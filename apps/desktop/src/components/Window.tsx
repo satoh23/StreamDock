@@ -9,11 +9,9 @@ export function Window({
   children: ReactNode;
 }) {
   return (
-    <div className={styles.app}>
-      <div className={styles.window}>
-        {sidebar}
-        <main className={styles.main}>{children}</main>
-      </div>
+    <div className={styles.window}>
+      {sidebar}
+      <main className={styles.main}>{children}</main>
     </div>
   );
 }

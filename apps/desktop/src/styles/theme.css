@@ -21,18 +21,17 @@
 }
 
 html,
-body {
+body,
+#root {
   margin: 0;
   padding: 0;
+  height: 100%;
 }
 
 body {
-  min-height: 100vh;
+  min-height: 100%;
   color: var(--text);
-  background:
-    radial-gradient(circle at top left, rgba(103, 232, 249, 0.18), transparent 32%),
-    radial-gradient(circle at top right, rgba(139, 92, 246, 0.16), transparent 34%),
-    var(--bg);
+  background: var(--bg);
 }
 
 h1,

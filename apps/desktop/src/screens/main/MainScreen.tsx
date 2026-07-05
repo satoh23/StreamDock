@@ -149,17 +149,14 @@ export function MainScreen({ presetName }: { presetName: string }) {
         ))}
       </div>
 
-      <div className={styles.footerActions}>
-        <p>
-          一括起動中は、番号順に起動します。途中で起動失敗した場合は、そのツールをエラーにして後続の起動を止めます。
-        </p>
-        {editMode && (
+      {editMode && (
+        <div className={styles.footerActions}>
           <div className={styles.footerButtons}>
             <Button>起動間隔を設定</Button>
             <Button>PC起動時の動作</Button>
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }

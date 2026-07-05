@@ -166,19 +166,13 @@
 .footerActions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 14px;
   margin-top: 18px;
   padding: 14px 16px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: rgba(18, 26, 47, 0.4);
-}
-.footerActions p {
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.5;
-  max-width: 520px;
 }
 .footerButtons {
   display: flex;
