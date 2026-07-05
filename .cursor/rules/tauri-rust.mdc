@@ -1,0 +1,14 @@
+---
+description: Tauri/Rust実装ルール
+globs:
+  - "apps/desktop/src-tauri/src/**/*.rs"
+---
+
+# tauri rust rules
+
+- OSプロセス操作はRust側に実装してください
+- frontendから直接shell実行する設計にしないでください
+- commandは薄くし、Service層にロジックを寄せてください
+- プロセス停止は原則としてstream-dock経由で起動したPIDのみ対象にしてください
+- 危険なファイル操作や削除処理は実装前に確認してください
+- DB schema変更時はmodel / repository / migrationを同時に更新してください

@@ -1,0 +1,41 @@
+# secrets
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+secrets.json
+
+# dependencies
+node_modules/
+.pnpm-store/
+
+# build outputs
+dist/
+build/
+.next/
+out/
+coverage/
+
+# rust / tauri outputs
+target/
+apps/desktop/src-tauri/target/
+
+# logs
+*.log
+logs/
+
+# binaries / installers
+*.exe
+*.dll
+*.msi
+*.dmg
+*.app
+*.zip
+*.7z
+
+# OS
+.DS_Store
+Thumbs.db

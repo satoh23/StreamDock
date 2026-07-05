@@ -1,0 +1,14 @@
+---
+description: React UI実装ルール
+globs:
+  - "apps/desktop/src/**/*.tsx"
+  - "apps/desktop/src/**/*.ts"
+---
+
+# frontend rules
+
+- UI変更では既存コンポーネントを優先してください
+- 状態管理を増やす前にReact stateで足りるか検討してください
+- Tauri invokeの呼び出しは専用API wrapperに集約してください
+- UIだけの変更でDB schemaやRust commandを変更しないでください
+- 表示文言は後でi18n化しやすいように分離しやすくしてください

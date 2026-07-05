@@ -1,0 +1,15 @@
+---
+description: stream-dock全体の開発ルール
+alwaysApply: true
+---
+
+# stream-dock project rules
+
+- このアプリはTauriデスクトップアプリです
+- フロントエンドはReact + TypeScriptです
+- OS操作、プロセス起動、停止、ファイル操作はRust側に寄せます
+- frontendから直接shell実行する設計にしないでください
+- 1回の変更で複数機能をまとめて実装しないでください
+- 変更前に対象ファイルと方針を説明してください
+- 新しいライブラリを追加する場合は理由を説明してください
+- UIだけの変更ではRust側を触らないでください
