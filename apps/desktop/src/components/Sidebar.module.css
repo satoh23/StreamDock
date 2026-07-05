@@ -1,0 +1,122 @@
+.sidebar {
+  padding: 24px;
+  border-right: 1px solid var(--line);
+  background: rgba(10, 16, 31, 0.72);
+  overflow: hidden;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 32px;
+}
+.logo {
+  width: 46px;
+  height: 46px;
+  display: grid;
+  place-items: center;
+  border-radius: 15px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: #05111f;
+  font-size: 22px;
+  font-weight: 900;
+  letter-spacing: -0.04em;
+}
+.brand h1 {
+  font-size: 22px;
+  letter-spacing: -0.04em;
+}
+.brand p {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.label {
+  margin: 24px 0 10px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.preset {
+  padding: 15px;
+  margin-bottom: 10px;
+  border-radius: 16px;
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.045);
+  cursor: pointer;
+}
+.preset.active {
+  border-color: rgba(103, 232, 249, 0.48);
+  background: linear-gradient(135deg, rgba(103, 232, 249, 0.13), rgba(139, 92, 246, 0.1));
+}
+.preset h3 {
+  font-size: 15px;
+  margin-bottom: 8px;
+}
+.presetMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ghost {
+  width: 100%;
+  padding: 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.055);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--text);
+  text-align: left;
+}
+.ghost.active {
+  background: rgba(103, 232, 249, 0.1);
+  border-color: rgba(103, 232, 249, 0.22);
+  color: #dffaff;
+}
+
+.toolList {
+  max-height: 224px;
+  overflow-y: auto;
+  margin-bottom: 12px;
+}
+.sidebarTool {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  margin-bottom: 6px;
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+.sidebarToolIcon {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: rgba(103, 232, 249, 0.1);
+  border: 1px solid rgba(103, 232, 249, 0.16);
+  color: #a5f3fc;
+  font-weight: 900;
+  font-size: 13px;
+  flex: none;
+}
+.sidebarTool span {
+  font-size: 13px;
+}
+
+.toolList::-webkit-scrollbar {
+  width: 6px;
+}
+.toolList::-webkit-scrollbar-track {
+  background: transparent;
+}
+.toolList::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.22);
+  border-radius: 999px;
+}

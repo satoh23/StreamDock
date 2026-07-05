@@ -1,0 +1,101 @@
+.top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 18px;
+}
+.title h2 {
+  font-size: 29px;
+  letter-spacing: -0.045em;
+}
+.title p {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.content {
+  display: grid;
+  grid-template-columns: 1fr 360px;
+  gap: 18px;
+  align-items: start;
+}
+
+.panel {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(18, 26, 47, 0.58);
+  overflow: hidden;
+}
+.panelHead {
+  padding: 16px 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(18, 26, 47, 0.76);
+}
+.panelHead h3 {
+  font-size: 17px;
+}
+.panelHead p {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.panelBody {
+  padding: 18px;
+}
+
+.form {
+  display: grid;
+  gap: 14px;
+}
+.field label {
+  display: block;
+  margin-bottom: 7px;
+  color: #cbd5e1;
+  font-size: 12px;
+  font-weight: 800;
+}
+.field input,
+.field select {
+  width: 100%;
+  height: 40px;
+  padding: 0 12px;
+  border-radius: 12px;
+  outline: none;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.055);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 13px;
+}
+.field select {
+  appearance: none;
+}
+.field input::placeholder {
+  color: rgba(148, 163, 184, 0.72);
+}
+.fieldHelp {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.conditionalField {
+  display: none;
+}
+.conditionalField.visible {
+  display: block;
+}
+
+.bottomActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 18px;
+}

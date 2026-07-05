@@ -1,0 +1,127 @@
+/* --- IconTile --- */
+.iconTile {
+  display: grid;
+  place-items: center;
+  border-radius: 14px;
+  background: rgba(103, 232, 249, 0.1);
+  border: 1px solid rgba(103, 232, 249, 0.16);
+  color: #a5f3fc;
+  font-weight: 900;
+}
+.iconTile.md {
+  width: 44px;
+  height: 44px;
+  font-size: 16px;
+}
+.iconTile.sm {
+  width: 42px;
+  height: 42px;
+  border-radius: 13px;
+  font-size: 14px;
+}
+
+/* --- OrderBadge --- */
+.order {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.055);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #cbd5e1;
+  font-weight: 800;
+  font-size: 10px;
+}
+.order.parallel {
+  width: 38px;
+  color: #e2faff;
+  background: rgba(103, 232, 249, 0.1);
+  border-color: rgba(103, 232, 249, 0.18);
+}
+
+/* --- Chip --- */
+.chip {
+  padding: 5px 8px;
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+/* --- StatusBadge --- */
+.status {
+  min-width: 64px;
+  text-align: center;
+  padding: 5px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 850;
+}
+.status.running {
+  color: var(--ok);
+  background: rgba(52, 211, 153, 0.1);
+}
+.status.starting {
+  color: var(--warn);
+  background: rgba(251, 191, 36, 0.1);
+  border: 1px solid rgba(251, 191, 36, 0.16);
+}
+.status.waiting {
+  color: var(--muted);
+  background: rgba(148, 163, 184, 0.1);
+}
+.status.error {
+  color: var(--danger);
+  background: rgba(251, 113, 133, 0.1);
+}
+
+/* --- Button --- */
+.btn {
+  font-family: inherit;
+}
+.primary {
+  height: 38px;
+  padding: 0 17px;
+  border-radius: 11px;
+  background: linear-gradient(135deg, #19d3ee, #8b5cf6);
+  box-shadow: 0 12px 26px rgba(25, 211, 238, 0.16);
+  font-size: 13px;
+  color: var(--text);
+}
+.primary.stopAll {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.105), rgba(255, 255, 255, 0.055));
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 6px 16px rgba(0, 0, 0, 0.12);
+  color: #f8fafc;
+}
+.primary:disabled {
+  opacity: 0.88;
+  cursor: default;
+}
+.secondary {
+  height: 38px;
+  padding: 0 14px;
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.065);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 13px;
+  color: var(--text);
+}
+
+/* inline spinner shown inside buttons/rows */
+.spinner {
+  width: 15px;
+  height: 15px;
+  border-radius: 999px;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  border-top-color: #f8fafc;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

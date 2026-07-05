@@ -1,0 +1,187 @@
+.top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 18px;
+}
+.title h2 {
+  font-size: 29px;
+  letter-spacing: -0.045em;
+}
+.progressText {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.editToggle {
+  height: 38px;
+  padding: 0 14px;
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.065);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 13px;
+  color: var(--text);
+}
+.editToggle.editing {
+  background: rgba(103, 232, 249, 0.12);
+  border-color: rgba(103, 232, 249, 0.32);
+  color: #b7f4ff;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 14px 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius) var(--radius) 0 0;
+  background: rgba(18, 26, 47, 0.76);
+}
+.toolbarHead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.toolbar h3 {
+  font-size: 17px;
+}
+.editHint {
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 13px;
+  background: rgba(103, 232, 249, 0.08);
+  border: 1px solid rgba(103, 232, 249, 0.16);
+  color: #b7f4ff;
+}
+.addToolBtn {
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.065);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #f8fafc;
+  font-size: 12px;
+}
+
+.toolList {
+  border: 1px solid var(--line);
+  border-top: 0;
+  border-radius: 0 0 var(--radius) var(--radius);
+  background: rgba(18, 26, 47, 0.58);
+  overflow: hidden;
+}
+
+.tool {
+  display: grid;
+  grid-template-columns: 28px 44px 1fr 82px 150px;
+  gap: 14px;
+  align-items: center;
+  padding: 15px 18px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+.tool:first-child {
+  border-top: 0;
+}
+.info h4 {
+  font-size: 15px;
+  margin-bottom: 3px;
+}
+.info p {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.toolActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.runtimeAction {
+  width: 34px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  color: #f8fafc;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.105), rgba(255, 255, 255, 0.055));
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 6px 16px rgba(0, 0, 0, 0.12);
+}
+.runtimeAction svg {
+  width: 18px;
+  height: 18px;
+}
+.stopBtn {
+  color: #fb7185;
+}
+.startBtn {
+  background:
+    radial-gradient(circle at 50% 35%, rgba(103, 232, 249, 0.22), transparent 60%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.105), rgba(255, 255, 255, 0.055));
+  border-color: rgba(103, 232, 249, 0.18);
+}
+.loadingAction {
+  width: 34px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+}
+
+.move,
+.delete {
+  width: 34px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  color: #f8fafc;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.045));
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  font-size: 16px;
+}
+.delete {
+  border-radius: 12px;
+  color: #fb7185;
+}
+.disabled {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+/* 編集モード: アクション列を広げ、行に薄い背景 */
+.editMode .tool {
+  grid-template-columns: 28px 44px 1fr 82px 270px;
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.footerActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-top: 18px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(18, 26, 47, 0.4);
+}
+.footerActions p {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  max-width: 520px;
+}
+.footerButtons {
+  display: flex;
+  gap: 10px;
+  flex: none;
+}
