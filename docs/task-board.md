@@ -1,18 +1,21 @@
 # Task Board
 
-## Todo
+## Done
 
 - 001 Project Setup
-- 002 App Shell
-- 003 Tool Registry
-- 004 Preset CRUD
-- 005 Preset Item Ordering
-- 006 Process Launch
-- 007 Bulk Launch
-- 008 Process Stop
-- 009 Runtime Status
-- 010 Windows Build
+- 002 Monorepo Structure
 
-## Doing
+## Next
 
-## Done
+- 003 App Shell
+
+## Todo
+
+- 004 Tool Registry
+- 005 Preset CRUD
+- 006 Preset Item Ordering
+- 007 Process Launch
+- 008 Bulk Launch
+- 009 Process Stop
+- 010 Runtime Status
+- 011 Windows Build
