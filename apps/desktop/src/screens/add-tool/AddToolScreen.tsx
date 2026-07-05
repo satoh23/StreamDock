@@ -62,9 +62,8 @@ export function AddToolScreen({ onNavigate }: { onNavigate: (screen: Screen) => 
   return (
     <>
       <div className={layout.top}>
-        <div className={layout.title}>
+        <div className={`${layout.title} ${layout.pageTitle}`}>
           <h2>ツールを追加</h2>
-          <p>アプリを選択すると、名前・パス・アイコンを読み取って登録します。</p>
         </div>
       </div>
 
@@ -165,7 +164,7 @@ export function AddToolScreen({ onNavigate }: { onNavigate: (screen: Screen) => 
         </section>
 
         <PreviewCard
-          title="ツール追加後"
+          title="ツール追加後プレビュー"
           rows={previewRows}
           help="起動順や並行起動はあとからプリセット編集画面で変更できます。"
         />

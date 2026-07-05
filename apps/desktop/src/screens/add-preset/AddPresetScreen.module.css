@@ -1,8 +1,9 @@
 .stepper {
   display: flex;
   align-items: center;
-  margin-bottom: 18px;
+  flex-shrink: 0;
 }
+
 .step {
   display: flex;
   align-items: center;

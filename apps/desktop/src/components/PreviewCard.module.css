@@ -9,6 +9,23 @@
   padding: 16px;
 }
 
+.previewRows {
+  max-height: 320px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.previewRows::-webkit-scrollbar {
+  width: 6px;
+}
+.previewRows::-webkit-scrollbar-track {
+  background: transparent;
+}
+.previewRows::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.22);
+  border-radius: 999px;
+}
+
 .previewTitle {
   font-size: 15px;
   font-weight: 800;
@@ -63,7 +80,7 @@
 
 .plainHelp {
   margin-top: 14px;
-  text-align: center;
+  text-align: left;
   color: var(--muted);
   font-size: 12px;
   line-height: 1.5;

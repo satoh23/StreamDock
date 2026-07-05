@@ -39,23 +39,25 @@ export function PreviewCard({
         </div>
       )}
 
-      {rows.length === 0 && emptyMessage ? (
-        <div className={styles.emptyPreview}>{emptyMessage}</div>
-      ) : (
-        rows.map((row) => (
-          <div
-            key={row.key}
-            className={`${styles.previewRow} ${row.highlight ? styles.newRow : ""}`}
-          >
-            <OrderBadge label={row.orderLabel} parallel={row.parallel} />
-            <IconTile glyph={row.iconLetter} size="sm" />
-            <div>
-              <h4>{row.name}</h4>
-              <p>{row.description}</p>
+      <div className={styles.previewRows}>
+        {rows.length === 0 && emptyMessage ? (
+          <div className={styles.emptyPreview}>{emptyMessage}</div>
+        ) : (
+          rows.map((row) => (
+            <div
+              key={row.key}
+              className={`${styles.previewRow} ${row.highlight ? styles.newRow : ""}`}
+            >
+              <OrderBadge label={row.orderLabel} parallel={row.parallel} />
+              <IconTile glyph={row.iconLetter} size="sm" />
+              <div>
+                <h4>{row.name}</h4>
+                <p>{row.description}</p>
+              </div>
             </div>
-          </div>
-        ))
-      )}
+          ))
+        )}
+      </div>
 
       {help && <div className={styles.plainHelp}>{help}</div>}
     </aside>

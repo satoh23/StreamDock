@@ -3,6 +3,7 @@ import type { Tool, ToolState } from "../../types";
 import { initialTools } from "../../data/mockData";
 import { Button, Spinner } from "../../components/primitives";
 import { ToolRow } from "./ToolRow";
+import layout from "../formLayout.module.css";
 import styles from "./MainScreen.module.css";
 
 export function MainScreen({ presetName }: { presetName: string }) {
@@ -85,7 +86,7 @@ export function MainScreen({ presetName }: { presetName: string }) {
   return (
     <div className={editMode ? styles.editMode : ""}>
       <div className={styles.top}>
-        <div className={styles.title}>
+        <div className={`${layout.title} ${layout.pageTitle}`}>
           <h2>{presetName}</h2>
           <div className={styles.progressText}>
             {runningCount} / {tools.length} 起動済み

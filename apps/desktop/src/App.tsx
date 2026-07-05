@@ -14,19 +14,14 @@ function App() {
 
   const sidebar = (
     <Sidebar
-      activePresetId={screen === "main" ? activePresetId : undefined}
-      onSelectPreset={(id) => {
-        setActivePresetId(id);
-        setScreen("main");
-      }}
-      showToolList={screen !== "main"}
-      activeNav={screen === "main" ? undefined : screen}
+      activePresetId={activePresetId}
+      onSelectPreset={setActivePresetId}
       onNavigate={setScreen}
     />
   );
 
   return (
-    <Window sidebar={sidebar}>
+    <Window sidebar={screen === "main" ? sidebar : undefined}>
       {screen === "main" && <MainScreen presetName={activePreset.name} />}
       {screen === "add-tool" && <AddToolScreen onNavigate={setScreen} />}
       {screen === "add-preset" && <AddPresetScreen onNavigate={setScreen} />}

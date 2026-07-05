@@ -7,6 +7,10 @@
   overflow: hidden;
 }
 
+.window.fullWidth {
+  grid-template-columns: 1fr;
+}
+
 .main {
   min-height: 0;
   overflow: auto;

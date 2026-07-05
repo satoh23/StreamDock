@@ -24,64 +24,54 @@ export function Sidebar({
 
   return (
     <aside className={styles.sidebar}>
-      <div className={styles.brand}>
-        <div className={styles.logo}>S</div>
-        <div>
-          <h1>stream-dock</h1>
-          <p>配信ツールランチャー</p>
-        </div>
+      <div className={styles.presetSection}>
+        <div className={styles.label}>配信プリセット</div>
+        {hasPresets && (
+          <div className={styles.presetList}>
+            {presets.map((preset) => (
+              <div
+                key={preset.id}
+                className={`${styles.preset} ${
+                  activePresetId === preset.id ? styles.active : ""
+                }`}
+                onClick={() => onSelectPreset?.(preset.id)}
+              >
+                <h3>{preset.name}</h3>
+                <div className={styles.presetMeta}>
+                  {preset.chips.map((chip) => (
+                    <Chip key={chip}>{chip}</Chip>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        <button
+          className={`${styles.ghost} ${activeNav === "add-preset" ? styles.active : ""}`}
+          onClick={() => onNavigate("add-preset")}
+        >
+          ＋ プリセットを追加
+        </button>
       </div>
 
-      <div className={styles.navBody}>
-        <div className={styles.presetSection}>
-          <div className={styles.label}>配信プリセット</div>
-          {hasPresets && (
-            <div className={styles.presetList}>
-              {presets.map((preset) => (
-                <div
-                  key={preset.id}
-                  className={`${styles.preset} ${
-                    activePresetId === preset.id ? styles.active : ""
-                  }`}
-                  onClick={() => onSelectPreset?.(preset.id)}
-                >
-                  <h3>{preset.name}</h3>
-                  <div className={styles.presetMeta}>
-                    {preset.chips.map((chip) => (
-                      <Chip key={chip}>{chip}</Chip>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-          <button
-            className={`${styles.ghost} ${activeNav === "add-preset" ? styles.active : ""}`}
-            onClick={() => onNavigate("add-preset")}
-          >
-            ＋ プリセットを追加
-          </button>
-        </div>
-
-        <div className={styles.toolSection}>
-          <div className={styles.label}>ツール</div>
-          {hasTools && (
-            <div className={styles.toolList}>
-              {toolCatalog.map((tool) => (
-                <div key={tool.id} className={styles.sidebarTool}>
-                  <div className={styles.sidebarToolIcon}>{tool.iconLetter}</div>
-                  <span>{tool.name}</span>
-                </div>
-              ))}
-            </div>
-          )}
-          <button
-            className={`${styles.ghost} ${activeNav === "add-tool" ? styles.active : ""}`}
-            onClick={() => onNavigate("add-tool")}
-          >
-            ＋ ツールを登録
-          </button>
-        </div>
+      <div className={styles.toolSection}>
+        <div className={styles.label}>ツール</div>
+        {hasTools && (
+          <div className={styles.toolList}>
+            {toolCatalog.map((tool) => (
+              <div key={tool.id} className={styles.sidebarTool}>
+                <div className={styles.sidebarToolIcon}>{tool.iconLetter}</div>
+                <span>{tool.name}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        <button
+          className={`${styles.ghost} ${activeNav === "add-tool" ? styles.active : ""}`}
+          onClick={() => onNavigate("add-tool")}
+        >
+          ＋ ツールを登録
+        </button>
       </div>
     </aside>
   );

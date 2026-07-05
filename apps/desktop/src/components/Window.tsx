@@ -5,11 +5,11 @@ export function Window({
   sidebar,
   children,
 }: {
-  sidebar: ReactNode;
+  sidebar?: ReactNode;
   children: ReactNode;
 }) {
   return (
-    <div className={styles.window}>
+    <div className={`${styles.window} ${sidebar ? "" : styles.fullWidth}`}>
       {sidebar}
       <main className={styles.main}>{children}</main>
     </div>

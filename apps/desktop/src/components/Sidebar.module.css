@@ -1,48 +1,13 @@
 .sidebar {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: 60fr 40fr;
+  gap: 16px;
   height: 100%;
   min-height: 0;
-  padding: 24px;
+  padding: 32px 24px 24px;
   border-right: 1px solid var(--line);
   background: rgba(10, 16, 31, 0.72);
   overflow: hidden;
-}
-
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 24px;
-  flex-shrink: 0;
-}
-.logo {
-  width: 46px;
-  height: 46px;
-  display: grid;
-  place-items: center;
-  border-radius: 15px;
-  background: linear-gradient(135deg, var(--accent), var(--accent-2));
-  color: #05111f;
-  font-size: 22px;
-  font-weight: 900;
-  letter-spacing: -0.04em;
-}
-.brand h1 {
-  font-size: 22px;
-  letter-spacing: -0.04em;
-}
-.brand p {
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.navBody {
-  flex: 1;
-  min-height: 0;
-  display: grid;
-  grid-template-rows: 1fr 1fr;
-  gap: 16px;
 }
 
 .presetSection,
@@ -73,8 +38,8 @@
 }
 
 .preset {
-  padding: 15px;
-  margin-bottom: 10px;
+  padding: 12px;
+  margin-bottom: 8px;
   border-radius: 16px;
   border: 1px solid transparent;
   background: rgba(255, 255, 255, 0.045);
@@ -85,16 +50,20 @@
 }
 .preset.active {
   border-color: rgba(103, 232, 249, 0.48);
-  background: linear-gradient(135deg, rgba(103, 232, 249, 0.13), rgba(139, 92, 246, 0.1));
+  background: linear-gradient(
+    135deg,
+    rgba(103, 232, 249, 0.13),
+    rgba(139, 92, 246, 0.1)
+  );
 }
 .preset h3 {
-  font-size: 15px;
-  margin-bottom: 8px;
+  font-size: 14px;
+  margin-bottom: 6px;
 }
 .presetMeta {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 4px;
 }
 
 .ghost {

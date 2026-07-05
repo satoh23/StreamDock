@@ -9,6 +9,10 @@
   font-size: 29px;
   letter-spacing: -0.045em;
 }
+.pageTitle h2 {
+  font-size: 24px;
+  letter-spacing: -0.045em;
+}
 .title p {
   margin-top: 6px;
   color: var(--muted);

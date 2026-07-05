@@ -112,28 +112,17 @@ export function AddPresetScreen({
   return (
     <>
       <div className={layout.top}>
-        <div className={layout.title}>
-          {currentStep === 1 ? (
-            <>
-              <h2>プリセットを追加</h2>
-              <p>配信内容ごとに、使うツールの組み合わせを保存します。</p>
-            </>
-          ) : (
-            <>
-              <h2>起動設定</h2>
-              <p>選択したツールの起動順と並行起動を設定します。</p>
-            </>
-          )}
+        <div className={`${layout.title} ${layout.pageTitle}`}>
+          <h2>{currentStep === 1 ? "プリセットを追加" : "起動設定"}</h2>
         </div>
-      </div>
-
-      <div className={styles.stepper}>
-        <div className={`${styles.step} ${currentStep === 1 ? styles.active : ""}`}>
-          <span className={styles.stepNumber}>1</span> 使うツール
-        </div>
-        <div className={styles.stepLine} />
-        <div className={`${styles.step} ${currentStep === 2 ? styles.active : ""}`}>
-          <span className={styles.stepNumber}>2</span> 起動設定
+        <div className={styles.stepper}>
+          <div className={`${styles.step} ${currentStep === 1 ? styles.active : ""}`}>
+            <span className={styles.stepNumber}>1</span> 使うツール
+          </div>
+          <div className={styles.stepLine} />
+          <div className={`${styles.step} ${currentStep === 2 ? styles.active : ""}`}>
+            <span className={styles.stepNumber}>2</span> 起動設定
+          </div>
         </div>
       </div>
 
