@@ -1,0 +1,866 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>stream-dock add tool prototype</title>
+  <style>
+    :root {
+      --bg: #0b1020;
+      --text: #eef4ff;
+      --muted: #93a4bc;
+      --line: #26334f;
+      --accent: #67e8f9;
+      --accent-2: #8b5cf6;
+      --danger: #fb7185;
+      --radius: 18px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(103,232,249,.18), transparent 32%),
+        radial-gradient(circle at top right, rgba(139,92,246,.16), transparent 34%),
+        var(--bg);
+    }
+
+    .app {
+      width: 1280px;
+      min-height: 820px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    .window {
+      min-height: 772px;
+      display: grid;
+      grid-template-columns: 300px 1fr;
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 28px;
+      overflow: hidden;
+      background: rgba(11,16,32,.74);
+      box-shadow: 0 28px 80px rgba(0,0,0,.38);
+    }
+
+    aside {
+      padding: 24px;
+      border-right: 1px solid var(--line);
+      background: rgba(10,16,31,.72);
+    }
+
+    main {
+      padding: 28px;
+      background: rgba(13,20,38,.48);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 32px;
+    }
+
+    .logo {
+      width: 44px;
+      height: 44px;
+      display: grid;
+      place-items: center;
+      border-radius: 15px;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      color: #05111f;
+      font-size: 22px;
+      font-weight: 900;
+    }
+
+    h1, h2, h3, p { margin-top: 0; }
+
+    .brand h1 {
+      margin-bottom: 2px;
+      font-size: 22px;
+      letter-spacing: -0.04em;
+    }
+
+    .brand p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .label {
+      margin: 24px 0 10px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .sidebar-preset-list {
+      max-height: 230px;
+      overflow-y: auto;
+      padding-right: 4px;
+      margin-bottom: 10px;
+    }
+
+    .sidebar-preset-list::-webkit-scrollbar,
+    .sidebar-tool-list::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    .sidebar-preset-list::-webkit-scrollbar-track,
+    .sidebar-tool-list::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    .sidebar-preset-list::-webkit-scrollbar-thumb,
+    .sidebar-tool-list::-webkit-scrollbar-thumb {
+      background: rgba(148,163,184,.22);
+      border-radius: 999px;
+    }
+
+    .preset {
+      padding: 15px;
+      margin-bottom: 10px;
+      border-radius: 16px;
+      border: 1px solid transparent;
+      background: rgba(255,255,255,.045);
+    }
+
+    .preset.active {
+      border-color: rgba(103,232,249,.48);
+      background: linear-gradient(135deg, rgba(103,232,249,.13), rgba(139,92,246,.10));
+    }
+
+    .preset h3 {
+      margin: 0;
+      font-size: 15px;
+    }
+
+    .preset-meta {
+      display: flex;
+      gap: 8px;
+      margin-top: 10px;
+      flex-wrap: wrap;
+    }
+
+    .chip {
+      padding: 5px 8px;
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 11px;
+      background: rgba(255,255,255,.06);
+      border: 1px solid rgba(255,255,255,.07);
+    }
+
+    button {
+      border: 0;
+      border-radius: 10px;
+      font-weight: 800;
+      color: var(--text);
+      cursor: pointer;
+      font-family: inherit;
+    }
+
+    .ghost {
+      width: 100%;
+      padding: 12px;
+      border-radius: 14px;
+      background: rgba(255,255,255,.055);
+      border: 1px solid rgba(255,255,255,.08);
+    }
+
+    .ghost.active {
+      background: rgba(103,232,249,.10);
+      border-color: rgba(103,232,249,.22);
+      color: #dffaff;
+    }
+
+    .sidebar-tool-list {
+      max-height: 220px;
+      overflow-y: auto;
+      padding-right: 4px;
+      margin-bottom: 10px;
+    }
+
+    .sidebar-tool {
+      display: grid;
+      grid-template-columns: 30px 1fr;
+      gap: 10px;
+      align-items: center;
+      padding: 9px 10px;
+      margin-bottom: 7px;
+      border-radius: 13px;
+      background: rgba(255,255,255,.035);
+      border: 1px solid rgba(255,255,255,.055);
+    }
+
+    .sidebar-tool-icon {
+      width: 30px;
+      height: 30px;
+      display: grid;
+      place-items: center;
+      border-radius: 10px;
+      background: rgba(103,232,249,.09);
+      border: 1px solid rgba(103,232,249,.14);
+      color: #dffaff;
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .sidebar-tool span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: #dbeafe;
+      font-size: 12px;
+      font-weight: 750;
+    }
+
+    .top {
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      align-items: center;
+      margin-bottom: 18px;
+    }
+
+    .title h2 {
+      margin: 0;
+      font-size: 29px;
+      letter-spacing: -0.045em;
+    }
+
+    .title p {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .primary {
+      height: 38px;
+      padding: 0 17px;
+      border-radius: 11px;
+      background: linear-gradient(135deg, #19d3ee, #8b5cf6);
+      box-shadow: 0 12px 26px rgba(25,211,238,.16);
+      white-space: nowrap;
+      font-size: 13px;
+    }
+
+    .secondary {
+      height: 38px;
+      padding: 0 14px;
+      border-radius: 11px;
+      background: rgba(255,255,255,.065);
+      border: 1px solid rgba(255,255,255,.08);
+      white-space: nowrap;
+      font-size: 13px;
+    }
+
+    .actions {
+      display: flex;
+      gap: 10px;
+    }
+
+    .content {
+      display: grid;
+      grid-template-columns: 1fr 360px;
+      gap: 18px;
+      align-items: start;
+    }
+
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(18,26,47,.58);
+      overflow: hidden;
+    }
+
+    .panel-head {
+      padding: 16px 18px;
+      border-bottom: 1px solid rgba(255,255,255,.06);
+      background: rgba(18,26,47,.76);
+    }
+
+    .panel-head h3 {
+      margin: 0;
+      font-size: 17px;
+    }
+
+    .panel-head p {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .panel-body {
+      padding: 18px;
+    }
+
+    .dropzone {
+      display: grid;
+      place-items: center;
+      min-height: 210px;
+      border-radius: 18px;
+      border: 1.5px dashed rgba(148,163,184,.32);
+      background:
+        radial-gradient(circle at center, rgba(103,232,249,.10), transparent 55%),
+        rgba(255,255,255,.035);
+      text-align: center;
+      padding: 26px;
+      margin-bottom: 18px;
+    }
+
+    .drop-icon {
+      width: 58px;
+      height: 58px;
+      display: grid;
+      place-items: center;
+      margin: 0 auto 14px;
+      border-radius: 18px;
+      background: rgba(103,232,249,.11);
+      border: 1px solid rgba(103,232,249,.18);
+      color: #e2faff;
+    }
+
+    .drop-icon svg {
+      width: 28px;
+      height: 28px;
+    }
+
+    .dropzone h3 {
+      margin: 0 0 8px;
+      font-size: 17px;
+    }
+
+    .dropzone p {
+      margin: 0 0 16px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .file-types {
+      display: flex;
+      justify-content: center;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .type-chip {
+      padding: 5px 8px;
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 11px;
+      background: rgba(255,255,255,.055);
+      border: 1px solid rgba(255,255,255,.07);
+    }
+
+    .selected-app {
+      display: grid;
+      grid-template-columns: 54px 1fr;
+      gap: 14px;
+      align-items: center;
+      padding: 15px;
+      border-radius: 16px;
+      background: rgba(255,255,255,.045);
+      border: 1px solid rgba(255,255,255,.07);
+      margin-bottom: 18px;
+    }
+
+    .app-icon {
+      width: 54px;
+      height: 54px;
+      display: grid;
+      place-items: center;
+      border-radius: 16px;
+      background:
+        radial-gradient(circle at 50% 20%, rgba(103,232,249,.28), transparent 45%),
+        linear-gradient(135deg, rgba(103,232,249,.18), rgba(139,92,246,.18));
+      border: 1px solid rgba(255,255,255,.10);
+      color: #f8fafc;
+      font-weight: 900;
+      font-size: 20px;
+    }
+
+    .selected-app h3 {
+      margin: 0 0 5px;
+      font-size: 16px;
+    }
+
+    .path {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+      word-break: break-all;
+    }
+
+    .form {
+      display: grid;
+      gap: 14px;
+    }
+
+    .field label {
+      display: block;
+      margin-bottom: 7px;
+      color: #cbd5e1;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .field input,
+    .field select {
+      width: 100%;
+      height: 40px;
+      padding: 0 12px;
+      border-radius: 12px;
+      outline: none;
+      color: var(--text);
+      background: rgba(255,255,255,.055);
+      border: 1px solid rgba(255,255,255,.08);
+      font-family: inherit;
+      font-size: 13px;
+    }
+
+    .field input::placeholder {
+      color: rgba(148,163,184,.72);
+    }
+
+    .field select {
+      appearance: none;
+    }
+
+    .field-help {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.5;
+    }
+
+    .conditional-field {
+      display: none;
+    }
+
+    .conditional-field.visible {
+      display: block;
+    }
+
+    .inline-fields {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .details {
+      border-top: 1px solid rgba(255,255,255,.06);
+      margin-top: 18px;
+      padding-top: 16px;
+    }
+
+    .details-title {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      color: #cbd5e1;
+      font-size: 13px;
+      font-weight: 800;
+      margin-bottom: 14px;
+    }
+
+    .tiny-button {
+      height: 30px;
+      padding: 0 10px;
+      border-radius: 9px;
+      color: #f8fafc;
+      background: rgba(255,255,255,.065);
+      border: 1px solid rgba(255,255,255,.08);
+      font-size: 12px;
+    }
+
+    .preview-card {
+      padding: 16px;
+    }
+
+    .preview-title {
+      margin: 0 0 13px;
+      font-size: 15px;
+    }
+
+    .preview-row {
+      display: grid;
+      grid-template-columns: 28px 42px 1fr;
+      gap: 12px;
+      align-items: center;
+      padding: 13px 0;
+      border-top: 1px solid rgba(255,255,255,.055);
+    }
+
+    .preview-row.new-row {
+      margin: 8px -8px 0;
+      padding: 13px 8px;
+      border: 1px solid rgba(103,232,249,.30);
+      border-radius: 14px;
+      background:
+        radial-gradient(circle at left, rgba(103,232,249,.14), transparent 64%),
+        rgba(103,232,249,.055);
+    }
+
+    .preview-row:first-of-type {
+      border-top: 0;
+    }
+
+    .order {
+      width: 22px;
+      height: 22px;
+      display: grid;
+      place-items: center;
+      border-radius: 999px;
+      background: rgba(255,255,255,.055);
+      border: 1px solid rgba(255,255,255,.10);
+      color: #cbd5e1;
+      font-weight: 800;
+      font-size: 10px;
+    }
+
+    .order.parallel {
+      width: 38px;
+      border-radius: 999px;
+      font-size: 10px;
+      color: #e2faff;
+      background: rgba(103,232,249,.10);
+      border-color: rgba(103,232,249,.18);
+    }
+
+    .mini-icon {
+      width: 42px;
+      height: 42px;
+      display: grid;
+      place-items: center;
+      border-radius: 13px;
+      background: rgba(103,232,249,.10);
+      border: 1px solid rgba(103,232,249,.16);
+      color: #a5f3fc;
+      font-weight: 900;
+      font-size: 14px;
+    }
+
+    .preview-row h4 {
+      margin: 0 0 4px;
+      font-size: 13px;
+    }
+
+    .preview-row p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+
+    .note {
+      margin-top: 14px;
+      padding: 13px;
+      border-radius: 14px;
+      background: rgba(255,255,255,.04);
+      border: 1px solid rgba(255,255,255,.06);
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    .plain-help {
+      margin: 12px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+      text-align: center;
+    }
+
+    .bottom-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      margin-top: 18px;
+    }
+
+    .disabled-button {
+      opacity: .52;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="app">
+    <div class="window">
+      <aside>
+        <div class="brand">
+          <div class="logo">S</div>
+          <div>
+            <h1>stream-dock</h1>
+            <p>配信ツールランチャー</p>
+          </div>
+        </div>
+
+        <div class="label">配信プリセット</div>
+        <div class="sidebar-preset-list">
+          <div class="preset active">
+            <h3>通常配信プリセット</h3>
+            <div class="preset-meta">
+              <span class="chip">10ツール</span>
+              <span class="chip">起動順あり</span>
+            </div>
+          </div>
+          <div class="preset">
+            <h3>雑談用プリセット</h3>
+            <div class="preset-meta">
+              <span class="chip">7ツール</span>
+              <span class="chip">一部並行</span>
+            </div>
+          </div>
+          <div class="preset">
+            <h3>海外コメント対応プリセット</h3>
+            <div class="preset-meta">
+              <span class="chip">9ツール</span>
+              <span class="chip">起動順あり</span>
+            </div>
+          </div>
+          <div class="preset">
+            <h3>コラボ配信プリセット</h3>
+            <div class="preset-meta">
+              <span class="chip">8ツール</span>
+              <span class="chip">一部並行</span>
+            </div>
+          </div>
+          <div class="preset">
+            <h3>歌枠プリセット</h3>
+            <div class="preset-meta">
+              <span class="chip">6ツール</span>
+            </div>
+          </div>
+        </div>
+        <button class="ghost">＋ プリセットを追加</button>
+
+        <div class="label">ツール</div>
+        <div class="sidebar-tool-list">
+          <div class="sidebar-tool">
+            <div class="sidebar-tool-icon">O</div>
+            <span>OBS Studio</span>
+          </div>
+          <div class="sidebar-tool">
+            <div class="sidebar-tool-icon">1</div>
+            <span>ワンコメ</span>
+          </div>
+          <div class="sidebar-tool">
+            <div class="sidebar-tool-icon">読</div>
+            <span>棒読みちゃん</span>
+          </div>
+          <div class="sidebar-tool">
+            <div class="sidebar-tool-icon">V</div>
+            <span>VOICEVOX</span>
+          </div>
+          <div class="sidebar-tool">
+            <div class="sidebar-tool-icon">翻</div>
+            <span>翻訳ツール</span>
+          </div>
+          <div class="sidebar-tool">
+            <div class="sidebar-tool-icon">狸</div>
+            <span>たぬえさ</span>
+          </div>
+          <div class="sidebar-tool">
+            <div class="sidebar-tool-icon">A</div>
+            <span>StreamAvatars</span>
+          </div>
+          <div class="sidebar-tool">
+            <div class="sidebar-tool-icon">V</div>
+            <span>VTubeStudio</span>
+          </div>
+          <div class="sidebar-tool">
+            <div class="sidebar-tool-icon">📸</div>
+            <span>スクショツール</span>
+          </div>
+          <div class="sidebar-tool">
+            <div class="sidebar-tool-icon">👁</div>
+            <span>視聴人数表示ツール</span>
+          </div>
+        </div>
+        <button class="ghost active">＋ ツールを登録</button>
+      </aside>
+
+      <main>
+        <div class="top">
+          <div class="title">
+            <h2>ツールを追加</h2>
+            <p>アプリを選択すると、名前・パス・アイコンを読み取って登録します。</p>
+          </div>
+          <div class="actions"></div>
+        </div>
+
+        <div class="content">
+          <section class="panel">
+            <div class="panel-head">
+              <h3>アプリを選択</h3>
+              <p>.exe やショートカットを選択します。ドラッグ&ドロップにも対応予定です。</p>
+            </div>
+            <div class="panel-body">
+              <div class="dropzone">
+                <div>
+                  <div class="drop-icon">
+                    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                      <path d="M12 4v10" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+                      <path d="m8 10 4 4 4-4" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+                      <path d="M5 18h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+                    </svg>
+                  </div>
+                  <h3>アプリをここにドロップ</h3>
+                  <p>またはファイル選択から、起動したいアプリを選びます。</p>
+                  <button class="secondary">アプリを選択</button>
+                  <div class="file-types">
+                    <span class="type-chip">.exe</span>
+                    <span class="type-chip">.lnk</span>
+                    <span class="type-chip">.bat</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="selected-app">
+                <div class="app-icon">A</div>
+                <div>
+                  <h3>StreamAvatars</h3>
+                  <div class="path">C:\Program Files (x86)\Steam\steamapps\common\StreamAvatars\StreamAvatars.exe</div>
+                </div>
+              </div>
+
+              <div class="form">
+                <div class="field">
+                  <label>表示名</label>
+                  <input value="StreamAvatars" />
+                  <div class="field-help">自動取得した名前を編集できます。</div>
+                </div>
+
+                <div class="field">
+                  <label>登録先プリセット</label>
+                  <select>
+                    <option>通常配信プリセット</option>
+                    <option>雑談用プリセット</option>
+                    <option>海外コメント対応プリセット</option>
+                    <option>ツールだけ登録して、プリセットには追加しない</option>
+                  </select>
+                </div>
+
+                <div class="field">
+                  <label>追加位置</label>
+                  <select id="insertMode">
+                    <option>最後に追加</option>
+                    <option>先頭に追加</option>
+                    <option>選択して追加</option>
+                    <option>順番なし（並行起動）</option>
+                  </select>
+                  <div class="field-help">順番が必要なツールは番号順、不要なツールは並行起動にできます。</div>
+                </div>
+
+                <div id="insertPositionField" class="field conditional-field">
+                  <label>挿入位置</label>
+                  <select>
+                    <option>1番目に追加</option>
+                    <option>2番目に追加</option>
+                    <option>3番目に追加</option>
+                    <option>4番目に追加</option>
+                    <option>5番目に追加</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="bottom-actions">
+                <button class="secondary">キャンセル</button>
+                <button class="primary">保存して追加</button>
+              </div>
+            </div>
+          </section>
+
+          <aside class="panel preview-card">
+            <h3 class="preview-title">ツール追加後</h3>
+
+            <div class="preview-row">
+              <div class="order">1</div>
+              <div class="mini-icon">O</div>
+              <div>
+                <h4>OBS Studio</h4>
+                <p>配信本体</p>
+              </div>
+            </div>
+
+            <div class="preview-row">
+              <div class="order">2</div>
+              <div class="mini-icon">1</div>
+              <div>
+                <h4>ワンコメ</h4>
+                <p>コメント取得・表示</p>
+              </div>
+            </div>
+
+            <div class="preview-row">
+              <div class="order">3</div>
+              <div class="mini-icon">読</div>
+              <div>
+                <h4>棒読みちゃん</h4>
+                <p>コメント読み上げ</p>
+              </div>
+            </div>
+
+            <div class="preview-row">
+              <div class="order">4</div>
+              <div class="mini-icon">V</div>
+              <div>
+                <h4>VOICEVOX</h4>
+                <p>音声変換</p>
+              </div>
+            </div>
+
+            <div class="preview-row parallel-row new-row">
+              <div class="order parallel">並行</div>
+              <div class="mini-icon">A</div>
+              <div>
+                <h4>StreamAvatars</h4>
+                <p>順番なしで並行起動</p>
+              </div>
+            </div>
+
+            <p class="plain-help">起動順や並行起動はあとからプリセット編集画面で変更できます。</p>
+          </aside>        </div>
+      </main>
+    </div>
+  </div>
+
+  <script>
+    const insertMode = document.getElementById('insertMode');
+    const insertPositionField = document.getElementById('insertPositionField');
+
+    const newRowOrder = document.querySelector('.preview-row.new-row .order');
+    const newRowDescription = document.querySelector('.preview-row.new-row p');
+
+    function updateInsertPositionVisibility() {
+      const shouldShow = insertMode.value === '選択して追加';
+      const isParallel = insertMode.value === '順番なし（並行起動）';
+      insertPositionField.classList.toggle('visible', shouldShow);
+
+      if (isParallel) {
+        newRowOrder.textContent = '並行';
+        newRowOrder.classList.add('parallel');
+        newRowDescription.textContent = '順番なしで並行起動';
+      } else {
+        newRowOrder.textContent = insertMode.value === '先頭に追加' ? '1' : '5';
+        newRowOrder.classList.remove('parallel');
+        newRowDescription.textContent = '画面下部のユーザーアバター';
+      }
+    }
+
+    insertMode.addEventListener('change', updateInsertPositionVisibility);
+    updateInsertPositionVisibility();
+  </script>
+
+</body>
+</html>

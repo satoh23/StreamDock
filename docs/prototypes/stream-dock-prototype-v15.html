@@ -1,0 +1,877 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>stream-dock prototype v6</title>
+  <style>
+    :root {
+      --bg: #0b1020;
+      --text: #eef4ff;
+      --muted: #93a4bc;
+      --line: #26334f;
+      --accent: #67e8f9;
+      --accent-2: #8b5cf6;
+      --ok: #34d399;
+      --warn: #fbbf24;
+      --danger: #fb7185;
+      --radius: 18px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(103,232,249,.18), transparent 32%),
+        radial-gradient(circle at top right, rgba(139,92,246,.16), transparent 34%),
+        var(--bg);
+    }
+
+    .app {
+      width: 1280px;
+      min-height: 820px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    .window {
+      min-height: 772px;
+      display: grid;
+      grid-template-columns: 300px 1fr;
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 28px;
+      overflow: hidden;
+      background: rgba(11,16,32,.74);
+      box-shadow: 0 28px 80px rgba(0,0,0,.38);
+    }
+
+    aside {
+      padding: 24px;
+      border-right: 1px solid var(--line);
+      background: rgba(10,16,31,.72);
+    }
+
+    main {
+      padding: 28px;
+      background: rgba(13,20,38,.48);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 32px;
+    }
+
+    .logo {
+      width: 44px;
+      height: 44px;
+      display: grid;
+      place-items: center;
+      border-radius: 15px;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      color: #05111f;
+      font-size: 22px;
+      font-weight: 900;
+    }
+
+    h1, h2, h3, p { margin-top: 0; }
+
+    .brand h1 {
+      margin-bottom: 2px;
+      font-size: 22px;
+      letter-spacing: -0.04em;
+    }
+
+    .brand p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .label {
+      margin: 24px 0 10px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .preset {
+      padding: 15px;
+      margin-bottom: 10px;
+      border-radius: 16px;
+      border: 1px solid transparent;
+      background: rgba(255,255,255,.045);
+    }
+
+    .preset.active {
+      border-color: rgba(103,232,249,.48);
+      background: linear-gradient(135deg, rgba(103,232,249,.13), rgba(139,92,246,.10));
+    }
+
+    .preset h3 {
+      margin: 0;
+      font-size: 15px;
+    }
+
+    .preset-meta {
+      display: flex;
+      gap: 8px;
+      margin-top: 10px;
+      flex-wrap: wrap;
+    }
+
+    .chip {
+      padding: 5px 8px;
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 11px;
+      background: rgba(255,255,255,.06);
+      border: 1px solid rgba(255,255,255,.07);
+    }
+
+    button {
+      border: 0;
+      border-radius: 10px;
+      font-weight: 800;
+      color: var(--text);
+      cursor: pointer;
+      font-family: inherit;
+    }
+
+    .ghost {
+      width: 100%;
+      padding: 12px;
+      border-radius: 14px;
+      background: rgba(255,255,255,.055);
+      border: 1px solid rgba(255,255,255,.08);
+    }
+
+    .top {
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      align-items: center;
+      margin-bottom: 18px;
+    }
+
+    .title {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+    }
+
+    .title h2 {
+      margin: 0;
+      font-size: 29px;
+      letter-spacing: -0.045em;
+    }
+
+    .progress-text {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .primary {
+      height: 38px;
+      padding: 0 17px;
+      border-radius: 11px;
+      background: linear-gradient(135deg, #19d3ee, #8b5cf6);
+      box-shadow: 0 12px 26px rgba(25,211,238,.16);
+      white-space: nowrap;
+      font-size: 13px;
+    }
+
+
+    .primary[disabled] {
+      cursor: default;
+      opacity: .88;
+    }
+
+    .primary.stop-all {
+      background: linear-gradient(180deg, rgba(255,255,255,.105), rgba(255,255,255,.055));
+      border: 1px solid rgba(255,255,255,.10);
+      color: #f8fafc;
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,.08),
+        0 6px 16px rgba(0,0,0,.12);
+    }
+
+    .button-spinner {
+      width: 15px;
+      height: 15px;
+      display: inline-block;
+      border-radius: 999px;
+      border: 2px solid rgba(226,232,240,.24);
+      border-top-color: #f8fafc;
+      animation: spin .8s linear infinite;
+      vertical-align: middle;
+    }
+
+    .secondary {
+      height: 38px;
+      padding: 0 14px;
+      border-radius: 11px;
+      background: rgba(255,255,255,.065);
+      border: 1px solid rgba(255,255,255,.08);
+      white-space: nowrap;
+      font-size: 13px;
+    }
+
+    .secondary.editing {
+      background: rgba(103,232,249,.12);
+      border-color: rgba(103,232,249,.32);
+      color: #b7f4ff;
+    }
+
+    .actions {
+      display: flex;
+      gap: 10px;
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 18px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius) var(--radius) 0 0;
+      background: rgba(18,26,47,.76);
+    }
+
+    .toolbar h3 {
+      margin: 0;
+      font-size: 17px;
+    }
+
+    .edit-hint {
+      display: none;
+      margin-top: 8px;
+      padding: 10px 12px;
+      border-radius: 13px;
+      background: rgba(103,232,249,.08);
+      border: 1px solid rgba(103,232,249,.16);
+      color: #b7f4ff;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    body.edit-mode .edit-hint {
+      display: block;
+    }
+
+    .tool-list {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-top: 0;
+      border-radius: 0 0 var(--radius) var(--radius);
+      background: rgba(18,26,47,.58);
+    }
+
+    .tool {
+      display: grid;
+      grid-template-columns: 28px 44px 1fr 82px 150px;
+      gap: 14px;
+      align-items: center;
+      padding: 15px 18px;
+      border-top: 1px solid rgba(255,255,255,.05);
+    }
+
+    body.edit-mode .tool {
+      grid-template-columns: 28px 44px 1fr 82px 270px;
+      background: rgba(255,255,255,.018);
+    }
+
+    .tool:first-child { border-top: 0; }
+
+    .order {
+      width: 22px;
+      height: 22px;
+      display: grid;
+      place-items: center;
+      border-radius: 999px;
+      background: rgba(255,255,255,.055);
+      border: 1px solid rgba(255,255,255,.10);
+      color: #cbd5e1;
+      font-weight: 800;
+      font-size: 10px;
+    }
+
+    .icon {
+      width: 44px;
+      height: 44px;
+      display: grid;
+      place-items: center;
+      border-radius: 14px;
+      background: rgba(103,232,249,.10);
+      border: 1px solid rgba(103,232,249,.16);
+      color: #a5f3fc;
+      font-weight: 900;
+    }
+
+    .info h4 {
+      margin: 0 0 5px;
+      font-size: 15px;
+    }
+
+    .info p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .status {
+      justify-self: start;
+      min-width: 64px;
+      padding: 5px 7px;
+      text-align: center;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 850;
+      line-height: 1;
+    }
+
+    .running { color: var(--ok); background: rgba(52,211,153,.10); }
+    .starting { color: var(--warn); background: rgba(251,191,36,.10); border: 1px solid rgba(251,191,36,.16); }
+
+    .spinner {
+      width: 13px;
+      height: 13px;
+      display: inline-block;
+      border-radius: 999px;
+      border: 2px solid rgba(226,232,240,.24);
+      border-top-color: #f8fafc;
+      animation: spin .8s linear infinite;
+      vertical-align: middle;
+    }
+
+    .tiny-spinner {
+      width: 15px;
+      height: 15px;
+      display: inline-block;
+      border-radius: 999px;
+      border: 2px solid rgba(226,232,240,.24);
+      border-top-color: #f8fafc;
+      animation: spin .8s linear infinite;
+      vertical-align: middle;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    .waiting { color: var(--muted); background: rgba(148,163,184,.10); }
+    .error { color: var(--danger); background: rgba(251,113,133,.10); }
+
+    .tool-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 6px;
+    }
+
+    .mini, .move, .stop-btn, .start-btn {
+      width: 34px;
+      height: 32px;
+      display: grid;
+      place-items: center;
+      padding: 0;
+      border-radius: 10px;
+      font-size: 16px;
+      line-height: 1;
+    }
+
+    .runtime-action {
+      position: relative;
+      color: #f8fafc;
+      background: linear-gradient(180deg, rgba(255,255,255,.105), rgba(255,255,255,.055));
+      border: 1px solid rgba(255,255,255,.10);
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,.08),
+        0 6px 16px rgba(0,0,0,.12);
+    }
+
+    .runtime-action svg {
+      width: 18px;
+      height: 18px;
+      display: block;
+    }
+
+    .start-btn {
+      background:
+        radial-gradient(circle at 50% 35%, rgba(103,232,249,.22), transparent 64%),
+        linear-gradient(180deg, rgba(255,255,255,.105), rgba(255,255,255,.055));
+      border-color: rgba(103,232,249,.18);
+    }
+
+    .open-btn {
+      color: #f8fafc;
+    }
+
+    .stop-btn {
+      color: #fb7185;
+    }
+
+    .stop-btn svg {
+      width: 16px;
+      height: 16px;
+    }
+
+    .loading-action {
+      width: 34px;
+      height: 32px;
+      display: grid;
+      place-items: center;
+      background: transparent !important;
+      border: 0 !important;
+      box-shadow: none !important;
+    }
+
+    .move {
+      display: none;
+      min-width: 38px;
+      padding: 8px 10px;
+      color: #f8fafc;
+      background: linear-gradient(180deg, rgba(255,255,255,.09), rgba(255,255,255,.045));
+      border: 1px solid rgba(255,255,255,.09);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.06);
+    }
+
+    body.edit-mode .move {
+      display: inline-block;
+    }
+
+    body.edit-mode .runtime-action {
+      display: none;
+    }
+
+    .delete {
+      display: none;
+      width: 34px;
+      height: 34px;
+      place-items: center;
+      padding: 0;
+      border-radius: 12px;
+      background: linear-gradient(180deg, rgba(255,255,255,.09), rgba(255,255,255,.045));
+      border: 1px solid rgba(255,255,255,.09);
+      color: #fb7185;
+      font-size: 15px;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.06);
+    }
+
+    body.edit-mode .delete {
+      display: grid;
+    }
+
+    body:not(.edit-mode) .edit-only {
+      display: none;
+    }
+
+    body.edit-mode .normal-only {
+      display: none;
+    }
+
+    .disabled {
+      opacity: .35;
+      pointer-events: none;
+    }
+
+    .footer-actions {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 18px;
+      padding: 14px 16px;
+      border-radius: var(--radius);
+      border: 1px solid rgba(255,255,255,.08);
+      background: rgba(255,255,255,.045);
+    }
+
+    .footer-actions p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .footer-actions .buttons {
+      display: flex;
+      gap: 10px;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="app">
+    <div class="window">
+      <aside>
+        <div class="brand">
+          <div class="logo">S</div>
+          <div>
+            <h1>stream-dock</h1>
+            <p>配信ツールランチャー</p>
+          </div>
+        </div>
+
+        <div class="label">配信プリセット</div>
+        <div class="preset active">
+          <h3>通常配信プリセット</h3>
+          <div class="preset-meta">
+            <span class="chip">10ツール</span>
+            <span class="chip">起動順あり</span>
+          </div>
+        </div>
+        <div class="preset">
+          <h3>雑談用プリセット</h3>
+          <div class="preset-meta">
+            <span class="chip">7ツール</span>
+          </div>
+        </div>
+        <div class="preset">
+          <h3>海外コメント対応プリセット</h3>
+          <div class="preset-meta">
+            <span class="chip">9ツール</span>
+          </div>
+        </div>
+        <button class="ghost">＋ プリセットを追加</button>
+
+        <div class="label">ツール</div>
+        <button class="ghost">＋ ツールを登録</button>
+      </aside>
+
+      <main>
+        <div class="top">
+          <div class="title">
+            <h2>通常配信プリセット</h2>
+            <span id="progressText" class="progress-text">3 / 10 起動済み</span>
+          </div>
+          <div class="actions">
+            <button id="editToggle" class="secondary">編集</button>
+            <button id="bulkButton" class="primary normal-only"><span id="bulkButtonContent">一括起動</span></button>
+            <button class="primary edit-only">保存</button>
+          </div>
+        </div>
+
+        <div class="toolbar">
+          <div>
+            <h3>起動順</h3>
+            <div class="edit-hint">編集モード中です。↑ ↓ で起動順を変更できます。</div>
+          </div>
+          <button class="secondary edit-only">＋ ツールを追加</button>
+        </div>
+
+        <div id="toolList" class="tool-list">
+          <div class="tool" data-state="running">
+            <div class="order">1</div>
+            <div class="icon">O</div>
+            <div class="info"><h4>OBS Studio</h4><p>配信本体</p></div>
+            <div class="status running">起動済み</div>
+            <div class="tool-actions">
+              <button class="move up disabled">↑</button><button class="move down">↓</button>
+              <button class="mini open-btn runtime-action" title="開く"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9 7h8v8" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7 7 17" stroke="currentColor" stroke-width="2.25" stroke-linecap="round"/><path d="M6 8.5v8.5c0 .55.45 1 1 1h8.5" stroke="currentColor" stroke-width="2.25" stroke-linecap="round"/></svg></button><button class="stop-btn runtime-action" title="停止"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2"/></svg></button><button class="delete" title="プリセットから外す">×</button>
+            </div>
+          </div>
+          <div class="tool" data-state="running">
+            <div class="order">2</div>
+            <div class="icon">1</div>
+            <div class="info"><h4>ワンコメ</h4><p>コメント取得・表示</p></div>
+            <div class="status running">起動済み</div>
+            <div class="tool-actions">
+              <button class="move up">↑</button><button class="move down">↓</button>
+              <button class="mini open-btn runtime-action" title="開く"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9 7h8v8" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7 7 17" stroke="currentColor" stroke-width="2.25" stroke-linecap="round"/><path d="M6 8.5v8.5c0 .55.45 1 1 1h8.5" stroke="currentColor" stroke-width="2.25" stroke-linecap="round"/></svg></button><button class="stop-btn runtime-action" title="停止"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2"/></svg></button><button class="delete" title="プリセットから外す">×</button>
+            </div>
+          </div>
+          <div class="tool" data-state="running">
+            <div class="order">3</div>
+            <div class="icon">読</div>
+            <div class="info"><h4>棒読みちゃん</h4><p>コメント読み上げ</p></div>
+            <div class="status running">起動済み</div>
+            <div class="tool-actions">
+              <button class="move up">↑</button><button class="move down">↓</button>
+              <button class="mini open-btn runtime-action" title="開く"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9 7h8v8" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7 7 17" stroke="currentColor" stroke-width="2.25" stroke-linecap="round"/><path d="M6 8.5v8.5c0 .55.45 1 1 1h8.5" stroke="currentColor" stroke-width="2.25" stroke-linecap="round"/></svg></button><button class="stop-btn runtime-action" title="停止"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2"/></svg></button><button class="delete" title="プリセットから外す">×</button>
+            </div>
+          </div>
+          <div class="tool" data-state="starting">
+            <div class="order">4</div>
+            <div class="icon">V</div>
+            <div class="info"><h4>VOICEVOX</h4><p>音声変換・棒読み連携</p></div>
+            <div class="status starting">起動中</div>
+            <div class="tool-actions">
+              <button class="move up">↑</button><button class="move down">↓</button>
+              <div class="loading-action"><span class="tiny-spinner" aria-label="起動中"></span></div><button class="delete" title="プリセットから外す">×</button>
+            </div>
+          </div>
+          <div class="tool" data-state="waiting">
+            <div class="order">5</div>
+            <div class="icon">翻</div>
+            <div class="info"><h4>翻訳ツール</h4><p>チャット翻訳・変換</p></div>
+            <div class="status waiting">待機中</div>
+            <div class="tool-actions">
+              <button class="move up">↑</button><button class="move down">↓</button>
+              <button class="start-btn runtime-action" title="起動"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13l10-6.5-10-6.5Z"/></svg></button><button class="delete" title="プリセットから外す">×</button>
+            </div>
+          </div>
+          <div class="tool" data-state="waiting">
+            <div class="order">6</div>
+            <div class="icon">狸</div>
+            <div class="info"><h4>たぬえさ</h4><p>配信補助ツール</p></div>
+            <div class="status waiting">待機中</div>
+            <div class="tool-actions">
+              <button class="move up">↑</button><button class="move down">↓</button>
+              <button class="start-btn runtime-action" title="起動"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13l10-6.5-10-6.5Z"/></svg></button><button class="delete" title="プリセットから外す">×</button>
+            </div>
+          </div>
+          <div class="tool" data-state="waiting">
+            <div class="order">7</div>
+            <div class="icon">A</div>
+            <div class="info"><h4>StreamAvatars</h4><p>画面下部のユーザーアバター</p></div>
+            <div class="status waiting">待機中</div>
+            <div class="tool-actions">
+              <button class="move up">↑</button><button class="move down">↓</button>
+              <button class="start-btn runtime-action" title="起動"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13l10-6.5-10-6.5Z"/></svg></button><button class="delete" title="プリセットから外す">×</button>
+            </div>
+          </div>
+          <div class="tool" data-state="waiting">
+            <div class="order">8</div>
+            <div class="icon">V</div>
+            <div class="info"><h4>VTubeStudio</h4><p>Vの本体</p></div>
+            <div class="status waiting">待機中</div>
+            <div class="tool-actions">
+              <button class="move up">↑</button><button class="move down">↓</button>
+              <button class="start-btn runtime-action" title="起動"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13l10-6.5-10-6.5Z"/></svg></button><button class="delete" title="プリセットから外す">×</button>
+            </div>
+          </div>
+          <div class="tool" data-state="waiting">
+            <div class="order">9</div>
+            <div class="icon">📸</div>
+            <div class="info"><h4>スクショツール</h4><p>配信用スクリーンショット</p></div>
+            <div class="status waiting">待機中</div>
+            <div class="tool-actions">
+              <button class="move up">↑</button><button class="move down">↓</button>
+              <button class="start-btn runtime-action" title="起動"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13l10-6.5-10-6.5Z"/></svg></button><button class="delete" title="プリセットから外す">×</button>
+            </div>
+          </div>
+          <div class="tool" data-state="waiting">
+            <div class="order">10</div>
+            <div class="icon">👁</div>
+            <div class="info"><h4>視聴人数表示ツール</h4><p>同接・視聴人数の表示</p></div>
+            <div class="status waiting">待機中</div>
+            <div class="tool-actions">
+              <button class="move up">↑</button><button class="move down disabled">↓</button>
+              <button class="start-btn runtime-action" title="起動"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13l10-6.5-10-6.5Z"/></svg></button><button class="delete" title="プリセットから外す">×</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="footer-actions">
+          <p>一括起動中は、番号順に起動します。途中で起動失敗した場合は、そのツールをエラーにして後続の起動を止めます。</p>
+          <div class="buttons edit-only">
+            <button class="secondary">起動間隔を設定</button>
+            <button class="secondary">PC起動時の動作</button>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <script>
+    const editToggle = document.getElementById('editToggle');
+    const toolList = document.getElementById('toolList');
+    const bulkButton = document.getElementById('bulkButton');
+    const bulkButtonContent = document.getElementById('bulkButtonContent');
+    const progressText = document.getElementById('progressText');
+
+    const statusLabels = {
+      running: '起動済み',
+      starting: '起動中',
+      waiting: '待機中',
+      stopped: '停止中',
+      error: 'エラー'
+    };
+
+    function createOpenButton() {
+      const button = document.createElement('button');
+      button.className = 'mini open-btn runtime-action';
+      button.title = '開く';
+      button.innerHTML = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9 7h8v8" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7 7 17" stroke="currentColor" stroke-width="2.25" stroke-linecap="round"/><path d="M6 8.5v8.5c0 .55.45 1 1 1h8.5" stroke="currentColor" stroke-width="2.25" stroke-linecap="round"/></svg>';
+      return button;
+    }
+
+    function createStopButton() {
+      const button = document.createElement('button');
+      button.className = 'stop-btn runtime-action';
+      button.title = '停止';
+      button.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2"/></svg>';
+      return button;
+    }
+
+    function createStartButton() {
+      const button = document.createElement('button');
+      button.className = 'start-btn runtime-action';
+      button.title = '起動';
+      button.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13l10-6.5-10-6.5Z"/></svg>';
+      return button;
+    }
+
+    function createLoadingAction() {
+      const div = document.createElement('div');
+      div.className = 'loading-action';
+      div.innerHTML = '<span class="tiny-spinner" aria-label="起動中"></span>';
+      return div;
+    }
+
+    function updateOrders() {
+      const tools = [...toolList.querySelectorAll('.tool')];
+      tools.forEach((tool, index) => {
+        tool.querySelector('.order').textContent = index + 1;
+        const up = tool.querySelector('.up');
+        const down = tool.querySelector('.down');
+        up.classList.toggle('disabled', index === 0);
+        down.classList.toggle('disabled', index === tools.length - 1);
+      });
+    }
+
+    function setToolState(tool, state) {
+      tool.dataset.state = state;
+
+      const status = tool.querySelector('.status');
+      status.className = 'status ' + (state === 'stopped' ? 'waiting' : state);
+      status.textContent = statusLabels[state] || state;
+
+      const actions = tool.querySelector('.tool-actions');
+      [...actions.querySelectorAll('.runtime-action, .loading-action')].forEach(el => el.remove());
+
+      const deleteButton = actions.querySelector('.delete');
+
+      if (state === 'running') {
+        actions.insertBefore(createOpenButton(), deleteButton);
+        actions.insertBefore(createStopButton(), deleteButton);
+      }
+
+      if (state === 'starting') {
+        actions.insertBefore(createLoadingAction(), deleteButton);
+      }
+
+      if (state === 'waiting' || state === 'stopped' || state === 'error') {
+        actions.insertBefore(createStartButton(), deleteButton);
+      }
+
+      updateProgress();
+    }
+
+    function updateProgress() {
+      const tools = [...toolList.querySelectorAll('.tool')];
+      const running = tools.filter(tool => tool.dataset.state === 'running').length;
+      const starting = tools.filter(tool => tool.dataset.state === 'starting').length;
+
+      if (running === tools.length) {
+        progressText.textContent = `${running} / ${tools.length} 起動済み`;
+        bulkButtonContent.textContent = '一括停止';
+        bulkButton.classList.add('stop-all');
+        bulkButton.disabled = false;
+        return;
+      }
+
+      bulkButton.classList.remove('stop-all');
+
+      if (starting > 0) {
+        progressText.textContent = `${running} / ${tools.length} 起動済み`;
+        bulkButtonContent.innerHTML = '<span class="button-spinner" aria-label="起動中"></span>';
+        bulkButton.disabled = true;
+        return;
+      }
+
+      progressText.textContent = `${running} / ${tools.length} 起動済み`;
+      bulkButtonContent.textContent = '一括起動';
+      bulkButton.disabled = false;
+    }
+
+    function sleep(ms) {
+      return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    async function launchAll() {
+      const tools = [...toolList.querySelectorAll('.tool')];
+      bulkButton.disabled = true;
+      bulkButtonContent.innerHTML = '<span class="button-spinner" aria-label="起動中"></span>';
+
+      for (const tool of tools) {
+        if (tool.dataset.state === 'running') continue;
+        setToolState(tool, 'starting');
+        await sleep(650);
+        setToolState(tool, 'running');
+      }
+
+      updateProgress();
+    }
+
+    function stopAll() {
+      const tools = [...toolList.querySelectorAll('.tool')];
+      tools.forEach(tool => setToolState(tool, 'waiting'));
+      updateProgress();
+    }
+
+    editToggle.addEventListener('click', () => {
+      document.body.classList.toggle('edit-mode');
+      const isEdit = document.body.classList.contains('edit-mode');
+      editToggle.textContent = isEdit ? '編集をやめる' : '編集';
+      editToggle.classList.toggle('editing', isEdit);
+    });
+
+    bulkButton.addEventListener('click', () => {
+      if (bulkButton.classList.contains('stop-all')) {
+        stopAll();
+      } else {
+        launchAll();
+      }
+    });
+
+    toolList.addEventListener('click', (event) => {
+      const button = event.target.closest('button');
+      if (!button) return;
+
+      const tool = button.closest('.tool');
+
+      if (document.body.classList.contains('edit-mode')) {
+        if (button.classList.contains('up')) {
+          const prev = tool.previousElementSibling;
+          if (prev) {
+            toolList.insertBefore(tool, prev);
+            updateOrders();
+          }
+        }
+
+        if (button.classList.contains('down')) {
+          const next = tool.nextElementSibling;
+          if (next) {
+            toolList.insertBefore(next, tool);
+            updateOrders();
+          }
+        }
+
+        return;
+      }
+
+      if (button.classList.contains('start-btn')) {
+        setToolState(tool, 'starting');
+        setTimeout(() => setToolState(tool, 'running'), 650);
+      }
+
+      if (button.classList.contains('stop-btn')) {
+        setToolState(tool, 'waiting');
+      }
+    });
+
+    [...toolList.querySelectorAll('.tool')].forEach(tool => {
+      setToolState(tool, tool.dataset.state || 'waiting');
+    });
+    updateOrders();
+    updateProgress();
+  </script>
+</body>
+</html>

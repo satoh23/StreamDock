@@ -1,0 +1,1104 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>stream-dock add preset two-step prototype</title>
+  <style>
+    :root {
+      --bg: #0b1020;
+      --text: #eef4ff;
+      --muted: #93a4bc;
+      --line: #26334f;
+      --accent: #67e8f9;
+      --accent-2: #8b5cf6;
+      --radius: 18px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(103,232,249,.18), transparent 32%),
+        radial-gradient(circle at top right, rgba(139,92,246,.16), transparent 34%),
+        var(--bg);
+    }
+
+    .app {
+      width: 1280px;
+      min-height: 840px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    .window {
+      min-height: 792px;
+      display: grid;
+      grid-template-columns: 300px 1fr;
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 28px;
+      overflow: hidden;
+      background: rgba(11,16,32,.74);
+      box-shadow: 0 28px 80px rgba(0,0,0,.38);
+    }
+
+    aside {
+      padding: 24px;
+      border-right: 1px solid var(--line);
+      background: rgba(10,16,31,.72);
+    }
+
+    main {
+      padding: 28px;
+      background: rgba(13,20,38,.48);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 32px;
+    }
+
+    .logo {
+      width: 44px;
+      height: 44px;
+      display: grid;
+      place-items: center;
+      border-radius: 15px;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      color: #05111f;
+      font-size: 22px;
+      font-weight: 900;
+    }
+
+    h1, h2, h3, p { margin-top: 0; }
+
+    .brand h1 {
+      margin-bottom: 2px;
+      font-size: 22px;
+      letter-spacing: -0.04em;
+    }
+
+    .brand p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .label {
+      margin: 24px 0 10px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .sidebar-preset-list,
+    .sidebar-tool-list {
+      overflow-y: auto;
+      padding-right: 4px;
+      margin-bottom: 10px;
+    }
+
+    .sidebar-preset-list { max-height: 230px; }
+    .sidebar-tool-list { max-height: 220px; }
+
+    .sidebar-preset-list::-webkit-scrollbar,
+    .sidebar-tool-list::-webkit-scrollbar,
+    .tool-select-list::-webkit-scrollbar,
+    .launch-list::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    .sidebar-preset-list::-webkit-scrollbar-track,
+    .sidebar-tool-list::-webkit-scrollbar-track,
+    .tool-select-list::-webkit-scrollbar-track,
+    .launch-list::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    .sidebar-preset-list::-webkit-scrollbar-thumb,
+    .sidebar-tool-list::-webkit-scrollbar-thumb,
+    .tool-select-list::-webkit-scrollbar-thumb,
+    .launch-list::-webkit-scrollbar-thumb {
+      background: rgba(148,163,184,.22);
+      border-radius: 999px;
+    }
+
+    .preset {
+      padding: 15px;
+      margin-bottom: 10px;
+      border-radius: 16px;
+      border: 1px solid transparent;
+      background: rgba(255,255,255,.045);
+    }
+
+    .preset h3 {
+      margin: 0;
+      font-size: 15px;
+    }
+
+    .preset-meta {
+      display: flex;
+      gap: 8px;
+      margin-top: 10px;
+      flex-wrap: wrap;
+    }
+
+    .chip {
+      padding: 5px 8px;
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 11px;
+      background: rgba(255,255,255,.06);
+      border: 1px solid rgba(255,255,255,.07);
+    }
+
+    button {
+      border: 0;
+      border-radius: 10px;
+      font-weight: 800;
+      color: var(--text);
+      cursor: pointer;
+      font-family: inherit;
+    }
+
+    .ghost {
+      width: 100%;
+      padding: 12px;
+      border-radius: 14px;
+      background: rgba(255,255,255,.055);
+      border: 1px solid rgba(255,255,255,.08);
+    }
+
+    .ghost.active {
+      background: rgba(103,232,249,.10);
+      border-color: rgba(103,232,249,.22);
+      color: #dffaff;
+    }
+
+    .sidebar-tool {
+      display: grid;
+      grid-template-columns: 30px 1fr;
+      gap: 10px;
+      align-items: center;
+      padding: 9px 10px;
+      margin-bottom: 7px;
+      border-radius: 13px;
+      background: rgba(255,255,255,.035);
+      border: 1px solid rgba(255,255,255,.055);
+    }
+
+    .sidebar-tool-icon {
+      width: 30px;
+      height: 30px;
+      display: grid;
+      place-items: center;
+      border-radius: 10px;
+      background: rgba(103,232,249,.09);
+      border: 1px solid rgba(103,232,249,.14);
+      color: #dffaff;
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .sidebar-tool span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: #dbeafe;
+      font-size: 12px;
+      font-weight: 750;
+    }
+
+    .top {
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      align-items: center;
+      margin-bottom: 18px;
+    }
+
+    .title h2 {
+      margin: 0;
+      font-size: 29px;
+      letter-spacing: -0.045em;
+    }
+
+    .title p {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .stepper {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 18px;
+    }
+
+    .step {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 12px;
+      border-radius: 999px;
+      color: var(--muted);
+      background: rgba(255,255,255,.04);
+      border: 1px solid rgba(255,255,255,.06);
+      font-size: 12px;
+      font-weight: 850;
+    }
+
+    .step.active {
+      color: #e2faff;
+      background: rgba(103,232,249,.10);
+      border-color: rgba(103,232,249,.23);
+    }
+
+    .step-number {
+      width: 20px;
+      height: 20px;
+      display: grid;
+      place-items: center;
+      border-radius: 999px;
+      background: rgba(255,255,255,.08);
+      color: #f8fafc;
+      font-size: 11px;
+    }
+
+    .step-line {
+      width: 34px;
+      height: 1px;
+      background: rgba(255,255,255,.12);
+    }
+
+    .primary {
+      height: 38px;
+      padding: 0 17px;
+      border-radius: 11px;
+      background: linear-gradient(135deg, #19d3ee, #8b5cf6);
+      box-shadow: 0 12px 26px rgba(25,211,238,.16);
+      white-space: nowrap;
+      font-size: 13px;
+    }
+
+    .secondary {
+      height: 38px;
+      padding: 0 14px;
+      border-radius: 11px;
+      background: rgba(255,255,255,.065);
+      border: 1px solid rgba(255,255,255,.08);
+      white-space: nowrap;
+      font-size: 13px;
+    }
+
+    .actions {
+      display: flex;
+      gap: 10px;
+    }
+
+    .content {
+      display: grid;
+      grid-template-columns: 1fr 360px;
+      gap: 18px;
+      align-items: start;
+    }
+
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(18,26,47,.58);
+      overflow: hidden;
+    }
+
+    .panel-head {
+      padding: 16px 18px;
+      border-bottom: 1px solid rgba(255,255,255,.06);
+      background: rgba(18,26,47,.76);
+    }
+
+    .panel-head h3 {
+      margin: 0;
+      font-size: 17px;
+    }
+
+    .panel-head p {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .panel-body {
+      padding: 18px;
+    }
+
+    .form {
+      display: grid;
+      gap: 14px;
+      margin-bottom: 18px;
+    }
+
+    .field label {
+      display: block;
+      margin-bottom: 7px;
+      color: #cbd5e1;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .field input {
+      width: 100%;
+      height: 40px;
+      padding: 0 12px;
+      border-radius: 12px;
+      outline: none;
+      color: var(--text);
+      background: rgba(255,255,255,.055);
+      border: 1px solid rgba(255,255,255,.08);
+      font-family: inherit;
+      font-size: 13px;
+    }
+
+    .field-help {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.5;
+    }
+
+    .tool-select-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin: 2px 0 10px;
+    }
+
+    .tool-select-header h3 {
+      margin: 0;
+      font-size: 15px;
+    }
+
+    .selected-count {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .tool-select-list {
+      max-height: 360px;
+      overflow-y: auto;
+      padding-right: 4px;
+    }
+
+    .tool-option {
+      display: grid;
+      grid-template-columns: 22px 42px 1fr;
+      gap: 12px;
+      align-items: center;
+      padding: 12px;
+      margin-bottom: 8px;
+      border-radius: 15px;
+      background: rgba(255,255,255,.04);
+      border: 1px solid rgba(255,255,255,.06);
+    }
+
+    .tool-option input {
+      accent-color: #67e8f9;
+      width: 16px;
+      height: 16px;
+    }
+
+    .tool-option.selected {
+      border-color: rgba(103,232,249,.26);
+      background:
+        radial-gradient(circle at left, rgba(103,232,249,.10), transparent 64%),
+        rgba(103,232,249,.045);
+    }
+
+    .tool-icon {
+      width: 42px;
+      height: 42px;
+      display: grid;
+      place-items: center;
+      border-radius: 13px;
+      background: rgba(103,232,249,.10);
+      border: 1px solid rgba(103,232,249,.16);
+      color: #a5f3fc;
+      font-weight: 900;
+      font-size: 14px;
+    }
+
+    .tool-option h4,
+    .launch-row h4,
+    .preview-row h4 {
+      margin: 0 0 4px;
+      font-size: 13px;
+    }
+
+    .tool-option p,
+    .launch-row p,
+    .preview-row p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .launch-list {
+      max-height: 460px;
+      overflow-y: auto;
+      padding-right: 4px;
+    }
+
+    .launch-row {
+      display: grid;
+      grid-template-columns: 42px 42px 1fr 132px 82px;
+      gap: 12px;
+      align-items: center;
+      padding: 12px;
+      margin-bottom: 8px;
+      border-radius: 15px;
+      background: rgba(255,255,255,.04);
+      border: 1px solid rgba(255,255,255,.06);
+    }
+
+    .launch-order {
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      justify-self: center;
+      border-radius: 999px;
+      background: rgba(255,255,255,.055);
+      border: 1px solid rgba(255,255,255,.10);
+      color: #cbd5e1;
+      font-weight: 850;
+      font-size: 11px;
+    }
+
+    .launch-order.parallel {
+      width: 42px;
+      color: #e2faff;
+      background: rgba(103,232,249,.10);
+      border-color: rgba(103,232,249,.18);
+    }
+
+    .mode-toggle {
+      height: 34px;
+      padding: 0 11px;
+      border-radius: 10px;
+      color: #f8fafc;
+      background: rgba(255,255,255,.065);
+      border: 1px solid rgba(255,255,255,.08);
+      font-size: 12px;
+    }
+
+    .move-actions {
+      display: flex;
+      gap: 6px;
+      justify-content: flex-end;
+    }
+
+    .move-btn {
+      width: 34px;
+      height: 32px;
+      display: grid;
+      place-items: center;
+      padding: 0;
+      border-radius: 10px;
+      color: #f8fafc;
+      background: linear-gradient(180deg, rgba(255,255,255,.09), rgba(255,255,255,.045));
+      border: 1px solid rgba(255,255,255,.09);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.06);
+      font-size: 13px;
+    }
+
+    .move-btn.disabled {
+      opacity: .35;
+      pointer-events: none;
+    }
+
+    .bottom-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      margin-top: 18px;
+    }
+
+    .step-screen {
+      display: none;
+    }
+
+    .step-screen.active {
+      display: block;
+    }
+
+    .preview-card {
+      padding: 16px;
+    }
+
+    .preview-title {
+      margin: 0 0 13px;
+      font-size: 15px;
+    }
+
+    .preview-name {
+      padding: 14px;
+      border-radius: 15px;
+      background: rgba(103,232,249,.065);
+      border: 1px solid rgba(103,232,249,.22);
+      margin-bottom: 14px;
+    }
+
+    .preview-name h3 {
+      margin: 0;
+      font-size: 16px;
+    }
+
+    .preview-name p {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .preview-row {
+      display: grid;
+      grid-template-columns: 42px 42px 1fr;
+      gap: 12px;
+      align-items: center;
+      padding: 13px 0;
+      border-top: 1px solid rgba(255,255,255,.055);
+    }
+
+    .preview-row:first-of-type {
+      border-top: 0;
+    }
+
+    .order {
+      width: 24px;
+      height: 24px;
+      display: grid;
+      place-items: center;
+      justify-self: center;
+      border-radius: 999px;
+      background: rgba(255,255,255,.055);
+      border: 1px solid rgba(255,255,255,.10);
+      color: #cbd5e1;
+      font-weight: 800;
+      font-size: 10px;
+    }
+
+    .order.parallel {
+      width: 38px;
+      color: #e2faff;
+      background: rgba(103,232,249,.10);
+      border-color: rgba(103,232,249,.18);
+    }
+
+    .mini-icon {
+      width: 42px;
+      height: 42px;
+      display: grid;
+      place-items: center;
+      border-radius: 13px;
+      background: rgba(103,232,249,.10);
+      border: 1px solid rgba(103,232,249,.16);
+      color: #a5f3fc;
+      font-weight: 900;
+      font-size: 14px;
+    }
+
+    .plain-help {
+      margin: 12px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+      text-align: center;
+    }
+
+    .empty-preview {
+      padding: 22px 14px;
+      border-radius: 15px;
+      background: rgba(255,255,255,.035);
+      border: 1px dashed rgba(148,163,184,.24);
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+      text-align: center;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="app">
+    <div class="window">
+      <aside>
+        <div class="brand">
+          <div class="logo">S</div>
+          <div>
+            <h1>stream-dock</h1>
+            <p>配信ツールランチャー</p>
+          </div>
+        </div>
+
+        <div class="label">配信プリセット</div>
+        <div class="sidebar-preset-list">
+          <div class="preset">
+            <h3>通常配信プリセット</h3>
+            <div class="preset-meta">
+              <span class="chip">10ツール</span>
+              <span class="chip">起動順あり</span>
+            </div>
+          </div>
+          <div class="preset">
+            <h3>雑談用プリセット</h3>
+            <div class="preset-meta">
+              <span class="chip">7ツール</span>
+              <span class="chip">一部並行</span>
+            </div>
+          </div>
+          <div class="preset">
+            <h3>海外コメント対応プリセット</h3>
+            <div class="preset-meta">
+              <span class="chip">9ツール</span>
+              <span class="chip">起動順あり</span>
+            </div>
+          </div>
+          <div class="preset">
+            <h3>コラボ配信プリセット</h3>
+            <div class="preset-meta">
+              <span class="chip">8ツール</span>
+              <span class="chip">一部並行</span>
+            </div>
+          </div>
+          <div class="preset">
+            <h3>歌枠プリセット</h3>
+            <div class="preset-meta">
+              <span class="chip">6ツール</span>
+            </div>
+          </div>
+        </div>
+        <button class="ghost active">＋ プリセットを追加</button>
+
+        <div class="label">ツール</div>
+        <div class="sidebar-tool-list">
+          <div class="sidebar-tool">
+            <div class="sidebar-tool-icon">O</div>
+            <span>OBS Studio</span>
+          </div>
+          <div class="sidebar-tool">
+            <div class="sidebar-tool-icon">1</div>
+            <span>ワンコメ</span>
+          </div>
+          <div class="sidebar-tool">
+            <div class="sidebar-tool-icon">読</div>
+            <span>棒読みちゃん</span>
+          </div>
+          <div class="sidebar-tool">
+            <div class="sidebar-tool-icon">V</div>
+            <span>VOICEVOX</span>
+          </div>
+          <div class="sidebar-tool">
+            <div class="sidebar-tool-icon">翻</div>
+            <span>翻訳ツール</span>
+          </div>
+          <div class="sidebar-tool">
+            <div class="sidebar-tool-icon">狸</div>
+            <span>たぬえさ</span>
+          </div>
+          <div class="sidebar-tool">
+            <div class="sidebar-tool-icon">A</div>
+            <span>StreamAvatars</span>
+          </div>
+          <div class="sidebar-tool">
+            <div class="sidebar-tool-icon">V</div>
+            <span>VTubeStudio</span>
+          </div>
+          <div class="sidebar-tool">
+            <div class="sidebar-tool-icon">📸</div>
+            <span>スクショツール</span>
+          </div>
+          <div class="sidebar-tool">
+            <div class="sidebar-tool-icon">👁</div>
+            <span>視聴人数表示ツール</span>
+          </div>
+        </div>
+        <button class="ghost">＋ ツールを登録</button>
+      </aside>
+
+      <main>
+        <div class="top">
+          <div class="title">
+            <h2 id="screenTitle">プリセットを追加</h2>
+            <p id="screenDescription">配信内容ごとに、使うツールの組み合わせを保存します。</p>
+          </div>
+          <div class="actions"></div>
+        </div>
+
+        <div class="stepper">
+          <div id="stepBadge1" class="step active">
+            <span class="step-number">1</span>
+            <span>使うツール</span>
+          </div>
+          <div class="step-line"></div>
+          <div id="stepBadge2" class="step">
+            <span class="step-number">2</span>
+            <span>起動設定</span>
+          </div>
+        </div>
+
+        <div class="content">
+          <section class="panel">
+            <div id="step1" class="step-screen active">
+              <div class="panel-head">
+                <h3>使うツールを選択</h3>
+                <p>このプリセットで使うツールを選びます。起動順や並行起動は次の画面で設定します。</p>
+              </div>
+
+              <div class="panel-body">
+                <div class="form">
+                  <div class="field">
+                    <label>プリセット名</label>
+                    <input id="presetName" value="通常配信プリセット" />
+                    <div class="field-help">例：通常配信、雑談用、ゲーム用、海外コメント対応など</div>
+                  </div>
+                </div>
+
+                <div class="tool-select-header">
+                  <h3>使うツール</h3>
+                  <span id="selectedCount" class="selected-count">5個選択中</span>
+                </div>
+
+                <div id="toolSelectList" class="tool-select-list">
+                  <label class="tool-option selected" data-name="OBS Studio" data-icon="O" data-desc="配信本体">
+                    <input type="checkbox" checked />
+                    <div class="tool-icon">O</div>
+                    <div>
+                      <h4>OBS Studio</h4>
+                      <p>配信本体</p>
+                    </div>
+                  </label>
+
+                  <label class="tool-option selected" data-name="ワンコメ" data-icon="1" data-desc="コメント取得・表示">
+                    <input type="checkbox" checked />
+                    <div class="tool-icon">1</div>
+                    <div>
+                      <h4>ワンコメ</h4>
+                      <p>コメント取得・表示</p>
+                    </div>
+                  </label>
+
+                  <label class="tool-option selected" data-name="棒読みちゃん" data-icon="読" data-desc="コメント読み上げ">
+                    <input type="checkbox" checked />
+                    <div class="tool-icon">読</div>
+                    <div>
+                      <h4>棒読みちゃん</h4>
+                      <p>コメント読み上げ</p>
+                    </div>
+                  </label>
+
+                  <label class="tool-option selected" data-name="VOICEVOX" data-icon="V" data-desc="音声変換">
+                    <input type="checkbox" checked />
+                    <div class="tool-icon">V</div>
+                    <div>
+                      <h4>VOICEVOX</h4>
+                      <p>音声変換</p>
+                    </div>
+                  </label>
+
+                  <label class="tool-option" data-name="翻訳ツール" data-icon="翻" data-desc="チャット翻訳・変換">
+                    <input type="checkbox" />
+                    <div class="tool-icon">翻</div>
+                    <div>
+                      <h4>翻訳ツール</h4>
+                      <p>チャット翻訳・変換</p>
+                    </div>
+                  </label>
+
+                  <label class="tool-option" data-name="たぬえさ" data-icon="狸" data-desc="配信補助ツール">
+                    <input type="checkbox" />
+                    <div class="tool-icon">狸</div>
+                    <div>
+                      <h4>たぬえさ</h4>
+                      <p>配信補助ツール</p>
+                    </div>
+                  </label>
+
+                  <label class="tool-option selected" data-name="StreamAvatars" data-icon="A" data-desc="画面下部のユーザーアバター">
+                    <input type="checkbox" checked />
+                    <div class="tool-icon">A</div>
+                    <div>
+                      <h4>StreamAvatars</h4>
+                      <p>画面下部のユーザーアバター</p>
+                    </div>
+                  </label>
+
+                  <label class="tool-option" data-name="VTubeStudio" data-icon="V" data-desc="Vの本体">
+                    <input type="checkbox" />
+                    <div class="tool-icon">V</div>
+                    <div>
+                      <h4>VTubeStudio</h4>
+                      <p>Vの本体</p>
+                    </div>
+                  </label>
+
+                  <label class="tool-option" data-name="スクショツール" data-icon="📸" data-desc="配信用スクリーンショット">
+                    <input type="checkbox" />
+                    <div class="tool-icon">📸</div>
+                    <div>
+                      <h4>スクショツール</h4>
+                      <p>配信用スクリーンショット</p>
+                    </div>
+                  </label>
+
+                  <label class="tool-option" data-name="視聴人数表示ツール" data-icon="👁" data-desc="同接・視聴人数の表示">
+                    <input type="checkbox" />
+                    <div class="tool-icon">👁</div>
+                    <div>
+                      <h4>視聴人数表示ツール</h4>
+                      <p>同接・視聴人数の表示</p>
+                    </div>
+                  </label>
+                </div>
+
+                <div class="bottom-actions">
+                  <button class="secondary">キャンセル</button>
+                  <button id="nextButton" class="primary">次へ</button>
+                </div>
+              </div>
+            </div>
+
+            <div id="step2" class="step-screen">
+              <div class="panel-head">
+                <h3>起動設定</h3>
+                <p>番号付きのツールは順番に起動し、並行起動のツールはまとめて起動します。</p>
+              </div>
+
+              <div class="panel-body">
+                <div id="launchList" class="launch-list"></div>
+
+                <div class="bottom-actions">
+                  <button id="backButton" class="secondary">戻る</button>
+                  <button class="primary">保存して作成</button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <aside class="panel preview-card">
+            <h3 id="previewTitle" class="preview-title">選択中のツール</h3>
+
+            <div class="preview-name">
+              <h3 id="previewName">通常配信プリセット</h3>
+              <p id="previewCount">5ツール</p>
+            </div>
+
+            <div id="previewRows"></div>
+
+            <p id="previewHelp" class="plain-help">次の画面で起動順や並行起動を設定できます。</p>
+          </aside>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <script>
+    const presetName = document.getElementById('presetName');
+    const previewName = document.getElementById('previewName');
+    const previewCount = document.getElementById('previewCount');
+    const selectedCount = document.getElementById('selectedCount');
+    const toolSelectList = document.getElementById('toolSelectList');
+    const previewRows = document.getElementById('previewRows');
+    const launchList = document.getElementById('launchList');
+
+    const step1 = document.getElementById('step1');
+    const step2 = document.getElementById('step2');
+    const stepBadge1 = document.getElementById('stepBadge1');
+    const stepBadge2 = document.getElementById('stepBadge2');
+    const nextButton = document.getElementById('nextButton');
+    const backButton = document.getElementById('backButton');
+    const screenTitle = document.getElementById('screenTitle');
+    const screenDescription = document.getElementById('screenDescription');
+    const previewTitle = document.getElementById('previewTitle');
+    const previewHelp = document.getElementById('previewHelp');
+
+    let currentStep = 1;
+    let launchItems = [];
+
+    function getSelectedTools() {
+      const options = [...toolSelectList.querySelectorAll('.tool-option')];
+      return options
+        .filter(option => option.querySelector('input').checked)
+        .map(option => ({
+          name: option.dataset.name,
+          icon: option.dataset.icon,
+          desc: option.dataset.desc,
+          mode: 'ordered'
+        }));
+    }
+
+    function syncLaunchItemsFromSelection() {
+      const selected = getSelectedTools();
+      const existingByName = new Map(launchItems.map(item => [item.name, item]));
+      launchItems = selected.map(tool => existingByName.get(tool.name) || tool);
+    }
+
+    function updateStepUI() {
+      const isStep1 = currentStep === 1;
+
+      step1.classList.toggle('active', isStep1);
+      step2.classList.toggle('active', !isStep1);
+      stepBadge1.classList.toggle('active', isStep1);
+      stepBadge2.classList.toggle('active', !isStep1);
+
+      screenTitle.textContent = isStep1 ? 'プリセットを追加' : '起動設定';
+      screenDescription.textContent = isStep1
+        ? '配信内容ごとに、使うツールの組み合わせを保存します。'
+        : '選択したツールの起動順と並行起動を設定します。';
+
+      previewTitle.textContent = isStep1 ? '選択中のツール' : 'プリセット作成後';
+      previewHelp.textContent = isStep1
+        ? '次の画面で起動順や並行起動を設定できます。'
+        : '起動順や並行起動はあとからプリセット編集画面で変更できます。';
+
+      updatePreview();
+    }
+
+    function updateSelectionCount() {
+      const selected = getSelectedTools();
+      selectedCount.textContent = `${selected.length}個選択中`;
+    }
+
+    function orderedIndexFor(itemIndex) {
+      let count = 0;
+      for (let i = 0; i <= itemIndex; i++) {
+        if (launchItems[i].mode === 'ordered') count++;
+      }
+      return count;
+    }
+
+    function renderPreviewRows() {
+      previewRows.innerHTML = '';
+
+      const tools = currentStep === 1 ? getSelectedTools() : launchItems;
+
+      if (tools.length === 0) {
+        previewRows.innerHTML = '<div class="empty-preview">ツールを選択すると、ここに内容が表示されます。</div>';
+        return;
+      }
+
+      tools.forEach((tool, index) => {
+        const isParallel = currentStep === 2 && tool.mode === 'parallel';
+        const order = isParallel ? '並行' : (currentStep === 2 ? orderedIndexFor(index) : index + 1);
+
+        const row = document.createElement('div');
+        row.className = 'preview-row';
+        row.innerHTML = `
+          <div class="order ${isParallel ? 'parallel' : ''}">${order}</div>
+          <div class="mini-icon">${tool.icon}</div>
+          <div>
+            <h4>${tool.name}</h4>
+            <p>${isParallel ? '並行起動' : tool.desc}</p>
+          </div>
+        `;
+        previewRows.appendChild(row);
+      });
+    }
+
+    function updatePreview() {
+      const tools = currentStep === 1 ? getSelectedTools() : launchItems;
+      previewName.textContent = presetName.value || '新しいプリセット';
+      previewCount.textContent = `${tools.length}ツール`;
+      updateSelectionCount();
+      renderPreviewRows();
+    }
+
+    function renderLaunchList() {
+      launchList.innerHTML = '';
+
+      if (launchItems.length === 0) {
+        launchList.innerHTML = '<div class="empty-preview">ツールが選択されていません。戻ってツールを選択してください。</div>';
+        return;
+      }
+
+      launchItems.forEach((tool, index) => {
+        const isParallel = tool.mode === 'parallel';
+        const row = document.createElement('div');
+        row.className = 'launch-row';
+        row.innerHTML = `
+          <div class="launch-order ${isParallel ? 'parallel' : ''}">${isParallel ? '並行' : orderedIndexFor(index)}</div>
+          <div class="tool-icon">${tool.icon}</div>
+          <div>
+            <h4>${tool.name}</h4>
+            <p>${isParallel ? '順番なしで並行起動' : tool.desc}</p>
+          </div>
+          <button class="mode-toggle" data-action="toggle">${isParallel ? '番号を付ける' : '並行にする'}</button>
+          <div class="move-actions">
+            <button class="move-btn ${index === 0 ? 'disabled' : ''}" data-action="up">↑</button>
+            <button class="move-btn ${index === launchItems.length - 1 ? 'disabled' : ''}" data-action="down">↓</button>
+          </div>
+        `;
+        launchList.appendChild(row);
+      });
+    }
+
+    toolSelectList.addEventListener('change', event => {
+      const option = event.target.closest('.tool-option');
+      if (option) {
+        option.classList.toggle('selected', event.target.checked);
+      }
+      syncLaunchItemsFromSelection();
+      updatePreview();
+    });
+
+    presetName.addEventListener('input', updatePreview);
+
+    nextButton.addEventListener('click', () => {
+      syncLaunchItemsFromSelection();
+      currentStep = 2;
+      renderLaunchList();
+      updateStepUI();
+    });
+
+    backButton.addEventListener('click', () => {
+      currentStep = 1;
+      updateStepUI();
+    });
+
+    launchList.addEventListener('click', event => {
+      const button = event.target.closest('button');
+      if (!button) return;
+
+      const row = button.closest('.launch-row');
+      const index = [...launchList.children].indexOf(row);
+      const action = button.dataset.action;
+
+      if (action === 'toggle') {
+        launchItems[index].mode = launchItems[index].mode === 'ordered' ? 'parallel' : 'ordered';
+      }
+
+      if (action === 'up' && index > 0) {
+        [launchItems[index - 1], launchItems[index]] = [launchItems[index], launchItems[index - 1]];
+      }
+
+      if (action === 'down' && index < launchItems.length - 1) {
+        [launchItems[index + 1], launchItems[index]] = [launchItems[index], launchItems[index + 1]];
+      }
+
+      renderLaunchList();
+      updatePreview();
+    });
+
+    syncLaunchItemsFromSelection();
+    updateStepUI();
+  </script>
+</body>
+</html>
