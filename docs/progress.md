@@ -77,3 +77,62 @@ stream-dock/
   - 移動対象: package.json / vite.config.ts / tsconfig / index.html / src / src-tauri / public / eslint.config.js 等
   - 移動後に `pnpm install` / `pnpm tauri dev` / typecheck / lint が通ることを再確認
 - 上記モノレポ化が済んでから、ツール登録・プリセット・SQLite 等の機能実装タスクへ進む
+
+## 2026-07-05 (モノレポ化: apps/desktop への集約)
+
+### 完了したこと
+
+- root 直下にフラット展開されていた Tauri/Vite アプリ一式を `apps/desktop/` 配下へ `git mv` で移動（履歴保持）
+- root を pnpm workspace の管理用に切り替え
+- 移動後に Tauri/Vite が root から起動できる状態を維持
+
+### 移動したファイル (root → apps/desktop/)
+
+- `package.json` / `vite.config.ts` / `tsconfig.json` / `tsconfig.node.json` / `index.html` / `eslint.config.js`
+- `src/` / `src-tauri/` / `public/`
+- いずれも設定は相対パスのみで成立するため **内容変更なし**（アプリ名 `stream-dock` も維持）
+
+### 新規作成 / 変更したファイル
+
+- `pnpm-workspace.yaml` — 新規。`packages: ["apps/*"]`
+- `package.json` (root) — 新規。workspace 管理用（name=stream-dock-workspace / private）。各スクリプトは `pnpm --filter ./apps/desktop <script>` へ委譲
+- `README.md` — ディレクトリ構成の追記、`cargo check` のパスを `apps/desktop/src-tauri` に修正
+- `docs/progress.md` — 本記録
+
+### 現在のディレクトリ構成 (モノレポ)
+
+```
+stream-dock/
+├── package.json            # workspace 管理用
+├── pnpm-workspace.yaml     # apps/* を対象
+├── pnpm-lock.yaml
+├── apps/
+│   └── desktop/            # デスクトップアプリ全体
+│       ├── package.json    # アプリ (name=stream-dock)
+│       ├── vite.config.ts / tsconfig*.json / index.html / eslint.config.js
+│       ├── src/            # React (App.tsx / main.tsx / assets)
+│       ├── src-tauri/      # Rust / Tauri
+│       └── public/
+├── README.md
+├── CLAUDE.md
+└── docs/
+```
+※ `backend/` ディレクトリは MVP では作らない方針。
+
+### 検証結果
+
+- `pnpm install` 成功（workspace projects: 2 を検出しリンク）
+- `pnpm typecheck` 成功 (exit 0)
+- `pnpm lint` 成功 (exit 0)
+- `cargo check` 成功（旧パスの stale キャッシュを `cargo clean` してから成功。stream-dock v0.1.0 コンパイル完了）
+- `pnpm build` 成功（`apps/desktop/dist` を生成。tauri の `frontendDist: "../dist"` と整合）
+- `pnpm tauri dev` 起動確認（root から実行。Rust ビルド完了 → `Running target/debug/stream-dock` を確認）
+
+### 補足 (実装メモ)
+
+- `git mv src-tauri` でディレクトリごと移動した際、未追跡の `target/`（旧絶対パスを含む Rust ビルド生成物）も一緒に移動し、初回 `cargo check` が旧パス参照で失敗した。`cargo clean` で解消。
+- pnpm workspace 化に伴い root `node_modules` を削除して再 `pnpm install`（シンボリックリンク構成で貼り直し）。
+
+### 次にやるべきこと
+
+- モノレポ化が完了したため、ツール登録・プリセット・SQLite 等の機能実装タスクへ進む

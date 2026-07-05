@@ -14,6 +14,17 @@
 - pnpm 10 以上
 - Rust ツールチェイン (rustc / cargo)
 
+## ディレクトリ構成
+
+pnpm workspace のモノレポ構成。
+
+- `apps/desktop/` … デスクトップアプリ全体
+  - `apps/desktop/src/` … React + TypeScript フロントエンド
+  - `apps/desktop/src-tauri/` … Rust / Tauri バックエンド
+- root … workspace 管理用（`pnpm-workspace.yaml` / 管理用 `package.json`）
+
+各コマンドは root から実行する（`--filter` で `apps/desktop` に委譲）。
+
 ## セットアップ
 
 ```sh
@@ -33,5 +44,5 @@ pnpm tauri dev
 ```sh
 pnpm typecheck   # tsc --noEmit
 pnpm lint        # eslint
-cd src-tauri && cargo check
+cd apps/desktop/src-tauri && cargo check
 ```
