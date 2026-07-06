@@ -11,6 +11,7 @@
 
 .previewRows {
   max-height: 320px;
+  overflow-x: hidden;
   overflow-y: auto;
   padding-right: 4px;
 }
@@ -59,17 +60,22 @@
 .previewRow:first-of-type {
   border-top: 0;
 }
+.previewRow > div:last-child {
+  min-width: 0;
+}
 .previewRow h4 {
   font-size: 13px;
   margin-bottom: 4px;
+  overflow-wrap: anywhere;
 }
 .previewRow p {
   color: var(--muted);
   font-size: 11px;
+  overflow-wrap: anywhere;
 }
 
 .newRow {
-  margin: 8px -8px 0;
+  margin: 8px 0 0;
   padding: 13px 8px;
   border: 1px solid rgba(103, 232, 249, 0.3);
   border-radius: 14px;

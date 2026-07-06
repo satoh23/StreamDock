@@ -1,15 +1,38 @@
 import { useEffect, useRef, useState } from "react";
 import type { Tool, ToolState } from "../../types";
-import { initialTools } from "../../data/mockData";
+import type { ToolRecord } from "../../features/tools/types";
+import { toIconLetter } from "../../features/tools/display";
 import { Button, Spinner } from "../../components/primitives";
 import { ToolRow } from "./ToolRow";
 import layout from "../formLayout.module.css";
 import styles from "./MainScreen.module.css";
 
-export function MainScreen({ presetName }: { presetName: string }) {
-  const [tools, setTools] = useState<Tool[]>(initialTools);
+/** 永続 ToolRecord をメイン画面のランタイム Tool（起動状態付き）に変換する。 */
+function toRuntimeTools(records: ToolRecord[]): Tool[] {
+  return records.map((r) => ({
+    id: r.id,
+    iconLetter: toIconLetter(r),
+    name: r.name,
+    description: r.description,
+    state: "waiting" as ToolState,
+  }));
+}
+
+export function MainScreen({
+  presetName,
+  tools: toolRecords,
+}: {
+  presetName: string;
+  tools: ToolRecord[];
+}) {
+  const [tools, setTools] = useState<Tool[]>(() => toRuntimeTools(toolRecords));
   const [editMode, setEditMode] = useState(false);
   const [launching, setLaunching] = useState(false);
+
+  // 登録ツールが変化したら（追加・編集・削除後）一覧を作り直す
+  useEffect(() => {
+    setTools(toRuntimeTools(toolRecords));
+  }, [toolRecords]);
 
   // 最新 tools と mount 状態を非同期処理から参照するための ref
   const toolsRef = useRef(tools);

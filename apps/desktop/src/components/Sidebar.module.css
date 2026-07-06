@@ -107,6 +107,50 @@
 }
 .sidebarTool span {
   font-size: 13px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toolActions {
+  display: flex;
+  gap: 4px;
+  flex: none;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.sidebarTool:hover .toolActions {
+  opacity: 1;
+}
+.toolActionBtn {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.toolActionBtn:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.12);
+}
+.toolActionBtn.danger:hover {
+  color: #fecaca;
+  background: rgba(248, 113, 113, 0.16);
+  border-color: rgba(248, 113, 113, 0.28);
+}
+
+.emptyHint {
+  color: var(--muted);
+  font-size: 12px;
+  padding: 2px 2px 12px;
 }
 
 .presetList::-webkit-scrollbar,

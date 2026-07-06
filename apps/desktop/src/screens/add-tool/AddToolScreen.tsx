@@ -1,18 +1,18 @@
-import { useState } from "react";
-import type { Screen, SelectedApp } from "../../types";
+import { useEffect, useState } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
+import type { Screen } from "../../types";
+import type { ToolRecord } from "../../features/tools/types";
+import { createTool, updateTool } from "../../features/tools/toolApi";
+import { toErrorMessage } from "../../features/tools/useTools";
+import { toIconLetter } from "../../features/tools/display";
 import {
   insertModeOptions,
-  sampleSelectedApp,
   targetPresetOptions,
-  toolCatalog,
 } from "../../data/mockData";
 import { Button } from "../../components/primitives";
 import { PreviewCard, type PreviewRowData } from "../../components/PreviewCard";
 import layout from "../formLayout.module.css";
 import styles from "./AddToolScreen.module.css";
-
-// プレビューの土台になる既存ツール（プロトタイプ準拠の4件）
-const baseRows = toolCatalog.slice(0, 4);
 
 function DropIcon() {
   return (
@@ -24,46 +24,104 @@ function DropIcon() {
   );
 }
 
-export function AddToolScreen({ onNavigate }: { onNavigate: (screen: Screen) => void }) {
-  const [selectedApp, setSelectedApp] = useState<SelectedApp | null>(null);
-  const [displayName, setDisplayName] = useState("");
+/** パス文字列からファイル名（拡張子除く）を推定して表示名の初期値にする。 */
+function guessNameFromPath(path: string): string {
+  const base = path.split(/[\\/]/).pop() ?? path;
+  return base.replace(/\.[^.]+$/, "");
+}
+
+export function AddToolScreen({
+  onNavigate,
+  editingTool,
+  onSaved,
+}: {
+  onNavigate: (screen: Screen) => void;
+  /** 編集対象。null なら新規登録。 */
+  editingTool?: ToolRecord | null;
+  /** 保存成功後に一覧を再読み込みするコールバック。 */
+  onSaved?: () => Promise<void> | void;
+}) {
+  const isEdit = !!editingTool;
+
+  const [name, setName] = useState("");
+  const [executablePath, setExecutablePath] = useState("");
+  const [description, setDescription] = useState("");
+  const [iconLabel, setIconLabel] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  // 編集画面 / 新規画面 いずれもフォーム初期値を editingTool に同期する
+  useEffect(() => {
+    setName(editingTool?.name ?? "");
+    setExecutablePath(editingTool?.executablePath ?? "");
+    setDescription(editingTool?.description ?? "");
+    setIconLabel(editingTool?.iconLabel ?? "");
+    setError(null);
+  }, [editingTool]);
+
+  // 表示のみに使う（保存には関与しない）プリセット系 select
   const [targetPreset, setTargetPreset] = useState(targetPresetOptions[0]);
   const [insertMode, setInsertMode] = useState(insertModeOptions[0]);
-  const [insertPosition, setInsertPosition] = useState("1番目に追加");
 
-  const selectApp = () => {
-    setSelectedApp(sampleSelectedApp);
-    setDisplayName(sampleSelectedApp.name);
+  const selectFile = async () => {
+    try {
+      const selected = await open({
+        multiple: false,
+        directory: false,
+        title: "実行ファイルを選択",
+      });
+      if (typeof selected === "string") {
+        setExecutablePath(selected);
+        if (!name.trim()) setName(guessNameFromPath(selected));
+      }
+    } catch (e) {
+      setError(toErrorMessage(e));
+    }
   };
 
-  const showInsertPosition = insertMode === "選択して追加";
-  const isParallel = insertMode === "順番なし（並行起動）";
+  const handleSave = async () => {
+    setError(null);
+    setSaving(true);
+    try {
+      const input = {
+        name,
+        executablePath,
+        description,
+        iconLabel,
+      };
+      if (isEdit && editingTool) {
+        await updateTool(editingTool.id, input);
+      } else {
+        await createTool(input);
+      }
+      await onSaved?.();
+      onNavigate("main");
+    } catch (e) {
+      setError(toErrorMessage(e));
+    } finally {
+      setSaving(false);
+    }
+  };
 
-  const previewRows: PreviewRowData[] = baseRows.map((tool, i) => ({
-    key: tool.id,
-    orderLabel: String(i + 1),
-    iconLetter: tool.iconLetter,
-    name: tool.name,
-    description: tool.description,
-  }));
+  const hasPath = executablePath.trim().length > 0;
+  const previewIcon = toIconLetter({ iconLabel, name });
 
-  if (selectedApp) {
-    previewRows.push({
-      key: "__new__",
-      orderLabel: isParallel ? "並行" : insertMode === "先頭に追加" ? "1" : "5",
-      parallel: isParallel,
-      iconLetter: selectedApp.iconLetter,
-      name: displayName || selectedApp.name,
-      description: isParallel ? "順番なしで並行起動" : selectedApp.description,
+  const previewRows: PreviewRowData[] = [
+    {
+      key: "__preview__",
+      orderLabel: "1",
+      iconLetter: previewIcon,
+      name: name || "（表示名未入力）",
+      description: description || executablePath || "説明未入力",
       highlight: true,
-    });
-  }
+    },
+  ];
 
   return (
     <>
       <div className={layout.top}>
         <div className={`${layout.title} ${layout.pageTitle}`}>
-          <h2>ツールを追加</h2>
+          <h2>{isEdit ? "ツールを編集" : "ツールを追加"}</h2>
         </div>
       </div>
 
@@ -71,15 +129,15 @@ export function AddToolScreen({ onNavigate }: { onNavigate: (screen: Screen) => 
         <section className={layout.panel}>
           <div className={layout.panelHead}>
             <h3>アプリを選択</h3>
-            <p>起動したいアプリの実行ファイルを選びます。ドラッグ&amp;ドロップにも対応予定です。</p>
+            <p>起動したいアプリの実行ファイルを選びます。パスは直接入力もできます。</p>
           </div>
           <div className={layout.panelBody}>
-            {selectedApp ? (
+            {hasPath ? (
               <div className={styles.selectedApp}>
-                <div className={styles.appIcon}>{selectedApp.iconLetter}</div>
+                <div className={styles.appIcon}>{previewIcon}</div>
                 <div>
-                  <h3>{selectedApp.name}</h3>
-                  <div className={styles.path}>{selectedApp.path}</div>
+                  <h3>{name || guessNameFromPath(executablePath)}</h3>
+                  <div className={styles.path}>{executablePath}</div>
                 </div>
               </div>
             ) : (
@@ -88,13 +146,13 @@ export function AddToolScreen({ onNavigate }: { onNavigate: (screen: Screen) => 
                   <div className={styles.dropIcon}>
                     <DropIcon />
                   </div>
-                  <h3>アプリをここにドロップ</h3>
-                  <p>またはファイル選択から、起動したいアプリを選びます。</p>
-                  <Button onClick={selectApp}>アプリを選択</Button>
+                  <h3>アプリを選択</h3>
+                  <p>ファイル選択から、起動したいアプリの実行ファイルを選びます。</p>
+                  <Button onClick={selectFile}>アプリを選択</Button>
                   <div className={styles.fileTypes}>
                     <span className={styles.typeChip}>.exe</span>
-                    <span className={styles.typeChip}>.lnk</span>
-                    <span className={styles.typeChip}>.bat</span>
+                    <span className={styles.typeChip}>.app</span>
+                    <span className={styles.typeChip}>その他</span>
                   </div>
                 </div>
               </div>
@@ -104,69 +162,94 @@ export function AddToolScreen({ onNavigate }: { onNavigate: (screen: Screen) => 
               <div className={layout.field}>
                 <label>表示名</label>
                 <input
-                  value={displayName}
+                  value={name}
                   placeholder="表示名を入力"
-                  onChange={(e) => setDisplayName(e.target.value)}
+                  onChange={(e) => setName(e.target.value)}
                 />
-                <div className={layout.fieldHelp}>自動取得した名前を編集できます。</div>
+                <div className={layout.fieldHelp}>サイドバーや一覧に表示される名前です。</div>
               </div>
 
               <div className={layout.field}>
-                <label>登録先プリセット</label>
-                <select
-                  value={targetPreset}
-                  onChange={(e) => setTargetPreset(e.target.value)}
-                >
-                  {targetPresetOptions.map((opt) => (
-                    <option key={opt}>{opt}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div className={layout.field}>
-                <label>追加位置</label>
-                <select value={insertMode} onChange={(e) => setInsertMode(e.target.value)}>
-                  {insertModeOptions.map((opt) => (
-                    <option key={opt}>{opt}</option>
-                  ))}
-                </select>
+                <label>実行ファイルパス</label>
+                <input
+                  value={executablePath}
+                  placeholder="実行ファイルのパス"
+                  onChange={(e) => setExecutablePath(e.target.value)}
+                />
                 <div className={layout.fieldHelp}>
-                  順番が必要なツールは番号順、不要なツールは並行起動にできます。
+                  「アプリを選択」で自動入力されます。直接入力・編集も可能です。
                 </div>
               </div>
 
-              <div
-                className={`${layout.field} ${layout.conditionalField} ${
-                  showInsertPosition ? layout.visible : ""
-                }`}
-              >
-                <label>挿入位置</label>
-                <select
-                  value={insertPosition}
-                  onChange={(e) => setInsertPosition(e.target.value)}
-                >
-                  {["1番目に追加", "2番目に追加", "3番目に追加", "4番目に追加", "5番目に追加"].map(
-                    (opt) => (
-                      <option key={opt}>{opt}</option>
-                    ),
-                  )}
-                </select>
+              <div className={layout.field}>
+                <label>説明</label>
+                <input
+                  value={description}
+                  placeholder="このツールの説明（任意）"
+                  onChange={(e) => setDescription(e.target.value)}
+                />
               </div>
+
+              <div className={layout.field}>
+                <label>アイコンラベル</label>
+                <input
+                  value={iconLabel}
+                  placeholder="アイコン表示用の1文字（任意）"
+                  onChange={(e) => setIconLabel(e.target.value)}
+                />
+                <div className={layout.fieldHelp}>
+                  未入力なら表示名の先頭文字を使います。
+                </div>
+              </div>
+
+              {!isEdit && (
+                <>
+                  <div className={layout.field}>
+                    <label>登録先プリセット</label>
+                    <select
+                      value={targetPreset}
+                      onChange={(e) => setTargetPreset(e.target.value)}
+                    >
+                      {targetPresetOptions.map((opt) => (
+                        <option key={opt}>{opt}</option>
+                      ))}
+                    </select>
+                    <div className={layout.fieldHelp}>
+                      プリセットへの登録は今後のバージョンで対応予定です。
+                    </div>
+                  </div>
+
+                  <div className={layout.field}>
+                    <label>追加位置</label>
+                    <select value={insertMode} onChange={(e) => setInsertMode(e.target.value)}>
+                      {insertModeOptions.map((opt) => (
+                        <option key={opt}>{opt}</option>
+                      ))}
+                    </select>
+                  </div>
+                </>
+              )}
             </div>
+
+            {error && <div className={styles.error}>{error}</div>}
 
             <div className={layout.bottomActions}>
               <Button onClick={() => onNavigate("main")}>キャンセル</Button>
-              <Button variant="primary" onClick={() => onNavigate("main")}>
-                保存して追加
+              <Button variant="primary" disabled={saving} onClick={handleSave}>
+                {isEdit ? "保存する" : "保存して追加"}
               </Button>
             </div>
           </div>
         </section>
 
         <PreviewCard
-          title="ツール追加後プレビュー"
+          title={isEdit ? "編集後プレビュー" : "ツール追加後プレビュー"}
           rows={previewRows}
-          help="起動順や並行起動はあとからプリセット編集画面で変更できます。"
+          help={
+            isEdit
+              ? undefined
+              : "起動順や並行起動はあとからプリセット編集画面で変更できます。"
+          }
         />
       </div>
     </>

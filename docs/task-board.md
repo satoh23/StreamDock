@@ -4,15 +4,15 @@
 
 - 001 Project Setup
 - 002 Monorepo Structure
+- 003 App Shell
+- 004 Tool Registry
 
 ## Next
 
-- 003 App Shell
+- 005 Preset CRUD
 
 ## Todo
 
-- 004 Tool Registry
-- 005 Preset CRUD
 - 006 Preset Item Ordering
 - 007 Process Launch
 - 008 Bulk Launch

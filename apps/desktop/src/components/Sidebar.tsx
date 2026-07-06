@@ -1,5 +1,7 @@
-import { presets, toolCatalog } from "../data/mockData";
+import { presets } from "../data/mockData";
 import type { Screen } from "../types";
+import type { ToolRecord } from "../features/tools/types";
+import { toIconLetter } from "../features/tools/display";
 import { Chip } from "./primitives";
 import styles from "./Sidebar.module.css";
 
@@ -9,18 +11,25 @@ export function Sidebar({
   showToolList = false,
   activeNav,
   onNavigate,
+  tools = [],
+  onEditTool,
+  onDeleteTool,
 }: {
   /** メイン画面: 選択中プリセットのハイライト */
   activePresetId?: string;
   onSelectPreset?: (id: string) => void;
-  /** 追加画面: 登録済みツール一覧を表示する */
+  /** 登録済みツール一覧を表示する */
   showToolList?: boolean;
   /** ghost ナビの active 表示 (追加画面のとき) */
   activeNav?: Extract<Screen, "add-preset" | "add-tool">;
   onNavigate: (screen: Screen) => void;
+  /** 登録済みツール（実データ） */
+  tools?: ToolRecord[];
+  onEditTool?: (id: string) => void;
+  onDeleteTool?: (id: string) => void;
 }) {
   const hasPresets = presets.length > 0;
-  const hasTools = showToolList && toolCatalog.length > 0;
+  const hasTools = tools.length > 0;
 
   return (
     <aside className={styles.sidebar}>
@@ -56,14 +65,40 @@ export function Sidebar({
 
       <div className={styles.toolSection}>
         <div className={styles.label}>ツール</div>
-        {hasTools && (
+        {showToolList && (
           <div className={styles.toolList}>
-            {toolCatalog.map((tool) => (
-              <div key={tool.id} className={styles.sidebarTool}>
-                <div className={styles.sidebarToolIcon}>{tool.iconLetter}</div>
-                <span>{tool.name}</span>
+            {hasTools ? (
+              tools.map((tool) => (
+                <div key={tool.id} className={styles.sidebarTool}>
+                  <div className={styles.sidebarToolIcon}>{toIconLetter(tool)}</div>
+                  <span title={tool.name}>{tool.name}</span>
+                  <div className={styles.toolActions}>
+                    {onEditTool && (
+                      <button
+                        className={styles.toolActionBtn}
+                        title="編集"
+                        onClick={() => onEditTool(tool.id)}
+                      >
+                        ✎
+                      </button>
+                    )}
+                    {onDeleteTool && (
+                      <button
+                        className={`${styles.toolActionBtn} ${styles.danger}`}
+                        title="削除"
+                        onClick={() => onDeleteTool(tool.id)}
+                      >
+                        ×
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className={styles.emptyHint}>
+                まだツールが登録されていません。
               </div>
-            ))}
+            )}
           </div>
         )}
         <button

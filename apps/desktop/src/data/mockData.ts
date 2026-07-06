@@ -1,4 +1,4 @@
-import type { Preset, SelectedApp, Tool, ToolCatalogItem } from "../types";
+import type { Preset, ToolCatalogItem } from "../types";
 
 /** サイドバーのプリセット一覧（仮データ） */
 export const presets: Preset[] = [
@@ -22,23 +22,6 @@ export const toolCatalog: ToolCatalogItem[] = [
   { id: "screenshot", iconLetter: "📸", name: "スクショツール", description: "配信用スクリーンショット" },
   { id: "viewers", iconLetter: "👁", name: "視聴人数表示ツール", description: "同接・視聴人数の表示" },
 ];
-
-/** メイン画面 起動順リストの初期状態（1-3=running, 4=starting, 5-10=waiting） */
-export const initialTools: Tool[] = toolCatalog.map((tool, index) => ({
-  id: tool.id,
-  iconLetter: tool.iconLetter,
-  name: tool.name,
-  description: tool.description,
-  state: index < 3 ? "running" : index === 3 ? "starting" : "waiting",
-}));
-
-/** ツール追加画面のサンプル選択アプリ */
-export const sampleSelectedApp: SelectedApp = {
-  iconLetter: "A",
-  name: "StreamAvatars",
-  path: "C:\\Program Files (x86)\\Steam\\steamapps\\common\\StreamAvatars\\StreamAvatars.exe",
-  description: "画面下部のユーザーアバター",
-};
 
 /** 登録先プリセットの選択肢 */
 export const targetPresetOptions: string[] = [

@@ -87,3 +87,14 @@
   line-height: 1.45;
   word-break: break-all;
 }
+
+.error {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  color: #fecaca;
+  font-size: 13px;
+  line-height: 1.5;
+  background: rgba(248, 113, 113, 0.12);
+  border: 1px solid rgba(248, 113, 113, 0.3);
+}
