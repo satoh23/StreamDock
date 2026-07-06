@@ -13,6 +13,8 @@ pub enum AppError {
     DuplicatePath(String),
     /// プリセット名が既存プリセットと重複
     DuplicateName(String),
+    /// 同一プリセット内に同じツールを重複追加しようとした
+    DuplicateToolInPreset(String),
     /// 指定された実行ファイルパスが存在しない
     PathNotFound(String),
     /// 対象のツールが見つからない
@@ -27,6 +29,7 @@ impl std::fmt::Display for AppError {
             AppError::Validation(m) => write!(f, "Validation error: {m}"),
             AppError::DuplicatePath(m) => write!(f, "Duplicate path: {m}"),
             AppError::DuplicateName(m) => write!(f, "Duplicate name: {m}"),
+            AppError::DuplicateToolInPreset(m) => write!(f, "Duplicate tool in preset: {m}"),
             AppError::PathNotFound(m) => write!(f, "Path not found: {m}"),
             AppError::NotFound(m) => write!(f, "Not found: {m}"),
             AppError::Db(m) => write!(f, "DB error: {m}"),

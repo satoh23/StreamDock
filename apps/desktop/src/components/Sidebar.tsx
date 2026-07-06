@@ -1,11 +1,19 @@
 import type { Screen } from "../types";
 import type { ToolRecord } from "../features/tools/types";
-import type { PresetRecord } from "../features/presets/types";
+import type { PresetItemMeta, PresetRecord } from "../features/presets/types";
 import { toIconLetter } from "../features/tools/display";
 import styles from "./Sidebar.module.css";
 
+/** プリセットのツール数・並行有無を表示用ラベルにする。 */
+function metaLabel(meta: PresetItemMeta | undefined): string {
+  const count = meta?.count ?? 0;
+  const base = `${count}ツール`;
+  return meta?.hasParallel ? `${base}・一部並行` : base;
+}
+
 export function Sidebar({
   presets = [],
+  presetMeta,
   activePresetId,
   onSelectPreset,
   onEditPreset,
@@ -19,6 +27,8 @@ export function Sidebar({
 }: {
   /** 登録済みプリセット（実データ） */
   presets?: PresetRecord[];
+  /** プリセットID → ツール数・並行有無のメタ情報 */
+  presetMeta?: Map<string, PresetItemMeta>;
   /** メイン画面: 選択中プリセットのハイライト */
   activePresetId?: string | null;
   onSelectPreset?: (id: string) => void;
@@ -52,7 +62,12 @@ export function Sidebar({
                 onClick={() => onSelectPreset?.(preset.id)}
               >
                 <div className={styles.presetHeader}>
-                  <h3 title={preset.name}>{preset.name}</h3>
+                  <div className={styles.presetMain}>
+                    <h3 title={preset.name}>{preset.name}</h3>
+                    <div className={styles.presetMeta}>
+                      {metaLabel(presetMeta?.get(preset.id))}
+                    </div>
+                  </div>
                   <div className={styles.toolActions}>
                     {onEditPreset && (
                       <button

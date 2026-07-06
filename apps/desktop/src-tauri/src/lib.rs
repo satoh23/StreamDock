@@ -1,4 +1,5 @@
 mod error;
+mod preset_items;
 mod presets;
 mod tools;
 
@@ -18,8 +19,12 @@ pub fn run() {
             std::fs::create_dir_all(&data_dir)?;
             let db_path = data_dir.join("stream-dock.db");
             let conn = Connection::open(&db_path)?;
+            // 外部キー制約を有効化する（接続ごとに必要）。
+            // preset_items → presets / tools のカスケード削除を効かせ、孤児行を防ぐ。
+            conn.execute("PRAGMA foreign_keys = ON", [])?;
             tools::repository::init(&conn)?;
             presets::repository::init(&conn)?;
+            preset_items::repository::init(&conn)?;
             app.manage(Mutex::new(conn));
             Ok(())
         })
@@ -34,6 +39,12 @@ pub fn run() {
             presets::commands::get_preset,
             presets::commands::update_preset,
             presets::commands::delete_preset,
+            preset_items::commands::add_tool_to_preset,
+            preset_items::commands::list_preset_items,
+            preset_items::commands::list_all_preset_items,
+            preset_items::commands::remove_tool_from_preset,
+            preset_items::commands::update_preset_item,
+            preset_items::commands::reorder_preset_items,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,48 +1,97 @@
 import { useEffect, useRef, useState } from "react";
-import type { Tool, ToolState } from "../../types";
+import type { ToolState } from "../../types";
 import type { ToolRecord } from "../../features/tools/types";
+import type {
+  LaunchMode,
+  PresetItemWithTool,
+} from "../../features/presets/types";
 import { toIconLetter } from "../../features/tools/display";
-import { Button, Spinner } from "../../components/primitives";
+import { Button, IconTile, Spinner } from "../../components/primitives";
 import { ToolRow } from "./ToolRow";
 import layout from "../formLayout.module.css";
 import styles from "./MainScreen.module.css";
 
-/** 永続 ToolRecord をメイン画面のランタイム Tool（起動状態付き）に変換する。 */
-function toRuntimeTools(records: ToolRecord[]): Tool[] {
-  return records.map((r) => ({
-    id: r.id,
-    iconLetter: toIconLetter(r),
-    name: r.name,
-    description: r.description,
+/** メイン画面の1行分のランタイム表現（表示用 PresetItem ＋ 擬似起動状態）。 */
+type RuntimeItem = {
+  /** preset_items.id（並び替え・削除・更新のキー） */
+  id: string;
+  toolId: string;
+  iconLetter: string;
+  name: string;
+  description: string;
+  launchMode: LaunchMode;
+  enabled: boolean;
+  /** 擬似的な起動状態（実プロセス起動は 007 以降） */
+  state: ToolState;
+};
+
+/** 表示用 PresetItemWithTool を、起動状態付きのランタイム行に変換する。 */
+function toRuntime(items: PresetItemWithTool[]): RuntimeItem[] {
+  return items.map((it) => ({
+    id: it.id,
+    toolId: it.toolId,
+    iconLetter: toIconLetter(it.tool),
+    name: it.tool.name,
+    description: it.tool.description,
+    launchMode: it.launchMode,
+    enabled: it.enabled,
     state: "waiting" as ToolState,
   }));
 }
 
+/** parallel を番号に数えず、ordered だけで連番を振る。 */
+function orderedIndexFor(list: RuntimeItem[], index: number): number {
+  let count = 0;
+  for (let i = 0; i <= index; i++) {
+    if (list[i].launchMode === "ordered") count++;
+  }
+  return count;
+}
+
 export function MainScreen({
   presetName,
-  tools: toolRecords,
+  presetId,
+  items,
+  availableTools,
+  onAddTool,
+  onRemoveItem,
+  onReorder,
+  onSetLaunchMode,
 }: {
   /** 選択中プリセット名。プリセットが1件も無い（未選択）の場合は null。 */
   presetName: string | null;
-  tools: ToolRecord[];
+  /** 選択中プリセットID。null なら未選択。 */
+  presetId: string | null;
+  /** 選択中プリセットのツール構成（order_index 昇順・Tool 情報合成済み）。 */
+  items: PresetItemWithTool[];
+  /** まだこのプリセットに入っていない登録済みツール（＋ツール追加の候補）。 */
+  availableTools: ToolRecord[];
+  onAddTool: (presetId: string, toolId: string) => Promise<void> | void;
+  onRemoveItem: (id: string) => Promise<void> | void;
+  onReorder: (presetId: string, orderedIds: string[]) => Promise<void> | void;
+  onSetLaunchMode: (
+    id: string,
+    launchMode: LaunchMode,
+    enabled: boolean,
+  ) => Promise<void> | void;
 }) {
-  const [tools, setTools] = useState<Tool[]>(() => toRuntimeTools(toolRecords));
+  const [runtime, setRuntime] = useState<RuntimeItem[]>(() => toRuntime(items));
   const [editMode, setEditMode] = useState(false);
   const [launching, setLaunching] = useState(false);
+  const [showPicker, setShowPicker] = useState(false);
 
-  // 登録ツールが変化したら（追加・編集・削除後）一覧を作り直す
+  // 構成（items）が変化したら（追加・削除・並び替え・モード変更後）一覧を作り直す
   useEffect(() => {
-    setTools(toRuntimeTools(toolRecords));
-  }, [toolRecords]);
+    setRuntime(toRuntime(items));
+  }, [items]);
 
-  // 最新 tools と mount 状態を非同期処理から参照するための ref
-  const toolsRef = useRef(tools);
-  toolsRef.current = tools;
+  // 最新 runtime と mount 状態を非同期処理から参照するための ref
+  const runtimeRef = useRef(runtime);
+  runtimeRef.current = runtime;
   const mountedRef = useRef(true);
   const timersRef = useRef<number[]>([]);
 
   useEffect(() => {
-    // timersRef.current は push のみで再代入しないため、同じ配列参照を cleanup で使える
     const timers = timersRef.current;
     return () => {
       mountedRef.current = false;
@@ -57,13 +106,14 @@ export function MainScreen({
     });
 
   const setToolState = (id: string, state: ToolState) => {
-    setTools((prev) => prev.map((t) => (t.id === id ? { ...t, state } : t)));
+    setRuntime((prev) => prev.map((t) => (t.id === id ? { ...t, state } : t)));
   };
 
-  const runningCount = tools.filter((t) => t.state === "running").length;
-  const anyStarting = tools.some((t) => t.state === "starting");
-  const allRunning = tools.length > 0 && runningCount === tools.length;
+  const runningCount = runtime.filter((t) => t.state === "running").length;
+  const anyStarting = runtime.some((t) => t.state === "starting");
+  const allRunning = runtime.length > 0 && runningCount === runtime.length;
 
+  // --- 擬似起動シミュレーション（007 以降で実プロセス起動に置き換え）---
   const handleStart = (id: string) => {
     setToolState(id, "starting");
     const timer = window.setTimeout(() => {
@@ -74,9 +124,9 @@ export function MainScreen({
 
   const launchAll = async () => {
     setLaunching(true);
-    const ids = toolsRef.current.map((t) => t.id);
+    const ids = runtimeRef.current.map((t) => t.id);
     for (const id of ids) {
-      const current = toolsRef.current.find((t) => t.id === id);
+      const current = runtimeRef.current.find((t) => t.id === id);
       if (current?.state === "running") continue;
       if (!mountedRef.current) return;
       setToolState(id, "starting");
@@ -88,24 +138,43 @@ export function MainScreen({
   };
 
   const stopAll = () => {
-    setTools((prev) => prev.map((t) => ({ ...t, state: "waiting" })));
+    setRuntime((prev) => prev.map((t) => ({ ...t, state: "waiting" })));
   };
 
+  // --- 編集モードの操作（操作ごとに即時保存）---
   const move = (index: number, dir: -1 | 1) => {
+    if (!presetId) return;
     const target = index + dir;
-    setTools((prev) => {
-      if (target < 0 || target >= prev.length) return prev;
-      const next = [...prev];
-      [next[index], next[target]] = [next[target], next[index]];
-      return next;
-    });
+    if (target < 0 || target >= runtime.length) return;
+    const orderedIds = runtime.map((t) => t.id);
+    [orderedIds[index], orderedIds[target]] = [
+      orderedIds[target],
+      orderedIds[index],
+    ];
+    void onReorder(presetId, orderedIds);
   };
 
   const remove = (id: string) => {
-    setTools((prev) => prev.filter((t) => t.id !== id));
+    void onRemoveItem(id);
   };
 
-  const toggleEdit = () => setEditMode((v) => !v);
+  const toggleMode = (item: RuntimeItem) => {
+    const next: LaunchMode =
+      item.launchMode === "ordered" ? "parallel" : "ordered";
+    void onSetLaunchMode(item.id, next, item.enabled);
+  };
+
+  const addTool = (toolId: string) => {
+    if (!presetId) return;
+    void onAddTool(presetId, toolId);
+  };
+
+  const toggleEdit = () => {
+    setEditMode((v) => {
+      if (v) setShowPicker(false);
+      return !v;
+    });
+  };
 
   // プリセットが1件も無い（未選択）場合は空状態を表示する
   if (presetName === null) {
@@ -120,13 +189,15 @@ export function MainScreen({
     );
   }
 
+  const isEmpty = runtime.length === 0;
+
   return (
     <div className={editMode ? styles.editMode : ""}>
       <div className={styles.top}>
         <div className={`${layout.title} ${layout.pageTitle}`}>
           <h2>{presetName}</h2>
           <div className={styles.progressText}>
-            {runningCount} / {tools.length} 起動済み
+            {runningCount} / {runtime.length} 起動済み
           </div>
         </div>
         <div className={styles.actions}>
@@ -134,15 +205,13 @@ export function MainScreen({
             className={`${styles.editToggle} ${editMode ? styles.editing : ""}`}
             onClick={toggleEdit}
           >
-            {editMode ? "編集をやめる" : "編集"}
+            {editMode ? "編集を終える" : "編集"}
           </button>
-          {editMode ? (
-            <Button variant="primary">保存</Button>
-          ) : (
+          {!editMode && (
             <Button
               variant="primary"
               stopAll={allRunning}
-              disabled={launching || anyStarting}
+              disabled={launching || anyStarting || isEmpty}
               onClick={allRunning ? stopAll : launchAll}
             >
               {launching || anyStarting ? (
@@ -162,30 +231,84 @@ export function MainScreen({
           <h3>起動順</h3>
           {editMode && (
             <div className={styles.editHint}>
-              編集モード中です。↑ ↓ で起動順を変更できます。
+              編集モード中です。↑ ↓ で起動順を、「並行」ボタンで起動モードを変更できます。
             </div>
           )}
         </div>
-        {editMode && <button className={styles.addToolBtn}>＋ ツールを追加</button>}
+        {editMode && (
+          <button
+            className={styles.addToolBtn}
+            onClick={() => setShowPicker((v) => !v)}
+          >
+            ＋ ツールを追加
+          </button>
+        )}
       </div>
 
-      <div className={styles.toolList}>
-        {tools.map((tool, index) => (
-          <ToolRow
-            key={tool.id}
-            tool={tool}
-            index={index}
-            total={tools.length}
-            order={index + 1}
-            editMode={editMode}
-            onStart={() => handleStart(tool.id)}
-            onStop={() => setToolState(tool.id, "waiting")}
-            onMoveUp={() => move(index, -1)}
-            onMoveDown={() => move(index, 1)}
-            onDelete={() => remove(tool.id)}
-          />
-        ))}
-      </div>
+      {editMode && showPicker && (
+        <div className={styles.picker}>
+          {availableTools.length === 0 ? (
+            <div className={styles.pickerEmpty}>
+              追加できるツールがありません。先にサイドバーの「＋
+              ツールを追加」でツールを登録してください。
+            </div>
+          ) : (
+            availableTools.map((tool) => (
+              <button
+                key={tool.id}
+                className={styles.pickerRow}
+                onClick={() => addTool(tool.id)}
+              >
+                <IconTile glyph={toIconLetter(tool)} size="sm" />
+                <div className={styles.pickerInfo}>
+                  <h4>{tool.name}</h4>
+                  <p>{tool.description}</p>
+                </div>
+                <span className={styles.pickerAdd}>追加</span>
+              </button>
+            ))
+          )}
+        </div>
+      )}
+
+      {isEmpty ? (
+        <div className={styles.itemsEmpty}>
+          <h3>このプリセットにはまだツールがありません</h3>
+          <p>
+            ツールを追加して、配信準備をまとめましょう。「編集」→「＋
+            ツールを追加」から登録済みツールを選べます。
+          </p>
+        </div>
+      ) : (
+        <div className={styles.toolList}>
+          {runtime.map((item, index) => {
+            const parallel = item.launchMode === "parallel";
+            return (
+              <ToolRow
+                key={item.id}
+                tool={{
+                  id: item.id,
+                  iconLetter: item.iconLetter,
+                  name: item.name,
+                  description: item.description,
+                  state: item.state,
+                }}
+                index={index}
+                total={runtime.length}
+                orderLabel={parallel ? "並行" : String(orderedIndexFor(runtime, index))}
+                parallel={parallel}
+                editMode={editMode}
+                onStart={() => handleStart(item.id)}
+                onStop={() => setToolState(item.id, "waiting")}
+                onMoveUp={() => move(index, -1)}
+                onMoveDown={() => move(index, 1)}
+                onToggleMode={() => toggleMode(item)}
+                onDelete={() => remove(item.id)}
+              />
+            );
+          })}
+        </div>
+      )}
 
       {editMode && (
         <div className={styles.footerActions}>

@@ -32,38 +32,49 @@ export function ToolRow({
   tool,
   index,
   total,
-  order,
+  orderLabel,
+  parallel,
   editMode,
   onStart,
   onStop,
   onMoveUp,
   onMoveDown,
+  onToggleMode,
   onDelete,
 }: {
   tool: Tool;
   index: number;
   total: number;
-  order: number;
+  orderLabel: string;
+  parallel: boolean;
   editMode: boolean;
   onStart: () => void;
   onStop: () => void;
   onMoveUp: () => void;
   onMoveDown: () => void;
+  onToggleMode: () => void;
   onDelete: () => void;
 }) {
   return (
     <div className={styles.tool}>
-      <OrderBadge label={String(order)} />
+      <OrderBadge label={orderLabel} parallel={parallel} />
       <IconTile glyph={tool.iconLetter} />
       <div className={styles.info}>
         <h4>{tool.name}</h4>
-        <p>{tool.description}</p>
+        <p>{parallel ? "順番なしで並行起動" : tool.description}</p>
       </div>
       <StatusBadge state={tool.state} />
 
       <div className={styles.toolActions}>
         {editMode ? (
           <>
+            <button
+              className={styles.modeToggle}
+              onClick={onToggleMode}
+              title={parallel ? "起動順を付ける" : "並行起動にする"}
+            >
+              {parallel ? "番号を付ける" : "並行にする"}
+            </button>
             <button
               className={`${styles.move} ${index === 0 ? styles.disabled : ""}`}
               onClick={onMoveUp}

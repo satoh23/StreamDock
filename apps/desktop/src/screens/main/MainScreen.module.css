@@ -177,10 +177,93 @@
   pointer-events: none;
 }
 
+.modeToggle {
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.065);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  color: #f8fafc;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 /* 編集モード: アクション列を広げ、行に薄い背景 */
 .editMode .tool {
-  grid-template-columns: 28px 44px 1fr 82px 270px;
+  grid-template-columns: 28px 44px 1fr 82px 330px;
   background: rgba(255, 255, 255, 0.018);
+}
+
+/* ＋ツール追加のインライン選択リスト */
+.picker {
+  border: 1px solid var(--line);
+  border-top: 0;
+  background: rgba(18, 26, 47, 0.72);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.pickerEmpty {
+  padding: 14px 12px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.pickerRow {
+  display: grid;
+  grid-template-columns: 34px 1fr auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  text-align: left;
+  color: var(--text);
+}
+.pickerRow:hover {
+  background: rgba(103, 232, 249, 0.08);
+  border-color: rgba(103, 232, 249, 0.22);
+}
+.pickerInfo h4 {
+  font-size: 14px;
+  margin-bottom: 2px;
+}
+.pickerInfo p {
+  color: var(--muted);
+  font-size: 12px;
+}
+.pickerAdd {
+  font-size: 12px;
+  font-weight: 700;
+  color: #b7f4ff;
+}
+
+/* プリセットはあるがツールが未登録のときの空状態 */
+.itemsEmpty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 220px;
+  padding: 40px 24px;
+  text-align: center;
+  border: 1px solid var(--line);
+  border-top: 0;
+  border-radius: 0 0 var(--radius) var(--radius);
+  background: rgba(18, 26, 47, 0.58);
+}
+.itemsEmpty h3 {
+  font-size: 16px;
+  letter-spacing: -0.02em;
+}
+.itemsEmpty p {
+  max-width: 360px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
 }
 
 .footerActions {
