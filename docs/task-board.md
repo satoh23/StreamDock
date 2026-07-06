@@ -18,4 +18,6 @@
 - 008 Bulk Launch
 - 009 Process Stop
 - 010 Runtime Status
-- 011 Windows Build
+- 011 Error Handling / Logs
+- 012 Windows Build
+- 013 User Test Package
