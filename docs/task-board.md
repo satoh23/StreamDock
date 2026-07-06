@@ -6,14 +6,14 @@
 - 002 Monorepo Structure
 - 003 App Shell
 - 004 Tool Registry
+- 005 Preset CRUD
 
 ## Next
 
-- 005 Preset CRUD
+- 006 Preset Item Ordering
 
 ## Todo
 
-- 006 Preset Item Ordering
 - 007 Process Launch
 - 008 Bulk Launch
 - 009 Process Stop

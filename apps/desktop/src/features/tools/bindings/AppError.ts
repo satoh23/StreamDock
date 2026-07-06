@@ -4,4 +4,4 @@
  * アプリ共通のエラー型。
  * Tauri command の戻り値 `Result<T, AppError>` としてフロントへ JSON でシリアライズされる。
  */
-export type AppError = { "kind": "validation", "message": string } | { "kind": "duplicatePath", "message": string } | { "kind": "pathNotFound", "message": string } | { "kind": "notFound", "message": string } | { "kind": "db", "message": string };
+export type AppError = { "kind": "validation", "message": string } | { "kind": "duplicatePath", "message": string } | { "kind": "duplicateName", "message": string } | { "kind": "pathNotFound", "message": string } | { "kind": "notFound", "message": string } | { "kind": "db", "message": string };

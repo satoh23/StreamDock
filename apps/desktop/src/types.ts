@@ -19,13 +19,6 @@ export interface ToolCatalogItem {
   description: string;
 }
 
-/** サイドバーのプリセット表示 */
-export interface Preset {
-  id: string;
-  name: string;
-  chips: string[];
-}
-
 /** ツール追加画面で選択したアプリ */
 export interface SelectedApp {
   iconLetter: string;

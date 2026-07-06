@@ -22,7 +22,8 @@ export function MainScreen({
   presetName,
   tools: toolRecords,
 }: {
-  presetName: string;
+  /** 選択中プリセット名。プリセットが1件も無い（未選択）の場合は null。 */
+  presetName: string | null;
   tools: ToolRecord[];
 }) {
   const [tools, setTools] = useState<Tool[]>(() => toRuntimeTools(toolRecords));
@@ -105,6 +106,19 @@ export function MainScreen({
   };
 
   const toggleEdit = () => setEditMode((v) => !v);
+
+  // プリセットが1件も無い（未選択）場合は空状態を表示する
+  if (presetName === null) {
+    return (
+      <div className={styles.emptyState}>
+        <h2>まだプリセットがありません</h2>
+        <p>
+          プリセットを追加して、配信で使うツール構成を保存しましょう。左のサイドバーの「＋
+          プリセットを追加」から作成できます。
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className={editMode ? styles.editMode : ""}>

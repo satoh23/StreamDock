@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "gen:bindings": "cd src-tauri && cargo test export_bindings",
-    "check:bindings": "pnpm gen:bindings && git diff --exit-code -- src/features/tools/bindings"
+    "check:bindings": "pnpm gen:bindings && git diff --exit-code -- src/features/tools/bindings src/features/presets/bindings"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

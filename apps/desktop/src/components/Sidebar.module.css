@@ -56,14 +56,22 @@
     rgba(139, 92, 246, 0.1)
   );
 }
-.preset h3 {
-  font-size: 14px;
-  margin-bottom: 6px;
-}
-.presetMeta {
+.presetHeader {
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
+  align-items: center;
+  gap: 8px;
+}
+.presetHeader h3 {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.preset:hover .toolActions {
+  opacity: 1;
 }
 
 .ghost {

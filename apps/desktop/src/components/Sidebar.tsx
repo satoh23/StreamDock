@@ -1,13 +1,15 @@
-import { presets } from "../data/mockData";
 import type { Screen } from "../types";
 import type { ToolRecord } from "../features/tools/types";
+import type { PresetRecord } from "../features/presets/types";
 import { toIconLetter } from "../features/tools/display";
-import { Chip } from "./primitives";
 import styles from "./Sidebar.module.css";
 
 export function Sidebar({
+  presets = [],
   activePresetId,
   onSelectPreset,
+  onEditPreset,
+  onDeletePreset,
   showToolList = false,
   activeNav,
   onNavigate,
@@ -15,9 +17,13 @@ export function Sidebar({
   onEditTool,
   onDeleteTool,
 }: {
+  /** 登録済みプリセット（実データ） */
+  presets?: PresetRecord[];
   /** メイン画面: 選択中プリセットのハイライト */
-  activePresetId?: string;
+  activePresetId?: string | null;
   onSelectPreset?: (id: string) => void;
+  onEditPreset?: (id: string) => void;
+  onDeletePreset?: (id: string) => void;
   /** 登録済みツール一覧を表示する */
   showToolList?: boolean;
   /** ghost ナビの active 表示 (追加画面のとき) */
@@ -35,9 +41,9 @@ export function Sidebar({
     <aside className={styles.sidebar}>
       <div className={styles.presetSection}>
         <div className={styles.label}>配信プリセット</div>
-        {hasPresets && (
-          <div className={styles.presetList}>
-            {presets.map((preset) => (
+        <div className={styles.presetList}>
+          {hasPresets ? (
+            presets.map((preset) => (
               <div
                 key={preset.id}
                 className={`${styles.preset} ${
@@ -45,16 +51,41 @@ export function Sidebar({
                 }`}
                 onClick={() => onSelectPreset?.(preset.id)}
               >
-                <h3>{preset.name}</h3>
-                <div className={styles.presetMeta}>
-                  {preset.chips.map((chip) => (
-                    <Chip key={chip}>{chip}</Chip>
-                  ))}
+                <div className={styles.presetHeader}>
+                  <h3 title={preset.name}>{preset.name}</h3>
+                  <div className={styles.toolActions}>
+                    {onEditPreset && (
+                      <button
+                        className={styles.toolActionBtn}
+                        title="編集"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onEditPreset(preset.id);
+                        }}
+                      >
+                        ✎
+                      </button>
+                    )}
+                    {onDeletePreset && (
+                      <button
+                        className={`${styles.toolActionBtn} ${styles.danger}`}
+                        title="削除"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onDeletePreset(preset.id);
+                        }}
+                      >
+                        ×
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
-            ))}
-          </div>
-        )}
+            ))
+          ) : (
+            <div className={styles.emptyHint}>まだプリセットがありません。</div>
+          )}
+        </div>
         <button
           className={`${styles.ghost} ${activeNav === "add-preset" ? styles.active : ""}`}
           onClick={() => onNavigate("add-preset")}

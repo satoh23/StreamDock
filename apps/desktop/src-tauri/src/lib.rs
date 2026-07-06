@@ -1,4 +1,5 @@
 mod error;
+mod presets;
 mod tools;
 
 use std::sync::Mutex;
@@ -18,6 +19,7 @@ pub fn run() {
             let db_path = data_dir.join("stream-dock.db");
             let conn = Connection::open(&db_path)?;
             tools::repository::init(&conn)?;
+            presets::repository::init(&conn)?;
             app.manage(Mutex::new(conn));
             Ok(())
         })
@@ -27,6 +29,11 @@ pub fn run() {
             tools::commands::get_tool,
             tools::commands::update_tool,
             tools::commands::delete_tool,
+            presets::commands::create_preset,
+            presets::commands::list_presets,
+            presets::commands::get_preset,
+            presets::commands::update_preset,
+            presets::commands::delete_preset,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

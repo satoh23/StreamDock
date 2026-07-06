@@ -1,13 +1,8 @@
-import type { Preset, ToolCatalogItem } from "../types";
+import type { ToolCatalogItem } from "../types";
 
-/** サイドバーのプリセット一覧（仮データ） */
-export const presets: Preset[] = [
-  { id: "normal", name: "通常配信プリセット", chips: ["10ツール", "起動順あり"] },
-  { id: "chat", name: "雑談用プリセット", chips: ["7ツール", "一部並行"] },
-  { id: "global", name: "海外コメント対応プリセット", chips: ["9ツール", "起動順あり"] },
-  { id: "collab", name: "コラボ配信プリセット", chips: ["8ツール", "一部並行"] },
-  { id: "singing", name: "歌枠プリセット", chips: ["6ツール"] },
-];
+// NOTE: プリセット一覧は 005 で実データ（SQLite）へ移行したため、仮データ `presets` は撤去した。
+// 以下の toolCatalog / defaultSelectedToolIds 等は 006 Preset Item Management（ツール選択・起動順）で
+// 旧2ステップUIを復元する際に再利用するため残置している。
 
 /** 登録済みツールのカタログ（10件・仮データ） */
 export const toolCatalog: ToolCatalogItem[] = [

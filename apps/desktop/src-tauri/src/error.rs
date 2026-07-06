@@ -11,6 +11,8 @@ pub enum AppError {
     Validation(String),
     /// executablePath が既存ツールと重複
     DuplicatePath(String),
+    /// プリセット名が既存プリセットと重複
+    DuplicateName(String),
     /// 指定された実行ファイルパスが存在しない
     PathNotFound(String),
     /// 対象のツールが見つからない
@@ -24,6 +26,7 @@ impl std::fmt::Display for AppError {
         match self {
             AppError::Validation(m) => write!(f, "Validation error: {m}"),
             AppError::DuplicatePath(m) => write!(f, "Duplicate path: {m}"),
+            AppError::DuplicateName(m) => write!(f, "Duplicate name: {m}"),
             AppError::PathNotFound(m) => write!(f, "Path not found: {m}"),
             AppError::NotFound(m) => write!(f, "Not found: {m}"),
             AppError::Db(m) => write!(f, "DB error: {m}"),
