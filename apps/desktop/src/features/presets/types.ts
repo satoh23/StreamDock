@@ -12,6 +12,10 @@ export type { LaunchMode } from "./bindings/LaunchMode";
 export type { AddPresetItemInput } from "./bindings/AddPresetItemInput";
 export type { UpdatePresetItemInput } from "./bindings/UpdatePresetItemInput";
 
+// 一括起動（008 Bulk Launch）の結果型も Rust をソースに ts-rs で自動生成する。
+export type { BulkLaunchPresetResult } from "./bindings/BulkLaunchPresetResult";
+export type { BulkLaunchToolResult } from "./bindings/BulkLaunchToolResult";
+
 // AppError は Tool と共有（tools/bindings に生成される）。
 export type { AppError } from "../tools/bindings/AppError";
 

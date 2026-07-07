@@ -1,10 +1,16 @@
 use std::path::Path;
 use std::process::Command;
 
+use rusqlite::Connection;
+
 use crate::error::{AppError, AppResult};
+use crate::preset_items;
+use crate::preset_items::model::{LaunchMode, PresetItem};
+use crate::presets;
+use crate::tools;
 use crate::tools::model::Tool;
 
-use super::model::LaunchToolResult;
+use super::model::{BulkLaunchPresetResult, BulkLaunchToolResult, LaunchToolResult};
 
 /// 登録済み Tool の executablePath を検証し、shell を経由せず直接プロセスを起動する。
 ///
@@ -119,4 +125,120 @@ pub fn launch(tool: &Tool) -> AppResult<LaunchToolResult> {
         process_id: child.id(),
         started_at: chrono::Utc::now().to_rfc3339(),
     })
+}
+
+/// 一括起動（008）の対象を DB から解決する。
+///
+/// ロックを保持したままプロセスを spawn しないよう、ここでは「取得」だけを行い、
+/// 実際の起動は [`launch_preset_targets`]（DB 非依存）に分離する（007 の launch_tool と同方針）。
+///
+/// 以下の場合は一括起動自体を開始しないため `Err` を返す:
+/// - Preset が存在しない（`NotFound`）
+/// - enabled な PresetItem が1件も無い（`Validation`）
+///
+/// 個々の Tool 欠落は best-effort で per-item 失敗として扱うため、ここでは `Option<Tool>` として返す
+/// （通常は ON DELETE CASCADE で発生しないが、防御的に処理する）。
+pub fn resolve_preset_targets(
+    conn: &Connection,
+    preset_id: &str,
+) -> AppResult<Vec<(PresetItem, Option<Tool>)>> {
+    // Preset が存在しなければ一括起動を開始しない。
+    presets::service::get(conn, preset_id)?;
+
+    // enabled な PresetItem のみを起動対象にする（list_by_preset は order_index 昇順）。
+    let enabled: Vec<PresetItem> = preset_items::service::list_by_preset(conn, preset_id)?
+        .into_iter()
+        .filter(|item| item.enabled)
+        .collect();
+    if enabled.is_empty() {
+        return Err(AppError::Validation("起動できるツールがありません".into()));
+    }
+
+    let mut targets = Vec::with_capacity(enabled.len());
+    for item in enabled {
+        let tool = tools::repository::get(conn, &item.tool_id)?;
+        targets.push((item, tool));
+    }
+    Ok(targets)
+}
+
+/// 解決済みの起動対象を best-effort で一括起動し、成功・失敗を集約して返す（DB 非依存）。
+///
+/// 起動順（MVP）:
+/// 1. ordered な item を orderIndex 昇順で先に起動する
+/// 2. parallel な item をまとめて起動する
+///
+/// `std::process::Command::spawn()` は子プロセスの終了を待たず即座に戻る非ブロッキング呼び出しのため、
+/// 順に spawn しても起動されたアプリ群は同時並行に走る（008 ではスレッドは使わない）。
+/// `targets` は [`resolve_preset_targets`] により order_index 昇順で渡ってくるので、
+/// モードで分割しても各グループ内の順序は保たれる。
+pub fn launch_preset_targets(
+    preset_id: &str,
+    targets: Vec<(PresetItem, Option<Tool>)>,
+) -> BulkLaunchPresetResult {
+    let started_at = chrono::Utc::now().to_rfc3339();
+
+    let (ordered, parallel): (Vec<_>, Vec<_>) = targets
+        .into_iter()
+        .partition(|(item, _)| item.launch_mode == LaunchMode::Ordered);
+
+    let mut results: Vec<BulkLaunchToolResult> = Vec::new();
+    for (item, tool) in ordered.into_iter().chain(parallel) {
+        results.push(launch_one(&item, tool.as_ref()));
+    }
+
+    let total_count = results.len() as u32;
+    let success_count = results.iter().filter(|r| r.success).count() as u32;
+    let failure_count = total_count - success_count;
+
+    BulkLaunchPresetResult {
+        preset_id: preset_id.to_string(),
+        started_at,
+        finished_at: chrono::Utc::now().to_rfc3339(),
+        total_count,
+        success_count,
+        failure_count,
+        results,
+    }
+}
+
+/// PresetItem 1件を起動し、結果を [`BulkLaunchToolResult`] にまとめる。
+fn launch_one(item: &PresetItem, tool: Option<&Tool>) -> BulkLaunchToolResult {
+    // Tool 欠落（防御的経路）で名前が空になると UI の失敗一覧が空要素になるため、
+    // 識別できるよう tool_id をフォールバック名にする。
+    let tool_name = tool
+        .map(|t| t.name.clone())
+        .unwrap_or_else(|| item.tool_id.clone());
+
+    let (success, process_id, started_at, error_message) = match tool {
+        None => (false, None, None, Some("ツールが見つかりません".to_string())),
+        Some(tool) => match launch(tool) {
+            Ok(res) => (true, Some(res.process_id), Some(res.started_at), None),
+            Err(err) => (false, None, None, Some(safe_launch_message(&err))),
+        },
+    };
+
+    BulkLaunchToolResult {
+        preset_item_id: item.id.clone(),
+        tool_id: item.tool_id.clone(),
+        tool_name,
+        launch_mode: item.launch_mode,
+        order_index: item.order_index,
+        success,
+        process_id,
+        started_at,
+        error_message,
+    }
+}
+
+/// 一括起動結果の error_message を、フロントに出しても安全な短文へ丸める。
+/// PathNotFound はメッセージにフルパスを含むため、パスを出さない固定文言に置き換える。
+fn safe_launch_message(err: &AppError) -> String {
+    match err {
+        // Validation / LaunchFailed の文言は固定文言でパス・環境情報を含まない。
+        AppError::Validation(m) | AppError::LaunchFailed(m) => m.clone(),
+        // PathNotFound はフルパスを含むため丸める。
+        AppError::PathNotFound(_) => "指定された実行ファイルが見つかりません".to_string(),
+        _ => "起動に失敗しました".to_string(),
+    }
 }

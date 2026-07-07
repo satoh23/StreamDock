@@ -630,3 +630,53 @@ cleanup で `mountedRef.current = false` にするが、effect 本体で `true` 
 ### 申し送り（009）
 
 - 実プロセス監視（macOS は実アプリ PID 解決を含む）を入れたら `launched`（起動中）→ プロセス稼働確認で `running`（「稼働確認済み」に再定義）へ遷移させる余地を残す。ただしそれでも「初期ローディング完了」の厳密検知ではない点は変わらない。
+
+## 2026-07-07 (008 Bulk Launch)
+
+### 完了したこと
+
+- 選択中 Preset に紐づく **enabled な PresetItem をまとめて実プロセス起動**できるようにした（停止・状態監視・起動完了検知・`.lnk`/`.bat` 対応は 008 スコープ外＝009 以降）
+- 007 の単体起動サービス **`process::service::launch(&Tool)` をそのまま再利用**（`&Tool` のみを取り DB 非依存）。008 では PresetItem の取得・並び替え・起動順制御・結果集約を上に載せた
+- Tauri command 1本 `launch_preset(db, preset_id)` を追加（薄いラッパ）。**frontend からは presetId のみ**を渡し、Preset / PresetItem / Tool の取得と executablePath 検証はすべて Rust 側で実施。DB は 004〜007 と同じ `Mutex<Connection>` State（`tools::commands::DbState`）を再利用
+- **DB ロックは起動対象の解決だけで解放し、spawn 中は保持しない**（007 の `launch_tool` と同方針）。command 内で `resolve_preset_targets` → ロック解放 → `launch_preset_targets`（DB 非依存）で spawn
+- **起動順（MVP）**: enabled な ordered を orderIndex 昇順で先に → enabled な parallel を後にまとめて起動。`std::process::Command::spawn()` は子の終了を待たない非ブロッキング呼び出しのため、順に spawn しても起動アプリ群は同時並行に走る（**スレッド・新規依存なし**）
+- **開始前 abort（一括起動自体を始めない）**: presetId 空 / Preset 不在（`NotFound`）/ enabled な PresetItem が0件（`Validation`）。それ以外は best-effort で、1件の失敗では全体を止めず成功・失敗を集約
+- **結果モデル**を追加（ts-rs 生成）: `BulkLaunchPresetResult { presetId, startedAt, finishedAt, totalCount, successCount, failureCount, results }` ＋ `BulkLaunchToolResult { presetItemId, toolId, toolName, launchMode, orderIndex, success, processId?, startedAt?, errorMessage? }`。起動成功ごとに `processId` を含む
+- **エラー文言の安全化**: bulk 結果の `errorMessage` は `safe_launch_message` でフロント表示に安全な短文へ丸める。特に `AppError::PathNotFound` はメッセージにフルパスを含むため、パスを出さない固定文言（「指定された実行ファイルが見つかりません」）に置換（環境情報・パスを露出しない）
+- React 側: `features/presets/presetLaunchApi.ts`（`launchPreset(presetId)` 薄ラッパ）を追加し、**コンポーネントは invoke を直接呼ばず API wrapper 経由**。メイン画面の疑似 `launchAll`（`setTimeout` シミュレーション）を実起動へ差し替え。起動中は一括起動ボタンが Spinner＋disabled、`res.results` を `presetItemId`（= 行 id）で各行に反映（成功→`launched`、失敗→`error`）。成功／一部失敗（warning）／全失敗（error）でフィードバック文言を出し分け、失敗ツール名を表示。enabled な item が0件・未選択のときは一括起動ボタンを disabled
+
+### 追加ライブラリ
+
+- なし（`std::process::Command`（std）のみ。既存 rusqlite / uuid / chrono / ts-rs を再利用。新規 crate・plugin・npm package なし）
+
+### 変更・作成した主要ファイル
+
+- Rust（`apps/desktop/src-tauri/`）: 変更 `src/process/model.rs`（`BulkLaunchPresetResult` / `BulkLaunchToolResult` 追加）・`src/process/service.rs`（`resolve_preset_targets` / `launch_preset_targets` / `launch_one` / `safe_launch_message` 追加、007 の `launch` は不変）・`src/process/commands.rs`（`launch_preset` command 追加）・`src/lib.rs`（handler に `launch_preset` 登録）
+- Frontend（`apps/desktop/src/`）: 生成物 `features/presets/bindings/BulkLaunchPresetResult.ts` / `BulkLaunchToolResult.ts` / 新規 `features/presets/presetLaunchApi.ts` / 変更 `features/presets/types.ts`（bulk 結果型を re-export）・`screens/main/MainScreen.tsx`（実一括起動・`hasEnabled` による disabled・warning フィードバック・不要になった `sleep` 撤去）・`screens/main/MainScreen.module.css`（`.launchWarning` 追加）
+
+### 検証結果
+
+- `cargo test export_bindings` 成功（14 tests ok。`BulkLaunchPresetResult` / `BulkLaunchToolResult` を新規生成、`LaunchMode` を同ディレクトリ import で参照）
+- `cargo check` 成功
+- `pnpm --filter ./apps/desktop typecheck` 成功（exit 0）
+- `pnpm --filter ./apps/desktop lint` 成功（exit 0 / warning なし）
+- `pnpm --filter ./apps/desktop build`（tsc && vite build）成功（58 modules）
+- ※ `check:bindings` は生成物が未コミットのため diff で exit 1（＝生成は最新・コミット前という想定どおり）。コミット時に bindings 差分を含める
+- ※ `pnpm tauri dev` の実機 E2E（複数ツールのプリセットで一括起動→ ordered 順→ parallel 起動／成功・一部失敗（warning＋失敗ツール名）・全失敗（error）／起動中ボタン disabled＋Spinner／enabled 0件・未選択で起動不可／004〜007 非破壊）は表示環境が必要なためユーザー環境での確認を推奨
+
+### セキュリティ確認（docs/security.md 準拠 / process 起動処理変更のため security-review 推奨）
+
+- shell 非経由（007 の `launch` を再利用＝`std::process::Command` 直接・`cmd /C` / `sh -c` なし・文字列連結でコマンド生成なし）
+- frontend からは presetId のみ。任意パス・任意コマンド・起動引数・working directory を渡せない。Preset / PresetItem / Tool 取得と executablePath 検証は Rust 側
+- `run_command` / `execute_shell` / `launch_path` / `bulk_launch_paths` 等の汎用危険 command を追加していない（限定的な `launch_preset` のみ）
+- Tauri capabilities / permissions 変更なし（自作 command は `core:default` でカバー）
+- `errorMessage` に環境変数・フルパス・スタックトレースを出さない（`safe_launch_message` で丸め）
+- 004〜007 のデータ・既存機能を壊さず、command 1本とモデル2つ・フロント wrapper 1つを追加するのみ
+
+### やっていないこと（今回スコープ外・据え置き）
+
+- プロセス停止（一括停止ボタンは bulk 起動では `launched` 止まりで `allRunning` にならず「一括起動」のまま。実 kill は 009）・起動状態監視・死活監視・自動リトライ
+- 起動完了検知・アプリ初期ローディング完了検知・ツールごとの起動待機秒数・launch group
+- 起動記録の永続ストア（processId を結果に含めるのみ。009 で PID 管理を検討。macOS `.app` の PID は `open` ヘルパのものである件は 007 からの申し送りどおり）
+- `.lnk` 実体パス解決・`.bat` 対応・アイコン自動抽出
+- git commit は未実施（指示があってから）

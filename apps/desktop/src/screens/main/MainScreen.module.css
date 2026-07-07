@@ -241,8 +241,9 @@
 }
 
 /* プリセットはあるがツールが未登録のときの空状態 */
-/* --- 単体起動フィードバック --- */
+/* --- 単体起動・一括起動フィードバック --- */
 .launchSuccess,
+.launchWarning,
 .launchError {
   margin: 10px 0 0;
   padding: 10px 14px;
@@ -253,6 +254,11 @@
   color: var(--ok);
   background: rgba(52, 211, 153, 0.1);
   border: 1px solid rgba(52, 211, 153, 0.16);
+}
+.launchWarning {
+  color: var(--warn);
+  background: rgba(251, 191, 36, 0.1);
+  border: 1px solid rgba(251, 191, 36, 0.16);
 }
 .launchError {
   color: var(--danger);

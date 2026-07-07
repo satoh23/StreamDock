@@ -7,6 +7,7 @@ import type {
 } from "../../features/presets/types";
 import { toIconLetter } from "../../features/tools/display";
 import { launchTool } from "../../features/tools/toolApi";
+import { launchPreset } from "../../features/presets/presetLaunchApi";
 import { toErrorMessage } from "../../features/tools/useTools";
 import { Button, IconTile, Spinner } from "../../components/primitives";
 import { ToolRow } from "./ToolRow";
@@ -81,9 +82,9 @@ export function MainScreen({
   const [editMode, setEditMode] = useState(false);
   const [launching, setLaunching] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
-  // 単体起動の成功/失敗フィードバック（トースト機構が無いためインライン表示）
+  // 単体起動・一括起動の成功/一部失敗/失敗フィードバック（トースト機構が無いためインライン表示）
   const [launchFeedback, setLaunchFeedback] = useState<{
-    kind: "success" | "error";
+    kind: "success" | "warning" | "error";
     text: string;
   } | null>(null);
 
@@ -97,33 +98,30 @@ export function MainScreen({
   const runtimeRef = useRef(runtime);
   runtimeRef.current = runtime;
   const mountedRef = useRef(true);
-  const timersRef = useRef<number[]>([]);
+  // 一括起動中にプリセットが切り替わったら、resolve 後の反映を捨てるための現在値参照。
+  const presetIdRef = useRef(presetId);
+  presetIdRef.current = presetId;
 
   useEffect(() => {
     // StrictMode（dev）では effect が mount→unmount→remount と二重実行される。
     // cleanup で false にした mounted 判定を再マウント時に true へ戻さないと、
     // 以降 mountedRef.current が false のまま固定され、非同期処理後の状態更新
-    // （起動成功で running へ遷移する等）が早期 return で握りつぶされる。
+    // （起動成功で launched へ遷移する等）が早期 return で握りつぶされる。
     mountedRef.current = true;
-    const timers = timersRef.current;
     return () => {
       mountedRef.current = false;
-      timers.forEach((id) => window.clearTimeout(id));
     };
   }, []);
-
-  const sleep = (ms: number) =>
-    new Promise<void>((resolve) => {
-      const id = window.setTimeout(resolve, ms);
-      timersRef.current.push(id);
-    });
 
   const setToolState = (id: string, state: ToolState) => {
     setRuntime((prev) => prev.map((t) => (t.id === id ? { ...t, state } : t)));
   };
 
-  const runningCount = runtime.filter((t) => t.state === "running").length;
-  const allRunning = runtime.length > 0 && runningCount === runtime.length;
+  // 008 では spawn 成功は "launched"（起動中）止まりで、"running"（稼働確認済み）には昇格しない。
+  // 「起動済み」表示は launched を数える。running への昇格・一括停止は 009 で扱うため
+  // allRunning は 008 では常に false（＝「一括停止」に切り替わらない）。
+  const launchedCount = runtime.filter((t) => t.state === "launched").length;
+  const allRunning = runtime.length > 0 && runtime.every((t) => t.state === "running");
 
   // --- 単体起動（007: 実プロセス起動）---
   // frontend からは toolId のみを渡し、Tool 取得・パス検証・起動は Rust 側で行う。
@@ -145,19 +143,71 @@ export function MainScreen({
     }
   };
 
+  // --- 一括起動（008: 選択中プリセットの enabled ツールを実プロセス起動）---
+  // frontend からは presetId のみを渡し、Preset/PresetItem/Tool 取得・パス検証・起動は Rust 側で行う。
+  // best-effort 起動のため、1件の失敗では全体を止めず、成功・失敗を集約して表示する。
   const launchAll = async () => {
+    if (!presetId) return;
+    setLaunchFeedback(null);
     setLaunching(true);
-    const ids = runtimeRef.current.map((t) => t.id);
-    for (const id of ids) {
-      const current = runtimeRef.current.find((t) => t.id === id);
-      if (current?.state === "running") continue;
-      if (!mountedRef.current) return;
-      setToolState(id, "starting");
-      await sleep(650);
-      if (!mountedRef.current) return;
-      setToolState(id, "running");
+    // enabled な行だけを起動対象として "starting" に（disabled 行は "waiting" のまま）。
+    const enabledIds = runtimeRef.current
+      .filter((t) => t.enabled)
+      .map((t) => t.id);
+    setRuntime((prev) =>
+      prev.map((t) =>
+        t.enabled ? { ...t, state: "starting" as ToolState } : t,
+      ),
+    );
+    try {
+      const res = await launchPreset(presetId);
+      // 起動中にプリセットが切り替わっていたら、旧プリセットの結果は反映しない
+      // （新プリセット画面に古いフィードバックが残るのを防ぐ）。
+      if (!mountedRef.current || presetIdRef.current !== presetId) return;
+      // 起動結果を presetItemId（= runtime id）で各行に反映する。
+      const byItemId = new Map(res.results.map((r) => [r.presetItemId, r]));
+      setRuntime((prev) =>
+        prev.map((t) => {
+          const r = byItemId.get(t.id);
+          if (!r) return t;
+          // 単体起動と同様、spawn 成功は "launched"（起動中）に留める（完了断定はしない）。
+          return { ...t, state: (r.success ? "launched" : "error") as ToolState };
+        }),
+      );
+      const failedNames = res.results
+        .filter((r) => !r.success)
+        .map((r) => r.toolName);
+      if (res.failureCount === 0) {
+        setLaunchFeedback({
+          kind: "success",
+          text: `${res.successCount}件のツールを起動しました`,
+        });
+      } else if (res.successCount === 0) {
+        setLaunchFeedback({
+          kind: "error",
+          text: `起動に失敗しました: ${failedNames.join("、")}`,
+        });
+      } else {
+        setLaunchFeedback({
+          kind: "warning",
+          text: `${res.totalCount}件中${res.successCount}件を起動しました。失敗: ${failedNames.join("、")}`,
+        });
+      }
+    } catch (e) {
+      if (!mountedRef.current || presetIdRef.current !== presetId) return;
+      // 起動を開始できなかった場合（presetId 空・Preset 無し・enabled item 無し）。
+      // starting にした行を元の待機状態へ戻す。
+      setRuntime((prev) =>
+        prev.map((t) =>
+          enabledIds.includes(t.id)
+            ? { ...t, state: "waiting" as ToolState }
+            : t,
+        ),
+      );
+      setLaunchFeedback({ kind: "error", text: toErrorMessage(e) });
+    } finally {
+      if (mountedRef.current) setLaunching(false);
     }
-    if (mountedRef.current) setLaunching(false);
   };
 
   const stopAll = () => {
@@ -213,6 +263,8 @@ export function MainScreen({
   }
 
   const isEmpty = runtime.length === 0;
+  // enabled な PresetItem が1件も無ければ一括起動できない（Rust 側でも同条件で開始を拒否する）。
+  const hasEnabled = runtime.some((t) => t.enabled);
 
   return (
     <div className={editMode ? styles.editMode : ""}>
@@ -220,7 +272,7 @@ export function MainScreen({
         <div className={`${layout.title} ${layout.pageTitle}`}>
           <h2>{presetName}</h2>
           <div className={styles.progressText}>
-            {runningCount} / {runtime.length} 起動済み
+            {launchedCount} / {runtime.length} 起動済み
           </div>
         </div>
         <div className={styles.actions}>
@@ -234,7 +286,7 @@ export function MainScreen({
             <Button
               variant="primary"
               stopAll={allRunning}
-              disabled={launching || isEmpty}
+              disabled={launching || isEmpty || !hasEnabled}
               onClick={allRunning ? stopAll : launchAll}
             >
               {launching ? <Spinner /> : allRunning ? "一括停止" : "一括起動"}
@@ -293,7 +345,9 @@ export function MainScreen({
           className={
             launchFeedback.kind === "success"
               ? styles.launchSuccess
-              : styles.launchError
+              : launchFeedback.kind === "warning"
+                ? styles.launchWarning
+                : styles.launchError
           }
         >
           {launchFeedback.text}

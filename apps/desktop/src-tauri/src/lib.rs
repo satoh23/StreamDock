@@ -36,6 +36,7 @@ pub fn run() {
             tools::commands::update_tool,
             tools::commands::delete_tool,
             process::commands::launch_tool,
+            process::commands::launch_preset,
             presets::commands::create_preset,
             presets::commands::list_presets,
             presets::commands::get_preset,
