@@ -5,6 +5,9 @@ import styles from "./primitives.module.css";
 const STATUS_LABELS: Record<ToolState, string> = {
   running: "起動済み",
   starting: "起動中",
+  // 起動要求は成功したが、アプリ側の初期ローディング完了は検知できないため
+  // 完了断定の「起動済み」ではなく「起動中」を継続表示する（resting 状態）。
+  launched: "起動中",
   waiting: "待機中",
   error: "エラー",
 };

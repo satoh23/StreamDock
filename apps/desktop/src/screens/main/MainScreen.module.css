@@ -241,6 +241,25 @@
 }
 
 /* プリセットはあるがツールが未登録のときの空状態 */
+/* --- 単体起動フィードバック --- */
+.launchSuccess,
+.launchError {
+  margin: 10px 0 0;
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  font-size: 13px;
+}
+.launchSuccess {
+  color: var(--ok);
+  background: rgba(52, 211, 153, 0.1);
+  border: 1px solid rgba(52, 211, 153, 0.16);
+}
+.launchError {
+  color: var(--danger);
+  background: rgba(251, 113, 133, 0.1);
+  border: 1px solid rgba(251, 113, 133, 0.16);
+}
+
 .itemsEmpty {
   display: flex;
   flex-direction: column;

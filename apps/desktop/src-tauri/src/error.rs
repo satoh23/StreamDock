@@ -19,6 +19,8 @@ pub enum AppError {
     PathNotFound(String),
     /// 対象のツールが見つからない
     NotFound(String),
+    /// プロセスの起動に失敗した（spawn 失敗）。詳細な環境情報は含めない。
+    LaunchFailed(String),
     /// SQLite / IO などの内部エラー
     Db(String),
 }
@@ -32,6 +34,7 @@ impl std::fmt::Display for AppError {
             AppError::DuplicateToolInPreset(m) => write!(f, "Duplicate tool in preset: {m}"),
             AppError::PathNotFound(m) => write!(f, "Path not found: {m}"),
             AppError::NotFound(m) => write!(f, "Not found: {m}"),
+            AppError::LaunchFailed(m) => write!(f, "Launch failed: {m}"),
             AppError::Db(m) => write!(f, "DB error: {m}"),
         }
     }

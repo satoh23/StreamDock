@@ -1,5 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { CreateToolInput, ToolRecord, UpdateToolInput } from "./types";
+import type {
+  CreateToolInput,
+  LaunchToolResult,
+  ToolRecord,
+  UpdateToolInput,
+} from "./types";
 
 /**
  * Tauri command の薄いラッパ。
@@ -27,4 +32,12 @@ export function updateTool(
 
 export function deleteTool(id: string): Promise<void> {
   return invoke<void>("delete_tool", { id });
+}
+
+/**
+ * 登録済み Tool を toolId で単体起動する。
+ * frontend からは toolId のみを渡し、Tool 取得・パス検証・起動は Rust 側で行う。
+ */
+export function launchTool(id: string): Promise<LaunchToolResult> {
+  return invoke<LaunchToolResult>("launch_tool", { id });
 }

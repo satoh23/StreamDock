@@ -93,7 +93,7 @@ export function ToolRow({
               ×
             </button>
           </>
-        ) : tool.state === "running" ? (
+        ) : tool.state === "running" || tool.state === "launched" ? (
           <>
             <button className={styles.runtimeAction} title="開く">
               <OpenIcon />

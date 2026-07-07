@@ -1,6 +1,11 @@
 export type Screen = "main" | "add-tool" | "add-preset";
 
-export type ToolState = "running" | "starting" | "waiting" | "error";
+export type ToolState =
+  | "running"
+  | "starting"
+  | "launched"
+  | "waiting"
+  | "error";
 
 /** メイン画面 起動順リストの1ツール */
 export interface Tool {

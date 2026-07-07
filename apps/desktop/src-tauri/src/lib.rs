@@ -1,6 +1,7 @@
 mod error;
 mod preset_items;
 mod presets;
+mod process;
 mod tools;
 
 use std::sync::Mutex;
@@ -34,6 +35,7 @@ pub fn run() {
             tools::commands::get_tool,
             tools::commands::update_tool,
             tools::commands::delete_tool,
+            process::commands::launch_tool,
             presets::commands::create_preset,
             presets::commands::list_presets,
             presets::commands::get_preset,

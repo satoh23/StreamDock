@@ -456,3 +456,177 @@ stream-dock/
 
 - 確認範囲を「毎回の削除」へ広げること（ユーザー回答＝最後の1つのみ、で確定）
 - git commit は未実施（指示があってから）
+
+## 2026-07-07 (007 Process Launch)
+
+### 完了したこと
+
+- 登録済み Tool を stream-dock から**単体で実プロセス起動**できるようにした（一括起動・停止・状態監視・`.lnk`/`.bat` 対応・起動状態管理の本格化は 007 スコープ外）
+- OS プロセス操作が初めて入るため `docs/security.md` を最優先。**shell 非経由**で保存済み `executablePath` を直接起動し、frontend からは `toolId` のみを渡す設計にした
+- 起動ロジックは **Rust 新規 `src/process/` モジュール**（`architecture.md` の ProcessService に対応）に置いた。DB テーブルを持たないため `repository.rs` は作らず、`mod`/`model`/`service`/`commands` の3+1構成
+- Tauri command 1本を実装: `launch_tool`（薄いラッパ。引数は既存 `get_tool`/`delete_tool` に合わせ `id`）。DB は 004〜006 と同じ `Mutex<Connection>` State（`tools::commands::DbState`）を再利用
+- **DB ロックは Tool 取得だけで解放し、プロセス spawn 中は保持しない**（`command` 内で Tool を取得→ロック解放→`process::service::launch(&tool)`）
+- Rust 側の起動時検証（`process::service::launch`）: `executablePath` が 空でない / 絶対パス / 実在 / 非ディレクトリ / `.lnk`・`.bat` でない、を確認してから `std::process::Command::new(path).spawn()`。`toolId` 空チェックと Tool 存在チェック（既存 `tools::service::get` で NotFound）は command 側
+- PID の扱い（009 Process Stop 準備）: 起動成功時に `LaunchToolResult { toolId, processId, startedAt }` を返す（**PID を返すだけ**。起動記録の永続ストアは 007 では作らない）
+- エラーは frontend で表示可能な安全な形に限定。`spawn()` 失敗の生 OS エラー文字列は露出させず、`AppError::LaunchFailed("プロセスの起動に失敗しました")` の固定メッセージに丸める（環境情報を漏らさない）
+- React 側: `features/tools/toolApi.ts` に `launchTool(id)` を追加（**各コンポーネントは invoke を直接呼ばず API wrapper 経由**）。メイン画面の擬似 `handleStart`（`setTimeout` シミュレーション）を実起動に差し替え。起動中は行のボタンが Spinner に置換され自動的に disabled、成功で `running` ＋成功メッセージ、失敗で `error` ＋ `toErrorMessage(e)` をインライン表示（トースト機構が無いため既存 `.error` イディオムに倣い成功/失敗の2クラスを CSS に追加）。失敗後の行は `error` 状態から再び起動ボタンが出るためリトライ可能
+
+### 追加ライブラリ
+
+- なし（`std::process::Command`（std）のみ。既存 rusqlite / uuid / chrono / ts-rs を再利用。新規依存・新規 Tauri plugin なし）
+
+### 変更・作成した主要ファイル
+
+- Rust（`apps/desktop/src-tauri/`）: 新規 `src/process/{mod,model,service,commands}.rs` / 変更 `src/lib.rs`（`mod process;` ＋ handler に `launch_tool` 登録）・`src/error.rs`（`LaunchFailed` variant ＋ Display 追加）
+- Frontend（`apps/desktop/src/`）: 生成物 `features/tools/bindings/LaunchToolResult.ts`（＋ `AppError.ts` 再生成）/ 変更 `features/tools/types.ts`（`LaunchToolResult` re-export）・`features/tools/toolApi.ts`（`launchTool` 追加）・`screens/main/MainScreen.tsx`（実起動 ＋ フィードバック）・`screens/main/MainScreen.module.css`（`.launchSuccess`/`.launchError` 追加）
+
+### 起動結果 model / 型
+
+- API/JSON は camelCase: `LaunchToolResult { toolId: string, processId: number, startedAt: string }`（ts-rs で Rust から自動生成）。DB スキーマ変更なし
+
+### 検証結果
+
+- `cargo check` 成功
+- `pnpm gen:bindings`（`cargo test export_bindings`）成功（12 tests ok。`LaunchToolResult` 新規 ＋ `AppError` 再生成）
+- `pnpm --filter ./apps/desktop typecheck` 成功（exit 0）
+- `pnpm --filter ./apps/desktop lint` 成功（exit 0 / warning なし）
+- `pnpm --filter ./apps/desktop build`（tsc && vite build）成功（57 modules）
+- ※ `pnpm tauri dev` の GUI 実機 E2E（実在する実行ファイルを登録→プリセット追加→行の起動ボタンで実アプリ起動＋成功メッセージ／存在しない・ディレクトリ・.bat で失敗メッセージ／起動中 Spinner 無効化／004〜006 非破壊）は表示環境が必要なため未実施。次回セッション冒頭またはユーザー環境での確認を推奨
+- ※ `check:bindings` は生成物が未コミットのため diff で exit 1（＝生成は最新・コミット前という想定どおり）。コミット時に bindings 差分を含める
+
+### セキュリティ確認（docs/security.md 準拠 / 実装後に security-review 実施予定）
+
+- shell 非経由（`std::process::Command` 直接・`cmd /C` / `sh -c` なし・文字列連結でコマンド生成なし）
+- frontend からは `toolId` のみ。任意パス・任意コマンドを渡せない。Tool の取得と `executablePath` 検証は Rust 側で実施
+- `run_command` / `execute_shell` / `write_file` / `delete_path` / `launch_path` / `launch_command` 等の汎用危険 command を追加していない
+- Tauri capabilities / permissions 変更なし（自作 command は `core:default` でカバー。shell/opener/fs プラグイン権限を追加していない）
+- エラーメッセージに環境変数・機密情報を含めない（`LaunchFailed` は固定文言）
+- 004/005/006 のデータ・既存機能を壊さず、command 1本と Rust モジュール1つを追加するのみ
+
+### やっていないこと（今回スコープ外・据え置き）
+
+- プリセット内ツールの一括起動（`launchAll` は擬似のまま）・ordered/parallel に従った起動制御
+- プロセス停止（メイン画面の running 行「停止」ボタンは UI 状態リセットのみで実 kill しない → 009 で実装）・起動状態監視
+- 起動記録の永続ストア（PID を返すのみ。009 Process Stop で追加検討）
+- `.lnk` 実体パス解決・`.bat` 対応・アイコン自動抽出
+- Sidebar のツール一覧・ピッカーへの起動ボタン追加
+- git commit は未実施（指示があってから）
+
+## 2026-07-07 (007 E2E 修正: macOS `.app` 起動 & 一括ボタン誤ローディング)
+
+### 背景
+
+macOS 上で 007 の E2E 検証中に 2 件の不具合が判明した。
+
+1. **単体起動ボタンを押してもアプリが起動しない。** 当初は Tauri/Rust の権限不足を疑ったが誤り（自作 command `launch_tool` は capabilities/ACL の権限を要求せず、既存 command と同様に到達可能）。真因は macOS 固有: ツール登録のファイル選択（`open({ directory: false })`）で macOS アプリを選ぶと `.app` バンドル＝**ディレクトリ**のパス（例 `/Applications/OBS.app`）が保存され、`process::service::launch` が `path.is_dir()` で `Validation("指定されたパスはディレクトリです")` を返して起動に到達しなかった。仮に通しても `std::process::Command::new("/…/OBS.app").spawn()` はバンドルを exec できない。007 が Windows 前提（`.exe`/`.lnk`/`.bat`）で設計され、macOS の `.app` 起動が未対応だった。
+2. **単体起動時に右上の「一括起動」ボタンまでローディング（Spinner + disabled）になる。** 一括ボタンが `launching || anyStarting` を条件にしており、単体起動 `handleStart` が対象行を `"starting"` にすると `anyStarting` が true になって巻き込まれていた。
+
+### 完了したこと
+
+- **macOS `.app` 起動対応（`open` 経由）**: `process::service::launch` に `#[cfg(target_os = "macos")]` 分岐を追加。拡張子 `app` のディレクトリを「起動可能」と判定し、固定の絶対パス `/usr/bin/open` にバンドルパスを**配列引数**（shell 非経由・文字列連結なし＝security.md 準拠）で渡して LaunchServices 起動する。`.app` 以外のディレクトリは従来どおり拒否。`.lnk`/`.bat` 拒否は通常ファイル経路のみに適用。Windows/Linux の直接 spawn 経路は cfg で不変。
+  - **PID の注意（009 申し送り）**: `open` 経由のため返る `processId` は実アプリではなく即座に終了する `open` ヘルパの PID。007 要件「起動成功時に PID を取得できる」は満たすが、009 Process Stop では macOS で実アプリ PID を別途取得する方式が必要。`service.rs`／`model.rs` の既存 TODO に明記した。
+- **一括ボタン誤ローディング修正**: `MainScreen.tsx` の一括起動ボタンの `disabled` / Spinner 条件を `launching || anyStarting` から **`launching` のみ**（disabled は `launching || isEmpty`）に変更し、未使用化した `anyStarting` を削除。単体起動のローディングは対象行の `ToolRow`（`state === "starting"` の Spinner）のみが担当する挙動に是正。
+
+### 変更したファイル
+
+- Rust: `apps/desktop/src-tauri/src/process/service.rs`（`.app` 判定 ＋ `open` 経由起動 ＋ TODO 追記）・`src/process/model.rs`（PID TODO に macOS 注記追記）
+- Frontend: `apps/desktop/src/screens/main/MainScreen.tsx`（`anyStarting` 削除・一括ボタン条件修正）
+
+### 触っていないもの
+
+- `error.rs`／型（bindings）変更なし → ts-rs 再生成不要。`capabilities/default.json` 変更なし。新規 crate・plugin・command・DB スキーマ追加なし。004/005/006 のデータ・機能は不変。
+
+### 検証結果
+
+- `cargo check` 成功
+- `pnpm typecheck` 成功（exit 0）
+- `pnpm lint` 成功（exit 0 / warning なし）
+- ※ `pnpm tauri dev` の macOS 実機 E2E（`.app` 登録→単体起動で実アプリ起動／単体起動中に一括ボタンが非ローディングのまま／一括起動で一括ボタンのみ Spinner／存在しないパス・非 .app ディレクトリ・.bat のエラー）はユーザー環境での確認を推奨
+
+### セキュリティ確認（docs/security.md 準拠 / process 起動処理変更のため security-review 推奨）
+
+- shell 非経由（`/usr/bin/open` は固定絶対パス、バンドルパスは配列引数で渡し文字列連結なし）
+- frontend からは `toolId` のみ。任意パス・任意コマンドは起動できない（Tool 取得・検証は Rust 側）
+- 汎用危険 command 追加なし／capabilities 変更なし／外部通信追加なし
+
+## 2026-07-07 (007 不具合修正: 単体起動後もUIが「起動中」のまま終わらない)
+
+### 背景
+
+macOS の実機 E2E で、`/Applications` 配下の LINE（`.app` バンドル）を登録して単体起動すると、
+**実アプリは起動するのに、メイン画面の行が「起動中」（Spinner）のまま永久にローディングが終わらない**症状を確認。
+直前の `.app` 起動対応で Rust 側の起動が成功するようになった結果、今度は「起動成功後のフロント状態遷移」の別バグが表面化した。
+
+### 根本原因（Rust 側ではなくフロント側）
+
+Rust の `launch_tool` → `process::service::launch` は正常に spawn して `LaunchToolResult` を返しており、
+`launchTool()` の Promise は解決している。問題は解決後のフロント状態更新が握りつぶされていた点。
+
+`MainScreen.tsx` の `mountedRef` が典型的な **React 18 StrictMode アンチパターン**になっていた。
+cleanup で `mountedRef.current = false` にするが、effect 本体で `true` に戻していなかったため、
+`pnpm tauri dev`（dev モード＝`<React.StrictMode>` 有効）の effect 二重実行（mount→unmount→remount）で
+`mountedRef.current` が**恒常的に false** に固定される。その結果 `handleStart` の
+`await launchTool()` 解決後に `if (!mountedRef.current) return;` で早期 return し、状態が `"starting"` から動かなくなっていた。
+成功側（running）も失敗側（error）も同じ早期 return で握りつぶされ、一括起動 `launchAll` の途中判定も同様に影響を受けていた。
+※ dev モード限定（本番ビルドでは StrictMode は effect を二重実行しないため再現しない）だが、検証は `pnpm tauri dev` で行うため実質必ず踏む。
+
+### 完了したこと
+
+- `MainScreen.tsx` の mount 用 `useEffect` 本体先頭に `mountedRef.current = true;` を追加し、StrictMode 再マウント後も mounted 判定が true に復帰するようにした（フロント1ファイル・1行の追加）。
+- これにより単体起動成功後に `running`＋成功メッセージへ、失敗時は `error`＋エラーメッセージへ正しく到達し、一括起動の途中判定も正常化する。
+
+### 触っていないもの
+
+- Rust 側（`process/` モジュール・`service.rs` の `.app` 起動ロジック・`launch_tool` command）は正常なため変更なし。
+- 型/bindings・`capabilities`・DB スキーマ・依存追加なし。
+- `.app` 経由起動で返る PID が `open` ヘルパの PID である件は 009 の申し送り事項で本不具合とは無関係のため対象外。
+
+### 検証結果
+
+- `pnpm --filter ./apps/desktop typecheck` 成功（exit 0）
+- `pnpm --filter ./apps/desktop lint` 成功（exit 0 / warning なし）
+- ※ `pnpm tauri dev` の macOS 実機 E2E（`.app` 単体起動で行が「起動中」→「起動済み」へ遷移し成功メッセージ表示／存在しないパス・非 .app ディレクトリ・.bat でエラー表示＋再起動ボタン復帰／一括起動でも各行が起動済みまで進む）はユーザー環境での確認を推奨
+
+## 2026-07-07 (007 UX調整: 単体起動ステータスを「起動済み」→「起動中(継続)」に変更)
+
+### 背景
+
+単体起動で spawn 成功と同時に行が「起動済み」になるが、実アプリはまだ初期ローディング中で「起動成功(完了)」の断定が実態とズレて直感に反する、というユーザー指摘。
+
+### 技術的前提（不可能な理由）
+
+「アプリの初期ローディングが完全に終わったタイミング」の正確な検知は実質不可能。
+- 「準備完了」はアプリ内部状態で、OS に汎用シグナルが無い。
+- プロセス生存確認はローディング中もずっと true なので早期化を解消しない（かつ macOS `.app` は `/usr/bin/open` 経由で実 PID を持たない＝追跡は 009 相当の追加実装が必要）。
+- macOS の `isFinishedLaunching` 等は AppKit 起動完了時点で早期発火し、ローディング完了とは一致しない（＋新規ネイティブ依存が必要）。
+
+### 完了したこと（フロントのみ・小規模）
+
+- 完了断定の「起動済み」への自動遷移をやめ、単体起動は spawn 成功後「起動中」を**到達点（resting 状態）**として表示する方針に変更（ユーザー確定）。
+- 新しい表示状態 `"launched"`（バッジ文言「起動中」）を追加。単体起動の遷移を `waiting → starting(Spinner=起動要求送信中) → launched(起動中の継続表示・開く/停止ボタン表示)` に変更。失敗は従来どおり `error`。
+- `starting` と `launched` はバッジ文言が同じ「起動中」で、Spinner → resting の遷移中もバッジ表示が途切れず自然につながる。完了断定の `running`（起動済み）へは単体起動では遷移しない（009 の実監視用に温存）。
+
+### 変更したファイル（`apps/desktop/src/`）
+
+- `types.ts`（`ToolState` に `"launched"` 追加）
+- `components/primitives.tsx`（`STATUS_LABELS` に `launched: "起動中"`）
+- `components/primitives.module.css`（`.status.starting` セレクタを `.launched` にも適用＝同じ見た目を流用・新規色なし）
+- `screens/main/ToolRow.tsx`（「開く／停止」の表示条件を `running` に加え `launched` でも出す。`starting` の Spinner 分岐は不変）
+- `screens/main/MainScreen.tsx`（`handleStart` 成功時を `running` → `launched`。成功メッセージ「◯◯ を起動しました」は維持）
+
+### 触っていないもの（スコープ限定）
+
+- 進捗テキスト `N / M 起動済み`（完了断定しない方針なので起動した行を「起動済み」に数えないのは整合的＝変更なし）
+- 一括起動 `launchAll` / `一括停止`（007 では疑似シミュレーションのまま。`running` 遷移・`allRunning` ロジックも不変）
+- 「停止」ボタンの挙動（007 どおり UI 状態リセットのみ。実 kill は 009）
+- Rust 側 / 型 bindings / capabilities / 依存（`ToolState` はフロント専用 UI 型のため bindings 再生成不要）
+
+### 検証結果
+
+- `pnpm --filter ./apps/desktop typecheck` 成功（exit 0）
+- `pnpm --filter ./apps/desktop lint` 成功（exit 0 / warning なし）
+- ※ `pnpm tauri dev` の macOS 実機 E2E（起動ボタン→一瞬 Spinner→実アプリ起動でバッジ「起動中」のまま留まり「開く／停止」表示＋成功メッセージ／「停止」で待機中へ戻りリトライ可／存在しないパス・非 .app・.bat でエラー）はユーザー環境での確認を推奨
+
+### 申し送り（009）
+
+- 実プロセス監視（macOS は実アプリ PID 解決を含む）を入れたら `launched`（起動中）→ プロセス稼働確認で `running`（「稼働確認済み」に再定義）へ遷移させる余地を残す。ただしそれでも「初期ローディング完了」の厳密検知ではない点は変わらない。
