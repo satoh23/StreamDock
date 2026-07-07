@@ -14,13 +14,11 @@ pub struct ManagedProcess {
     pub tool_name: String,
     /// 008 一括起動で登録したときのみ Some（Preset 単位停止の絞り込みに使う）。
     pub preset_id: Option<String>,
-    /// 008 一括起動で登録したときのみ Some。009 では未使用だが、010 Runtime Status / 013 で
-    /// どの PresetItem 由来かを辿れるよう保持しておく（概念モデルの一部）。
-    #[allow(dead_code)]
+    /// 008 一括起動で登録したときのみ Some。010 Runtime Status / 013 で
+    /// どの PresetItem 由来かを辿れるよう保持する（010 のスナップショットで返す）。
     pub preset_item_id: Option<String>,
     pub process_id: u32,
-    /// 起動時刻。009 の停止結果には使わないが、010 Runtime Status での表示用に保持しておく。
-    #[allow(dead_code)]
+    /// 起動時刻。010 Runtime Status のスナップショット表示に使う。
     pub started_at: String,
     /// 起動したプロセスのハンドル。stop 時に try_wait / kill / wait に使う。
     pub child: Child,

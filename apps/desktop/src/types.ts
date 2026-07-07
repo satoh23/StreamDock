@@ -6,6 +6,7 @@ export type ToolState =
   | "launched"
   | "stopping"
   | "waiting"
+  | "stopped"
   | "error";
 
 /** メイン画面 起動順リストの1ツール */

@@ -26,11 +26,26 @@ macOS の `.app`（アプリバンドル）を stream-dock から**実際に停�
 なお Windows(`.exe`)/Linux の直接 spawn 経路では `Child` が実プロセスなので、009 の停止機能で
 正しく停止できている（本命ターゲットは Windows）。
 
+## 010 Runtime Status への波及（同じ根本原因）
+
+この `open` ヘルパ問題は、停止（009）だけでなく **010 Runtime Status の状態表示にも波及している**。
+
+010 は registry の `std::process::Child::try_wait()` で状態を判定するが、macOS `.app` では
+その `Child` が即終了する `open` ヘルパのため、**起動直後に「停止済み（stopped）」と表示される**
+（実アプリは起動しているが監視できない）。Windows(`.exe`)/Linux では実プロセスを掴むため
+`running`（起動済み）を正しく継続表示する。
+
+013 で実アプリのプロセス（実体 `Child` または実 PID）を registry に載せられるようになれば、
+**009 の停止だけでなく 010 の状態監視も同じ仕組みで解消する**（`try_wait()` が実アプリを見るため
+`running` / `stopped` を正しく判定できる）。013 は 010 の macOS 対応も兼ねる位置づけ。
+
 ## このタスクでやること
 
 - macOS の `.app` について、stream-dock が起動した実アプリを停止できるようにする
 - 009 の registry / `stop_process` / `stop_preset_processes` の枠組みはそのまま活かす
 - macOS `.app` を起動 → 停止で、実アプリが実際に終了することを確認する
+- 実アプリのプロセスを registry に載せることで、**010 Runtime Status の macOS 状態表示も併せて解消する**
+  （起動直後に「停止済み」になる縮退を無くし、`running` を正しく継続表示する）
 
 ## 想定アプローチ（いずれか / 実装時に比較して決める）
 
@@ -65,7 +80,9 @@ macOS の `.app`（アプリバンドル）を stream-dock から**実際に停�
 ## 完了条件
 
 - macOS `.app` を stream-dock から起動 → 単体停止 / Preset 単位停止で**実アプリが終了する**
-- 007 / 008 / 009 の既存機能を壊していない（Windows/Linux の起動・停止挙動は不変）
+- macOS `.app` を起動後、010 Runtime Status のバッジが**「起動済み（running）」を継続表示する**
+  （起動直後に「停止済み」になる縮退が解消されている）。実アプリ終了時は「停止済み」に遷移する
+- 007 / 008 / 009 / 010 の既存機能を壊していない（Windows/Linux の起動・停止・状態表示は不変）
 - 危険な汎用 command を追加していない / Tauri capabilities に不要な強権限を追加していない
 - `cargo check` / `pnpm typecheck` / `pnpm lint` が通る
 - docs/progress.md が更新されている

@@ -19,6 +19,10 @@ export type { BulkLaunchToolResult } from "./bindings/BulkLaunchToolResult";
 // Preset 単位のプロセス停止（009 Process Stop）の結果型。
 export type { StopPresetProcessesResult } from "./bindings/StopPresetProcessesResult";
 
+// runtime process registry の状態型（010 Runtime Status）。
+export type { RuntimeProcess } from "./bindings/RuntimeProcess";
+export type { RuntimeProcessStatus } from "./bindings/RuntimeProcessStatus";
+
 // AppError は Tool と共有（tools/bindings に生成される）。
 export type { AppError } from "../tools/bindings/AppError";
 

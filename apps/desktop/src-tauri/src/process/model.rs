@@ -105,3 +105,54 @@ pub struct StopPresetProcessesResult {
     pub failure_count: u32,
     pub results: Vec<StopProcessResult>,
 }
+
+/// runtime process registry のプロセス状態（010 Runtime Status）。
+/// JSON は lowercase（`running` / `stopped` / `error`）。
+///
+/// Rust 側が `std::process::Child::try_wait()` で判定できるのはこの3状態のみ:
+/// - `try_wait()` が `Ok(None)` → Running（まだ終了していない）
+/// - `try_wait()` が `Ok(Some(_))` → Stopped（既に終了した）
+/// - `try_wait()` が `Err(_)` → Error（状態確認に失敗した）
+///
+/// UI 側の `waiting` / `starting` / `stopping` は操作中の一時状態であり registry では扱わない。
+#[derive(Debug, Clone, Copy, Serialize, TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(export, export_to = "../../src/features/presets/bindings/")]
+pub enum RuntimeProcessStatus {
+    /// try_wait が None（稼働確認済み）
+    Running,
+    /// try_wait が終了状態を返した（既に終了）
+    Stopped,
+    /// try_wait が失敗した
+    Error,
+}
+
+/// runtime process registry 内の管理プロセス1件の状態スナップショット（010 の API 戻り値）。
+/// JSON は camelCase。
+///
+/// 現在のアプリ起動セッション中に stream-dock が registry に登録したプロセスのみを表す。
+/// raw PID / path / command を frontend から受け取って状態確認するものではない。
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/features/presets/bindings/")]
+pub struct RuntimeProcess {
+    pub launch_id: String,
+    pub tool_id: String,
+    pub tool_name: String,
+    /// 008 一括起動由来のみ Some（単体起動 007 は None）。
+    #[ts(optional)]
+    pub preset_id: Option<String>,
+    #[ts(optional)]
+    pub preset_item_id: Option<String>,
+    pub process_id: u32,
+    pub status: RuntimeProcessStatus,
+    pub started_at: String,
+    /// このスナップショットを取得した時刻。
+    pub updated_at: String,
+    /// 終了を検知した時刻（Running のときは None）。
+    #[ts(optional)]
+    pub ended_at: Option<String>,
+    /// status が Error のときのフロント表示用の短文（パス・環境情報を含めない）。
+    #[ts(optional)]
+    pub error_message: Option<String>,
+}

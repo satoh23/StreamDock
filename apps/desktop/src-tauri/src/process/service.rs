@@ -10,7 +10,10 @@ use crate::presets;
 use crate::tools;
 use crate::tools::model::Tool;
 
-use super::model::{BulkLaunchPresetResult, BulkLaunchToolResult, StopProcessResult, StopStatus};
+use super::model::{
+    BulkLaunchPresetResult, BulkLaunchToolResult, RuntimeProcess, RuntimeProcessStatus,
+    StopProcessResult, StopStatus,
+};
 use super::registry::{ManagedProcess, ProcessRegistry};
 
 /// 登録済み Tool の executablePath を検証し、shell を経由せず直接プロセスを起動して
@@ -319,6 +322,97 @@ fn build_stop_result(
         stopped_at,
         error_message,
     }
+}
+
+/// runtime process registry のスナップショットを取得する（010 Runtime Status）。
+///
+/// registry に登録された managed process だけを対象に `std::process::Child::try_wait()` で
+/// 状態を確認する。frontend から raw PID / path / command を受け取らず、shell も一切使わない。
+///
+/// - `try_wait()` が `Ok(None)` → Running
+/// - `try_wait()` が `Ok(Some(_))` → Stopped（終了検知）。`ended_at` を付与する。
+/// - `try_wait()` が `Err(_)` → Error。安全な短文の `error_message` を付与する。
+///
+/// `preset_id` を渡した場合は、その preset に紐づく managed process だけを対象にする
+/// （単体起動 007 は preset_id = None のため、preset 絞り込みでは含まれない）。
+///
+/// 終了・エラーを検知したプロセスは registry から除去する（Child ハンドルを drop する）。
+/// これは 009 の「停止したら registry から消す」方針に合わせるもので、UI へはこの応答で
+/// 一度 `stopped` を返し、以降は不在として扱う。
+///
+/// 注記: `try_wait()` は `&mut Child` を要する非ブロッキング呼び出しのため、ここでは lock を
+/// 保持したまま走査してよい（kill / wait のようなブロッキング操作は行わない）。
+///
+/// 設計メモ（読み取り command が registry を mutate する点について）:
+/// この関数は「状態取得（read）」でありながら、終了検知したプロセスを registry から除去する
+/// という副作用を持つ。`list_runtime_processes` / `list_preset_runtime_processes` という
+/// 命名からは純粋な read に見えるため、意図的にこの doc へ理由を残す。
+///
+/// なぜ現状こうなっているか:
+/// - 終了検知（try_wait が Some/Err）は snapshot 時にしか起こせない。別途 refresh 用 command を
+///   分けると command 数が増え、010 の「MVP では command を増やしすぎない」方針に反する。
+/// - 除去タイミングを snapshot に寄せることで、009 の「停止したら registry から消す」方針と
+///   状態遷移を一元化でき、終了済み Child ハンドルを保持し続けない（リソース面でも安全）。
+/// - セキュリティ上の対象範囲は変わらない（あくまで stream-dock が起動した registry 内プロセス
+///   のみ。外部プロセスの列挙・監視・停止は一切増えていない）。
+///
+/// どうなったら分離を検討すべきか:
+/// - read 系 command が増え、「状態を見るだけ」の呼び出しで registry が変化することが
+///   バグ・混乱の原因になり始めたとき。
+/// - 終了検知と除去のタイミングを UI 側で細かく制御したくなったとき
+///   （例: 「停止済み」を一覧に残す期間を明示管理したい等）。
+/// - その場合は read（純粋な snapshot）と reap（終了検知・除去）を別関数／別 command に分離し、
+///   除去のみを明示的な refresh 経路に寄せることを検討する。
+pub fn snapshot(registry: &ProcessRegistry, preset_id: Option<&str>) -> Vec<RuntimeProcess> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut reg = registry.lock().expect("process registry mutex poisoned");
+
+    let mut out: Vec<RuntimeProcess> = Vec::new();
+    // 終了・エラーを検知した launchId（走査後に registry から除去する）。
+    let mut finished: Vec<String> = Vec::new();
+
+    for (launch_id, mp) in reg.iter_mut() {
+        if let Some(pid) = preset_id {
+            if mp.preset_id.as_deref() != Some(pid) {
+                continue;
+            }
+        }
+
+        let (status, ended_at, error_message) = match mp.child.try_wait() {
+            Ok(None) => (RuntimeProcessStatus::Running, None, None),
+            Ok(Some(_)) => (RuntimeProcessStatus::Stopped, Some(now.clone()), None),
+            Err(_) => (
+                RuntimeProcessStatus::Error,
+                Some(now.clone()),
+                Some("プロセスの状態確認に失敗しました".to_string()),
+            ),
+        };
+
+        if !matches!(status, RuntimeProcessStatus::Running) {
+            finished.push(launch_id.clone());
+        }
+
+        out.push(RuntimeProcess {
+            launch_id: mp.launch_id.clone(),
+            tool_id: mp.tool_id.clone(),
+            tool_name: mp.tool_name.clone(),
+            preset_id: mp.preset_id.clone(),
+            preset_item_id: mp.preset_item_id.clone(),
+            process_id: mp.process_id,
+            status,
+            started_at: mp.started_at.clone(),
+            updated_at: now.clone(),
+            ended_at,
+            error_message,
+        });
+    }
+
+    // 終了・エラー検知分は registry から除去（Child を drop）。以降は不在として扱う。
+    for launch_id in finished {
+        reg.remove(&launch_id);
+    }
+
+    out
 }
 
 /// 一括起動結果の error_message を、フロントに出しても安全な短文へ丸める。

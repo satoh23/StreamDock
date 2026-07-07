@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ToolState } from "../../types";
 import type { ToolRecord } from "../../features/tools/types";
 import type {
   LaunchMode,
   PresetItemWithTool,
+  RuntimeProcessStatus,
 } from "../../features/presets/types";
 import { toIconLetter } from "../../features/tools/display";
 import { launchTool, stopProcess } from "../../features/tools/toolApi";
@@ -11,6 +12,7 @@ import {
   launchPreset,
   stopPresetProcesses,
 } from "../../features/presets/presetLaunchApi";
+import { listRuntimeProcesses } from "../../features/presets/runtimeApi";
 import { toErrorMessage } from "../../features/tools/useTools";
 import { Button, IconTile, Spinner } from "../../components/primitives";
 import { ToolRow } from "./ToolRow";
@@ -48,6 +50,22 @@ function toRuntime(items: PresetItemWithTool[]): RuntimeItem[] {
     enabled: it.enabled,
     state: "waiting" as ToolState,
   }));
+}
+
+/**
+ * Rust registry の状態（010 RuntimeProcessStatus）を UI の ToolState に写像する。
+ * Rust が try_wait で判定できるのは running / stopped / error の3状態のみ。
+ * running は「稼働確認済み」なので、spawn 直後の暫定表示 "launched" から "running" へ昇格させる。
+ */
+function mapStatus(status: RuntimeProcessStatus): ToolState {
+  switch (status) {
+    case "running":
+      return "running";
+    case "stopped":
+      return "stopped";
+    case "error":
+      return "error";
+  }
 }
 
 /** parallel を番号に数えず、ordered だけで連番を振る。 */
@@ -98,12 +116,6 @@ export function MainScreen({
     text: string;
   } | null>(null);
 
-  // 構成（items）が変化したら（追加・削除・並び替え・モード変更後）一覧を作り直す
-  useEffect(() => {
-    setRuntime(toRuntime(items));
-    setLaunchFeedback(null);
-  }, [items]);
-
   // 最新 runtime と mount 状態を非同期処理から参照するための ref
   const runtimeRef = useRef(runtime);
   runtimeRef.current = runtime;
@@ -127,11 +139,81 @@ export function MainScreen({
     setRuntime((prev) => prev.map((t) => (t.id === id ? { ...t, state } : t)));
   };
 
-  // spawn 成功は "launched"（起動中）で留まる（"running"＝稼働確認済みへの昇格は 010 で扱う）。
-  // 「起動済み」表示は launched を数える。
-  const launchedCount = runtime.filter((t) => t.state === "launched").length;
-  // 009: 起動中の行が1つでもあれば一括ボタンを「一括停止」に切り替える。
-  const anyLaunched = runtime.some((t) => t.state === "launched");
+  // --- 010 Runtime Status: registry の実状態を UI へ反映する ---
+  // Rust 側 registry（stream-dock がこのセッションで起動したプロセス）だけを状態確認する。
+  // 突き合わせは launchId を主キーにする（単体起動 007 は preset に紐づかないため全件取得を使う）。
+  // 一括起動（008）由来は presetItemId を持つので、構成再描画で launchId を失った行も復元できる。
+  //
+  // force=false（polling）: 起動中プロセス（launchId 保持行）が無ければ IPC しない。
+  // force=true（明示再取得: マウント/プリセット切替/起動・停止直後）: 常に取得して復元・昇格する。
+  const reconcile = useCallback(async (force = false) => {
+    if (!force && !runtimeRef.current.some((t) => t.launchId)) return;
+    const targetPresetId = presetIdRef.current;
+    let procs;
+    try {
+      procs = await listRuntimeProcesses();
+    } catch {
+      // 状態取得の失敗は致命的でないため握りつぶす（次の再取得で回復する）。
+      return;
+    }
+    // 取得中にアンマウント/プリセット切替が起きたら、古い結果は反映しない。
+    if (!mountedRef.current || presetIdRef.current !== targetPresetId) return;
+
+    const byLaunchId = new Map(procs.map((p) => [p.launchId, p]));
+    const byPresetItemId = new Map<string, (typeof procs)[number]>();
+    for (const p of procs) {
+      if (p.presetItemId) byPresetItemId.set(p.presetItemId, p);
+    }
+
+    setRuntime((prev) =>
+      prev.map((row) => {
+        // 操作送信中（starting / stopping）の行は楽観的表示を優先し、上書きしない。
+        if (row.state === "starting" || row.state === "stopping") return row;
+        if (row.launchId) {
+          const p = byLaunchId.get(row.launchId);
+          // registry から消えている＝終了して除去済み → 停止済みへ。
+          if (!p) return { ...row, state: "stopped", launchId: undefined };
+          // running は launchId を保持したまま「起動済み」へ昇格。
+          // stopped / error は launchId を破棄（以降は再起動できる）。
+          return p.status === "running"
+            ? { ...row, state: "running" }
+            : { ...row, state: mapStatus(p.status), launchId: undefined };
+        }
+        // launchId を失った行（構成再描画・プリセット切替後）でも、一括起動由来なら
+        // presetItemId で running プロセスに再関連付けして「起動済み」を復元する。
+        const bulk = byPresetItemId.get(row.id);
+        if (bulk && bulk.status === "running") {
+          return { ...row, state: "running", launchId: bulk.launchId };
+        }
+        return row;
+      }),
+    );
+  }, []);
+
+  // メイン画面表示中の軽い polling（約4秒間隔）。registry のプロセスだけを対象にし、外部通信はしない。
+  // reconcile は launchId 保持行が無ければ IPC しないため、起動プロセスが無い間は no-op。
+  useEffect(() => {
+    const timer = setInterval(() => {
+      void reconcile();
+    }, 4000);
+    return () => clearInterval(timer);
+  }, [reconcile]);
+
+  // 構成（items）が変化したら（追加・削除・並び替え・モード変更後・プリセット切替・初期表示）
+  // 一覧を作り直し、registry の実状態を明示再取得して起動中の行を復元・昇格する。
+  useEffect(() => {
+    setRuntime(toRuntime(items));
+    setLaunchFeedback(null);
+    // reconcile は setRuntime(prev => ...) で更新するため、上のリセット反映後の行に対して適用される。
+    void reconcile(true);
+  }, [items, reconcile]);
+
+  // spawn 成功は "launched"（起動中）、reconcile 後は "running"（稼働確認済み）。どちらも起動中扱いとし、
+  // 「起動済み」カウントと一括停止トグルの対象にする。
+  const isActive = (s: ToolState) => s === "launched" || s === "running";
+  const launchedCount = runtime.filter((t) => isActive(t.state)).length;
+  // 009/010: 起動中（launched/running）の行が1つでもあれば一括ボタンを「一括停止」に切り替える。
+  const anyLaunched = runtime.some((t) => isActive(t.state));
 
   // --- 単体起動（007: 実プロセス起動）---
   // frontend からは toolId のみを渡し、Tool 取得・パス検証・起動は Rust 側で行う。
@@ -153,6 +235,8 @@ export function MainScreen({
         ),
       );
       setLaunchFeedback({ kind: "success", text: `${name} を起動しました` });
+      // 010: 起動直後に registry を再取得し、稼働確認できれば "running" へ昇格させる。
+      void reconcile(true);
     } catch (e) {
       if (!mountedRef.current) return;
       setToolState(id, "error");
@@ -215,6 +299,8 @@ export function MainScreen({
           text: `${res.totalCount}件中${res.successCount}件を起動しました。失敗: ${failedNames.join("、")}`,
         });
       }
+      // 010: 一括起動直後に registry を再取得し、稼働確認できた行を "running" へ昇格させる。
+      void reconcile(true);
     } catch (e) {
       if (!mountedRef.current || presetIdRef.current !== presetId) return;
       // 起動を開始できなかった場合（presetId 空・Preset 無し・enabled item 無し）。
@@ -258,10 +344,10 @@ export function MainScreen({
         });
         return;
       }
-      // stopped / already-exited / not-found → 停止済みとして待機中へ戻し、launchId を破棄する。
+      // stopped / already-exited / not-found → 停止済み表示にし、launchId を破棄する。
       setRuntime((prev) =>
         prev.map((t) =>
-          t.id === id ? { ...t, state: "waiting", launchId: undefined } : t,
+          t.id === id ? { ...t, state: "stopped", launchId: undefined } : t,
         ),
       );
       setLaunchFeedback({
@@ -273,6 +359,8 @@ export function MainScreen({
               ? `${name} は既に停止しています`
               : `${name} を停止しました`,
       });
+      // 010: 他の行の状態変化（自然終了など）も拾えるよう再取得する。
+      void reconcile(true);
     } catch (e) {
       if (!mountedRef.current) return;
       setToolState(id, "launched");
@@ -286,16 +374,16 @@ export function MainScreen({
     if (!presetId) return;
     setLaunchFeedback(null);
     setStopping(true);
-    // 起動中の行を停止中表示に。
+    // 起動中（launched/running）の行を停止中表示に。
     setRuntime((prev) =>
       prev.map((t) =>
-        t.state === "launched" ? { ...t, state: "stopping" as ToolState } : t,
+        isActive(t.state) ? { ...t, state: "stopping" as ToolState } : t,
       ),
     );
     try {
       const res = await stopPresetProcesses(presetId);
       if (!mountedRef.current || presetIdRef.current !== presetId) return;
-      // 停止に失敗した launchId の行は起動中へ戻し、それ以外の停止中行は待機中へ。
+      // 停止に失敗した launchId の行は起動中へ戻し、それ以外の停止中行は停止済みへ。
       const failedIds = new Set(
         res.results.filter((r) => r.status === "failed").map((r) => r.launchId),
       );
@@ -305,7 +393,7 @@ export function MainScreen({
           if (t.launchId && failedIds.has(t.launchId)) {
             return { ...t, state: "launched" as ToolState };
           }
-          return { ...t, state: "waiting" as ToolState, launchId: undefined };
+          return { ...t, state: "stopped" as ToolState, launchId: undefined };
         }),
       );
       const settled = res.successCount + res.alreadyExitedCount;
@@ -325,6 +413,8 @@ export function MainScreen({
           text: `${res.totalCount}件中${settled}件を停止しました。停止に失敗: ${res.failureCount}件`,
         });
       }
+      // 010: 停止後の registry 実状態を再取得する（失敗行の残存・自然終了などを反映）。
+      void reconcile(true);
     } catch (e) {
       if (!mountedRef.current || presetIdRef.current !== presetId) return;
       // 停止を開始できなかった（presetId 空・Preset 無し等）。停止中にした行を起動中へ戻す。

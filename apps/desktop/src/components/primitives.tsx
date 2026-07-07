@@ -11,6 +11,8 @@ const STATUS_LABELS: Record<ToolState, string> = {
   // 停止要求を送信し、Rust 側の停止完了を待っている状態（009 Process Stop）。
   stopping: "停止中",
   waiting: "待機中",
+  // stream-dock 経由で起動したが既に終了した状態（010 Runtime Status）。
+  stopped: "停止済み",
   error: "エラー",
 };
 

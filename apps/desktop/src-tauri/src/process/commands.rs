@@ -6,8 +6,8 @@ use crate::tools;
 use crate::tools::commands::DbState;
 
 use super::model::{
-    BulkLaunchPresetResult, LaunchToolResult, StopPresetProcessesResult, StopProcessResult,
-    StopStatus,
+    BulkLaunchPresetResult, LaunchToolResult, RuntimeProcess, StopPresetProcessesResult,
+    StopProcessResult, StopStatus,
 };
 use super::registry::ProcessRegistry;
 use super::service;
@@ -187,4 +187,30 @@ pub fn stop_preset_processes(
         failure_count,
         results,
     })
+}
+
+/// runtime process registry の全 managed process の状態を返す（010 Runtime Status）。
+///
+/// frontend からは何も受け取らない。registry に登録されたプロセスだけを `try_wait()` で確認し、
+/// 終了検知分は registry から除去する。raw PID / path / command による状態確認は行わない。
+#[tauri::command]
+pub fn list_runtime_processes(
+    registry: State<'_, ProcessRegistry>,
+) -> AppResult<Vec<RuntimeProcess>> {
+    Ok(service::snapshot(&registry, None))
+}
+
+/// 選択中 Preset に紐づく managed process の状態を返す（010 Runtime Status）。
+///
+/// frontend からは presetId のみを受け取る。registry を presetId で絞り込み、`try_wait()` で
+/// 状態確認する（単体起動 007 由来は preset_id を持たないため含まれない）。
+#[tauri::command]
+pub fn list_preset_runtime_processes(
+    registry: State<'_, ProcessRegistry>,
+    preset_id: String,
+) -> AppResult<Vec<RuntimeProcess>> {
+    if preset_id.trim().is_empty() {
+        return Err(AppError::Validation("presetId は必須です".into()));
+    }
+    Ok(service::snapshot(&registry, Some(&preset_id)))
 }

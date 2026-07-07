@@ -45,6 +45,8 @@ pub fn run() {
             process::commands::launch_preset,
             process::commands::stop_process,
             process::commands::stop_preset_processes,
+            process::commands::list_runtime_processes,
+            process::commands::list_preset_runtime_processes,
             presets::commands::create_preset,
             presets::commands::list_presets,
             presets::commands::get_preset,

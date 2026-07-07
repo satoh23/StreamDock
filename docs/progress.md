@@ -743,3 +743,65 @@ cleanup で `mountedRef.current = false` にするが、effect 本体で `true` 
 - プロセスツリー全体の停止・graceful shutdown・アプリごとの安全な終了手順
 - アプリ再起動後のプロセス復元（current session 限定。PID 再利用の危険があるため過去セッションは停止対象外）
 - git commit は未実施（指示があってから）
+
+## 2026-07-07 (010 Runtime Status)
+
+### 完了したこと
+
+- runtime process registry の**実状態を UI に反映**できるようにした。009 まで完全に楽観的（optimistic）だったメイン画面の状態バッジ／ボタン制御を、Rust 側 registry の `std::process::Child::try_wait()` 結果と突き合わせて更新する。対象は**現在のアプリ起動セッション中に stream-dock が registry に登録したプロセスのみ**（frontend から raw PID / path / command を渡さない・shell 不使用）
+- Rust に **状態取得 command 2本**を追加（既存 `launch_*` / `stop_*` の命名規則に合わせて確定）:
+  - `list_runtime_processes(registry)`: registry の全 managed process を `try_wait()` で確認し `Vec<RuntimeProcess>` を返す
+  - `list_preset_runtime_processes(registry, presetId)`: presetId 空チェック後、`preset_id` 一致の managed process だけを同様に返す（単体起動 007 は `preset_id=None` のため含まれない）
+- **状態判定は `try_wait()` のみ**（`service::snapshot`）: `Ok(None)`→`Running` / `Ok(Some(_))`→`Stopped`（`endedAt` 付与）/ `Err(_)`→`Error`（安全な短文の `errorMessage` 付与）。終了・エラーを検知した launchId は registry から除去して `Child` を drop（009 の「停止したら registry から消す」方針に合わせ、その応答で一度 `stopped` を返し以降は不在扱い）。`try_wait()` は非ブロッキングのため lock 保持のまま走査（kill/wait のようなブロッキング操作はしない）
+- 状態モデル（ts-rs 生成）: enum `RuntimeProcessStatus`（lowercase: `running` / `stopped` / `error`＝Rust が try_wait で判定できる3状態のみ）＋ `RuntimeProcess { launchId, toolId, toolName, presetId?, presetItemId?, processId, status, startedAt, updatedAt, endedAt?, errorMessage? }`。009 で `#[allow(dead_code)]` にしていた `ManagedProcess.started_at` / `preset_item_id` を本タスクで使用（annotation を除去）
+- React 側: API wrapper `features/presets/runtimeApi.ts`（`listRuntimeProcesses()` / `listPresetRuntimeProcesses(presetId)`）を追加し、**コンポーネントは invoke を直接呼ばず wrapper 経由**。`ToolState` に `"stopped"`（バッジ「停止済み」）を追加
+- UI 反映（`MainScreen`）: `reconcile()` を新設し、**launchId を主キー**に registry 状態を各行へ写像（`running`→「起動済み」へ昇格し launchId 保持 / registry から消えた行→「停止済み」+ launchId 破棄）。構成再描画・プリセット切替で launchId を失った行も、一括起動由来なら **presetItemId で running プロセスに再関連付け**して復元。`starting` / `stopping` の操作送信中行は上書きしない。`mountedRef` / `presetIdRef` で stale 反映を破棄
+- 再取得タイミング（ユーザー選択＝軽い polling＋明示再取得）: **マウント時 / 構成・プリセット切替時 / 単体起動成功後 / 一括起動成功後 / 単体停止後 / Preset 単位停止後**に明示再取得。加えてメイン画面表示中は**約4秒間隔の軽い polling**（`reconcile` は launchId 保持行が無ければ IPC しないため起動プロセスが無い間は no-op・外部通信なし・registry のプロセスのみ対象）。これにより stream-dock 外でプロセスが終了しても数秒以内に「停止済み」へ自動遷移
+- ボタン制御: `ToolRow` は既存分岐（running/launched→開く＋停止、starting/stopping→Spinner、その他＝waiting/stopped/error→起動）で 010 の要件（waiting/stopped/error は再起動可・running は停止可・起動中/停止中は disabled）を満たすため**変更なし**。`StatusBadge` は state をそのまま描画するので `stopped` 追加だけで表示。進捗カウント「N / M 起動済み」と一括停止トグルは `launched`／`running` の両方を「起動中扱い」に合算
+
+### macOS `.app` の既知の縮退（013 で対応予定・009 からの継続）
+
+- macOS の `.app` は 007/008 が `/usr/bin/open` 経由で起動するため、registry が掴む `Child` は即終了する `open` ヘルパ。010 の `try_wait()` でも即 `stopped` と判定されるため、**起動直後に「停止済み」表示になる**（実アプリは起動しているが監視できない既知縮退）。Windows(`.exe`)/Linux の直接 spawn 経路では `Child` が実プロセスなので `running` を正しく継続表示する（本命ターゲットは Windows）。macOS の実対応は 013 macOS App Bundle Stop
+
+### 追加ライブラリ
+
+- なし（`std::process::Child::try_wait()`（std）と既存 chrono / ts-rs を再利用。新規 crate・plugin・npm package・状態管理ライブラリなし）
+
+### 変更・作成した主要ファイル
+
+- Rust（`apps/desktop/src-tauri/`）: 変更 `src/process/model.rs`（`RuntimeProcessStatus` / `RuntimeProcess` 追加）・`src/process/service.rs`（`snapshot` 追加。009 の `spawn`/`stop_one` は不変）・`src/process/commands.rs`（`list_runtime_processes` / `list_preset_runtime_processes` 追加）・`src/process/registry.rs`（`started_at` / `preset_item_id` の `#[allow(dead_code)]` 除去。構造体自体は不変）・`src/lib.rs`（handler に command 2本登録）。`error.rs`・`capabilities/default.json` は**変更なし**
+- Frontend（`apps/desktop/src/`）: 生成物 `features/presets/bindings/{RuntimeProcess,RuntimeProcessStatus}.ts` / 新規 `features/presets/runtimeApi.ts` / 変更 `features/presets/types.ts`（runtime 型を re-export）・`types.ts`（`ToolState` に `"stopped"`）・`components/primitives.{tsx,module.css}`（`stopped: "停止済み"` ラベルと `.status.stopped` スタイル）・`screens/main/MainScreen.tsx`（`reconcile` / polling / 停止後 `stopped` 表示 / launched・running 合算）。`screens/main/ToolRow.tsx` は変更なし
+- Docs: 変更 `docs/progress.md`（本記録）
+
+### 追加した型（API/JSON は camelCase、status enum は lowercase）
+
+- `RuntimeProcessStatus` = `"running" | "stopped" | "error"`（UI の6状態のうち Rust が try_wait で判定できる3状態のみ。`waiting` / `starting` / `stopping` は UI 専用の操作中一時状態）
+- `RuntimeProcess { launchId, toolId, toolName, presetId?, presetItemId?, processId, status, startedAt, updatedAt, endedAt?, errorMessage? }`
+
+### 検証結果
+
+- `cargo check` 成功
+- `pnpm --filter ./apps/desktop gen:bindings`（`cargo test export_bindings`）成功（19 tests ok。`RuntimeProcess` / `RuntimeProcessStatus` 新規生成）
+- `pnpm --filter ./apps/desktop typecheck` 成功（exit 0）
+- `pnpm --filter ./apps/desktop lint` 成功（exit 0 / warning なし）
+- `pnpm --filter ./apps/desktop build`（tsc && vite build）成功（59 modules）
+- ※ `check:bindings` は生成物が未コミットのため diff で exit 1（＝生成は最新・コミット前という想定どおり）。コミット時に bindings 差分を含める
+- ※ `pnpm tauri dev` の実機 E2E（単体起動→「起動中」→約数秒で「起動済み」＋停止ボタン／単体停止→「停止済み」→再起動可／一括起動→成功 running・失敗 error／一括停止→対象 stopped・失敗は起動中へ／起動アプリを OS 側で閉じる→約4秒以内に「停止済み」／プリセット切替・編集で 004〜009 非破壊／macOS `.app` は既知縮退で即 stopped・`.exe`/Linux は running 継続）は表示環境が必要なためユーザー環境での確認を推奨
+
+### セキュリティ確認（docs/security.md 準拠 / process 状態確認処理追加のため security-review 推奨）
+
+- 状態確認は `std::process::Child::try_wait()` のみ（`tasklist` / `ps` / `pgrep` / `cmd /C` / `sh -c` / `powershell` なし・shell 非経由）
+- frontend からは何も（`list_runtime_processes`）または `presetId` のみ（`list_preset_runtime_processes`）。任意 PID・path・command で状態確認できない。registry 未登録のプロセスは状態確認対象にしない。ユーザーが手動起動したプロセスは監視しない
+- `check_process` / `watch_process` / `list_os_processes` / `get_process_by_pid` / `kill_process` 等の汎用危険 command を追加していない（限定的な `list_runtime_processes` / `list_preset_runtime_processes` のみ）
+- Tauri capabilities / permissions 変更なし（自作 command は `core:default` でカバー）
+- `errorMessage` は環境変数・フルパス・スタックトレースを含まない固定文言に丸め。ログに機密情報を出さない
+- polling は UI 表示中のみ・約4秒間隔（1秒未満の高頻度なし）・IPC のみで外部通信なし・registry のプロセスに限定
+- 004〜009 のデータ・既存機能を壊さず、command 2本・モデル2つ・フロント wrapper 1つを追加するのみ（`ToolRow` の分岐や 009 の停止ロジックは不変）
+
+### やっていないこと（今回スコープ外・据え置き）
+
+- アプリ再起動後のプロセス復元・PID だけを使った任意プロセス監視・ユーザー入力 PID の監視・プロセスツリー全体の監視
+- 起動完了／ウィンドウ表示完了の厳密検知・CPU / メモリ使用量取得・詳細なログ画面・永続的な起動履歴 DB
+- macOS `.app` の実プロセス監視（→ 013 macOS App Bundle Stop）
+- 単体起動（007）由来プロセスのプリセット切替を跨いだ復元（preset に紐づかないため。一括起動由来は presetItemId で復元可。単体は同一マウント中のみ launchId で追跡）
+- git commit は未実施（指示があってから）

@@ -11,14 +11,14 @@
 - 007 Process Launch
 - 008 Bulk Launch
 - 009 Process Stop
+- 010 Runtime Status
 
 ## Next
 
-- 010 Runtime Status
+- 011 Error Handling / Logs
 
 ## Todo
 
-- 011 Error Handling / Logs
 - 012 Rust Common Helper Refactor
 - 013 macOS App Bundle Stop
 - 014 Windows Build
