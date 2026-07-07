@@ -16,6 +16,9 @@ export type { UpdatePresetItemInput } from "./bindings/UpdatePresetItemInput";
 export type { BulkLaunchPresetResult } from "./bindings/BulkLaunchPresetResult";
 export type { BulkLaunchToolResult } from "./bindings/BulkLaunchToolResult";
 
+// Preset 単位のプロセス停止（009 Process Stop）の結果型。
+export type { StopPresetProcessesResult } from "./bindings/StopPresetProcessesResult";
+
 // AppError は Tool と共有（tools/bindings に生成される）。
 export type { AppError } from "../tools/bindings/AppError";
 

@@ -9,12 +9,14 @@ use crate::preset_items::model::LaunchMode;
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/features/tools/bindings/")]
 pub struct LaunchToolResult {
+    /// 009 停止操作用の識別子（Rust 側で採番。frontend は stop 時にこの値のみを渡す）。
+    pub launch_id: String,
     pub tool_id: String,
-    // TODO(009): PID 数値のみでは PID 再利用により停止対象を誤る恐れがある（詳細は service::launch の spawn 箇所）。
-    //   現状の実装理由 / 意図: 007 は起動結果として PID を返すだけ（停止・永続化は 009 以降）。
-    //   考慮すべき修正: 009 の停止処理では Child ハンドル保持、または起動時刻＋パスでの本人性照合を併用する。
-    //   また macOS の `.app` は `/usr/bin/open` 経由で起動するため、この値は実アプリではなく
-    //   即座に終了する `open` ヘルパの PID になる。009 では macOS で実アプリ PID を取得する方式を要検討。
+    // 009: 起動した Child は runtime process registry に保持し、停止はこの launch_id 経由で
+    //   Child ハンドルに対して行う（PID 数値を frontend から受け取って kill しない）。
+    //   なお macOS の `.app` は `/usr/bin/open` 経由で起動するため、この process_id は実アプリではなく
+    //   即座に終了する `open` ヘルパの PID になる（＝ macOS の `.app` 停止は「既に終了済み」になる既知縮退。
+    //   実対応は 013 macOS App Bundle Stop）。
     pub process_id: u32,
     pub started_at: String,
 }
@@ -46,10 +48,60 @@ pub struct BulkLaunchToolResult {
     pub launch_mode: LaunchMode,
     pub order_index: u32,
     pub success: bool,
+    /// 009 停止操作用の識別子。起動に成功した Tool のみ Some（失敗した Tool には付けない）。
+    #[ts(optional)]
+    pub launch_id: Option<String>,
     #[ts(optional)]
     pub process_id: Option<u32>,
     #[ts(optional)]
     pub started_at: Option<String>,
     #[ts(optional)]
     pub error_message: Option<String>,
+}
+
+/// 単体プロセス停止（009）の状態。JSON は kebab-case（`stopped` / `already-exited` / `not-found` / `failed`）。
+#[derive(Debug, Clone, Copy, Serialize, TS)]
+#[serde(rename_all = "kebab-case")]
+#[ts(export, export_to = "../../src/features/tools/bindings/")]
+pub enum StopStatus {
+    /// kill に成功して停止した
+    Stopped,
+    /// stop 実行時点で既に終了していた
+    AlreadyExited,
+    /// registry に該当 launchId が無かった（停止操作の対象外）
+    NotFound,
+    /// kill に失敗した（registry に残して再試行可能）
+    Failed,
+}
+
+/// 単体プロセス停止（009）の結果（API 戻り値）。JSON は camelCase。
+/// エラー文言はフロントに出しても安全な短文に丸める（パス・環境情報を含めない）。
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/features/tools/bindings/")]
+pub struct StopProcessResult {
+    pub launch_id: String,
+    pub tool_id: String,
+    pub tool_name: String,
+    pub process_id: u32,
+    pub status: StopStatus,
+    #[ts(optional)]
+    pub stopped_at: Option<String>,
+    #[ts(optional)]
+    pub error_message: Option<String>,
+}
+
+/// Preset 単位停止（009）の結果（API 戻り値）。JSON は camelCase。
+/// 選択中 Preset に紐づく registry 登録済みプロセスだけを対象に集約する。
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/features/presets/bindings/")]
+pub struct StopPresetProcessesResult {
+    pub preset_id: String,
+    pub stopped_at: String,
+    pub total_count: u32,
+    pub success_count: u32,
+    pub already_exited_count: u32,
+    pub failure_count: u32,
+    pub results: Vec<StopProcessResult>,
 }

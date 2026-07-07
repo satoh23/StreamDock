@@ -8,6 +8,8 @@ const STATUS_LABELS: Record<ToolState, string> = {
   // 起動要求は成功したが、アプリ側の初期ローディング完了は検知できないため
   // 完了断定の「起動済み」ではなく「起動中」を継続表示する（resting 状態）。
   launched: "起動中",
+  // 停止要求を送信し、Rust 側の停止完了を待っている状態（009 Process Stop）。
+  stopping: "停止中",
   waiting: "待機中",
   error: "エラー",
 };

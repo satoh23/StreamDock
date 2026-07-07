@@ -4,4 +4,8 @@
  * Tool 単体起動の結果（API 戻り値）。JSON は camelCase。
  * 007 では processId を返すのみ（起動記録の永続化は 009 以降）。
  */
-export type LaunchToolResult = { toolId: string, processId: number, startedAt: string, };
+export type LaunchToolResult = { 
+/**
+ * 009 停止操作用の識別子（Rust 側で採番。frontend は stop 時にこの値のみを渡す）。
+ */
+launchId: string, toolId: string, processId: number, startedAt: string, };

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { BulkLaunchPresetResult } from "./types";
+import type { BulkLaunchPresetResult, StopPresetProcessesResult } from "./types";
 
 /**
  * プリセット一括起動（008 Bulk Launch）の Tauri command 薄いラッパ。
@@ -12,4 +12,17 @@ export function launchPreset(
   presetId: string,
 ): Promise<BulkLaunchPresetResult> {
   return invoke<BulkLaunchPresetResult>("launch_preset", { presetId });
+}
+
+/**
+ * 選択中 Preset に紐づく、registry 登録済みプロセスをまとめて停止する（009 Process Stop）。
+ * frontend からは presetId のみを渡す。Rust 側で registry を検索し、その presetId に
+ * 紐づく managed process だけを停止する（docs/security.md §6）。
+ */
+export function stopPresetProcesses(
+  presetId: string,
+): Promise<StopPresetProcessesResult> {
+  return invoke<StopPresetProcessesResult>("stop_preset_processes", {
+    presetId,
+  });
 }

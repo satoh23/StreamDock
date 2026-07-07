@@ -6,6 +6,9 @@ export type { Tool } from "./bindings/Tool";
 export type { CreateToolInput } from "./bindings/CreateToolInput";
 export type { UpdateToolInput } from "./bindings/UpdateToolInput";
 export type { LaunchToolResult } from "./bindings/LaunchToolResult";
+// プロセス停止（009 Process Stop）の結果型。
+export type { StopProcessResult } from "./bindings/StopProcessResult";
+export type { StopStatus } from "./bindings/StopStatus";
 export type { AppError } from "./bindings/AppError";
 
 // 既存コンポーネントは `ToolRecord` 名で参照しているため alias を温存する。

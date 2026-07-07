@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::process::Command;
+use std::process::{Child, Command};
 
 use rusqlite::Connection;
 
@@ -10,17 +10,23 @@ use crate::presets;
 use crate::tools;
 use crate::tools::model::Tool;
 
-use super::model::{BulkLaunchPresetResult, BulkLaunchToolResult, LaunchToolResult};
+use super::model::{BulkLaunchPresetResult, BulkLaunchToolResult, StopProcessResult, StopStatus};
+use super::registry::{ManagedProcess, ProcessRegistry};
 
-/// 登録済み Tool の executablePath を検証し、shell を経由せず直接プロセスを起動する。
+/// 登録済み Tool の executablePath を検証し、shell を経由せず直接プロセスを起動して
+/// `Child` ハンドルを返す。
 ///
-/// 検証項目（007）:
+/// 007 では起動して PID を返すだけで `Child` を drop していたが、009 では停止のために
+/// `Child` を registry に保持する必要があるため、ここでは **drop せず返す** ようにした
+/// （検証・macOS `.app` の起動経路は 007/008 から変更しない）。
+///
+/// 検証項目（007 から不変）:
 /// - executablePath が空でない
 /// - 絶対パスである
 /// - 実在する
-/// - ディレクトリでない
-/// - `.lnk` / `.bat` ではない（007 では非対応）
-pub fn launch(tool: &Tool) -> AppResult<LaunchToolResult> {
+/// - ディレクトリでない（macOS の `.app` バンドルのみ例外的に起動可能）
+/// - `.lnk` / `.bat` ではない
+pub fn spawn(tool: &Tool) -> AppResult<Child> {
     let path_str = tool.executable_path.trim();
     if path_str.is_empty() {
         return Err(AppError::Validation("実行ファイルパスが未設定です".into()));
@@ -56,12 +62,6 @@ pub fn launch(tool: &Tool) -> AppResult<LaunchToolResult> {
         ));
     }
 
-    // TODO(009+): 拒否対象が .lnk / .bat の2種のみ。
-    //   現状の実装理由 / 意図: 007 仕様が「.lnk / .bat を起動対象にしない」と明示しており、
-    //     スコープを最小化するため仕様どおり2種だけ拒否している。
-    //   考慮すべき修正: .cmd も .bat と同様にコマンドインタプリタ経由で実行される（取りこぼし）。
-    //     将来 spawn に引数を渡す実装を入れる際は .cmd を拒否リストへ追加するか、
-    //     .exe / .app 等の「許可リスト方式」へ転換する（拒否リストは取りこぼしが起きやすいため）。
     // 007 では .lnk（ショートカット）/ .bat（バッチ）を起動対象にしない。
     // `.app` バンドルは上で起動可能と判定済みなので、この拒否チェックは通常ファイル経路のみに適用する。
     if !is_app_bundle {
@@ -76,37 +76,14 @@ pub fn launch(tool: &Tool) -> AppResult<LaunchToolResult> {
         }
     }
 
-    // TODO(将来): 上の exists / is_dir 検証と、下の spawn の間にはパスが差し替わる TOCTOU の隙間がある。
-    //   現状の実装理由 / 意図: 本アプリは単一ユーザー・権限昇格なし（起動プロセスもユーザー権限）で、
-    //     パスは本人が Tool 登録した値。ここでの検証は権限境界のガードではなく「起動前の妥当性チェック」と
-    //     割り切っており、実害のある攻撃面ではないため検証と起動をアトミックにしていない。
-    //   考慮すべき修正: ネットワーク越し登録・共有 DB・マルチユーザー化が入ったら、
-    //     開いた fd 経由の実行など検証と起動をアトミックに扱う方式を再検討する。
-
     // shell を経由せず executablePath を直接起動する。
     // 起動失敗の詳細（OS エラー文字列）は環境情報を含みうるため露出させず、固定メッセージに丸める。
     //
-    // TODO(009): ここで得た `child`（std::process::Child）を保持せず、関数を抜けると drop している。
-    //   現状の実装理由 / 意図: 007 の責務は「起動して PID を返す」だけで、停止・監視は 009 以降。
-    //     Rust は Child を drop しても kill も wait もしないため、起動したプロセスはそのまま生き続ける
-    //     （＝単体起動としては意図どおりの挙動）。
-    //   考慮すべき修正:
-    //     (1) PID 数値だけを返すと、対象プロセス終了後に OS が同じ PID を別プロセスへ再利用した場合、
-    //         009 の停止処理が無関係なプロセスを kill する恐れがある。009 では Child ハンドル自体を
-    //         State に保持するか、起動時刻＋実行ファイルパスでの本人性照合を併用し、
-    //         security.md §6（stream-dock が起動した PID のみ停止）を厳密に満たす。
-    //     (2) Child を wait しないため、Unix では子プロセス終了後にゾンビが残り得る。
-    //         009 で try_wait() 等のリープ方針を併せて決める。
-    //     (3) macOS の `.app` は下記のとおり `/usr/bin/open` 経由で起動するため、返る PID は
-    //         起動した実アプリではなく即座に終了する `open` ヘルパのもの。009 の停止処理では
-    //         この PID を停止対象に使えないので、macOS では実アプリ PID を別途取得する方式
-    //         （open 前後の LaunchServices 差分・起動時刻＋バンドルパス照合・`open -W` 系の再設計など）
-    //         を検討する。007 の要件「起動成功時に PID を取得できる」は満たすが値の質は 009 で見直す。
-    //
-    // TODO(将来/ハードニング): spawn した子プロセスは stream-dock の環境変数・stdio・cwd を継承する。
-    //   現状の実装理由 / 意図: 本人権限で本人のツールを起動する MVP のため、継承で許容している。
-    //   考慮すべき修正: 情報分離を強めるなら .env_clear() や
-    //     .stdin/.stdout/.stderr(Stdio::null()) での分離を検討する。
+    // 009 注記（macOS `.app`）: `.app` は下記のとおり `/usr/bin/open` 経由で起動するため、得られる
+    //   `Child` は起動した実アプリではなく即座に終了する `open` ヘルパのもの。よって registry に
+    //   保持しても停止時には「既に終了済み」になり実アプリは止まらない（既知の縮退）。
+    //   実アプリを停止できるようにする macOS 対応は 013 macOS App Bundle Stop で別途行う。
+    //   Windows(`.exe`)/Linux の直接 spawn 経路では `Child` が実プロセスなので正しく停止できる。
     let child = if is_app_bundle {
         // macOS の `.app` はバンドルを直接 exec できないため、固定の絶対パス `/usr/bin/open` に
         // バンドルパスを配列引数（文字列連結なし・shell 非経由）で渡して LaunchServices 起動する。
@@ -120,11 +97,7 @@ pub fn launch(tool: &Tool) -> AppResult<LaunchToolResult> {
             .map_err(|_| AppError::LaunchFailed("プロセスの起動に失敗しました".into()))?
     };
 
-    Ok(LaunchToolResult {
-        tool_id: tool.id.clone(),
-        process_id: child.id(),
-        started_at: chrono::Utc::now().to_rfc3339(),
-    })
+    Ok(child)
 }
 
 /// 一括起動（008）の対象を DB から解決する。
@@ -172,9 +145,13 @@ pub fn resolve_preset_targets(
 /// 順に spawn しても起動されたアプリ群は同時並行に走る（008 ではスレッドは使わない）。
 /// `targets` は [`resolve_preset_targets`] により order_index 昇順で渡ってくるので、
 /// モードで分割しても各グループ内の順序は保たれる。
+///
+/// 009: 起動に成功したプロセスは `registry` に登録し、`BulkLaunchToolResult.launch_id` に採番した
+/// launchId を入れる（Preset 単位停止で presetId から絞り込めるよう `preset_id` を保持する）。
 pub fn launch_preset_targets(
     preset_id: &str,
     targets: Vec<(PresetItem, Option<Tool>)>,
+    registry: &ProcessRegistry,
 ) -> BulkLaunchPresetResult {
     let started_at = chrono::Utc::now().to_rfc3339();
 
@@ -184,7 +161,7 @@ pub fn launch_preset_targets(
 
     let mut results: Vec<BulkLaunchToolResult> = Vec::new();
     for (item, tool) in ordered.into_iter().chain(parallel) {
-        results.push(launch_one(&item, tool.as_ref()));
+        results.push(launch_one(&item, tool.as_ref(), preset_id, registry));
     }
 
     let total_count = results.len() as u32;
@@ -203,18 +180,36 @@ pub fn launch_preset_targets(
 }
 
 /// PresetItem 1件を起動し、結果を [`BulkLaunchToolResult`] にまとめる。
-fn launch_one(item: &PresetItem, tool: Option<&Tool>) -> BulkLaunchToolResult {
+/// 起動に成功した場合のみ registry に登録し、launchId を採番して結果に含める。
+fn launch_one(
+    item: &PresetItem,
+    tool: Option<&Tool>,
+    preset_id: &str,
+    registry: &ProcessRegistry,
+) -> BulkLaunchToolResult {
     // Tool 欠落（防御的経路）で名前が空になると UI の失敗一覧が空要素になるため、
     // 識別できるよう tool_id をフォールバック名にする。
     let tool_name = tool
         .map(|t| t.name.clone())
         .unwrap_or_else(|| item.tool_id.clone());
 
-    let (success, process_id, started_at, error_message) = match tool {
-        None => (false, None, None, Some("ツールが見つかりません".to_string())),
-        Some(tool) => match launch(tool) {
-            Ok(res) => (true, Some(res.process_id), Some(res.started_at), None),
-            Err(err) => (false, None, None, Some(safe_launch_message(&err))),
+    let (success, launch_id, process_id, started_at, error_message) = match tool {
+        None => (false, None, None, None, Some("ツールが見つかりません".to_string())),
+        Some(tool) => match spawn(tool) {
+            Ok(child) => {
+                let process_id = child.id();
+                let started_at = chrono::Utc::now().to_rfc3339();
+                let launch_id = register(
+                    registry,
+                    tool,
+                    Some(preset_id.to_string()),
+                    Some(item.id.clone()),
+                    child,
+                    started_at.clone(),
+                );
+                (true, Some(launch_id), Some(process_id), Some(started_at), None)
+            }
+            Err(err) => (false, None, None, None, Some(safe_launch_message(&err))),
         },
     };
 
@@ -225,8 +220,103 @@ fn launch_one(item: &PresetItem, tool: Option<&Tool>) -> BulkLaunchToolResult {
         launch_mode: item.launch_mode,
         order_index: item.order_index,
         success,
+        launch_id,
         process_id,
         started_at,
+        error_message,
+    }
+}
+
+/// 起動した `Child` を registry に登録し、採番した launchId を返す。
+///
+/// process_id は呼び出し側で登録前に `child.id()` から取得しておくこと
+/// （このメソッドに child を move で渡すため、内部でも同じ値を保持する）。
+pub fn register(
+    registry: &ProcessRegistry,
+    tool: &Tool,
+    preset_id: Option<String>,
+    preset_item_id: Option<String>,
+    child: Child,
+    started_at: String,
+) -> String {
+    let launch_id = uuid::Uuid::new_v4().to_string();
+    let process_id = child.id();
+    let managed = ManagedProcess {
+        launch_id: launch_id.clone(),
+        tool_id: tool.id.clone(),
+        tool_name: tool.name.clone(),
+        preset_id,
+        preset_item_id,
+        process_id,
+        started_at,
+        child,
+    };
+    registry
+        .lock()
+        .expect("process registry mutex poisoned")
+        .insert(launch_id.clone(), managed);
+    launch_id
+}
+
+/// registry から取り出した1件を停止し、[`StopProcessResult`] を返す。
+///
+/// - `try_wait()` が `Ok(Some(_))`（既に終了） → `already-exited`
+/// - まだ動いていれば `kill()` → 成功で `wait()` により終了を回収し `stopped`
+/// - kill / try_wait に失敗 → `failed`
+///
+/// 失敗時のみ `Some(mp)` を返し、呼び出し側が registry へ再挿入して再試行できるようにする。
+/// 成功・既に終了済みの場合は `None`（registry から除去したまま破棄）。
+pub fn stop_one(mut mp: ManagedProcess) -> (StopProcessResult, Option<ManagedProcess>) {
+    match mp.child.try_wait() {
+        Ok(Some(_)) => (
+            build_stop_result(&mp, StopStatus::AlreadyExited, None, None),
+            None,
+        ),
+        Ok(None) => match mp.child.kill() {
+            Ok(()) => {
+                // ゾンビを残さないよう終了を回収する。
+                let _ = mp.child.wait();
+                let stopped_at = chrono::Utc::now().to_rfc3339();
+                (
+                    build_stop_result(&mp, StopStatus::Stopped, Some(stopped_at), None),
+                    None,
+                )
+            }
+            Err(_) => (
+                build_stop_result(
+                    &mp,
+                    StopStatus::Failed,
+                    None,
+                    Some("プロセスの停止に失敗しました".into()),
+                ),
+                Some(mp),
+            ),
+        },
+        Err(_) => (
+            build_stop_result(
+                &mp,
+                StopStatus::Failed,
+                None,
+                Some("プロセスの停止に失敗しました".into()),
+            ),
+            Some(mp),
+        ),
+    }
+}
+
+fn build_stop_result(
+    mp: &ManagedProcess,
+    status: StopStatus,
+    stopped_at: Option<String>,
+    error_message: Option<String>,
+) -> StopProcessResult {
+    StopProcessResult {
+        launch_id: mp.launch_id.clone(),
+        tool_id: mp.tool_id.clone(),
+        tool_name: mp.tool_name.clone(),
+        process_id: mp.process_id,
+        status,
+        stopped_at,
         error_message,
     }
 }

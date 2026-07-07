@@ -680,3 +680,66 @@ cleanup で `mountedRef.current = false` にするが、effect 本体で `true` 
 - 起動記録の永続ストア（processId を結果に含めるのみ。009 で PID 管理を検討。macOS `.app` の PID は `open` ヘルパのものである件は 007 からの申し送りどおり）
 - `.lnk` 実体パス解決・`.bat` 対応・アイコン自動抽出
 - git commit は未実施（指示があってから）
+
+## 2026-07-07 (009 Process Stop)
+
+### 完了したこと
+
+- stream-dock 経由で起動したプロセスだけを**安全に停止**できるようにした（raw PID ではなく Rust 側 registry が保持する `std::process::Child` ハンドル経由で停止）。frontend からは `launchId` / `presetId` のみを渡し、任意 PID・path・command・shell 経由の停止はしない（docs/security.md §6 準拠）
+- Rust に **runtime process registry** を新設（`process/registry.rs`）。`ManagedProcess { launch_id, tool_id, tool_name, preset_id, preset_item_id, process_id, started_at, child }` を `Mutex<HashMap<launchId, ManagedProcess>>`（`ProcessRegistry`）で current session 限定に保持。`app.manage` で State 共有。`launchId` は Rust 側で `uuid::Uuid::new_v4()` 採番（既存依存を再利用・新規 crate なし）
+- 007 の `process::service::launch`（Child を drop していた）を **`spawn(&Tool) -> AppResult<Child>`** に置き換え、Child を drop せず返す形にした（**検証・macOS `.app` の `/usr/bin/open` 起動経路は 007/008 から変更しない**＝起動処理は不変）。`launch_tool` command で spawn 成功後に registry 登録し、`LaunchToolResult` に `launchId` を含める
+- 008 の `launch_preset_targets` / `launch_one` に `registry` を配線し、spawn 成功ごとに `ManagedProcess`（`preset_id`/`preset_item_id` 付き）を登録。`BulkLaunchToolResult` に `launchId`（成功時のみ Some）を追加
+- Tauri command 2本を追加（既存 `launch_tool`/`launch_preset` 命名に合わせて確定）:
+  - `stop_process(registry, launchId)`: registry から `remove` → `service::stop_one` で停止 → 停止失敗時のみ registry へ戻して再試行可能に。registry に無い launchId は `not-found` を返し何も停止しない
+  - `stop_preset_processes(db, registry, presetId)`: presetId 空チェック → Preset 実在チェック（`presets::service::get`）→ registry を `preset_id` 一致で絞り込み → 各 `stop_one` → 集計（stopped / already-exited / failed 件数）。対象0件でも totalCount=0 の正常結果を返す
+- **停止ロジック**（`service::stop_one`）: `child.try_wait()` で既終了なら `already-exited`、動作中なら `child.kill()` → `child.wait()` でゾンビ回収して `stopped`、失敗は `failed`。エラー文言は環境情報を出さない固定文言に丸める
+- 結果モデル（ts-rs 生成）: `StopProcessResult { launchId, toolId, toolName, processId, status, stoppedAt?, errorMessage? }` ＋ enum `StopStatus`（kebab-case: `stopped` / `already-exited` / `not-found` / `failed`）＋ `StopPresetProcessesResult { presetId, stoppedAt, totalCount, successCount, alreadyExitedCount, failureCount, results }`
+- React 側: API wrapper `stopProcess(launchId)`（`features/tools/toolApi.ts`）/ `stopPresetProcesses(presetId)`（`features/presets/presetLaunchApi.ts`）を追加し、**コンポーネントは invoke を直接呼ばず wrapper 経由**。`RuntimeItem` に `launchId` を追加し、単体/一括起動の成功結果から行に保持。`ToolState` に `"stopping"`（バッジ「停止中」）を追加
+- UI 接続: 行の「停止」ボタンを実 `stopProcess` に配線（停止中は行が Spinner＋disabled）。停止成功=「◯◯ を停止しました」／既終了=「既に終了していました」／失敗=エラー文言＋起動中へ戻し再試行可。一括ボタンは起動中の行があるとき「一括停止」に切り替わり `stopPresetProcesses` を呼ぶ（進行中は Spinner＋disabled）。件数フィードバックを成功/一部失敗/対象なしで出し分け
+
+### macOS `.app` の既知の縮退 & 013 への切り出し
+
+- macOS の `.app` は 007/008 が `/usr/bin/open` 経由で起動するため、registry が掴む `Child` は即終了する `open` ヘルパで、**停止すると「既に終了済み」になり実アプリは止まらない**。009 では起動処理を変更しない方針（スコープを狭めて品質を上げる）とし、macOS `.app` の実停止対応は新タスク **013 macOS App Bundle Stop**（`docs/tasks/013-macos-app-stop.md`）に切り出した。Windows(`.exe`)/Linux の直接 spawn 経路では `Child` が実プロセスなので正しく停止できる（本命ターゲットは Windows）
+- タスクボード: 013 に macOS App Bundle Stop を差し込み、既存を繰り下げ（Windows Build→014、User Test Package→015）
+
+### 既知の制約（MVP・据え置き）
+
+- メイン画面の `useEffect` は items 変更時に runtime を待機中へ再構築するため、起動後に Preset 構成を編集すると UI 側の `launchId` は失われ単体停止ボタンは消える。ただし Rust registry はプロセスを保持し続けるので、**Preset 単位停止（Rust 側で presetId 検索）では引き続き停止できる**
+
+### 追加ライブラリ
+
+- なし（`std::process::Child`（std）と既存 uuid / chrono / rusqlite / ts-rs を再利用。新規 crate・plugin・npm package なし）
+
+### 変更・作成した主要ファイル
+
+- Rust（`apps/desktop/src-tauri/`）: 新規 `src/process/registry.rs` / 変更 `src/process/{mod,model,service,commands}.rs`・`src/lib.rs`（registry を `app.manage`・`mod registry`・stop command 2本を handler 登録）。`error.rs`・`capabilities/default.json` は**変更なし**
+- Frontend（`apps/desktop/src/`）: 生成物 `features/tools/bindings/{StopProcessResult,StopStatus,LaunchToolResult}.ts`・`features/presets/bindings/{StopPresetProcessesResult,BulkLaunchToolResult}.ts` / 変更 `features/tools/{toolApi,types}.ts`・`features/presets/{presetLaunchApi,types}.ts`・`types.ts`・`components/primitives.{tsx,module.css}`・`screens/main/{MainScreen.tsx,ToolRow.tsx}`
+- Docs: 新規 `docs/tasks/013-macos-app-stop.md` / 変更 `docs/task-board.md`（013 差し込み・009 を Done へ）・`docs/progress.md`（本記録）
+
+### 検証結果
+
+- `cargo check` 成功
+- `pnpm --filter ./apps/desktop gen:bindings`（`cargo test export_bindings`）成功（17 tests ok。`StopProcessResult` / `StopStatus` / `StopPresetProcessesResult` 新規、`LaunchToolResult` / `BulkLaunchToolResult` 再生成）
+- `pnpm --filter ./apps/desktop typecheck` 成功（exit 0）
+- `pnpm --filter ./apps/desktop lint` 成功（exit 0 / warning なし）
+- `pnpm --filter ./apps/desktop build`（tsc && vite build）成功（58 modules）
+- ※ `pnpm tauri dev` の実機 E2E（`.exe`/`.app` を起動→単体停止・Preset 単位停止／既終了→「既に終了済み」／registry 外 launchId・presetId の非停止／手動起動アプリを止めない／macOS `.app` は既知縮退どおり実アプリが止まらない／004〜008 非破壊）は表示環境が必要なためユーザー環境での確認を推奨
+- ※ `check:bindings` は生成物が未コミットのため diff で exit 1（＝生成は最新・コミット前という想定どおり）。コミット時に bindings 差分を含める
+
+### セキュリティ確認（docs/security.md 準拠 / process 停止処理追加のため security-review 推奨）
+
+- 停止は `std::process::Child::kill()` のみ（`taskkill` / `kill` / `pkill` / `cmd /C` / `sh -c` / `powershell` なし・shell 非経由）
+- frontend からは `launchId` / `presetId` のみ。任意 PID・path・command を渡せない。registry 未登録は停止しない。frontend から渡された launchId / presetId は Rust 側で検証（空チェック・registry/Preset 実在）
+- `kill_pid` / `stop_pid` / `run_command` / `execute_shell` 等の汎用危険 command を追加していない（限定的な `stop_process` / `stop_preset_processes` のみ）
+- Tauri capabilities / permissions 変更なし（自作 command は `core:default` でカバー）
+- 停止結果の `errorMessage` は環境情報・パスを含まない固定文言に丸め
+- プロセスツリー停止・graceful shutdown・常時死活監視（010 相当）は実装していない
+- 004〜008 のデータ・既存機能を壊さず、command 2本・Rust モジュール1つ・フロント wrapper 2つを追加するのみ
+
+### やっていないこと（今回スコープ外・据え置き）
+
+- macOS `.app` の実プロセス停止（→ 013 macOS App Bundle Stop）
+- 起動状態の常時監視・死活監視ループ・waiting/starting/running/stopping/stopped/error の本格的な状態管理（→ 010 Runtime Status）
+- プロセスツリー全体の停止・graceful shutdown・アプリごとの安全な終了手順
+- アプリ再起動後のプロセス復元（current session 限定。PID 再利用の危険があるため過去セッションは停止対象外）
+- git commit は未実施（指示があってから）

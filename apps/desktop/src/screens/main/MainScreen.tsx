@@ -6,8 +6,11 @@ import type {
   PresetItemWithTool,
 } from "../../features/presets/types";
 import { toIconLetter } from "../../features/tools/display";
-import { launchTool } from "../../features/tools/toolApi";
-import { launchPreset } from "../../features/presets/presetLaunchApi";
+import { launchTool, stopProcess } from "../../features/tools/toolApi";
+import {
+  launchPreset,
+  stopPresetProcesses,
+} from "../../features/presets/presetLaunchApi";
 import { toErrorMessage } from "../../features/tools/useTools";
 import { Button, IconTile, Spinner } from "../../components/primitives";
 import { ToolRow } from "./ToolRow";
@@ -24,8 +27,13 @@ type RuntimeItem = {
   description: string;
   launchMode: LaunchMode;
   enabled: boolean;
-  /** 擬似的な起動状態（実プロセス起動は 007 以降） */
+  /** 起動状態（007/008 で実プロセス起動） */
   state: ToolState;
+  /**
+   * 009 停止操作用の識別子。起動成功時に Rust 側 registry に登録された値を保持し、
+   * 単体停止（stop_process）でこの値を渡す。未起動 / 停止済みは undefined。
+   */
+  launchId?: string;
 };
 
 /** 表示用 PresetItemWithTool を、起動状態付きのランタイム行に変換する。 */
@@ -81,6 +89,8 @@ export function MainScreen({
   const [runtime, setRuntime] = useState<RuntimeItem[]>(() => toRuntime(items));
   const [editMode, setEditMode] = useState(false);
   const [launching, setLaunching] = useState(false);
+  // 一括停止（009）の進行中フラグ。一括起動と同様に進行中は一括ボタンを Spinner + disabled にする。
+  const [stopping, setStopping] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
   // 単体起動・一括起動の成功/一部失敗/失敗フィードバック（トースト機構が無いためインライン表示）
   const [launchFeedback, setLaunchFeedback] = useState<{
@@ -117,11 +127,11 @@ export function MainScreen({
     setRuntime((prev) => prev.map((t) => (t.id === id ? { ...t, state } : t)));
   };
 
-  // 008 では spawn 成功は "launched"（起動中）止まりで、"running"（稼働確認済み）には昇格しない。
-  // 「起動済み」表示は launched を数える。running への昇格・一括停止は 009 で扱うため
-  // allRunning は 008 では常に false（＝「一括停止」に切り替わらない）。
+  // spawn 成功は "launched"（起動中）で留まる（"running"＝稼働確認済みへの昇格は 010 で扱う）。
+  // 「起動済み」表示は launched を数える。
   const launchedCount = runtime.filter((t) => t.state === "launched").length;
-  const allRunning = runtime.length > 0 && runtime.every((t) => t.state === "running");
+  // 009: 起動中の行が1つでもあれば一括ボタンを「一括停止」に切り替える。
+  const anyLaunched = runtime.some((t) => t.state === "launched");
 
   // --- 単体起動（007: 実プロセス起動）---
   // frontend からは toolId のみを渡し、Tool 取得・パス検証・起動は Rust 側で行う。
@@ -130,11 +140,18 @@ export function MainScreen({
     // 起動中は行のボタンが Spinner に置き換わり、自動的に無効化される。
     setToolState(id, "starting");
     try {
-      await launchTool(toolId);
+      const res = await launchTool(toolId);
       if (!mountedRef.current) return;
       // 起動要求は成功したが、アプリの初期ローディング完了は検知できないため
       // 完了断定の "running"（起動済み）にはせず、"launched"（起動中の継続表示）に留める。
-      setToolState(id, "launched");
+      // 009: 停止操作用に launchId を行に保持する。
+      setRuntime((prev) =>
+        prev.map((t) =>
+          t.id === id
+            ? { ...t, state: "launched", launchId: res.launchId }
+            : t,
+        ),
+      );
       setLaunchFeedback({ kind: "success", text: `${name} を起動しました` });
     } catch (e) {
       if (!mountedRef.current) return;
@@ -171,7 +188,12 @@ export function MainScreen({
           const r = byItemId.get(t.id);
           if (!r) return t;
           // 単体起動と同様、spawn 成功は "launched"（起動中）に留める（完了断定はしない）。
-          return { ...t, state: (r.success ? "launched" : "error") as ToolState };
+          // 009: 成功した行には停止操作用の launchId を保持する（失敗行には付かない）。
+          return {
+            ...t,
+            state: (r.success ? "launched" : "error") as ToolState,
+            launchId: r.success ? r.launchId : undefined,
+          };
         }),
       );
       const failedNames = res.results
@@ -210,8 +232,111 @@ export function MainScreen({
     }
   };
 
-  const stopAll = () => {
-    setRuntime((prev) => prev.map((t) => ({ ...t, state: "waiting" })));
+  // --- 単体停止（009: registry 登録済みプロセスを launchId で停止）---
+  // frontend からは launchId のみを渡す。停止対象は Rust 側 registry のプロセスに限定される。
+  const handleStop = async (
+    id: string,
+    launchId: string | undefined,
+    name: string,
+  ) => {
+    setLaunchFeedback(null);
+    if (!launchId) {
+      // 構成変更等で UI が launchId を失った行。表示だけ待機中へ戻す（実プロセスは Preset 単位停止で止められる）。
+      setToolState(id, "waiting");
+      return;
+    }
+    setToolState(id, "stopping");
+    try {
+      const res = await stopProcess(launchId);
+      if (!mountedRef.current) return;
+      if (res.status === "failed") {
+        // 停止失敗。行は起動中へ戻し、再試行できるようにする。
+        setToolState(id, "launched");
+        setLaunchFeedback({
+          kind: "error",
+          text: res.errorMessage ?? `${name} の停止に失敗しました`,
+        });
+        return;
+      }
+      // stopped / already-exited / not-found → 停止済みとして待機中へ戻し、launchId を破棄する。
+      setRuntime((prev) =>
+        prev.map((t) =>
+          t.id === id ? { ...t, state: "waiting", launchId: undefined } : t,
+        ),
+      );
+      setLaunchFeedback({
+        kind: "success",
+        text:
+          res.status === "already-exited"
+            ? `${name} は既に終了していました`
+            : res.status === "not-found"
+              ? `${name} は既に停止しています`
+              : `${name} を停止しました`,
+      });
+    } catch (e) {
+      if (!mountedRef.current) return;
+      setToolState(id, "launched");
+      setLaunchFeedback({ kind: "error", text: toErrorMessage(e) });
+    }
+  };
+
+  // --- 一括停止（009: 選択中 Preset に紐づく registry 登録済みプロセスをまとめて停止）---
+  // frontend からは presetId のみを渡す。Rust 側で presetId に紐づく managed process だけを停止する。
+  const stopAll = async () => {
+    if (!presetId) return;
+    setLaunchFeedback(null);
+    setStopping(true);
+    // 起動中の行を停止中表示に。
+    setRuntime((prev) =>
+      prev.map((t) =>
+        t.state === "launched" ? { ...t, state: "stopping" as ToolState } : t,
+      ),
+    );
+    try {
+      const res = await stopPresetProcesses(presetId);
+      if (!mountedRef.current || presetIdRef.current !== presetId) return;
+      // 停止に失敗した launchId の行は起動中へ戻し、それ以外の停止中行は待機中へ。
+      const failedIds = new Set(
+        res.results.filter((r) => r.status === "failed").map((r) => r.launchId),
+      );
+      setRuntime((prev) =>
+        prev.map((t) => {
+          if (t.state !== "stopping") return t;
+          if (t.launchId && failedIds.has(t.launchId)) {
+            return { ...t, state: "launched" as ToolState };
+          }
+          return { ...t, state: "waiting" as ToolState, launchId: undefined };
+        }),
+      );
+      const settled = res.successCount + res.alreadyExitedCount;
+      if (res.totalCount === 0) {
+        setLaunchFeedback({
+          kind: "success",
+          text: "停止対象のプロセスがありません",
+        });
+      } else if (res.failureCount === 0) {
+        setLaunchFeedback({
+          kind: "success",
+          text: `${settled}件のツールを停止しました`,
+        });
+      } else {
+        setLaunchFeedback({
+          kind: "warning",
+          text: `${res.totalCount}件中${settled}件を停止しました。停止に失敗: ${res.failureCount}件`,
+        });
+      }
+    } catch (e) {
+      if (!mountedRef.current || presetIdRef.current !== presetId) return;
+      // 停止を開始できなかった（presetId 空・Preset 無し等）。停止中にした行を起動中へ戻す。
+      setRuntime((prev) =>
+        prev.map((t) =>
+          t.state === "stopping" ? { ...t, state: "launched" as ToolState } : t,
+        ),
+      );
+      setLaunchFeedback({ kind: "error", text: toErrorMessage(e) });
+    } finally {
+      if (mountedRef.current) setStopping(false);
+    }
   };
 
   // --- 編集モードの操作（操作ごとに即時保存）---
@@ -285,11 +410,19 @@ export function MainScreen({
           {!editMode && (
             <Button
               variant="primary"
-              stopAll={allRunning}
-              disabled={launching || isEmpty || !hasEnabled}
-              onClick={allRunning ? stopAll : launchAll}
+              stopAll={anyLaunched}
+              disabled={
+                launching || stopping || (!anyLaunched && (isEmpty || !hasEnabled))
+              }
+              onClick={anyLaunched ? stopAll : launchAll}
             >
-              {launching ? <Spinner /> : allRunning ? "一括停止" : "一括起動"}
+              {launching || stopping ? (
+                <Spinner />
+              ) : anyLaunched ? (
+                "一括停止"
+              ) : (
+                "一括起動"
+              )}
             </Button>
           )}
         </div>
@@ -382,7 +515,7 @@ export function MainScreen({
                 parallel={parallel}
                 editMode={editMode}
                 onStart={() => void handleStart(item.id, item.toolId, item.name)}
-                onStop={() => setToolState(item.id, "waiting")}
+                onStop={() => void handleStop(item.id, item.launchId, item.name)}
                 onMoveUp={() => move(index, -1)}
                 onMoveDown={() => move(index, 1)}
                 onToggleMode={() => toggleMode(item)}

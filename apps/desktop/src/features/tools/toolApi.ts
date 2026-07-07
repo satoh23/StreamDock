@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   CreateToolInput,
   LaunchToolResult,
+  StopProcessResult,
   ToolRecord,
   UpdateToolInput,
 } from "./types";
@@ -40,4 +41,13 @@ export function deleteTool(id: string): Promise<void> {
  */
 export function launchTool(id: string): Promise<LaunchToolResult> {
   return invoke<LaunchToolResult>("launch_tool", { id });
+}
+
+/**
+ * stream-dock 経由で起動した単体プロセスを launchId で停止する（009 Process Stop）。
+ * frontend からは launchId のみを渡す。停止対象は Rust 側 registry 登録済みプロセスに限定され、
+ * raw PID / path / command は渡さない（docs/security.md §6）。
+ */
+export function stopProcess(launchId: string): Promise<StopProcessResult> {
+  return invoke<StopProcessResult>("stop_process", { launchId });
 }

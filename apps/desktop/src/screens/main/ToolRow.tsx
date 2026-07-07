@@ -106,7 +106,8 @@ export function ToolRow({
               <StopIcon />
             </button>
           </>
-        ) : tool.state === "starting" ? (
+        ) : tool.state === "starting" || tool.state === "stopping" ? (
+          // 起動要求送信中（starting）／停止要求送信中（stopping）はボタンを Spinner に置き換えて無効化する。
           <div className={styles.loadingAction}>
             <Spinner />
           </div>

@@ -4,6 +4,7 @@ export type ToolState =
   | "running"
   | "starting"
   | "launched"
+  | "stopping"
   | "waiting"
   | "error";
 

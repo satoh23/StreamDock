@@ -4,10 +4,13 @@ mod presets;
 mod process;
 mod tools;
 
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 use rusqlite::Connection;
 use tauri::Manager;
+
+use process::registry::ManagedProcess;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -27,6 +30,9 @@ pub fn run() {
             presets::repository::init(&conn)?;
             preset_items::repository::init(&conn)?;
             app.manage(Mutex::new(conn));
+            // stream-dock がこのセッション中に起動したプロセスを保持する runtime process registry。
+            // 009 の停止は raw PID ではなくここに保持した Child ハンドル経由で行う。
+            app.manage(Mutex::new(HashMap::<String, ManagedProcess>::new()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -37,6 +43,8 @@ pub fn run() {
             tools::commands::delete_tool,
             process::commands::launch_tool,
             process::commands::launch_preset,
+            process::commands::stop_process,
+            process::commands::stop_preset_processes,
             presets::commands::create_preset,
             presets::commands::list_presets,
             presets::commands::get_preset,

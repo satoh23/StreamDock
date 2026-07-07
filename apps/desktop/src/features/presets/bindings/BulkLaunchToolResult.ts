@@ -5,4 +5,8 @@ import type { LaunchMode } from "./LaunchMode";
  * 一括起動における Tool 1件ごとの起動結果。JSON は camelCase。
  * エラー文言はフロントに出しても安全な短文に丸める（パス・環境情報を含めない）。
  */
-export type BulkLaunchToolResult = { presetItemId: string, toolId: string, toolName: string, launchMode: LaunchMode, orderIndex: number, success: boolean, processId?: number, startedAt?: string, errorMessage?: string, };
+export type BulkLaunchToolResult = { presetItemId: string, toolId: string, toolName: string, launchMode: LaunchMode, orderIndex: number, success: boolean, 
+/**
+ * 009 停止操作用の識別子。起動に成功した Tool のみ Some（失敗した Tool には付けない）。
+ */
+launchId?: string, processId?: number, startedAt?: string, errorMessage?: string, };

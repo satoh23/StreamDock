@@ -10,15 +10,16 @@
 - 006 Preset Item Ordering
 - 007 Process Launch
 - 008 Bulk Launch
+- 009 Process Stop
 
 ## Next
 
-- 009 Process Stop
+- 010 Runtime Status
 
 ## Todo
 
-- 010 Runtime Status
 - 011 Error Handling / Logs
 - 012 Rust Common Helper Refactor
-- 013 Windows Build
-- 014 User Test Package
+- 013 macOS App Bundle Stop
+- 014 Windows Build
+- 015 User Test Package
