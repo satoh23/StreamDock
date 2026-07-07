@@ -8,15 +8,15 @@
 - 004 Tool Registry
 - 005 Preset CRUD
 - 006 Preset Item Ordering
+- 007 Process Launch
+- 008 Bulk Launch
 
 ## Next
 
-- 007 Process Launch
+- 009 Process Stop
 
 ## Todo
 
-- 008 Bulk Launch
-- 009 Process Stop
 - 010 Runtime Status
 - 011 Error Handling / Logs
 - 012 Rust Common Helper Refactor
