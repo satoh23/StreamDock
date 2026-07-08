@@ -36,8 +36,8 @@ export function Sidebar({
   onDeletePreset?: (id: string) => void;
   /** 登録済みツール一覧を表示する */
   showToolList?: boolean;
-  /** ghost ナビの active 表示 (追加画面のとき) */
-  activeNav?: Extract<Screen, "add-preset" | "add-tool">;
+  /** ghost ナビの active 表示 (追加画面 / 診断画面のとき) */
+  activeNav?: Extract<Screen, "add-preset" | "add-tool" | "diagnostics">;
   onNavigate: (screen: Screen) => void;
   /** 登録済みツール（実データ） */
   tools?: ToolRecord[];
@@ -152,6 +152,15 @@ export function Sidebar({
           onClick={() => onNavigate("add-tool")}
         >
           ＋ ツールを登録
+        </button>
+      </div>
+
+      <div className={styles.toolSection}>
+        <button
+          className={`${styles.ghost} ${activeNav === "diagnostics" ? styles.active : ""}`}
+          onClick={() => onNavigate("diagnostics")}
+        >
+          🩺 診断 / ログ
         </button>
       </div>
     </aside>

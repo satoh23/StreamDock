@@ -3,6 +3,8 @@ use std::sync::Mutex;
 use rusqlite::Connection;
 use tauri::State;
 
+use crate::app_logs;
+use crate::app_logs::model::LogCategory;
 use crate::error::AppResult;
 
 use super::model::{CreateToolInput, Tool, UpdateToolInput};
@@ -14,7 +16,10 @@ pub type DbState = Mutex<Connection>;
 #[tauri::command]
 pub fn create_tool(db: State<'_, DbState>, input: CreateToolInput) -> AppResult<Tool> {
     let conn = db.lock().expect("db mutex poisoned");
-    service::create(&conn, input)
+    let result = service::create(&conn, input);
+    // 011: 保存処理失敗 / validation error を記録する。
+    app_logs::service::log_command_err(&conn, LogCategory::Tool, "create_tool", &result);
+    result
 }
 
 #[tauri::command]
@@ -36,11 +41,15 @@ pub fn update_tool(
     input: UpdateToolInput,
 ) -> AppResult<Tool> {
     let conn = db.lock().expect("db mutex poisoned");
-    service::update(&conn, &id, input)
+    let result = service::update(&conn, &id, input);
+    app_logs::service::log_command_err(&conn, LogCategory::Tool, "update_tool", &result);
+    result
 }
 
 #[tauri::command]
 pub fn delete_tool(db: State<'_, DbState>, id: String) -> AppResult<()> {
     let conn = db.lock().expect("db mutex poisoned");
-    service::delete(&conn, &id)
+    let result = service::delete(&conn, &id);
+    app_logs::service::log_command_err(&conn, LogCategory::Tool, "delete_tool", &result);
+    result
 }

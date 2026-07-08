@@ -37,7 +37,7 @@ export function useTools(): UseToolsResult {
   return { tools, loading, error, reload };
 }
 
-/** Tauri command が reject した AppError（{ kind, message }）を表示用文字列にする。 */
+/** Tauri command が reject した AppError（{ code, message, details?, ... }）を表示用文字列にする。 */
 export function toErrorMessage(e: unknown): string {
   if (e && typeof e === "object" && "message" in e) {
     const message = (e as { message?: unknown }).message;

@@ -1,5 +1,7 @@
 use tauri::State;
 
+use crate::app_logs;
+use crate::app_logs::model::LogCategory;
 use crate::error::AppResult;
 use crate::tools::commands::DbState;
 
@@ -12,7 +14,10 @@ pub fn add_tool_to_preset(
     input: AddPresetItemInput,
 ) -> AppResult<PresetItem> {
     let conn = db.lock().expect("db mutex poisoned");
-    service::add(&conn, input)
+    let result = service::add(&conn, input);
+    // 011: 保存処理失敗 / validation error を記録する。
+    app_logs::service::log_command_err(&conn, LogCategory::PresetItem, "add_tool_to_preset", &result);
+    result
 }
 
 #[tauri::command]
@@ -33,7 +38,9 @@ pub fn list_all_preset_items(db: State<'_, DbState>) -> AppResult<Vec<PresetItem
 #[tauri::command]
 pub fn remove_tool_from_preset(db: State<'_, DbState>, id: String) -> AppResult<()> {
     let conn = db.lock().expect("db mutex poisoned");
-    service::remove(&conn, &id)
+    let result = service::remove(&conn, &id);
+    app_logs::service::log_command_err(&conn, LogCategory::PresetItem, "remove_tool_from_preset", &result);
+    result
 }
 
 #[tauri::command]
@@ -43,7 +50,9 @@ pub fn update_preset_item(
     input: UpdatePresetItemInput,
 ) -> AppResult<PresetItem> {
     let conn = db.lock().expect("db mutex poisoned");
-    service::update(&conn, &id, input)
+    let result = service::update(&conn, &id, input);
+    app_logs::service::log_command_err(&conn, LogCategory::PresetItem, "update_preset_item", &result);
+    result
 }
 
 #[tauri::command]
@@ -53,5 +62,7 @@ pub fn reorder_preset_items(
     ordered_ids: Vec<String>,
 ) -> AppResult<Vec<PresetItem>> {
     let conn = db.lock().expect("db mutex poisoned");
-    service::reorder(&conn, &preset_id, ordered_ids)
+    let result = service::reorder(&conn, &preset_id, ordered_ids);
+    app_logs::service::log_command_err(&conn, LogCategory::PresetItem, "reorder_preset_items", &result);
+    result
 }

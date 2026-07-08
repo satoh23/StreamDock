@@ -6,6 +6,7 @@ import { Sidebar } from "./components/Sidebar";
 import { MainScreen } from "./screens/main/MainScreen";
 import { AddToolScreen } from "./screens/add-tool/AddToolScreen";
 import { AddPresetScreen } from "./screens/add-preset/AddPresetScreen";
+import { DiagnosticsScreen } from "./screens/diagnostics/DiagnosticsScreen";
 import { useTools } from "./features/tools/useTools";
 import { deleteTool } from "./features/tools/toolApi";
 import { usePresets } from "./features/presets/usePresets";
@@ -251,6 +252,7 @@ function App() {
           onSaved={reloadPresetData}
         />
       )}
+      {screen === "diagnostics" && <DiagnosticsScreen onNavigate={setScreen} />}
     </Window>
   );
 }

@@ -26,33 +26,29 @@ fn validate(
     exclude_id: Option<&str>,
 ) -> AppResult<()> {
     if name.is_empty() {
-        return Err(AppError::Validation("プリセット名は必須です".into()));
+        return Err(AppError::validation("プリセット名は必須です"));
     }
     if name.chars().count() > MAX_NAME_LEN {
-        return Err(AppError::Validation(format!(
+        return Err(AppError::validation(format!(
             "プリセット名は{MAX_NAME_LEN}文字以内で入力してください"
         )));
     }
     // 制御文字（改行・NUL 等）を弾く。
     if name.chars().any(char::is_control) {
-        return Err(AppError::Validation(
-            "プリセット名に制御文字は使用できません".into(),
-        ));
+        return Err(AppError::validation("プリセット名に制御文字は使用できません"));
     }
     if description.chars().count() > MAX_DESCRIPTION_LEN {
-        return Err(AppError::Validation(format!(
+        return Err(AppError::validation(format!(
             "説明は{MAX_DESCRIPTION_LEN}文字以内で入力してください"
         )));
     }
     // 説明も名前と同様に制御文字を弾く（単一行入力のため改行等は許可しない）。
     if description.chars().any(char::is_control) {
-        return Err(AppError::Validation(
-            "説明に制御文字は使用できません".into(),
-        ));
+        return Err(AppError::validation("説明に制御文字は使用できません"));
     }
     if let Some(existing) = repository::find_by_name(conn, name)? {
         if exclude_id != Some(existing.id.as_str()) {
-            return Err(AppError::DuplicateName(format!(
+            return Err(AppError::duplicate_name(format!(
                 "同じ名前のプリセットが既に登録されています: {name}"
             )));
         }
@@ -82,12 +78,12 @@ pub fn list(conn: &Connection) -> AppResult<Vec<Preset>> {
 
 pub fn get(conn: &Connection, id: &str) -> AppResult<Preset> {
     repository::get(conn, id)?
-        .ok_or_else(|| AppError::NotFound(format!("プリセットが見つかりません: {id}")))
+        .ok_or_else(|| AppError::not_found(format!("プリセットが見つかりません: {id}")))
 }
 
 pub fn update(conn: &Connection, id: &str, input: UpdatePresetInput) -> AppResult<Preset> {
     let existing = repository::get(conn, id)?
-        .ok_or_else(|| AppError::NotFound(format!("プリセットが見つかりません: {id}")))?;
+        .ok_or_else(|| AppError::not_found(format!("プリセットが見つかりません: {id}")))?;
 
     let (name, description) = normalize(&input.name, &input.description);
     validate(conn, &name, &description, Some(id))?;
@@ -106,7 +102,7 @@ pub fn update(conn: &Connection, id: &str, input: UpdatePresetInput) -> AppResul
 pub fn delete(conn: &Connection, id: &str) -> AppResult<()> {
     let affected = repository::delete(conn, id)?;
     if affected == 0 {
-        return Err(AppError::NotFound(format!("プリセットが見つかりません: {id}")));
+        return Err(AppError::not_found(format!("プリセットが見つかりません: {id}")));
     }
     Ok(())
 }

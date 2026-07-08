@@ -32,19 +32,24 @@ use super::registry::{ManagedProcess, ProcessRegistry};
 pub fn spawn(tool: &Tool) -> AppResult<Child> {
     let path_str = tool.executable_path.trim();
     if path_str.is_empty() {
-        return Err(AppError::Validation("実行ファイルパスが未設定です".into()));
+        return Err(AppError::validation("実行ファイルパスが未設定です"));
     }
 
     let path = Path::new(path_str);
     if !path.is_absolute() {
-        return Err(AppError::Validation(
-            "実行ファイルパスが絶対パスではありません".into(),
+        return Err(AppError::validation(
+            "実行ファイルパスが絶対パスではありません",
         ));
     }
     if !path.exists() {
-        return Err(AppError::PathNotFound(format!(
-            "指定された実行ファイルが見つかりません: {path_str}"
-        )));
+        // フルパスは frontend / log に露出させない。安全な文言にし、details にはファイル名のみを入れる。
+        let err = AppError::path_not_found(
+            "登録された実行ファイルが見つかりません。ツールのパスを確認してください。",
+        );
+        return Err(match path.file_name().and_then(|n| n.to_str()) {
+            Some(name) if !name.is_empty() => err.with_details(format!("ファイル名: {name}")),
+            _ => err,
+        });
     }
 
     // macOS の `.app` はバンドル＝ディレクトリだが、LaunchServices（`open`）経由で起動できる
@@ -60,9 +65,7 @@ pub fn spawn(tool: &Tool) -> AppResult<Child> {
     let is_app_bundle = false;
 
     if path.is_dir() && !is_app_bundle {
-        return Err(AppError::Validation(
-            "指定されたパスはディレクトリです".into(),
-        ));
+        return Err(AppError::validation("指定されたパスはディレクトリです"));
     }
 
     // 007 では .lnk（ショートカット）/ .bat（バッチ）を起動対象にしない。
@@ -73,8 +76,8 @@ pub fn spawn(tool: &Tool) -> AppResult<Child> {
             .and_then(|e| e.to_str())
             .map(str::to_ascii_lowercase);
         if matches!(ext.as_deref(), Some("lnk") | Some("bat")) {
-            return Err(AppError::Validation(
-                "この形式のファイルは現在起動に対応していません".into(),
+            return Err(AppError::unsupported_file_type(
+                "このファイル形式は現在未対応です。",
             ));
         }
     }
@@ -93,11 +96,11 @@ pub fn spawn(tool: &Tool) -> AppResult<Child> {
         Command::new("/usr/bin/open")
             .arg(path)
             .spawn()
-            .map_err(|_| AppError::LaunchFailed("プロセスの起動に失敗しました".into()))?
+            .map_err(|_| AppError::launch_failed("プロセスの起動に失敗しました"))?
     } else {
         Command::new(path)
             .spawn()
-            .map_err(|_| AppError::LaunchFailed("プロセスの起動に失敗しました".into()))?
+            .map_err(|_| AppError::launch_failed("プロセスの起動に失敗しました"))?
     };
 
     Ok(child)
@@ -127,7 +130,7 @@ pub fn resolve_preset_targets(
         .filter(|item| item.enabled)
         .collect();
     if enabled.is_empty() {
-        return Err(AppError::Validation("起動できるツールがありません".into()));
+        return Err(AppError::validation("起動できるツールがありません"));
     }
 
     let mut targets = Vec::with_capacity(enabled.len());
@@ -290,7 +293,7 @@ pub fn stop_one(mut mp: ManagedProcess) -> (StopProcessResult, Option<ManagedPro
                     &mp,
                     StopStatus::Failed,
                     None,
-                    Some("プロセスの停止に失敗しました".into()),
+                    Some("プロセスの停止に失敗しました".to_string()),
                 ),
                 Some(mp),
             ),
@@ -416,13 +419,9 @@ pub fn snapshot(registry: &ProcessRegistry, preset_id: Option<&str>) -> Vec<Runt
 }
 
 /// 一括起動結果の error_message を、フロントに出しても安全な短文へ丸める。
-/// PathNotFound はメッセージにフルパスを含むため、パスを出さない固定文言に置き換える。
+///
+/// AppError の再設計（011）で、`message` はいずれも安全文言（フルパス・環境情報を含まない）に
+/// 統一済みのため、ここでは message をそのまま採用する（サニタイズ境界としての役割は維持）。
 fn safe_launch_message(err: &AppError) -> String {
-    match err {
-        // Validation / LaunchFailed の文言は固定文言でパス・環境情報を含まない。
-        AppError::Validation(m) | AppError::LaunchFailed(m) => m.clone(),
-        // PathNotFound はフルパスを含むため丸める。
-        AppError::PathNotFound(_) => "指定された実行ファイルが見つかりません".to_string(),
-        _ => "起動に失敗しました".to_string(),
-    }
+    err.message.clone()
 }

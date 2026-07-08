@@ -805,3 +805,103 @@ cleanup で `mountedRef.current = false` にするが、effect 本体で `true` 
 - macOS `.app` の実プロセス監視（→ 013 macOS App Bundle Stop）
 - 単体起動（007）由来プロセスのプリセット切替を跨いだ復元（preset に紐づかないため。一括起動由来は presetItemId で復元可。単体は同一マウント中のみ launchId で追跡）
 - git commit は未実施（指示があってから）
+
+## 2026-07-08 (011 Error Handling / Logs)
+
+### 完了したこと
+
+- ユーザーテストで問題を再現・聞き取り・修正しやすくするため、**統一エラー形式**・**structured log（SQLite `app_logs`）**・**診断 / ログ画面**を追加した（外部送信・telemetry・analytics・crash report・cloud sync は追加していない）
+- **エラー型の全面再設計（ユーザー選択）**: `AppError` を enum `{ kind, message }` から **struct `{ code, message, details?, operation?, occurredAt }`** に変更。`ErrorCode` enum（`VALIDATION_ERROR` 等、SCREAMING_SNAKE_CASE）を新設し `AppError.code` と `AppLogEntry.errorCode` で共有。旧変種名に対応するコンストラクタ（`AppError::validation` / `not_found` / `path_not_found` / `duplicate_path` / `duplicate_name` / `duplicate_tool_in_preset` / `launch_failed` / `unsupported_file_type` / `storage` / `internal`）＋ `with_details` / `with_operation` ビルダを用意し、services/commands の全呼び出し（~33 箇所）を機械的に置換
+  - frontend で `AppError.kind` に分岐する箇所は無く（`toErrorMessage` は `.message` のみ参照）、wire 変更後も既存のエラー表示は message で動作（コメントのみ更新）
+- **機密情報の安全化**（011 の重要目的）:
+  - `process::service::spawn` / `tools::service::validate` の `PathNotFound`・`DuplicatePath` が message に**フルパスを連結していた**のを、安全な固定文言に変更し `details` は**ファイル名のみ**（`Path::file_name`）に限定
+  - `.lnk` / `.bat` 拒否を `Validation` から `unsupported_file_type`（`UNSUPPORTED_FILE_TYPE` / 「このファイル形式は現在未対応です。」）へ
+  - `From<rusqlite::Error>` は生の rusqlite 文字列（DB パスを含みうる）を**frontend にも log にも載せず**、固定文言＋`StorageFailed` に丸め
+- **structured log（SQLite `app_logs`）**: 新規 `src/app_logs/{mod,model,repository,service,commands}.rs`（004 の4層パターン踏襲、DbState は `tools::commands::DbState` を再利用、同一 `stream-dock.db` に `app_logs` テーブル追加）。`AppLogEntry { id, level, category, operation, message, errorCode?, toolId?, toolName?, presetId?, presetName?, presetItemId?, launchId?, processId?, occurredAt }`。level=info/warn/error、category=tool/preset/preset-item/process-launch/bulk-launch/process-stop/runtime-status/storage/ui。enum ⇔ DB 文字列は serde_json 経由で naming を単一ソース化
+- **ログ取得 command 3本**（限定的な内部ログ取得のみ・危険な汎用 command なし）:
+  - `list_app_logs(db, limit?)`: 直近ログを返す。**limit は Rust 側で clamp（既定 50・最大 200）**。任意 SQL / 検索条件は受け取らない
+  - `get_diagnostic_summary(db, registry)`: `DiagnosticSummary { generatedAt, appVersion(env!("CARGO_PKG_VERSION")), recentErrors, recentWarnings, runtimeProcesses }`。full path / 環境変数を含めない
+  - `clear_app_logs(db)`: ユーザーテストの履歴リセット用
+- **既存操作へのログ記録**（spawn/kill 中は DB ロック非保持を守るため、command 層で結果確定後に短時間ロックして記録。ログ失敗は握りつぶす）:
+  - `launch_tool` 成功/失敗、`launch_preset` 開始/全成功/一部失敗(`BULK_LAUNCH_PARTIAL_FAILED`)/全失敗(`BULK_LAUNCH_FAILED`)、`stop_process`/`stop_preset_processes`（stopped/already-exited(`PROCESS_ALREADY_EXITED`)/failed(`STOP_FAILED`)）、runtime status の Error 検知(`RUNTIME_STATUS_FAILED`)
+  - CRUD（tools/presets/preset_items の create/update/delete/add/remove/reorder）は `log_command_err` を1行追加し、保存処理失敗・validation error を記録
+- React 側: 新規 `features/logs/{types,logsApi,useLogs}.ts` ＋ 生成 `features/logs/bindings/`。**コンポーネントは invoke を直接呼ばず API wrapper 経由**（`listAppLogs` / `getDiagnosticSummary` / `clearAppLogs`）
+- UI: 新規 `screens/diagnostics/DiagnosticsScreen.tsx`（Screen union に `"diagnostics"` 追加、サイドバー下部の「🩺 診断 / ログ」から開く）。**直近エラー / 簡易ログビュー（発生時刻・level・category・operation・message・関連 Tool/Preset 名・error code を表示）/ 診断サマリー（readonly textarea ＋「コピー」ボタン）**。stack trace / full path / raw Rust error は表示しない。コピーは `navigator.clipboard`（失敗時は textarea select フォールバック）で **capabilities / plugin 追加なし**
+
+### `.gitignore` の修正（要確認）
+
+- ルート `.gitignore` の `logs`（Node のログ出力無視）が **`apps/desktop/src/features/logs/` のソースまで無視**していたため、`!apps/desktop/src/features/logs/` の除外規則を追加した（この feature を版管理・コミット対象にするため）。Rust 側の ts-rs `export_to` パス（`features/logs/bindings/`）はそのまま
+
+### 追加ライブラリ
+
+- なし（既存の rusqlite / uuid / chrono / serde / serde_json / ts-rs を再利用。新規 crate・plugin・npm package なし）
+
+### 変更・作成した主要ファイル
+
+- Rust（`apps/desktop/src-tauri/`）: 新規 `src/app_logs/{mod,model,repository,service,commands}.rs` / 変更 `src/error.rs`（AppError struct 化・ErrorCode 追加）・`src/lib.rs`（`mod app_logs`・init・handler 3本）・`src/process/{commands,service}.rs`（ログ記録・パス安全化・safe_launch_message 簡素化）・`src/tools/{commands,service}.rs`・`src/presets/{commands,service}.rs`・`src/preset_items/{commands,service}.rs`（コンストラクタ置換・log_command_err）
+- Frontend（`apps/desktop/src/`）: 新規 `features/logs/{types,logsApi,useLogs}.ts` ＋ 生成 `features/logs/bindings/*`・`screens/diagnostics/DiagnosticsScreen.{tsx,module.css}` / 変更 `types.ts`・`App.tsx`・`components/Sidebar.tsx`・`features/tools/useTools.ts`（コメント）・生成 `features/tools/bindings/{AppError,ErrorCode}.ts`
+- 設定 / docs: `apps/desktop/package.json`（check:bindings に logs/bindings 追加）・`.gitignore`（上記）・`docs/progress.md`（本記録）
+
+### 検証結果
+
+- `cargo check` 成功（warning 0）
+- `pnpm gen:bindings`（`cargo test export_bindings`）成功（24 tests ok。ErrorCode / AppLogEntry / DiagnosticSummary / LogLevel / LogCategory を新規生成、AppError を再生成）
+- `pnpm --filter ./apps/desktop typecheck` 成功（exit 0）
+- `pnpm --filter ./apps/desktop lint` 成功（exit 0 / warning なし）
+- `pnpm --filter ./apps/desktop build`（tsc && vite build）成功（63 modules）
+- ※ `check:bindings` は生成物が未コミットのため diff で exit 1（＝生成は最新・コミット前という想定どおり）。コミット時に bindings 差分を含める
+- ※ `pnpm tauri dev` の実機 E2E（存在しないパス/.bat/.lnk 起動で安全な message＋ログに `LAUNCH_FAILED`/`UNSUPPORTED_FILE_TYPE`／一括の一部・全失敗ログ／停止失敗・already-exited／validation error・保存失敗ログ／診断画面の直近エラー・ログビュー・サマリーコピー／フルパス非表示／004〜010 非破壊）は表示環境が必要なためユーザー環境での確認を推奨
+
+### セキュリティ確認（docs/security.md 準拠 / 実装後に security-review 推奨）
+
+- ログ保存先は Rust 固定（`stream-dock.db` の `app_logs`）。frontend から任意 path / SQL / 検索条件を渡せない。`list_app_logs` の limit は Rust 側 clamp
+- message / details / log に環境変数・stack trace 全文・secret・不要なフルパス・OS ユーザー名を出さない。`path_not_found` はファイル名のみ、DB エラーは固定文言、raw rusqlite 文字列は非永続
+- 診断サマリーに full path を出さない（runtimeProcesses は既存のサニタイズ済みフィールドのみ）
+- 外部通信 / telemetry / analytics / crash report / cloud sync を追加していない。危険な汎用 command（read_file / write_file / execute_sql 等）を追加していない（限定的な `list_app_logs` / `get_diagnostic_summary` / `clear_app_logs` のみ）
+- Tauri capabilities / permissions 変更なし（コピーは webview clipboard、plugin 不要）。004〜010 のデータ・既存機能・DB スキーマは非破壊（別テーブル `app_logs` 追加のみ）
+
+### やっていないこと（今回スコープ外・据え置き）
+
+- 外部送信ログ / telemetry / analytics / crash report / cloud sync / Sentry 連携 / 遠隔ログ収集
+- 詳細なログ検索・高度なフィルタリング・永続的な監査ログ基盤・ログローテーション本格実装・OS イベントログ連携
+- ログの任意 export（011 では必須にしない）
+- git commit は未実施（指示があってから）
+
+## 2026-07-08 (011 フォローアップ: security-review 指摘対応)
+
+### 背景
+
+011 実装後の security-review で以下を検出し、堅牢化（防御的）方針で対応した。
+
+- **Med**: CRUD エラーの `AppError.message`（`duplicate_name` はユーザー入力のプリセット名を埋め込む）が `log_command_err` 経由で `app_logs` に永続化され、Error レベルのため**診断サマリー（開発者へ共有する copy テキスト）にプリセット名が流出**していた。docs/security.md §9「ログに任意ユーザー入力を残さない／共有用サマリーに出さない」に該当。
+
+### 完了したこと
+
+- **Med 修正（CRUD ログの code 由来文言化）**:
+  - `error.rs` に `ErrorCode::log_message(&self) -> &'static str` を追加。全 15 code ごとの**ユーザー入力・フルパス・環境情報を含まない静的文言**を返す。ログ／共有サマリー用で、frontend 向けの詳細 `AppError.message` とは役割を分離
+  - `app_logs::service::log_command_err` を、`e.message` ではなく **`e.code.log_message()`** を記録するよう変更（`.error_code(e.code)` は維持）。これで CRUD 失敗ログが raw message（＝ユーザー入力）を一切永続化しない構造に
+  - `presets::service` の `duplicate_name` message は**変更せず**（frontend には名前入りの詳細文言を返して UX 維持。漏洩はログ側で断ち切る方針）。UUID を含む `not_found` 系メッセージも据え置き（機密でなく、id はデバッグに有用）
+- **Low 修正（安全な手当て）**:
+  - `DiagnosticsScreen.tsx`: 「コピーしました」表示を戻す `setTimeout` の id を `useRef` に保持し、アンマウント時 `useEffect` cleanup で `clearTimeout`。連打時は張り替え前に前回タイマーをクリア（多重タイマー防止）
+  - `app_logs::commands::get_diagnostic_summary` の doc に、`snapshot` の reap 副作用（終了検知プロセスを registry から除去）と db→registry のロック順序（唯一の同時保持箇所）を明記（挙動は不変）
+
+### 変更した主要ファイル
+
+- Rust: `src/error.rs`（`ErrorCode::log_message` 追加）・`src/app_logs/service.rs`（`log_command_err` 変更）・`src/app_logs/commands.rs`（doc 追記）
+- Frontend: `src/screens/diagnostics/DiagnosticsScreen.tsx`（timer 後始末）
+- docs: `docs/progress.md`（本記録）
+
+### 検証結果
+
+- `cargo check` 成功（warning 0）
+- `pnpm --filter ./apps/desktop check:bindings` … `ErrorCode` / `AppError` の wire は不変のため**bindings 差分ゼロ**（impl メソッド追加のみ）
+- `pnpm --filter ./apps/desktop typecheck` 成功（exit 0）
+- `pnpm --filter ./apps/desktop lint` 成功（exit 0 / warning なし）
+- ※ 実機 E2E（既存名プリセットで作成/編集 → frontend は名前入りエラー表示／診断サマリーには `DUPLICATE_NAME` 固定文言のみでプリセット名が出ない／コピー後の画面遷移で警告なし／004〜010 非破壊）は表示環境が必要なためユーザー環境での確認を推奨
+
+### やっていないこと（据え置き・別タスク）
+
+- `AppError.operation` 未設定フィールドの削除／配線（wire に出ているが常に None。害はないため据え置き）
+- ログ並び順の tie-break 改善（同一 `occurred_at` は id DESC のため表示順が稀に前後する。機能影響なし）
+- process 経路の Info ログ（tool.name 入り）の文言変更（Info はサマリー非対象・structured field は設計どおり）
+- git commit は未実施（指示があってから）

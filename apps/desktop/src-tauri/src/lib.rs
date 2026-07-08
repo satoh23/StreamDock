@@ -1,3 +1,4 @@
+mod app_logs;
 mod error;
 mod preset_items;
 mod presets;
@@ -29,6 +30,7 @@ pub fn run() {
             tools::repository::init(&conn)?;
             presets::repository::init(&conn)?;
             preset_items::repository::init(&conn)?;
+            app_logs::repository::init(&conn)?;
             app.manage(Mutex::new(conn));
             // stream-dock がこのセッション中に起動したプロセスを保持する runtime process registry。
             // 009 の停止は raw PID ではなくここに保持した Child ハンドル経由で行う。
@@ -58,6 +60,9 @@ pub fn run() {
             preset_items::commands::remove_tool_from_preset,
             preset_items::commands::update_preset_item,
             preset_items::commands::reorder_preset_items,
+            app_logs::commands::list_app_logs,
+            app_logs::commands::get_diagnostic_summary,
+            app_logs::commands::clear_app_logs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

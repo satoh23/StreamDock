@@ -11,20 +11,18 @@ use super::repository;
 /// frontend 側のチェックとは別に、Rust 側でも参照整合を担保する。
 fn validate_refs(conn: &Connection, preset_id: &str, tool_id: &str) -> AppResult<()> {
     if preset_id.trim().is_empty() {
-        return Err(AppError::Validation("プリセットIDは必須です".into()));
+        return Err(AppError::validation("プリセットIDは必須です"));
     }
     if tool_id.trim().is_empty() {
-        return Err(AppError::Validation("ツールIDは必須です".into()));
+        return Err(AppError::validation("ツールIDは必須です"));
     }
     if presets_repo::get(conn, preset_id)?.is_none() {
-        return Err(AppError::NotFound(format!(
+        return Err(AppError::not_found(format!(
             "プリセットが見つかりません: {preset_id}"
         )));
     }
     if tools_repo::get(conn, tool_id)?.is_none() {
-        return Err(AppError::NotFound(format!(
-            "ツールが見つかりません: {tool_id}"
-        )));
+        return Err(AppError::not_found(format!("ツールが見つかりません: {tool_id}")));
     }
     Ok(())
 }
@@ -37,8 +35,8 @@ pub fn add(conn: &Connection, input: AddPresetItemInput) -> AppResult<PresetItem
 
     // 同一プリセット内での同一ツール重複を防ぐ。
     if repository::find_by_preset_and_tool(conn, &preset_id, &tool_id)?.is_some() {
-        return Err(AppError::DuplicateToolInPreset(
-            "このツールは既にプリセットに追加されています".into(),
+        return Err(AppError::duplicate_tool_in_preset(
+            "このツールは既にプリセットに追加されています",
         ));
     }
 
@@ -72,7 +70,7 @@ pub fn list_all(conn: &Connection) -> AppResult<Vec<PresetItem>> {
 pub fn remove(conn: &Connection, id: &str) -> AppResult<()> {
     let affected = repository::delete(conn, id)?;
     if affected == 0 {
-        return Err(AppError::NotFound(format!(
+        return Err(AppError::not_found(format!(
             "プリセットのツールが見つかりません: {id}"
         )));
     }
@@ -86,7 +84,7 @@ pub fn update(
     input: UpdatePresetItemInput,
 ) -> AppResult<PresetItem> {
     let existing = repository::get(conn, id)?.ok_or_else(|| {
-        AppError::NotFound(format!("プリセットのツールが見つかりません: {id}"))
+        AppError::not_found(format!("プリセットのツールが見つかりません: {id}"))
     })?;
 
     let updated = PresetItem {
@@ -108,15 +106,15 @@ pub fn reorder(
 ) -> AppResult<Vec<PresetItem>> {
     let current = repository::list_by_preset(conn, preset_id)?;
     if ordered_ids.len() != current.len() {
-        return Err(AppError::Validation(
-            "並び替え対象がプリセットのツール一覧と一致しません".into(),
+        return Err(AppError::validation(
+            "並び替え対象がプリセットのツール一覧と一致しません",
         ));
     }
     let current_ids: std::collections::HashSet<&str> =
         current.iter().map(|i| i.id.as_str()).collect();
     if !ordered_ids.iter().all(|id| current_ids.contains(id.as_str())) {
-        return Err(AppError::Validation(
-            "並び替え対象にプリセット外のツールが含まれています".into(),
+        return Err(AppError::validation(
+            "並び替え対象にプリセット外のツールが含まれています",
         ));
     }
 

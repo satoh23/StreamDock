@@ -1,4 +1,4 @@
-export type Screen = "main" | "add-tool" | "add-preset";
+export type Screen = "main" | "add-tool" | "add-preset" | "diagnostics";
 
 export type ToolState =
   | "running"

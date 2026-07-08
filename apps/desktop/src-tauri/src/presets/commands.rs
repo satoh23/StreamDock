@@ -1,5 +1,7 @@
 use tauri::State;
 
+use crate::app_logs;
+use crate::app_logs::model::LogCategory;
 use crate::error::AppResult;
 use crate::tools::commands::DbState;
 
@@ -9,7 +11,10 @@ use super::service;
 #[tauri::command]
 pub fn create_preset(db: State<'_, DbState>, input: CreatePresetInput) -> AppResult<Preset> {
     let conn = db.lock().expect("db mutex poisoned");
-    service::create(&conn, input)
+    let result = service::create(&conn, input);
+    // 011: 保存処理失敗 / validation error を記録する。
+    app_logs::service::log_command_err(&conn, LogCategory::Preset, "create_preset", &result);
+    result
 }
 
 #[tauri::command]
@@ -31,11 +36,15 @@ pub fn update_preset(
     input: UpdatePresetInput,
 ) -> AppResult<Preset> {
     let conn = db.lock().expect("db mutex poisoned");
-    service::update(&conn, &id, input)
+    let result = service::update(&conn, &id, input);
+    app_logs::service::log_command_err(&conn, LogCategory::Preset, "update_preset", &result);
+    result
 }
 
 #[tauri::command]
 pub fn delete_preset(db: State<'_, DbState>, id: String) -> AppResult<()> {
     let conn = db.lock().expect("db mutex poisoned");
-    service::delete(&conn, &id)
+    let result = service::delete(&conn, &id);
+    app_logs::service::log_command_err(&conn, LogCategory::Preset, "delete_preset", &result);
+    result
 }
