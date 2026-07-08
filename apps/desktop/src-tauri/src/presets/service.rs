@@ -1,6 +1,7 @@
 use rusqlite::Connection;
 
 use crate::error::{AppError, AppResult};
+use crate::util::{normalize_optional, now_rfc3339, reject_control_chars, require_non_empty};
 
 use super::model::{CreatePresetInput, Preset, UpdatePresetInput};
 use super::repository;
@@ -12,10 +13,7 @@ const MAX_DESCRIPTION_LEN: usize = 500;
 
 /// 入力を trim し、正規化した (name, description) を返す。
 fn normalize(name: &str, description: &Option<String>) -> (String, String) {
-    (
-        name.trim().to_string(),
-        description.as_deref().unwrap_or("").trim().to_string(),
-    )
+    (name.trim().to_string(), normalize_optional(description))
 }
 
 /// 必須・長さ・制御文字・重複の検証。id を除外して name 重複を検証する。
@@ -25,27 +23,21 @@ fn validate(
     description: &str,
     exclude_id: Option<&str>,
 ) -> AppResult<()> {
-    if name.is_empty() {
-        return Err(AppError::validation("プリセット名は必須です"));
-    }
+    require_non_empty(name, "プリセット名は必須です")?;
     if name.chars().count() > MAX_NAME_LEN {
         return Err(AppError::validation(format!(
             "プリセット名は{MAX_NAME_LEN}文字以内で入力してください"
         )));
     }
     // 制御文字（改行・NUL 等）を弾く。
-    if name.chars().any(char::is_control) {
-        return Err(AppError::validation("プリセット名に制御文字は使用できません"));
-    }
+    reject_control_chars(name, "プリセット名に制御文字は使用できません")?;
     if description.chars().count() > MAX_DESCRIPTION_LEN {
         return Err(AppError::validation(format!(
             "説明は{MAX_DESCRIPTION_LEN}文字以内で入力してください"
         )));
     }
     // 説明も名前と同様に制御文字を弾く（単一行入力のため改行等は許可しない）。
-    if description.chars().any(char::is_control) {
-        return Err(AppError::validation("説明に制御文字は使用できません"));
-    }
+    reject_control_chars(description, "説明に制御文字は使用できません")?;
     if let Some(existing) = repository::find_by_name(conn, name)? {
         if exclude_id != Some(existing.id.as_str()) {
             return Err(AppError::duplicate_name(format!(
@@ -60,7 +52,7 @@ pub fn create(conn: &Connection, input: CreatePresetInput) -> AppResult<Preset> 
     let (name, description) = normalize(&input.name, &input.description);
     validate(conn, &name, &description, None)?;
 
-    let now = chrono::Utc::now().to_rfc3339();
+    let now = now_rfc3339();
     let preset = Preset {
         id: uuid::Uuid::new_v4().to_string(),
         name,
@@ -93,7 +85,7 @@ pub fn update(conn: &Connection, id: &str, input: UpdatePresetInput) -> AppResul
         name,
         description,
         created_at: existing.created_at,
-        updated_at: chrono::Utc::now().to_rfc3339(),
+        updated_at: now_rfc3339(),
     };
     repository::update(conn, &updated)?;
     Ok(updated)

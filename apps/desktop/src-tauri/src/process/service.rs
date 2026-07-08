@@ -4,6 +4,7 @@ use std::process::{Child, Command};
 use rusqlite::Connection;
 
 use crate::error::{AppError, AppResult};
+use crate::util::{now_rfc3339, require_non_empty, with_filename_detail};
 use crate::preset_items;
 use crate::preset_items::model::{LaunchMode, PresetItem};
 use crate::presets;
@@ -31,9 +32,7 @@ use super::registry::{ManagedProcess, ProcessRegistry};
 /// - `.lnk` / `.bat` ではない
 pub fn spawn(tool: &Tool) -> AppResult<Child> {
     let path_str = tool.executable_path.trim();
-    if path_str.is_empty() {
-        return Err(AppError::validation("実行ファイルパスが未設定です"));
-    }
+    require_non_empty(path_str, "実行ファイルパスが未設定です")?;
 
     let path = Path::new(path_str);
     if !path.is_absolute() {
@@ -46,10 +45,7 @@ pub fn spawn(tool: &Tool) -> AppResult<Child> {
         let err = AppError::path_not_found(
             "登録された実行ファイルが見つかりません。ツールのパスを確認してください。",
         );
-        return Err(match path.file_name().and_then(|n| n.to_str()) {
-            Some(name) if !name.is_empty() => err.with_details(format!("ファイル名: {name}")),
-            _ => err,
-        });
+        return Err(with_filename_detail(err, path));
     }
 
     // macOS の `.app` はバンドル＝ディレクトリだが、LaunchServices（`open`）経由で起動できる
@@ -159,7 +155,7 @@ pub fn launch_preset_targets(
     targets: Vec<(PresetItem, Option<Tool>)>,
     registry: &ProcessRegistry,
 ) -> BulkLaunchPresetResult {
-    let started_at = chrono::Utc::now().to_rfc3339();
+    let started_at = now_rfc3339();
 
     let (ordered, parallel): (Vec<_>, Vec<_>) = targets
         .into_iter()
@@ -177,7 +173,7 @@ pub fn launch_preset_targets(
     BulkLaunchPresetResult {
         preset_id: preset_id.to_string(),
         started_at,
-        finished_at: chrono::Utc::now().to_rfc3339(),
+        finished_at: now_rfc3339(),
         total_count,
         success_count,
         failure_count,
@@ -204,7 +200,7 @@ fn launch_one(
         Some(tool) => match spawn(tool) {
             Ok(child) => {
                 let process_id = child.id();
-                let started_at = chrono::Utc::now().to_rfc3339();
+                let started_at = now_rfc3339();
                 let launch_id = register(
                     registry,
                     tool,
@@ -282,7 +278,7 @@ pub fn stop_one(mut mp: ManagedProcess) -> (StopProcessResult, Option<ManagedPro
             Ok(()) => {
                 // ゾンビを残さないよう終了を回収する。
                 let _ = mp.child.wait();
-                let stopped_at = chrono::Utc::now().to_rfc3339();
+                let stopped_at = now_rfc3339();
                 (
                     build_stop_result(&mp, StopStatus::Stopped, Some(stopped_at), None),
                     None,
@@ -367,7 +363,7 @@ fn build_stop_result(
 /// - その場合は read（純粋な snapshot）と reap（終了検知・除去）を別関数／別 command に分離し、
 ///   除去のみを明示的な refresh 経路に寄せることを検討する。
 pub fn snapshot(registry: &ProcessRegistry, preset_id: Option<&str>) -> Vec<RuntimeProcess> {
-    let now = chrono::Utc::now().to_rfc3339();
+    let now = now_rfc3339();
     let mut reg = registry.lock().expect("process registry mutex poisoned");
 
     let mut out: Vec<RuntimeProcess> = Vec::new();

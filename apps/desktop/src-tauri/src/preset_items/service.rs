@@ -2,6 +2,7 @@ use rusqlite::Connection;
 
 use crate::error::{AppError, AppResult};
 use crate::presets::repository as presets_repo;
+use crate::util::{now_rfc3339, require_non_empty};
 use crate::tools::repository as tools_repo;
 
 use super::model::{AddPresetItemInput, LaunchMode, PresetItem, UpdatePresetItemInput};
@@ -10,12 +11,8 @@ use super::repository;
 /// presetId / toolId が必須かつ実在することを検証する。
 /// frontend 側のチェックとは別に、Rust 側でも参照整合を担保する。
 fn validate_refs(conn: &Connection, preset_id: &str, tool_id: &str) -> AppResult<()> {
-    if preset_id.trim().is_empty() {
-        return Err(AppError::validation("プリセットIDは必須です"));
-    }
-    if tool_id.trim().is_empty() {
-        return Err(AppError::validation("ツールIDは必須です"));
-    }
+    require_non_empty(preset_id, "プリセットIDは必須です")?;
+    require_non_empty(tool_id, "ツールIDは必須です")?;
     if presets_repo::get(conn, preset_id)?.is_none() {
         return Err(AppError::not_found(format!(
             "プリセットが見つかりません: {preset_id}"
@@ -43,7 +40,7 @@ pub fn add(conn: &Connection, input: AddPresetItemInput) -> AppResult<PresetItem
     let order_index = repository::max_order_index(conn, &preset_id)?
         .map(|max| max + 1)
         .unwrap_or(0);
-    let now = chrono::Utc::now().to_rfc3339();
+    let now = now_rfc3339();
     let item = PresetItem {
         id: uuid::Uuid::new_v4().to_string(),
         preset_id,
@@ -90,7 +87,7 @@ pub fn update(
     let updated = PresetItem {
         launch_mode: input.launch_mode,
         enabled: input.enabled,
-        updated_at: chrono::Utc::now().to_rfc3339(),
+        updated_at: now_rfc3339(),
         ..existing
     };
     repository::update(conn, &updated)?;
@@ -118,7 +115,7 @@ pub fn reorder(
         ));
     }
 
-    let now = chrono::Utc::now().to_rfc3339();
+    let now = now_rfc3339();
     for (index, id) in ordered_ids.iter().enumerate() {
         repository::update_order_index(conn, id, index as u32, &now)?;
     }

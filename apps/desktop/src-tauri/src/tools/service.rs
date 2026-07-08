@@ -3,6 +3,9 @@ use std::path::Path;
 use rusqlite::Connection;
 
 use crate::error::{AppError, AppResult};
+use crate::util::{
+    normalize_optional, now_rfc3339, reject_control_chars, require_non_empty, with_filename_detail,
+};
 
 use super::model::{CreateToolInput, Tool, UpdateToolInput};
 use super::repository;
@@ -17,8 +20,8 @@ fn normalize(
     (
         name.trim().to_string(),
         executable_path.trim().to_string(),
-        description.as_deref().unwrap_or("").trim().to_string(),
-        icon_label.as_deref().unwrap_or("").trim().to_string(),
+        normalize_optional(description),
+        normalize_optional(icon_label),
     )
 }
 
@@ -29,39 +32,26 @@ fn validate(
     executable_path: &str,
     exclude_id: Option<&str>,
 ) -> AppResult<()> {
-    if name.is_empty() {
-        return Err(AppError::validation("ツール名は必須です"));
-    }
-    if executable_path.is_empty() {
-        return Err(AppError::validation("実行ファイルパスは必須です"));
-    }
+    require_non_empty(name, "ツール名は必須です")?;
+    require_non_empty(executable_path, "実行ファイルパスは必須です")?;
     // 制御文字（改行・NUL 等）を弾く。将来プロセス起動時のコマンド注入を防ぐ前提検証。
-    if name.chars().any(char::is_control) {
-        return Err(AppError::validation("ツール名に制御文字は使用できません"));
-    }
-    if executable_path.chars().any(char::is_control) {
-        return Err(AppError::validation(
-            "実行ファイルパスに制御文字は使用できません",
-        ));
-    }
+    reject_control_chars(name, "ツール名に制御文字は使用できません")?;
+    reject_control_chars(
+        executable_path,
+        "実行ファイルパスに制御文字は使用できません",
+    )?;
     if !Path::new(executable_path).exists() {
         // フルパスは frontend / log に露出させない。details にはファイル名のみを入れる。
         let err = AppError::path_not_found(
             "指定された実行ファイルが見つかりません。パスを確認してください。",
         );
-        return Err(match Path::new(executable_path).file_name().and_then(|n| n.to_str()) {
-            Some(name) if !name.is_empty() => err.with_details(format!("ファイル名: {name}")),
-            _ => err,
-        });
+        return Err(with_filename_detail(err, Path::new(executable_path)));
     }
     if let Some(existing) = repository::find_by_executable_path(conn, executable_path)? {
         if exclude_id != Some(existing.id.as_str()) {
             let err =
                 AppError::duplicate_path("同じ実行ファイルパスのツールが既に登録されています。");
-            return Err(match Path::new(executable_path).file_name().and_then(|n| n.to_str()) {
-                Some(name) if !name.is_empty() => err.with_details(format!("ファイル名: {name}")),
-                _ => err,
-            });
+            return Err(with_filename_detail(err, Path::new(executable_path)));
         }
     }
     Ok(())
@@ -76,7 +66,7 @@ pub fn create(conn: &Connection, input: CreateToolInput) -> AppResult<Tool> {
     );
     validate(conn, &name, &executable_path, None)?;
 
-    let now = chrono::Utc::now().to_rfc3339();
+    let now = now_rfc3339();
     let tool = Tool {
         id: uuid::Uuid::new_v4().to_string(),
         name,
@@ -118,7 +108,7 @@ pub fn update(conn: &Connection, id: &str, input: UpdateToolInput) -> AppResult<
         description,
         icon_label,
         created_at: existing.created_at,
-        updated_at: chrono::Utc::now().to_rfc3339(),
+        updated_at: now_rfc3339(),
     };
     repository::update(conn, &updated)?;
     Ok(updated)

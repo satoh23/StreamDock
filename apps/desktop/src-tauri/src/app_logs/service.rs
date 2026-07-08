@@ -1,6 +1,7 @@
 use rusqlite::Connection;
 
 use crate::error::AppResult;
+use crate::util::now_rfc3339;
 use crate::process::registry::ProcessRegistry;
 use crate::process::service as process_service;
 
@@ -31,7 +32,7 @@ pub fn record(conn: &Connection, entry: NewLog) {
         preset_item_id: entry.preset_item_id,
         launch_id: entry.launch_id,
         process_id: entry.process_id,
-        occurred_at: chrono::Utc::now().to_rfc3339(),
+        occurred_at: now_rfc3339(),
     };
     let _ = repository::insert(conn, &row);
 }
@@ -82,7 +83,7 @@ pub fn diagnostic_summary(
     let recent_warnings = repository::list_recent_by_level(conn, LogLevel::Warn, SUMMARY_LIMIT)?;
     let runtime_processes = process_service::snapshot(registry, None);
     Ok(DiagnosticSummary {
-        generated_at: chrono::Utc::now().to_rfc3339(),
+        generated_at: now_rfc3339(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         recent_errors,
         recent_warnings,

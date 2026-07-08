@@ -87,7 +87,7 @@ impl AppError {
             message: message.into(),
             details: None,
             operation: None,
-            occurred_at: chrono::Utc::now().to_rfc3339(),
+            occurred_at: crate::util::now_rfc3339(),
         }
     }
 

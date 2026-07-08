@@ -3,6 +3,7 @@ use tauri::State;
 use crate::app_logs;
 use crate::app_logs::model::{LogCategory, LogLevel, NewLog};
 use crate::error::{AppError, AppResult, ErrorCode};
+use crate::util::now_rfc3339;
 use crate::presets;
 use crate::tools;
 use crate::tools::commands::DbState;
@@ -70,7 +71,7 @@ pub fn launch_tool(
     match service::spawn(&tool) {
         Ok(child) => {
             let process_id = child.id();
-            let started_at = chrono::Utc::now().to_rfc3339();
+            let started_at = now_rfc3339();
             let launch_id = service::register(&registry, &tool, None, None, child, started_at.clone());
             log(
                 &db,
@@ -305,7 +306,7 @@ pub fn stop_preset_processes(
         }
     }
 
-    let stopped_at = chrono::Utc::now().to_rfc3339();
+    let stopped_at = now_rfc3339();
     let total_count = results.len() as u32;
     let success_count = results
         .iter()

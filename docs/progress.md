@@ -905,3 +905,65 @@ cleanup で `mountedRef.current = false` にするが、effect 本体で `true` 
 - ログ並び順の tie-break 改善（同一 `occurred_at` は id DESC のため表示順が稀に前後する。機能影響なし）
 - process 経路の Info ログ（tool.name 入り）の文言変更（Info はサマリー非対象・structured field は設計どおり）
 - git commit は未実施（指示があってから）
+
+## 2026-07-08 (012 Rust Common Helper Refactor)
+
+### 完了したこと
+
+- 004〜011 で各モジュール（tools / presets / preset_items / process / app_logs）に散在していた**同一イディオムの重複コード**を、薄い共通ヘルパ1モジュール `src-tauri/src/util.rs` に抽出し、呼び出し側を機械的に差し替えた。**挙動・検証ルール・メッセージ文言・チェック順序・DB スキーマ・bindings 出力を一切変えない純リファクタ**（下位プリミティブのみ抽出。検証フロー自体は各モジュールに残置）
+- 着手前に実コードを `grep` で再スキャンし、012 仕様（007 時点の行番号）とのズレ（011 で AppError が struct 化・path 系メッセージが安全化・now 呼び出しが app_logs/process に増加）を反映した
+
+### 新設した共通ヘルパ（`src-tauri/src/util.rs`・すべて薄く保持）
+
+- `now_rfc3339() -> String` … `chrono::Utc::now().to_rfc3339()` の単一定義
+- `normalize_optional(&Option<String>) -> String` … 任意フィールドの trim 正規化（None は空文字）
+- `require_non_empty(&str, message) -> AppResult<()>` … trim 後に空なら Validation エラー
+- `reject_control_chars(&str, message) -> AppResult<()>` … 制御文字を含めば Validation エラー
+- `with_filename_detail(AppError, &Path) -> AppError` … `path_not_found`/`duplicate_path` 共通の「file_name のみを details に付与（フルパス非露出）」定型を集約。付与元の AppError は呼び出し側が渡すため各サイト固有の安全文言は不変
+
+### 差し替え内容（再スキャン済みの正確な位置）
+
+- `now_rfc3339()`: `chrono::Utc::now().to_rfc3339()` の**全17箇所**を置換（`error.rs`・tools/presets/preset_items/process の各 service・`process/commands.rs`・`app_logs/service.rs`）。011 で増えた新規箇所と定義元の `error.rs` も含め single-source 化
+- `normalize_optional`: `tools/service.rs`（description/icon_label）・`presets/service.rs`（description）の3箇所
+- `reject_control_chars`: `tools/service.rs`（name/executable_path）・`presets/service.rs`（name/description）の4箇所
+- `require_non_empty`: service 層の clean な6箇所（tools name/executable_path・presets name・preset_items presetId/toolId・process path_str）
+- `with_filename_detail`: `tools/service.rs`（path_not_found / duplicate_path）・`process/service.rs`（path_not_found）の3箇所
+
+### 明示的に触っていないもの（挙動差分・スコープ膨張回避）
+
+- `process/commands.rs` の必須チェック（toolId/presetId/launchId 空チェック）… ログ記録（`log(...)`）が絡む複合処理のため、`require_non_empty` 単純置換だとログ副作用が失われる。挙動不変を守り据え置き
+- `process/service.rs` の `enabled.is_empty()`（Vec 空判定・文言別）、`process/commands.rs` の `result.tool_id.is_empty()`（分岐）… 意味が別のため対象外
+- 検証ルール・文言・順序の変更／起動時と登録時のパス検証の統合／新機能・新 command・DB スキーマ・bindings 変更／新規ライブラリ・capabilities 追加／React 側変更／trait 化などの過剰抽象化
+
+### 追加ライブラリ
+
+- なし（`chrono`（既存）のみ利用。新規 crate・plugin・npm package なし）
+
+### 変更・作成した主要ファイル
+
+- 新規: `apps/desktop/src-tauri/src/util.rs`（5ヘルパ）
+- 変更（Rust）: `src/lib.rs`（`mod util;` 追加）・`src/error.rs`・`src/tools/service.rs`・`src/presets/service.rs`・`src/preset_items/service.rs`・`src/process/service.rs`・`src/process/commands.rs`・`src/app_logs/service.rs`
+- 変更（docs）: `docs/progress.md`（本記録）
+- React / bindings / capabilities / Cargo.toml / DB スキーマは変更なし
+
+### 検証結果（挙動不変の証跡）
+
+- `cargo check` 成功（warning 0）
+- `pnpm --filter ./apps/desktop gen:bindings` 成功（24 tests ok）→ **bindings 生成物に差分ゼロ**（型・wire・挙動が不変であることの証跡）
+- `pnpm --filter ./apps/desktop typecheck` 成功（exit 0）
+- `pnpm --filter ./apps/desktop lint` 成功（exit 0 / warning なし）
+- `pnpm --filter ./apps/desktop build`（tsc && vite build）成功
+- `git diff --stat`: Rust 8ファイル変更 + `util.rs` 新規（45 insertions / 67 deletions）で計画どおりの範囲に収まる
+- 挙動差分ゼロの確認: 差し替え前後で各エラー message / details / チェック順序が同一（ヘルパは同一ロジックの機械的抽出。`grep` で `to_rfc3339` / `any(char::is_control)` / `as_deref().unwrap_or` の残存が `util.rs` の定義のみになったことを確認）
+- ※ `pnpm tauri dev` の 004〜007 主要動線（Tool CRUD / Preset CRUD / PresetItem 並び替え・ordered/parallel / Tool 単体起動）の実機非破壊確認は表示環境が必要なためユーザー環境で実施
+
+### セキュリティ確認（docs/security.md 準拠・検証強度を下げない）
+
+- 純内部リファクタ。外部通信・危険 command・capabilities・依存追加なし
+- 空・制御文字・実在・絶対パス・拡張子拒否の検証はすべて現状の文言・順序のまま維持（ヘルパは同一ロジックの抽出）
+- `path_not_found` / `duplicate_path` の details は引き続きファイル名のみ（フルパス非露出）。`safe_launch_message` / `LaunchFailed` 固定文言・ログ方針は不変
+
+### やっていないこと（今回スコープ外・据え置き）
+
+- `process/commands.rs` の必須チェック共通化（ログ副作用があるため据え置き）
+- git commit は未実施（指示があってから）
