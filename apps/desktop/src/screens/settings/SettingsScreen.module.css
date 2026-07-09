@@ -1,0 +1,71 @@
+.stack {
+  display: grid;
+  gap: 18px;
+  align-items: start;
+}
+
+.options {
+  display: grid;
+  gap: 10px;
+}
+
+.option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: 14px;
+  text-align: left;
+  color: var(--text);
+  background: var(--control-bg);
+  border: 1px solid var(--border-soft);
+}
+
+.option:hover {
+  background: var(--control-bg-hover);
+}
+
+.option.selected {
+  background: var(--primary-soft);
+  border-color: var(--primary-soft-border);
+  color: var(--primary-text);
+}
+
+.optionIcon {
+  flex-shrink: 0;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.optionBody {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.optionLabel {
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.optionDesc {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.option.selected .optionDesc {
+  color: var(--primary-text);
+}
+
+.check {
+  flex-shrink: 0;
+  width: 18px;
+  text-align: center;
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--primary-text);
+}

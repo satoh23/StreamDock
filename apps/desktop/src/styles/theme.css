@@ -100,6 +100,87 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* ============================================================
+   016 テーマ切替
+   seed（--color-*）をテーマごとに差し替えると、役割トークンは
+   color-mix 派生なのでほぼ全て自動追従する（015 の設計を利用）。
+   上の :root は「既定」かつ「OS ダーク時のシステム追従」を兼ねる
+   （media-dark は :root と重複するため置かない）。
+   ダーク前提の派生（-text の #fff 混色 / --btn-primary-fg=text）は
+   ライトだけ個別に上書きする。新色は足さない。
+   ============================================================ */
+
+/* --- 明示「ダーク」選択（値は上の :root=015 と同一。両方向トグルの明示化） --- */
+:root[data-theme="dark"] {
+  --color-primary: #2f6bff;
+  --color-secondary: #22d3ee;
+  --color-accent: #a78bfa;
+  --color-background: #090d18;
+  --color-surface: #111827;
+  --color-surface-elevated: #1b2435;
+  --color-text: #f9fafb;
+  --color-text-muted: #9ca3af;
+  --color-text-inverse: #090d18;
+  --color-border: #2d3748;
+  --color-info: #60a5fa;
+  --color-success: #4ade80;
+  --color-warning: #fbbf24;
+  --color-error: #f87171;
+}
+
+/* --- ライト seed + ライト個別上書き（明示「ライト」選択） --- */
+:root[data-theme="light"] {
+  --color-primary: #0036cb;
+  --color-secondary: #00a3b5;
+  --color-accent: #7c3aed;
+  --color-background: #f7f8fa;
+  --color-surface: #ffffff;
+  --color-surface-elevated: #eef2f7;
+  --color-text: #111827;
+  --color-text-muted: #6b7280;
+  --color-text-inverse: #ffffff;
+  --color-border: #d7dee8;
+  --color-info: #2563eb;
+  --color-success: #16a34a;
+  --color-warning: #f59e0b;
+  --color-error: #dc2626;
+
+  /* ダーク前提の派生の上書き（白地では暗い文字が要る / CTA は白文字が要る） */
+  --accent-text: color-mix(in srgb, var(--accent) 55%, var(--color-text));
+  --primary-text: color-mix(in srgb, var(--primary) 55%, var(--color-text));
+  --warn-text: color-mix(in srgb, var(--warn) 55%, var(--color-text));
+  --danger-text: color-mix(in srgb, var(--danger) 60%, var(--color-text));
+  --info-text: color-mix(in srgb, var(--info) 55%, var(--color-text));
+  --btn-primary-fg: var(--color-text-inverse);
+}
+
+/* --- 「システム」かつ OS ライト時（data-theme 未指定なら media に委譲） --- */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    --color-primary: #0036cb;
+    --color-secondary: #00a3b5;
+    --color-accent: #7c3aed;
+    --color-background: #f7f8fa;
+    --color-surface: #ffffff;
+    --color-surface-elevated: #eef2f7;
+    --color-text: #111827;
+    --color-text-muted: #6b7280;
+    --color-text-inverse: #ffffff;
+    --color-border: #d7dee8;
+    --color-info: #2563eb;
+    --color-success: #16a34a;
+    --color-warning: #f59e0b;
+    --color-error: #dc2626;
+
+    --accent-text: color-mix(in srgb, var(--accent) 55%, var(--color-text));
+    --primary-text: color-mix(in srgb, var(--primary) 55%, var(--color-text));
+    --warn-text: color-mix(in srgb, var(--warn) 55%, var(--color-text));
+    --danger-text: color-mix(in srgb, var(--danger) 60%, var(--color-text));
+    --info-text: color-mix(in srgb, var(--info) 55%, var(--color-text));
+    --btn-primary-fg: var(--color-text-inverse);
+  }
+}
+
 * {
   box-sizing: border-box;
 }

@@ -95,6 +95,10 @@
   text-align: left;
   flex-shrink: 0;
 }
+/* 隣接する ghost ナビ（診断 / 設定）同士のみ間隔をあける */
+.ghost + .ghost {
+  margin-top: 8px;
+}
 .ghost.active {
   background: var(--primary-soft);
   border-color: var(--primary-soft-border);

@@ -7,6 +7,8 @@ import { MainScreen } from "./screens/main/MainScreen";
 import { AddToolScreen } from "./screens/add-tool/AddToolScreen";
 import { AddPresetScreen } from "./screens/add-preset/AddPresetScreen";
 import { DiagnosticsScreen } from "./screens/diagnostics/DiagnosticsScreen";
+import { SettingsScreen } from "./screens/settings/SettingsScreen";
+import { useTheme } from "./features/theme/useTheme";
 import { useTools } from "./features/tools/useTools";
 import { deleteTool } from "./features/tools/toolApi";
 import { usePresets } from "./features/presets/usePresets";
@@ -23,6 +25,9 @@ import type { LaunchMode, PresetItemMeta } from "./features/presets/types";
 
 function App() {
   const [screen, setScreen] = useState<Screen>("main");
+
+  const { preference: themePreference, setPreference: setThemePreference } =
+    useTheme();
 
   const { tools, reload: reloadTools } = useTools();
   const { presets, reload: reloadPresets } = usePresets();
@@ -255,6 +260,13 @@ function App() {
         />
       )}
       {screen === "diagnostics" && <DiagnosticsScreen onNavigate={setScreen} />}
+      {screen === "settings" && (
+        <SettingsScreen
+          onNavigate={setScreen}
+          preference={themePreference}
+          onChangePreference={setThemePreference}
+        />
+      )}
     </Window>
   );
 }

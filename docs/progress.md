@@ -1435,3 +1435,68 @@ StillPending 据え置きにしているのに、停止側だけ非対称だっ�
 ### やっていないこと（スコープ外）
 
 - ライト/ダーク切替・OS 検知・設定画面（016）/ レイアウト・props/API・文言・アイコン方式の変更 / 新ライブラリ・外部リソース追加なし（§CSP 準拠）。
+
+## 2026-07-10 (016 Light/Dark Theme + Settings)
+
+### 完了したこと
+
+- **ライト値セット**と**テーマ切替（システム / ライト / ダーク）**を追加。既定は OS 設定に追従し、**設定画面**で明示選択・永続化できるようにした（ユーザー要望 4）。015 のトークン体系を土台にライト seed とスイッチ機構を載せただけで、配色トークン自体の再設計はしていない。
+- サイドバーに「⚙ 設定」ナビを追加（diagnostics パターン踏襲）。設定画面でテーマ 3 択が**即時反映**、localStorage で**再起動後も保持**、「システム」時は CSS の `prefers-color-scheme` が **OS 変更へライブ追従**。
+
+### テーマ切替の実装方式（frontend のみ / 外部通信なし）
+
+- **CSS（`src/styles/theme.css`）**: seed の `--color-*` をテーマごとに差し替えると、役割トークンは color-mix 派生なのでほぼ全て自動追従する（015 の設計を利用）。
+  - 既存 `:root`（015=ダーク）は**丸ごと温存**し「既定」兼「OS ダーク時のシステム追従」を兼ねる（media-dark は :root と重複するため置かない）。
+  - `:root[data-theme="dark"]`（明示ダーク・値は 015 と同一）/ `:root[data-theme="light"]`（明示ライト）/ `@media (prefers-color-scheme: light) { :root:not([data-theme]) }`（システム時 OS ライト）を追加。
+  - 切替の勝ち負け: システム→ダークは `data-theme="dark"` で base(dark) 適用＆media-light を `:not([data-theme])` で無効化。システム→ライトは `[data-theme="light"]`(0,2,0) が `:root`(0,1,0) に勝つ。両方向でトグルが勝つことを確認。
+- **状態/永続化**: `ThemePreference = "system" | "light" | "dark"`（既定 `system`）。localStorage キー **`stream-dock.theme`（1 個）**、不正値・例外は `system` にフォールバック（`features/theme/theme.ts`）。
+- **反映**: `document.documentElement` に `system`→`removeAttribute("data-theme")` / `light|dark`→`setAttribute`。`useTheme()` フックが保存＋DOM反映を担い、App.tsx から SettingsScreen へ props で渡す。
+- **FOUC 防止**: `main.tsx` で React render 前に `applyThemePreference(loadThemePreference())` を同期適用。
+- **matchMedia 監視は不採用**: 「システム」時は data-theme 未設定で CSS の media が OS 変更へ自動追従するため、JS 側の監視は不要（任意項目）。
+
+### ライト値マッピング（seed = CastDock A案 パレット `:root`）
+
+| 役割 seed | ライト | ダーク(015=パレット.dark) |
+|---|---|---|
+| primary | `#0036CB` | `#2F6BFF` |
+| secondary | `#00A3B5` | `#22D3EE` |
+| accent | `#7C3AED` | `#A78BFA` |
+| background | `#F7F8FA` | `#090D18` |
+| surface | `#FFFFFF` | `#111827` |
+| surface-elevated | `#EEF2F7` | `#1B2435` |
+| text | `#111827` | `#F9FAFB` |
+| text-muted | `#6B7280` | `#9CA3AF` |
+| text-inverse | `#FFFFFF` | `#090D18` |
+| border | `#D7DEE8` | `#2D3748` |
+| info / success / warning / error | `#2563EB` / `#16A34A` / `#F59E0B` / `#DC2626` | `#60A5FA` / `#4ADE80` / `#FBBF24` / `#F87171` |
+
+- **015 のダーク seed はパレット `.dark` と完全一致**（齟齬なし・勝手な変更なし）。
+
+### ライトで個別上書きした「ダーク前提の派生」（新色は足さない）
+
+1. `-text` 系（015 は `mix(色, #fff)` で暗い面用の明るい文字を作る）を、ライトでは **mix 先を `var(--color-text)`(=#111827)** に再導出: `--accent-text` / `--primary-text` / `--warn-text` / `--danger-text` / `--info-text`（白地の淡いソフト背景に暗い文字が載るように）。
+2. `--btn-primary-fg`（base=`var(--text)`）は、ライトの CTA グラデ（teal→purple）で暗い文字が判読不能になるため **`var(--color-text-inverse)`(=#FFFFFF)** に上書き。
+- いずれも**パレット既存色のみ**を使用。新たな基準色の追加は無し。
+
+### 派生色の判断（ユーザー確認済み）
+
+- `--elev-gradient`（一括停止ボタン背景 & カード面。`mix(text 10%→5%, transparent)`）: ライトでは「白地に薄いグレーのティント」に自動追従しコントラストは保たれる → **そのまま自動追従で採用**（ライト個別上書きなし・新色ゼロ・最小変更）。
+- 影（`--shadow-1` = 黒 12%）は白地でも標準的に成立するため**維持**。
+- 相談が必要な不足色は**無し**（すべてパレット既存色＋派生で表現可能）。
+
+### 作成・変更ファイル
+
+- 変更: `styles/theme.css`（テーマブロック追加・既存 :root 温存）/ `types.ts`（`Screen` に `"settings"`）/ `main.tsx`（初期適用）/ `App.tsx`（`useTheme` 配線・設定画面描画）/ `components/Sidebar.tsx`（設定ナビ・`activeNav` 型拡張）/ `components/Sidebar.module.css`（隣接 ghost ナビの間隔）。
+- 新規: `features/theme/theme.ts` / `features/theme/useTheme.ts` / `screens/settings/SettingsScreen.tsx` / `screens/settings/SettingsScreen.module.css`（トークン参照のみ）。
+
+### 検証結果
+
+- `grep -rnE '#[0-9a-fA-F]{3,8}|rgba?\(' --include=*.module.css`（`var(--` 除外）→ **0 件**（新規 CSS も含めトークン参照のみ）。
+- `pnpm --filter ./apps/desktop typecheck` → 成功（exit 0）
+- `pnpm --filter ./apps/desktop lint` → 成功（exit 0）
+- `pnpm --filter ./apps/desktop build`（tsc && vite build）→ 成功（67 modules、CSS 29.11 kB）
+- **実機表示（`tauri dev`）は未実施**: 初回 OS 追従 / 設定で 3 択即時反映 / 再起動後保持 / システム時 OS 変更追従 / ライト・ダーク双方で全画面（メイン/ツール追加/プリセット追加/診断/設定/サイドバー/プレビュー）が破綻しない、をユーザー環境で確認をお願いしたい。
+
+### やっていないこと（スコープ外）
+
+- 019「PC起動時の動作」「起動間隔を設定」プレースホルダは未実装（温存）/ 015 トークンの再設計 / テーマの外部同期・クラウド保存 / 設定画面のテーマ以外の項目 / アニメ付きトランジション / 新ライブラリ・外部リソース追加なし（§CSP・ローカル保存のみ）。
