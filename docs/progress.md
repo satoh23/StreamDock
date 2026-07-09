@@ -1377,3 +1377,61 @@ StillPending 据え置きにしているのに、停止側だけ非対称だっ�
   008 由来の停止が退行しない / サイドバー個別起動は一括停止の対象外 / 所属 preset_item を解決できない
   ケース（削除済み等）でも起動は失敗しない。
 - git commit は未実施（指示があってから）。
+
+---
+
+## 2026-07-10 (015 Design Tokens & Color Unification)
+
+### 完了したこと
+
+- 配色を **役割ベースのデザイントークン（CSS 変数）** に集約し、「配色がダサい・見にくい」「ボタン等の色が不統一」を解消。ダーク単色のまま洗練し、色のハードコードをトークンへ寄せた（ライト/ダーク切替・OS 検知・設定は 016 の範囲、015 はその土台）。
+- **パレット**: CastDock A案 Clean Dock の `.dark` 値を唯一のパレットとして採用。`.dark`/`prefers-color-scheme` を使う箇所は現状ゼロのため、`.dark` の hex を **`:root` の seed 変数**（`--color-*`）として配置（トグル機構は 016 で追加）。
+- **9 個の `*.module.css` の生 hex/rgba（計 192 箇所）を全廃**し、すべて `var(--...)` 参照に置換（grep で 0 件確認）。
+
+### 採用したトークン体系（`apps/desktop/src/styles/theme.css`）
+
+- seed（パレット）: `--color-background #090D18` / `--color-surface #111827` / `--color-surface-elevated #1B2435` / `--color-border #2D3748` / `--color-text #F9FAFB` / `--color-text-muted #9CA3AF` / `--color-text-inverse #090D18` / `--color-primary #2F6BFF` / `--color-secondary #22D3EE` / `--color-accent #A78BFA` / `--color-info #60A5FA` / `--color-success #4ADE80` / `--color-warning #FBBF24` / `--color-error #F87171`
+- 役割トークン（既存 `--bg`/`--text`/`--muted`/`--line`/`--accent`/`--accent-2`/`--ok`/`--warn`/`--danger`/`--radius` は温存し値を seed 参照へ更新）:
+  - 表面: `--surface` / `--surface-2` / `--surface-hover` / `--surface-subtle` / `--control-bg` / `--control-bg-hover`
+  - 境界: `--line` / `--border-soft`
+  - 文字: `--text` / `--muted` / `--text-faint` / `--text-inverse` / `--muted-soft` / `--muted-border`
+  - アクセント: `--accent`(secondary cyan) / `--accent-2`(purple) / `--accent-soft` / `--accent-soft-border` / `--accent-text`
+  - primary（**新規** CTA/選択/フォーカス）: `--primary` / `--primary-soft` / `--primary-soft-border` / `--primary-text`
+  - ステータス: `--ok`/`--warn`/`--danger`/`--info` と各 `*-soft` / `*-border`（+ `--warn-border-strong` / `--danger-border-strong` / `--danger-focus` / `--*-text`）
+  - ボタン/elevation: `--btn-primary-bg`(secondary↔accent グラデ) / `--btn-primary-fg` / `--shadow-drop` / `--btn-ghost-bg` / `--btn-ghost-border` / `--elev-gradient` / `--elev-border` / `--shadow-1` / `--shadow-inset` / `--overlay-scrollbar` / `--spinner-track`
+
+### パレットのマッピング（役割 → seed）
+
+- 背景=background / カード・パネル=surface / toolbar・panelHead・footer・emptyState=surface-elevated / 標準境界=border / 文字=text・text-muted。
+- **primary #2F6BFF は CTA/選択/フォーカスに限定**（広面積禁止）: 選択中プリセット・アクティブ step・選択済みツール・編集トグル ON・空状態 CTA・チェックボックス accent-color を primary 系へ統一。
+- secondary #22D3EE（`--accent`）と accent #A78BFA（`--accent-2`）は装飾アクセント（IconTile・parallel バッジ・dropzone・appIcon・previewName・newRow 等）に限定。
+- info/success/warning/error → info/ok/warn/danger バッジ・バナー・入力エラー。
+
+### 派生色（color-mix・新基準色は追加せず）
+
+- hover 面 / 弱い境界 / 半透明 white オーバーレイ（input・ghost・chip・elevation グラデ）
+- placeholder（muted 72%）/ accent 上の淡色文字 / danger・info・warn の淡色文字
+- 各ステータスの弱背景・弱境界 / accent 弱背景・弱境界 / 影・inset ハイライト・scrollbar
+- 装飾用ラジアルグロー（startBtn / appIcon / dropzone / toolOption.selected / newRow）は `color-mix(in srgb, var(--accent|--primary) N%, transparent)` で表現
+
+### 設計判断（ユーザー確認済み）
+
+1. プライマリボタンのグラデ両端 → **secondary↔accent（#22D3EE↔#A78BFA）**（現 cyan→purple の雰囲気を継承）
+2. 選択・CTA の色 → **primary 青 #2F6BFF に寄せる**（cyan は装飾アクセント限定）
+3. パネル/サイドバー等の表面 → **ソリッドに集約**（半透明レイヤー廃止、sidebar/main は `--bg`）
+
+### 置換範囲（生 hex/rgba → var）
+
+- `MainScreen`(51) / `primitives`(31) / `AddPreset`(31) / `Sidebar`(22) / `AddTool`(18) / `Diagnostics`(17) / `formLayout`(12) / `PreviewCard`(9) / `Window`(1) = 192 箇所すべて。
+
+### 検証結果
+
+- `grep -riE '#[0-9a-f]{3,8}\b|rgba?\(' --include=*.module.css` → **0 件**（module.css は完全にトークン参照のみ）
+- `pnpm --filter ./apps/desktop typecheck` → 成功（exit 0）
+- `pnpm --filter ./apps/desktop lint` → 成功（exit 0）
+- `pnpm --filter ./apps/desktop build`（tsc && vite build）→ 成功（63 modules、CSS 26.11 kB）
+- **実機表示（`tauri dev`）は未実施**: 全画面（メイン/ツール追加/プリセット追加/診断/サイドバー/プレビュー）の視覚破綻なしはユーザー環境で確認をお願いしたい。
+
+### やっていないこと（スコープ外）
+
+- ライト/ダーク切替・OS 検知・設定画面（016）/ レイアウト・props/API・文言・アイコン方式の変更 / 新ライブラリ・外部リソース追加なし（§CSP 準拠）。

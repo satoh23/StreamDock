@@ -15,5 +15,5 @@
   min-height: 0;
   overflow: auto;
   padding: 28px;
-  background: rgba(13, 20, 38, 0.48);
+  background: var(--bg);
 }

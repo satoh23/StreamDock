@@ -1,13 +1,97 @@
 :root {
-  --bg: #0b1020;
-  --text: #eef4ff;
-  --muted: #93a4bc;
-  --line: #26334f;
-  --accent: #67e8f9;
-  --accent-2: #8b5cf6;
-  --ok: #34d399;
-  --warn: #fbbf24;
-  --danger: #fb7185;
+  /* --- seed palette (CastDock A案 Clean Dock / dark) ---
+     016 でライト値を差し込む前提。015 はダーク単色なのでこの値を唯一のパレットとして使う。
+     色は必ず role トークン経由で参照し、*.module.css には生 hex/rgba を残さない。 */
+  --color-background: #090d18;
+  --color-surface: #111827;
+  --color-surface-elevated: #1b2435;
+  --color-border: #2d3748;
+  --color-text: #f9fafb;
+  --color-text-muted: #9ca3af;
+  --color-text-inverse: #090d18;
+  /* primary(#2f6bff) は広面積・アプリ背景に使わない。CTA / 選択 / フォーカスに限定。 */
+  --color-primary: #2f6bff;
+  --color-secondary: #22d3ee;
+  --color-accent: #a78bfa;
+  --color-info: #60a5fa;
+  --color-success: #4ade80;
+  --color-warning: #fbbf24;
+  --color-error: #f87171;
+
+  /* --- role tokens --- */
+  /* 背景・表面 */
+  --bg: var(--color-background);
+  --surface: var(--color-surface);
+  --surface-2: var(--color-surface-elevated);
+  --surface-hover: color-mix(in srgb, var(--color-text) 8%, var(--surface));
+  --surface-subtle: color-mix(in srgb, var(--color-text) 4%, transparent);
+  --control-bg: color-mix(in srgb, var(--color-text) 6%, transparent);
+  --control-bg-hover: color-mix(in srgb, var(--color-text) 12%, transparent);
+
+  /* 境界 */
+  --line: var(--color-border);
+  --border-soft: color-mix(in srgb, var(--color-text) 8%, transparent);
+
+  /* 文字 */
+  --text: var(--color-text);
+  --muted: var(--color-text-muted);
+  --text-faint: color-mix(in srgb, var(--color-text-muted) 72%, transparent);
+  --text-inverse: var(--color-text-inverse);
+  --muted-soft: color-mix(in srgb, var(--muted) 10%, transparent);
+  --muted-border: color-mix(in srgb, var(--muted) 22%, transparent);
+
+  /* アクセント（cyan/purple 系・装飾） */
+  --accent: var(--color-secondary);
+  --accent-2: var(--color-accent);
+  --accent-soft: color-mix(in srgb, var(--accent) 10%, transparent);
+  --accent-soft-border: color-mix(in srgb, var(--accent) 20%, transparent);
+  --accent-text: color-mix(in srgb, var(--accent) 55%, #fff);
+
+  /* primary（CTA / 選択 / フォーカス） */
+  --primary: var(--color-primary);
+  --primary-soft: color-mix(in srgb, var(--primary) 12%, transparent);
+  --primary-soft-border: color-mix(in srgb, var(--primary) 32%, transparent);
+  --primary-text: color-mix(in srgb, var(--primary) 55%, #fff);
+
+  /* ステータス（+ 弱背景 / 弱境界 / 淡色文字） */
+  --ok: var(--color-success);
+  --ok-soft: color-mix(in srgb, var(--ok) 10%, transparent);
+  --ok-border: color-mix(in srgb, var(--ok) 18%, transparent);
+  --warn: var(--color-warning);
+  --warn-soft: color-mix(in srgb, var(--warn) 10%, transparent);
+  --warn-border: color-mix(in srgb, var(--warn) 18%, transparent);
+  --warn-border-strong: color-mix(in srgb, var(--warn) 30%, transparent);
+  --warn-text: color-mix(in srgb, var(--warn) 55%, #fff);
+  --danger: var(--color-error);
+  --danger-soft: color-mix(in srgb, var(--danger) 11%, transparent);
+  --danger-border: color-mix(in srgb, var(--danger) 18%, transparent);
+  --danger-border-strong: color-mix(in srgb, var(--danger) 30%, transparent);
+  --danger-focus: color-mix(in srgb, var(--danger) 70%, transparent);
+  --danger-text: color-mix(in srgb, var(--danger) 60%, #fff);
+  --info: var(--color-info);
+  --info-soft: color-mix(in srgb, var(--info) 12%, transparent);
+  --info-border: color-mix(in srgb, var(--info) 30%, transparent);
+  --info-text: color-mix(in srgb, var(--info) 55%, #fff);
+
+  /* ボタン・elevation */
+  --btn-primary-bg: linear-gradient(135deg, var(--color-secondary), var(--color-accent));
+  --btn-primary-fg: var(--text);
+  --btn-primary-shadow: color-mix(in srgb, var(--color-secondary) 16%, transparent);
+  --btn-ghost-bg: var(--control-bg);
+  --btn-ghost-border: var(--border-soft);
+  --btn-ghost-fg: var(--text);
+  --elev-gradient: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-text) 10%, transparent),
+    color-mix(in srgb, var(--color-text) 5%, transparent)
+  );
+  --elev-border: color-mix(in srgb, var(--color-text) 10%, transparent);
+  --shadow-1: 0 6px 16px color-mix(in srgb, #000 12%, transparent);
+  --shadow-drop: 0 12px 26px var(--btn-primary-shadow);
+  --shadow-inset: inset 0 1px 0 color-mix(in srgb, var(--color-text) 8%, transparent);
+  --overlay-scrollbar: color-mix(in srgb, var(--color-text-muted) 22%, transparent);
+  --spinner-track: color-mix(in srgb, var(--color-text) 25%, transparent);
+
   --radius: 18px;
 
   color: var(--text);

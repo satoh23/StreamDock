@@ -1,7 +1,7 @@
 .panel {
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: rgba(18, 26, 47, 0.58);
+  background: var(--surface);
   overflow: hidden;
 }
 .previewCard {
@@ -23,7 +23,7 @@
   background: transparent;
 }
 .previewRows::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.22);
+  background: var(--overlay-scrollbar);
   border-radius: 999px;
 }
 
@@ -36,8 +36,8 @@
 .previewName {
   padding: 14px;
   border-radius: 15px;
-  background: rgba(103, 232, 249, 0.065);
-  border: 1px solid rgba(103, 232, 249, 0.22);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-soft-border);
   margin-bottom: 14px;
 }
 .previewName h3 {
@@ -55,7 +55,7 @@
   gap: 12px;
   align-items: center;
   padding: 13px 0;
-  border-top: 1px solid rgba(255, 255, 255, 0.055);
+  border-top: 1px solid var(--border-soft);
 }
 .previewRow:first-of-type {
   border-top: 0;
@@ -77,11 +77,11 @@
 .newRow {
   margin: 8px 0 0;
   padding: 13px 8px;
-  border: 1px solid rgba(103, 232, 249, 0.3);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
   border-radius: 14px;
   background:
-    radial-gradient(circle at left, rgba(103, 232, 249, 0.14), transparent 64%),
-    rgba(103, 232, 249, 0.055);
+    radial-gradient(circle at left, color-mix(in srgb, var(--accent) 14%, transparent), transparent 64%),
+    var(--accent-soft);
 }
 
 .plainHelp {
@@ -98,6 +98,6 @@
   color: var(--muted);
   font-size: 12px;
   line-height: 1.6;
-  border: 1px dashed rgba(148, 163, 184, 0.24);
+  border: 1px dashed var(--muted-border);
   border-radius: 15px;
 }

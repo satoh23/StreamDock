@@ -15,14 +15,14 @@
 - 011 Error Handling / Logs
 - 012 Rust Common Helper Refactor
 - 013 macOS App Bundle Stop
+- 014 Bulk Stop for Individual Launches
 
 ## Next
 
-- 014 Bulk Stop for Individual Launches
+- 015 Design Tokens & Color Unification
 
 ## Todo
 
-- 015 Design Tokens & Color Unification
 - 016 Light/Dark Theme + Settings
 - 017 Tool Path Input Lock
 - 018 Tool Icon Auto-Extraction

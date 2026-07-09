@@ -34,13 +34,13 @@
 .panel {
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: rgba(18, 26, 47, 0.58);
+  background: var(--surface);
   overflow: hidden;
 }
 .panelHead {
   padding: 16px 18px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-  background: rgba(18, 26, 47, 0.76);
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--surface-2);
 }
 .panelHead h3 {
   font-size: 17px;
@@ -62,7 +62,7 @@
 .field label {
   display: block;
   margin-bottom: 7px;
-  color: #cbd5e1;
+  color: var(--text);
   font-size: 12px;
   font-weight: 800;
 }
@@ -74,20 +74,20 @@
   border-radius: 12px;
   outline: none;
   color: var(--text);
-  background: rgba(255, 255, 255, 0.055);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--control-bg);
+  border: 1px solid var(--border-soft);
   font-size: 13px;
 }
 .field select {
   appearance: none;
 }
 .field input::placeholder {
-  color: rgba(148, 163, 184, 0.72);
+  color: var(--text-faint);
 }
 .field input.inputError,
 .field input.inputError:focus {
-  border-color: rgba(248, 113, 113, 0.7);
-  background: rgba(248, 113, 113, 0.08);
+  border-color: var(--danger-focus);
+  background: var(--danger-soft);
 }
 .fieldHelp {
   margin-top: 6px;
@@ -113,9 +113,9 @@
   margin-top: 12px;
   padding: 10px 12px;
   border-radius: 12px;
-  color: #fecaca;
+  color: var(--danger-text);
   font-size: 13px;
   line-height: 1.5;
-  background: rgba(248, 113, 113, 0.12);
-  border: 1px solid rgba(248, 113, 113, 0.3);
+  background: var(--danger-soft);
+  border: 1px solid var(--danger-border-strong);
 }
