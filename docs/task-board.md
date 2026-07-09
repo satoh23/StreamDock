@@ -12,14 +12,23 @@
 - 008 Bulk Launch
 - 009 Process Stop
 - 010 Runtime Status
+- 011 Error Handling / Logs
+- 012 Rust Common Helper Refactor
+- 013 macOS App Bundle Stop
 
 ## Next
 
-- 011 Error Handling / Logs
+- 014 Bulk Stop for Individual Launches
 
 ## Todo
 
-- 012 Rust Common Helper Refactor
-- 013 macOS App Bundle Stop
-- 014 Windows Build
-- 015 User Test Package
+- 015 Design Tokens & Color Unification
+- 016 Light/Dark Theme + Settings
+- 017 Tool Path Input Lock
+- 018 Tool Icon Auto-Extraction
+- 019 Preset Auto-Launch on Boot
+
+## MVP リリース前最後
+
+- 098 Windows Build
+- 099 User Test Package
