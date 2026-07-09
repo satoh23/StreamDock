@@ -69,22 +69,25 @@ pub fn launch_tool(
     };
 
     match service::spawn(&tool) {
-        Ok(child) => {
-            let process_id = child.id();
+        Ok(handle) => {
+            // macOS `.app` の未同定起動時は実 PID がまだ無い（resolved_pid = None）。ログには載せず、
+            // wire 値（LaunchToolResult.process_id: u32）は 0 に丸める（診断表示のみ）。
+            let resolved_pid = handle.resolved_pid();
+            let process_id = handle.wire_pid();
             let started_at = now_rfc3339();
-            let launch_id = service::register(&registry, &tool, None, None, child, started_at.clone());
-            log(
-                &db,
-                NewLog::new(
-                    LogLevel::Info,
-                    LogCategory::ProcessLaunch,
-                    "launch_tool",
-                    format!("{} を起動しました", tool.name),
-                )
-                .tool(tool.id.clone(), tool.name.clone())
-                .launch_id(launch_id.clone())
-                .process_id(process_id),
-            );
+            let launch_id = service::register(&registry, &tool, None, None, handle, started_at.clone());
+            let mut entry = NewLog::new(
+                LogLevel::Info,
+                LogCategory::ProcessLaunch,
+                "launch_tool",
+                format!("{} を起動しました", tool.name),
+            )
+            .tool(tool.id.clone(), tool.name.clone())
+            .launch_id(launch_id.clone());
+            if let Some(pid) = resolved_pid {
+                entry = entry.process_id(pid);
+            }
+            log(&db, entry);
             Ok(LaunchToolResult {
                 launch_id,
                 tool_id: tool.id,

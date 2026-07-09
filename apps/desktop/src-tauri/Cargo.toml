@@ -28,3 +28,10 @@ uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["clock"] }
 ts-rs = "10"
 
+# macOS の `.app` は `/usr/bin/open`（LaunchServices）経由で起動するため、掴む Child は実アプリでは
+# なく即終了する open ヘルパになる。013 では起動した実アプリの PID を解決し、その PID の生存確認・停止
+# （kill）に sysinfo を用いる（shell 非経由）。用途は自分が起動したプロセスの PID 解決・生存確認・kill に
+# 限定し、Windows/Linux ビルドには載せない（macOS 限定ターゲット依存）。
+[target.'cfg(target_os = "macos")'.dependencies]
+sysinfo = "0.39"
+

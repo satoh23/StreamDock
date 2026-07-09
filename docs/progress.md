@@ -967,3 +967,257 @@ cleanup で `mountedRef.current = false` にするが、effect 本体で `true` 
 
 - `process/commands.rs` の必須チェック共通化（ログ副作用があるため据え置き）
 - git commit は未実施（指示があってから）
+
+## 2026-07-08 (013 macOS App Bundle Stop)
+
+### 完了したこと
+
+- macOS の `.app` を stream-dock から**実際に停止**できるようにし、あわせて **010 Runtime Status の macOS 誤表示**（起動直後に「停止済み」）も解消した。009/010 は変更せず、起動処理（`spawn`）1点の修正で両方の縮退を根本解消
+- **根本原因**（007/008 からの申し送り）: macOS `.app` を `/usr/bin/open` 経由で起動していたため、009 registry が掴む `std::process::Child` が即終了する `open` ヘルパになり、`stop_one` の `try_wait()` が常に `already-exited`（実アプリが止まらない）、`snapshot` の `try_wait()` が即 `Stopped`（起動直後に「停止済み」誤表示）になっていた
+- **採用アプローチ = (a) バンドル内実体バイナリの直接 spawn**（ユーザー確定）。macOS `.app` を `/usr/bin/open` ではなく `Contents/MacOS/<CFBundleExecutable>`（実体バイナリ）を `std::process::Command` で直接 spawn するよう `process::service::spawn` の `is_app_bundle` 分岐を変更。掴む `Child` が実アプリになるため、**registry / `stop_one`（kill）/ `snapshot`（try_wait）は無改修**で 009 の停止・010 の状態監視がそのまま効く（Child ベース機構を再利用）
+- **(b) を採らなかった理由**: registry・停止・状態がすべて `ManagedProcess.child: Child` 前提のため、open 後に実 PID を照合する (b) は raw PID kill 用の別経路・新規依存・PID 再利用対策が必要で変更面が大きく広がる。(a) は変更が `spawn()` の macOS 分岐1箇所に閉じる
+- **CFBundleExecutable の解決**: 新規ヘルパ `resolve_bundle_executable(bundle: &Path) -> AppResult<PathBuf>` を追加。`Contents/Info.plist` を `plist` crate で読み `CFBundleExecutable` を取得 → `Contents/MacOS/<exec>` を組み立て。ディレクトリ走査ヒューリスティックではなく Info.plist を正とすることで、バンドル名 ≠ 実体名のアプリ（例: Visual Studio Code.app → `Electron`）も正確に解決
+- **起動時検証（Layer B）は不変**: 空でない / 絶対パス / 実在 / ディレクトリ拒否（`.app` のみ例外）/ `.lnk`・`.bat` 拒否は 007/008 のまま維持（検証強度を下げない）。Windows(`.exe`)/Linux の直接 spawn 経路（`else` 側）は不変
+
+### 追加ライブラリ（理由）
+
+- `plist`（1.x, 実際に解決されたのは 1.10.0）: macOS `.app` の `Contents/Info.plist` から `CFBundleExecutable`（実体バイナリ名）を解決するために追加。XML/バイナリ両 plist に対応した**読み取り専用パーサ**で、network/fs/shell/updater 系の強権限を要求しない。用途は Info.plist の当該キー読み取りに限定（CLAUDE.md「新ライブラリは理由明記」/ security.md §10「依存を増やしすぎない」に沿って最小用途で導入）
+- 実体は macOS 分岐からのみ利用。呼び出し側（`if is_app_bundle` ブロック）は全プラットフォームでコンパイルされるため dead_code 警告は出ない（`cargo check` warning 0）
+
+### 変更・作成した主要ファイル
+
+- Rust（`apps/desktop/src-tauri/`）: `Cargo.toml`（`plist` 追加）・`src/process/service.rs`（`spawn` の macOS 分岐を実体バイナリ直接 spawn に変更・`resolve_bundle_executable` 新規・`PathBuf` import 追加・009 既知縮退の doc を 013 解消済みに更新）
+- 触っていない: `process/{registry,commands,model}.rs`（`ManagedProcess.child: Child` / `process_id` は既存のまま流用）・型 bindings（wire 不変）・`capabilities/default.json`・DB スキーマ・React 側・Windows/Linux 経路
+
+### path traversal 防御（security）
+
+- `CFBundleExecutable` は悪意ある `.app` なら任意値を持ちうるため、`resolve_bundle_executable` で **空 / `/` を含む / `..` を含む値を拒否**し、`Contents/MacOS/` 直下の**実在する通常ファイル**（`is_file()`）に限定。バンドル外・親ディレクトリへの脱出を防ぐ
+- 解決失敗・plist 破損・実体不在はいずれもフルパスや plist 内容を露出させず固定文言 `launch_failed`（「プロセスの起動に失敗しました」）に丸め（`spawn` の他エラー・`with_filename_detail` のサニタイズ方針と整合）
+
+### 検証結果
+
+- `cargo check` 成功（warning 0。`plist` 1.10.0 のコンパイル込み）
+- `cargo test export_bindings` 成功（24 tests ok）→ **bindings 生成物に差分ゼロ**（型・wire・挙動が不変であることの証跡。`gen:bindings` のコミット不要）
+- `pnpm --filter ./apps/desktop typecheck` 成功（exit 0）
+- `pnpm --filter ./apps/desktop lint` 成功（exit 0 / warning なし）
+- `pnpm --filter ./apps/desktop build`（tsc && vite build）成功（63 modules）
+- ※ `pnpm tauri dev` の macOS 実機 E2E（`.app` を起動 → 単体停止 / Preset 単位停止で実アプリが終了する ／ 起動後に Runtime Status が「起動済み(running)」を継続表示し実アプリ終了時に「停止済み」へ遷移する ／ Electron 系など bundle 名 ≠ exec 名の `.app` でも起動・停止できる ／ 存在しないパス・非 .app ディレクトリ・.bat は従来どおりエラー ／ Windows・Linux 経路〈004〜010〉が非破壊）は表示環境が必要なためユーザー環境での確認を推奨
+
+### セキュリティ確認（docs/security.md 準拠 / 起動処理変更のため security-review 必須）
+
+- shell 非経由: `/usr/bin/open` を廃し `Command::new(<exec>)` の直接 spawn。`sh -c` / `open` のシェル展開なし・文字列連結でコマンド生成なし・path は配列（`Command::new`）で明示、追加引数なし
+- frontend からは toolId / presetId のみ。任意 path / command を渡せない。exec の解決元は登録済み `executablePath`（Layer A/B 検証済み）配下の Info.plist に限定
+- path traversal 防御（上記）でバンドル外実行を防止。情報漏洩なし（固定文言に丸め）
+- 停止・状態は不変（`stop_one` の `kill` / `snapshot` の `try_wait` は無改修で registry 内プロセス限定）。raw PID kill・プロセスツリー停止・常時死活監視は追加していない
+- Tauri capabilities / permissions 変更なし・外部通信追加なし・危険な汎用 command 追加なし・DB スキーマ不変
+
+### やっていないこと / 既知の残課題（今回スコープ外・据え置き）
+
+- **LaunchServices 非経由による挙動差**: 単一インスタンス制御・アクティベーション・既起動アプリの再アクティブ化が効かず、直接 spawn は常に新インスタンスを起動しうる（streaming ツール用途では許容範囲と判断。バンドル内 exec を起動するため `NSBundle.mainBundle` 等のバンドル文脈自体は正しく解決される）
+- graceful shutdown・プロセスツリー全体停止・常時死活監視ループ・OS/アプリ再起動後のプロセス復元
+- git commit は未実施（指示があってから）
+
+## 2026-07-08 (013 修正 v2: 直接spawn退行の是正 / open起動＋実PID方式へ)
+
+### 背景（v1 の退行）
+
+013 v1（直接 spawn 方式）の macOS 実機 E2E で、`/System/Applications/Calendar.app` を起動すると
+**「Calendar が予期しない理由で終了しました」というクラッシュ**が発生した。クラッシュレポートの要点:
+`Exception Type: EXC_CRASH (SIGKILL (Code Signature Invalid))` / `_dyld_start` / `dyld_path_missing` /
+`main_executable_path_missing` / `dyld_process_snapshot_get_shared_cache failed` / `Parent Process: stream-dock`。
+
+### 根本原因（approach (a) 自体の限界・実装バグではない）
+
+`.app` の実体 Mach-O バイナリ（`Contents/MacOS/<CFBundleExecutable>`）を `std::process::Command` で
+**直接 exec すると LaunchServices を通らず**、macOS の **launch constraints（起動制約, macOS 13+）と
+コード署名の起動コンテキスト検証**に違反する。Apple システムアプリ（`/System/Applications/` 配下）は
+「launchd/LaunchServices からのみ起動可」の制約を持つため、親プロセスが stream-dock だとカーネルが
+即 SIGKILL する。→ **`.app` の汎用起動には `/usr/bin/open`（LaunchServices）が必須**で、直接 spawn は不採用。
+
+### 完了したこと（open 起動へ差し戻し ＋ 実 PID 方式で 009/010 を達成）
+
+- **起動を `/usr/bin/open` に戻す**（007/008 と同じ・全アプリで安定。system/サードパーティ両方が起動可）。
+  固定絶対パス・バンドルパスは配列引数（shell 非経由・文字列連結なし）。
+- **実アプリ PID を同定して registry に載せる（approach b・ユーザー確定）**: `open` 実行の前後で
+  「exe の親が `<bundle>/Contents/MacOS` の実行中プロセス」の PID 集合を差分（before/after）し、
+  **新規に現れた PID を優先採用**（最大 ~2 秒ポーリング）。新規が出ない再アクティブ化時は既存一致 PID を採用。
+  同定時の exe 絶対パスを **PID 再利用ガード**用に保持する。
+- **停止（009）**: macOS `.app` は保持 PID が生存かつ exe 一致なら `sysinfo` で kill（SIGKILL）。exe 不一致・
+  不在なら「既終了」扱いで**絶対に kill しない**（PID 再利用による他プロセス停止を防止）。shell 非経由。
+- **状態（010）**: macOS `.app` は保持 PID の生存＋exe 一致で `Running` / それ以外 `Stopped`。これにより
+  「起動直後に停止済み」と「停止しても止まらない」の両縮退が解消。
+- **registry ハンドルの一般化**: `ManagedProcess.child: Child` → `child: Option<Child>` ＋ `exe_path: Option<PathBuf>`。
+  Windows/Linux/非バンドルは従来どおり `child = Some(...)`（`try_wait`/`kill`/`wait` は挙動不変）。macOS `.app` は
+  `child = None` ＋ PID/exe で管理。enum ではなく Option にして非 macOS の未構築 variant による dead_code を回避。
+- **spawn の戻りを一般化**: `spawn(&Tool) -> AppResult<Spawned { process_id, child, exe_path }>`。
+  `register` も `Spawned` を受け取る形に変更（`launch_tool` / `launch_one` の呼び出しを更新）。起動時検証
+  （空/絶対パス/実在/ディレクトリ拒否〈.app 例外〉/`.lnk`・`.bat` 拒否）は 007/008 から不変。
+- v1 で入れた**直接 spawn 分岐・`resolve_bundle_executable`・`plist` 依存は撤去**。
+
+### 依存の変更（理由）
+
+- **撤去**: `plist`（v1 で追加）。open 起動＋PID 同定では Info.plist を読む必要がないため。
+- **追加**: `sysinfo`（0.39, **macOS 限定ターゲット依存** `[target.'cfg(target_os = "macos")'.dependencies]`）。
+  用途は「自分が `open` で起動した実アプリの PID 解決・生存確認・kill」に限定。Windows/Linux ビルドには
+  載せない（014 Windows Build に影響しない）。全使用箇所を `#[cfg(target_os = "macos")] mod macos` に閉じる。
+
+### 変更・作成した主要ファイル
+
+- Rust（`apps/desktop/src-tauri/`）: `Cargo.toml`（plist 撤去・sysinfo を macOS 限定で追加）・
+  `src/process/service.rs`（`Spawned` / open 起動＋PID 同定 `macos::launch_app_bundle` / `stop_by_pid` /
+  `is_running` / `stop_one` と `snapshot` を Option<Child>＋PID 両対応化 / register シグネチャ変更 /
+  v1 の直接 spawn・resolve_bundle_executable を撤去）・`src/process/registry.rs`（`ManagedProcess` の
+  `child: Option<Child>` 化・`exe_path` 追加）・`src/process/commands.rs`（`launch_tool` を Spawned 前提に更新）
+- 触っていない: `process/model.rs` と型 bindings（`process_id: u32` を維持＝**wire 不変**）・
+  `capabilities/default.json`・DB スキーマ・React 側・Windows/Linux 経路（`child = Some`）
+
+### 検証結果
+
+- `cargo check` 成功（sysinfo 0.39.5 込みで warning 0）
+- `cargo test export_bindings` 成功（24 tests）→ **bindings 差分ゼロ**（wire 不変・`gen:bindings` コミット不要）
+- `pnpm --filter ./apps/desktop typecheck` / `lint` / `build`（tsc && vite build）すべて成功
+- ※ 非 macOS ビルドは当環境（darwin）で実行不可。sysinfo と全使用箇所が `#[cfg(target_os = "macos")]` に
+  漏れなく閉じている（`mod macos` 内のみ）ことをコードレビューで担保
+- ※ 実機 E2E（macOS・ユーザー環境）で以下を確認予定: **Calendar.app がクラッシュせず起動**（v1 退行解消）/
+  `.app` 起動→単体・Preset 単位停止で実アプリ終了 / 起動後 Runtime Status が running 継続→終了で stopped /
+  第三者アプリ（OBS/Discord 等）/ 既起動アプリの起動→停止（§6 限界の実挙動）/ 存在しないパス・非 .app・.bat の
+  エラー / Windows・Linux 経路（004〜010）非破壊
+
+### セキュリティ確認（docs/security.md 準拠 / 起動・停止処理変更のため security-review 必須）
+
+- **shell 非経由**: 起動は `/usr/bin/open`（固定絶対パス・配列引数）。停止は `sysinfo` のプロセス kill
+  （システムコール）で `taskkill`/`kill(1)`/`pkill`/`sh -c`/`osascript` を使わない
+- **kill 対象の限定**: stream-dock が `open` した before/after 差分で同定した PID のみ registry に載せ、
+  停止・状態確認の直前に **exe パス一致を再検証（PID 再利用ガード）**。プロセス名だけの kill はしない（§6）
+- **process 列挙（sysinfo）**: 全プロセス列挙は「自分が起動したアプリの PID 解決」に限定した読み取り専用・
+  ローカルのみ。取得情報はログ/画面に出さない・外部送信なし（§9）
+- **情報漏洩**: 解決失敗・open 失敗・タイムアウト・停止失敗はすべて固定文言（`launch_failed`/「プロセスの
+  停止に失敗しました」）に丸め、フルパス・OS エラーを frontend・app_logs に出さない
+- frontend からは toolId/presetId のみ（任意 PID/path/command を渡せない）・capabilities/外部通信の追加なし・
+  Windows/Linux 非破壊（sysinfo は macOS 限定＋cfg・`child = Some` 経路は不変）
+
+### 既知の限界 / 残課題（今回スコープ外・据え置き）
+
+- **§6 の緊張**: 既起動アプリの再アクティブ化時（新規 PID が出ない場合）に既存一致 PID を採用しうるため、
+  ユーザーが手動起動したインスタンスを管理対象に取り込む可能性がある。security-review で妥当性を確認する
+- PID 解決ポーリングによる**起動レイテンシ**（1アプリ最大 ~2 秒・一括起動は逐次で加算）。必要なら後続で最適化
+- graceful shutdown（SIGTERM 猶予）・プロセスツリー全体停止・常時死活監視ループ・再起動後の復元
+- git commit は未実施（指示があってから）
+
+## 2026-07-09 (013 修正 v3: 品質レビュー指摘の是正 / Handle enum 化・遅延解決)
+
+### 背景
+
+013 v2 の品質レビュー（`/code-review high`）で致命1件＋改善6件を検出。ユーザー承認のもと全7件を是正した。
+最重要は **Finding 1**（起動の遅い `.app` が「起動失敗」扱いになり、実際には起動したアプリが registry 未登録＝
+停止不能なオーファンになる）。ユーザー選択で **深い正攻法**（registry ハンドルを `Handle` enum 化し、`open` 成功後は
+PID 未同定でも登録して遅延解決）を採用した。wire（`process_id: u32`）は不変・bindings 差分ゼロを維持。
+
+### 中核リファクタ: `Handle` enum（`registry.rs`）
+
+- `ManagedProcess` の `process_id: u32` / `child: Option<Child>` / `exe_path: Option<PathBuf>` を単一の
+  `handle: Handle` に統合。不正な組み合わせを表現不能にした:
+  - `Handle::Child(Child)`（Windows/Linux/非バンドル・全プラットフォーム）
+  - `#[cfg(macos)] Handle::MacResolved { pid, exe_path, start_time }`（同定済み）
+  - `#[cfg(macos)] Handle::MacUnresolved { exe_dir, deadline }`（open 成功・PID 未同定＝遅延解決待ち）
+- macOS 専用 variant を cfg 分岐にしたことで **非 macOS はフィールド自体が存在せず dead_code 警告ゼロ**、
+  v2 にあった `stop_managed_by_pid` / `runtime_status_by_pid` の cfg フォールバック関数対と
+  `spawn_app_bundle` の `unreachable!` スタブが**不要になり削除**。
+- wire は `Handle::wire_pid() -> u32`（未同定は `0`＝`commands.rs` の NotFound と同じ前例）と
+  `resolved_pid() -> Option<u32>`（ログ / `BulkLaunchToolResult.process_id` 用）で境界のみ導出。
+- `spawn(&Tool) -> AppResult<Handle>`（v2 の `Spawned` 構造体は撤去）。`register` も `Handle` を受け取る。
+
+### 各 Finding の是正
+
+- **Finding 1（致命・オーファン根治）**: `launch_app_bundle` は `open` 失敗のみ `Err`。同定タイムアウト時は
+  `Err` にせず `Launch::Unresolved { exe_dir, deadline }` を返し `Handle::MacUnresolved` で登録。以降の
+  `snapshot` / `stop` で `exe_dir` から遅延解決する。`deadline`（`RESOLVE_GRACE = 10s`）前は楽観的に
+  `Running` 表示、経過後も現れなければ `Stopped`＋reap（偽失敗を恒久ゴーストにしない）。
+- **Finding 2（PID 再利用ガード強化）**: 同定時の `start_time` を保持し、`stop_by_pid` / `is_running` の
+  再利用ガードを `exe 一致 && start_time 一致` に強化（同一 exe の別インスタンスへの PID 再割当を弾く）。
+- **Finding 3（stop の refresh→kill レース）**: `stop_by_pid` は `kill()==false` 時にもう一度リフレッシュし、
+  PID が消えていれば `None`（= already-exited）を返す。自然終了直前の停止で「停止失敗」を誤報告し
+  dead エントリを registry へ再挿入する退行を解消。
+- **Finding 4（一括起動レイテンシ）**: 同期ポーリング窓を `2.0s`（20×100ms）→ `~0.5s`（5×100ms）に短縮
+  （タイムアウトが非致命になったため）。速いパス（before 集合で新規 PID 優先）は同期窓に残す。
+  一括起動は `launch_one` 逐次のため N×窓 の線形依存は残る（スレッド化は 008 方針に反するため今回はしない）。
+- **Finding 5（効率）**: ポーリングで `System` を1つ生成して使い回し（毎周回の `System::new()`＋全列挙を回避）。
+  snapshot の遅延解決も **ロック外で `refresh_all()` を1回だけ**呼ぶ3フェーズ構成（重い全列挙を registry
+  ロック下で回さない）。複数未同定エントリが同一 PID を取り合わないようパス横断で重複排除。
+- **Finding 6（効率）**: ポーリング最終回の無駄な `sleep(100ms)` を除去。
+- **Finding 7（文書化のみ・下記「既知の限界」）**: コード変更なし。
+
+### snapshot の3フェーズ構成（ロック保持時間を増やさない）
+
+1. **Phase A（ロック内・軽量）**: `Child::try_wait()` / `MacResolved` の単一 PID 確認を実施。`MacUnresolved` は
+   `(launch_id, exe_dir, deadline)` を収集するのみ。解決済み PID は `claimed` に控える。
+2. **Phase B（ロック外）**: 未同定エントリを `resolve_pending` で **1 回の全列挙**でまとめて解決。
+3. **Phase C（ロック再取得）**: 解決結果を反映（`MacResolved` へ遷移／楽観 Running／deadline 超過は Stopped）し、
+   終了検知分を reap。Phase A/B の間に消えたエントリは skip。
+
+### 変更・作成した主要ファイル
+
+- `src/process/registry.rs`: `Handle` enum・`ManagedProcess` の `handle` 化・`wire_pid`/`resolved_pid`・`RESOLVE_GRACE`
+- `src/process/service.rs`: `spawn -> Handle`・`macos::Launch`/`Resolution`・`launch_app_bundle`（Unresolved 返却・
+  System 使い回し・窓短縮・末尾 sleep 除去）・`stop_by_pid`（start_time ガード＋kill レース）・`is_running`/`stop_unresolved`/
+  `resolve_pending`・`stop_one`（Handle match）・`snapshot`（3フェーズ）・`build_runtime` ヘルパ
+- `src/process/commands.rs`: `launch_tool`（未同定時は pid ログを省く）
+- 触っていない: `process/model.rs`・型 bindings（**wire 不変**）・`Cargo.toml`（sysinfo 0.39 のまま）・
+  `capabilities`・DB・React 側・Windows/Linux 経路（`Handle::Child` 一択で挙動不変）
+
+### 検証結果
+
+- `cargo check` / `cargo clippy` 成功（**warning 0**）
+- `cargo test export_bindings` 成功（**24 tests** ok）→ **bindings 差分ゼロ**（wire 不変）
+- `pnpm typecheck` / `pnpm lint` 成功
+- 事前検証: sysinfo 0.39.5 の単一 PID リフレッシュでも `start_time` が取得される（`pbi_start_tvsec` 由来で
+  `ProcessRefreshKind` に非依存）ことをクレートソースで確認済み（Finding 2 ガードの前提）
+- ※ 非 macOS ビルドは当環境（darwin）で実行不可。macOS 専用コードが `#[cfg(target_os = "macos")]` に
+  漏れなく閉じ、非 macOS では `Handle` が `Child` 一択で dead_code が出ないことをコードレビューで担保
+- ※ 実機 E2E（macOS・ユーザー環境）で確認予定: 起動の遅い/大型 `.app` を起動 → 「起動失敗」にならず少し後に
+  Running で現れ停止できる（オーファンなし）／ 同一 exe の別インスタンスへ PID 再利用されても他人のアプリを
+  kill しない ／ 自然終了しかけの停止で「停止失敗」誤報告が出ない ／ 起動済み `.app` 複数のプリセット一括起動の体感改善
+
+### 既知の限界 / 残課題（今回スコープ外・据え置き）
+
+- **Finding 7（複数バイナリ `.app`）**: `same_macos_dir` は `Info.plist` の `CFBundleExecutable` ではなく
+  「exe の親が `<bundle>/Contents/MacOS`」の全プロセスに一致する。`Contents/MacOS` 直下に**複数のフラット
+  バイナリ**を持つ `.app`（ランチャスタブ＋本体等）では、本体以外の PID を同定・停止しうる（低頻度・アプリ依存）。
+  Info.plist を読むと撤去済みの `plist` クレート再導入が必要なため、**既知の限界として据え置く**。
+  ネストした `.app`（Electron/Chromium 系）は自分の内側 `Contents/MacOS` が exe 親のため非該当。
+- **§6 の緊張（v2 から継続）**: 既起動アプリの再アクティブ化（新規 PID が出ない）や遅延解決時に、ユーザーが
+  手動起動したインスタンスを管理対象に取り込む可能性。security-review で妥当性を確認する。
+- **一括起動レイテンシ**: 窓短縮で軽減したが `launch_one` 逐次のため線形依存は残る（スレッド化は 008 方針外）。
+- graceful shutdown（SIGTERM 猶予）・プロセスツリー全体停止・常時死活監視ループ・再起動後の復元
+- git commit は未実施（指示があってから）
+
+## 2026-07-09 (013 レビュー指摘 #1 の是正: MacUnresolved 停止の deadline 尊重)
+
+### 直した問題
+
+品質レビューで、`Handle::MacUnresolved`（`open` 成功だが実プロセスがまだプロセステーブルに現れていない
+＝コールドスタート中）に対する停止が、`deadline` を見ずに一律「既終了（already-exited）」と判定して registry
+から**エントリを破棄**していた。結果、実プロセス未出現の窓で停止すると、その後に起動したアプリが stream-dock
+の管理外で動き続け、以降 停止も 010 状態表示も効かなくなる（`snapshot` 側は `deadline` を尊重して
+StillPending 据え置きにしているのに、停止側だけ非対称だった）。
+
+### 変更（`src/process/service.rs` のみ）
+
+- `macos::stop_unresolved` の戻り値を `Option<bool>` → **`UnresolvedStop { Killed(pid) / SendFailed / Gone / NotAppeared }`**
+  へ変更。「一致プロセスが列挙に無い（まだ現れていない）＝ `NotAppeared`」を、`stop_by_pid` の `None`
+  （同定直後に消えた/再利用＝ `Gone`）と区別できるようにした。
+- `stop_one` の `MacUnresolved` 分岐で `deadline` を尊重:
+  - `Killed` → `stopped`（同定した実 PID を停止結果へ反映＝レビュー指摘 #6 も是正。従来は pid 0 表示）
+  - `SendFailed` → `failed`（ハンドルを戻して再試行可能に）
+  - `Gone` → `already-exited`
+  - `NotAppeared` → `deadline` 前なら `failed` ＋ **ハンドルを registry へ戻し**、アプリ出現後の再 stop で kill
+    できるようにする（snapshot の StillPending と対称）。`deadline` 超過は「起動しなかった」扱いで `already-exited`。
+- `StopStatus` / `StopProcessResult` / bindings / 起動処理 / Windows・Linux 経路（`Handle::Child`）は**不変**。
+
+### 検証結果
+
+- `cargo check` **warning 0** / `cargo test export_bindings` **24 tests ok**・**bindings 差分ゼロ**
+- `pnpm typecheck` / `pnpm lint` 成功
+- 停止判定ロジックの変更のため security-review を再実施予定（013 方針）
+- 実機 E2E（macOS）で確認予定: 起動の遅い `.app` を起動 → 実プロセス出現前に停止 →「起動処理中…」の
+  `failed` でエントリが残り、出現後の再停止で `stopped` になること（オーファンが残らないこと）
