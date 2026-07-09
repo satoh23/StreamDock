@@ -4,6 +4,7 @@ use crate::app_logs;
 use crate::app_logs::model::{LogCategory, LogLevel, NewLog};
 use crate::error::{AppError, AppResult, ErrorCode};
 use crate::util::now_rfc3339;
+use crate::preset_items;
 use crate::presets;
 use crate::tools;
 use crate::tools::commands::DbState;
@@ -43,7 +44,9 @@ pub fn launch_tool(
     id: String,
     // 010/バグ2: 起動元のメイン画面行（preset_items.id）を registry に記録する。
     // これにより画面遷移で UI 状態を失っても reconcile が presetItemId で「起動済み」を復元できる。
-    // preset_id は None のまま（一括停止 stop_preset_processes のスコープは変えない）。
+    // 014: preset_item_id が Some のときは所属 preset_id を DB から解決して registry に確定保存し、
+    // プリセット文脈で個別起動したプロセスも一括停止（stop_preset_processes）の対象に含める。
+    // preset_item_id が無い個別起動（サイドバー等）は従来どおり preset_id = None で一括停止の対象外。
     preset_item_id: Option<String>,
 ) -> AppResult<LaunchToolResult> {
     if id.trim().is_empty() {
@@ -56,10 +59,10 @@ pub fn launch_tool(
         return Err(err);
     }
 
-    // DB ロックは Tool の取得だけで解放し、プロセス spawn 中は保持しない。
-    let tool = {
+    // DB ロックは Tool 取得と preset_id 解決だけで解放し、プロセス spawn 中は保持しない。
+    let (tool, resolved_preset_id) = {
         let conn = db.lock().expect("db mutex poisoned");
-        match tools::service::get(&conn, &id) {
+        let tool = match tools::service::get(&conn, &id) {
             Ok(tool) => tool,
             Err(e) => {
                 app_logs::service::record(
@@ -69,7 +72,17 @@ pub fn launch_tool(
                 );
                 return Err(e);
             }
-        }
+        };
+        // 014: preset_item_id が Some のとき所属 preset_id を解決し、一括停止の対象に含める。
+        // 該当 preset_item が無い / DB エラーのときは None にフォールバックし、起動自体は失敗させない
+        // （preset_item_id を無条件に信用せず、存在確認したうえで preset_id を確定する）。
+        let resolved_preset_id = preset_item_id.as_deref().and_then(|item_id| {
+            preset_items::repository::get(&conn, item_id)
+                .ok()
+                .flatten()
+                .map(|item| item.preset_id)
+        });
+        (tool, resolved_preset_id)
     };
 
     match service::spawn(&tool) {
@@ -79,8 +92,14 @@ pub fn launch_tool(
             let resolved_pid = handle.resolved_pid();
             let process_id = handle.wire_pid();
             let started_at = now_rfc3339();
-            let launch_id =
-                service::register(&registry, &tool, None, preset_item_id, handle, started_at.clone());
+            let launch_id = service::register(
+                &registry,
+                &tool,
+                resolved_preset_id,
+                preset_item_id,
+                handle,
+                started_at.clone(),
+            );
             let mut entry = NewLog::new(
                 LogLevel::Info,
                 LogCategory::ProcessLaunch,

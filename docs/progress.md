@@ -1325,3 +1325,55 @@ StillPending 据え置きにしているのに、停止側だけ非対称だっ�
 4. `apps/desktop/src-tauri/src/process/commands.rs`（`focus_process` / `launch_tool` の presetItemId）
 5. `apps/desktop/src/screens/main/MainScreen.tsx`（`handleOpen` / reconcile / 空状態分岐）・
    `apps/desktop/src/features/tools/toolApi.ts`（`focusProcess` / `launchTool`）
+
+## 2026-07-09 (014 Bulk Stop for Individual Launches)
+
+### 今回完了したこと
+
+プリセットのメイン画面で**個別起動**したツールを「一括停止」で止められない不具合を解消した。
+
+- **根本原因**: `process/commands.rs` の `launch_tool` が単体起動時に
+  `service::register(..., None, preset_item_id, ...)` として **`preset_id = None` で登録**していた。
+  一方 `stop_preset_processes` は registry を `mp.preset_id.as_deref() == Some(preset_id)` で絞り込むため、
+  `preset_id = None` の個別起動プロセスは一括停止の対象に一切入らなかった。メイン画面の個別起動は
+  `preset_item_id`（= preset_items.id）を渡しており所属プリセットは特定可能なのに、その情報が
+  `preset_id` へ反映されていないだけだった。
+
+- **変更内容（`launch_tool` 一箇所に閉じる）**: Tool 取得と**同じ DB ロックスコープ内**で、
+  `preset_item_id` が `Some` のとき `preset_items::repository::get` により所属 `preset_id` を解決し、
+  `service::register(..., resolved_preset_id, preset_item_id, ...)` で registry に確定保存するようにした。
+  - 該当 preset_item が無い / DB エラーのときは `.ok().flatten()` で `preset_id = None` に**フォールバックし、
+    起動自体は失敗させない**（`preset_item_id` を無条件に信用せず、存在確認したうえで解決）。
+  - `preset_item_id` の無い個別起動（サイドバー等・プリセット文脈なし）は従来どおり `preset_id = None` で
+    一括停止の対象外。
+  - `launch_tool` の doc コメント（旧「preset_id は None のまま」）を実態に合わせて更新した。
+
+- **変更が `launch_tool` に閉じている**: `stop_preset_processes` のフィルタロジック・`service::register`
+  （既に `preset_id: Option<String>` を受け取る）・registry・013 の macOS `.app` 起動/停止経路はいずれも無改修。
+  `git diff --name-only` は `commands.rs` 1ファイルのみ（+26 / -7）。停止側の DB 往復は増やしていない。
+
+### セキュリティ確認（security-review 実施済み）
+
+`docs/security.md`（§6 プロセス停止 / §8 入力検証）に基づき security-review を実施。**問題なし**。
+
+- 停止対象は依然 registry 登録の stream-dock 起動プロセスのみ。スコープの拡大は「プリセット文脈で個別起動した
+  registry 内プロセス」に限られ、外部プロセス・手動起動プロセスの取り込みは増えていない（§6）。
+- frontend から渡るのは `toolId` / `presetItemId` のみで、`preset_id` は Rust 側で DB から導出。任意 PID /
+  path / 任意 preset_id を停止に渡せる経路は生まれていない。偽装 `preset_item_id` は `repository::get` の
+  実在確認で弾かれ `None` フォールバックとなる（§8）。
+- shell 非経由（`taskkill`/`kill`/`pkill` 追加なし）。008/009/013 の停止経路は不変。Tauri capabilities・
+  外部通信・CSP・依存関係は変更なし。DB ロックは spawn/kill 中に保持しない従来設計を維持。
+
+### 実行した確認コマンド（すべて macOS 上・成功）
+
+- `cargo check` → 成功（warning 0）
+- `pnpm --filter ./apps/desktop typecheck` → 成功（exit 0）
+- `pnpm --filter ./apps/desktop lint` → 成功（exit 0）
+- `pnpm --filter ./apps/desktop build`（tsc && vite build）→ 成功（63 modules）
+
+### 未完了事項
+
+- **実機 E2E 未実施**（ユーザー環境）: プリセット画面で複数個別起動 →「一括停止」で実停止 /
+  008 由来の停止が退行しない / サイドバー個別起動は一括停止の対象外 / 所属 preset_item を解決できない
+  ケース（削除済み等）でも起動は失敗しない。
+- git commit は未実施（指示があってから）。
