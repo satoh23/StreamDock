@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ToolState } from "../../types";
+import type { Screen, ToolState } from "../../types";
 import type { ToolRecord } from "../../features/tools/types";
 import type {
   LaunchMode,
@@ -7,7 +7,7 @@ import type {
   RuntimeProcessStatus,
 } from "../../features/presets/types";
 import { toIconLetter } from "../../features/tools/display";
-import { launchTool, stopProcess } from "../../features/tools/toolApi";
+import { focusProcess, launchTool, stopProcess } from "../../features/tools/toolApi";
 import {
   launchPreset,
   stopPresetProcesses,
@@ -82,6 +82,8 @@ export function MainScreen({
   presetId,
   items,
   availableTools,
+  hasAnyTools,
+  onNavigate,
   onAddTool,
   onRemoveItem,
   onReorder,
@@ -95,6 +97,10 @@ export function MainScreen({
   items: PresetItemWithTool[];
   /** まだこのプリセットに入っていない登録済みツール（＋ツール追加の候補）。 */
   availableTools: ToolRecord[];
+  /** 登録済みツールが1件以上あるか（空状態の分岐用・バグ6/7）。 */
+  hasAnyTools: boolean;
+  /** 空状態からツール登録／プリセット追加画面へ遷移する（バグ6/7）。 */
+  onNavigate: (next: Screen) => void;
   onAddTool: (presetId: string, toolId: string) => Promise<void> | void;
   onRemoveItem: (id: string) => Promise<void> | void;
   onReorder: (presetId: string, orderedIds: string[]) => Promise<void> | void;
@@ -222,7 +228,9 @@ export function MainScreen({
     // 起動中は行のボタンが Spinner に置き換わり、自動的に無効化される。
     setToolState(id, "starting");
     try {
-      const res = await launchTool(toolId);
+      // presetItemId（= 行キー id）を渡して registry に記録する。画面遷移で UI 状態を失っても
+      // reconcile が presetItemId で「起動済み」を復元できる（バグ2）。
+      const res = await launchTool(toolId, id);
       if (!mountedRef.current) return;
       // 起動要求は成功したが、アプリの初期ローディング完了は検知できないため
       // 完了断定の "running"（起動済み）にはせず、"launched"（起動中の継続表示）に留める。
@@ -241,6 +249,33 @@ export function MainScreen({
       if (!mountedRef.current) return;
       setToolState(id, "error");
       setLaunchFeedback({ kind: "error", text: toErrorMessage(e) });
+    }
+  };
+
+  // --- 「開く」: 起動中アプリを前面に出す（バグ1・アクティブ化）---
+  // frontend からは launchId のみを渡す（stop と同じ設計）。前面化は Rust 側が registry の実 PID を
+  // 使って shell 非経由で行い、新規インスタンスは起動しない。
+  // 成功時は UI を変更しない（すでに「起動済み」）。失敗時のみインラインでエラー表示する。
+  const handleOpen = async (launchId: string | undefined, name: string) => {
+    setLaunchFeedback(null);
+    if (!launchId) {
+      // 構成再描画直後などで一時的に launchId を失った行。registry を再取得して復元を促す
+      // （handleStop の launchId 欠落ガードと同型）。
+      void reconcile(true);
+      setLaunchFeedback({
+        kind: "warning",
+        text: `${name} の起動状態を確認中です。少し待って再試行してください`,
+      });
+      return;
+    }
+    try {
+      await focusProcess(launchId);
+    } catch (e) {
+      if (!mountedRef.current) return;
+      setLaunchFeedback({
+        kind: "error",
+        text: `${name} を開けませんでした: ${toErrorMessage(e)}`,
+      });
     }
   };
 
@@ -464,15 +499,34 @@ export function MainScreen({
     });
   };
 
-  // プリセットが1件も無い（未選択）場合は空状態を表示する
+  // プリセットが1件も無い（未選択）場合は空状態を表示する。
+  // ツールが1件も無いときは、まずツール登録を促す（プリセットはツールが無いと作れないため）。
   if (presetName === null) {
-    return (
+    return hasAnyTools ? (
       <div className={styles.emptyState}>
         <h2>まだプリセットがありません</h2>
         <p>
-          プリセットを追加して、配信で使うツール構成を保存しましょう。左のサイドバーの「＋
-          プリセットを追加」から作成できます。
+          プリセットを追加して、配信で使うツール構成を保存しましょう。
         </p>
+        <button
+          className={styles.emptyAction}
+          onClick={() => onNavigate("add-preset")}
+        >
+          ＋ プリセットを追加
+        </button>
+      </div>
+    ) : (
+      <div className={styles.emptyState}>
+        <h2>まだツールがありません</h2>
+        <p>
+          まずは配信で使うツールを登録しましょう。ツールを1つ以上登録すると、プリセットを作成できます。
+        </p>
+        <button
+          className={styles.emptyAction}
+          onClick={() => onNavigate("add-tool")}
+        >
+          ＋ ツールを登録
+        </button>
       </div>
     );
   }
@@ -517,6 +571,21 @@ export function MainScreen({
           )}
         </div>
       </div>
+
+      {/* インフォメーション（起動/エラー等）は「起動順」の上に表示する（バグ3）。 */}
+      {launchFeedback && (
+        <div
+          className={
+            launchFeedback.kind === "success"
+              ? styles.launchSuccess
+              : launchFeedback.kind === "warning"
+                ? styles.launchWarning
+                : styles.launchError
+          }
+        >
+          {launchFeedback.text}
+        </div>
+      )}
 
       <div className={styles.toolbar}>
         <div className={styles.toolbarHead}>
@@ -563,20 +632,6 @@ export function MainScreen({
         </div>
       )}
 
-      {launchFeedback && (
-        <div
-          className={
-            launchFeedback.kind === "success"
-              ? styles.launchSuccess
-              : launchFeedback.kind === "warning"
-                ? styles.launchWarning
-                : styles.launchError
-          }
-        >
-          {launchFeedback.text}
-        </div>
-      )}
-
       {isEmpty ? (
         <div className={styles.itemsEmpty}>
           <h3>このプリセットにはまだツールがありません</h3>
@@ -606,6 +661,7 @@ export function MainScreen({
                 editMode={editMode}
                 onStart={() => void handleStart(item.id, item.toolId, item.name)}
                 onStop={() => void handleStop(item.id, item.launchId, item.name)}
+                onOpen={() => void handleOpen(item.launchId, item.name)}
                 onMoveUp={() => move(index, -1)}
                 onMoveDown={() => move(index, 1)}
                 onToggleMode={() => toggleMode(item)}

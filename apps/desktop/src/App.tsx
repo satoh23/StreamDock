@@ -230,6 +230,8 @@ function App() {
           presetId={activePresetId}
           items={activeItems}
           availableTools={availableTools}
+          hasAnyTools={tools.length > 0}
+          onNavigate={handleNavigate}
           onAddTool={handleAddToolToPreset}
           onRemoveItem={handleRemovePresetItem}
           onReorder={handleReorderPresetItems}

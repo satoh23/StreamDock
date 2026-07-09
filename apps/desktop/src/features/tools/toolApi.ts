@@ -38,9 +38,24 @@ export function deleteTool(id: string): Promise<void> {
 /**
  * 登録済み Tool を toolId で単体起動する。
  * frontend からは toolId のみを渡し、Tool 取得・パス検証・起動は Rust 側で行う。
+ * presetItemId（起動元のメイン画面行）を渡すと registry に記録され、画面遷移で UI 状態を失っても
+ * reconcile が「起動済み」を復元できる（バグ2）。停止対象のスコープには影響しない（preset_id は None）。
  */
-export function launchTool(id: string): Promise<LaunchToolResult> {
-  return invoke<LaunchToolResult>("launch_tool", { id });
+export function launchTool(
+  id: string,
+  presetItemId?: string,
+): Promise<LaunchToolResult> {
+  return invoke<LaunchToolResult>("launch_tool", { id, presetItemId });
+}
+
+/**
+ * 起動中プロセスを launchId で前面に出す（アクティブ化）。「開く」ボタン用（バグ1）。
+ * frontend からは launchId のみを渡す（`stopProcess` と同じ設計）。Rust 側が registry から
+ * 実 PID を解決し、shell を経由せず既存ウィンドウを前面化する（新規インスタンスは起動しない）。
+ * Windows は保持 PID のウィンドウを前面化、macOS の `.app` は `/usr/bin/open` で既存を前面化する。
+ */
+export function focusProcess(launchId: string): Promise<void> {
+  return invoke<void>("focus_process", { launchId });
 }
 
 /**

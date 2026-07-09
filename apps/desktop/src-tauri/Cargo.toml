@@ -35,3 +35,16 @@ ts-rs = "10"
 [target.'cfg(target_os = "macos")'.dependencies]
 sysinfo = "0.39"
 
+# 「開く」ボタン（バグ1）で既存プロセスを前面化するため、Windows では stream-dock が保持する PID
+# （とその子プロセスツリー）からトップレベルウィンドウを特定し、SetForegroundWindow で前面化する。
+# 用途を Win32 のウィンドウ操作・プロセス列挙（子プロセス探索）に限定し、shell を経由しない。
+# macOS/Linux ビルドには載せない（Windows 限定ターゲット依存。sysinfo の macOS 限定と同じ扱い）。
+# Microsoft 公式クレート。必要最小の feature のみ有効化する（docs/security.md §10）。
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_ToolHelp",
+] }
+

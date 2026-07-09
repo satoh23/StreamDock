@@ -37,6 +37,91 @@ use super::registry::{Handle, ManagedProcess, ProcessRegistry};
 /// - ディレクトリでない（macOS の `.app` バンドルのみ例外的に起動可能）
 /// - `.lnk` / `.bat` ではない
 pub fn spawn(tool: &Tool) -> AppResult<Handle> {
+    let (path, is_app_bundle) = validate_executable(tool)?;
+
+    // shell を経由せず起動する。起動失敗の詳細（OS エラー文字列）は環境情報を含みうるため露出させず、
+    // 固定メッセージに丸める。
+    //
+    // macOS `.app`: `/usr/bin/open`（LaunchServices）で起動し、実アプリ PID を同定して返す。
+    // `is_app_bundle` は非 macOS では常に false のため、この分岐は macOS でのみコンパイルする。
+    #[cfg(target_os = "macos")]
+    if is_app_bundle {
+        return spawn_app_bundle(&path);
+    }
+    // 非 macOS では is_app_bundle を参照する分岐が無いため、未使用警告を避ける。
+    #[cfg(not(target_os = "macos"))]
+    let _ = is_app_bundle;
+
+    // Windows/Linux/非バンドル（macOS の非バンドルも含む）: 自分が spawn した子を掴む（007/008 から不変）。
+    let child = Command::new(&path)
+        .spawn()
+        .map_err(|_| AppError::launch_failed("プロセスの起動に失敗しました"))?;
+    Ok(Handle::Child(child))
+}
+
+/// registry が管理する既存プロセスを**前面化（アクティブ化）**する。「開く」ボタン用（バグ1）。
+///
+/// frontend からは launchId のみを受け取り、コマンド側（[`super::commands::focus_process`]）が
+/// registry から解決した実 PID（Windows 用）と Tool（macOS の `.app` バンドルパス用）を渡す。
+/// **新規インスタンスは絶対に起動しない**（従来 Windows/Linux で `spawn` フォールバックしていた
+/// 二重起動の不具合を根絶する）。registry には登録しない（監視対象・停止対象を増やさない）。
+///
+/// - Windows: 保持 PID とその子プロセスツリーからトップレベルウィンドウを特定して前面化する
+///   （最小化なら復元）。ウィンドウが見つからなければ何もしない（no-op・新規起動しない）。
+/// - macOS `.app`: `/usr/bin/open <bundle>`（LaunchServices が既存インスタンスを前面化・新規起動しない）。
+/// - Linux / 非バンドル: 前面化 API を持たないため no-op（新規起動しない・アクティブ化は非対応の既知の限界）。
+///
+/// `pid` は Windows でのみ使い、`tool` は macOS でのみ使う。他プラットフォームでは該当引数を無視する。
+pub fn focus(pid: Option<u32>, tool: Option<&Tool>) -> AppResult<()> {
+    #[cfg(target_os = "macos")]
+    {
+        // macOS `.app`: `/usr/bin/open` は起動済みなら前面化するだけ（新規起動しない）。
+        // 固定絶対パス・バンドルパスは配列引数（文字列連結なし・shell 非経由）。
+        let _ = pid;
+        if let Some(tool) = tool {
+            let (path, is_app_bundle) = validate_executable(tool)?;
+            if is_app_bundle {
+                let status = Command::new("/usr/bin/open")
+                    .arg(&path)
+                    .status()
+                    .map_err(|_| AppError::launch_failed("プロセスの起動に失敗しました"))?;
+                if !status.success() {
+                    return Err(AppError::launch_failed("プロセスの起動に失敗しました"));
+                }
+            }
+            // 非バンドル（生バイナリ）はアクティブ化 API を持たないため no-op。
+        }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    {
+        // Windows: 保持 PID（とその子孫）のトップレベルウィンドウを前面化する。見つからなければ no-op。
+        let _ = tool;
+        if let Some(pid) = pid {
+            windows::focus_by_pid(pid);
+        }
+        Ok(())
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        // Linux 等: アクティブ化 API を実装しない方針（本命は Windows）。ただし二重起動しないよう
+        // 従来の `spawn` フォールバックは廃止し、no-op にする。
+        let _ = (pid, tool);
+        Ok(())
+    }
+}
+
+/// executablePath を検証し、`(絶対パス, macOS `.app` バンドルか)` を返す。[`spawn`] / [`focus`] 共通。
+///
+/// 検証項目（007 から不変・強度を下げない）:
+/// - executablePath が空でない
+/// - 絶対パスである
+/// - 実在する
+/// - ディレクトリでない（macOS の `.app` バンドルのみ例外的に起動可能）
+/// - `.lnk` / `.bat` ではない
+fn validate_executable(tool: &Tool) -> AppResult<(std::path::PathBuf, bool)> {
     let path_str = tool.executable_path.trim();
     require_non_empty(path_str, "実行ファイルパスが未設定です")?;
 
@@ -84,21 +169,7 @@ pub fn spawn(tool: &Tool) -> AppResult<Handle> {
         }
     }
 
-    // shell を経由せず起動する。起動失敗の詳細（OS エラー文字列）は環境情報を含みうるため露出させず、
-    // 固定メッセージに丸める。
-    //
-    // macOS `.app`: `/usr/bin/open`（LaunchServices）で起動し、実アプリ PID を同定して返す。
-    // `is_app_bundle` は非 macOS では常に false のため、この分岐は macOS でのみコンパイルする。
-    #[cfg(target_os = "macos")]
-    if is_app_bundle {
-        return spawn_app_bundle(path);
-    }
-
-    // Windows/Linux/非バンドル（macOS の非バンドルも含む）: 自分が spawn した子を掴む（007/008 から不変）。
-    let child = Command::new(path)
-        .spawn()
-        .map_err(|_| AppError::launch_failed("プロセスの起動に失敗しました"))?;
-    Ok(Handle::Child(child))
+    Ok((path.to_path_buf(), is_app_bundle))
 }
 
 /// macOS `.app` を `/usr/bin/open` で起動し、起動した実アプリの PID を同定して [`Handle`] を返す。
@@ -437,6 +508,160 @@ mod macos {
                 (launch_id.clone(), resolution)
             })
             .collect()
+    }
+}
+
+/// Windows で「開く」（前面化）を担う。stream-dock が保持する PID（とその子プロセスツリー）に
+/// 属するトップレベルウィンドウを特定し、Win32 API で前面化する（shell 非経由・新規起動しない）。
+///
+/// docs/security.md 準拠:
+/// - 操作対象は stream-dock が起動して registry に保持する PID と、その**子孫プロセス**のみ
+///   （＝間接的に自分が起動したもの）。プロセス名だけで他人のウィンドウを探して操作しない（§6）。
+/// - frontend から raw PID / ウィンドウハンドルを受け取らない（コマンド側で registry から解決した PID を渡す）。
+/// - ウィンドウタイトル等は読み取らず（存在有無のみ判定）、ログ・画面・外部送信もしない（§9）。
+#[cfg(windows)]
+mod windows {
+    use std::collections::HashSet;
+
+    use ::windows::Win32::Foundation::{BOOL, FALSE, HWND, LPARAM, TRUE};
+    use ::windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32First, Process32Next, PROCESSENTRY32, TH32CS_SNAPPROCESS,
+    };
+    use ::windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+    use ::windows::Win32::UI::WindowsAndMessaging::{
+        BringWindowToTop, EnumWindows, GetForegroundWindow, GetWindow, GetWindowTextLengthW,
+        GetWindowThreadProcessId, IsIconic, IsWindowVisible, SetForegroundWindow, ShowWindow,
+        GW_OWNER, SW_RESTORE, SW_SHOW,
+    };
+
+    /// 子プロセスツリー探索の上限（暴走・循環に対する保護）。
+    const MAX_TREE_DEPTH: usize = 8;
+    const MAX_TREE_NODES: usize = 1024;
+
+    /// `root_pid` とその子孫プロセスの PID 集合を返す。
+    ///
+    /// `CreateToolhelp32Snapshot` で全プロセスの `(pid, ppid)` を1回取得し、`root_pid` から
+    /// 子孫を BFS で辿る。ランチャ／中間プロセスが実ウィンドウを持つ子プロセスを起動する構成に対応する。
+    /// PID 再利用で ppid が別プロセスを指しうるため深さ・件数を上限で保護する（既知の限界）。
+    fn collect_process_tree(root_pid: u32) -> HashSet<u32> {
+        let mut result = HashSet::new();
+        result.insert(root_pid);
+
+        // 全プロセスの (pid, ppid) を列挙する。
+        let mut edges: Vec<(u32, u32)> = Vec::new();
+        unsafe {
+            let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
+                return result;
+            };
+            // PROCESSENTRY32 は Default を導出しないため zeroed で初期化し、dwSize のみ設定する
+            // （ToolHelp API の要件）。全体が unsafe ブロック内。
+            let mut entry: PROCESSENTRY32 = std::mem::zeroed();
+            entry.dwSize = std::mem::size_of::<PROCESSENTRY32>() as u32;
+            if Process32First(snapshot, &mut entry).is_ok() {
+                loop {
+                    edges.push((entry.th32ProcessID, entry.th32ParentProcessID));
+                    if Process32Next(snapshot, &mut entry).is_err() {
+                        break;
+                    }
+                }
+            }
+            let _ = ::windows::Win32::Foundation::CloseHandle(snapshot);
+        }
+
+        // root からの子孫を BFS で収集（深さ・件数の上限で保護）。
+        let mut frontier = vec![root_pid];
+        let mut depth = 0;
+        while !frontier.is_empty() && depth < MAX_TREE_DEPTH && result.len() < MAX_TREE_NODES {
+            let mut next = Vec::new();
+            for &parent in &frontier {
+                for &(pid, ppid) in &edges {
+                    // ppid == 0 は System Idle 等の擬似親のため辿らない。
+                    if parent != 0 && ppid == parent && !result.contains(&pid) {
+                        result.insert(pid);
+                        next.push(pid);
+                    }
+                }
+            }
+            frontier = next;
+            depth += 1;
+        }
+        result
+    }
+
+    /// `EnumWindows` コールバックへ渡す走査状態。lifetime を跨がないよう PID 集合は生ポインタで持つ。
+    struct FindCtx {
+        pids: *const HashSet<u32>,
+        found: Option<HWND>,
+    }
+
+    /// `EnumWindows` コールバック。`pids` に属し、可視・オーナー無し・タイトル有りの
+    /// トップレベルウィンドウを見つけたら記録して走査を打ち切る。
+    unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let ctx = &mut *(lparam.0 as *mut FindCtx);
+        let pids = &*ctx.pids;
+
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == 0 || !pids.contains(&pid) {
+            return TRUE; // 継続
+        }
+        // 主ウィンドウの選定: 可視 / オーナー無し（＝ツールウィンドウやダイアログでない） / タイトル有り。
+        let visible = IsWindowVisible(hwnd).as_bool();
+        let no_owner = GetWindow(hwnd, GW_OWNER).map_or(true, |o| o.0.is_null());
+        let has_title = GetWindowTextLengthW(hwnd) > 0;
+        if visible && no_owner && has_title {
+            ctx.found = Some(hwnd);
+            return FALSE; // 発見。走査終了
+        }
+        TRUE
+    }
+
+    /// `pids` のいずれかに属する主ウィンドウを1つ探す。
+    fn find_main_window(pids: &HashSet<u32>) -> Option<HWND> {
+        let mut ctx = FindCtx {
+            pids: pids as *const _,
+            found: None,
+        };
+        unsafe {
+            // 見つかると enum_proc が FALSE を返して EnumWindows は Err を返すため、結果は ctx で判定する。
+            let _ = EnumWindows(Some(enum_proc), LPARAM(&mut ctx as *mut _ as isize));
+        }
+        ctx.found
+    }
+
+    /// ウィンドウを前面化する。最小化なら復元し、フォアグラウンド制限を回避して最前面に出す。
+    fn activate(hwnd: HWND) {
+        unsafe {
+            if IsIconic(hwnd).as_bool() {
+                let _ = ShowWindow(hwnd, SW_RESTORE);
+            }
+
+            // SetForegroundWindow のフォアグラウンド制限を回避するため、現在の前面ウィンドウの
+            // 入力スレッドへ一時的にアタッチする（AttachThreadInput）。
+            let foreground = GetForegroundWindow();
+            let mut fg_pid = 0u32;
+            let fg_thread = GetWindowThreadProcessId(foreground, Some(&mut fg_pid));
+            let cur_thread = GetCurrentThreadId();
+            let attached = fg_thread != 0
+                && fg_thread != cur_thread
+                && AttachThreadInput(cur_thread, fg_thread, TRUE).as_bool();
+
+            let _ = BringWindowToTop(hwnd);
+            let _ = ShowWindow(hwnd, SW_SHOW);
+            let _ = SetForegroundWindow(hwnd);
+
+            if attached {
+                let _ = AttachThreadInput(cur_thread, fg_thread, FALSE);
+            }
+        }
+    }
+
+    /// 保持 PID（とその子孫）のトップレベルウィンドウを前面化する。見つからなければ no-op。
+    pub fn focus_by_pid(root_pid: u32) {
+        let pids = collect_process_tree(root_pid);
+        if let Some(hwnd) = find_main_window(&pids) {
+            activate(hwnd);
+        }
     }
 }
 

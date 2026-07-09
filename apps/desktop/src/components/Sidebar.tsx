@@ -104,9 +104,18 @@ export function Sidebar({
         <button
           className={`${styles.ghost} ${activeNav === "add-preset" ? styles.active : ""}`}
           onClick={() => onNavigate("add-preset")}
+          disabled={!hasTools}
+          title={
+            hasTools ? undefined : "先にツールを1つ以上登録してください"
+          }
         >
           ＋ プリセットを追加
         </button>
+        {!hasTools && (
+          <div className={styles.emptyHint}>
+            ツールを登録するとプリセットを作成できます。
+          </div>
+        )}
       </div>
 
       <div className={styles.toolSection}>

@@ -41,6 +41,10 @@ pub fn launch_tool(
     db: State<'_, DbState>,
     registry: State<'_, ProcessRegistry>,
     id: String,
+    // 010/バグ2: 起動元のメイン画面行（preset_items.id）を registry に記録する。
+    // これにより画面遷移で UI 状態を失っても reconcile が presetItemId で「起動済み」を復元できる。
+    // preset_id は None のまま（一括停止 stop_preset_processes のスコープは変えない）。
+    preset_item_id: Option<String>,
 ) -> AppResult<LaunchToolResult> {
     if id.trim().is_empty() {
         let err = AppError::validation("toolId は必須です");
@@ -75,7 +79,8 @@ pub fn launch_tool(
             let resolved_pid = handle.resolved_pid();
             let process_id = handle.wire_pid();
             let started_at = now_rfc3339();
-            let launch_id = service::register(&registry, &tool, None, None, handle, started_at.clone());
+            let launch_id =
+                service::register(&registry, &tool, None, preset_item_id, handle, started_at.clone());
             let mut entry = NewLog::new(
                 LogLevel::Info,
                 LogCategory::ProcessLaunch,
@@ -102,6 +107,72 @@ pub fn launch_tool(
                     .error_code(e.code)
                     .tool(tool.id.clone(), tool.name.clone()),
             );
+            Err(e)
+        }
+    }
+}
+
+/// 起動中プロセスを launchId で前面に出す（アクティブ化）。「開く」ボタン用（バグ1）。
+///
+/// frontend からは launchId のみを受け取る（`stop_process` と同じ設計）。Rust 側で registry から
+/// 管理レコードを引き、保持している実 PID（Windows のウィンドウ前面化用）と tool_id（macOS の
+/// `.app` バンドルパス再取得用）を解決する。前面化は shell を経由せず行い、**新規インスタンスは
+/// 起動しない**（従来 Windows/Linux で `spawn` フォールバックしていた二重起動を根絶）。
+/// registry には登録しない（focus は監視対象・停止対象を増やさない）。失敗は固定文言に丸め、
+/// フルパス・OS エラーを露出させない。
+#[tauri::command]
+pub fn focus_process(
+    db: State<'_, DbState>,
+    registry: State<'_, ProcessRegistry>,
+    launch_id: String,
+) -> AppResult<()> {
+    if launch_id.trim().is_empty() {
+        let err = AppError::validation("launchId は必須です");
+        log(
+            &db,
+            NewLog::new(LogLevel::Error, LogCategory::ProcessLaunch, "focus_process", err.code.log_message())
+                .error_code(err.code),
+        );
+        return Err(err);
+    }
+
+    // registry から tool_id と実 PID を取り出す（ロックは取り出しのみで解放。OS 操作中は保持しない）。
+    let resolved = {
+        let reg = registry.lock().expect("process registry mutex poisoned");
+        reg.get(&launch_id)
+            .map(|mp| (mp.tool_id.clone(), mp.handle.resolved_pid()))
+    };
+
+    let Some((tool_id, pid)) = resolved else {
+        // registry に無い launchId は前面化対象外（既に終了して除去済み等）。新規起動はしない。
+        let err = AppError::not_found("対象のプロセスが見つかりません（既に終了している可能性があります）");
+        log(
+            &db,
+            NewLog::new(LogLevel::Warn, LogCategory::ProcessLaunch, "focus_process", err.code.log_message())
+                .error_code(err.code)
+                .launch_id(launch_id.clone()),
+        );
+        return Err(err);
+    };
+
+    // macOS の `.app` バンドルパス用に Tool を再取得する（DB ロックは取得のみで解放）。
+    // Windows は PID のみで前面化できるため、Tool 取得失敗は致命ではない（best-effort で None を渡す）。
+    let tool = {
+        let conn = db.lock().expect("db mutex poisoned");
+        tools::service::get(&conn, &tool_id).ok()
+    };
+
+    match service::focus(pid, tool.as_ref()) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let mut entry =
+                NewLog::new(LogLevel::Error, LogCategory::ProcessLaunch, "focus_process", e.code.log_message())
+                    .error_code(e.code)
+                    .launch_id(launch_id.clone());
+            if let Some(tool) = &tool {
+                entry = entry.tool(tool.id.clone(), tool.name.clone());
+            }
+            log(&db, entry);
             Err(e)
         }
     }

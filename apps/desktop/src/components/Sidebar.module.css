@@ -100,6 +100,11 @@
   border-color: rgba(103, 232, 249, 0.22);
   color: #dffaff;
 }
+/* ツール0件時の「＋ プリセットを追加」は非活性化する（バグ4） */
+.ghost:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 
 .sidebarTool {
   display: flex;

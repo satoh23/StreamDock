@@ -45,6 +45,7 @@ pub fn run() {
             tools::commands::update_tool,
             tools::commands::delete_tool,
             process::commands::launch_tool,
+            process::commands::focus_process,
             process::commands::launch_preset,
             process::commands::stop_process,
             process::commands::stop_preset_processes,

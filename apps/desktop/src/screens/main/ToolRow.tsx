@@ -37,6 +37,7 @@ export function ToolRow({
   editMode,
   onStart,
   onStop,
+  onOpen,
   onMoveUp,
   onMoveDown,
   onToggleMode,
@@ -50,6 +51,7 @@ export function ToolRow({
   editMode: boolean;
   onStart: () => void;
   onStop: () => void;
+  onOpen: () => void;
   onMoveUp: () => void;
   onMoveDown: () => void;
   onToggleMode: () => void;
@@ -95,7 +97,11 @@ export function ToolRow({
           </>
         ) : tool.state === "running" || tool.state === "launched" ? (
           <>
-            <button className={styles.runtimeAction} title="開く">
+            <button
+              className={styles.runtimeAction}
+              onClick={onOpen}
+              title="開く"
+            >
               <OpenIcon />
             </button>
             <button

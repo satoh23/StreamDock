@@ -1221,3 +1221,107 @@ StillPending 据え置きにしているのに、停止側だけ非対称だっ�
 - 停止判定ロジックの変更のため security-review を再実施予定（013 方針）
 - 実機 E2E（macOS）で確認予定: 起動の遅い `.app` を起動 → 実プロセス出現前に停止 →「起動処理中…」の
   `failed` でエントリが残り、出現後の再停止で `stopped` になること（オーファンが残らないこと）
+
+## 2026-07-09 (メイン画面バグ修正 ＋ 全プラットフォーム前面化)
+
+### 今回完了したこと
+
+ユーザー報告のメイン画面バグ7件を調査・修正した（macOS で確認、Windows でも発生しうるもの）。加えて、
+当初 MVP で許容としていた「開く」の Windows/Linux 二重起動の縮退を、別対応で根絶した（launchId ベースの
+既存ウィンドウ前面化へ設計変更）。
+
+- **バグ1: 「開く」が動作しない → 全プラットフォームで既存ウィンドウを前面化（新規起動しない）**
+  - 当初は死にボタン（`onClick` 未配線）。まず `focus_tool(toolId)` を新設したが、Windows/Linux は
+    `spawn` フォールバックで**二重起動**する縮退があった。これを是正し、**`focus_process(launchId)`**
+    に設計変更。frontend は launchId のみ渡し、Rust が registry から実 PID / Tool を解決して前面化する
+    （`stop_process` と同じ設計。**新規インスタンスは絶対に起動しない**）。
+    - Windows: 保持 PID とその**子プロセスツリー**（`CreateToolhelp32Snapshot` で親子関係を辿る）から
+      トップレベルウィンドウ（可視・オーナー無し・タイトル有り）を `EnumWindows` で特定し、最小化なら
+      `SW_RESTORE`、`SetForegroundWindow` のフォアグラウンド制限は `AttachThreadInput` 系の回避で前面化。
+    - macOS `.app`: `/usr/bin/open <bundle>`（LaunchServices が既存を前面化・新規起動しない）。
+    - Linux / 非バンドル: アクティブ化は非対応（no-op）。ただし二重起動はしない（`spawn` フォールバック廃止）。
+- **バグ2: 画面遷移でステータスが「待機中」に戻る（単体起動）** → `launch_tool` に `preset_item_id` 引数を
+  追加し、単体起動プロセスも registry に presetItemId を記録。再マウント時の `reconcile(true)` が既存の
+  `byPresetItemId` 経路で「起動済み」を復元する（一括起動と同じ復元経路）。preset_id は None のまま
+  （一括停止のスコープは不変）。wire 不変・bindings 差分ゼロ。
+- **バグ3: インフォメーションの位置** → `launchFeedback` バナーを「起動順」見出しの**上**へ移動（従来は
+  起動順とアプリ一覧の間に割り込んで連続カードの seam を割っていた）。margin を調整。
+- **バグ4: ツール0件でも「＋ プリセットを追加」が押せる** → `disabled={!hasTools}` ＋ `.ghost:disabled`
+  スタイル ＋ ヒント文を追加。
+- **バグ5: 空状態が上寄せ** → `.emptyState` を `min-height: 320px` → `min-height: 100%`（box-sizing:
+  border-box）にし、`.main` の高さいっぱいで上下左右中央寄せ。
+- **バグ6/7: 空状態の文言・遷移ボタン欠如** → `presetName === null` の空状態を `hasAnyTools` で分岐。
+  ツール0件は「まだツールがありません」＋「＋ ツールを登録」（add-tool へ遷移）、ツールあり・プリセット
+  0件は「まだプリセットがありません」＋「＋ プリセットを追加」（add-preset へ遷移）。App から
+  `onNavigate` / `hasAnyTools` を配布。
+
+### 追加ライブラリ（理由）
+
+- `windows`（0.58・**Windows 限定ターゲット依存** `[target.'cfg(windows)'.dependencies]`）: 既存ウィンドウの
+  前面化（`EnumWindows` / `SetForegroundWindow` / `ShowWindow` / `CreateToolhelp32Snapshot` 等）に必要。
+  features は `Win32_Foundation` / `Win32_UI_WindowsAndMessaging` / `Win32_System_Threading` /
+  `Win32_System_Diagnostics_ToolHelp` に限定。macOS/Linux ビルドには載せない（sysinfo の macOS 限定と同じ扱い）。
+  用途は「自分が起動した PID のウィンドウ前面化」に限定・外部通信なし。
+
+### 変更した主要ファイル
+
+- Rust（`apps/desktop/src-tauri/`）:
+  - `src/process/service.rs` — 検証を `validate_executable()` に抽出（spawn/focus 共通）・`focus(pid, tool)`
+    新設（macOS `open` / Windows `windows::focus_by_pid` / Linux no-op）・`#[cfg(windows)] mod windows`
+    （プロセスツリー探索＋ウィンドウ前面化）
+  - `src/process/commands.rs` — `focus_process(launch_id)` 追加（registry から PID/Tool 解決）・`launch_tool` に
+    `preset_item_id` 引数追加し register へ
+  - `src/lib.rs` — handler に `focus_process` 登録
+  - `Cargo.toml` — `windows` を Windows 限定で追加（`Cargo.lock` 更新）
+- Frontend（`apps/desktop/src/`）:
+  - `features/tools/toolApi.ts` — `focusProcess(launchId)` 追加・`launchTool(id, presetItemId?)` 拡張
+  - `screens/main/ToolRow.tsx` — 「開く」に `onOpen` 配線
+  - `screens/main/MainScreen.tsx` — `handleOpen(launchId)`・単体起動で presetItemId 送信・バナー移動・
+    空状態分岐＋遷移ボタン・props（`onNavigate` / `hasAnyTools`）追加
+  - `screens/main/MainScreen.module.css` — バナー margin・`.emptyState` 100%・`.emptyAction` ボタン
+  - `components/Sidebar.tsx` / `Sidebar.module.css` — プリセット追加ボタン非活性化＋ヒント＋`.ghost:disabled`
+  - `App.tsx` — MainScreen へ `onNavigate` / `hasAnyTools` を配布
+- bindings（ts-rs）・DB スキーマ・capabilities: 変更なし（focus は `()` 返却・launch の wire 不変）
+
+### まだ未完了のこと
+
+- **security-review 未実施**（プロセス操作の追加＝`focus_process` と Windows ウィンドウ前面化、
+  `windows` クレート・起動 command の引数追加が対象。`docs/security.md` レビュー必須条件に該当）。
+- **実機 E2E 未実施**（GUI 表示が必要）。特に **Windows 実機での「起動→背面化→開くで既存を前面化・二重起動
+  しない」** の確認が最重要。macOS の前面化・バグ2〜7 も未確認。手順はチャットで提示済み。
+- **Windows / Linux ビルドの未検証**：当環境（darwin）では `#[cfg(windows)] mod windows` と `windows`
+  クレートがコンパイルされないため、Windows コードは静的検査で通っていない（下記「既知のエラー」参照）。
+- git commit は未実施（指示があってから）。
+
+### 次にやるべきタスク
+
+1. `docs/security.md` 準拠の **security-review**（`focus_process` / Windows 前面化 / `windows` クレート /
+   registry の PID 利用範囲＝stream-dock 起動プロセスに限定されているか）。
+2. **Windows 実機ビルド＆E2E**（`cargo check`/`clippy` を Windows で通す・二重起動しないことの確認）。
+3. macOS 実機 E2E（バグ1〜7）。
+4. 問題なければ commit。
+
+### 既知のエラー
+
+- なし（macOS 上の静的検査はすべてクリーン）。
+- **注意（未検証領域）**: `#[cfg(windows)] mod windows` と `windows` クレートは darwin ではコンパイル対象外の
+  ため、`cargo check`/`clippy` では検証されていない。Windows ビルドで初めて型・API 使用が検査される。
+
+### 実行した確認コマンド（すべて macOS 上・成功）
+
+- `cargo check` → 成功（warning 0）
+- `cargo clippy` → 成功（warning 0）
+- `cargo test --lib export_bindings` → **24 tests ok**・**bindings 差分ゼロ**（wire 不変の証跡）
+- `pnpm --filter ./apps/desktop typecheck` → 成功（exit 0）
+- `pnpm --filter ./apps/desktop lint` → 成功（exit 0 / warning なし）
+- `pnpm --filter ./apps/desktop build`（tsc && vite build）→ 成功（63 modules）
+- ※ `pnpm tauri dev` の GUI 実機 E2E は表示環境が必要なため未実施
+
+### 次回セッションで最初に読むべきファイル
+
+1. `docs/progress.md`（この節）
+2. `CLAUDE.md`（開発ルール・検証コマンド）/ `docs/security.md`（前面化＝プロセス操作のレビュー基準）
+3. `apps/desktop/src-tauri/src/process/service.rs`（`focus` / `#[cfg(windows)] mod windows`）
+4. `apps/desktop/src-tauri/src/process/commands.rs`（`focus_process` / `launch_tool` の presetItemId）
+5. `apps/desktop/src/screens/main/MainScreen.tsx`（`handleOpen` / reconcile / 空状態分岐）・
+   `apps/desktop/src/features/tools/toolApi.ts`（`focusProcess` / `launchTool`）
