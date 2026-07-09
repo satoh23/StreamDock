@@ -6,7 +6,7 @@
 有効にしたプリセットは、PC 起動時に本アプリ（stream-dock）が起動し、そのプリセットに登録された
 ツールの一括起動が自動で走る。
 
-ユーザーの想定する「丸い」形＝「PC 起動 → stream-dock 自動起動 → 登録プリセットの一括起動が自動実行」
+ユーザーの想定する「丸い」方針＝「PC 起動 → stream-dock 自動起動 → 登録プリセットの一括起動が自動実行」
 を実現する。
 
 ## 現在の前提
@@ -28,6 +28,7 @@
 ## このタスクでやること
 
 ### (1) per-preset フラグ + スキーマ
+
 - `presets` に `auto_launch_on_boot INTEGER NOT NULL DEFAULT 0` を追加。
   `util.rs::ensure_column`（018 で新設）を `presets::repository::init` の
   `CREATE TABLE IF NOT EXISTS` 直後に呼んで冪等に追加する。
@@ -37,6 +38,7 @@
   `!= 0` 読取）と `presets/service.rs`（`create` / `update`、既定 `false`）に通す。
 
 ### (2) ログイン項目登録（tauri-plugin-autostart）
+
 - `tauri-plugin-autostart`（公式・v2）を導入し、`--autostart` 引数付きで起動するよう設定する
   （`MacosLauncher` 指定 + `Some(vec!["--autostart".into()])`）。
 - **ユーザー向けグローバル ON/OFF は作らない**。「フラグ付きプリセットが 1 つ以上あれば有効」という
@@ -47,6 +49,7 @@
     `&Connection` しか持たない service 層で OS 呼び出しをしない。
 
 ### (3) 起動時フック（既存一括起動の再利用）
+
 - `lib.rs::setup()` で、DB / registry を manage したあと、**`std::env::args()` に `--autostart` が
   含まれるときのみ**、フラグ付きプリセットを取得して自動起動する。
   - 既存の DB 非依存ランチャ `process::service::{resolve_preset_targets, launch_preset_targets}` を
@@ -60,6 +63,7 @@
   （ユーザー不在でも安全に走る）。
 
 ### (4) capabilities / 設定
+
 - `lib.rs` builder に `.plugin(tauri_plugin_autostart::init(...))` を追加。
 - `capabilities/default.json` に必要な permission のみ追加:
   `autostart:allow-enable` / `autostart:allow-disable` / `autostart:allow-is-enabled`
@@ -68,6 +72,7 @@
 - `tauri.conf.json` はウィンドウ非表示起動に必要な範囲のみ調整。
 
 ### (5) frontend 配線
+
 - `AddPresetScreen.tsx` Step1 に `auto_launch_on_boot` トグル（ラベル「PC起動時にプリセット自動起動」）を追加。
   `editingPreset` から初期化し、`createPreset` / `updatePreset` のペイロードに含める。
 - presets の types / api（`features/presets/`）を拡張。
