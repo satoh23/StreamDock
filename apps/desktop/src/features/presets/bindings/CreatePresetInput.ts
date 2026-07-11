@@ -3,4 +3,4 @@
 /**
  * プリセット新規作成の入力。description は任意。
  */
-export type CreatePresetInput = { name: string, description?: string, };
+export type CreatePresetInput = { name: string, description?: string, autoLaunchOnBoot?: boolean, };

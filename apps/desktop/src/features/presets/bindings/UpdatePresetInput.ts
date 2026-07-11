@@ -3,4 +3,4 @@
 /**
  * プリセット更新の入力。create と同項目（id は command 引数で受ける）。
  */
-export type UpdatePresetInput = { name: string, description?: string, };
+export type UpdatePresetInput = { name: string, description?: string, autoLaunchOnBoot?: boolean, };

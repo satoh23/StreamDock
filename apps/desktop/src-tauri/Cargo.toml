@@ -21,6 +21,11 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
+# 019 Preset Auto-Launch on Boot: OS のログイン項目に stream-dock を登録/解除する公式プラグイン。
+# 手書きの LaunchAgent/レジストリ書込（docs/security.md §5 違反）を避けるため公式実装を用いる。
+# reconcile（フラグ付きプリセットが 1 つ以上 ⇔ 有効）で enable/disable し、OS 起動時は `--autostart`
+# 付きで起動して手動起動と区別する。
+tauri-plugin-autostart = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }

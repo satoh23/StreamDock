@@ -57,6 +57,7 @@ pub fn create(conn: &Connection, input: CreatePresetInput) -> AppResult<Preset> 
         id: uuid::Uuid::new_v4().to_string(),
         name,
         description,
+        auto_launch_on_boot: input.auto_launch_on_boot.unwrap_or(false),
         created_at: now.clone(),
         updated_at: now,
     };
@@ -84,6 +85,10 @@ pub fn update(conn: &Connection, id: &str, input: UpdatePresetInput) -> AppResul
         id: existing.id,
         name,
         description,
+        // 未指定（None）は既存値を維持し、明示指定があればそれを採用する。
+        auto_launch_on_boot: input
+            .auto_launch_on_boot
+            .unwrap_or(existing.auto_launch_on_boot),
         created_at: existing.created_at,
         updated_at: now_rfc3339(),
     };

@@ -4,4 +4,8 @@
  * 永続化される Preset（DB / API 戻り値）。JSON は camelCase。
  * 005 時点ではツール紐付け・起動順・並行設定は持たない（006 以降で拡張）。
  */
-export type Preset = { id: string, name: string, description: string, createdAt: string, updatedAt: string, };
+export type Preset = { id: string, name: string, description: string, 
+/**
+ * PC 起動時（`--autostart` 起動）にこのプリセットのツールを自動一括起動するか（019）。
+ */
+autoLaunchOnBoot: boolean, createdAt: string, updatedAt: string, };

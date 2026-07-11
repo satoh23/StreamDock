@@ -37,6 +37,21 @@
   background: var(--control-bg-hover);
 }
 
+.bootToggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--text);
+}
+.bootToggle input {
+  accent-color: var(--primary);
+  width: 16px;
+  height: 16px;
+}
+
 .toolSelectHeader {
   display: flex;
   align-items: center;

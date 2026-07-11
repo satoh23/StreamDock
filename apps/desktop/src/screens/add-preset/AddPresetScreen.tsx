@@ -82,6 +82,8 @@ export function AddPresetScreen({
   const [error, setError] = useState<string | null>(null);
   const [nameError, setNameError] = useState(false);
   const [saving, setSaving] = useState(false);
+  // 019: PC 起動時にこのプリセットのツールを自動一括起動するか（per-preset フラグ）。
+  const [autoLaunchOnBoot, setAutoLaunchOnBoot] = useState(false);
 
   const toolById = useMemo(
     () => new Map(tools.map((t) => [t.id, t])),
@@ -93,6 +95,7 @@ export function AddPresetScreen({
   useEffect(() => {
     setName(editingPreset?.name ?? "");
     setDescription(editingPreset?.description ?? "");
+    setAutoLaunchOnBoot(editingPreset?.autoLaunchOnBoot ?? false);
     const seeded = editingItems
       .slice()
       .sort((a, b) => a.orderIndex - b.orderIndex)
@@ -160,7 +163,11 @@ export function AddPresetScreen({
 
   /** 新規作成: プリセットを作り、選択順どおりにツールを追加する。 */
   const saveCreate = async () => {
-    const preset = await createPreset({ name: name.trim(), description });
+    const preset = await createPreset({
+      name: name.trim(),
+      description,
+      autoLaunchOnBoot,
+    });
     for (const item of launchItems) {
       await addToolToPreset({
         presetId: preset.id,
@@ -172,7 +179,11 @@ export function AddPresetScreen({
 
   /** 編集: プリセット情報を更新し、既存構成との差分を反映する。 */
   const saveEdit = async (presetId: string) => {
-    await updatePreset(presetId, { name: name.trim(), description });
+    await updatePreset(presetId, {
+      name: name.trim(),
+      description,
+      autoLaunchOnBoot,
+    });
 
     const existingByToolId = new Map(
       editingItems.map((i) => [i.toolId, i]),
@@ -330,6 +341,20 @@ export function AddPresetScreen({
                     />
                     <div className={layout.fieldHelp}>
                       サイドバーや一覧の補足として使えます。未入力でも保存できます。
+                    </div>
+                  </div>
+                  <div className={layout.field}>
+                    <label className={styles.bootToggle}>
+                      <input
+                        type="checkbox"
+                        checked={autoLaunchOnBoot}
+                        onChange={(e) => setAutoLaunchOnBoot(e.target.checked)}
+                      />
+                      <span>PC起動時にプリセット自動起動</span>
+                    </label>
+                    <div className={layout.fieldHelp}>
+                      オンにすると、PC 起動時に stream-dock
+                      が自動起動し、このプリセットのツールを一括起動します。
                     </div>
                   </div>
                 </div>

@@ -10,6 +10,8 @@ pub struct Preset {
     pub id: String,
     pub name: String,
     pub description: String,
+    /// PC 起動時（`--autostart` 起動）にこのプリセットのツールを自動一括起動するか（019）。
+    pub auto_launch_on_boot: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -23,6 +25,9 @@ pub struct CreatePresetInput {
     #[serde(default)]
     #[ts(optional)]
     pub description: Option<String>,
+    #[serde(default)]
+    #[ts(optional)]
+    pub auto_launch_on_boot: Option<bool>,
 }
 
 /// プリセット更新の入力。create と同項目（id は command 引数で受ける）。
@@ -34,4 +39,7 @@ pub struct UpdatePresetInput {
     #[serde(default)]
     #[ts(optional)]
     pub description: Option<String>,
+    #[serde(default)]
+    #[ts(optional)]
+    pub auto_launch_on_boot: Option<bool>,
 }

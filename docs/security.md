@@ -242,6 +242,30 @@ MVPでは外部リソースを読み込まない。
 - 自動アップデート
 - 設定ファイルのバックアップ・上書き
 - ユーザー入力をOS操作に渡す処理
+- ログイン項目（autostart / 永続 OS 連携）の登録・解除処理
+
+### 011 ログイン項目（autostart, 019 時点）
+
+- ログイン項目の登録・解除は公式 `tauri-plugin-autostart`（v2, macOS は LaunchAgent 方式）のみで行い、
+  手書きの LaunchAgent plist / レジストリ書込は行わない（§5）。
+- ユーザー向けのグローバル ON/OFF は設けず、「`auto_launch_on_boot` フラグ付きプリセットが 1 つ以上
+  ⇔ ログイン項目 ON」という不変条件を reconcile（create/update/delete/起動時）で導出する。
+  全フラグ解除時は `disable()` により**必ず**解除される（`is_enabled()` でガードし冗長書込を回避）。
+- OS がログイン時に起動する際は `--autostart` 引数を渡し、起動時フックはこの引数がある時のみ
+  フラグ付きプリセットのツールを自動一括起動する（手動起動では発火しない）。起動処理は既存
+  `validate_executable` / 保存済み `executablePath` 経由のみで、新規 spawn 面・shell・外部通信を増やさない。
+- capabilities は autostart の 3 permission（`allow-enable` / `allow-disable` / `allow-is-enabled`）のみ。
+  なお reconcile は Rust 側 `ManagerExt`（IPC 非経由）で行うため、これら 3 permission は **JS からは未使用**。
+  削除すると plugin が ACL 経由の場合に autostart が黙って壊れるリスクがあるため最小構成として保持する
+  （`capabilities/default.json` は JSON でコメントを書けないため、保持理由をここに残す）。
+- **既知の限界**: アプリをアンインストールした場合、登録済みのログイン項目（macOS の
+  `~/Library/LaunchAgents/<identifier>.plist` 等）が OS 側に残留し得る。アンインストーラ側での
+  クリーンアップは MVP スコープ外（別途検討）。ユーザーが手動で削除することでも解除できる。
+- **プラットフォーム限定（未検証）**: `tauri-plugin-autostart` は OS ごとに登録方式が異なる
+  （macOS=LaunchAgent / Windows=レジストリ Run キー / Linux=.desktop）。本開発環境は macOS のため、
+  Windows/Linux の autostart 登録経路は `cargo check` でコンパイルされても**実挙動は未検証**
+  （動作対象は macOS のみ）。起動時の自動一括起動が再利用する `launch_preset_targets` も
+  013 由来のプラットフォーム差（macOS `/usr/bin/open` 縮退）を継承する。
 
 ## 004 Tool Registry時点のレビュー観点
 

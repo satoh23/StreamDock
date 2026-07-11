@@ -35,7 +35,7 @@
 - `src-tauri/Cargo.toml` — package name = stream-dock
 - `README.md` — 要件・起動方法・検証コマンドを記載
 - `docs/progress.md` — 本記録
-- その他スキャフォールド生成物一式 (index.html / vite.config.ts / tsconfig*.json / src/ / src-tauri/)
+- その他スキャフォールド生成物一式 (index.html / vite.config.ts / tsconfig\*.json / src/ / src-tauri/)
 
 ### 現在のディレクトリ構成 (root 直下にフラット展開)
 
@@ -117,6 +117,7 @@ stream-dock/
 ├── CLAUDE.md
 └── docs/
 ```
+
 ※ `backend/` ディレクトリは MVP では作らない方針。
 
 ### 検証結果
@@ -596,6 +597,7 @@ cleanup で `mountedRef.current = false` にするが、effect 本体で `true` 
 ### 技術的前提（不可能な理由）
 
 「アプリの初期ローディングが完全に終わったタイミング」の正確な検知は実質不可能。
+
 - 「準備完了」はアプリ内部状態で、OS に汎用シグナルが無い。
 - プロセス生存確認はローディング中もずっと true なので早期化を解消しない（かつ macOS `.app` は `/usr/bin/open` 経由で実 PID を持たない＝追跡は 009 相当の追加実装が必要）。
 - macOS の `isFinishedLaunching` 等は AppKit 起動完了時点で早期発火し、ローディング完了とは一致しない（＋新規ネイティブ依存が必要）。
@@ -1456,18 +1458,18 @@ StillPending 据え置きにしているのに、停止側だけ非対称だっ�
 
 ### ライト値マッピング（seed = CastDock A案 パレット `:root`）
 
-| 役割 seed | ライト | ダーク(015=パレット.dark) |
-|---|---|---|
-| primary | `#0036CB` | `#2F6BFF` |
-| secondary | `#00A3B5` | `#22D3EE` |
-| accent | `#7C3AED` | `#A78BFA` |
-| background | `#F7F8FA` | `#090D18` |
-| surface | `#FFFFFF` | `#111827` |
-| surface-elevated | `#EEF2F7` | `#1B2435` |
-| text | `#111827` | `#F9FAFB` |
-| text-muted | `#6B7280` | `#9CA3AF` |
-| text-inverse | `#FFFFFF` | `#090D18` |
-| border | `#D7DEE8` | `#2D3748` |
+| 役割 seed                        | ライト                                        | ダーク(015=パレット.dark)                     |
+| -------------------------------- | --------------------------------------------- | --------------------------------------------- |
+| primary                          | `#0036CB`                                     | `#2F6BFF`                                     |
+| secondary                        | `#00A3B5`                                     | `#22D3EE`                                     |
+| accent                           | `#7C3AED`                                     | `#A78BFA`                                     |
+| background                       | `#F7F8FA`                                     | `#090D18`                                     |
+| surface                          | `#FFFFFF`                                     | `#111827`                                     |
+| surface-elevated                 | `#EEF2F7`                                     | `#1B2435`                                     |
+| text                             | `#111827`                                     | `#F9FAFB`                                     |
+| text-muted                       | `#6B7280`                                     | `#9CA3AF`                                     |
+| text-inverse                     | `#FFFFFF`                                     | `#090D18`                                     |
+| border                           | `#D7DEE8`                                     | `#2D3748`                                     |
 | info / success / warning / error | `#2563EB` / `#16A34A` / `#F59E0B` / `#DC2626` | `#60A5FA` / `#4ADE80` / `#FBBF24` / `#F87171` |
 
 - **015 のダーク seed はパレット `.dark` と完全一致**（齟齬なし・勝手な変更なし）。
@@ -1476,6 +1478,7 @@ StillPending 据え置きにしているのに、停止側だけ非対称だっ�
 
 1. `-text` 系（015 は `mix(色, #fff)` で暗い面用の明るい文字を作る）を、ライトでは **mix 先を `var(--color-text)`(=#111827)** に再導出: `--accent-text` / `--primary-text` / `--warn-text` / `--danger-text` / `--info-text`（白地の淡いソフト背景に暗い文字が載るように）。
 2. `--btn-primary-fg`（base=`var(--text)`）は、ライトの CTA グラデ（teal→purple）で暗い文字が判読不能になるため **`var(--color-text-inverse)`(=#FFFFFF)** に上書き。
+
 - いずれも**パレット既存色のみ**を使用。新たな基準色の追加は無し。
 
 ### 派生色の判断（ユーザー確認済み）
@@ -1635,3 +1638,67 @@ StillPending 据え置きにしているのに、停止側だけ非対称だっ�
 ### 検証
 
 - `cargo check` / `pnpm typecheck` / `pnpm lint`、および `tauri dev` で Calendar 実アイコン表示・`.icns` アプリ（Chrome）の非退行・抽出不可時の文字フォールバックを確認する。
+
+## 2026-07-11 (019 Preset Auto-Launch on Boot)
+
+### 完了したこと
+
+- プリセット追加/編集画面（`AddPresetScreen.tsx` Step1）に **per-preset トグル「PC起動時にプリセット自動起動」** を追加した（ユーザー要望 5）。有効化したプリセットは、PC 起動 → stream-dock 自動起動（`--autostart`）→ そのプリセットのツール一括起動が無人で走る。
+- ユーザー向けのグローバル ON/OFF UI は作らず、**「`auto_launch_on_boot` フラグ付きプリセットが 1 つ以上 ⇔ ログイン項目 ON」という不変条件を reconcile で導出**する方式にした。
+
+### autostart プラグイン導入理由（docs/security.md §5 / §10）
+
+- ログイン項目は永続的な OS 連携（§10 レビュー対象）。手書きの LaunchAgent plist / レジストリ書込は §5 違反のため、公式 `tauri-plugin-autostart = "2"`（macOS は `MacosLauncher::LaunchAgent`）を導入した。OS がログイン時に起動する際に `--autostart` を渡す設定（`Some(vec!["--autostart"])`）にし、起動時フックで手動起動と区別する。
+- 追加された推移依存: `auto-launch` / `dirs` / `dirs-sys` / `redox_users` / `winreg`（プラグインの依存。いずれもローカルのログイン項目登録用で外部通信なし）。
+
+### reconcile の不変条件と置き場（command 層）
+
+- `presets/commands.rs` に private `reconcile_autostart(app: &AppHandle, conn: &Connection)` を新設。`repository::count_auto_launch_on_boot` が 1 以上なら `enable()`、0 なら `disable()`。`is_enabled()` でガードし冗長な OS 書込を避ける。OS 書込失敗は best-effort（UI をブロックせず `app_logs` に Warn 記録）。
+- 呼び出しタイミング: `create_preset` / `update_preset` / `delete_preset` の service 成功後（各 command に `app: AppHandle` 引数を追加）、および起動時（setup）。前回セッションで全フラグ解除された場合も起動時 reconcile で是正される。
+- OS 連携は `AppHandle` を持てる command 層のみで行い、`&Connection` しか持たない service 層では触らない。reconcile は Rust 側 `ManagerExt`（IPC 非経由）で行う。
+
+### 起動時フック（既存一括起動の再利用）— lib.rs setup
+
+- DB/registry を manage したあと `std::env::args()` に `--autostart` が含まれるときのみ、`lib.rs::boot_launch_presets` を **別スレッド**で実行（ウィンドウ生成をブロックしない）。`AppHandle` を clone し、スレッド内で `handle.state::<DbState>()` / `state::<ProcessRegistry>()` を取得。
+- 起動は既存 `process::service::{resolve_preset_targets, launch_preset_targets}` を再利用（`launch_preset` command と同処理・新規 spawn 経路なし）。DB ロックは targets 解決時のみ取得し spawn 前に解放。開始/完了を `app_logs`（`LogCategory::BulkLaunch`, operation `autostart_launch_preset`）に記録（launch_preset と同じ成功/一部失敗/全失敗の分岐）。
+- 手動起動（`--autostart` 無し）では自動起動を発火させない。
+- ウィンドウ: `tauri.conf.json` は**未変更**（デフォルト visible:true）。setup で `show()` のみ行い、手動起動・自動起動とも**通常表示**（最小化しない・ユーザー確認済み。自動起動時も、立ち上がったツールを管理しやすいため）。ダイアログ等でブロックしない。トレイは作らない（スコープ外）。
+
+### スキーマ変更（`ensure_column` 再利用）
+
+- `presets` に `auto_launch_on_boot INTEGER NOT NULL DEFAULT 0` を、018 新設の冪等ヘルパ `util::ensure_column(conn, "presets", "auto_launch_on_boot", "INTEGER NOT NULL DEFAULT 0")` で `presets::repository::init` の `CREATE TABLE IF NOT EXISTS` 直後に追加（既存 DB でも落ちない）。table/column/decl はコンパイル時定数のみ。
+- bool 保存は既存 `preset_items.enabled` の慣用を踏襲（`as i64` 書込 / `i64 != 0` 読取）。`PRESET_COLUMNS` / `row_to_preset` / `insert` / `update` に配線。reconcile・起動時用に `count_auto_launch_on_boot` / `list_auto_launch_on_boot` を追加。
+- モデル: `Preset` に `auto_launch_on_boot: bool`、`CreatePresetInput` / `UpdatePresetInput` に `#[serde(default)] #[ts(optional)] auto_launch_on_boot: Option<bool>`。service の `create`（既定 false）/ `update`（未指定は既存値維持）で通す。ts-rs 再生成で `autoLaunchOnBoot` を frontend 型に反映。
+
+### capabilities / 設定
+
+- `capabilities/default.json` に autostart の **3 permission のみ** 追加（`autostart:allow-enable` / `allow-disable` / `allow-is-enabled`）。広い scope は足さない。
+- `Cargo.toml` に `tauri-plugin-autostart = "2"`、`lib.rs` builder に `.plugin(tauri_plugin_autostart::init(...))`。`tauri.conf.json` は**未変更**（window 制御は setup の `show()` のみ。CSP `csp:null` 不変・外部通信ゼロ）。
+
+### frontend 配線
+
+- `AddPresetScreen.tsx`: `autoLaunchOnBoot` state を追加、`editingPreset?.autoLaunchOnBoot ?? false` で初期化、Step1 の説明フィールド直後にトグル（素の `<input type="checkbox">` + `AddPresetScreen.module.css` に `.bootToggle`）を配置。`createPreset` / `updatePreset` の payload に `autoLaunchOnBoot` を含める。016 設定画面とは独立。
+
+### 既知の限界
+
+- **アンインストール時にログイン項目（macOS `~/Library/LaunchAgents/<identifier>.plist` 等）が OS 側に残留し得る**。アンインストーラでのクリーンアップは MVP スコープ外（docs/security.md に明記）。ユーザーの手動削除でも解除可能。
+- `tauri-plugin-single-instance`（二重起動対策）は未導入（別途検討）。起動順の高度制御・自動停止・OS 再起動をまたいだプロセス復元はスコープ外。
+- **Windows(レジストリ Run キー)/Linux(.desktop) の autostart 登録経路は macOS 開発環境ではコンパイルのみで実挙動未検証**（動作対象は macOS/LaunchAgent のみ）。自動一括起動が再利用する `launch_preset_targets` も 013 由来のプラットフォーム差（macOS `/usr/bin/open` 縮退）を継承する。
+
+### セキュリティレビュー結果（security-review 実施済み・必須）
+
+- 判定: **問題なし（修正必須なし）**。外部通信ゼロ / 新規 spawn 面・shell・汎用 command なし / frontend から渡るのは `autoLaunchOnBoot`(bool) のみ（`app: AppHandle` は Tauri 自動注入）/ 起動時起動は既存 `validate_executable`・保存済み path 経由のみ / `--autostart` ゲートで手動起動時は非発火 / 全フラグ解除で `disable()` 保証（`is_enabled()` ガード）/ ログは固定文言＋preset_id(uuid) のみ / capabilities は autostart 3 permission 限定 / CSP 不変。
+- 後回し（実害なし）: reconcile を DB ロック保持中に OS 呼び出しする点（ユーザー操作頻度低・将来ロック外へ出す余地）。capabilities 3 permission は Rust 側 `ManagerExt` 使用のため JS からは未使用だが最小構成で攻撃面を広げない。
+
+### 検証結果
+
+- `cargo check` → 成功（`tauri-plugin-autostart` 取得後も success）
+- `pnpm --filter ./apps/desktop gen:bindings` → 24 tests ok（`autoLaunchOnBoot` 再生成）
+- `pnpm --filter ./apps/desktop typecheck` → 成功（exit 0）
+- `pnpm --filter ./apps/desktop lint` → 成功（exit 0）
+- `git diff --stat` → 変更範囲は 019 想定内（Cargo.lock/Cargo.toml/capabilities/lib.rs/presets 各ファイル/tauri.conf.json/presets bindings 3 件/AddPresetScreen.tsx(+css)/docs）。
+- **実機表示（`tauri dev`）は未実施**: トグル保存・再表示 / 有効化でログイン項目登録・全解除で解除 / `--autostart` 付き起動でフラグ付きプリセットが通常表示＋自動一括起動しウィンドウ生成をブロックしない / 手動起動では非発火 / 既存 DB でも落ちない、をユーザー環境（macOS）で確認をお願いしたい。
+
+### やっていないこと（スコープ外）
+
+- グローバルな「起動時にアプリを起動」ON/OFF UI / `tauri-plugin-single-instance` / 起動順の高度制御・待機秒数 / 自動停止・スケジューリング / OS 再起動をまたいだプロセス復元 / MainScreen「起動間隔を設定」プレースホルダ / トレイ / 018・017 の既存パス検証（`validate_executable`）の変更。
