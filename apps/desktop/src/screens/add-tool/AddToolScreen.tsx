@@ -222,33 +222,36 @@ export function AddToolScreen({
             </p>
           </div>
           <div className={layout.panelBody}>
-            {/* 023: ツール種別トグル（アプリ = 実行ファイル / URL = 既定ブラウザで開く）。 */}
-            <div className={styles.kindToggle} role="tablist" aria-label="ツール種別">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={!isUrlKind}
-                className={`${styles.kindOption} ${!isUrlKind ? styles.kindActive : ""}`}
-                onClick={() => {
-                  setKind("executable");
-                  setError(null);
-                }}
-              >
-                アプリ
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={isUrlKind}
-                className={`${styles.kindOption} ${isUrlKind ? styles.kindActive : ""}`}
-                onClick={() => {
-                  setKind("url");
-                  setError(null);
-                }}
-              >
-                URL
-              </button>
-            </div>
+            {/* 023: ツール種別トグル（アプリ = 実行ファイル / URL = 既定ブラウザで開く）。
+                025: 編集時は種別切替を許さないため非表示にする（種別は editingTool.kind 固定）。 */}
+            {!isEdit && (
+              <div className={styles.kindToggle} role="tablist" aria-label="ツール種別">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={!isUrlKind}
+                  className={`${styles.kindOption} ${!isUrlKind ? styles.kindActive : ""}`}
+                  onClick={() => {
+                    setKind("executable");
+                    setError(null);
+                  }}
+                >
+                  アプリ
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={isUrlKind}
+                  className={`${styles.kindOption} ${isUrlKind ? styles.kindActive : ""}`}
+                  onClick={() => {
+                    setKind("url");
+                    setError(null);
+                  }}
+                >
+                  URL
+                </button>
+              </div>
+            )}
 
             {isUrlKind ? (
               <div className={styles.selectedApp}>

@@ -76,7 +76,6 @@ export function AddPresetScreen({
 
   const [currentStep, setCurrentStep] = useState<1 | 2>(1);
   const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [launchItems, setLaunchItems] = useState<LaunchItem[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -94,7 +93,6 @@ export function AddPresetScreen({
   // editingItems は App 側で useMemo し identity が安定しているため dep に含めてよい。
   useEffect(() => {
     setName(editingPreset?.name ?? "");
-    setDescription(editingPreset?.description ?? "");
     setAutoLaunchOnBoot(editingPreset?.autoLaunchOnBoot ?? false);
     const seeded = editingItems
       .slice()
@@ -165,7 +163,6 @@ export function AddPresetScreen({
   const saveCreate = async () => {
     const preset = await createPreset({
       name: name.trim(),
-      description,
       autoLaunchOnBoot,
     });
     for (const item of launchItems) {
@@ -181,7 +178,6 @@ export function AddPresetScreen({
   const saveEdit = async (presetId: string) => {
     await updatePreset(presetId, {
       name: name.trim(),
-      description,
       autoLaunchOnBoot,
     });
 
@@ -330,17 +326,6 @@ export function AddPresetScreen({
                     />
                     <div className={layout.fieldHelp}>
                       例：通常配信、雑談用、ゲーム用、海外コメント対応など
-                    </div>
-                  </div>
-                  <div className={layout.field}>
-                    <label>説明</label>
-                    <input
-                      value={description}
-                      placeholder="このプリセットの説明（任意）"
-                      onChange={(e) => setDescription(e.target.value)}
-                    />
-                    <div className={layout.fieldHelp}>
-                      サイドバーや一覧の補足として使えます。未入力でも保存できます。
                     </div>
                   </div>
                   <div className={layout.field}>

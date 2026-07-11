@@ -320,19 +320,3 @@
   line-height: 1.6;
 }
 
-.footerActions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 14px;
-  margin-top: 18px;
-  padding: 14px 16px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--surface-2);
-}
-.footerButtons {
-  display: flex;
-  gap: 10px;
-  flex: none;
-}

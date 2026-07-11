@@ -2011,3 +2011,50 @@ Rust: `tools/model.rs`, `tools/repository.rs`, `tools/service.rs`, `util.rs`, `p
 - `git diff --stat` → 上記 3 ファイルのみ（App.tsx / mockData.ts 削除 / AddToolScreen.tsx）
 - **セキュリティ確認（docs/security.md 準拠）**: frontend のみ。新規 Tauri command / capabilities を追加せず既存 `create_tool`/`add_tool_to_preset`/`reorder_preset_items` のみ利用（`AddToolScreen` に直接 `invoke` なし）。frontend から渡すのは `presetId`/`toolId`/`launchMode` のみ（任意 path/command を渡さない）。外部通信・外部リソースを増やさない。
 - **実機表示（`tauri dev`）は未実施**（ユーザー環境で確認依頼）: 登録先が実データから選べ選んだプリセットに登録される／プリセット 0 件で登録先セレクトが非活性・「追加しない」固定／追加位置が「追加しない」・非活性時は非表示、実プリセット選択時のみ表示／「末尾＝addToolToPreset・先頭＝続けて reorderPresetItems・並行＝launchMode parallel」が実挙動と一致／プリセット登録失敗時にエラー表示されツールの二重作成が起きない／「追加しない」選択時はツールのみ作成／編集時は登録先/追加位置が出ない／ライト・ダーク両テーマで破綻しない。
+
+## 2026-07-12 025 Form/UI Polish Round 2（フォーム/UI 細部整理・frontend のみ）
+
+022 に続くフォーム/UI の細部整理。表示されない未使用フォームの削除、プレビュー枠のフラット化、ツール編集時の種別トグル非表示、メイン画面編集中フッタの不要要素削除。frontend のみ・Rust / DB / bindings 変更なし・新規ライブラリ / 外部リソースなし。
+
+### (1) プリセット説明欄の削除（`AddPresetScreen.tsx`）
+
+- UI のどこにも表示されない write-only な「説明」欄を削除。Step1 の「説明」フィールド JSX（label〜fieldHelp「サイドバーや一覧の補足として使えます。」）を撤去。
+- 関連 state `description` / `setDescription`・初期化 `setDescription(editingPreset?.description ?? "")`・保存 payload の `description`（`saveCreate` の `createPreset` / `saveEdit` の `updatePreset`）を整理し、両 API へ `description` を送らない。
+- **整理範囲**: state 定義 1 / 初期化 1 / payload 2 / JSX フィールド 1。`toLaunchItem` の `tool.description`（tool 側）は無関係で無変更。
+- **残置方針**: `CreatePresetInput` / `UpdatePresetInput` は `description?` が任意のため省略で typecheck が通る。Rust の Preset モデル / DB の `description` カラム・`PresetRecord.description` 型は残置（022 の `icon_label` と同方針・破壊的変更は範囲外で既存 default 挙動に委ねる）。
+
+### (2) プレビュー枠のフラット化（`PreviewCard.module.css` `.newRow`）
+
+- ハイライト行 `.newRow` の accent `border`（`color-mix(... --accent 30% ...)`）と radial-gradient ＋ `--accent-soft` 背景を撤廃。「枠/影」に見えパネル（`.panel` 上辺 `--line`）と干渉していた状態を解消。
+- フラットな単色面 `background: var(--surface-2)` に置換（border なし・グラデなし）。`margin`/`padding`/`border-radius` は維持。021 のフラット方針に整合。生の hex/rgba は残さず全て `var(--...)` 経由。
+
+### (3) ツール編集時の種別トグル非表示（`AddToolScreen.tsx`）
+
+- アプリ/URL 種別トグル（`role="tablist"` の `.kindToggle` ブロック）を `{!isEdit && ( ... )}` で囲み、編集時は非表示に。編集時は種別切替 UI が無く `setKind` が呼ばれないため `editingTool.kind`（70/83 行で初期化）のまま固定。
+- **編集時 kind 分岐**: パネル見出し（`isUrlKind ? "URL を入力" : "アプリを選択"`）・selectedApp・フォーム分岐（URL 入力 / 実行ファイルパス readOnly）は全て既存の `isUrlKind` 由来で自動的に対象種別が出る。executable 編集は実行ファイル系のみ、url 編集は URL 入力のみ編集可（種別切替不可）。分岐ロジック / state / 見出しは無変更。
+
+### (4) メイン画面編集中フッタの削除（`MainScreen.tsx` / `MainScreen.module.css`）
+
+- `MainScreen.tsx` の `{editMode && ( <div className={styles.footerActions}> ... </div> )}` ブロック全体（未配線プレースホルダ Button「起動間隔を設定」「PC起動時の動作」）を削除。`Button` import は他所で使用継続のため残置。
+- `MainScreen.module.css` の `.footerActions`（囲み枠 `border`/`border-radius`/`background`）と未使用になる `.footerButtons` を削除。編集モードは items 一覧で自然終了しレイアウト非破綻。
+
+### やらないこと（維持）
+
+Rust モデル / DB スキーマ変更（description カラム削除しない）／024 のプリセット登録本実装・021 の配色/ボタンモダン化追加／「起動間隔」「PC起動時の動作」機能の実装（削除のみ・将来別タスク）／プレビュー以外のスタイル刷新／新ライブラリ・外部リソース追加。
+
+### 変更ファイル（Frontend 5）
+
+- `screens/add-preset/AddPresetScreen.tsx`（description 削除）
+- `components/PreviewCard.module.css`（`.newRow` フラット化）
+- `screens/add-tool/AddToolScreen.tsx`（種別トグル `!isEdit` ガード）
+- `screens/main/MainScreen.tsx`（編集中フッタ削除）
+- `screens/main/MainScreen.module.css`（`.footerActions` / `.footerButtons` 削除）
+
+### 確認
+
+- `pnpm --filter ./apps/desktop typecheck` → 成功（exit 0）
+- `pnpm --filter ./apps/desktop lint` → 成功（exit 0）
+- `git diff --name-only` → 上記 5 ファイル ＋ `docs/progress.md` のみ
+- 生の hex/rgba 残置なし（touched CSS 2 ファイルを grep 済み・全て `var(--...)`）／削除に伴う未使用 state / import / スタイルなし（`Button` は MainScreen で継続使用を確認）
+- **セキュリティ確認（docs/security.md 準拠）**: frontend のみ。OS 操作 / ファイル操作 / プロセス操作を追加せず（§2/§4）、外部リソース・外部通信・telemetry を増やさない（§1/§CSP）。パス設定・ファイル選択の既存仕様は無変更。新規 command / capabilities / ライブラリなし。
+- **実機表示（`tauri dev`）は未実施**（ユーザー環境で確認依頼）: プリセット追加/編集画面から「説明」欄が消え作成・編集・保存が破綻しない（Rust の description カラム残置）／ツール追加後プレビューのハイライト枠がフラットになりパネル上辺の線が正常表示／ツール編集画面でアプリ/URL トグルが表示されず対象種別の項目のみ編集可（executable・url 両方で確認・種別切替不可）／メイン画面編集中の「起動間隔を設定」「PC起動時の動作」と囲み枠線が消えレイアウト非破綻／ライト・ダーク両テーマで破綻しない。

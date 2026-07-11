@@ -77,11 +77,8 @@
 .newRow {
   margin: 8px 0 0;
   padding: 13px 8px;
-  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
   border-radius: 14px;
-  background:
-    radial-gradient(circle at left, color-mix(in srgb, var(--accent) 14%, transparent), transparent 64%),
-    var(--accent-soft);
+  background: var(--surface-2);
 }
 
 .plainHelp {

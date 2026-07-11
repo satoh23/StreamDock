@@ -705,15 +705,6 @@ export function MainScreen({
           })}
         </div>
       )}
-
-      {editMode && (
-        <div className={styles.footerActions}>
-          <div className={styles.footerButtons}>
-            <Button>起動間隔を設定</Button>
-            <Button>PC起動時の動作</Button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
