@@ -14,7 +14,10 @@
       {
         "title": "stream-dock",
         "width": 1280,
-        "height": 800
+        "height": 800,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": { "x": 16, "y": 28 }
       }
     ],
     "security": {

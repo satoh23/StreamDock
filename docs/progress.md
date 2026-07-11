@@ -1702,3 +1702,138 @@ StillPending 据え置きにしているのに、停止側だけ非対称だっ�
 ### やっていないこと（スコープ外）
 
 - グローバルな「起動時にアプリを起動」ON/OFF UI / `tauri-plugin-single-instance` / 起動順の高度制御・待機秒数 / 自動停止・スケジューリング / OS 再起動をまたいだプロセス復元 / MainScreen「起動間隔を設定」プレースホルダ / トレイ / 018・017 の既存パス検証（`validate_executable`）の変更。
+
+## 2026-07-11 (020 App Header (Docker-like))
+
+Docker Desktop 風の共通ヘッダーを全画面に常設。従来、設定/診断への遷移はサイドバー下部の ghost ボタンのみで、サイドバーは `screen === "main"` のときしか出ないため他画面で導線が消えていた。ヘッダーへ一本化し、全画面に常時表示する。**frontend のみの変更**（OS/ファイル/プロセス操作は追加せず、外部リソースも読み込まない）。
+
+### ヘッダー構成（新設 `components/Header.tsx` ＋ `Header.module.css`）
+
+- props: `activeNav?: Extract<Screen, "diagnostics" | "settings">` / `onNavigate: (s: Screen) => void`。
+- 左（brand）: 同梱アプリアイコン `public/icon.png` を `<img src="/icon.png" alt="" />` で表示＋「StreamDock」ワードマーク。**アイコン調達 = 同梱アセットのみ**（外部フォント/CSS/CDN/リモート画像なし・docs/security.md §CSP 準拠）。
+- 右（nav）: 現行絵文字 🩺（診断 / ログ）・⚙（設定）を流用したアイコンボタン。`title` / `aria-label` 付与、`activeNav` に応じ `.active`（`--primary-soft` 系）表示。
+- ヘッダーは**アプリ名バーに徹する**（各画面の見出しは各 screen の `layout.pageTitle` が持つため二重見出しにしない）。
+- CSS は role トークン（`var(--...)`）のみ。生 hex/rgba なし（背景 `--surface` / 区切り `--line` / ボタン `--btn-ghost-*` / active `--primary-soft*`）。
+
+### Window 再構成方式（外側 flex ラップ）
+
+- `Window` に `header?: ReactNode` prop を追加。`{ header?, sidebar?, children }`。
+- `.shell`（`flex-direction: column; height:100%`）直下にヘッダー行 ＋ `.body` を置く縦構成。`.body` は従来の 2 カラム grid（`300px 1fr` / `flex:1; min-height:0; overflow:hidden`）で `sidebar | main` を保持。`.fullWidth` 修飾子は `.body` へ移設。
+- ヘッダーは sidebar 有無に関わらず常時表示。既存 `.window` の grid ルールはそのまま `.body` へ移しただけで、本体レイアウトの挙動は不変。
+
+### サイドバーからの移設（`Sidebar.tsx` / `Sidebar.module.css`）
+
+- `Sidebar.tsx` の診断/設定 ghost ボタン section（🩺 / ⚙）を削除しヘッダーへ一本化。
+- 未使用になった型/スタイルを整理: `activeNav` prop の型を `Extract<Screen, "add-preset" | "add-tool" | "diagnostics" | "settings">` → **`Extract<Screen, "add-preset" | "add-tool">`** へ narrow。`Sidebar.module.css` の隣接 ghost 専用ルール `.ghost + .ghost { margin-top: 8px }`（＋コメント）を削除（`.ghost` / `.ghost.active` / `.ghost:disabled` は add-preset / add-tool ghost が継続使用のため残置）。
+
+### App 配線（`App.tsx`）
+
+- `Header` を import。`activeNav = screen === "diagnostics" || screen === "settings" ? screen : undefined` を導出し、`<Window header={<Header activeNav={activeNav} onNavigate={handleNavigate} />} ...>` で渡す。`handleNavigate` は既存流用（diagnostics/settings/add-* を既に捌ける）。
+
+### 検証結果
+
+- `pnpm --filter ./apps/desktop typecheck` → 成功（exit 0）
+- `pnpm --filter ./apps/desktop lint` → 成功（exit 0）
+- `*.module.css` の生 hex/rgba なし（Header/Window とも全て `var(--...)`）を確認。
+- 変更範囲: `App.tsx` / `components/{Header.tsx,Header.module.css(新規),Window.tsx,Window.module.css,Sidebar.tsx,Sidebar.module.css}` / `docs/progress.md`。`types.ts` は変更なし。
+- **実機表示（`tauri dev`）は未実施**: 全画面（main / add-tool / add-preset / diagnostics / settings）でヘッダー常時表示 / 左にアイコン＋StreamDock・右に診断/設定 / ヘッダーから遷移でき現在画面が active / サイドバー下部 ghost が消えヘッダーへ一本化 / 二重見出しなし / sidebar 有(main)・無(他)ともレイアウト非破綻 / ライト・ダーク双方非破綻、をユーザー環境（macOS）で確認をお願いしたい。
+
+### やっていないこと（スコープ外）
+
+- ネイティブ枠のカスタム化（カスタムタイトルバー・ドラッグ領域・信号機ボタン移動）/ ヘッダー遷移先の新規機能画面そのものの追加（土台のみ）/ プリセット・ツール管理の導線変更（サイドバーの ＋追加・一覧は据え置き）/ 配色・ボタンのモダン化（021）/ フォーム文言・項目の変更（022）/ 新規ライブラリ・外部リソースの追加。
+
+### 020-b 追従修正（ヘッダー配色 primary ＋ アプリアイコン blend・ユーザー要望）
+
+- **アイコンのリンク切れ修正**: 当初の `<img src="/icon.png">` は `apps/desktop/public/` に `icon.png` が無く表示されていなかった（アプリアイコンPNGは `src-tauri/icons/` にある）。`src-tauri/icons/128x128.png` を `public/icon.png` へコピー配置し、`src="/icon.png"` を有効化（同梱アセットの複製・外部通信なし・CSP 準拠）。`Header.tsx` は変更なし。
+- **ヘッダー配色を primary に**（`Header.module.css` のみ・生 hex なし）: `.header` 背景 `--surface` → `--primary`、`border-bottom` 撤去（色差で境界十分）。`.wordmark` 文字色 `--text` → `--btn-primary-fg`（primary 上で両テーマ白系＝可読）。`.logo` は角丸フレーム（`border-radius`）を撤去しアイコン地をヘッダーに溶け込ませ、白マークだけ見せる（サイズ 26→30px）。`.navBtn.active` は primary 上で埋もれる `--primary-soft` を `--surface` チップに変更して可視化。
+- **テーマ差の既知挙動**: ダークはヘッダー `--primary`(#2f6bff) とアイコン地がほぼ一致し白マークのみ浮く（狙いどおり）。ライトは `--primary`(#0036cb) がより濃く、アイコン地は固定の明るい青のため白マーク周りに薄い青のバッジ状の縁が残る（破綻なし。テーマ別アイコン差し替えはスコープ外）。
+- 検証: `typecheck` / `lint` 成功、`Header.module.css` に生 hex/rgba なしを確認。実機表示（`tauri dev`）はユーザー環境で確認依頼。
+
+## 2026-07-11 (021 Custom Native Title Bar (Docker Desktop 風))
+
+020 のアプリ内ヘッダーを **OS ネイティブのウィンドウ枠に統合**し、タイトルバー領域に primary ヘッダーを出す（ユーザー要望）。020 で「ネイティブ枠のカスタム化」はスコープ外としていたため、その非目標を反転させる新規タスク。採用方式は **OS 別ネイティブ**（ユーザー確認済み）。macOS / Windows 両対応。
+
+### ウィンドウ枠方式（OS 別）
+
+- **macOS**: `tauri.conf.json` の window に `titleBarStyle: "Overlay"` / `hiddenTitle: true` / `trafficLightPosition: {x:16, y:28}` を追加。ネイティブ信号機（赤黄緑）を残しつつ Web コンテンツをタイトルバー領域まで延伸。65px の背高ヘッダー内で信号機を縦中央寄りに配置。自作ボタンは出さない。
+- **Windows**: static config の `decorations` 衝突を避けるため、`lib.rs` setup の既存 `get_webview_window("main")` ブロック内で `#[cfg(target_os = "windows")]` 時のみ `window.set_decorations(false)` を実行してフレームレス化。右端に自作 min/max/close を描画。
+- 両 OS ともヘッダー領域を `data-tauri-drag-region` でドラッグ移動可能に。
+
+### プラットフォーム判定
+
+- `lib.rs` に自前コマンド `host_os()`（`std::env::consts::OS` を返すのみ・入力なし・固定文字列）を追加し `invoke_handler` に登録。自前コマンドは ACL 不要。
+- frontend は `features/platform/useHostOs.ts`（新規 hook）で起動時に一度取得し、`App.tsx` → `Header` へ `hostOs` を渡す。取得失敗時は null（余白なし・制御ボタン非表示にフォールバック）。
+
+### Header のタイトルバー化（`Header.tsx` / `Header.module.css`）
+
+- `.header`（と非対話な `.brand`）に `data-tauri-drag-region` を付与。nav/制御ボタンは対話要素なので自動的に非ドラッグ。
+- macOS の信号機回避: ルートに `data-os={hostOs}` を出し、`.header[data-os="macos"] { padding-left: 78px }` で brand の左余白を確保。
+- Windows 制御ボタン: `hostOs === "windows"` のときのみ nav 右端に min/max/close を描画。`@tauri-apps/api/window` の `getCurrentWindow().minimize()/toggleMaximize()/close()` を呼ぶ。アイコンはインライン SVG（─ / □ / ✕）。close の hover は `--danger`。すべて `var(--...)` トークン（生 hex/rgba なし）。
+- ヘッダー本体（primary 背景・ロゴ・ワードマーク・🩺/⚙）は 020/020-b のまま流用。二重見出しにしない方針も維持。
+
+### capabilities（`capabilities/default.json`）※セキュリティレビュー対象
+
+- `core:window` の変更系 permission を UI 制御に限定して追加: `allow-start-dragging` / `allow-minimize` / `allow-toggle-maximize` / `allow-close`。shell/fs/process/network は不追加。CSP（`csp: null`）不変・新規 npm/crate/plugin なし。
+
+### 検証結果
+
+- `pnpm --filter ./apps/desktop typecheck` → 成功（exit 0）
+- `pnpm --filter ./apps/desktop lint` → 成功（exit 0）
+- `cargo check`（src-tauri）→ 成功（`host_os` / `#[cfg(windows)] set_decorations` 込み）
+- `Header.module.css` に生 hex/rgba なしを確認。
+- `docs/security.md` に 021 セクションを追記（core:window capabilities / frameless / host_os / Windows 未検証）。
+- **実機表示（`tauri dev`）は未実施**: macOS で上部にネイティブ信号機＋primary ヘッダー / ヘッダードラッグで移動 / タイトル文字の二重表示なし / 全画面で破綻なし、をユーザー環境で確認依頼。Windows は当環境（macOS）ではコンパイルのみ・実挙動未検証。
+
+### やっていないこと（スコープ外）
+
+- 配色刷新（021 本来）/ フォーム文言変更（022）/ macOS の自作信号機ボタン化（ネイティブ維持のため不要）/ Linux 専用対応 / 新規ライブラリ・外部リソース・新 plugin・CSP 変更。
+
+## 2026-07-11 セッション引き継ぎ（handoff）
+
+### 今回完了したこと
+
+- **020 App Header**: 全画面常設の共通ヘッダー新設（Window を外側 flex ラップで再構成、Sidebar 下部の診断/設定 ghost をヘッダーへ一本化）。typecheck/lint 通過。
+- **020-b ヘッダー配色 primary ＋ アイコン blend**: `.header` 背景を `--primary` に、アプリアイコンの broken link を修正（`src-tauri/icons/128x128.png` → `public/icon.png` にコピー）。ダークは白マークが溶け込む／ライトは薄いバッジ縁が残る既知挙動。
+- **021 カスタムネイティブタイトルバー（Docker Desktop 風）**: macOS=`titleBarStyle:"Overlay"`＋`hiddenTitle`＋`trafficLightPosition`（ネイティブ信号機維持）、Windows=`lib.rs` で `#[cfg(windows)] set_decorations(false)`＋自作 min/max/close。両 OS ドラッグ移動（`data-tauri-drag-region`）。OS 判定は自前コマンド `host_os`＋`useHostOs` フック。
+- **セキュリティレビュー実施**: 判定「軽微な懸念あり・修正必須なし」。指摘の未使用 capability `core:window:allow-is-maximized` を**削除済み**（残りは start-dragging/minimize/toggle-maximize/close）。
+- typecheck / lint / cargo check すべて成功。
+
+### 変更した主要ファイル
+
+- frontend: `src/components/Header.tsx`（新規）, `Header.module.css`（新規）, `Window.tsx`/`Window.module.css`, `Sidebar.tsx`/`Sidebar.module.css`, `App.tsx`, `features/platform/useHostOs.ts`（新規）
+- Rust/config: `src-tauri/src/lib.rs`（`host_os` コマンド・Windows `set_decorations(false)`）, `src-tauri/tauri.conf.json`（Overlay/hiddenTitle/trafficLightPosition）, `src-tauri/capabilities/default.json`（core:window 4 permission）
+- assets: `public/icon.png`（新規コピー）, `public/fonts/`（Gloock self-host, ユーザー追加）
+- docs: `docs/security.md`（021 セクション）, `docs/progress.md`
+
+### まだ未完了のこと（重要・次の主題）
+
+- **macOS 信号機ボタンの上下中央寄せが未解決**。`trafficLightPosition.y` を 24→26→28 と調整したが、ユーザーは「まだ中央でない、もっと下が正しいはず」と指摘。ユーザーの問い＝「結局は具体的な数値を指定するしかないのか？」。
+  - 判明事項: キー名 `trafficLightPosition` は正しい（`tauri-utils-2.9.3/src/config.rs:2061-2065`）。前提「titleBarStyle:Overlay かつ decorations:true」も満たす（macOS の decorations は既定 true）。`y` はウィンドウ上端からの**固定 px オフセット**。ヘッダー高は現状 65px（`Header.module.css:7`）。
+  - 未確定: 実測でどの y が中央になるか。ボタン実寸/オフセット基準（上端 or 中心）が想定とズレている可能性。`y` を増やすほど下がるので、次は **y を 30〜34 あたりまで上げて実機で追い込む**のが素直。
+  - 代替案（数値ハードコードを避けたい場合）: Tauri v2 に安定版の runtime 位置設定 API は無いが、既存依存 `objc2-app-kit` で標準ボタン（`NSWindow.standardWindowButton`）を setup 後に手動 reposition する手がある（追加依存なし）。ただし複雑化するため、まずは config の y 追い込みを推奨。
+
+### 次にやるべきタスク
+
+1. macOS で `pnpm tauri dev` を**完全再起動**して信号機位置を実測し、中央になる `y` を確定（次は y=30〜34 を試す）。config 変更は **HMR では反映されない**ため必ず Tauri プロセス再起動が必要。
+2. 実機確認（macOS）: ヘッダー常時表示 / ドラッグ移動 / 二重見出しなし / ライト・ダーク破綻なし / 全画面。
+3. （別環境があれば）Windows のフレームレス＋自作 min/max/close 実挙動確認。
+
+### 既知のエラー
+
+- `pnpm tauri dev` で **`Error: Port 1420 is already in use`**。原因は前回の孤児 Vite プロセスがポート1420を占有（`vite.config.ts` は `strictPort:true` のため別ポートに逃げず即エラー）。**コードのバグではない**。対処: `lsof -ti tcp:1420 | xargs kill 2>/dev/null` してから `pnpm tauri dev`。
+
+### 実行した確認コマンド
+
+- `pnpm --filter ./apps/desktop typecheck` → 成功
+- `pnpm --filter ./apps/desktop lint` → 成功
+- `cargo check`（src-tauri）→ 成功
+- `grep`（`*.module.css` に生 hex/rgba なしを確認）
+
+### 次回セッションで最初に読むべきファイル
+
+- 本 handoff（docs/progress.md 末尾）
+- `apps/desktop/src-tauri/tauri.conf.json`（trafficLightPosition, 現 y=28）
+- `apps/desktop/src/components/Header.module.css`（ヘッダー高 65px, `data-os="macos"` の余白）
+- `apps/desktop/src/components/Header.tsx`（drag region / Windows 制御ボタン）
+- `docs/security.md` の「021 カスタムタイトルバー」セクション
+- 参考: `~/.cargo/registry/src/*/tauri-utils-2.9.3/src/config.rs:2061`（traffic_light_position 定義）

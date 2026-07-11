@@ -1,13 +1,21 @@
-.window {
-  display: grid;
-  grid-template-columns: 300px 1fr;
+.shell {
+  display: flex;
+  flex-direction: column;
   width: 100%;
   height: 100%;
   min-height: 0;
   overflow: hidden;
 }
 
-.window.fullWidth {
+.body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 300px 1fr;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.body.fullWidth {
   grid-template-columns: 1fr;
 }
 

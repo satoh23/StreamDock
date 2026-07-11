@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ask } from "@tauri-apps/plugin-dialog";
 import type { Screen } from "./types";
 import { Window } from "./components/Window";
+import { Header } from "./components/Header";
 import { Sidebar } from "./components/Sidebar";
 import { MainScreen } from "./screens/main/MainScreen";
 import { AddToolScreen } from "./screens/add-tool/AddToolScreen";
@@ -9,6 +10,7 @@ import { AddPresetScreen } from "./screens/add-preset/AddPresetScreen";
 import { DiagnosticsScreen } from "./screens/diagnostics/DiagnosticsScreen";
 import { SettingsScreen } from "./screens/settings/SettingsScreen";
 import { useTheme } from "./features/theme/useTheme";
+import { useHostOs } from "./features/platform/useHostOs";
 import { useTools } from "./features/tools/useTools";
 import { deleteTool } from "./features/tools/toolApi";
 import { usePresets } from "./features/presets/usePresets";
@@ -28,6 +30,8 @@ function App() {
 
   const { preference: themePreference, setPreference: setThemePreference } =
     useTheme();
+
+  const hostOs = useHostOs();
 
   const { tools, reload: reloadTools } = useTools();
   const { presets, reload: reloadPresets } = usePresets();
@@ -227,8 +231,21 @@ function App() {
     />
   );
 
+  // ヘッダー右ナビの active 表示：診断/設定を開いているときだけ導出する
+  const activeNav =
+    screen === "diagnostics" || screen === "settings" ? screen : undefined;
+
   return (
-    <Window sidebar={screen === "main" ? sidebar : undefined}>
+    <Window
+      header={
+        <Header
+          hostOs={hostOs}
+          activeNav={activeNav}
+          onNavigate={handleNavigate}
+        />
+      }
+      sidebar={screen === "main" ? sidebar : undefined}
+    >
       {screen === "main" && (
         <MainScreen
           presetName={activePreset?.name ?? null}

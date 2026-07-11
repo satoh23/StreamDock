@@ -1,3 +1,13 @@
+/* アプリ名ワードマーク用フォント（Gloock / SIL OFL）。
+   外部通信を避けるため public/fonts に self-host。ライセンスは public/fonts/OFL.txt を同梱。 */
+@font-face {
+  font-family: "Gloock";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/Gloock-Regular.woff2") format("woff2");
+}
+
 :root {
   /* --- seed palette (CastDock A案 Clean Dock / dark) ---
      016 でライト値を差し込む前提。015 はダーク単色なのでこの値を唯一のパレットとして使う。

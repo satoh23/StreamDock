@@ -267,6 +267,27 @@ MVPでは外部リソースを読み込まない。
   （動作対象は macOS のみ）。起動時の自動一括起動が再利用する `launch_preset_targets` も
   013 由来のプラットフォーム差（macOS `/usr/bin/open` 縮退）を継承する。
 
+### 021 カスタムタイトルバー（core:window capabilities / frameless）
+
+- Docker Desktop 風に OS ウィンドウ枠へヘッダーを統合するため、`capabilities/default.json` に
+  `core:window` の変更系 permission を**ウィンドウ操作に限定**して追加した:
+  `allow-start-dragging` / `allow-minimize` / `allow-toggle-maximize` / `allow-close`。
+  いずれも自ウィンドウの移動・最小化・最大化・クローズという UI 制御のみで、shell / fs / process / network を
+  伴わない（実害の小さい操作）。広い scope（`core:window:default` を超える任意 window 生成等）は追加しない。
+- **frontend からの呼び出し面**: `@tauri-apps/api/window` の `getCurrentWindow().minimize()/toggleMaximize()/
+  close()`（Windows の自作制御ボタン）と、`data-tauri-drag-region`（両 OS のドラッグ移動）に限定。
+  任意 URL/コマンド/パスを渡す口はない。
+- **OS 判定コマンド `host_os`**: `std::env::consts::OS` を返すだけの自前コマンド（ユーザー入力なし・固定文字列）。
+  タイトルバーの出し分け（macOS=信号機回避の余白 / Windows=制御ボタン表示）にのみ使う。ACL 追加は不要。
+- **ウィンドウ枠設定**: macOS は `titleBarStyle="Overlay"`＋`hiddenTitle`＋`trafficLightPosition`（config）で
+  ネイティブ信号機を残す。Windows は `lib.rs` setup で `#[cfg(windows)]` 時のみ `set_decorations(false)` で
+  フレームレス化する（static config の `decorations` 衝突回避のため実行時に設定）。
+- **CSP・外部リソースは不変**（`csp: null` のまま／外部フォント・CSS・CDN・リモート画像を増やさない）。
+  新規 npm / crate / plugin の追加なし。
+- **プラットフォーム限定（未検証）**: 本開発環境は macOS のため、Windows のフレームレス＋自作制御ボタン経路は
+  `cargo check` でコンパイルされても**実挙動は未検証**（動作対象は macOS を主とする。既存 013/019 と同じ扱い）。
+  フレームレス Windows の Aero Snap / リサイズ縁 / スナップレイアウトのホバーはネイティブ同等にならない場合がある。
+
 ## 004 Tool Registry時点のレビュー観点
 
 004では、以下を確認する。

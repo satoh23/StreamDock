@@ -1,0 +1,100 @@
+.header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  height: 65px;
+  padding: 0 16px;
+  background: var(--primary);
+}
+
+/* macOS: titleBarStyle="Overlay" のネイティブ信号機（左上）に brand が被らないよう左に余白を空ける */
+.header[data-os="macos"] {
+  padding-left: 78px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* アイコン自身の青角丸地をヘッダー primary に溶け込ませ、白マークだけ見せる（角丸フレームは付けない） */
+.logo {
+  width: 55px;
+  height: 55px;
+  object-fit: contain;
+  flex: none;
+}
+
+.wordmark {
+  /* Gloock（セリフ系ディスプレイ書体）。未読込時はセリフ系にフォールバック。
+     Gloock は Regular(400) のみのため、疑似太字を避けて weight は 400 とする。 */
+  font-family: "Gloock", Georgia, "Times New Roman", serif;
+  font-size: 20px;
+  font-weight: 400;
+  color: var(--btn-primary-fg);
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.navBtn {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: var(--btn-ghost-bg);
+  border: 1px solid var(--btn-ghost-border);
+  color: var(--btn-primary-fg);
+  font-size: 16px;
+  line-height: 1;
+}
+
+.navBtn:hover {
+  background: var(--control-bg-hover);
+}
+
+/* primary 背景上では primary-soft は同系で埋もれるため、surface のチップで active を可視化する */
+.navBtn.active {
+  background: var(--surface);
+  border-color: var(--surface);
+}
+
+/* Windows フレームレス時の自作ウィンドウ制御ボタン（min / max / close）。右端に寄せる */
+.winControls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+}
+
+.winBtn {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: transparent;
+  border: 0;
+  color: var(--btn-primary-fg);
+  line-height: 1;
+}
+
+.winBtn:hover {
+  background: var(--control-bg-hover);
+}
+
+.winClose:hover {
+  background: var(--danger);
+  color: var(--btn-primary-fg);
+}

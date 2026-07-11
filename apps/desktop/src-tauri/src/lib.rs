@@ -14,6 +14,13 @@ use tauri::Manager;
 
 use process::registry::ManagedProcess;
 
+/// 021: カスタムタイトルバーの出し分け（macOS=信号機回避の左余白 / Windows=自作制御ボタン）に使う
+/// ホスト OS 名。ユーザー入力を取らず固定文字列（"macos"/"windows"/"linux" 等）を返すのみ。
+#[tauri::command]
+fn host_os() -> &'static str {
+    std::env::consts::OS
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -60,6 +67,13 @@ pub fn run() {
             //（自動起動時も、立ち上がったツールを管理しやすいよう最小化しない — ユーザー確認済み 019）。
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
+                // 021: カスタムタイトルバー。macOS は config の titleBarStyle="Overlay" で
+                // ネイティブ信号機を残す。Windows は static config の decorations 衝突を避けるため、
+                // ここで実行時にフレームレス化し、フロントの自作 min/max/close で操作する。
+                #[cfg(target_os = "windows")]
+                {
+                    let _ = window.set_decorations(false);
+                }
             }
 
             // `--autostart` のときのみ、フラグ付きプリセットのツールを別スレッドで自動一括起動する。
@@ -74,6 +88,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            host_os,
             tools::commands::create_tool,
             tools::commands::list_tools,
             tools::commands::get_tool,
