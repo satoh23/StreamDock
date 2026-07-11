@@ -54,6 +54,7 @@
   --accent: var(--color-secondary);
   --accent-2: var(--color-accent);
   --accent-soft: color-mix(in srgb, var(--accent) 10%, transparent);
+  --accent-soft-hover: color-mix(in srgb, var(--accent) 16%, transparent);
   --accent-soft-border: color-mix(in srgb, var(--accent) 20%, transparent);
   --accent-text: color-mix(in srgb, var(--accent) 55%, #fff);
 
@@ -84,21 +85,15 @@
   --info-text: color-mix(in srgb, var(--info) 55%, #fff);
 
   /* ボタン・elevation */
-  --btn-primary-bg: linear-gradient(135deg, var(--color-secondary), var(--color-accent));
+  /* 021: CTA はグラデ廃止で --primary 単色フラット。emboss 用のグラデ/落ち影/上辺ハイライトは
+     各ボタンをフラット化して不要になったため撤去（--elev-border は appIcon の装飾枠でのみ継続使用）。 */
+  --btn-primary-bg: var(--primary);
+  /* 021: 一括起動ボタンのみ例外的にグラデを許容（cyan→purple）。他の primary CTA は単色。 */
+  --btn-launch-bg: linear-gradient(135deg, var(--color-secondary), var(--color-accent));
   --btn-primary-fg: var(--text);
-  --btn-primary-shadow: color-mix(in srgb, var(--color-secondary) 16%, transparent);
   --btn-ghost-bg: var(--control-bg);
-  --btn-ghost-border: var(--border-soft);
   --btn-ghost-fg: var(--text);
-  --elev-gradient: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--color-text) 10%, transparent),
-    color-mix(in srgb, var(--color-text) 5%, transparent)
-  );
   --elev-border: color-mix(in srgb, var(--color-text) 10%, transparent);
-  --shadow-1: 0 6px 16px color-mix(in srgb, #000 12%, transparent);
-  --shadow-drop: 0 12px 26px var(--btn-primary-shadow);
-  --shadow-inset: inset 0 1px 0 color-mix(in srgb, var(--color-text) 8%, transparent);
   --overlay-scrollbar: color-mix(in srgb, var(--color-text-muted) 22%, transparent);
   --spinner-track: color-mix(in srgb, var(--color-text) 25%, transparent);
 

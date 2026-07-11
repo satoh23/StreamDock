@@ -61,7 +61,6 @@
   font-weight: 700;
   line-height: 1.3;
   background: var(--control-bg);
-  border: 1px solid var(--border-soft);
 }
 
 /* --- StatusBadge --- */
@@ -108,15 +107,23 @@
   padding: 0 17px;
   border-radius: 11px;
   background: var(--btn-primary-bg);
-  box-shadow: var(--shadow-drop);
   font-size: 13px;
   color: var(--btn-primary-fg);
 }
+.primary:hover {
+  filter: brightness(1.06);
+}
+/* 021: 一括起動ボタンのみグラデを許容（.primary の単色を複合セレクタで上書き）。 */
+.primary.launch {
+  background: var(--btn-launch-bg);
+}
 .primary.stopAll {
-  background: var(--elev-gradient);
-  border: 1px solid var(--elev-border);
-  box-shadow: var(--shadow-inset), var(--shadow-1);
+  background: var(--control-bg);
   color: var(--text);
+}
+.primary.stopAll:hover {
+  background: var(--control-bg-hover);
+  filter: none;
 }
 .primary:disabled {
   opacity: 0.88;
@@ -127,9 +134,11 @@
   padding: 0 14px;
   border-radius: 11px;
   background: var(--btn-ghost-bg);
-  border: 1px solid var(--btn-ghost-border);
   font-size: 13px;
   color: var(--btn-ghost-fg);
+}
+.secondary:hover {
+  background: var(--control-bg-hover);
 }
 
 /* inline spinner shown inside buttons/rows */

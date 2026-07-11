@@ -50,11 +50,7 @@
 }
 .preset.active {
   border-color: color-mix(in srgb, var(--primary) 48%, transparent);
-  background: linear-gradient(
-    135deg,
-    var(--primary-soft),
-    color-mix(in srgb, var(--accent-2) 10%, transparent)
-  );
+  background: var(--primary-soft);
 }
 .presetHeader {
   display: flex;
@@ -90,14 +86,15 @@
   padding: 12px;
   border-radius: 14px;
   background: var(--btn-ghost-bg);
-  border: 1px solid var(--btn-ghost-border);
   color: var(--text);
   text-align: left;
   flex-shrink: 0;
 }
+.ghost:hover {
+  background: var(--control-bg-hover);
+}
 .ghost.active {
   background: var(--primary-soft);
-  border-color: var(--primary-soft-border);
   color: var(--primary-text);
 }
 /* ツール0件時の「＋ プリセットを追加」は非活性化する（バグ4） */
@@ -168,7 +165,6 @@
   place-items: center;
   border-radius: 8px;
   background: var(--control-bg);
-  border: 1px solid var(--border-soft);
   color: var(--muted);
   font-size: 12px;
   line-height: 1;
@@ -181,7 +177,6 @@
 .toolActionBtn.danger:hover {
   color: var(--danger-text);
   background: var(--danger-soft);
-  border-color: var(--danger-border-strong);
 }
 
 .emptyHint {

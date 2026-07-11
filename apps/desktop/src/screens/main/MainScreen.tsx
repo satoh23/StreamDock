@@ -558,6 +558,7 @@ export function MainScreen({
             <Button
               variant="primary"
               stopAll={anyLaunched}
+              launch={!anyLaunched}
               disabled={
                 launching || stopping || (!anyLaunched && (isEmpty || !hasEnabled))
               }

@@ -54,7 +54,6 @@
   place-items: center;
   border-radius: 10px;
   background: var(--btn-ghost-bg);
-  border: 1px solid var(--btn-ghost-border);
   color: var(--btn-primary-fg);
   font-size: 16px;
   line-height: 1;

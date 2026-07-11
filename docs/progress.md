@@ -1837,3 +1837,46 @@ Docker Desktop 風の共通ヘッダーを全画面に常設。従来、設定/�
 - `apps/desktop/src/components/Header.tsx`（drag region / Windows 制御ボタン）
 - `docs/security.md` の「021 カスタムタイトルバー」セクション
 - 参考: `~/.cargo/registry/src/*/tauri-utils-2.9.3/src/config.rs:2061`（traffic_light_position 定義）
+
+## 2026-07-11 021 UI Design Modernization（グラデ廃止・隆起排除・枠線間引き）
+
+配色刷新タスク（docs/tasks/021）。ユーザー要望 2・3 に対応。トークン差し替え中心・015/016 の役割トークン／ライト・ダーク両対応を維持。生 hex/rgba は増やしていない（全 `var(--...)` 経由）。
+
+### グラデーション廃止
+
+- `theme.css` `--btn-primary-bg`: cyan→purple の `linear-gradient(135deg,...)` を **`var(--primary)` 単色**へ（CTA フラット化）。
+- `primitives .primary`: `box-shadow: var(--shadow-drop)`（グロー落ち影）を除去、hover を `filter: brightness(1.06)` に変更。
+- `MainScreen .startBtn`: accent の `radial-gradient`＋`--elev-gradient` を撤廃 → `background: var(--accent-soft)`、hover は新トークン `--accent-soft-hover`。グリフ色は `--text` 維持（両テーマで可読）。
+- `Sidebar .preset.active`: 2 色 `linear-gradient`（primary-soft→accent-2）を **`var(--primary-soft)` 単色**へ。選択枠（primary 48% border）は状態区別のため残置。
+- **例外（ユーザー追加要望）**: 一括起動ボタンのみグラデを許容。`--btn-launch-bg`（cyan→purple、旧 `--btn-primary-bg` と同値）を復活させ、`primitives .primary.launch`（複合セレクタで `.primary` の単色を上書き）で適用。`Button` に opt-in プロップ `launch` を追加し、`MainScreen` で `launch={!anyLaunched}`（＝一括起動状態のときだけ）指定。一括停止（`.stopAll`）・他画面の primary CTA（Diagnostics/AddTool/AddPreset）は単色のまま。落ち影（glow）は復活させずグラデのみ。
+- 装飾 radial ティント（AddTool `.appIcon` / `PreviewCard` / AddPreset パネル背景）は雰囲気付けとして**残す**（ユーザー確認済み。ボタン系グラデのみ撤廃方針）。
+
+### 隆起（emboss）排除 → フラットアイコンボタン
+
+- `MainScreen .runtimeAction` / `.move` / `.delete`、`primitives .primary.stopAll`、`AddPreset .moveBtn`（範囲拡張）から `--elev-gradient`＋`--elev-border`(border)＋`--shadow-inset`／`--shadow-1` を撤去 → 既定 `--control-bg` 面・hover `--control-bg-hover` のフラット化。
+- `.startBtn`=accent 淡ティント、`.stopBtn`／`.delete`=danger 文字色＋hover `--danger-soft`。
+
+### 枠線の間引き（モダン化）
+
+- **撤廃した常時 border**: `primitives .secondary` / `.chip`、`Sidebar .ghost` / `.toolActionBtn`、`MainScreen .editToggle` / `.addToolBtn` / `.modeToggle`、`AddPreset .modeToggle`、`Header .navBtn`（範囲拡張）。面色＋新規 hover（`--control-bg-hover` / danger は `--danger-soft`）で表現。active 状態（editToggle.editing / ghost.active）は border を落とし `--primary-soft` 背景＋`--primary-text` で区別。
+- **残した border（視認性・状態区別のため意図的）**: `formLayout .field input/select`、パネル外枠（`.panel` の `--line`）、`StatusBadge`（starting/stopped 等）、OrderBadge、iconTile、list-item 系（sidebarTool / pickerRow）。
+
+### トークン変更（theme.css）
+
+- 追加: `--accent-soft-hover: color-mix(in srgb, var(--accent) 16%, transparent)`（`--accent` からの派生。新基準色なし）。
+- 変更: `--btn-primary-bg` → `var(--primary)`。
+- 削除（フラット化で未使用化）: `--elev-gradient` / `--shadow-drop` / `--shadow-inset` / `--shadow-1` / `--btn-primary-shadow` / `--btn-ghost-border`。
+- 残置: `--elev-border`（AddTool `.appIcon` の装飾枠でのみ継続使用）、`--btn-ghost-bg`（中立フラット面）。
+
+### 変更ファイル（6）
+
+`styles/theme.css`, `components/primitives.module.css`, `screens/main/MainScreen.module.css`, `components/Sidebar.module.css`, `screens/add-preset/AddPresetScreen.module.css`, `components/Header.module.css`。**触っていない**: AddToolScreen / PreviewCard（装飾 radial 維持）, formLayout（入力枠維持）。
+
+### 確認
+
+- `pnpm --filter ./apps/desktop typecheck` → 成功（exit 0）
+- `pnpm --filter ./apps/desktop lint` → 成功（exit 0）
+- `grep`（`*.module.css` に生 hex/rgba なし）→ 該当なし。削除トークンの残参照なし。`--elev-border` は appIcon のみ。
+- **実機表示（`tauri dev`）は未実施**（ユーザー環境で確認依頼）。
+  - ライト/ダーク要注意点: ①中立フラットアイコンボタン（`--control-bg`＝text6%透過・border無し）がライト白面上で薄くなりすぎないか。薄い場合は `--surface-2`（ライトで実線面）へ切替。②`.startBtn` の accent 淡ティントの start/stop 色差。③ghost ボタンの border 撤廃後の輪郭（toolbar/footer は `--surface-2` 面上で差が付く想定）。
+  - 全画面（メイン／ツール追加／プリセット追加／診断／設定／サイドバー／ヘッダー）で破綻がないか。

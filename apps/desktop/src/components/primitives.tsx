@@ -60,18 +60,21 @@ export function Spinner() {
 type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?: "primary" | "secondary";
   stopAll?: boolean;
+  // 021: 一括起動ボタンのみグラデを許容する opt-in（他の primary CTA は単色のまま）。
+  launch?: boolean;
 };
 
 export function Button({
   variant = "secondary",
   stopAll = false,
+  launch = false,
   className = "",
   children,
   ...rest
 }: ButtonProps) {
   const variantClass =
     variant === "primary"
-      ? `${styles.primary} ${stopAll ? styles.stopAll : ""}`
+      ? `${styles.primary} ${stopAll ? styles.stopAll : ""} ${launch ? styles.launch : ""}`
       : styles.secondary;
   return (
     <button className={`${styles.btn} ${variantClass} ${className}`} {...rest}>

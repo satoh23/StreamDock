@@ -151,8 +151,10 @@
   border-radius: 10px;
   color: var(--text);
   background: var(--btn-ghost-bg);
-  border: 1px solid var(--btn-ghost-border);
   font-size: 12px;
+}
+.modeToggle:hover {
+  background: var(--control-bg-hover);
 }
 .moveActions {
   display: flex;
@@ -167,10 +169,11 @@
   padding: 0;
   border-radius: 10px;
   color: var(--text);
-  background: var(--elev-gradient);
-  border: 1px solid var(--elev-border);
-  box-shadow: var(--shadow-inset);
+  background: var(--control-bg);
   font-size: 13px;
+}
+.moveBtn:hover {
+  background: var(--control-bg-hover);
 }
 .moveBtn.disabled {
   opacity: 0.35;

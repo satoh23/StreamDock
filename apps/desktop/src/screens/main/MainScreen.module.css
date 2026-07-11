@@ -62,13 +62,14 @@
   padding: 0 14px;
   border-radius: 11px;
   background: var(--btn-ghost-bg);
-  border: 1px solid var(--btn-ghost-border);
   font-size: 13px;
   color: var(--text);
 }
+.editToggle:hover {
+  background: var(--control-bg-hover);
+}
 .editToggle.editing {
   background: var(--primary-soft);
-  border-color: var(--primary-soft-border);
   color: var(--primary-text);
 }
 
@@ -103,9 +104,11 @@
   padding: 0 12px;
   border-radius: 10px;
   background: var(--btn-ghost-bg);
-  border: 1px solid var(--btn-ghost-border);
   color: var(--text);
   font-size: 12px;
+}
+.addToolBtn:hover {
+  background: var(--control-bg-hover);
 }
 
 .toolList {
@@ -148,9 +151,10 @@
   place-items: center;
   border-radius: 10px;
   color: var(--text);
-  background: var(--elev-gradient);
-  border: 1px solid var(--elev-border);
-  box-shadow: var(--shadow-inset), var(--shadow-1);
+  background: var(--control-bg);
+}
+.runtimeAction:hover {
+  background: var(--control-bg-hover);
 }
 .runtimeAction svg {
   width: 18px;
@@ -159,11 +163,14 @@
 .stopBtn {
   color: var(--danger);
 }
+.stopBtn:hover {
+  background: var(--danger-soft);
+}
 .startBtn {
-  background:
-    radial-gradient(circle at 50% 35%, color-mix(in srgb, var(--accent) 22%, transparent), transparent 60%),
-    var(--elev-gradient);
-  border-color: var(--accent-soft-border);
+  background: var(--accent-soft);
+}
+.startBtn:hover {
+  background: var(--accent-soft-hover);
 }
 .loadingAction {
   width: 34px;
@@ -180,14 +187,18 @@
   place-items: center;
   border-radius: 10px;
   color: var(--text);
-  background: var(--elev-gradient);
-  border: 1px solid var(--elev-border);
-  box-shadow: var(--shadow-inset);
+  background: var(--control-bg);
   font-size: 16px;
+}
+.move:hover {
+  background: var(--control-bg-hover);
 }
 .delete {
   border-radius: 12px;
   color: var(--danger);
+}
+.delete:hover {
+  background: var(--danger-soft);
 }
 .disabled {
   opacity: 0.35;
@@ -199,10 +210,12 @@
   padding: 0 12px;
   border-radius: 10px;
   background: var(--btn-ghost-bg);
-  border: 1px solid var(--btn-ghost-border);
   color: var(--text);
   font-size: 12px;
   white-space: nowrap;
+}
+.modeToggle:hover {
+  background: var(--control-bg-hover);
 }
 
 /* 編集モード: アクション列を広げ、行に薄い背景 */
