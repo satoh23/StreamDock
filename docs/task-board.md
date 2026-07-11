@@ -16,17 +16,21 @@
 - 012 Rust Common Helper Refactor
 - 013 macOS App Bundle Stop
 - 014 Bulk Stop for Individual Launches
-
-## Next
-
 - 015 Design Tokens & Color Unification
-
-## Todo
-
 - 016 Light/Dark Theme + Settings
 - 017 Tool Path Input Lock
 - 018 Tool Icon Auto-Extraction
 - 019 Preset Auto-Launch on Boot
+
+## Next
+
+- 020 App Header (Docker-like)
+- 021 UI Design Modernization
+- 022 Tool/Preset Form Polish
+
+## Todo
+
+- 023 Browser URL Tool Support
 
 ## MVP リリース前最後
 
