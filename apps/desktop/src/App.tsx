@@ -3,12 +3,14 @@ import { ask } from "@tauri-apps/plugin-dialog";
 import type { Screen } from "./types";
 import { Window } from "./components/Window";
 import { Header } from "./components/Header";
+import { HEADER_SECTIONS } from "./components/headerSections";
 import { Sidebar } from "./components/Sidebar";
 import { MainScreen } from "./screens/main/MainScreen";
 import { AddToolScreen } from "./screens/add-tool/AddToolScreen";
 import { AddPresetScreen } from "./screens/add-preset/AddPresetScreen";
 import { DiagnosticsScreen } from "./screens/diagnostics/DiagnosticsScreen";
 import { SettingsScreen } from "./screens/settings/SettingsScreen";
+import { ComingSoonScreen } from "./screens/coming-soon/ComingSoonScreen";
 import { useTheme } from "./features/theme/useTheme";
 import { useHostOs } from "./features/platform/useHostOs";
 import { useTools } from "./features/tools/useTools";
@@ -231,9 +233,20 @@ function App() {
     />
   );
 
-  // ヘッダー右ナビの active 表示：診断/設定を開いているときだけ導出する
+  // ヘッダーの active 表示：メイン(ツール管理)/準備中セクション/診断/設定を開いているとき導出する
   const activeNav =
-    screen === "diagnostics" || screen === "settings" ? screen : undefined;
+    screen === "main" ||
+    screen === "rakuraku-tools" ||
+    screen === "obs-effects" ||
+    screen === "diagnostics" ||
+    screen === "settings"
+      ? screen
+      : undefined;
+
+  // 現在の画面が未実装セクションの「準備中」ダミーページに該当するか（該当時はその定義を表示に使う）
+  const comingSoonSection = HEADER_SECTIONS.find(
+    (s) => !s.implemented && s.screen === screen,
+  );
 
   return (
     <Window
@@ -282,12 +295,17 @@ function App() {
           onSaved={reloadPresetData}
         />
       )}
-      {screen === "diagnostics" && <DiagnosticsScreen onNavigate={setScreen} />}
+      {screen === "diagnostics" && <DiagnosticsScreen />}
       {screen === "settings" && (
         <SettingsScreen
-          onNavigate={setScreen}
           preference={themePreference}
           onChangePreference={setThemePreference}
+        />
+      )}
+      {comingSoonSection && (
+        <ComingSoonScreen
+          title={comingSoonSection.label}
+          description={comingSoonSection.comingSoonDescription}
         />
       )}
     </Window>

@@ -1,6 +1,4 @@
-import type { Screen } from "../../types";
 import type { ThemePreference } from "../../features/theme/theme";
-import { Button } from "../../components/primitives";
 import layout from "../formLayout.module.css";
 import styles from "./SettingsScreen.module.css";
 
@@ -32,11 +30,9 @@ const THEME_OPTIONS: {
 ];
 
 export function SettingsScreen({
-  onNavigate,
   preference,
   onChangePreference,
 }: {
-  onNavigate: (screen: Screen) => void;
   preference: ThemePreference;
   onChangePreference: (preference: ThemePreference) => void;
 }) {
@@ -46,9 +42,6 @@ export function SettingsScreen({
         <div className={`${layout.title} ${layout.pageTitle}`}>
           <h2>設定</h2>
           <p>アプリの外観などを設定できます。</p>
-        </div>
-        <div className={layout.actions}>
-          <Button onClick={() => onNavigate("main")}>メインに戻る</Button>
         </div>
       </div>
 

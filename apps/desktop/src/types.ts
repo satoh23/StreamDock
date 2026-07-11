@@ -3,7 +3,10 @@ export type Screen =
   | "add-tool"
   | "add-preset"
   | "diagnostics"
-  | "settings";
+  | "settings"
+  // 未実装機能の「準備中」ダミーページ（ヘッダーのセクション導線から遷移）
+  | "rakuraku-tools"
+  | "obs-effects";
 
 export type ToolState =
   | "running"

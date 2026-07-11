@@ -2058,3 +2058,92 @@ Rust モデル / DB スキーマ変更（description カラム削除しない）
 - 生の hex/rgba 残置なし（touched CSS 2 ファイルを grep 済み・全て `var(--...)`）／削除に伴う未使用 state / import / スタイルなし（`Button` は MainScreen で継続使用を確認）
 - **セキュリティ確認（docs/security.md 準拠）**: frontend のみ。OS 操作 / ファイル操作 / プロセス操作を追加せず（§2/§4）、外部リソース・外部通信・telemetry を増やさない（§1/§CSP）。パス設定・ファイル選択の既存仕様は無変更。新規 command / capabilities / ライブラリなし。
 - **実機表示（`tauri dev`）は未実施**（ユーザー環境で確認依頼）: プリセット追加/編集画面から「説明」欄が消え作成・編集・保存が破綻しない（Rust の description カラム残置）／ツール追加後プレビューのハイライト枠がフラットになりパネル上辺の線が正常表示／ツール編集画面でアプリ/URL トグルが表示されず対象種別の項目のみ編集可（executable・url 両方で確認・種別切替不可）／メイン画面編集中の「起動間隔を設定」「PC起動時の動作」と囲み枠線が消えレイアウト非破綻／ライト・ダーク両テーマで破綻しない。
+
+## 2026-07-12 026 Header Polish & Navigation Foundation（ヘッダーの見た目/導線整備・frontend のみ）
+
+020 で新設した共通ヘッダーを見た目と導線の両面で整える。右アイコンのフラット白化・メイン戻り導線・機能大別の導線土台。frontend のみ・Rust / DB / bindings 変更なし・新規ライブラリ / 外部リソースなし・`Screen` union 無変更（実機能画面は作らない）。
+
+### (1) 右アイコンのフラット白化（`Header.tsx` / `Header.module.css`）
+
+- 診断🩺 / 設定⚙ の**絵文字を単色インライン SVG（`currentColor`）へ置換**（絵文字は CSS `color` で白くできないため）。診断＝パルス/活動ライン、設定＝歯車。`viewBox 0 0 24 24`・`width/height 22px`・塗り無し・`stroke: currentColor`。既存 Windows 制御ボタンと同方式で外部リソースなし（§CSP 準拠）。`title`/`aria-label` は現行文言維持。
+- `.navBtn` から `background: var(--btn-ghost-bg)`（うっすら枠の正体）・`border-radius`・`.navBtn:hover` の背景変化・`.navBtn.active` の surface チップを**撤去**。`background: transparent; border: 0` でフラット化。色は `var(--btn-primary-fg)`（白系トークン）維持。
+- active/非active/hover は **`opacity` の濃淡のみ**で表現（非active 0.72 / active・hover 1.0）。枠・チップ・背景変化なし。アイコンは 16px→22px（SVG）で拡大、ボタンのタップ領域 36px は維持。
+
+### (2) メイン画面リンク（`Header.tsx` / `Header.module.css` / `App.tsx`）
+
+- 左ロゴ（img + ワードマーク）を `<div data-tauri-drag-region>` から **`<button onClick={() => onNavigate("main")} aria-label="メイン画面へ">` 化**し、ロゴ自身の `data-tauri-drag-region` を除去。`.brand` に button リセット（`background: transparent; border: 0; padding: 0; cursor: pointer`）＋既存 flex/gap 維持。
+- **ドラッグ両立方式**: header 要素自体の `data-tauri-drag-region` は残置。ロゴ〜ナビ間の余白でウィンドウドラッグが従来どおり効き、ロゴ領域のみクリック→メイン遷移。ドラッグ領域とクリック領域を要素単位で切り分け。
+- **activeNav 拡張**: 型を `Extract<Screen, "diagnostics" | "settings">` → `"main" | "diagnostics" | "settings"` に拡張。`App.tsx` の導出を `screen === "main"` でも `activeNav = screen` とし、メイン時のセクション導線 active 表示に整合（`types.ts` は無変更）。
+
+### (3) 機能大別への導線土台（`Header.tsx` / `Header.module.css`）
+
+- **右詰め・診断/設定の左側**にセクション導線 `.sections` を新設。データ駆動の `SECTIONS` 配列（`{ id, label, screen?, enabled }`）で描画。当面「ツール管理」のみ `enabled: true`（→ `onNavigate("main")`・`activeNav==="main"` で active）、他（OBS 連携 / おすすめツール / 読み上げ連携）は `disabled` の placeholder（`title="近日対応"`）。
+- **構造の土台まで**: `Screen` は増やさず placeholder は無効ボタンのみ。将来の「大項目→プルダウン」は配列を入れ子に拡張していく想定（ドロップダウン UI は今回作らない）。
+- `.sectionBtn` は背景/枠無しのテキストリンク（`font-size 14px`・`opacity` 濃淡: 非active 0.72 / active 1.0 / disabled 0.4）。`.sections` は診断/設定との間に `border-right: 1px solid var(--border-soft)` の区切り＋余白。
+
+### やらないこと（維持）
+
+新規機能画面（OBS/おすすめ/読み上げ）の実装・実機能を伴う `Screen` 追加（`types.ts` 無変更）／大項目のプルダウン UI（構造の土台のみ）／ネイティブ枠・カスタムタイトルバー・信号機・Windows コントロールの挙動変更／サイドバー・プリセット/ツール管理の導線変更／配色トークンの大規模変更／新ライブラリ・外部リソース追加。
+
+### 変更ファイル（Frontend 3）
+
+- `components/Header.tsx`（ロゴ button 化・SECTIONS 導線・診断/設定 SVG 化・activeNav 型拡張）
+- `components/Header.module.css`（`.navBtn` フラット化・`.brand` リセット・`.sections`/`.sectionBtn` 新設）
+- `App.tsx`（activeNav 導出に `main` を追加）
+
+### 確認
+
+- `pnpm --filter ./apps/desktop typecheck` → 成功（exit 0）
+- `pnpm --filter ./apps/desktop lint` → 成功（exit 0）
+- `git diff --stat` → 上記 3 ファイルのみ（＋ `docs/progress.md`）
+- 生の hex/rgba 残置なし（`Header.module.css` を grep 済み・全て `var(--...)`。濃淡は `opacity` プロパティで表現し raw color を持ち込まない）／外部リソース読み込みなし（`img src="/icon.png"` は従来どおり同梱アセット、外部 URL / CDN / フォント無し）
+- **セキュリティ確認（docs/security.md 準拠）**: frontend のみ。OS 操作 / ファイル操作 / プロセス操作を追加せず（§2/§4）、アイコンは同梱アセット or インライン SVG のみ（§CSP）、外部通信・telemetry を増やさない（§1）。新規 command / capabilities / ライブラリなし。
+- **実機表示（`tauri dev`）は未実施**（ユーザー環境で確認依頼）: 右アイコンが背景無しの白アイコンになり hover/active のエフェクトとうっすら枠が消え以前より大きい／ロゴクリックでメイン画面へ戻れウィンドウドラッグも従来どおり効く／診断・設定の左に右詰めセクション導線が出る（ツール管理のみ有効・他は無効表示）／全画面でヘッダー常時表示・sidebar 有/無ともレイアウト非破綻／ライト・ダーク両テーマで破綻しない。
+
+## 2026-07-12 026 追加 診断/設定画面の「メインに戻る」ボタン削除（導線をヘッダーへ一本化・frontend のみ）
+
+026 でヘッダーにメイン戻り導線（ロゴ＝ホームボタン）を追加したため、診断/設定画面の「メインに戻る」ボタンが重複・不要になり削除。各画面で `onNavigate` はこのボタンでのみ使用していたため、未使用化する prop / import / App.tsx の受け渡しまでクリーン削除。Rust / DB / bindings / `types.ts` 変更なし・新規ライブラリ / 外部リソースなし。
+
+### 変更内容
+
+- `screens/diagnostics/DiagnosticsScreen.tsx`: `layout.actions` 内の「メインに戻る」`Button` を削除（**「再読込」は残置**、`layout.actions` div は維持）。未使用化した `onNavigate` prop（分割代入＋型）と `import type { Screen }` を削除。
+- `screens/settings/SettingsScreen.tsx`: 「メインに戻る」`Button` が `layout.actions` の唯一の要素のため **`layout.actions` div ごと削除**（`layout.top` は title のみ）。未使用化した `onNavigate` prop・`import type { Screen }`・`import { Button }`（この画面では他に `Button` プリミティブ未使用）を削除。`preference` / `onChangePreference` は維持。
+- `App.tsx`: `<DiagnosticsScreen onNavigate={setScreen} />` / `<SettingsScreen onNavigate={setScreen} … />` から `onNavigate` を除去。`setScreen` は AddTool/AddPreset・`handleNavigate` で継続使用のため残置。
+
+### やらないこと（維持）
+
+AddTool / AddPreset 等その他画面の「戻る」ボタン（対象外）／ヘッダー・その他導線・スタイル・Rust / DB / `types.ts` の変更／新ライブラリ・外部リソース追加。
+
+### 確認
+
+- `pnpm --filter ./apps/desktop typecheck` → 成功（exit 0・未使用 prop/import なし）
+- `pnpm --filter ./apps/desktop lint` → 成功（exit 0）
+- `git diff --name-only` → `App.tsx` / `DiagnosticsScreen.tsx` / `SettingsScreen.tsx`（＋ `docs/progress.md`。Header 系は 026 本体の未コミット差分）
+- **セキュリティ確認（docs/security.md 準拠）**: frontend のみ・削除のみ。OS / ファイル / プロセス操作を追加せず（§2/§4）、外部通信・外部リソース・telemetry を増やさない（§1/§CSP）。新規 command / capabilities / ライブラリなし。
+- **実機表示（`tauri dev`）は未実施**（ユーザー環境で確認依頼）: 診断画面で「メインに戻る」が消え「再読込」は残る／設定画面で「メインに戻る」が消えタイトルのみのヘッダー行になりレイアウト非破綻／どちらもヘッダーのロゴからメインへ戻れる／ライト・ダーク両テーマで破綻しない。
+
+## 2026-07-12 026 追加 未実装ヘッダーリンクを2本化し「準備中」ダミーページへ遷移（frontend のみ）
+
+ヘッダーの機能大別セクション導線の未実装リンクを「らくらくツール導入」「OBSエフェクト」の2つに整理し、無効表示（クリック不可）をやめて**クリックで「準備中（To be continued）」ダミーページへ遷移**するようにした。実機能はまだ無いが今後追加される旨を遷移先で伝える。frontend のみ・Rust / DB / bindings 変更なし・新規ライブラリ / 外部リソースなし。
+
+### 変更内容
+
+- `types.ts`: `Screen` union に `"rakuraku-tools" | "obs-effects"` を追加（ダミーページ遷移のため。前タスクまでの「Screen を増やさない」方針は本要望で更新）。
+- **【新規】`components/headerSections.ts`**: ヘッダー導線の単一ソース `HEADER_SECTIONS`（`{ id, label, screen, implemented, comingSoonDescription? }`）。Header（リンク描画）と App（準備中ページ描画）が同配列を参照し label 重複を回避。ツール管理=implemented / らくらくツール導入・OBSエフェクト=未実装。
+- `components/Header.tsx`: ローカル `SECTIONS`（enabled/disabled 判別 union）を撤去し `HEADER_SECTIONS` を使用。セクションは**全項目を均一な navigable リンクとして描画**（`disabled` 分岐撤去。見た目はツール管理と同一）。`activeNav` 型を `main / rakuraku-tools / obs-effects / diagnostics / settings` に拡張。
+- `components/Header.module.css`: `.sectionBtn:disabled` を削除、`.sectionBtn:hover:not(:disabled)` を `.sectionBtn:hover` に戻す（無効項目が無くなったため）。生 hex/rgba なし。
+- **【新規】`screens/coming-soon/ComingSoonScreen.tsx` + `.module.css`**: 再利用可能な「準備中」ページ。props `{ title, description? }`。`formLayout` の見出し＋中央寄せカードに 🚧・「準備中 / To be continued」・説明・「今後のアップデートで追加予定です。」を表示。トークン（`--surface`/`--line`/`--muted`/`--text-faint` 等）のみ・絵文字のみ・外部リソースなし。
+- `App.tsx`: `HEADER_SECTIONS` から `comingSoonSection = HEADER_SECTIONS.find(s => !s.implemented && s.screen === screen)` を導出し、該当時に `<ComingSoonScreen title description />` を描画（新画面は sidebar 無し＝full-width）。`activeNav` 導出を新セクション込みに拡張。
+
+### やらないこと（維持）
+
+らくらくツール導入 / OBSエフェクトの実機能実装（ダミーページのみ）／ヘッダーの見た目・診断/設定・ロゴ導線・その他画面の変更／Rust / DB / capabilities の変更／新ライブラリ・外部リソース追加。
+
+### 確認
+
+- `pnpm --filter ./apps/desktop typecheck` → 成功（exit 0・`Screen` 追加を各分岐が網羅・未使用なし）
+- `pnpm --filter ./apps/desktop lint` → 成功（exit 0）
+- `git diff --name-only` → `types.ts` / `components/headerSections.ts`（新規）/ `components/Header.tsx` / `components/Header.module.css` / `screens/coming-soon/ComingSoonScreen.tsx`（新規）/ `screens/coming-soon/ComingSoonScreen.module.css`（新規）/ `App.tsx`（＋ `docs/progress.md`）
+- 生の hex/rgba 残置なし（`ComingSoonScreen.module.css` / `Header.module.css` を grep 済み・全て `var(--...)`）／外部リソース読み込みなし（絵文字のみ・`http`/`url(`/`@import` 無し）
+- **セキュリティ確認（docs/security.md 準拠）**: frontend のみ。OS / ファイル / プロセス操作を追加せず（§2/§4）、アイコン/装飾は絵文字のみで外部リソース・外部通信・telemetry を増やさない（§1/§CSP）。新規 command / capabilities / ライブラリなし。
+- **実機表示（`tauri dev`）は未実施**（ユーザー環境で確認依頼）: ヘッダーの未実装リンクが「らくらくツール導入」「OBSエフェクト」の2つ（＋ツール管理）になっている／それぞれクリックで「準備中」ダミーページへ遷移し未実装だが今後追加される旨が分かる・該当リンクが active 表示／ロゴ・ツール管理でメインへ戻れる／全画面でヘッダー常時表示・sidebar 有無ともレイアウト非破綻／ライト・ダーク両テーマで破綻しない。

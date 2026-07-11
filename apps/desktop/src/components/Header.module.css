@@ -14,11 +14,16 @@
   padding-left: 78px;
 }
 
+/* ロゴ全体をメイン画面へのホームボタンに。背景/枠無しのフラットな見た目を保つ。 */
 .brand {
   display: flex;
   align-items: center;
   gap: 10px;
   min-width: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
 }
 
 /* アイコン自身の青角丸地をヘッダー primary に溶け込ませ、白マークだけ見せる（角丸フレームは付けない） */
@@ -47,26 +52,58 @@
   flex: none;
 }
 
+/* 機能大別のセクション導線。右詰めナビの左側（診断/設定の左）に間隔を空けて並ぶ。 */
+.sections {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 8px;
+  padding-right: 12px;
+  border-right: 1px solid var(--border-soft);
+}
+
+/* 背景/枠無しのテキストリンク。active/非active/無効は opacity の濃淡のみで表現（枠・チップ無し）。 */
+.sectionBtn {
+  padding: 4px 6px;
+  background: transparent;
+  border: 0;
+  color: var(--btn-primary-fg);
+  font-size: 14px;
+  line-height: 1;
+  white-space: nowrap;
+  opacity: 0.72;
+  cursor: pointer;
+}
+
+.sectionBtn:hover {
+  opacity: 1;
+}
+
+.sectionActive {
+  opacity: 1;
+}
+
+/* 背景無しのフラットな白アイコン。うっすら枠（旧 btn-ghost-bg）は撤去。
+   active/非active は opacity の濃淡のみ（hover/active のチップ・背景変化は付けない）。 */
 .navBtn {
   width: 36px;
   height: 36px;
   display: grid;
   place-items: center;
-  border-radius: 10px;
-  background: var(--btn-ghost-bg);
+  background: transparent;
+  border: 0;
   color: var(--btn-primary-fg);
-  font-size: 16px;
   line-height: 1;
+  opacity: 0.72;
+  cursor: pointer;
 }
 
 .navBtn:hover {
-  background: var(--control-bg-hover);
+  opacity: 1;
 }
 
-/* primary 背景上では primary-soft は同系で埋もれるため、surface のチップで active を可視化する */
 .navBtn.active {
-  background: var(--surface);
-  border-color: var(--surface);
+  opacity: 1;
 }
 
 /* Windows フレームレス時の自作ウィンドウ制御ボタン（min / max / close）。右端に寄せる */

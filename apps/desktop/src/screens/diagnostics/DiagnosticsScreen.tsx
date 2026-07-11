@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ask } from "@tauri-apps/plugin-dialog";
-import type { Screen } from "../../types";
 import type { AppLogEntry, DiagnosticSummary, LogLevel } from "../../features/logs/types";
 import {
   clearAppLogs,
@@ -85,11 +84,7 @@ function LogRow({ entry }: { entry: AppLogEntry }) {
   );
 }
 
-export function DiagnosticsScreen({
-  onNavigate,
-}: {
-  onNavigate: (screen: Screen) => void;
-}) {
+export function DiagnosticsScreen() {
   const { logs, error: logsError, reload: reloadLogs } = useLogs();
   const [summary, setSummary] = useState<DiagnosticSummary | null>(null);
   const [summaryError, setSummaryError] = useState<string | null>(null);
@@ -169,7 +164,6 @@ export function DiagnosticsScreen({
         </div>
         <div className={layout.actions}>
           <Button onClick={() => void reloadAll()}>再読込</Button>
-          <Button onClick={() => onNavigate("main")}>メインに戻る</Button>
         </div>
       </div>
 
