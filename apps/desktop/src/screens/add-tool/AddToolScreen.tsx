@@ -129,7 +129,7 @@ export function AddToolScreen({
         <section className={layout.panel}>
           <div className={layout.panelHead}>
             <h3>アプリを選択</h3>
-            <p>起動したいアプリの実行ファイルを選びます。パスは直接入力もできます。</p>
+            <p>起動したいアプリの実行ファイルを選びます。パスは「アプリを選択」からのみ設定できます。</p>
           </div>
           <div className={layout.panelBody}>
             {hasPath ? (
@@ -174,10 +174,10 @@ export function AddToolScreen({
                 <input
                   value={executablePath}
                   placeholder="実行ファイルのパス"
-                  onChange={(e) => setExecutablePath(e.target.value)}
+                  readOnly
                 />
                 <div className={layout.fieldHelp}>
-                  「アプリを選択」で自動入力されます。直接入力・編集も可能です。
+                  「アプリを選択」からのみ設定できます。直接入力・編集はできません。
                 </div>
               </div>
 

@@ -1500,3 +1500,47 @@ StillPending 据え置きにしているのに、停止側だけ非対称だっ�
 ### やっていないこと（スコープ外）
 
 - 019「PC起動時の動作」「起動間隔を設定」プレースホルダは未実装（温存）/ 015 トークンの再設計 / テーマの外部同期・クラウド保存 / 設定画面のテーマ以外の項目 / アニメ付きトランジション / 新ライブラリ・外部リソース追加なし（§CSP・ローカル保存のみ）。
+
+## 2026-07-11 (017 Tool Path Input Lock)
+
+### 完了したこと
+
+- ツール追加/編集画面（`screens/add-tool/AddToolScreen.tsx`）の**実行ファイルパス欄を編集不可（readOnly）**にし、パスの値設定を既存の `open()` ピッカー（「アプリを選択」）経由のみに限定した（ユーザー要望 7）。任意パスの手打ちを排除し、docs/security.md §2 / §7 の「frontend から任意パスを自由入力させない」方針と整合させた。
+- Rust 側の検証（`tools/service.rs::validate` / `process/service.rs::validate_executable`）は**変更なし**。frontend の非活性化だけに依存せず、保存時・起動時の検証を引き続き最終防衛線とする。
+
+### 値更新経路をピッカーのみに限定
+
+- 変更前は `setExecutablePath` の呼び出しが 3 経路: (1) `useEffect` の DB 由来初期化、(2) `selectFile()` の `open()` 成功時、(3) パス `<input>` の `onChange` 手打ち。
+- (3) の `onChange` を除去して手打ち経路を排除。残るのは (1) DB 由来の復元と (2) ピッカーのみ。`handleSave` は `executablePath` を読むだけ、`guessNameFromPath` は name 側にしか書かないため、他に手打ち経路はない。
+
+### readOnly / disabled の選択と理由 → **readOnly を採用**
+
+- パスは「設定済みの有効な値」でユーザーが目視確認・**コピー**したい情報 → readOnly なら選択・コピーが残る。
+- `disabled` のグレーアウトは「無効/使用不可」に見え、値が入っているのに壊れて見える恐れ。readOnly の方が「値は設定済み・ここでは打てないだけ」の意図に合う。
+- 値は React state 由来（ネイティブ form 送信ではない）なので送信可否の差は無関係。可読性・コピー性・意味の一致で readOnly が優る。
+- 実装は input に `readOnly` 付与＋`onChange` 除去（readOnly があれば制御 input の警告は出ない）。
+
+### ヘルプ文言の変更
+
+1. パネル見出し説明: `〜選びます。パスは直接入力もできます。` → `〜選びます。パスは「アプリを選択」からのみ設定できます。`
+2. パス欄 fieldHelp: `「アプリを選択」で自動入力されます。直接入力・編集も可能です。` → `「アプリを選択」からのみ設定できます。直接入力・編集はできません。`
+
+### 据え置き（変更なし）
+
+- 未選択時のドロップゾーン導線（「アプリを選択」ボタン・`.exe/.app/その他` チップ）を維持。
+- 選択済み `selectedApp` カード（アイコン文字＋名前＋パス表示）は据え置き。アイコン方式は 018 スコープのため本タスクでは変更しない。
+- パス以外のフォーム項目（表示名・説明・アイコンラベル・プリセット系 select）と名前自動推測（`guessNameFromPath`）は既存挙動のまま。
+
+### 作成・変更ファイル
+
+- 変更: `apps/desktop/src/screens/add-tool/AddToolScreen.tsx`（パス input を readOnly 化＋onChange 除去、ヘルプ文言 2 箇所更新）。
+- 変更: `docs/progress.md`（本記録）。
+- CSS 変更なし / 新規ライブラリ・外部リソース追加なし / Rust 側変更なし / OS・ファイル・プロセス操作の追加なし（既存 `open()` の利用範囲を変えない）。
+
+### 検証結果
+
+- `git diff --stat` → `AddToolScreen.tsx` のみ（3 insertions / 3 deletions）＋ `docs/progress.md`。変更範囲が想定内。
+- `grep -rn setExecutablePath apps/desktop/src` → 値更新は L56（DB 復元）と L74（ピッカー）のみ。手打ち経路なしを確認。
+- `pnpm --filter ./apps/desktop typecheck` → 成功（exit 0）
+- `pnpm --filter ./apps/desktop lint` → 成功（exit 0）
+- **実機表示（`tauri dev`）は未実施**: パス欄が直接編集できない / ピッカーからのみ設定 / 新規作成・編集・保存・更新・名前自動推測が従来どおり / 文言更新 / 未選択導線と選択済みカード維持、をユーザー環境で確認をお願いしたい。
