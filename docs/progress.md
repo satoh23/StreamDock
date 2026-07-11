@@ -1880,3 +1880,39 @@ Docker Desktop 風の共通ヘッダーを全画面に常設。従来、設定/�
 - **実機表示（`tauri dev`）は未実施**（ユーザー環境で確認依頼）。
   - ライト/ダーク要注意点: ①中立フラットアイコンボタン（`--control-bg`＝text6%透過・border無し）がライト白面上で薄くなりすぎないか。薄い場合は `--surface-2`（ライトで実線面）へ切替。②`.startBtn` の accent 淡ティントの start/stop 色差。③ghost ボタンの border 撤廃後の輪郭（toolbar/footer は `--surface-2` 面上で差が付く想定）。
   - 全画面（メイン／ツール追加／プリセット追加／診断／設定／サイドバー／ヘッダー）で破綻がないか。
+
+## 2026-07-11 022 Tool/Preset Form Polish（フォーム細部調整）
+
+ツール/プリセットのフォーム細部を整えるタスク（docs/tasks/022）。ユーザー要望 4・5・6・7 に対応。frontend のみ。Rust モデル/DB・パス検証・自動起動ロジック（019）・アイコン自動抽出（018）は変更なし。新ライブラリ追加なし。
+
+### (4) アイコンラベル入力欄の削除
+
+- `AddToolScreen.tsx`: state `iconLabel`／初期化（`setIconLabel(editingTool?.iconLabel)`）／保存 payload の `iconLabel`／「アイコンラベル」フィールド（input＋ヘルプ）を削除。プレビューは `toIconLetter({ iconLabel, name })` → `toIconLetter({ name })` に変更（表示名先頭文字ベースへ）。
+- `display.ts` `toIconLetter`: 引数型を `Pick<ToolRecord, "iconLabel" | "name">` → `{ iconLabel?: string; name: string }` に緩め、`tool.iconLabel?.trim()` に変更。フォールバック（iconLabel 優先→無ければ name 先頭文字）は温存。未使用化した `ToolRecord` import を削除。
+- **toIconLetter 波及: ゼロ**。他5呼び出し（MainScreen×2 / Sidebar / AddPresetScreen×3）はすべて実 `Tool` レコード（`iconLabel: string` 保持）を渡すため、引数任意化後もそのまま通る。DB 残置の `icon_label` を持つ既存ツールも従来通り表示。
+- **Rust/DB は非変更**。`Tool.iconLabel: string`・`CreateToolInput`/`UpdateToolInput` の `iconLabel?`（任意）は ts-rs 自動生成のまま。payload から省略しても型OK・DB は既存 default 挙動に委ねる → bindings 再生成不要。
+
+### (5) 実行ファイルパス欄の灰色化＋文言短縮（AddToolScreen.tsx / formLayout.module.css）
+
+- `formLayout.module.css` に `.field input.readonlyInput { color: var(--muted); }` を追加（生 hex/rgba なし・`var(--muted)` 経由）。パス input（`readOnly` 維持）に `className={layout.readonlyInput}` を付与し、非活性と分かる灰色文字に。
+- フィールドヘルプを「『アプリを選択』からのみ設定できます。直接入力・編集はできません。」→ **「直接入力・編集はできません。」** のみに短縮。
+- パネル見出し `<p>` を「起動したいアプリの実行ファイルを選びます。パスは『アプリを選択』からのみ設定できます。」→ **「起動したいアプリの実行ファイルを選びます。」**（フィールドヘルプとの重複を解消）。
+
+### (6) チェックボックス余白（AddPresetScreen.module.css）
+
+- `.bootToggle` の `gap: 10px` → **`gap: 12px`**（checkbox とラベルテキストの間隔を拡大）。
+
+### (7) 自動起動の説明文言変更（AddPresetScreen.tsx）
+
+- 「オンにすると、PC 起動時に stream-dock が自動起動し、このプリセットのツールを一括起動します。」→ **「PC起動時にこのプリセットに登録されたツールが自動起動されます。」**
+
+### 変更ファイル（5・全て編集、新規なし）
+
+`features/tools/display.ts`, `screens/add-tool/AddToolScreen.tsx`, `screens/formLayout.module.css`, `screens/add-preset/AddPresetScreen.module.css`, `screens/add-preset/AddPresetScreen.tsx`。
+
+### 確認
+
+- `pnpm --filter ./apps/desktop typecheck` → 成功（exit 0）
+- `pnpm --filter ./apps/desktop lint` → 成功（exit 0）
+- `grep`（触れた `*.module.css` に生 hex/rgba なし）→ 該当なし（灰色化は `var(--muted)` 経由）。
+- **実機表示（`tauri dev`）は未実施**（ユーザー環境で確認依頼）: アイコンラベル欄が消え、アイコンが自動抽出 PNG（無ければ表示名先頭文字）で従来通り表示／新規作成・編集・保存・プレビューが破綻しない／パス欄が灰色文字で非活性と分かりヘルプが「直接入力・編集はできません。」のみ／自動起動チェックボックスとテキストに適度な余白／説明文が新文言／ライト・ダーク両テーマで破綻なし。

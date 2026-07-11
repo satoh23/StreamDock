@@ -84,6 +84,9 @@
 .field input::placeholder {
   color: var(--text-faint);
 }
+.field input.readonlyInput {
+  color: var(--muted);
+}
 .field input.inputError,
 .field input.inputError:focus {
   border-color: var(--danger-focus);

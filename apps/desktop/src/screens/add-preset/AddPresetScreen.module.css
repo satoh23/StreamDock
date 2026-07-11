@@ -40,7 +40,7 @@
 .bootToggle {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   cursor: pointer;
   font-size: 13px;
   font-weight: 800;

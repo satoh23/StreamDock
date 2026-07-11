@@ -353,8 +353,7 @@ export function AddPresetScreen({
                       <span>PC起動時にプリセット自動起動</span>
                     </label>
                     <div className={layout.fieldHelp}>
-                      オンにすると、PC 起動時に stream-dock
-                      が自動起動し、このプリセットのツールを一括起動します。
+                      PC起動時にこのプリセットに登録されたツールが自動起動されます。
                     </div>
                   </div>
                 </div>

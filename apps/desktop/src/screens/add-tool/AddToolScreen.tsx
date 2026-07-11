@@ -46,7 +46,6 @@ export function AddToolScreen({
   const [name, setName] = useState("");
   const [executablePath, setExecutablePath] = useState("");
   const [description, setDescription] = useState("");
-  const [iconLabel, setIconLabel] = useState("");
   // 018: 選択時に一度だけ抽出した実アイコン（base64 PNG, `data:` 無し）。抽出不可なら null。
   const [iconPng, setIconPng] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -57,7 +56,6 @@ export function AddToolScreen({
     setName(editingTool?.name ?? "");
     setExecutablePath(editingTool?.executablePath ?? "");
     setDescription(editingTool?.description ?? "");
-    setIconLabel(editingTool?.iconLabel ?? "");
     setIconPng(editingTool?.iconPng ?? null);
     setError(null);
   }, [editingTool]);
@@ -93,7 +91,6 @@ export function AddToolScreen({
         name,
         executablePath,
         description,
-        iconLabel,
         // 018: 抽出済みアイコンを保存する（無ければ省略し、DB では null のまま）。
         iconPng: iconPng ?? undefined,
       };
@@ -112,7 +109,7 @@ export function AddToolScreen({
   };
 
   const hasPath = executablePath.trim().length > 0;
-  const previewIcon = toIconLetter({ iconLabel, name });
+  const previewIcon = toIconLetter({ name });
   const previewIconSrc = iconDataUri(iconPng);
 
   const previewRows: PreviewRowData[] = [
@@ -139,7 +136,7 @@ export function AddToolScreen({
         <section className={layout.panel}>
           <div className={layout.panelHead}>
             <h3>アプリを選択</h3>
-            <p>起動したいアプリの実行ファイルを選びます。パスは「アプリを選択」からのみ設定できます。</p>
+            <p>起動したいアプリの実行ファイルを選びます。</p>
           </div>
           <div className={layout.panelBody}>
             {hasPath ? (
@@ -192,12 +189,13 @@ export function AddToolScreen({
               <div className={layout.field}>
                 <label>実行ファイルパス</label>
                 <input
+                  className={layout.readonlyInput}
                   value={executablePath}
                   placeholder="実行ファイルのパス"
                   readOnly
                 />
                 <div className={layout.fieldHelp}>
-                  「アプリを選択」からのみ設定できます。直接入力・編集はできません。
+                  直接入力・編集はできません。
                 </div>
               </div>
 
@@ -208,18 +206,6 @@ export function AddToolScreen({
                   placeholder="このツールの説明（任意）"
                   onChange={(e) => setDescription(e.target.value)}
                 />
-              </div>
-
-              <div className={layout.field}>
-                <label>アイコンラベル</label>
-                <input
-                  value={iconLabel}
-                  placeholder="アイコン表示用の1文字（任意）"
-                  onChange={(e) => setIconLabel(e.target.value)}
-                />
-                <div className={layout.fieldHelp}>
-                  未入力なら表示名の先頭文字を使います。
-                </div>
               </div>
 
               {!isEdit && (
