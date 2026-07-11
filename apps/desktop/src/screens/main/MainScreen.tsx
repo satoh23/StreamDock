@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Screen, ToolState } from "../../types";
-import type { ToolRecord } from "../../features/tools/types";
+import type { ToolKind, ToolRecord } from "../../features/tools/types";
 import type {
   LaunchMode,
   PresetItemWithTool,
@@ -31,6 +31,8 @@ type RuntimeItem = {
   description: string;
   launchMode: LaunchMode;
   enabled: boolean;
+  /** 023: ツール種別。`"url"` は既定ブラウザで開くだけで停止/状態監視の対象外。 */
+  kind: ToolKind;
   /** 起動状態（007/008 で実プロセス起動） */
   state: ToolState;
   /**
@@ -51,6 +53,7 @@ function toRuntime(items: PresetItemWithTool[]): RuntimeItem[] {
     description: it.tool.description,
     launchMode: it.launchMode,
     enabled: it.enabled,
+    kind: it.tool.kind,
     state: "waiting" as ToolState,
   }));
 }
@@ -220,9 +223,11 @@ export function MainScreen({
   // spawn 成功は "launched"（起動中）、reconcile 後は "running"（稼働確認済み）。どちらも起動中扱いとし、
   // 「起動済み」カウントと一括停止トグルの対象にする。
   const isActive = (s: ToolState) => s === "launched" || s === "running";
-  const launchedCount = runtime.filter((t) => isActive(t.state)).length;
+  // 023: url 種別は「開く」のみで PID 管理下に入らないため、「起動済み」カウント・一括停止の対象から除外する。
+  const isActiveRow = (t: RuntimeItem) => t.kind !== "url" && isActive(t.state);
+  const launchedCount = runtime.filter(isActiveRow).length;
   // 009/010: 起動中（launched/running）の行が1つでもあれば一括ボタンを「一括停止」に切り替える。
-  const anyLaunched = runtime.some((t) => isActive(t.state));
+  const anyLaunched = runtime.some(isActiveRow);
 
   // --- 単体起動（007: 実プロセス起動）---
   // frontend からは toolId のみを渡し、Tool 取得・パス検証・起動は Rust 側で行う。
@@ -279,6 +284,21 @@ export function MainScreen({
         kind: "error",
         text: `${name} を開けませんでした: ${toErrorMessage(e)}`,
       });
+    }
+  };
+
+  // --- 023: url 種別ツールを既定ブラウザで開く ---
+  // frontend は toolId のみ渡す。Rust 側が DB 保存 URL を http/https 検証してから opener に渡す。
+  // PID 管理下に入れないため行 state は変えず（停止/状態表示なし）、成否のみフィードバックする。
+  const handleOpenUrl = async (toolId: string, name: string) => {
+    setLaunchFeedback(null);
+    try {
+      await launchTool(toolId);
+      if (!mountedRef.current) return;
+      setLaunchFeedback({ kind: "success", text: `${name} を開きました` });
+    } catch (e) {
+      if (!mountedRef.current) return;
+      setLaunchFeedback({ kind: "error", text: toErrorMessage(e) });
     }
   };
 
@@ -662,6 +682,7 @@ export function MainScreen({
                   name: item.name,
                   description: item.description,
                   state: item.state,
+                  kind: item.kind,
                 }}
                 index={index}
                 total={runtime.length}
@@ -670,7 +691,11 @@ export function MainScreen({
                 editMode={editMode}
                 onStart={() => void handleStart(item.id, item.toolId, item.name)}
                 onStop={() => void handleStop(item.id, item.launchId, item.name)}
-                onOpen={() => void handleOpen(item.launchId, item.name)}
+                onOpen={() =>
+                  item.kind === "url"
+                    ? void handleOpenUrl(item.toolId, item.name)
+                    : void handleOpen(item.launchId, item.name)
+                }
                 onMoveUp={() => move(index, -1)}
                 onMoveDown={() => move(index, 1)}
                 onToggleMode={() => toggleMode(item)}

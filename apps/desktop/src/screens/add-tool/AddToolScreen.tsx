@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { Screen } from "../../types";
-import type { ToolRecord } from "../../features/tools/types";
+import type { ToolKind, ToolRecord } from "../../features/tools/types";
 import { createTool, extractAppIcon, updateTool } from "../../features/tools/toolApi";
 import { toErrorMessage } from "../../features/tools/useTools";
 import { iconDataUri, toIconLetter } from "../../features/tools/display";
@@ -30,6 +30,15 @@ function guessNameFromPath(path: string): string {
   return base.replace(/\.[^.]+$/, "");
 }
 
+/**
+ * 023: URL が http/https スキームか（frontend の事前バリデーション）。
+ * Rust 側でも `validate_http_url` で必ず再検証する（多層防御）。
+ */
+function isValidHttpUrl(url: string): boolean {
+  const lower = url.trim().toLowerCase();
+  return lower.startsWith("http://") || lower.startsWith("https://");
+}
+
 export function AddToolScreen({
   onNavigate,
   editingTool,
@@ -44,7 +53,11 @@ export function AddToolScreen({
   const isEdit = !!editingTool;
 
   const [name, setName] = useState("");
+  // 023: ツール種別（アプリ = executable / URL = url）。
+  const [kind, setKind] = useState<ToolKind>("executable");
   const [executablePath, setExecutablePath] = useState("");
+  // 023: url 種別で開く URL（http/https）。
+  const [url, setUrl] = useState("");
   const [description, setDescription] = useState("");
   // 018: 選択時に一度だけ抽出した実アイコン（base64 PNG, `data:` 無し）。抽出不可なら null。
   const [iconPng, setIconPng] = useState<string | null>(null);
@@ -54,11 +67,15 @@ export function AddToolScreen({
   // 編集画面 / 新規画面 いずれもフォーム初期値を editingTool に同期する
   useEffect(() => {
     setName(editingTool?.name ?? "");
+    setKind(editingTool?.kind ?? "executable");
     setExecutablePath(editingTool?.executablePath ?? "");
+    setUrl(editingTool?.url ?? "");
     setDescription(editingTool?.description ?? "");
     setIconPng(editingTool?.iconPng ?? null);
     setError(null);
   }, [editingTool]);
+
+  const isUrlKind = kind === "url";
 
   // 表示のみに使う（保存には関与しない）プリセット系 select
   const [targetPreset, setTargetPreset] = useState(targetPresetOptions[0]);
@@ -85,14 +102,24 @@ export function AddToolScreen({
 
   const handleSave = async () => {
     setError(null);
+    // 023: url 種別は http/https のみ許可（Rust 側でも再検証されるが、無駄な往復を避け即時にエラー表示）。
+    if (isUrlKind && !isValidHttpUrl(url)) {
+      setError("URL は http:// または https:// で始まる必要があります");
+      return;
+    }
     setSaving(true);
     try {
+      // 023: 種別に応じて payload を構成する。
+      // - executable: 従来どおり executablePath ＋抽出アイコン。
+      // - url: URL を含め、executablePath は空文字（アイコンは文字ラベルにフォールバック）。
       const input = {
         name,
-        executablePath,
+        kind,
+        executablePath: isUrlKind ? "" : executablePath,
+        url: isUrlKind ? url.trim() : undefined,
         description,
         // 018: 抽出済みアイコンを保存する（無ければ省略し、DB では null のまま）。
-        iconPng: iconPng ?? undefined,
+        iconPng: isUrlKind ? undefined : iconPng ?? undefined,
       };
       if (isEdit && editingTool) {
         await updateTool(editingTool.id, input);
@@ -110,7 +137,8 @@ export function AddToolScreen({
 
   const hasPath = executablePath.trim().length > 0;
   const previewIcon = toIconLetter({ name });
-  const previewIconSrc = iconDataUri(iconPng);
+  // 023: url 種別は実アイコン抽出をしないため文字ラベルにフォールバックする。
+  const previewIconSrc = isUrlKind ? null : iconDataUri(iconPng);
 
   const previewRows: PreviewRowData[] = [
     {
@@ -119,7 +147,7 @@ export function AddToolScreen({
       iconLetter: previewIcon,
       iconSrc: previewIconSrc,
       name: name || "（表示名未入力）",
-      description: description || executablePath || "説明未入力",
+      description: description || (isUrlKind ? url : executablePath) || "説明未入力",
       highlight: true,
     },
   ];
@@ -135,11 +163,51 @@ export function AddToolScreen({
       <div className={layout.content}>
         <section className={layout.panel}>
           <div className={layout.panelHead}>
-            <h3>アプリを選択</h3>
-            <p>起動したいアプリの実行ファイルを選びます。</p>
+            <h3>{isUrlKind ? "URL を入力" : "アプリを選択"}</h3>
+            <p>
+              {isUrlKind
+                ? "ブラウザで開くサイトの URL（http / https）を登録します。"
+                : "起動したいアプリの実行ファイルを選びます。"}
+            </p>
           </div>
           <div className={layout.panelBody}>
-            {hasPath ? (
+            {/* 023: ツール種別トグル（アプリ = 実行ファイル / URL = 既定ブラウザで開く）。 */}
+            <div className={styles.kindToggle} role="tablist" aria-label="ツール種別">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={!isUrlKind}
+                className={`${styles.kindOption} ${!isUrlKind ? styles.kindActive : ""}`}
+                onClick={() => {
+                  setKind("executable");
+                  setError(null);
+                }}
+              >
+                アプリ
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={isUrlKind}
+                className={`${styles.kindOption} ${isUrlKind ? styles.kindActive : ""}`}
+                onClick={() => {
+                  setKind("url");
+                  setError(null);
+                }}
+              >
+                URL
+              </button>
+            </div>
+
+            {isUrlKind ? (
+              <div className={styles.selectedApp}>
+                <div className={styles.appIcon}>{previewIcon}</div>
+                <div>
+                  <h3>{name || "URL ツール"}</h3>
+                  <div className={styles.path}>{url || "URL 未入力"}</div>
+                </div>
+              </div>
+            ) : hasPath ? (
               <div className={styles.selectedApp}>
                 <div className={styles.appIcon}>
                   {previewIconSrc ? (
@@ -186,18 +254,35 @@ export function AddToolScreen({
                 <div className={layout.fieldHelp}>サイドバーや一覧に表示される名前です。</div>
               </div>
 
-              <div className={layout.field}>
-                <label>実行ファイルパス</label>
-                <input
-                  className={layout.readonlyInput}
-                  value={executablePath}
-                  placeholder="実行ファイルのパス"
-                  readOnly
-                />
-                <div className={layout.fieldHelp}>
-                  直接入力・編集はできません。
+              {isUrlKind ? (
+                <div className={layout.field}>
+                  <label>URL</label>
+                  <input
+                    className={
+                      url && !isValidHttpUrl(url) ? layout.inputError : undefined
+                    }
+                    value={url}
+                    placeholder="https://example.com"
+                    onChange={(e) => setUrl(e.target.value)}
+                  />
+                  <div className={layout.fieldHelp}>
+                    http:// または https:// で始まる URL を既定ブラウザで開きます。
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div className={layout.field}>
+                  <label>実行ファイルパス</label>
+                  <input
+                    className={layout.readonlyInput}
+                    value={executablePath}
+                    placeholder="実行ファイルのパス"
+                    readOnly
+                  />
+                  <div className={layout.fieldHelp}>
+                    直接入力・編集はできません。
+                  </div>
+                </div>
+              )}
 
               <div className={layout.field}>
                 <label>説明</label>

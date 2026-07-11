@@ -66,7 +66,9 @@ export function ToolRow({
         <h4>{tool.name}</h4>
         <p>{parallel ? "順番なしで並行起動" : tool.description}</p>
       </div>
-      <StatusBadge state={tool.state} />
+      {/* 023: url 種別は PID 管理下に入らないため status バッジを出さない。ただしグリッドの status 列
+          セルは空で占有し、アクション列（toolActions）が PC アプリ行と同じ位置に揃うようにする。 */}
+      {tool.kind === "url" ? <span aria-hidden /> : <StatusBadge state={tool.state} />}
 
       <div className={styles.toolActions}>
         {editMode ? (
@@ -96,6 +98,16 @@ export function ToolRow({
               ×
             </button>
           </>
+        ) : tool.kind === "url" ? (
+          // 023: url 種別は state に依らず起動ボタンだけを出す（停止/状態表示なし・MVP: 開くのみ）。
+          // マーク・ラベルは PC アプリの未起動時ボタンと統一する（StartIcon / 「起動」）。
+          <button
+            className={`${styles.runtimeAction} ${styles.startBtn}`}
+            onClick={onOpen}
+            title="起動"
+          >
+            <StartIcon />
+          </button>
         ) : tool.state === "running" || tool.state === "launched" ? (
           <>
             <button

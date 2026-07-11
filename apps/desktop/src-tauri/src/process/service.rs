@@ -2,14 +2,16 @@ use std::path::Path;
 use std::process::Command;
 
 use rusqlite::Connection;
+use tauri::AppHandle;
+use tauri_plugin_opener::OpenerExt;
 
 use crate::error::{AppError, AppResult};
-use crate::util::{now_rfc3339, require_non_empty, with_filename_detail};
+use crate::util::{now_rfc3339, require_non_empty, validate_http_url, with_filename_detail};
 use crate::preset_items;
 use crate::preset_items::model::{LaunchMode, PresetItem};
 use crate::presets;
 use crate::tools;
-use crate::tools::model::Tool;
+use crate::tools::model::{Tool, ToolKind};
 
 use super::model::{
     BulkLaunchPresetResult, BulkLaunchToolResult, RuntimeProcess, RuntimeProcessStatus,
@@ -57,6 +59,23 @@ pub fn spawn(tool: &Tool) -> AppResult<Handle> {
         .spawn()
         .map_err(|_| AppError::launch_failed("プロセスの起動に失敗しました"))?;
     Ok(Handle::Child(child))
+}
+
+/// 023: url 種別ツールを既定ブラウザで開く。
+///
+/// frontend からは toolId のみを受け取り、URL は DB 保存値を Rust 側で **http/https スキーム限定**に
+/// 検証してから `tauri-plugin-opener`（既定ブラウザ委譲）に渡す。新規 spawn 経路・shell・任意コマンド
+/// 組立・外部通信は増やさない（OS の既定ブラウザに委譲するだけ）。PID 管理下には入れない（MVP: 開くのみ）。
+///
+/// opener の Rust API（`OpenerExt`）は IPC 非経由のため capabilities の許可を必要としない
+/// （frontend から opener コマンドは呼ばせない）。失敗は固定文言に丸め、URL/OS エラーを露出させない。
+pub fn open_url(app: &AppHandle, tool: &Tool) -> AppResult<()> {
+    // 保存済み値を再検証する（多層防御）。`javascript:` / `file:` / 独自スキーム等はここで拒否される。
+    let url = validate_http_url(tool.url.as_deref().unwrap_or(""))?;
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|_| AppError::launch_failed("URL を開けませんでした"))?;
+    Ok(())
 }
 
 /// registry が管理する既存プロセスを**前面化（アクティブ化）**する。「開く」ボタン用（バグ1）。
@@ -714,6 +733,7 @@ pub fn resolve_preset_targets(
 /// 009: 起動に成功したプロセスは `registry` に登録し、`BulkLaunchToolResult.launch_id` に採番した
 /// launchId を入れる（Preset 単位停止で presetId から絞り込めるよう `preset_id` を保持する）。
 pub fn launch_preset_targets(
+    app: &AppHandle,
     preset_id: &str,
     targets: Vec<(PresetItem, Option<Tool>)>,
     registry: &ProcessRegistry,
@@ -726,7 +746,7 @@ pub fn launch_preset_targets(
 
     let mut results: Vec<BulkLaunchToolResult> = Vec::new();
     for (item, tool) in ordered.into_iter().chain(parallel) {
-        results.push(launch_one(&item, tool.as_ref(), preset_id, registry));
+        results.push(launch_one(app, &item, tool.as_ref(), preset_id, registry));
     }
 
     let total_count = results.len() as u32;
@@ -747,6 +767,7 @@ pub fn launch_preset_targets(
 /// PresetItem 1件を起動し、結果を [`BulkLaunchToolResult`] にまとめる。
 /// 起動に成功した場合のみ registry に登録し、launchId を採番して結果に含める。
 fn launch_one(
+    app: &AppHandle,
     item: &PresetItem,
     tool: Option<&Tool>,
     preset_id: &str,
@@ -760,6 +781,12 @@ fn launch_one(
 
     let (success, launch_id, process_id, started_at, error_message) = match tool {
         None => (false, None, None, None, Some("ツールが見つかりません".to_string())),
+        // 023: url 種別は registry に入れず既定ブラウザで開くだけ（MVP: 開くのみ）。
+        // 成功時 launch_id / process_id は None（停止・状態監視の対象外）。
+        Some(tool) if tool.kind == ToolKind::Url => match open_url(app, tool) {
+            Ok(()) => (true, None, None, Some(now_rfc3339()), None),
+            Err(err) => (false, None, None, None, Some(safe_launch_message(&err))),
+        },
         Some(tool) => match spawn(tool) {
             Ok(handle) => {
                 // macOS `.app` 未同定時は実 PID がまだ無い（None）。BulkLaunchToolResult.process_id は

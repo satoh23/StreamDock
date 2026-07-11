@@ -37,6 +37,25 @@ pub fn reject_control_chars(value: &str, message: impl Into<String>) -> AppResul
     Ok(())
 }
 
+/// 023: URL を http/https スキーム限定で検証し、trim 済みの安全な URL 文字列を返す。
+///
+/// 保存時（`tools::service`）と起動時（`process::service::open_url`）の両方で使う多層防御。
+/// frontend の生値を信用せず Rust 側で必ず検証する（docs/security.md §4/§8）。`javascript:` /
+/// `file:` / `data:` / 独自スキーム等は `http://` / `https://` プレフィックスに一致しないため拒否される。
+pub fn validate_http_url(raw: &str) -> AppResult<String> {
+    let url = raw.trim();
+    require_non_empty(url, "URL が未設定です")?;
+    reject_control_chars(url, "URL に制御文字は使用できません")?;
+    // スキームは大文字小文字を無視して比較する（ホスト・パスの大小は保持したいので元文字列を返す）。
+    let lower = url.to_ascii_lowercase();
+    if !(lower.starts_with("http://") || lower.starts_with("https://")) {
+        return Err(AppError::validation(
+            "URL は http:// または https:// で始まる必要があります",
+        ));
+    }
+    Ok(url.to_string())
+}
+
 /// `AppError` に「ファイル名のみ」の `details` を付与する（フルパスは frontend / log に露出しない）。
 ///
 /// `path_not_found` / `duplicate_path` で共通していた「`file_name` を取り出して

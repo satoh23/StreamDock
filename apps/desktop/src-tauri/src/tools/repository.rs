@@ -1,13 +1,15 @@
 use rusqlite::{Connection, OptionalExtension};
 
-use super::model::Tool;
+use super::model::{Tool, ToolKind};
 
 /// SELECT で取得する tools テーブルの全カラム（複数クエリで共有）。
 const TOOL_COLUMNS: &str =
-    "id, name, executable_path, description, icon_label, icon_png, created_at, updated_at";
+    "id, name, executable_path, description, icon_label, icon_png, kind, url, created_at, updated_at";
 
 /// tools テーブルを作成する（存在すれば何もしない）。
 pub fn init(conn: &Connection) -> rusqlite::Result<()> {
+    // インデックスはここでは作らない。`kind` 列を後付け（ensure_column）してからでないと
+    // 部分ユニークインデックス（WHERE kind = 'executable'）を張れないため、下で作成する。
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS tools (
             id              TEXT PRIMARY KEY,
@@ -17,17 +19,28 @@ pub fn init(conn: &Connection) -> rusqlite::Result<()> {
             icon_label      TEXT NOT NULL DEFAULT '',
             created_at      TEXT NOT NULL,
             updated_at      TEXT NOT NULL
-        );
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_tools_executable_path
-            ON tools(executable_path);",
+        );",
     )?;
     // 018: 既存 DB にも `icon_png`（nullable）を冪等に追加する。マイグレーション基盤が無いため
     // pragma で存在確認してから ADD COLUMN する共通ヘルパを使う（既存インストールでも落ちない）。
     crate::util::ensure_column(conn, "tools", "icon_png", "TEXT")?;
+    // 023: 種別カラム。既存行は 'executable' 既定で埋まる（NOT NULL ＋ 定数 DEFAULT は SQLite で許容）。
+    crate::util::ensure_column(conn, "tools", "kind", "TEXT NOT NULL DEFAULT 'executable'")?;
+    // 023: url 種別用の URL（nullable。executable 種別では NULL）。
+    crate::util::ensure_column(conn, "tools", "url", "TEXT")?;
+    // 023: executable_path の重複防止を維持しつつ、url 種別（executable_path 空文字）の衝突を避けるため
+    // 旧・全行 UNIQUE インデックスを撤去し、`kind = 'executable'` の部分ユニークインデックスへ移行する。
+    // DROP IF EXISTS + CREATE IF NOT EXISTS で冪等（新規/既存/再起動いずれも最終状態は部分 index のみ）。
+    conn.execute_batch(
+        "DROP INDEX IF EXISTS idx_tools_executable_path;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_tools_executable_path_executable
+            ON tools(executable_path) WHERE kind = 'executable';",
+    )?;
     Ok(())
 }
 
 fn row_to_tool(row: &rusqlite::Row<'_>) -> rusqlite::Result<Tool> {
+    let kind: String = row.get("kind")?;
     Ok(Tool {
         id: row.get("id")?,
         name: row.get("name")?,
@@ -35,6 +48,9 @@ fn row_to_tool(row: &rusqlite::Row<'_>) -> rusqlite::Result<Tool> {
         description: row.get("description")?,
         icon_label: row.get("icon_label")?,
         icon_png: row.get("icon_png")?,
+        // 未知値（前方互換）は executable に丸める。
+        kind: ToolKind::from_str_lenient(&kind),
+        url: row.get("url")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
     })
@@ -43,8 +59,8 @@ fn row_to_tool(row: &rusqlite::Row<'_>) -> rusqlite::Result<Tool> {
 pub fn insert(conn: &Connection, tool: &Tool) -> rusqlite::Result<()> {
     conn.execute(
         "INSERT INTO tools
-            (id, name, executable_path, description, icon_label, icon_png, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            (id, name, executable_path, description, icon_label, icon_png, kind, url, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         rusqlite::params![
             tool.id,
             tool.name,
@@ -52,6 +68,8 @@ pub fn insert(conn: &Connection, tool: &Tool) -> rusqlite::Result<()> {
             tool.description,
             tool.icon_label,
             tool.icon_png,
+            tool.kind.as_str(),
+            tool.url,
             tool.created_at,
             tool.updated_at,
         ],
@@ -89,6 +107,16 @@ pub fn find_by_executable_path(
     .optional()
 }
 
+/// url が一致する url 種別ツールを返す（023 url 種別の重複チェック用）。
+pub fn find_by_url(conn: &Connection, url: &str) -> rusqlite::Result<Option<Tool>> {
+    conn.query_row(
+        &format!("SELECT {TOOL_COLUMNS} FROM tools WHERE kind = 'url' AND url = ?1"),
+        rusqlite::params![url],
+        row_to_tool,
+    )
+    .optional()
+}
+
 pub fn update(conn: &Connection, tool: &Tool) -> rusqlite::Result<()> {
     conn.execute(
         "UPDATE tools SET
@@ -97,7 +125,9 @@ pub fn update(conn: &Connection, tool: &Tool) -> rusqlite::Result<()> {
             description = ?4,
             icon_label = ?5,
             icon_png = ?6,
-            updated_at = ?7
+            kind = ?7,
+            url = ?8,
+            updated_at = ?9
          WHERE id = ?1",
         rusqlite::params![
             tool.id,
@@ -106,6 +136,8 @@ pub fn update(conn: &Connection, tool: &Tool) -> rusqlite::Result<()> {
             tool.description,
             tool.icon_label,
             tool.icon_png,
+            tool.kind.as_str(),
+            tool.url,
             tool.updated_at,
         ],
     )?;

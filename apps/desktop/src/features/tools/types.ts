@@ -3,6 +3,7 @@
 // Rust 側（src-tauri/src/tools/model.rs・error.rs）を変更したら
 // `pnpm --filter ./apps/desktop gen:bindings` で再生成する。
 export type { Tool } from "./bindings/Tool";
+export type { ToolKind } from "./bindings/ToolKind";
 export type { CreateToolInput } from "./bindings/CreateToolInput";
 export type { UpdateToolInput } from "./bindings/UpdateToolInput";
 export type { LaunchToolResult } from "./bindings/LaunchToolResult";

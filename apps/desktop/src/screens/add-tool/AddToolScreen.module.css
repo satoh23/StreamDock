@@ -1,3 +1,31 @@
+/* 023: ツール種別トグル（アプリ / URL）。 */
+.kindToggle {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 12px;
+  background: var(--control-bg);
+  border: 1px solid var(--border-soft);
+  margin-bottom: 16px;
+}
+.kindOption {
+  min-width: 88px;
+  height: 32px;
+  padding: 0 16px;
+  border-radius: 9px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.kindActive {
+  background: var(--surface);
+  color: var(--text);
+  border-color: var(--elev-border);
+}
+
 .dropzone {
   display: grid;
   place-items: center;

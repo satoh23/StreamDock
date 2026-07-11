@@ -177,7 +177,9 @@ fn boot_launch_presets(handle: tauri::AppHandle) {
         };
 
         // 既存の DB 非依存ランチャで best-effort 起動（新規 spawn 経路を作らない）。
-        let result = process::service::launch_preset_targets(&preset.id, targets, &registry);
+        // 023: url 種別ツールは launch_preset_targets 内で既定ブラウザに開く（handle を渡す）。
+        let result =
+            process::service::launch_preset_targets(&handle, &preset.id, targets, &registry);
 
         // 完了ログ（launch_preset command と同じ分岐）。
         // 成功/一部失敗/全失敗の分岐は launch_preset command と重複するが、operation 名

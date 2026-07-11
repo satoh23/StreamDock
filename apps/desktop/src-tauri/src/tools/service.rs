@@ -4,10 +4,11 @@ use rusqlite::Connection;
 
 use crate::error::{AppError, AppResult};
 use crate::util::{
-    normalize_optional, now_rfc3339, reject_control_chars, require_non_empty, with_filename_detail,
+    normalize_optional, now_rfc3339, reject_control_chars, require_non_empty, validate_http_url,
+    with_filename_detail,
 };
 
-use super::model::{CreateToolInput, Tool, UpdateToolInput};
+use super::model::{CreateToolInput, Tool, ToolKind, UpdateToolInput};
 use super::repository;
 
 /// 入力を trim し、正規化した (name, executable_path, description, icon_label) を返す。
@@ -25,17 +26,21 @@ fn normalize(
     )
 }
 
-/// 必須・パス存在の検証。id を除外して executable_path 重複を検証する。
-fn validate(
+/// 名前の共通検証（種別に依らず必須・制御文字を弾く）。
+fn validate_name(name: &str) -> AppResult<()> {
+    require_non_empty(name, "ツール名は必須です")?;
+    reject_control_chars(name, "ツール名に制御文字は使用できません")?;
+    Ok(())
+}
+
+/// executable 種別の検証。必須・実在・制御文字・executable_path 重複を検証する。
+fn validate_executable_kind(
     conn: &Connection,
-    name: &str,
     executable_path: &str,
     exclude_id: Option<&str>,
 ) -> AppResult<()> {
-    require_non_empty(name, "ツール名は必須です")?;
     require_non_empty(executable_path, "実行ファイルパスは必須です")?;
     // 制御文字（改行・NUL 等）を弾く。将来プロセス起動時のコマンド注入を防ぐ前提検証。
-    reject_control_chars(name, "ツール名に制御文字は使用できません")?;
     reject_control_chars(
         executable_path,
         "実行ファイルパスに制御文字は使用できません",
@@ -57,6 +62,24 @@ fn validate(
     Ok(())
 }
 
+/// url 種別の検証。http/https スキーム限定で検証し、重複 URL を拒否する。検証済み URL を返す。
+fn validate_url_kind(
+    conn: &Connection,
+    raw_url: &Option<String>,
+    exclude_id: Option<&str>,
+) -> AppResult<String> {
+    // frontend の生値を信用せず Rust 側で必ず検証する（http/https 限定・危険スキーム拒否）。
+    let url = validate_http_url(raw_url.as_deref().unwrap_or(""))?;
+    if let Some(existing) = repository::find_by_url(conn, &url)? {
+        if exclude_id != Some(existing.id.as_str()) {
+            return Err(AppError::validation(
+                "同じ URL のツールが既に登録されています。",
+            ));
+        }
+    }
+    Ok(url)
+}
+
 pub fn create(conn: &Connection, input: CreateToolInput) -> AppResult<Tool> {
     let (name, executable_path, description, icon_label) = normalize(
         &input.name,
@@ -64,9 +87,22 @@ pub fn create(conn: &Connection, input: CreateToolInput) -> AppResult<Tool> {
         &input.description,
         &input.icon_label,
     );
-    validate(conn, &name, &executable_path, None)?;
+    validate_name(&name)?;
 
     let now = now_rfc3339();
+    // 種別で分岐して検証し、保存する executable_path / url を確定する。
+    let (executable_path, url) = match input.kind {
+        ToolKind::Executable => {
+            validate_executable_kind(conn, &executable_path, None)?;
+            (executable_path, None)
+        }
+        ToolKind::Url => {
+            let url = validate_url_kind(conn, &input.url, None)?;
+            // url 種別は executable_path を空文字で保存する。
+            (String::new(), Some(url))
+        }
+    };
+
     let tool = Tool {
         id: uuid::Uuid::new_v4().to_string(),
         name,
@@ -75,6 +111,8 @@ pub fn create(conn: &Connection, input: CreateToolInput) -> AppResult<Tool> {
         icon_label,
         // 018: 抽出済み base64 PNG はそのまま保存する（trim / 正規化しない）。
         icon_png: input.icon_png,
+        kind: input.kind,
+        url,
         created_at: now.clone(),
         updated_at: now,
     };
@@ -101,7 +139,18 @@ pub fn update(conn: &Connection, id: &str, input: UpdateToolInput) -> AppResult<
         &input.description,
         &input.icon_label,
     );
-    validate(conn, &name, &executable_path, Some(id))?;
+    validate_name(&name)?;
+
+    let (executable_path, url) = match input.kind {
+        ToolKind::Executable => {
+            validate_executable_kind(conn, &executable_path, Some(id))?;
+            (executable_path, None)
+        }
+        ToolKind::Url => {
+            let url = validate_url_kind(conn, &input.url, Some(id))?;
+            (String::new(), Some(url))
+        }
+    };
 
     let updated = Tool {
         id: existing.id,
@@ -111,6 +160,8 @@ pub fn update(conn: &Connection, id: &str, input: UpdateToolInput) -> AppResult<
         icon_label,
         // 018: 編集画面が既存値を再送するためそのまま保存する（trim / 正規化しない）。
         icon_png: input.icon_png,
+        kind: input.kind,
+        url,
         created_at: existing.created_at,
         updated_at: now_rfc3339(),
     };

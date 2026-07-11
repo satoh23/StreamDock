@@ -1,4 +1,4 @@
-use tauri::State;
+use tauri::{AppHandle, State};
 
 use crate::app_logs;
 use crate::app_logs::model::{LogCategory, LogLevel, NewLog};
@@ -8,6 +8,7 @@ use crate::preset_items;
 use crate::presets;
 use crate::tools;
 use crate::tools::commands::DbState;
+use crate::tools::model::ToolKind;
 
 use super::model::{
     BulkLaunchPresetResult, LaunchToolResult, RuntimeProcess, RuntimeProcessStatus,
@@ -39,6 +40,7 @@ fn log(db: &State<'_, DbState>, entry: NewLog) {
 /// 011: 成功・失敗を app_logs に記録する。
 #[tauri::command]
 pub fn launch_tool(
+    app: AppHandle,
     db: State<'_, DbState>,
     registry: State<'_, ProcessRegistry>,
     id: String,
@@ -84,6 +86,42 @@ pub fn launch_tool(
         });
         (tool, resolved_preset_id)
     };
+
+    // 023: url 種別は registry に入れず既定ブラウザで開くだけ（MVP: 開くのみ）。
+    // frontend は toolId のみ渡し、URL は DB 保存値を Rust 側で http/https 検証してから opener に渡す。
+    // 停止・状態監視の対象外のため launch_id は空・process_id は 0 を返す（UI は url 行に stop/status を出さない）。
+    if tool.kind == ToolKind::Url {
+        return match service::open_url(&app, &tool) {
+            Ok(()) => {
+                let started_at = now_rfc3339();
+                log(
+                    &db,
+                    NewLog::new(
+                        LogLevel::Info,
+                        LogCategory::ProcessLaunch,
+                        "launch_tool",
+                        format!("{} を開きました", tool.name),
+                    )
+                    .tool(tool.id.clone(), tool.name.clone()),
+                );
+                Ok(LaunchToolResult {
+                    launch_id: String::new(),
+                    tool_id: tool.id,
+                    process_id: 0,
+                    started_at,
+                })
+            }
+            Err(e) => {
+                log(
+                    &db,
+                    NewLog::new(LogLevel::Error, LogCategory::ProcessLaunch, "launch_tool", e.code.log_message())
+                        .error_code(e.code)
+                        .tool(tool.id.clone(), tool.name.clone()),
+                );
+                Err(e)
+            }
+        };
+    }
 
     match service::spawn(&tool) {
         Ok(handle) => {
@@ -206,6 +244,7 @@ pub fn focus_process(
 /// 011: 開始・完了（全成功 / 一部失敗 / 全失敗）を app_logs に記録する。
 #[tauri::command]
 pub fn launch_preset(
+    app: AppHandle,
     db: State<'_, DbState>,
     registry: State<'_, ProcessRegistry>,
     preset_id: String,
@@ -243,7 +282,7 @@ pub fn launch_preset(
             .preset_id(preset_id.clone()),
     );
 
-    let result = service::launch_preset_targets(&preset_id, targets, &registry);
+    let result = service::launch_preset_targets(&app, &preset_id, targets, &registry);
 
     let entry = if result.failure_count == 0 {
         NewLog::new(

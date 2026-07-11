@@ -1916,3 +1916,49 @@ Docker Desktop 風の共通ヘッダーを全画面に常設。従来、設定/�
 - `pnpm --filter ./apps/desktop lint` → 成功（exit 0）
 - `grep`（触れた `*.module.css` に生 hex/rgba なし）→ 該当なし（灰色化は `var(--muted)` 経由）。
 - **実機表示（`tauri dev`）は未実施**（ユーザー環境で確認依頼）: アイコンラベル欄が消え、アイコンが自動抽出 PNG（無ければ表示名先頭文字）で従来通り表示／新規作成・編集・保存・プレビューが破綻しない／パス欄が灰色文字で非活性と分かりヘルプが「直接入力・編集はできません。」のみ／自動起動チェックボックスとテキストに適度な余白／説明文が新文言／ライト・ダーク両テーマで破綻なし。
+
+## 2026-07-11 023 Browser URL Tool Support（URL ツール登録＋起動基盤）
+
+実行ファイルだけでなく「ブラウザで開く URL（サイト）」もツール登録・起動できるようにするタスク（docs/tasks/023・ユーザー要望 8）。本タスクは**登録＋起動の基盤まで**（URL を既定ブラウザで開く）。「起動後にブラウザ上ツールの設定を自動反映」は**Out of scope（将来別タスクで設計）**。新ライブラリ追加なし（導入済み `tauri-plugin-opener` を初めて使用）。
+
+### (1) モデル / スキーマ拡張（kind / url）
+
+- `tools/model.rs`: `ToolKind` enum 新設（`Serialize/Deserialize/TS`・`#[serde(rename_all="lowercase")]`・`#[derive(Default)] #[default] Executable` → TS union `"executable" | "url"`）。`Tool` に `kind: ToolKind` と `url: Option<String>`、`CreateToolInput` / `UpdateToolInput` に `#[serde(default)] kind` と `#[serde(default)] #[ts(optional)] url` を追加。`executable_path` は `#[serde(default)]` 化（url 種別は空文字）。
+- `tools/repository.rs`: `TOOL_COLUMNS` に `kind, url` 追加。`row_to_tool` は `kind` を String で読み `ToolKind::from_str_lenient`（未知値→`Executable`・前方互換）。`insert`/`update` に `kind.as_str()`/`url` を通す。`find_by_url`（`kind='url'` 限定）を追加。
+- **スキーマ移行（`init`・冪等）**: `CREATE TABLE` からインライン index を撤去 → `ensure_column(kind, "TEXT NOT NULL DEFAULT 'executable'")` → `ensure_column(url, "TEXT")` → `DROP INDEX IF EXISTS idx_tools_executable_path;` → `CREATE UNIQUE INDEX IF NOT EXISTS idx_tools_executable_path_executable ON tools(executable_path) WHERE kind='executable';`。既存 DB も落ちない（`kind` は既存行が既定 'executable' で埋まる）。新規/既存/再起動いずれも最終状態は「部分ユニーク index のみ」で一致。
+- ts-rs 再生成（`pnpm gen:bindings`）: `Tool.ts` / `CreateToolInput.ts` / `UpdateToolInput.ts` 更新 ＋ `ToolKind.ts` 新規。`features/tools/types.ts` に `ToolKind` re-export。
+
+### UNIQUE 制約の見直し方式
+
+- url 種別は `executable_path` が空文字になり、旧・全行 `UNIQUE(executable_path)` では空文字同士が衝突するため、**`kind='executable'` の部分ユニークインデックス**へ移行（executable の重複防止は維持）。url 種別の重複は service 層 `find_by_url` で拒否（重複防止の意図を維持）。
+
+### (2) フォーム（AddToolScreen.tsx / .module.css）
+
+- 種別トグル（アプリ / URL）を追加（`kind` state・segmented `.kindToggle`/`.kindOption`/`.kindActive` を CSS 追加）。URL 種別はファイル選択の代わりに **URL 入力欄（編集可）** を出し、保存前に `isValidHttpUrl`（http/https のみ）を検証（不正は保存させずインラインエラー）。アイコンは文字ラベルにフォールバック（url 種別は自動抽出しない）。保存 payload に `kind`/`url` を含め、url 種別は `executablePath: ""`。
+
+### (3) 起動経路（Rust）／(4) 状態・停止の採用方針
+
+- **採用方針＝ MVP「開くのみ」**: url 種別は **registry（PID 管理）に登録しない**（`Handle` enum に URL バリアントを足さない・`registry.rs`/`snapshot`/`stop_one` は無変更）。UI は url 行に「開く」ボタンだけを出し、status バッジ・停止ボタン・スピナーを出さない（`ToolRow.tsx` で **kind 分岐を state 分岐より前**に配置）。`MainScreen.tsx` に `handleOpenUrl`（`launchTool(toolId)` を呼び URL を開くだけ・行 state を変えない）を追加、`onOpen` を kind で出し分け、`isActiveRow` で url 種別を「起動済み」カウント・一括停止トグルから除外。
+- **url 起動経路とスキーム検証**: `process/service.rs::open_url(app, tool)` を新設。`validate_http_url(tool.url)` で **http/https 限定**に再検証してから `app.opener().open_url(url, None)`（既定ブラウザ委譲・shell 非経由・新規 spawn 面なし）。`launch_tool` command に `app: AppHandle` を追加し `tool.kind == Url` を分岐（registry 非登録・`launch_id:"" / process_id:0` を返す・ログは「{name} を開きました」でツール名のみ）。一括起動は `launch_preset_targets`/`launch_one` に `app` を渡し、url 種別は `open_url` で `success=true, launch_id=None`（registry 非登録・一括停止対象外）。`lib.rs::boot_launch_presets` は手持ちの handle を渡すだけ。
+- **URL 検証ヘルパ**: `util.rs::validate_http_url(raw)` を新設（trim → 非空 → 制御文字拒否 → `http://`/`https://` プレフィックス限定・大小無視）。**保存時（tools/service）と起動時（process/service）の両方**で使う多層防御。`javascript:` / `file:` / `data:` / 独自スキームは拒否。
+
+### (5) opener capabilities scope
+
+- URL は Rust `OpenerExt`（**IPC 非経由・ACL 非対象**）で開くため frontend は opener コマンドを一切呼ばない。`capabilities/default.json` から **`opener:default` を削除**（`allow-open-url`/`allow-reveal-item-in-dir`/`allow-default-urls` の JS 露出を排除）。広い許可の追加なし（むしろ縮小）。Rust 側 open は capabilities に依存しないため削除しても URL 起動は壊れない（019 autostart の ManagerExt IPC 非経由と同型）。
+
+### Out of scope（将来検討）
+
+「起動後にブラウザ上ツールの設定を自動反映」（拡張連携・プロファイル注入・自動操作）／埋め込み WebView ／url ツールの停止・タブ制御・複数ブラウザ選択・ブラウザ指定起動／一括起動での url 高度順序制御／新規ライブラリ追加。
+
+### 変更ファイル（Rust 8・生成物 4・Frontend 5）
+
+Rust: `tools/model.rs`, `tools/repository.rs`, `tools/service.rs`, `util.rs`, `process/service.rs`, `process/commands.rs`, `lib.rs`, `capabilities/default.json`。生成物: `bindings/{Tool,CreateToolInput,UpdateToolInput}.ts` 更新 ＋ `bindings/ToolKind.ts` 新規。Frontend: `features/tools/types.ts`, `types.ts`, `screens/add-tool/AddToolScreen.tsx`(+`.module.css`), `screens/main/MainScreen.tsx`, `screens/main/ToolRow.tsx`。
+
+### 確認
+
+- `pnpm --filter ./apps/desktop typecheck` → 成功（exit 0）
+- `pnpm --filter ./apps/desktop lint` → 成功（exit 0）
+- `cd apps/desktop/src-tauri && cargo check` → 成功
+- `pnpm gen:bindings`（ts-rs 25 tests pass）→ bindings 差分は kind/url/ToolKind のみ
+- **security-review 実施済み（本タスク必須）→ 判定「問題なし」**: frontend から任意 URL/コマンドを渡せない（toolId のみ・URL は Rust 側 `validate_http_url` で http/https 検証）／`javascript:`・`file:`・`data:` 等の危険スキームを拒否／opener capabilities は最小（`opener:default` 削除・広い許可の追加なし）／新規 spawn 面・shell・外部通信を増やしていない（OS 既定ブラウザに委譲）／`ensure_column`＋`DROP/CREATE IF (NOT) EXISTS` が冪等で既存 DB を壊さない。軽微観察: URL 内の半角空白は未拒否だが opener へ配列引数で単一文字列渡し（shell 非経由）のため注入面なし・据え置き。
+- **実機表示（`tauri dev`）は未実施**（ユーザー環境で確認依頼）: 種別トグルでアプリ/URL を選べ URL は http/https を保存・再表示（不正スキームを弾く）／url 起動で既定ブラウザが開く（frontend は toolId のみ・`opener:default` 削除後も Rust 側 open が動作）／既存 executable ツールが従来どおり／url 行に stop/status が出ない／既存 DB で起動後に落ちない／一括起動に url を含めても破綻しない。

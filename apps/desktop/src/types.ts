@@ -23,6 +23,8 @@ export interface Tool {
   name: string;
   description: string;
   state: ToolState;
+  /** 023: ツール種別。`"url"` は「開く」のみで停止/状態表示を出さない。 */
+  kind: import("./features/tools/types").ToolKind;
 }
 
 /** サイドバー等で使うツールのカタログ項目 */
