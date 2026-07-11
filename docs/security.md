@@ -215,6 +215,17 @@ MVPでは外部リソースを読み込まない。
 - inline scriptを増やさない
 - remote domain IPCを使わない
 
+### 現状の実装メモ（018 時点）
+
+`tauri.conf.json` は plain JSON でインラインコメントを持てないため、CSP の現状意図をここに残す。
+
+- `app.security.csp` は現在 `null`（＝CSP を**強制していない**）。これは 018 以前からの既定で、
+  018 Tool Icon Auto-Extraction でも**緩めていない**（変更していない）。
+- 018 のアイコン表示は `data:image/png;base64,...`（inline data URI）のみを使い、リモート画像の
+  取得は行わない。上記「外部imageを読み込まない」方針とは矛盾しない。
+- TODO（別タスク）: CSP を実際に効かせる場合は `img-src 'self' data:` 等を設定し、`data:` inline を
+  許可しつつ外部リソースをブロックする。値の変更はレビュー必須条件（下記）に該当するため別途対応する。
+
 ## レビュー必須条件
 
 以下を変更する場合は、必ずセキュリティレビューを行う。

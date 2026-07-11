@@ -1544,3 +1544,94 @@ StillPending 据え置きにしているのに、停止側だけ非対称だっ�
 - `pnpm --filter ./apps/desktop typecheck` → 成功（exit 0）
 - `pnpm --filter ./apps/desktop lint` → 成功（exit 0）
 - **実機表示（`tauri dev`）は未実施**: パス欄が直接編集できない / ピッカーからのみ設定 / 新規作成・編集・保存・更新・名前自動推測が従来どおり / 文言更新 / 未選択導線と選択済みカード維持、をユーザー環境で確認をお願いしたい。
+
+## 2026-07-11 (018 Tool Icon Auto-Extraction)
+
+### 完了したこと
+
+- ツール追加/編集画面で、ユーザーがピッカー（017 で確定）で選んだ実行ファイルの**実アイコンを選択時に一度だけ自動抽出**し、`data:` URI（base64 PNG, ≤128px）で表示・DB 保存する仕組みを追加した（ユーザー要望 6）。抽出できない形式は従来の 1 文字ラベル（`toIconLetter`）にフォールバックする。
+- 抽出は Rust の**限定的な読み取り専用コマンド** `extract_app_icon(path) -> AppResult<Option<String>>`（`tools/commands.rs`、ロジックは新規 `tools/icon.rs`）に閉じ込め、frontend からは選択済みパスのみを渡す。非対応・失敗・パス検証 NG はすべて `Ok(None)`。
+
+### プラットフォーム別抽出方式
+
+- **macOS `.app`**: `Contents/Info.plist` を `plist` でパース → `CFBundleIconFile`（拡張子無しなら `.icns` 補完）→ `Contents/Resources/<name>.icns` を `icns` でデコード → 最大サイズ画像を `image` で ≤128px にリサイズ（縮小のみ・Lanczos3）→ PNG エンコード → `base64` 化。`CFBundleIconFile` 無し / `.icns` 不在 / Assets.car（`CFBundleIconName`）方式は `Ok(None)`（既知の限界・文字フォールバック）。
+- **Windows `.exe`**: 今回は **`Ok(None)` スタブ**（決定事項）。この開発環境が macOS で `#[cfg(windows)]` を `cargo check` でコンパイル検証できないため、未検証コードを混ぜない。将来、Windows 実機/CI が使える別タスクで `windows` クレートの feature 追加（`Win32_UI_Shell` / `Win32_Graphics_Gdi`）＋埋め込みアイコン抽出を実装する（TODO）。
+- **Linux / 非バンドル / スクリプト**: `Ok(None)`。
+
+### 追加依存とその理由（docs/security.md §10）
+
+- すべて **macOS ターゲット限定**（`[target.'cfg(target_os = "macos")'.dependencies]`。既存 `sysinfo` の mac 限定パターンに倣う）。用途はアイコン抽出のみ・外部通信なし・pure-Rust。
+  - `plist`（Info.plist の XML/バイナリ両対応パース）
+  - `icns`（`.icns` デコード・最大サイズ取得）
+  - `image`（PNG エンコード + ≤128px リサイズ。`default-features = false, features = ["png"]` で最小化）
+  - `base64`（PNG → data URI 用 base64 文字列）
+- `plist` / `base64` は **tauri の既存推移依存**で新規増分クレートは無く、直接依存追加は `image` / `icns`（＋そのサブ依存）のみ。
+- 代替 `systemicons`（単一クレートで mac/win 両対応）は Linux で GTK を引き込み・監査性が下がるため「target 別・pure-Rust・監査可能」方針に反すると判断し不採用。macOS の objc2/AppKit `NSWorkspace.iconForFile`（Assets.car も取得可）は Objective-C ランタイム依存＋NSImage→TIFF 変換が増えるため不採用（`.icns` を持たないアプリは文字フォールバックになるトレードオフを許容）。
+
+### スキーマ変更 / `ensure_column` 設計
+
+- `tools` に nullable `icon_png TEXT` を追加。マイグレーション基盤が無いため、冪等ヘルパ **`util.rs::ensure_column(conn, table, column, decl)`** を新設: `SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2`（table/column をバインド）で存在確認し、未存在時のみ `ALTER TABLE {table} ADD COLUMN {column} {decl}` を実行。`tools::repository::init` の `CREATE TABLE IF NOT EXISTS` 直後に `ensure_column(conn, "tools", "icon_png", "TEXT")` を呼ぶ。既存 DB でも起動時に落ちない。019 でも共用する。
+- ADD COLUMN は識別子をバインドできないため `format!` 生成だが、`table`/`column`/`decl` は**呼び出し側のコンパイル時定数のみ**（ユーザー入力を渡さない・doc に明記）。
+- モデル: `Tool` に `icon_png: Option<String>`（`#[ts(optional)]`）、`CreateToolInput` / `UpdateToolInput` に `#[serde(default)] #[ts(optional)] icon_png`。repository（`TOOL_COLUMNS` / `row_to_tool` / `insert` / `update`）と service（`create` / `update`）は**正規化せずそのまま通す**。ts-rs 再生成で `iconPng?` を frontend 型に反映。
+
+### 出力サイズ制限 / data URI 方針
+
+- 出力は ≤128px（`width.max(height) > 128` のときのみ縮小）にしてから PNG 化 → DB 肥大化を防止。
+- 表示は `data:image/png;base64,...`（`display.ts::iconDataUri`）。**PNG のファイル出力 / asset protocol / `convertFileSrc` は使わない**（`fs`・asset-protocol scope を足さない）。CSP は `csp: null` のまま変更なし・外部通信ゼロ。
+- frontend 配線: `AddToolScreen.selectFile()` で選択直後に `extractAppIcon` を invoke し state 保持（失敗はフローを止めず null）。保存ペイロードに `iconPng` を含める。表示は `IconTile` に任意 `imageSrc` を追加し「PNG あれば画像・無ければ文字」に統一（一覧 `ToolRow` / メインのツールピッカー / `PreviewCard` / サイドバー / プリセット追加）。
+
+### セキュリティレビュー結果（security-review 実施済み・必須）
+
+- 判定: **軽微な懸念あり → 1 点ハードニングを適用済み**。
+- 適用した修正: `resolve_icns` で `Info.plist` を信頼せず、`CFBundleIconFile` に `/`・`\`・`..` を含む値は拒否（`Ok(None)`）。バンドル外 `.icns` の読み取り（パストラバーサル）を防ぐ（§7/§8）。正当な値は Resources 直下のベース名のため副作用なし。
+- 確認済み: `extract_app_icon` は読み取り専用（`File::open`／`plist::from_file` のみ・write/delete/network なし）で任意パスの自由読取ではない（read 前にパス検証・`.app` バンドルのみ抽出）。出力 ≤128px。エラーは `Ok(None)` に丸めフルパスをログ/UI に出さない（§9）。`csp:null`／capabilities 不変（asset-protocol・`fs` 強権限を追加していない）。外部通信ゼロ。追加依存は mac gate・最小で理由を明記（§3/§4/§10）。
+
+### 作成・変更ファイル
+
+- 新規（Rust）: `apps/desktop/src-tauri/src/tools/icon.rs`。
+- 変更（Rust）: `Cargo.toml`（mac gate 依存追加）/ `src/lib.rs`（コマンド登録）/ `tools/{commands,mod,model,repository,service}.rs`（`extract_app_icon` 配線・`icon_png` 永続化・`init` で `ensure_column`）/ `util.rs`（`ensure_column` 新設）。
+- 再生成（ts-rs）: `features/tools/bindings/{Tool,CreateToolInput,UpdateToolInput}.ts`。
+- 変更（frontend）: `features/tools/{toolApi,display}.ts` / `types.ts` / `screens/add-tool/AddToolScreen.tsx`(+css) / `components/{primitives,PreviewCard,Sidebar}.tsx`(+css) / `screens/main/{MainScreen,ToolRow}.tsx` / `screens/add-preset/AddPresetScreen.tsx`。
+
+### 検証結果
+
+- `pnpm --filter ./apps/desktop typecheck` → 成功（exit 0）
+- `pnpm --filter ./apps/desktop lint` → 成功（exit 0）
+- `cd apps/desktop/src-tauri && cargo check` → 成功（ハードニング適用後も success）
+- `pnpm --filter ./apps/desktop gen:bindings` → 24 tests ok（`iconPng?` を再生成）
+- **実機表示（`tauri dev`）は未実施**: `.app` 選択で実アイコンがプレビュー表示 / 抽出不可形式は文字にフォールバック（クラッシュしない）/ 保存後に一覧・サイドバー・プレビューでアイコン表示 / 既存 DB でも起動後に落ちない（`ensure_column` 冪等）/ 再起動後も保持、をユーザー環境（macOS）で確認をお願いしたい。
+
+### やっていないこと（スコープ外）
+
+- Windows(.exe) の実アイコン抽出（今回 `Ok(None)` スタブ・別タスク）/ アイコンの手動アップロード・差し替え / リモート取得 / PNG のファイル出力＋asset protocol 参照 / 一覧表示時の都度再抽出 / `.lnk` 実体解決・`.bat` 対応 / テーマ連動・加工 / 017 のパス入力ロック・`validate` / `validate_executable` の変更。
+
+## 2026-07-11 (018 バグ修正: Assets.car のみのアプリで実アイコンが出ない)
+
+### 事象と原因
+
+- macOS で `Calendar.app` を登録しても実アイコンが反映されず、文字ラベルにフォールバックしていた。
+- 原因は macOS 抽出が `Info.plist` → `CFBundleIconFile` → `Contents/Resources/<name>.icns` の**レガシー経路のみ**だったこと。`Calendar.app` は `CFBundleIconFile` を持たず（`CFBundleIconName = AppIcon` のみ）、`.icns` も存在せず、アイコンは `Assets.car`（コンパイル済みアセットカタログ）内にのみある。`resolve_icns` が即 `None` を返し `Ok(None)` → 文字表示になっていた。Apple システムアプリに多い失敗クラス（Chrome/VSCode/Notes/Safari/Terminal 等は `.icns` を持つため既存経路で成功）。フロント〜DB の配線は元々正しく、欠陥は抽出のみ。
+
+### 修正内容（保守的ハイブリッド）
+
+- 既存の pure-Rust `plist`+`icns` 経路を**主経路として維持**し、`.icns` 解決が `None` のときだけ AppKit の `NSWorkspace.iconForFile:`（Finder が表示する実アイコン。`.icns` / `Assets.car` の双方を透過的に扱う）にフォールバックする（`tools/icon.rs::macos::nsworkspace_icon_png`）。取得した NSImage → TIFF → `NSBitmapImageRep` → PNG バイト列にし、既存の ≤128px リサイズ＋base64 経路（新設共通ヘルパ `encode_png_base64`）を再利用する。
+- 主経路の挙動は不変（`.icns` を持つアプリは従来どおり）。`.app` ゲートも維持し、非バンドルは引き続き `Ok(None)`。読み取り専用・外部通信なし。
+
+### 追加依存とその理由（docs/security.md §10）
+
+- macOS 限定で `objc2-app-kit` / `objc2-foundation` を追加（`[target.'cfg(target_os = "macos")'.dependencies]`）。用途はアイコン取得のみ。
+- **いずれも Tauri が既定 feature 付きで依存ツリーに導入済み**（Cargo.lock に解決済み。`objc2` 0.6 / `objc2-app-kit` 0.3 / `objc2-foundation` 0.3）。feature は cargo により union されるため、直接依存追加による**新規ビルド面・監査面の増分は実質ゼロ**。
+- これは 018 初版で NSWorkspace を不採用とした判断（progress 上記 018 節）の**フォールバック限定での見直し**。`.icns` を持たないアプリ（Calendar 等）が文字フォールバックになる制約を解消するため、主経路の pure-Rust 方式は残したまま最終手段として採用した。
+
+### 変更ファイル
+
+- `apps/desktop/src-tauri/Cargo.toml`（mac gate 依存 `objc2-app-kit` / `objc2-foundation` 追加）
+- `apps/desktop/src-tauri/src/tools/icon.rs`（`macos::extract` にフォールバック分岐追加・`nsworkspace_icon_png` 新設・`encode_png_base64` 共通化）
+
+### セキュリティ（実装後 security-review 必須）
+
+- 読み取り専用（アイコン取得のみ・write/delete/network なし）。パスは既存 `validate_icon_path` を通過したユーザー選択パスのみ。出力 ≤128px 維持。CSP(`csp:null`) / capabilities 不変。`representationUsingType:properties:` のみ `unsafe`（generics 整合が呼び出し側責任のため）で、他の AppKit 呼び出しは安全メソッド。
+
+### 検証
+
+- `cargo check` / `pnpm typecheck` / `pnpm lint`、および `tauri dev` で Calendar 実アイコン表示・`.icns` アプリ（Chrome）の非退行・抽出不可時の文字フォールバックを確認する。

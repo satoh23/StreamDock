@@ -18,12 +18,19 @@ const STATUS_LABELS: Record<ToolState, string> = {
 
 export function IconTile({
   glyph,
+  imageSrc,
   size = "md",
 }: {
   glyph: string;
+  /** 018: 実アイコン（data URI）。あれば画像、無ければ glyph（文字）を表示する。 */
+  imageSrc?: string | null;
   size?: "md" | "sm";
 }) {
-  return <div className={`${styles.iconTile} ${styles[size]}`}>{glyph}</div>;
+  return (
+    <div className={`${styles.iconTile} ${styles[size]}`}>
+      {imageSrc ? <img className={styles.iconImg} src={imageSrc} alt="" /> : glyph}
+    </div>
+  );
 }
 
 export function OrderBadge({

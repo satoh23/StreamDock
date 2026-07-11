@@ -7,6 +7,8 @@
 
 use std::path::Path;
 
+use rusqlite::Connection;
+
 use crate::error::{AppError, AppResult};
 
 /// 現在時刻を RFC3339 文字列で返す（`chrono::Utc::now().to_rfc3339()` の単一定義）。
@@ -45,4 +47,31 @@ pub fn with_filename_detail(err: AppError, path: &Path) -> AppError {
         Some(name) if !name.is_empty() => err.with_details(format!("ファイル名: {name}")),
         _ => err,
     }
+}
+
+/// テーブルに指定カラムが無ければ `ALTER TABLE ... ADD COLUMN` で追加する冪等マイグレーション。
+///
+/// マイグレーション基盤が無い（各 repository の `init()` が冪等 DDL）ため、既存 DB へ後付けカラムを
+/// 安全に足すための最小ヘルパ。`pragma_table_info` で現在のカラムを確認し、未存在時のみ追加する。
+/// 018 で新設し、以降のスキーマ追加（019 等）でも共用する。
+///
+/// 注意: SQLite は識別子（テーブル名・カラム名）をプレースホルダにバインドできないため ADD COLUMN の
+/// SQL は `format!` で組み立てる。`table` / `column` / `decl` は**呼び出し側のコンパイル時定数のみ**を
+/// 渡すこと（ユーザー入力を渡さない）。存在確認の `table` は table-valued function にバインドする。
+pub fn ensure_column(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    decl: &str,
+) -> rusqlite::Result<()> {
+    let exists = {
+        let mut stmt = conn.prepare("SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2")?;
+        stmt.exists(rusqlite::params![table, column])?
+    };
+    if !exists {
+        conn.execute_batch(&format!(
+            "ALTER TABLE {table} ADD COLUMN {column} {decl};"
+        ))?;
+    }
+    Ok(())
 }

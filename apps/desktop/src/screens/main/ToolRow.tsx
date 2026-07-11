@@ -1,5 +1,6 @@
 import type { Tool } from "../../types";
 import { IconTile, OrderBadge, Spinner, StatusBadge } from "../../components/primitives";
+import { iconDataUri } from "../../features/tools/display";
 import styles from "./MainScreen.module.css";
 
 function OpenIcon() {
@@ -60,7 +61,7 @@ export function ToolRow({
   return (
     <div className={styles.tool}>
       <OrderBadge label={orderLabel} parallel={parallel} />
-      <IconTile glyph={tool.iconLetter} />
+      <IconTile glyph={tool.iconLetter} imageSrc={iconDataUri(tool.iconPng)} />
       <div className={styles.info}>
         <h4>{tool.name}</h4>
         <p>{parallel ? "順番なしで並行起動" : tool.description}</p>

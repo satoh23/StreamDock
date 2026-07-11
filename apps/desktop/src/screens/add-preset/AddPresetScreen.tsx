@@ -5,7 +5,7 @@ import type {
   PresetRecord,
 } from "../../features/presets/types";
 import type { ToolRecord } from "../../features/tools/types";
-import { toIconLetter } from "../../features/tools/display";
+import { iconDataUri, toIconLetter } from "../../features/tools/display";
 import { createPreset, updatePreset } from "../../features/presets/presetApi";
 import {
   addToolToPreset,
@@ -25,6 +25,7 @@ function toLaunchItem(tool: ToolRecord, mode: LaunchItem["mode"]): LaunchItem {
   return {
     id: tool.id,
     iconLetter: toIconLetter(tool),
+    iconPng: tool.iconPng,
     name: tool.name,
     description: tool.description,
     mode,
@@ -247,6 +248,7 @@ export function AddPresetScreen({
           key: tool.id,
           orderLabel: String(i + 1),
           iconLetter: toIconLetter(tool),
+          iconSrc: iconDataUri(tool.iconPng),
           name: tool.name,
           description: tool.description,
         }))
@@ -258,6 +260,7 @@ export function AddPresetScreen({
               : String(orderedIndexFor(launchItems, i)),
           parallel: item.mode === "parallel",
           iconLetter: item.iconLetter,
+          iconSrc: iconDataUri(item.iconPng),
           name: item.name,
           description: item.mode === "parallel" ? "並行起動" : item.description,
         }));
@@ -356,7 +359,11 @@ export function AddPresetScreen({
                             checked={checked}
                             onChange={() => toggleTool(tool.id)}
                           />
-                          <IconTile glyph={toIconLetter(tool)} size="sm" />
+                          <IconTile
+                            glyph={toIconLetter(tool)}
+                            imageSrc={iconDataUri(tool.iconPng)}
+                            size="sm"
+                          />
                           <div>
                             <h4>{tool.name}</h4>
                             <p>{tool.description}</p>
@@ -403,7 +410,11 @@ export function AddPresetScreen({
                               ? "並行"
                               : orderedIndexFor(launchItems, index)}
                           </div>
-                          <IconTile glyph={item.iconLetter} size="sm" />
+                          <IconTile
+                            glyph={item.iconLetter}
+                            imageSrc={iconDataUri(item.iconPng)}
+                            size="sm"
+                          />
                           <div>
                             <h4>{item.name}</h4>
                             <p>

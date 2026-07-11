@@ -3,4 +3,8 @@
 /**
  * 永続化される Tool（DB / API 戻り値）。JSON は camelCase。
  */
-export type Tool = { id: string, name: string, executablePath: string, description: string, iconLabel: string, createdAt: string, updatedAt: string, };
+export type Tool = { id: string, name: string, executablePath: string, description: string, iconLabel: string, 
+/**
+ * 018: 自動抽出した実アイコン（`data:` 無しの base64 PNG）。抽出できない場合は None。
+ */
+iconPng?: string, createdAt: string, updatedAt: string, };

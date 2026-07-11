@@ -73,6 +73,8 @@ pub fn create(conn: &Connection, input: CreateToolInput) -> AppResult<Tool> {
         executable_path,
         description,
         icon_label,
+        // 018: 抽出済み base64 PNG はそのまま保存する（trim / 正規化しない）。
+        icon_png: input.icon_png,
         created_at: now.clone(),
         updated_at: now,
     };
@@ -107,6 +109,8 @@ pub fn update(conn: &Connection, id: &str, input: UpdateToolInput) -> AppResult<
         executable_path,
         description,
         icon_label,
+        // 018: 編集画面が既存値を再送するためそのまま保存する（trim / 正規化しない）。
+        icon_png: input.icon_png,
         created_at: existing.created_at,
         updated_at: now_rfc3339(),
     };

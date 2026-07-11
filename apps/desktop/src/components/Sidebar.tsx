@@ -1,7 +1,7 @@
 import type { Screen } from "../types";
 import type { ToolRecord } from "../features/tools/types";
 import type { PresetItemMeta, PresetRecord } from "../features/presets/types";
-import { toIconLetter } from "../features/tools/display";
+import { iconDataUri, toIconLetter } from "../features/tools/display";
 import styles from "./Sidebar.module.css";
 
 /** プリセットのツール数・並行有無を表示用ラベルにする。 */
@@ -128,7 +128,17 @@ export function Sidebar({
             {hasTools ? (
               tools.map((tool) => (
                 <div key={tool.id} className={styles.sidebarTool}>
-                  <div className={styles.sidebarToolIcon}>{toIconLetter(tool)}</div>
+                  <div className={styles.sidebarToolIcon}>
+                    {iconDataUri(tool.iconPng) ? (
+                      <img
+                        className={styles.sidebarToolIconImg}
+                        src={iconDataUri(tool.iconPng)}
+                        alt=""
+                      />
+                    ) : (
+                      toIconLetter(tool)
+                    )}
+                  </div>
                   <span title={tool.name}>{tool.name}</span>
                   <div className={styles.toolActions}>
                     {onEditTool && (

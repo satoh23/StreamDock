@@ -36,6 +36,15 @@ export function deleteTool(id: string): Promise<void> {
 }
 
 /**
+ * 018: ユーザーが選択した実行ファイルの実アイコンを抽出し、base64 PNG（`data:` 無し・≤128px）を返す。
+ * 抽出は Rust 側の読み取り専用コマンドに限定され、frontend からは選択済みパスのみを渡す。
+ * 非対応形式・失敗時は `null`（呼び出し側は文字アイコンにフォールバックする）。
+ */
+export function extractAppIcon(path: string): Promise<string | null> {
+  return invoke<string | null>("extract_app_icon", { path });
+}
+
+/**
  * 登録済み Tool を toolId で単体起動する。
  * frontend からは toolId のみを渡し、Tool 取得・パス検証・起動は Rust 側で行う。
  * presetItemId（起動元のメイン画面行）を渡すと registry に記録され、画面遷移で UI 状態を失っても

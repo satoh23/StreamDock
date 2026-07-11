@@ -18,6 +18,8 @@ export type ToolState =
 export interface Tool {
   id: string;
   iconLetter: string;
+  /** 018: 自動抽出した実アイコン（base64 PNG, `data:` 無し）。無ければ iconLetter を使う。 */
+  iconPng?: string | null;
   name: string;
   description: string;
   state: ToolState;
@@ -45,6 +47,8 @@ export type LaunchMode = "ordered" | "parallel";
 export interface LaunchItem {
   id: string;
   iconLetter: string;
+  /** 018: 自動抽出した実アイコン（base64 PNG, `data:` 無し）。無ければ iconLetter を使う。 */
+  iconPng?: string | null;
   name: string;
   description: string;
   mode: LaunchMode;

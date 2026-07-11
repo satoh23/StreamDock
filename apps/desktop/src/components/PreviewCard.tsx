@@ -6,6 +6,8 @@ export interface PreviewRowData {
   orderLabel: string;
   parallel?: boolean;
   iconLetter: string;
+  /** 018: 実アイコン（data URI）。あれば画像、無ければ iconLetter を表示する。 */
+  iconSrc?: string | null;
   name: string;
   description: string;
   /** 追加/新規行のハイライト表示 */
@@ -49,7 +51,7 @@ export function PreviewCard({
               className={`${styles.previewRow} ${row.highlight ? styles.newRow : ""}`}
             >
               <OrderBadge label={row.orderLabel} parallel={row.parallel} />
-              <IconTile glyph={row.iconLetter} size="sm" />
+              <IconTile glyph={row.iconLetter} imageSrc={row.iconSrc} size="sm" />
               <div>
                 <h4>{row.name}</h4>
                 <p>{row.description}</p>

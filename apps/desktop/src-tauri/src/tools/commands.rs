@@ -7,6 +7,7 @@ use crate::app_logs;
 use crate::app_logs::model::LogCategory;
 use crate::error::AppResult;
 
+use super::icon;
 use super::model::{CreateToolInput, Tool, UpdateToolInput};
 use super::service;
 
@@ -44,6 +45,14 @@ pub fn update_tool(
     let result = service::update(&conn, &id, input);
     app_logs::service::log_command_err(&conn, LogCategory::Tool, "update_tool", &result);
     result
+}
+
+/// 018: ユーザーが選択した実行ファイルの実アイコンを抽出し、base64 PNG（`data:` 無し・≤128px）を返す。
+/// 読み取り専用・外部通信なし。非対応形式・失敗・パス検証 NG は `Ok(None)`（frontend は文字にフォールバック）。
+/// DB は使わないため State を取らない（最小権限）。
+#[tauri::command]
+pub fn extract_app_icon(path: String) -> AppResult<Option<String>> {
+    icon::extract_app_icon(&path)
 }
 
 #[tauri::command]

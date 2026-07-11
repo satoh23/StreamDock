@@ -44,6 +44,7 @@ pub fn run() {
             tools::commands::get_tool,
             tools::commands::update_tool,
             tools::commands::delete_tool,
+            tools::commands::extract_app_icon,
             process::commands::launch_tool,
             process::commands::focus_process,
             process::commands::launch_preset,

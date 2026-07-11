@@ -3,4 +3,8 @@
 /**
  * ツール新規作成の入力。description / icon_label は任意。
  */
-export type CreateToolInput = { name: string, executablePath: string, description?: string, iconLabel?: string, };
+export type CreateToolInput = { name: string, executablePath: string, description?: string, iconLabel?: string, 
+/**
+ * 018: 自動抽出した実アイコン（`data:` 無しの base64 PNG）。未抽出なら省略/None。
+ */
+iconPng?: string, };

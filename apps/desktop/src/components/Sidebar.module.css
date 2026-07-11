@@ -132,6 +132,19 @@
   font-weight: 900;
   font-size: 13px;
   flex: none;
+  overflow: hidden;
+}
+/* 018: 実アイコン（PNG data URI）はアイコン枠にアスペクト維持で収める。 */
+.sidebarToolIconImg {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border-radius: inherit;
+}
+/* 018: 実アイコン表示時は文字ラベル用の色付き枠を消し、アイコンだけを見せる。 */
+.sidebarToolIcon:has(img) {
+  background: transparent;
+  border-color: transparent;
 }
 .sidebarTool span {
   font-size: 13px;

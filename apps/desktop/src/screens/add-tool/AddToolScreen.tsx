@@ -2,9 +2,9 @@ import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { Screen } from "../../types";
 import type { ToolRecord } from "../../features/tools/types";
-import { createTool, updateTool } from "../../features/tools/toolApi";
+import { createTool, extractAppIcon, updateTool } from "../../features/tools/toolApi";
 import { toErrorMessage } from "../../features/tools/useTools";
-import { toIconLetter } from "../../features/tools/display";
+import { iconDataUri, toIconLetter } from "../../features/tools/display";
 import {
   insertModeOptions,
   targetPresetOptions,
@@ -47,6 +47,8 @@ export function AddToolScreen({
   const [executablePath, setExecutablePath] = useState("");
   const [description, setDescription] = useState("");
   const [iconLabel, setIconLabel] = useState("");
+  // 018: 選択時に一度だけ抽出した実アイコン（base64 PNG, `data:` 無し）。抽出不可なら null。
+  const [iconPng, setIconPng] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -56,6 +58,7 @@ export function AddToolScreen({
     setExecutablePath(editingTool?.executablePath ?? "");
     setDescription(editingTool?.description ?? "");
     setIconLabel(editingTool?.iconLabel ?? "");
+    setIconPng(editingTool?.iconPng ?? null);
     setError(null);
   }, [editingTool]);
 
@@ -73,6 +76,9 @@ export function AddToolScreen({
       if (typeof selected === "string") {
         setExecutablePath(selected);
         if (!name.trim()) setName(guessNameFromPath(selected));
+        // 018: 選択時に一度だけ実アイコンを抽出する。抽出失敗はフローを止めず文字にフォールバック。
+        const png = await extractAppIcon(selected).catch(() => null);
+        setIconPng(png);
       }
     } catch (e) {
       setError(toErrorMessage(e));
@@ -88,6 +94,8 @@ export function AddToolScreen({
         executablePath,
         description,
         iconLabel,
+        // 018: 抽出済みアイコンを保存する（無ければ省略し、DB では null のまま）。
+        iconPng: iconPng ?? undefined,
       };
       if (isEdit && editingTool) {
         await updateTool(editingTool.id, input);
@@ -105,12 +113,14 @@ export function AddToolScreen({
 
   const hasPath = executablePath.trim().length > 0;
   const previewIcon = toIconLetter({ iconLabel, name });
+  const previewIconSrc = iconDataUri(iconPng);
 
   const previewRows: PreviewRowData[] = [
     {
       key: "__preview__",
       orderLabel: "1",
       iconLetter: previewIcon,
+      iconSrc: previewIconSrc,
       name: name || "（表示名未入力）",
       description: description || executablePath || "説明未入力",
       highlight: true,
@@ -134,7 +144,17 @@ export function AddToolScreen({
           <div className={layout.panelBody}>
             {hasPath ? (
               <div className={styles.selectedApp}>
-                <div className={styles.appIcon}>{previewIcon}</div>
+                <div className={styles.appIcon}>
+                  {previewIconSrc ? (
+                    <img
+                      className={styles.appIconImg}
+                      src={previewIconSrc}
+                      alt=""
+                    />
+                  ) : (
+                    previewIcon
+                  )}
+                </div>
                 <div>
                   <h3>{name || guessNameFromPath(executablePath)}</h3>
                   <div className={styles.path}>{executablePath}</div>

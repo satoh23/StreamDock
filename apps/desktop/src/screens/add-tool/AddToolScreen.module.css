@@ -76,6 +76,19 @@
   color: var(--text);
   font-weight: 900;
   font-size: 20px;
+  overflow: hidden;
+}
+/* 018: 実アイコン（PNG data URI）はアイコン枠にアスペクト維持で収める。 */
+.appIconImg {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border-radius: inherit;
+}
+/* 018: 実アイコン表示時は文字ラベル用のグラデーション枠を消し、アイコンだけを見せる。 */
+.appIcon:has(img) {
+  background: none;
+  border-color: transparent;
 }
 .selectedApp h3 {
   margin-bottom: 5px;

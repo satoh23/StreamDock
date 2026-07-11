@@ -11,6 +11,9 @@ pub struct Tool {
     pub executable_path: String,
     pub description: String,
     pub icon_label: String,
+    /// 018: 自動抽出した実アイコン（`data:` 無しの base64 PNG）。抽出できない場合は None。
+    #[ts(optional)]
+    pub icon_png: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -28,6 +31,10 @@ pub struct CreateToolInput {
     #[serde(default)]
     #[ts(optional)]
     pub icon_label: Option<String>,
+    /// 018: 自動抽出した実アイコン（`data:` 無しの base64 PNG）。未抽出なら省略/None。
+    #[serde(default)]
+    #[ts(optional)]
+    pub icon_png: Option<String>,
 }
 
 /// ツール更新の入力。create と同項目（id は command 引数で受ける）。
@@ -43,4 +50,8 @@ pub struct UpdateToolInput {
     #[serde(default)]
     #[ts(optional)]
     pub icon_label: Option<String>,
+    /// 018: 自動抽出した実アイコン（`data:` 無しの base64 PNG）。未抽出なら省略/None。
+    #[serde(default)]
+    #[ts(optional)]
+    pub icon_png: Option<String>,
 }

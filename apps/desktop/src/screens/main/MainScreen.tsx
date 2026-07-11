@@ -6,7 +6,7 @@ import type {
   PresetItemWithTool,
   RuntimeProcessStatus,
 } from "../../features/presets/types";
-import { toIconLetter } from "../../features/tools/display";
+import { iconDataUri, toIconLetter } from "../../features/tools/display";
 import { focusProcess, launchTool, stopProcess } from "../../features/tools/toolApi";
 import {
   launchPreset,
@@ -25,6 +25,8 @@ type RuntimeItem = {
   id: string;
   toolId: string;
   iconLetter: string;
+  /** 018: 自動抽出した実アイコン（base64 PNG, `data:` 無し）。無ければ iconLetter を使う。 */
+  iconPng?: string | null;
   name: string;
   description: string;
   launchMode: LaunchMode;
@@ -44,6 +46,7 @@ function toRuntime(items: PresetItemWithTool[]): RuntimeItem[] {
     id: it.id,
     toolId: it.toolId,
     iconLetter: toIconLetter(it.tool),
+    iconPng: it.tool.iconPng,
     name: it.tool.name,
     description: it.tool.description,
     launchMode: it.launchMode,
@@ -620,7 +623,11 @@ export function MainScreen({
                 className={styles.pickerRow}
                 onClick={() => addTool(tool.id)}
               >
-                <IconTile glyph={toIconLetter(tool)} size="sm" />
+                <IconTile
+                  glyph={toIconLetter(tool)}
+                  imageSrc={iconDataUri(tool.iconPng)}
+                  size="sm"
+                />
                 <div className={styles.pickerInfo}>
                   <h4>{tool.name}</h4>
                   <p>{tool.description}</p>
@@ -650,6 +657,7 @@ export function MainScreen({
                 tool={{
                   id: item.id,
                   iconLetter: item.iconLetter,
+                  iconPng: item.iconPng,
                   name: item.name,
                   description: item.description,
                   state: item.state,

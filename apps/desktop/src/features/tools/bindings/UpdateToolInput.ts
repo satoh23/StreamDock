@@ -3,4 +3,8 @@
 /**
  * ツール更新の入力。create と同項目（id は command 引数で受ける）。
  */
-export type UpdateToolInput = { name: string, executablePath: string, description?: string, iconLabel?: string, };
+export type UpdateToolInput = { name: string, executablePath: string, description?: string, iconLabel?: string, 
+/**
+ * 018: 自動抽出した実アイコン（`data:` 無しの base64 PNG）。未抽出なら省略/None。
+ */
+iconPng?: string, };

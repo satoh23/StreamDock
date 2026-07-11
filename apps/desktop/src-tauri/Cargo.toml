@@ -35,6 +35,29 @@ ts-rs = "10"
 [target.'cfg(target_os = "macos")'.dependencies]
 sysinfo = "0.39"
 
+# 018 Tool Icon Auto-Extraction（macOS 限定）。ユーザーが選択した `.app` の Info.plist を読み、
+# `CFBundleIconFile` から `.icns` を解決して実アイコンを PNG(base64) 化する（読み取り専用・外部通信なし）。
+# 用途をアイコン抽出に限定し、いずれも pure-Rust。Windows/Linux 抽出は現状 Ok(None) スタブのため載せない
+# （docs/security.md §10）。
+# - plist: Info.plist（XML/バイナリ両対応）パース
+# - icns : `.icns` デコード（最大サイズ取得）
+# - image: PNG エンコード + ≤128px リサイズ（png コーデックのみ有効化して最小化）
+#   ※ image 0.25 は推移依存として moxcms / pxfm（カラーマネジメント）等を引くが、いずれも pure-Rust で
+#     ネットワーク/ビルドスクリプト系ではなく監査上問題ない（Cargo.lock に解決済み・§10）。
+# - base64: PNG を data URI 用 base64 文字列にエンコード
+plist = "1"
+icns = "0.3"
+image = { version = "0.25", default-features = false, features = ["png"] }
+base64 = "0.22"
+
+# 018 フォールバック（Calendar 等アセットカタログのみのアプリ対応）。`.icns` を持たない `.app`
+# （アイコンが `Assets.car` 内にのみ存在）では `CFBundleIconFile`→`.icns` 経路が解決できないため、
+# AppKit の `NSWorkspace.iconForFile:`（Finder が表示する実アイコン）で取得し PNG(base64) 化する。
+# 読み取り専用・外部通信なし。objc2 系は Tauri が既定 feature 付きで依存ツリーに導入済み
+# （Cargo.lock に解決済み）で、feature は cargo により union されるため追加のビルド面は増えない（§10）。
+objc2-app-kit = "0.3"
+objc2-foundation = "0.3"
+
 # 「開く」ボタン（バグ1）で既存プロセスを前面化するため、Windows では stream-dock が保持する PID
 # （とその子プロセスツリー）からトップレベルウィンドウを特定し、SetForegroundWindow で前面化する。
 # 用途を Win32 のウィンドウ操作・プロセス列挙（子プロセス探索）に限定し、shell を経由しない。
