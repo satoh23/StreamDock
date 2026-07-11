@@ -21,16 +21,19 @@
 - 017 Tool Path Input Lock
 - 018 Tool Icon Auto-Extraction
 - 019 Preset Auto-Launch on Boot
-
-## Next
-
 - 020 App Header (Docker-like)
 - 021 UI Design Modernization
 - 022 Tool/Preset Form Polish
+- 023 Browser URL Tool Support
+
+## Next
+
+- 024 Tool → Preset Registration
 
 ## Todo
 
-- 023 Browser URL Tool Support
+- 025 Form/UI Polish Round 2
+- 026 Header Polish & Navigation Foundation
 
 ## MVP リリース前最後
 
