@@ -1962,3 +1962,52 @@ Rust: `tools/model.rs`, `tools/repository.rs`, `tools/service.rs`, `util.rs`, `p
 - `pnpm gen:bindings`（ts-rs 25 tests pass）→ bindings 差分は kind/url/ToolKind のみ
 - **security-review 実施済み（本タスク必須）→ 判定「問題なし」**: frontend から任意 URL/コマンドを渡せない（toolId のみ・URL は Rust 側 `validate_http_url` で http/https 検証）／`javascript:`・`file:`・`data:` 等の危険スキームを拒否／opener capabilities は最小（`opener:default` 削除・広い許可の追加なし）／新規 spawn 面・shell・外部通信を増やしていない（OS 既定ブラウザに委譲）／`ensure_column`＋`DROP/CREATE IF (NOT) EXISTS` が冪等で既存 DB を壊さない。軽微観察: URL 内の半角空白は未拒否だが opener へ配列引数で単一文字列渡し（shell 非経由）のため注入面なし・据え置き。
 - **実機表示（`tauri dev`）は未実施**（ユーザー環境で確認依頼）: 種別トグルでアプリ/URL を選べ URL は http/https を保存・再表示（不正スキームを弾く）／url 起動で既定ブラウザが開く（frontend は toolId のみ・`opener:default` 削除後も Rust 側 open が動作）／既存 executable ツールが従来どおり／url 行に stop/status が出ない／既存 DB で起動後に落ちない／一括起動に url を含めても破綻しない。
+
+## 2026-07-12 024 Tool → Preset Registration（ツール追加と同時にプリセット登録）
+
+ツール追加画面の「登録先プリセット」「追加位置」を表示専用スタブ（`mockData` ハードコード配列）から**本実装**へ。ツール新規登録と同時に、選んだプリセットへそのツールを登録できるようにした。frontend のみ・既存 command 再利用（新規 command / capabilities / ライブラリなし）。
+
+### (1) 登録先プリセットの実データ化
+
+- `AddToolScreen` を props ベースに変更（`presets: PresetRecord[]` / `presetItems: PresetItemRecord[]` を追加）。App が既に保持する `usePresets()` / `usePresetItems()` の結果を props で配布する既存方針に合わせ、画面内で `usePresets()` を二重に呼ばない。
+- 登録先 select の option は `presets.map(p => <option value={p.id}>{p.name}</option>)` ＋ **末尾に固定センチネル `<option value="">プリセットには追加しない</option>`**。state `targetPreset` の既定値は `""`（＝追加しない）。
+- **プリセット 0 件時**は select を `disabled` にし value は `""` のまま固定（「追加しない」相当）。ヘルプ文言は 0 件時「先にプリセットを作成してください。」／それ以外「選んだプリセットにこのツールを登録します。」（「今後のバージョンで対応予定」を撤去）。
+
+### (2) 追加位置の条件表示
+
+- `isRealPreset = targetPreset !== ""` が true のとき（実プリセット選択時）だけ「追加位置」ブロックを表示。非活性・「追加しない」（`""`）時は自動的に非表示。
+- 選択肢を **`tail`（末尾に追加）/ `head`（先頭に追加）/ `parallel`（並行（順番なし））** の 3 択に簡素化（value 固定の `InsertMode` union）。mockData の 4 択（「選択して追加」含む）は撤去。state `insertMode` 既定 `"tail"`。
+
+### (3) 保存時のプリセット登録（`handleSave`・新規時のみ）
+
+- 新規分岐で `createTool(input)` の戻り値 `created` を受ける（従来は破棄）。編集分岐（`updateTool`）・URL バリデーション・payload 構成は無変更。
+- **`!isEdit && isRealPreset` のときのみ** プリセット登録:
+  - `launchMode = insertMode === "parallel" ? "parallel" : "ordered"`。
+  - `addToolToPreset({ presetId: targetPreset, toolId: created.id, launchMode })`（末尾自動採番）→ 戻り値 `item`（新 PresetItem）。
+  - **`head` のみ** 続けて `reorderPresetItems(targetPreset, [item.id, ...existingIds])`。`existingIds` は props の `presetItems` を `presetId` で絞り `orderIndex` 昇順に並べた既存 item id。Rust `reorder`（`preset_items/service.rs:105`）が「対象プリセットの全 item id・件数一致」を要求するため、新規＋既存の全 id を渡す。`list_preset_items` は呼ばず、許可 command（`create_tool`/`add_tool_to_preset`/`reorder_preset_items`）のみ利用。
+  - **API 呼び出し順**: `create_tool` → `add_tool_to_preset` →（head 時のみ）`reorder_preset_items`。
+- **失敗時**: `try/catch` は従来どおり `handleSave` 全体を包む。`createTool` 成功後に `addToolToPreset`/`reorderPresetItems` が失敗しても `toErrorMessage` でエラー表示するのみで**ツール作成のリトライはしない**（ツールは作成済み・二重作成を回避）。成功時は既存どおり `onSaved?.()` → `onNavigate("main")`。
+- App の `onSaved` を `reloadTools()` ＋ `reloadPresetItems()` に変更（プリセット登録がメイン画面のツール構成へ即反映されるよう。編集・「追加しない」時も items 再読込するが安価・副作用なし）。
+
+### (4) スタブ整理
+
+- `data/mockData.ts`（`targetPresetOptions` / `insertModeOptions` のみ残っていた）を**削除**。他参照なし（`AddToolScreen` からのみ import）。import 文も除去。
+- 「表示のみに使う（保存には関与しない）」コメントを実装済み内容に更新。
+
+### やらないこと（維持）
+
+編集時のプリセット登録 UI（`!isEdit` でのみ表示）／Rust command・モデル・DB スキーマ変更／挿入位置の任意指定・launch group・待機秒・複数プリセット同時登録／新規ライブラリ・command・capabilities。
+
+### 変更ファイル（Frontend 3）
+
+- `screens/add-tool/AddToolScreen.tsx`（props 追加・state 実データ化・条件表示・保存フロー）
+- `App.tsx`（`presets`/`presetItems` を props で渡す・`onSaved` で items も再読込）
+- `data/mockData.ts`（削除）
+
+### 確認
+
+- `pnpm --filter ./apps/desktop typecheck` → 成功（exit 0）
+- `pnpm --filter ./apps/desktop lint` → 成功（exit 0）
+- `git diff --stat` → 上記 3 ファイルのみ（App.tsx / mockData.ts 削除 / AddToolScreen.tsx）
+- **セキュリティ確認（docs/security.md 準拠）**: frontend のみ。新規 Tauri command / capabilities を追加せず既存 `create_tool`/`add_tool_to_preset`/`reorder_preset_items` のみ利用（`AddToolScreen` に直接 `invoke` なし）。frontend から渡すのは `presetId`/`toolId`/`launchMode` のみ（任意 path/command を渡さない）。外部通信・外部リソースを増やさない。
+- **実機表示（`tauri dev`）は未実施**（ユーザー環境で確認依頼）: 登録先が実データから選べ選んだプリセットに登録される／プリセット 0 件で登録先セレクトが非活性・「追加しない」固定／追加位置が「追加しない」・非活性時は非表示、実プリセット選択時のみ表示／「末尾＝addToolToPreset・先頭＝続けて reorderPresetItems・並行＝launchMode parallel」が実挙動と一致／プリセット登録失敗時にエラー表示されツールの二重作成が起きない／「追加しない」選択時はツールのみ作成／編集時は登録先/追加位置が出ない／ライト・ダーク両テーマで破綻しない。

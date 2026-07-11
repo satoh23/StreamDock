@@ -6,9 +6,13 @@ import { createTool, extractAppIcon, updateTool } from "../../features/tools/too
 import { toErrorMessage } from "../../features/tools/useTools";
 import { iconDataUri, toIconLetter } from "../../features/tools/display";
 import {
-  insertModeOptions,
-  targetPresetOptions,
-} from "../../data/mockData";
+  addToolToPreset,
+  reorderPresetItems,
+} from "../../features/presets/presetItemApi";
+import type {
+  PresetItemRecord,
+  PresetRecord,
+} from "../../features/presets/types";
 import { Button } from "../../components/primitives";
 import { PreviewCard, type PreviewRowData } from "../../components/PreviewCard";
 import layout from "../formLayout.module.css";
@@ -39,16 +43,25 @@ function isValidHttpUrl(url: string): boolean {
   return lower.startsWith("http://") || lower.startsWith("https://");
 }
 
+/** 追加位置。tail=末尾追加 / head=先頭追加 / parallel=並行（順番なし・末尾）。 */
+type InsertMode = "tail" | "head" | "parallel";
+
 export function AddToolScreen({
   onNavigate,
   editingTool,
   onSaved,
+  presets,
+  presetItems,
 }: {
   onNavigate: (screen: Screen) => void;
   /** 編集対象。null なら新規登録。 */
   editingTool?: ToolRecord | null;
   /** 保存成功後に一覧を再読み込みするコールバック。 */
   onSaved?: () => Promise<void> | void;
+  /** 登録先プリセットの選択肢（登録済みプリセットの実データ）。 */
+  presets: PresetRecord[];
+  /** 「先頭に追加」時の並べ替えに使う既存 PresetItem 一覧（App が保持）。 */
+  presetItems: PresetItemRecord[];
 }) {
   const isEdit = !!editingTool;
 
@@ -77,9 +90,14 @@ export function AddToolScreen({
 
   const isUrlKind = kind === "url";
 
-  // 表示のみに使う（保存には関与しない）プリセット系 select
-  const [targetPreset, setTargetPreset] = useState(targetPresetOptions[0]);
-  const [insertMode, setInsertMode] = useState(insertModeOptions[0]);
+  // 登録先プリセット。"" はセンチネル（プリセットには追加しない）で既定値。
+  const [targetPreset, setTargetPreset] = useState("");
+  // 追加位置。既定は末尾追加。登録先が実プリセットのときだけ意味を持つ。
+  const [insertMode, setInsertMode] = useState<InsertMode>("tail");
+
+  const hasPresets = presets.length > 0;
+  // 実プリセットを選んでいるときだけ「追加位置」を表示する。
+  const isRealPreset = targetPreset !== "";
 
   const selectFile = async () => {
     try {
@@ -124,7 +142,40 @@ export function AddToolScreen({
       if (isEdit && editingTool) {
         await updateTool(editingTool.id, input);
       } else {
-        await createTool(input);
+        const created = await createTool(input);
+        // 024: 実プリセットが選ばれているときのみ、作成したツールをそのプリセットへ登録する。
+        // 失敗してもツールは作成済み。二重作成を避けるためツール作成のリトライはしない。
+        if (isRealPreset) {
+          const launchMode = insertMode === "parallel" ? "parallel" : "ordered";
+          const item = await addToolToPreset({
+            presetId: targetPreset,
+            toolId: created.id,
+            launchMode,
+          });
+          // 先頭に追加：末尾採番された新 item を先頭にした全 id で並べ替える
+          // （reorder は対象プリセットの全 item id を要求するため既存 id も渡す）。
+          //
+          // existingIds は addToolToPreset 前の props presetItems から作るため、
+          // 新 item.id を含まず重複しない。件数は reorder 契約
+          // （ordered_ids.len() == 対象プリセットの現行 item 数）を満たす前提で組む。
+          //
+          // なお existingIds は App 保持の props（本画面マウント時点のスナップショット）に
+          // 依存する。add-tool は単一ユーザー・排他マウントで、表示中に preset_items を
+          // 変更する経路が同時に存在しない（App の全ミューテーションは reloadPresetItems を
+          // await 済み）ため、通常フローで DB と乖離＝件数不一致は発生しない。
+          // 仮に乖離しても reorder が validation error を返すだけでツールは作成済み・
+          // 二重作成はなく、失敗は toErrorMessage 表示に留まる（graceful）。
+          // より堅牢にするなら addToolToPreset 直後に list_preset_items で取り直す手もあるが、
+          // 本タスクは許可 command（create_tool / add_tool_to_preset / reorder_preset_items）に
+          // 限定するスコープのため採用せず、上記の低リスク前提で現状の props 参照とする。
+          if (insertMode === "head") {
+            const existingIds = presetItems
+              .filter((i) => i.presetId === targetPreset)
+              .sort((a, b) => a.orderIndex - b.orderIndex)
+              .map((i) => i.id);
+            await reorderPresetItems(targetPreset, [item.id, ...existingIds]);
+          }
+        }
       }
       await onSaved?.();
       onNavigate("main");
@@ -299,25 +350,38 @@ export function AddToolScreen({
                     <label>登録先プリセット</label>
                     <select
                       value={targetPreset}
+                      disabled={!hasPresets}
                       onChange={(e) => setTargetPreset(e.target.value)}
                     >
-                      {targetPresetOptions.map((opt) => (
-                        <option key={opt}>{opt}</option>
+                      {presets.map((preset) => (
+                        <option key={preset.id} value={preset.id}>
+                          {preset.name}
+                        </option>
                       ))}
+                      <option value="">プリセットには追加しない</option>
                     </select>
                     <div className={layout.fieldHelp}>
-                      プリセットへの登録は今後のバージョンで対応予定です。
+                      {hasPresets
+                        ? "選んだプリセットにこのツールを登録します。"
+                        : "先にプリセットを作成してください。"}
                     </div>
                   </div>
 
-                  <div className={layout.field}>
-                    <label>追加位置</label>
-                    <select value={insertMode} onChange={(e) => setInsertMode(e.target.value)}>
-                      {insertModeOptions.map((opt) => (
-                        <option key={opt}>{opt}</option>
-                      ))}
-                    </select>
-                  </div>
+                  {isRealPreset && (
+                    <div className={layout.field}>
+                      <label>追加位置</label>
+                      <select
+                        value={insertMode}
+                        onChange={(e) =>
+                          setInsertMode(e.target.value as InsertMode)
+                        }
+                      >
+                        <option value="tail">末尾に追加</option>
+                        <option value="head">先頭に追加</option>
+                        <option value="parallel">並行（順番なし）</option>
+                      </select>
+                    </div>
+                  )}
                 </>
               )}
             </div>

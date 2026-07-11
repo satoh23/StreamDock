@@ -264,7 +264,13 @@ function App() {
         <AddToolScreen
           onNavigate={setScreen}
           editingTool={editingTool}
-          onSaved={reloadTools}
+          presets={presets}
+          presetItems={presetItems}
+          onSaved={async () => {
+            await reloadTools();
+            // 024: プリセット登録がメイン画面のツール構成へ反映されるよう item も再読込
+            await reloadPresetItems();
+          }}
         />
       )}
       {screen === "add-preset" && (
