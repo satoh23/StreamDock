@@ -32,9 +32,11 @@
 
 ## Next
 
+- 028 Windows App Icon Auto-Extraction
+- 098 Windows Build
+
 ## Todo
 
 ## MVP リリース前最後
 
-- 098 Windows Build
 - 099 User Test Package
