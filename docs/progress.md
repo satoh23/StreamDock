@@ -2313,3 +2313,104 @@ Rust / SQLite / Tauri command / capabilities / CSP / 依存の変更。ステッ
 - `apps/desktop/src/features/tutorial/TutorialProvider.tsx`（冪等ガードの実装）
 - `apps/desktop/src/components/tutorial/TutorialOverlay.tsx`（幾何・target-click/target-appears の advance 経路）
 - `apps/desktop/src/features/tutorial/tutorialSteps.ts`（16 ステップ定義・advanceOn union）
+
+## 2026-07-12 028 Windows App Icon Auto-Extraction（Windows(.exe) 実アイコン抽出の本実装・Rust のみ）
+
+### 完了したこと（本タスクの完了条件＝macOS 上で達成）
+
+- 018 で `Ok(None)` スタブだった **Windows(.exe) の実アイコン抽出**を本実装した。ユーザーがピッカーで選んだ
+  `.exe` のシェル表示アイコンを取得し、018 と同じ出力仕様（`data:` 無し base64 PNG・≤128px・失敗は `Ok(None)`）で返す。
+  frontend / DB スキーマ / `extract_app_icon` の I/F・出力仕様は **018 のまま流用（変更なし）**。実質は Rust の
+  Windows 抽出ロジック追加 + Cargo.toml の依存再配置/feature 追加のみ。
+- ⚠️ **Windows コードは未検証のまま main に入る**（下記「未検証範囲」）。実コンパイル・実機 E2E は 098 が初。
+
+### (1) Cargo.toml（依存再配置と feature 追加・docs/security.md §10）
+
+- `image`（`default-features=false, features=["png"]`）と `base64` を `[target.'cfg(target_os = "macos")'.dependencies]`
+  から **共通 `[dependencies]` へ移動**。理由: 共有化した `encode_png_base64`（icon.rs 直下・macOS/Windows で
+  コンパイル）が両クレートを参照するため。機能スペックは維持・**新規クレート追加ではない**（ターゲット再配置）。
+  `plist` / `icns` / `objc2-*` は macOS 限定のまま据え置き。
+- `[target.'cfg(windows)'.dependencies] windows`（0.58）に feature を4つ追加（理由コメントを Cargo.toml に明記）:
+  - `Win32_UI_Shell`（`SHCreateItemFromParsingName` / `IShellItemImageFactory` / `SHGetFileInfoW`）
+  - `Win32_Graphics_Gdi`（`GetObjectW` / `GetDIBits` / `HBITMAP` / `BITMAP` / `DeleteObject` / DC 系 / `GetIconInfo`）
+  - `Win32_System_Com`（`CoInitializeEx` / `CoUninitialize`）
+  - `Win32_Storage_FileSystem`（`SHGetFileInfoW` の第2引数 `FILE_FLAGS_AND_ATTRIBUTES` 由来。**task doc の当初
+    一覧には無かったが、windows 0.58 実ソースの `#[cfg(all(Win32_Storage_FileSystem, Win32_UI_WindowsAndMessaging))]`
+    gate 上フォールバック採用に必須**と机上確認できたため追加。ユーザー承認済み）。
+- `Cargo.lock` は**変更なし**（feature 選択は Cargo.toml に記録され、解決済みクレートの版・依存グラフは不変。
+  image/base64 のターゲット間移動も同一クレート・同一版のため lock に差分は出ない）。
+
+### (2) icon.rs 共通化リファクタ（macOS 挙動不変）
+
+- `MAX_ICON_PX` と `encode_png_base64(DynamicImage) -> Option<String>` を `mod macos` 内から **`icon.rs` 直下へ
+  引き上げ**、`#[cfg(any(target_os = "macos", windows))]` で gate（Linux では未使用のため dead_code 警告回避）。
+  `use base64::Engine;` は当該 fn 内へ移動。macOS 側は呼び出しを `super::encode_png_base64(...)` に変更しただけで
+  **ロジック・出力は完全不変**。
+- `extract_app_icon` の分岐を3分割: `#[cfg(target_os="macos")]`→`macos::extract` /
+  `#[cfg(windows)]`→`windows::extract` / `#[cfg(all(not(macos),not(windows)))]`→`Ok(None)`（Linux 従来どおり）。
+- `validate_icon_path` は変更なし（`.app` 例外は `cfg!(target_os="macos")` gate 済み。Windows では `.exe` 通過・
+  ディレクトリ/`.lnk`/`.bat` 拒否）。
+
+### (3) 新設 `#[cfg(windows)] mod windows`（抽出設計・リソース解放）
+
+- **主経路 `extract_via_shell_image`**: `CoInitializeEx(None, COINIT_APARTMENTTHREADED)` →
+  `SHCreateItemFromParsingName::<_,_,IShellItemImageFactory>(PCWSTR, None IBindCtx)` →
+  `GetImage(SIZE{128,128}, SIIGBF_ICONONLY|SIIGBF_BIGGERSIZEOK)` → `HBITMAP` → `hbitmap_to_rgba` →
+  `image::RgbaImage::from_raw` → 共有 `super::encode_png_base64`。
+- **フォールバック `extract_via_file_info`**: `SHGetFileInfoW(SHGFI_ICON|SHGFI_LARGEICON)` → `HICON` →
+  `GetIconInfo` → カラー `HBITMAP` → 同 `hbitmap_to_rgba`。`.ico` 直接指定や主経路不可環境の保険。
+- **共通 DIB 変換 `hbitmap_to_rgba`**: `GetObjectW`(BITMAP) で幅/高さ → `GetDC(NULL)` の画面 DC →
+  `BITMAPINFOHEADER`（`biHeight` 負＝top-down・32bpp・`biCompression=0(BI_RGB)`）で `GetDIBits` →
+  32bpp BGRA を取得 → **B↔R スワップで RGBA 化**（premultiplied alpha は表示用途で許容）。
+- すべて失敗で `None`（→ `extract_app_icon` が `Ok(None)` → 文字フォールバック）。
+- **リソース解放方式＝RAII ガード**（ユーザー承認済み）: `ComGuard`（`CoUninitialize`・自分が初期化した
+  S_OK/S_FALSE 時のみ true・`RPC_E_CHANGED_MODE` では uninit しない）/ `OwnedHBitmap`（`DeleteObject`）/
+  `OwnedHIcon`（`DestroyIcon`）/ `ScreenDc`（`ReleaseDC`）の Drop で全 early-return・`?` 経路を網羅。
+  **Rust の逆順 Drop により COM インターフェース Release が `CoUninitialize` より先**に走る宣言順にしてある
+  （`_com` を関数先頭で宣言）。`GetIconInfo` の `hbmColor`/`hbmMask` は両方 `DeleteObject`。`unsafe` は各 FFI
+  呼び出し単位の最小スコープに限定。
+
+### 机上整合（windows 0.58 実ソースで確認済み）
+
+- `~/.cargo/registry/cache/.../windows-0.58.0.crate` を展開し、使用 API の実シグネチャ・feature gate・struct の
+  `Default` 実装・`HBITMAP: CanInto<HGDIOBJ>` を照合済み。macOS では `cargo check` 対象外のため**机上整合のみ**。
+
+### セキュリティレビュー結果（security-review 実施済み・必須）
+
+- 判定: **問題なし**（018 のセキュリティ姿勢を Windows へ逸脱なく拡張）。修正必須項目なし。
+- 確認済み: 読み取り専用（`GetImage`/`SHGetFileInfoW`/GDI はアイコン取得のみ・write/delete/network なし・§1/§5）/
+  新規 command・capabilities を増やさず 018 の `extract_app_icon` を流用（追加は `windows` feature のみで Tauri ACL
+  権限ではない・§3/§10）/ 抽出対象は `validate_icon_path` 通過パスのみ（§7/§8。macOS の CFBundleIconFile のような
+  二次パス解決＝トラバーサル面は Windows 経路に無い）/ 出力 ≤128px・エラーは `Ok(None)` に丸めフルパス/OS エラー
+  非露出・ログ追加なし（§9）/ COM 解放順序が逆順 Drop で正しい・ハンドル/COM を全経路で解放/ `csp:null` 不変・
+  `data:` inline のみ・外部通信ゼロ。
+
+### 検証結果（本タスク＝macOS 上）
+
+- `cd apps/desktop/src-tauri && cargo check` → **成功**（共通化リファクタ・依存再配置で mac 経路は非退行。
+  ※ `#[cfg(windows)] mod windows` は macOS では**コンパイルされない**）。
+- `pnpm --filter ./apps/desktop typecheck` → 成功 / `pnpm --filter ./apps/desktop lint` → 成功（frontend 変更なし・再確認）。
+- 実機 macOS（`.app` 実アイコン抽出の非退行）はユーザー環境での確認をお願いしたい（コード上 mac 経路は
+  呼び出しパス変更と依存再配置のみで出力不変）。
+
+### 未検証範囲（本タスクの完了条件に含めない・098 Windows Build へ持ち越し）
+
+- `#[cfg(windows)] mod windows` は **macOS では `cargo check` 未走・実機未確認**。型・API 名・unsafe FFI は
+  windows 0.58 実ソースとの**机上整合のみ**。既存 `process/service.rs::mod windows`（前面化）と同じ
+  「macOS で書いて Windows ビルドで初検証」扱い。098 でコンパイルエラー/不具合が出たら **098 側で最小修正**する前提。
+- 098 で確認: Windows ARM64(VM) の `cargo check` / `cargo clippy`（`mod windows` 初コンパイル）/ `.exe`
+  （メモ帳/OBS/Chrome 等）登録時に実アイコンがプレビュー・一覧・サイドバー・プリセット追加に表示される /
+  アイコン無し `.exe` は文字フォールバックしクラッシュしない / 再起動後もアイコン保持 / ハンドル・COM リークが無いこと。
+
+### やらないこと（維持）
+
+- frontend / DB スキーマ / `extract_app_icon` の I/F・出力仕様の変更（018 の配線をそのまま流用）/ macOS 抽出
+  ロジックの挙動変更（`encode_png_base64` の移動のみ）/ Linux のアイコン抽出（`Ok(None)`）/ `.lnk` 実体解決・
+  `.bat` 対応・手動アップロード・差し替え・加工 / 一覧表示時の都度再抽出 / 高解像度化の追加依存
+  （`SHGetImageList`/`SHIL_JUMBO` 等・まず 128px で十分か 098 実機で判断）/ 新規クレート追加（`windows` feature 追加のみ）。
+
+### 変更ファイル
+
+- `apps/desktop/src-tauri/Cargo.toml`（image/base64 を共通へ・windows feature 4つ追加＋理由コメント）
+- `apps/desktop/src-tauri/src/tools/icon.rs`（共通化リファクタ＋`#[cfg(windows)] mod windows` 新設）
+- `docs/progress.md`（本節）/ `docs/security.md`（028 の未検証注記を追記）

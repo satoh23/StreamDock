@@ -33,6 +33,13 @@ uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["clock"] }
 ts-rs = "10"
 
+# 018/028 アイコン抽出の共通 PNG エンコード経路（`tools/icon.rs::encode_png_base64`）で使用する。
+# 018 では macOS 限定ブロックにあったが、028 で Windows 抽出も同じ `encode_png_base64`（≤128px PNG →
+# base64）に合流させるため、共通 `[dependencies]` へ移動した（機能スペックは維持・新規クレート追加ではない）。
+# いずれも pure-Rust・外部通信なし。`image` は png コーデックのみ有効化して依存面を最小化する。
+image = { version = "0.25", default-features = false, features = ["png"] }
+base64 = "0.22"
+
 # macOS の `.app` は `/usr/bin/open`（LaunchServices）経由で起動するため、掴む Child は実アプリでは
 # なく即終了する open ヘルパになる。013 では起動した実アプリの PID を解決し、その PID の生存確認・停止
 # （kill）に sysinfo を用いる（shell 非経由）。用途は自分が起動したプロセスの PID 解決・生存確認・kill に
@@ -42,18 +49,14 @@ sysinfo = "0.39"
 
 # 018 Tool Icon Auto-Extraction（macOS 限定）。ユーザーが選択した `.app` の Info.plist を読み、
 # `CFBundleIconFile` から `.icns` を解決して実アイコンを PNG(base64) 化する（読み取り専用・外部通信なし）。
-# 用途をアイコン抽出に限定し、いずれも pure-Rust。Windows/Linux 抽出は現状 Ok(None) スタブのため載せない
-# （docs/security.md §10）。
+# 用途をアイコン抽出に限定し、いずれも pure-Rust。macOS 専用の plist/icns デコードのみをここに残す
+# （PNG エンコード用の `image` / `base64` は 028 で共通 `[dependencies]` へ移動した）。
+# ※ image 0.25 は推移依存として moxcms / pxfm（カラーマネジメント）等を引くが、いずれも pure-Rust で
+#   ネットワーク/ビルドスクリプト系ではなく監査上問題ない（Cargo.lock に解決済み・§10）。
 # - plist: Info.plist（XML/バイナリ両対応）パース
 # - icns : `.icns` デコード（最大サイズ取得）
-# - image: PNG エンコード + ≤128px リサイズ（png コーデックのみ有効化して最小化）
-#   ※ image 0.25 は推移依存として moxcms / pxfm（カラーマネジメント）等を引くが、いずれも pure-Rust で
-#     ネットワーク/ビルドスクリプト系ではなく監査上問題ない（Cargo.lock に解決済み・§10）。
-# - base64: PNG を data URI 用 base64 文字列にエンコード
 plist = "1"
 icns = "0.3"
-image = { version = "0.25", default-features = false, features = ["png"] }
-base64 = "0.22"
 
 # 018 フォールバック（Calendar 等アセットカタログのみのアプリ対応）。`.icns` を持たない `.app`
 # （アイコンが `Assets.car` 内にのみ存在）では `CFBundleIconFile`→`.icns` 経路が解決できないため、
@@ -68,11 +71,23 @@ objc2-foundation = "0.3"
 # 用途を Win32 のウィンドウ操作・プロセス列挙（子プロセス探索）に限定し、shell を経由しない。
 # macOS/Linux ビルドには載せない（Windows 限定ターゲット依存。sysinfo の macOS 限定と同じ扱い）。
 # Microsoft 公式クレート。必要最小の feature のみ有効化する（docs/security.md §10）。
+#
+# 028 Windows App Icon Auto-Extraction: ユーザー選択済み `.exe` の実アイコンを OS（シェル）から
+# 読み取り、PNG(base64) 化するために feature を追加する（読み取り専用・書込/削除/外部通信なし）。
+# 抽出は `tools/icon.rs::windows`（主経路 IShellItemImageFactory::GetImage・フォールバック SHGetFileInfoW）で行う。
+# - Win32_UI_Shell         : SHCreateItemFromParsingName / IShellItemImageFactory / SHGetFileInfoW（実アイコン取得）
+# - Win32_Graphics_Gdi     : GetObjectW / GetDIBits / HBITMAP / BITMAP / DeleteObject / DC 系 / GetIconInfo（DIB 変換）
+# - Win32_System_Com       : CoInitializeEx / CoUninitialize（GetImage の COM 初期化）
+# - Win32_Storage_FileSystem: SHGetFileInfoW の第2引数 FILE_FLAGS_AND_ATTRIBUTES に必要（0.58 の feature gate 上必須）
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
     "Win32_System_Threading",
     "Win32_System_Diagnostics_ToolHelp",
+    "Win32_UI_Shell",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Com",
+    "Win32_Storage_FileSystem",
 ] }
 
