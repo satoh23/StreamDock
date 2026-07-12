@@ -28,10 +28,9 @@
 - 024 Tool → Preset Registration
 - 025 Form/UI Polish Round 2
 - 026 Header Polish & Navigation Foundation
+- 027 First-Run Tutorial (Onboarding)
 
 ## Next
-
-- 027 First-Run Tutorial (Onboarding)
 
 ## Todo
 
