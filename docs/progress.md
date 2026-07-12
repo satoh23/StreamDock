@@ -2495,3 +2495,56 @@ macOS でしか動かしていなかった MVP を、UTM(QEMU) の **Windows 11 
 
 - `apps/desktop/src-tauri/icons/icon.ico`（Windows アプリアイコン再生成のみ。macOS の `icon.icns` は不変）
 - `docs/progress.md`（本節）/ `docs/security.md`（§098 の実検証・security-review 済み注記を追記）
+
+## 2026-07-12 099 User Test Package フェーズ1（配布 CI・GitHub Actions で Mac/Win(x64) 自動ビルド）
+
+ユーザー配布の基盤を作る。ビルド自動化の方式（Docker/VM 可否）と署名の要否という2つの問いに答え、
+**GitHub Actions（クラウド CI）**で macOS と Windows(x64) のインストーラを自動生成し **GitHub Releases** へ
+配布する仕組みを入れた。**アプリ本体のコード変更なし**（配布設定・ドキュメントのみ）。
+
+### 背景の結論（2つの問いへの回答）
+
+- **Docker で Windows ビルド不可**: Windows コンテナは Windows ホストが要り Apple Silicon Mac で動かない
+  （Mac の Docker は Linux のみ）。Tauri もクロスコンパイル不可。
+- **VM も不要にできる**: 配布ターゲットを **Windows x64**（一般ユーザーのほぼ全員・ARM64 でも x64 エミュで動作）
+  にすれば windows-latest（x64）クラウドランナーでビルドでき、VM/Docker 不要。098 の ARM64 VM は配布に使わない。
+- **署名は必要**（未署名は SmartScreen/Gatekeeper 警告）。ユーザー方針＝**Windows のみ署名**（証明書取得後に追加）。
+
+### 決定事項
+
+- ビルド自動化 = GitHub Actions / Windows = **x64 のみ**（`x86_64-pc-windows-msvc`）/ macOS = **universal(.dmg)・未署名** /
+  署名 = **Windows のみ**（フェーズ2）/ 配布 = **GitHub Releases**（登録不要 DL）。窓の杜/Vector は別途手動申請。
+
+### フェーズ1（本セッションで実装＝未署名・費用ゼロ）
+
+- `.github/workflows/release.yml`（新規）: `tauri-apps/tauri-action` のマトリクス（macos-latest / windows-latest）。
+  `v*` タグ push（＋ `workflow_dispatch` 手動）で両 OS のインストーラを生成し **Release 下書き**へ添付。
+  - macOS: `--target universal-apple-darwin`（Intel/Apple Silicon 両対応）・rust targets 2つ追加。
+  - Windows: 既定 x64＝ターゲット指定なし。NSIS(.exe)+WiX(.msi) を生成。
+  - pnpm(action-setup)＋Node20＋Rust(stable)＋rust-cache、`pnpm install --frozen-lockfile`、`permissions: contents: write`。
+- `README.md`: リリース手順（タグの打ち方・手動実行・生成物・未署名時の警告回避・ローカル `pnpm tauri build`）を追記。
+- `docs/tasks/099-user-test-package.md`（新規スペック）。
+
+### フェーズ2（未実装・証明書取得後）
+
+- Windows 署名: `tauri.conf.json` に `bundle.windows.signCommand` ＋ workflow に署名ステップ・GitHub Secrets を追加。
+  証明書はユーザー取得（Azure Trusted Signing 最安・要身元確認 / OV+Key Vault / OV・EV）。発行に数日〜数週間。
+
+### セキュリティ（docs/security.md 準拠）
+
+- アプリの OS/プロセス/ファイル操作の設計は不変（配布のみ・§2/§4/§5）。新規 crate/npm/plugin 追加なし
+  （tauri-action は CI 上の Action・§10）。外部通信/telemetry/CSP 不変（§1/§CSP）。署名鍵は GitHub Secrets のみ（フェーズ2）。
+
+### 検証（実装後にユーザーが実施）
+
+- テストタグ `v0.0.1-test` を push（or Actions 画面から `release` を手動実行）→ Actions 緑 → Releases 下書きに
+  macOS `.dmg` と Windows x64 `.exe`/`.msi` が並ぶ → Windows `.exe` を DL・インストール・起動（実機 or ARM64 VM の x64 エミュ）。
+
+### 残課題
+
+- フェーズ2（Windows 署名・証明書取得後）/ macOS 署名・notarize（別途）/ 自動アップデータ / 窓の杜・Vector 手動申請 /
+  x64 実機での最終確認（現状 x64 実機が無く、ARM64 VM の x64 エミュ or ユーザーテストで代替）。
+
+### 変更ファイル
+
+- `.github/workflows/release.yml`（新規）/ `docs/tasks/099-user-test-package.md`（新規）/ `README.md`（リリース手順追記）/ `docs/progress.md`（本節）

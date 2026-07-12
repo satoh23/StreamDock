@@ -1,0 +1,77 @@
+# 099 配布パッケージ フェーズ1: Mac + Windows(x64) を GitHub Actions のクラウドランナーで
+# 自動ビルドし、GitHub Releases の下書きにインストーラを添付する（VM/Docker 不要）。
+#
+# - Windows は windows-latest（x64）で NSIS(.exe) + WiX(.msi) を生成（x86_64-pc-windows-msvc・既定）。
+# - macOS は macos-latest で universal(.dmg)（Intel/Apple Silicon 両対応）を生成。
+# - この段階は未署名（Windows は SmartScreen 警告が出る＝フェーズ2で署名を追加して解消）。
+# - トリガー: `v` から始まるタグ push（例 `v0.1.0`）。手動実行（workflow_dispatch）でも動作確認できる。
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+# tauri-action が GitHub Release を作成/更新するために必要。
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS: 1つの .dmg で Intel/Apple Silicon 両対応（universal binary）。
+          - platform: macos-latest
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+            args: "--target universal-apple-darwin"
+          # Windows: 既定の x64 ランナー＝x86_64-pc-windows-msvc。NSIS/MSI を生成。
+          - platform: windows-latest
+            rust_targets: ""
+            args: ""
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        # packageManager フィールド（pnpm@10.33.0）に従う。
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri -> target
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # tauri-action がフロントを beforeBuildCommand（pnpm build）でビルドし、
+      # `tauri build` でインストーラを生成、Release 下書きに添付する。
+      - name: Build & release (tauri)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: apps/desktop
+          # タグ push 時はそのタグ名、手動実行時は動作確認用の一時タグ名にする。
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('ci-{0}', github.run_number) }}
+          releaseName: "stream-dock ${{ github.ref_type == 'tag' && github.ref_name || format('CI build {0}', github.run_number) }}"
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
