@@ -97,6 +97,15 @@
   --overlay-scrollbar: color-mix(in srgb, var(--color-text-muted) 22%, transparent);
   --spinner-track: color-mix(in srgb, var(--color-text) 25%, transparent);
 
+  /* 027 First-Run Tutorial のオーバーレイ。役割トークン参照は late-bound で
+     テーマ追従し、ディムのみ意図的に暗い定数（スクリムは両テーマで暗くする）。 */
+  --tutorial-dim: color-mix(in srgb, #05070d 74%, transparent);
+  --tutorial-bubble-bg: var(--surface-2);
+  --tutorial-bubble-border: var(--elev-border);
+  --tutorial-ring: color-mix(in srgb, var(--color-secondary) 72%, transparent);
+  --tutorial-ring-soft: color-mix(in srgb, var(--color-secondary) 28%, transparent);
+  --tutorial-shadow: color-mix(in srgb, #05070d 55%, transparent);
+
   --radius: 18px;
 
   color: var(--text);

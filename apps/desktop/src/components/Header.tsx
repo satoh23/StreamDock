@@ -43,7 +43,7 @@ export function Header({
         <span className={styles.wordmark}>StreamDock</span>
       </button>
       <nav className={styles.nav}>
-        <div className={styles.sections}>
+        <div className={styles.sections} data-tutorial-id="header-sections">
           {HEADER_SECTIONS.map((s) => (
             <button
               key={s.id}
@@ -51,6 +51,7 @@ export function Header({
               className={`${styles.sectionBtn} ${activeNav === s.screen ? styles.sectionActive : ""}`}
               onClick={() => onNavigate(s.screen)}
               aria-current={activeNav === s.screen ? "page" : undefined}
+              data-tutorial-id={`header-section-${s.id}`}
             >
               {s.label}
             </button>

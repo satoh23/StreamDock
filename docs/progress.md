@@ -2147,3 +2147,169 @@ AddTool / AddPreset 等その他画面の「戻る」ボタン（対象外）／
 - 生の hex/rgba 残置なし（`ComingSoonScreen.module.css` / `Header.module.css` を grep 済み・全て `var(--...)`）／外部リソース読み込みなし（絵文字のみ・`http`/`url(`/`@import` 無し）
 - **セキュリティ確認（docs/security.md 準拠）**: frontend のみ。OS / ファイル / プロセス操作を追加せず（§2/§4）、アイコン/装飾は絵文字のみで外部リソース・外部通信・telemetry を増やさない（§1/§CSP）。新規 command / capabilities / ライブラリなし。
 - **実機表示（`tauri dev`）は未実施**（ユーザー環境で確認依頼）: ヘッダーの未実装リンクが「らくらくツール導入」「OBSエフェクト」の2つ（＋ツール管理）になっている／それぞれクリックで「準備中」ダミーページへ遷移し未実装だが今後追加される旨が分かる・該当リンクが active 表示／ロゴ・ツール管理でメインへ戻れる／全画面でヘッダー常時表示・sidebar 有無ともレイアウト非破綻／ライト・ダーク両テーマで破綻しない。
+
+## 2026-07-12 027 First-Run Tutorial (Onboarding)（初回起動ガイドツアー・frontend のみ）
+
+初見ユーザーに「ツール登録 → 配信プリセット作成 → 一括起動」のコア導線を体験で伝えるため、初回起動時のみ薄暗いオーバーレイ＋スポットライトで 16 ステップのガイドツアーを表示。実ツール1件＋実プリセット1件を作らせながら一括起動まで到達させる。frontend のみで完結し、Rust / SQLite / Tauri command / capabilities / CSP・依存は不変。既存挙動は不変で、**唯一の例外＝チュートリアル中のキャンセルボタン無効化のみ**。永続化は `theme.ts` と同方式（localStorage 直接 read/write・例外握りつぶし）。
+
+### 変更内容
+
+**【新規】features/tutorial 構成**
+- `features/tutorial/tutorialStorage.ts`: キー `stream-dock.tutorial.completed`。`isTutorialCompleted()` / `markTutorialCompleted()` を try/catch 握りつぶし（`theme.ts` 踏襲）。
+- `features/tutorial/tutorialSteps.ts`: 16 ステップ静的定義 `TUTORIAL_STEPS`。各 = `{ id, mode, targetId?, title?, body, advanceOn, lockCancel? }`。`mode` = `dialog` / `spotlight-info`（穴あきで対象を明るく・クリック不可・次へ）/ `spotlight-action`（対象クリック可・ボタン非表示・操作/状態で進む）。`advanceOn` 判別 union = `next` / `target-click{clickId?}` / `screen` / `tools-increased` / `presets-increased`。
+- `features/tutorial/useTutorial.ts`: Context 定義＋`useTutorial()` フック。値 `{ active, currentStep, stepIndex, advance, skip, isCancelLockedByTutorial }`。Provider 未設置でも既定値で安全。
+- `features/tutorial/TutorialProvider.tsx`: 薄い Provider。props = 監視用 `screen` / `toolsCount` / `presetsCount`。初回判定 = `VITE_SHOW_TUTORIAL==="true"`（env 強制）or `!isTutorialCompleted()`。**開始時に `markTutorialCompleted()`＝中断（閉じる/リロード）も完了扱い**（env 強制時のみフラグを書かず毎回表示）。**状態条件 advance は 1 本の useEffect に集約**し、App から渡る `screen` 一致 / `tools`・`presets` 件数増（ステップ開始時 `baselineRef` 比較）を監視して `advance()`。各画面のハンドラは非改変（非破壊）。
+
+**【新規】オーバーレイ描画（クリック制御方式）**
+- `components/tutorial/TutorialOverlay.tsx`: `#root` へ `createPortal`。対象は `querySelector('[data-tutorial-id]')` を `getBoundingClientRect` で計測。**穴あきディム＝上下左右 4 枚パネル方式**（各 `pointer-events:auto` でディム＋外側クリック遮断、穴は空けて対象がネイティブにクリックを受ける＝`spotlight-action`）。**`spotlight-info` は穴に透明ブロッカーを重ねてクリック不可**。`dialog`・対象未検出は全面ディム＋中央カードへフォールバック（「次へ」で進行が止まらない）。再計測は `resize`/`scroll`(capture)＋`ResizeObserver`＋step 変化を **`requestAnimationFrame`** でコアレス（穴がリサイズ・スクロールで対象へ追従）。`target-click` は document capture の click リスナで `closest(clickId)` 一致時 `advance()`（ネイティブ onClick は通常どおり実行＝実操作を兼ねる）。吹き出し（copy＋`next` 時のみ「次へ」）、クリック可ステップに 👆 インジケータ、常時右下に「チュートリアルをスキップ」。
+- `components/tutorial/TutorialOverlay.module.css`: ディム・吹き出し・リング・インジケータ・z-index（既存 z-index 規約が無いため新規定義: 9000 系）。**色は全て `var(--tutorial-*)` / 役割トークン経由・生 hex/rgba なし**。
+
+**【新規】env / 型**
+- `apps/desktop/.env.local.example`: `VITE_SHOW_TUTORIAL=true`（`.gitignore` の `*.local` で `.env.local` 自体は無視）。
+- `vite-env.d.ts`: `interface ImportMetaEnv { readonly VITE_SHOW_TUTORIAL?: string }` を追記。
+
+**【変更】トークン追加（theme.css）**
+- `styles/theme.css`: tutorial 専用トークンを `:root` に追加のみ（`--tutorial-dim`＝両テーマ暗いスクリム定数 / `--tutorial-bubble-bg`=`--surface-2` / `--tutorial-bubble-border`=`--elev-border` / `--tutorial-ring` / `--tutorial-ring-soft` / `--tutorial-shadow`）。役割トークン参照は late-bound でテーマ追従。module.css を var 経由に保つための追加。
+
+**【変更】data-tutorial-id の付与（加算的・挙動不変）**
+- `components/Header.tsx`: `header-sections`（セクション群 div）/ `header-section-${s.id}`（各セクションボタン＝`header-section-tools` / `-rakuraku` / `-obs`）。
+- `components/Sidebar.tsx`: `sidebar-add-tool` / `sidebar-add-preset`。
+- `screens/add-tool/AddToolScreen.tsx`: `add-tool-kind-toggle` / `add-tool-panel`。**キャンセル Button に `disabled={isCancelLockedByTutorial()}`**（唯一の挙動変更）。
+- `screens/add-preset/AddPresetScreen.tsx`: `add-preset-panel` / `add-preset-next` / `add-preset-launch-list` / `add-preset-submit`。**Step1 キャンセル Button に `disabled={isCancelLockedByTutorial()}`**（唯一の挙動変更）。
+- `screens/main/MainScreen.tsx`: `main-launch-all`（右上の一括起動/停止 Button）。
+
+**【変更】App 配線**
+- `App.tsx`: ツリーを `TutorialProvider`（props: `screen` / `tools.length` / `presets.length`）でラップし、`Window` と同階層に `TutorialOverlay` を描画。既存 state・ハンドラ・画面 props は不変（Provider ラップに伴う内側 JSX の再インデントのみ）。
+
+### 16 ステップ対応表（# → mode → targetId → advanceOn）
+
+| # | mode | targetId | advanceOn | lockCancel |
+|---|---|---|---|---|
+| 1 | dialog | — | next | |
+| 2 | dialog | — | next | |
+| 3 | spotlight-info | header-sections | next | |
+| 4 | spotlight-action | header-section-tools | target-click | |
+| 5 | spotlight-action | sidebar-add-tool | screen=add-tool | |
+| 6 | spotlight-info | add-tool-kind-toggle | next | |
+| 7 | spotlight-action | add-tool-panel | tools-increased | ✔ |
+| 8 | spotlight-action | sidebar-add-preset | screen=add-preset | |
+| 9 | spotlight-info | add-preset-panel | next | |
+| 10 | spotlight-action | add-preset-panel | target-click(add-preset-next) | ✔ |
+| 11 | spotlight-info | add-preset-launch-list | next | |
+| 12 | spotlight-action | add-preset-submit | presets-increased | |
+| 13 | dialog | — | next | |
+| 14 | spotlight-action | main-launch-all | target-click（実起動を兼ねる） | |
+| 15 | dialog | — | next | |
+| 16 | dialog | — | next（末尾で完了・非表示） | |
+
+- 仕様の numbered 1〜16 に 1:1 対応。解釈 2 点: item 3（ヘッダー各セクション「順に説明」）はセクション群 1 ステップに集約し copy で 3 セクションを順に説明（診断/設定への任意言及は割愛）。item 8（成功 dialog → プリセット追加 spotlight-action）は全面 dialog だとサイドバーを押せないため成功メッセージを spotlight-action の吹き出しに内包して 1 ステップ化。
+- キャンセル無効化は 2 箇所のみ（AddTool キャンセル / AddPreset Step1 キャンセル）。フォーム操作可ステップ（7/10）の穴はフォーム全体を露出するため、穴に入るキャンセルを `disabled` で塞ぐのが目的。AddPreset Step2 は穴を「保存して作成」に絞り 戻る はディムで遮断。
+
+### やらないこと（維持）
+
+Rust / SQLite / Tauri command / capabilities / CSP / 依存の変更。ステップ途中保存・再開ロジック（中断＝完了扱い）。設定画面の「もう一度見る」リセット。キャンセル無効化以外の既存挙動変更・大規模リファクタ。未実装ヘッダーセクション（らくらく/OBS）の実画面実装。新規 npm/crate/plugin・外部リソースの追加。
+
+### 確認
+
+- `pnpm --filter ./apps/desktop typecheck` → 成功（exit 0）
+- `pnpm --filter ./apps/desktop lint` → 成功（exit 0）
+- `git diff --name-only` → `App.tsx` / `components/Header.tsx` / `components/Sidebar.tsx` / `screens/add-tool/AddToolScreen.tsx` / `screens/add-preset/AddPresetScreen.tsx` / `screens/main/MainScreen.tsx` / `styles/theme.css` / `vite-env.d.ts`（＋新規 `features/tutorial/` 4 ファイル・`components/tutorial/` 2 ファイル・`.env.local.example`）。**`src-tauri/` に変更なし**。
+- `TutorialOverlay.module.css` に生 hex/rgba なし（grep 済み・全て `var(--...)`）／新規ファイルに `http`・`url(`・`@import` の外部参照なし／新規依存（`package.json`/`Cargo.toml`/`pnpm-lock`）なし／capabilities・`tauri.conf.json`(CSP) 不変。
+- **セキュリティ確認（docs/security.md 準拠）**: frontend のみ。OS / ファイル / プロセス操作を追加せず（§2/§4）、インジケータは絵文字のみで外部リソース・外部通信・telemetry を増やさない（§1/§CSP）、localStorage はローカルのみ（テーマ設定と同方針）。新規 command / capabilities / ライブラリなし（§10）。Rust / CSP 不変。
+- **実機表示（`tauri dev`）は未実施**（ユーザー環境で確認依頼）: `.env.local` に `VITE_SHOW_TUTORIAL=true` を置いて `pnpm --filter ./apps/desktop tauri dev`。16 ステップを踏破でき実ツール1件＋実プリセット1件が作られ一括起動まで到達／スポットライトの穴がリサイズ・スクロールで対象に追従／ステップ 7・10 でキャンセルボタンが無効／右下「チュートリアルをスキップ」で即終了し以降再表示されない／完了フラグ済み（env 強制なし）では何も表示されない／ヘッダー巡回で未実装セクションへ遷移せず補足が出る／ライト・ダーク両テーマで破綻しない。
+
+## 2026-07-12 027 追加 チュートリアルオーバーレイの表示・操作不具合修正（frontend のみ）
+
+初回チュートリアルの実機確認で判明した 2 件を修正。いずれも `components/tutorial/TutorialOverlay.tsx`（＋`.module.css`）に閉じ、16 ステップ定義・advance・data-tutorial-id・キャンセル無効化・Provider・Rust / CSP / 依存は不変。
+
+### 不具合と原因
+
+1. **吹き出し／矢印が画面外にはみ出す**（ステップ7 `add-tool-panel` / 10 `add-preset-panel`）: 穴＝縦長フォームパネルなのに配置が「上/下」2択で、縦の余白不足時に吹き出しを `top: innerH-60`・インジケータを画面外へ置いていた。
+2. **スポットライトがヘッダーに被るとヘッダーのリンクが押せてしまう**: `Window.module.css` の `.main { overflow:auto }` で本文が 65px ヘッダー配下へスクロールし、縦長パネルをスクロールすると対象 `rect.top` が負→穴上端が 0 に張り付き、穴（クリック透過領域）がヘッダー帯を覆って上ディムパネルが消え、ヘッダーのリンクがネイティブに押せて別画面へ遷移していた。副次: ヘッダー対象の spotlight-action（ステップ4）が PAD=6 で隣接リンク（間隔4px）に被って押せていた。
+
+### 修正内容（`TutorialOverlay.tsx` / `.module.css`）
+
+- **A（不具合2主対策）**: ヘッダー下端を `document.querySelector("header")` の rect で計測し state 化（既存 `scheduleMeasure` に同梱）。**ヘッダー以外を対象とするステップ**（`targetId` が `"header-"` 始まりでない）では穴上端を `top = max(0, rawTop-pad, headerBottom)` にクランプ。上ディムパネルが常にヘッダーを覆い `pointer-events:auto` で遮断する。クランプ後 `holeW/holeH<=0`（対象が完全にヘッダー裏へ）は中央カードフォールバックへ倒す。
+- **B（不具合2副次）**: PAD を対象で出し分け（`pad = isHeaderTarget ? 0 : 6`）。ヘッダー対象（3/4）は穴を対象ぴったりにして隣接リンク漏れを解消（視認性は既存リングのグローで担保）。
+- **C（不具合1）**: 配置を空きスペースに応じ **下→上→右→左** で選ぶ `computePlacement()` に置換（縦が入らない縦長パネルは自動で横＝プレビュー列側へ）。インジケータは向きを配置に追従（下👆/上👇/右👈/左👉）、横配置は `.indicatorSide`（横バウンス）。横吹き出しは `.bubbleSide`（`max-width:300px`）で幅を抑え対象に被りにくく。吹き出し・インジケータは常に viewport 内へ clamp。
+
+### 確認
+
+- `pnpm --filter ./apps/desktop typecheck` → 成功（exit 0）
+- `pnpm --filter ./apps/desktop lint` → 成功（exit 0）
+- 変更は `components/tutorial/TutorialOverlay.tsx` / `TutorialOverlay.module.css`（＋本 `docs/progress.md`）のみ。**`src-tauri/` 変更なし**。`.module.css` に生 hex/rgba なし（`var(--...)` のみ）・外部参照なし・新規依存なし。
+- **セキュリティ確認（docs/security.md 準拠）**: frontend のみ。OS / ファイル / プロセス操作を追加せず（§2/§4）、インジケータは絵文字のみで外部リソース・外部通信・telemetry を増やさない（§1/§CSP）。新規 command / capabilities / ライブラリなし（§10）。Rust / CSP 不変。
+- **実機表示（`tauri dev`）は未実施**（ユーザー環境で確認依頼）: `.env.local` に `VITE_SHOW_TUTORIAL=true` を置いて起動。ステップ7/10 で吹き出し・矢印が穴の横に出て画面外へはみ出さない（縦に狭めても横へ回り込む）／どのステップでも（縦長パネルをスクロールしても）ヘッダーが常に暗転しリンクを押せず誤遷移しない／ステップ4でハイライトが「ツール管理」に密着し隣の「らくらくツール導入」を押せずクリックで正常に次へ進む／既存挙動（16ステップ踏破・キャンセル無効・スキップ・穴の追従・ライト/ダーク）に回帰なし。
+
+## 2026-07-12 027 追加 チュートリアル横配置時の指インジケータ被り修正（frontend のみ）
+
+横配置（右/左）の吹き出しで指インジケータ（👈/👉）が吹き出しに重なり文字が読みにくかった。原因は `TutorialOverlay.tsx` の `computePlacement()` 横配置分岐で、穴〜吹き出しの間隔 `GAP=16` がインジケータの見た目幅（絵文字 `font-size:30px` ≒30px）より狭く、`right+2`/`left-32` 起点の指が吹き出し端へ食い込んでいた。
+
+### 修正内容（`components/tutorial/TutorialOverlay.tsx` の `computePlacement()` のみ）
+
+- 定数追加: `SIDE_GAP=46`（横配置の穴〜吹き出し間隔＝指が収まる幅）・`IND=30`（指の見た目幅）。
+- 横配置を選ぶ閾値を `BW_SIDE + SIDE_GAP`（=346）に変更（ツール/プリセット画面の右空き ≒400px で満たす）。
+- 右/左とも吹き出しを `SIDE_GAP` 分離し、インジケータを**穴と吹き出しの隙間の中央**へ配置（`right + (gapW-IND)/2` 等）→ 吹き出しへ被らない。
+- 隙間がインジケータに満たない場合（狭い側へのフォールバック等）は戻り値 `showIndicator=false` として**指を描画しない**（可読性優先）。JSX を `{isAction && showIndicator && ...}` に変更。上下配置は常に表示。併せて上下配置のインジケータと吹き出しの間隔も軽微に拡大。
+
+### 確認
+
+- `pnpm --filter ./apps/desktop typecheck` → 成功（exit 0）／`lint` → 成功（exit 0）
+- 変更は `components/tutorial/TutorialOverlay.tsx`（＋本 `docs/progress.md`）のみ。`.module.css` 変更なし・`src-tauri/` 変更なし・新規依存/外部リソースなし・Rust / CSP 不変（§1/§2/§4/§CSP/§10）。
+- **実機表示（`tauri dev`）は未実施**（ユーザー環境で確認依頼）: ステップ7/10 で吹き出しが穴の横に出て指が吹き出しに被らず文字が読める／横に狭めても画面内に収まり上下配置（他ステップ）に回帰なし。
+
+## 2026-07-12 027 追加 プリセットStep1「次へ」のバリデーション失敗時にチュートリアルだけ進む問題の修正（frontend のみ）
+
+チュートリアルのステップ10（プリセット Step1）が `advanceOn: target-click(add-preset-next)` で「次へ」クリック自体で進んでいたため、名前未入力・ツール未選択でも `AddPresetScreen.goNext()` がエラー表示で Step1 に留まる一方、チュートリアルだけ Step2 の説明（ステップ11）へ進み、画面と説明が食い違っていた（実装当初の既知の弱点）。
+
+### 修正内容（`tutorialSteps.ts` ＋ `TutorialOverlay.tsx` のみ・非破壊）
+
+- `AdvanceOn` に汎用プリミティブ `{ kind: "target-appears"; appearId }`（指定 data-tutorial-id 要素が DOM に現れたら進む）を追加。
+- ステップ10 `preset-step1` の `advanceOn` を `target-appears("add-preset-launch-list")` に変更。`add-preset-launch-list`（起動リスト）は `AddPresetScreen` の内部 Step2 でのみレンダーされるため、**バリデーション通過して Step2 に入った時だけ**進む。`mode: spotlight-action` / `targetId: add-preset-panel` / `lockCancel` は維持し、native の「次へ」クリックは従来どおり `goNext()` を実行。
+- `TutorialOverlay.tsx` に `target-appears` 用 useEffect を追加（要素の初回チェック＋`MutationObserver(document.body, childList/subtree)` で出現監視 → `advance()`、cleanup で disconnect）。既存の target-click 監視（ステップ4/14）は不変。`AddPresetScreen` のハンドラ・バリデーション・data 属性は非改変。
+
+### 確認
+
+- `pnpm --filter ./apps/desktop typecheck` → 成功（exit 0）／`lint` → 成功（exit 0）
+- 変更は `features/tutorial/tutorialSteps.ts` / `components/tutorial/TutorialOverlay.tsx`（＋本 `docs/progress.md`）のみ。`src-tauri/` 変更なし・新規依存/外部リソースなし・Rust / CSP 不変（§1/§2/§4/§CSP/§10）。
+- **実機表示（`tauri dev`）は未実施**（ユーザー環境で確認依頼）: プリセット Step1 で名前/ツール未設定のまま「次へ」→ エラーが出て Step1 に留まり、チュートリアルも Step1 の説明のまま進まない／入力・選択して「次へ」→ Step2 に入りチュートリアルが「起動設定」へ進む／部分入力でも Step2 到達まで進まない／以降（保存して作成→一括起動→完了）まで通し他ステップに回帰なし。
+
+## 2026-07-12 027 レビュー対応 advance 多重呼び出しによるステップ飛ばしの冪等化（frontend のみ）
+
+027 の差分全体（本実装＋4修正）にセキュリティ／品質レビューを実施。セキュリティは問題なし（`src-tauri/`・capabilities・CSP・依存すべて不変、外部通信/リソースなし、危険 DOM API なし、localStorage はテーマ同方針、セレクタは静的定数のみ）。品質は「中1・低2」を検出し、中1 のみ修正。
+
+### 今回完了したこと
+
+- **中の修正**: `advance()` がステップ遷移コミット前に複数回呼ばれるとステップを飛ばし得る問題（target-click のダブルクリック＝ステップ14 で「一括起動できました」を飛ばす／target-appears の MutationObserver 多重発火／screen 条件 effect 再発火）を冪等化。`TutorialProvider` に `stepIndexRef`（コミット済み index ミラー）＋`advancedFromRef`（直近 advance 済み index）を追加し、`advance()` は `advancedFromRef.current === from` なら no-op。判定・更新は `setStepIndex` の **updater 外**で行い StrictMode の updater 二重実行を回避。state 条件は既存 `baselineRef` に加え本ガードで一律冪等化。
+- **低1（未修正・意図をコメント化）**: `add-preset-next` の `data-tutorial-id` はバグD修正で target-appears へ切替後どのステップも参照しないが、害のない安定目印として残置する旨を `AddPresetScreen.tsx` にコメント記載。
+- **低2（対応不要）**: 対象未検出時の中央カード縮退は既存コメント（`TutorialOverlay.tsx` の「進行が止まらないよう」）で意図が既述のため追加なし。
+
+### 変更した主要ファイル
+
+- `apps/desktop/src/features/tutorial/TutorialProvider.tsx`（冪等ガード追加。挙動は正常時不変・安全側の防御のみ）
+- `apps/desktop/src/screens/add-preset/AddPresetScreen.tsx`（`add-preset-next` 残置理由コメントのみ・挙動不変）
+
+### まだ未完了のこと / 次にやるべきタスク
+
+- **実機表示（`tauri dev`）が 027 全体で未実施**。`.env.local` に `VITE_SHOW_TUTORIAL=true` を置いて 16 ステップ通し確認が最優先。特に本回の冪等化: **ステップ14「一括起動」を素早く2回押しても「一括起動できました」（ステップ15）を飛ばさない**こと、および全ステップで飛ばし・回帰がないこと。
+- ライト／ダーク両テーマの視認性確認（レビュー指摘の軽微メモ: ライト時のグロー `--tutorial-ring-soft`＝secondary 28% が淡い。主線リング 72% が輪郭を担保するため実害は小だが、実機で縁が弱ければ 38–40% へ調整余地）。
+- 実機 OK 後、027 差分（新規 `features/tutorial/`・`components/tutorial/`＋既存への加算的変更）をコミット。
+
+### 既知のエラー
+
+- なし（typecheck / lint ともクリーン、コンパイルエラー・ランタイム既知不具合なし）。未実施なのは実機目視確認のみ。
+
+### 実行した確認コマンド
+
+- `pnpm --filter ./apps/desktop typecheck` → 成功（exit 0）
+- `pnpm --filter ./apps/desktop lint` → 成功（exit 0）
+- `git status --porcelain` ／ `git diff --name-only` ／ `src-tauri`・`Cargo`・`tauri.conf`・`capabilities`・`package.json`・`pnpm-lock` の変更なしを grep 確認（すべて空＝不変）
+- `grep` で tutorial 配下に `http`/`url(`/`@import`/`fetch`/`WebSocket`・`innerHTML`/`dangerouslySetInnerHTML`/`eval`・`.module.css` の生 hex/rgba がないことを確認（いずれもなし）
+
+### 次回セッションで最初に読むべきファイル
+
+- 本 `docs/progress.md` 末尾の 027 各節（本実装＋4修正＋本レビュー対応）
+- `docs/tasks/027-first-run-tutorial.md`（仕様・完了条件・セキュリティ制約）
+- `apps/desktop/src/features/tutorial/TutorialProvider.tsx`（冪等ガードの実装）
+- `apps/desktop/src/components/tutorial/TutorialOverlay.tsx`（幾何・target-click/target-appears の advance 経路）
+- `apps/desktop/src/features/tutorial/tutorialSteps.ts`（16 ステップ定義・advanceOn union）

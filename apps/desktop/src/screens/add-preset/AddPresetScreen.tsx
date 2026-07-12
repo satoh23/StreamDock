@@ -17,6 +17,7 @@ import {
 import { toErrorMessage } from "../../features/tools/useTools";
 import { Button, IconTile } from "../../components/primitives";
 import { PreviewCard, type PreviewRowData } from "../../components/PreviewCard";
+import { useTutorial } from "../../features/tutorial/useTutorial";
 import layout from "../formLayout.module.css";
 import styles from "./AddPresetScreen.module.css";
 
@@ -73,6 +74,7 @@ export function AddPresetScreen({
   onSaved?: () => Promise<void> | void;
 }) {
   const isEdit = !!editingPreset;
+  const { isCancelLockedByTutorial } = useTutorial();
 
   const [currentStep, setCurrentStep] = useState<1 | 2>(1);
   const [name, setName] = useState("");
@@ -302,7 +304,7 @@ export function AddPresetScreen({
       </div>
 
       <div className={layout.content}>
-        <section className={layout.panel}>
+        <section className={layout.panel} data-tutorial-id="add-preset-panel">
           {currentStep === 1 ? (
             <>
               <div className={layout.panelHead}>
@@ -386,8 +388,22 @@ export function AddPresetScreen({
                 {error && <div className={layout.error}>{error}</div>}
 
                 <div className={layout.bottomActions}>
-                  <Button onClick={() => onNavigate("main")}>キャンセル</Button>
-                  <Button variant="primary" onClick={goNext}>
+                  <Button
+                    onClick={() => onNavigate("main")}
+                    disabled={isCancelLockedByTutorial()}
+                  >
+                    キャンセル
+                  </Button>
+                  {/* 027: 現在どのステップも参照しない目印属性。ステップ10 の進行は
+                      「次へ」クリック自体ではなく Step2（起動リスト）出現を検知する
+                      target-appears(add-preset-launch-list) に切り替えたため（バリデーション
+                      通過時のみ進めるバグ修正）。将来「次へ」自体をハイライトする余地を残す
+                      安定目印として、害のない属性のまま残置する。 */}
+                  <Button
+                    variant="primary"
+                    onClick={goNext}
+                    data-tutorial-id="add-preset-next"
+                  >
                     次へ
                   </Button>
                 </div>
@@ -402,7 +418,10 @@ export function AddPresetScreen({
                 </p>
               </div>
               <div className={layout.panelBody}>
-                <div className={styles.launchList}>
+                <div
+                  className={styles.launchList}
+                  data-tutorial-id="add-preset-launch-list"
+                >
                   {launchItems.length === 0 ? (
                     <div className={styles.emptyPreview}>
                       ツールが選択されていません。前の画面でツールを選択してください。
@@ -468,6 +487,7 @@ export function AddPresetScreen({
                     variant="primary"
                     disabled={saving}
                     onClick={handleSave}
+                    data-tutorial-id="add-preset-submit"
                   >
                     {isEdit ? "保存する" : "保存して作成"}
                   </Button>

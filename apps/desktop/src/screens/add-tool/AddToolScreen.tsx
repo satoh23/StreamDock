@@ -15,6 +15,7 @@ import type {
 } from "../../features/presets/types";
 import { Button } from "../../components/primitives";
 import { PreviewCard, type PreviewRowData } from "../../components/PreviewCard";
+import { useTutorial } from "../../features/tutorial/useTutorial";
 import layout from "../formLayout.module.css";
 import styles from "./AddToolScreen.module.css";
 
@@ -64,6 +65,7 @@ export function AddToolScreen({
   presetItems: PresetItemRecord[];
 }) {
   const isEdit = !!editingTool;
+  const { isCancelLockedByTutorial } = useTutorial();
 
   const [name, setName] = useState("");
   // 023: ツール種別（アプリ = executable / URL = url）。
@@ -212,7 +214,7 @@ export function AddToolScreen({
       </div>
 
       <div className={layout.content}>
-        <section className={layout.panel}>
+        <section className={layout.panel} data-tutorial-id="add-tool-panel">
           <div className={layout.panelHead}>
             <h3>{isUrlKind ? "URL を入力" : "アプリを選択"}</h3>
             <p>
@@ -225,7 +227,12 @@ export function AddToolScreen({
             {/* 023: ツール種別トグル（アプリ = 実行ファイル / URL = 既定ブラウザで開く）。
                 025: 編集時は種別切替を許さないため非表示にする（種別は editingTool.kind 固定）。 */}
             {!isEdit && (
-              <div className={styles.kindToggle} role="tablist" aria-label="ツール種別">
+              <div
+                className={styles.kindToggle}
+                role="tablist"
+                aria-label="ツール種別"
+                data-tutorial-id="add-tool-kind-toggle"
+              >
                 <button
                   type="button"
                   role="tab"
@@ -392,7 +399,12 @@ export function AddToolScreen({
             {error && <div className={styles.error}>{error}</div>}
 
             <div className={layout.bottomActions}>
-              <Button onClick={() => onNavigate("main")}>キャンセル</Button>
+              <Button
+                onClick={() => onNavigate("main")}
+                disabled={isCancelLockedByTutorial()}
+              >
+                キャンセル
+              </Button>
               <Button variant="primary" disabled={saving} onClick={handleSave}>
                 {isEdit ? "保存する" : "保存して追加"}
               </Button>

@@ -25,15 +25,15 @@
 - 021 UI Design Modernization
 - 022 Tool/Preset Form Polish
 - 023 Browser URL Tool Support
+- 024 Tool → Preset Registration
+- 025 Form/UI Polish Round 2
+- 026 Header Polish & Navigation Foundation
 
 ## Next
 
-- 024 Tool → Preset Registration
+- 027 First-Run Tutorial (Onboarding)
 
 ## Todo
-
-- 025 Form/UI Polish Round 2
-- 026 Header Polish & Navigation Foundation
 
 ## MVP リリース前最後
 

@@ -583,6 +583,7 @@ export function MainScreen({
                 launching || stopping || (!anyLaunched && (isEmpty || !hasEnabled))
               }
               onClick={anyLaunched ? stopAll : launchAll}
+              data-tutorial-id="main-launch-all"
             >
               {launching || stopping ? (
                 <Spinner />

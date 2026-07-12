@@ -108,6 +108,7 @@ export function Sidebar({
           title={
             hasTools ? undefined : "先にツールを1つ以上登録してください"
           }
+          data-tutorial-id="sidebar-add-preset"
         >
           ＋ プリセットを追加
         </button>
@@ -169,6 +170,7 @@ export function Sidebar({
         <button
           className={`${styles.ghost} ${activeNav === "add-tool" ? styles.active : ""}`}
           onClick={() => onNavigate("add-tool")}
+          data-tutorial-id="sidebar-add-tool"
         >
           ＋ ツールを登録
         </button>

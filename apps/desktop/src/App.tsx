@@ -26,6 +26,8 @@ import {
 } from "./features/presets/presetItemApi";
 import { withTools } from "./features/presets/types";
 import type { LaunchMode, PresetItemMeta } from "./features/presets/types";
+import { TutorialProvider } from "./features/tutorial/TutorialProvider";
+import { TutorialOverlay } from "./components/tutorial/TutorialOverlay";
 
 function App() {
   const [screen, setScreen] = useState<Screen>("main");
@@ -249,66 +251,73 @@ function App() {
   );
 
   return (
-    <Window
-      header={
-        <Header
-          hostOs={hostOs}
-          activeNav={activeNav}
-          onNavigate={handleNavigate}
-        />
-      }
-      sidebar={screen === "main" ? sidebar : undefined}
+    <TutorialProvider
+      screen={screen}
+      toolsCount={tools.length}
+      presetsCount={presets.length}
     >
-      {screen === "main" && (
-        <MainScreen
-          presetName={activePreset?.name ?? null}
-          presetId={activePresetId}
-          items={activeItems}
-          availableTools={availableTools}
-          hasAnyTools={tools.length > 0}
-          onNavigate={handleNavigate}
-          onAddTool={handleAddToolToPreset}
-          onRemoveItem={handleRemovePresetItem}
-          onReorder={handleReorderPresetItems}
-          onSetLaunchMode={handleSetLaunchMode}
-        />
-      )}
-      {screen === "add-tool" && (
-        <AddToolScreen
-          onNavigate={setScreen}
-          editingTool={editingTool}
-          presets={presets}
-          presetItems={presetItems}
-          onSaved={async () => {
-            await reloadTools();
-            // 024: プリセット登録がメイン画面のツール構成へ反映されるよう item も再読込
-            await reloadPresetItems();
-          }}
-        />
-      )}
-      {screen === "add-preset" && (
-        <AddPresetScreen
-          onNavigate={setScreen}
-          editingPreset={editingPreset}
-          editingItems={editingItems}
-          tools={tools}
-          onSaved={reloadPresetData}
-        />
-      )}
-      {screen === "diagnostics" && <DiagnosticsScreen />}
-      {screen === "settings" && (
-        <SettingsScreen
-          preference={themePreference}
-          onChangePreference={setThemePreference}
-        />
-      )}
-      {comingSoonSection && (
-        <ComingSoonScreen
-          title={comingSoonSection.label}
-          description={comingSoonSection.comingSoonDescription}
-        />
-      )}
-    </Window>
+      <Window
+        header={
+          <Header
+            hostOs={hostOs}
+            activeNav={activeNav}
+            onNavigate={handleNavigate}
+          />
+        }
+        sidebar={screen === "main" ? sidebar : undefined}
+      >
+        {screen === "main" && (
+          <MainScreen
+            presetName={activePreset?.name ?? null}
+            presetId={activePresetId}
+            items={activeItems}
+            availableTools={availableTools}
+            hasAnyTools={tools.length > 0}
+            onNavigate={handleNavigate}
+            onAddTool={handleAddToolToPreset}
+            onRemoveItem={handleRemovePresetItem}
+            onReorder={handleReorderPresetItems}
+            onSetLaunchMode={handleSetLaunchMode}
+          />
+        )}
+        {screen === "add-tool" && (
+          <AddToolScreen
+            onNavigate={setScreen}
+            editingTool={editingTool}
+            presets={presets}
+            presetItems={presetItems}
+            onSaved={async () => {
+              await reloadTools();
+              // 024: プリセット登録がメイン画面のツール構成へ反映されるよう item も再読込
+              await reloadPresetItems();
+            }}
+          />
+        )}
+        {screen === "add-preset" && (
+          <AddPresetScreen
+            onNavigate={setScreen}
+            editingPreset={editingPreset}
+            editingItems={editingItems}
+            tools={tools}
+            onSaved={reloadPresetData}
+          />
+        )}
+        {screen === "diagnostics" && <DiagnosticsScreen />}
+        {screen === "settings" && (
+          <SettingsScreen
+            preference={themePreference}
+            onChangePreference={setThemePreference}
+          />
+        )}
+        {comingSoonSection && (
+          <ComingSoonScreen
+            title={comingSoonSection.label}
+            description={comingSoonSection.comingSoonDescription}
+          />
+        )}
+      </Window>
+      <TutorialOverlay />
+    </TutorialProvider>
   );
 }
 
