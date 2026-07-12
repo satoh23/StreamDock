@@ -2517,12 +2517,21 @@ macOS でしか動かしていなかった MVP を、UTM(QEMU) の **Windows 11 
 
 ### フェーズ1（本セッションで実装＝未署名・費用ゼロ）
 
-- `.github/workflows/release.yml`（新規）: `tauri-apps/tauri-action` のマトリクス（macos-latest / windows-latest）。
-  `v*` タグ push（＋ `workflow_dispatch` 手動）で両 OS のインストーラを生成し **Release 下書き**へ添付。
-  - macOS: `--target universal-apple-darwin`（Intel/Apple Silicon 両対応）・rust targets 2つ追加。
-  - Windows: 既定 x64＝ターゲット指定なし。NSIS(.exe)+WiX(.msi) を生成。
-  - pnpm(action-setup)＋Node20＋Rust(stable)＋rust-cache、`pnpm install --frozen-lockfile`、`permissions: contents: write`。
-- `README.md`: リリース手順（タグの打ち方・手動実行・生成物・未署名時の警告回避・ローカル `pnpm tauri build`）を追記。
+- **配布方式の決定（ソース非公開のまま配布）**: このリポジトリ（`stream-dock`）は **private のまま**、
+  成果物だけを **別の public リポジトリ `satoh23/StreamDock-releases`** の Releases に置く。理由: GitHub Releases で
+  「アカウント登録なしに誰でも DL」できるのは public リポジトリのみだが、ソースまで公開したくない（パクられ懸念）ため、
+  バイナリ専用の public リポジトリに分離する。private の Actions から別リポジトリへ書くため `GITHUB_TOKEN` は使えず、
+  Secrets `RELEASE_REPO_TOKEN`（public 側 Contents: R/W な Fine-grained PAT）を使う。
+- `.github/workflows/release.yml`（新規）: 2 ジョブ構成。
+  - `build`（macos-latest / windows-latest マトリクス）: tauri-action で**ビルドのみ**（tagName 未指定＝Release は作らない）→
+    生成物（dmg/nsis/msi）を `actions/upload-artifact` で保存。macOS は `--target universal-apple-darwin`（rust targets 2つ）、
+    Windows は既定 x64。pnpm(action-setup)＋Node20＋Rust(stable)＋rust-cache＋`pnpm install --frozen-lockfile`。
+  - `release`（ubuntu・`needs: build`）: 全成果物を `download-artifact` で集約 → `softprops/action-gh-release@v2` で
+    **public `StreamDock-releases` に Release 下書き**作成・添付（`repository` + `token: RELEASE_REPO_TOKEN`）。
+  - 2 ジョブに分けたのは、両 OS が同じ Release を同時作成する競合を避け、公開先を1回の集約で作るため。
+  - `permissions: contents: read`（公開先へは PAT を使うため本リポジトリ側は読み取りのみ）。
+- `README.md`: リリース手順（前提＝public リポジトリ＋`RELEASE_REPO_TOKEN`／タグの打ち方・手動実行・生成物・未署名時の警告回避・
+  ローカル `pnpm tauri build`）を追記。
 - `docs/tasks/099-user-test-package.md`（新規スペック）。
 
 ### フェーズ2（未実装・証明書取得後）

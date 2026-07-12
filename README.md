@@ -50,10 +50,18 @@ cd apps/desktop/src-tauri && cargo check
 ## リリース / 配布（099）
 
 ビルドは **GitHub Actions**（`.github/workflows/release.yml`）で自動化している。VM も Docker も不要で、
-macOS と Windows(x64) のインストーラをクラウドで生成し、**GitHub Releases の下書き**に添付する。
+macOS と Windows(x64) のインストーラをクラウドで生成する。
 
 - 生成物: macOS `.dmg`（universal・Intel/Apple Silicon 両対応）/ Windows x64 `.exe`(NSIS) + `.msi`(WiX)。
 - Windows は **x64 のみ**（一般ユーザーのほぼ全員。ARM64 Windows でも x64 エミュで動作）。
+- **このリポジトリ（ソース）は private のまま**。成果物だけを **別の public リポジトリ
+  `satoh23/StreamDock-releases`** の Releases 下書きに添付する（ユーザーはそちらから登録不要で DL）。
+
+### 前提（配布リポジトリと Secrets）
+
+- public リポジトリ `satoh23/StreamDock-releases` を作成済み（README 等で最低1コミットが必要）。
+- private リポジトリの Secrets に **`RELEASE_REPO_TOKEN`**（`StreamDock-releases` への Contents: Read/Write な
+  Fine-grained PAT）を登録済み。`GITHUB_TOKEN` は別リポジトリへ書けないため PAT を使う。
 
 ### リリース手順
 
@@ -63,9 +71,9 @@ git tag v0.1.0
 git push --tags
 ```
 
-タグ push で Actions が走り、完了すると Releases に下書きが作られる。内容を確認して publish する。
-動作確認だけなら GitHub の Actions 画面から `release` ワークフローを **手動実行（workflow_dispatch）**しても
-ビルドできる。
+タグ push で Actions が走り、完了すると **`StreamDock-releases` の Releases に下書き**が作られる。
+内容を確認して publish する。動作確認だけなら GitHub の Actions 画面から `release` ワークフローを
+**手動実行（workflow_dispatch）**してもビルドできる（下書き名は `CI build <番号>`）。
 
 ### 署名について（現状）
 

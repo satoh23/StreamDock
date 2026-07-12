@@ -25,14 +25,19 @@ GitHub Actions（クラウド CI）で自動化し、**VM も Docker も使わ�
 - macOS = **universal(.dmg)**（Intel/Apple Silicon 両対応）・**未署名**。
 - 署名 = **Windows のみ**（証明書取得後にフェーズ2で追加）。
 - 配布 = **GitHub Releases**（ユーザーはアカウント登録不要で DL 可）。窓の杜/Vector 等は別途手動申請。
+- **ソース非公開のまま配布**: このリポジトリ（`stream-dock`）は **private のまま**、成果物だけを
+  **別の public リポジトリ `satoh23/StreamDock-releases`** の Releases に置く。CI は private でビルドし、
+  別リポジトリへ書くため `GITHUB_TOKEN` ではなく Secrets の **`RELEASE_REPO_TOKEN`**（public 側 Contents: R/W な PAT）を使う。
 
 ## 進め方（2フェーズ）
 
 ### フェーズ1 — CI で未署名ビルド → Releases（費用ゼロ・すぐ配布可能）
 
-- `.github/workflows/release.yml`: `tauri-apps/tauri-action` のマトリクス（macos-latest / windows-latest）。
-  `v*` タグ push（＋ `workflow_dispatch` 手動）で両 OS のインストーラを生成し Release 下書きに添付。
-- 成果: `git tag v0.1.0 && git push --tags` で Mac/Win(x64) インストーラが Releases に出る。
+- `.github/workflows/release.yml`: `build`（macos-latest / windows-latest マトリクスで tauri-action ビルド →
+  成果物を workflow artifact 化）＋ `release`（全成果物を集約し public `StreamDock-releases` に Release 下書き作成）。
+  `v*` タグ push（＋ `workflow_dispatch` 手動）で起動。
+- 前提: public リポジトリ `satoh23/StreamDock-releases`（最低1コミット）＋ private 側 Secrets `RELEASE_REPO_TOKEN`。
+- 成果: `git tag v0.1.0 && git push --tags` で Mac/Win(x64) インストーラが public 側の Releases に出る。
 - この段階は未署名（Windows は「詳細情報 → 実行」で回避・案内を docs に記載）。
 
 ### フェーズ2 — Windows 署名を CI に統合（証明書取得後）
