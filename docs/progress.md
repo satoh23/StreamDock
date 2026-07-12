@@ -2414,3 +2414,84 @@ Rust / SQLite / Tauri command / capabilities / CSP / 依存の変更。ステッ
 - `apps/desktop/src-tauri/Cargo.toml`（image/base64 を共通へ・windows feature 4つ追加＋理由コメント）
 - `apps/desktop/src-tauri/src/tools/icon.rs`（共通化リファクタ＋`#[cfg(windows)] mod windows` 新設）
 - `docs/progress.md`（本節）/ `docs/security.md`（028 の未検証注記を追記）
+
+## 2026-07-12 098 Windows Build（Windows 11 ARM64 実機で初コンパイル・初 E2E・インストーラ生成）
+
+macOS でしか動かしていなかった MVP を、UTM(QEMU) の **Windows 11 ARM64** VM 上で初めてビルド・起動・E2E した。
+一度も Windows でコンパイルされていなかった `#[cfg(windows)]` コード（前面化・028 アイコン抽出・windows 0.58）を
+`aarch64-pc-windows-msvc` で初コンパイルし、コア導線と要注意フローを実機確認、ARM64 インストーラ（.exe/.msi）まで生成した。
+
+### 環境（(A)・手作業）
+
+- VM: UTM(QEMU) / Windows 11 ARM64。ツールチェイン（すべて ARM64）: rustup ＋ `aarch64-pc-windows-msvc`（ネイティブ）、
+  VS Build Tools ARM64（**MSVC v143 ARM64/ARM64EC ビルドツール**＋Windows SDK）、Node 24（20+ 要件を満たす）＋pnpm 10.33、Git for Windows。
+- **詰まった点＝ブロッカーと解消**: `cargo check` で `error: linker link.exe not found`。原因は VS Build Tools に **ARM64 用 VC ツールが未導入**
+  （`vswhere -requires Microsoft.VisualStudio.Component.VC.Tools.ARM64` が空）。**「MSVC v143 - VS 2022 C++ ARM64/ARM64EC ビルドツール」を
+  追加インストール**して解消。以後リンク成功。
+
+### (B) 静的検査＝初コンパイル（全クリーン・コード修正ゼロ）
+
+- `cargo check` → **成功**。`#[cfg(windows)] mod windows` ×2（`process/service.rs` 前面化 / `tools/icon.rs` 028 抽出）と
+  windows 0.58 の全 feature/型/API が**初コンパイルでエラーなし**。事前に懸念した GDI/COM の型（`DeleteObject`/`GetObjectW` の
+  `HGDIOBJ` 変換等）は windows 0.58 で問題なし。→ **028 の未検証 Windows コードは修正不要で通過**。
+- `cargo clippy` → 警告なし。`pnpm typecheck` / `pnpm lint`（root）→ ともにエラーなし。
+
+### (C) 実機起動・E2E（`pnpm tauri dev`）
+
+- 見た目: フレームレス表示（`set_decorations(false)`）・自作 min/max/close・ドラッグ移動・タイトル二重表示/リサイズ破綻なし → OK。
+- コア導線: `.exe` 登録（絶対パス検証）/ URL ツール（既定ブラウザ・023）/ プリセット作成→**一括起動→一括停止** / 個別起動・停止・
+  ランタイムステータス → 全 OK。
+- 要注意フロー（重点・progress.md 既知 TODO の解消）:
+  - **「開く」で既存インスタンス前面化・二重起動しない**（`focus_by_pid`/`SetForegroundWindow`）→ **確認 OK**（未実施だった E2E を解消）。
+  - **autostart**: OS スタートアップ（レジストリ Run キー）の登録・解除・`--autostart` 起動 → 確認 OK。
+  - **028 アイコン抽出の実機初検証**: `.exe` の実アイコンがプレビュー/一覧/サイドバー/プリセットに表示・抽出不可は文字フォールバック・
+    繰り返し登録で不安定化なし（**ハンドル/COM リーク兆候なし**）→ 確認 OK。
+
+### 直した箇所（最小修正の内容と理由）
+
+- **`apps/desktop/src-tauri/icons/icon.ico` の再生成のみ**（Windows 専用ファイル。macOS の `icon.icns` は未変更＝macOS 挙動不変）。
+  - 理由: Windows のタスクバー等でアプリアイコンが他アプリより小さく見えた。原因は元アイコンが **macOS 慣習の余白（青い角丸が
+    キャンバスの ~81%・四隅 ~9.4% 透明）** を持ち、端まで絵を敷く Windows で相対的に小さく見えるため。
+  - 対応: ユーザー提供の**端まで敷いた高解像度素材（1254px）**から、角丸半径 ~176px の**透過マスク**（四隅を透明化・白い角を出さない）を
+    当て、16/24/32/48/64/128/256px を**元画像から直接縮小レンダリング**して `.ico` を再生成（拡大由来のボケなし）。`tauri.conf.json` は変更せず。
+  - Rust / frontend のコード変更は **一切なし**（(B) で修正ゼロ）。
+
+### (C-4) インストーラ生成
+
+- `pnpm tauri build` で **ARM64 の `.exe`(NSIS) と `.msi`(WiX) の両方を生成**（縮退なし。WiX が ARM64 で不可なら `.exe` のみに
+  縮退する方針だったが、今回は両方生成できた）。インストール → 起動 → 新アイコン表示まで確認。
+- 署名なしのため SmartScreen 警告は想定内（署名・公証は 099）。
+
+### security-review 結果（前面化 / 028 unsafe FFI・実施済み＝必須）
+
+- 判定: **問題なし**（修正必須なし）。progress.md 既知 TODO だった「前面化 / focus_process / windows クレートの security-review 未実施」を**解消**。
+- 確認済み（docs/security.md 準拠）: `focus_process` は frontend から **launchId のみ**受け取り raw PID/HWND を受けない・前面化対象は
+  **registry 保持の自分が起動した PID とその子孫**に限定・**プロセス名では探さない**（§6）/ registry に無い launchId は新規起動せず二重起動を根絶 /
+  ウィンドウは `GetWindowTextLengthW` の**長さだけ**判定しタイトル文字列を読まない・エラー固定文言・ログ露出なし（§9）/ shell 非経由・
+  外部通信/ファイル操作なし（§1/§4/§5）/ 028 は RAII ガードで全 early-return・`?` 経路のハンドル/COM 解放・COM Release→`CoUninitialize` の
+  drop 順が正しい・`CloseHandle(snapshot)` 実施（リーク兆候なしの E2E と整合）/ 新規 crate なし（windows feature 追加のみ・§10）/ `csp:null` 不変。
+- **既知の限界（記録のみ・修正不要）**: `collect_process_tree` は PID 再利用時に無関係な PID を子孫集合に含めうる（深さ 8/件数 1024 で保護）。
+  ただし操作は**前面化のみ（kill しない）**で実害は「無関係なウィンドウが前面に出る」程度・低頻度。停止経路のような exe/start_time 照合の
+  追加は前面化の低リスクに対し過剰なため据え置き。
+
+### 完了条件の達成状況
+
+- cargo check / clippy 通過 ✓ / typecheck・lint 通過 ✓ / dev でフレームレス＋min/max/close ✓ / ツール登録→プリセット作成→一括起動→一括停止 ✓ /
+  「開く」で前面化・二重起動しない ✓ / autostart 登録・解除・`--autostart` ✓ / 028 アイコン抽出の実機表示・フォールバック・リーク無し ✓ /
+  ARM64 `.exe`(NSIS) ＋ `.msi`(WiX) インストーラ生成・インストール・起動 ✓ / 前面化 security-review 実施＝問題なし ✓。
+
+### 残課題
+
+- コード署名 / 公証（署名なし SmartScreen 警告の解消）は **099** で対応。
+- x86_64(x64) Windows 検証は本タスク対象外（ARM64 限定）。
+- macOS 側の `.app` 実アイコン抽出の非退行（028 由来）は macOS 実機での確認継続（本タスクでは Windows のみ検証）。
+
+### やらないこと（維持）
+
+- macOS 挙動変更・共通ロジックの大規模リファクタ / Linux ビルド / CI 自動 Windows ビルド / 新機能追加（ビルド・起動に不可欠な最小修正のみ＝
+  今回は icon.ico の再生成のみ）/ 新規 npm・crate・plugin 追加。
+
+### 変更ファイル
+
+- `apps/desktop/src-tauri/icons/icon.ico`（Windows アプリアイコン再生成のみ。macOS の `icon.icns` は不変）
+- `docs/progress.md`（本節）/ `docs/security.md`（§098 の実検証・security-review 済み注記を追記）
