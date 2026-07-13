@@ -19,11 +19,11 @@ export const HEADER_SECTIONS: readonly HeaderSection[] = [
   { id: "tools", label: "ツール管理", screen: "main", implemented: true },
   {
     id: "rakuraku",
-    label: "らくらくツール導入",
+    label: "らくらくツール設定",
     screen: "rakuraku-tools",
     implemented: false,
     comingSoonDescription:
-      "おすすめの配信ツールをまとめて確認し、ワンクリックで導入できる機能を準備中です。",
+      "おすすめの配信ツールをまとめて確認し、ワンクリックで設定できる機能を準備中です。",
   },
   {
     id: "obs",

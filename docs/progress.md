@@ -2695,3 +2695,45 @@ OS/ファイル/プロセス操作・外部通信・依存は一切変更して�
 #### 変更ファイル
 
 - `apps/desktop/src/components/Sidebar.tsx` / `apps/desktop/src/screens/main/MainScreen.tsx` / `apps/desktop/src/screens/add-preset/AddPresetScreen.tsx` / `apps/desktop/src/screens/add-tool/AddToolScreen.tsx` / `apps/desktop/src/features/tutorial/tutorialSteps.ts` / `docs/progress.md`（本節）。
+
+## 2026-07-13 (031 Rakuraku Tool Settings Rename)
+
+### 完了したこと
+
+「らくらくツール**導入**」を「らくらくツール**設定**」に改名した。今後この画面で導入だけでなく設定等も行えるように
+名称を「設定」へ寄せるための**名称変更のみ**のタスク。画面自体は 032 の新機能実装までは現状の ComingSoon（準備中）
+プレースホルダのまま。frontend の表示文言のみの変更。
+
+#### 改名した箇所（現行 → 変更後）
+
+- (1) **ラベル**（単一ソース）: `headerSections.ts:22` `label` `"らくらくツール導入"` → `"らくらくツール設定"`。
+  `App.tsx` が `comingSoonSection.label` をページ見出しに使うため、**サイドバー導線＋準備中ページ見出しの両方**に自動波及。
+- (2) **説明文のリワード**: `headerSections.ts:26` `comingSoonDescription` の「ワンクリックで**導入**できる」→「ワンクリックで**設定**できる」。
+- (3) **チュートリアル文言の同期**: `tutorialSteps.ts:62` の直書き引用 `『らくらくツール導入』` → `『らくらくツール設定』`
+  （`HEADER_SECTIONS` を参照せず直書きのため (1) では自動反映されず、個別に手で同期）。
+- (4) **コメント参照の更新**（非表示）: `ComingSoonScreen.tsx:5` のコメント内 `らくらくツール導入` → `らくらくツール設定`。
+
+#### 据え置いた内部識別子（触っていない）
+
+- `screen: "rakuraku-tools"`（`headerSections.ts:23` / `types.ts:8` / `App.tsx:241` / `Header.tsx:25` の型 union）。
+  ローマ字 ID で「導入/設定」の語を含まないため不変。
+- `implemented: false`（`headerSections.ts:24`）— 画面は準備中プレースホルダのまま維持。
+
+#### セキュリティ（docs/security.md 準拠）
+
+- frontend の表示文字列のみの変更。OS/ファイル/プロセス操作を追加せず（§2/§4/§5）、新しい Tauri command /
+  capabilities / 依存を追加していない（§3/§10）。外部通信・外部リソース読み込みを増やしていない（§1/§CSP）。
+
+#### 検証
+
+- `git diff --stat` = 3 ファイル・4 挿入/4 削除。`git diff` で変更が (1)〜(4) の該当行のみで、内部識別子 `rakuraku-tools`
+  （4 箇所）と `implemented:false` に波及していないこと、チュートリアル引用(:62)が新ラベル `らくらくツール設定` と
+  一致することを確認。`らくらくツール導入` / 表示文言の「導入」の残存は grep で 0 件。
+- `pnpm --filter ./apps/desktop typecheck` = pass（exit 0）。`pnpm --filter ./apps/desktop lint` = pass（exit 0）。
+- 実機表示（`pnpm --filter ./apps/desktop tauri dev`）はユーザー環境で目視確認予定: ヘッダー導線・準備中ページ見出しが
+  「らくらくツール設定」／説明文の「導入」が「設定」寄り／チュートリアル引用が新ラベルと一致／画面は準備中プレースホルダのまま。
+
+#### 変更ファイル
+
+- `apps/desktop/src/components/headerSections.ts` / `apps/desktop/src/features/tutorial/tutorialSteps.ts` /
+  `apps/desktop/src/screens/coming-soon/ComingSoonScreen.tsx` / `docs/progress.md`（本節）。
