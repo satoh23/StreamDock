@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "stream-dock",
+  "productName": "StreamDock",
   "version": "0.1.0",
   "identifier": "com.tetsuya.stream-dock",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "stream-dock",
+        "title": "StreamDock",
         "width": 1280,
         "height": 800,
         "titleBarStyle": "Overlay",

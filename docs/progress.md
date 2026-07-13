@@ -2596,3 +2596,55 @@ macOS でしか動かしていなかった MVP を、UTM(QEMU) の **Windows 11 
 - `docs/tasks/032-rakuraku-auto-setup-design.md`（設計確定版へ書換）/ `docs/tasks/032a-rakuraku-tools-screen.md`（新規）/
   `docs/tasks/032b-bouyomi-voicevox-integration.md`（新規）/ `docs/task-board.md`（032 分割・032a/032b 追加）/
   `docs/progress.md`（本節）。
+
+### 029 StreamDock Naming Consistency
+
+ユーザー可視の表示名を **StreamDock** に統一した。frontend の固定文言と window タイトルの変更に加え、
+実装後の確認でメニューバー/Dock の OS アプリ名が `stream-dock` のままと判明したため、**ユーザー判断で
+`productName` も追加変更**した（当初 029 では据え置き予定だったスコープを拡張）。ロジック・API・DB スキーマ・
+OS/ファイル/プロセス操作・外部通信・依存は一切変更していない。
+
+#### 変更した3箇所（ユーザー可視の表示名）
+
+- `apps/desktop/index.html:7` — `<title>Tauri + React + Typescript</title>`（Vite 雛形のまま）→ `<title>StreamDock</title>`。
+- `apps/desktop/src-tauri/tauri.conf.json:15` — ネイティブ window `"title": "stream-dock"` → `"StreamDock"`。
+- `apps/desktop/src/screens/diagnostics/DiagnosticsScreen.tsx:29` — 診断サマリー本文 `"stream-dock 診断サマリー"` → `"StreamDock 診断サマリー"`。
+
+いずれもユーザー入力を扱わない固定文字列（§8 非該当）。3箇所の該当行のみを編集し、周辺行・他の
+`stream-dock` 表記には触れていない。
+
+#### 追加変更（productName — ユーザー判断でスコープ拡張）
+
+- `apps/desktop/src-tauri/tauri.conf.json:3` `productName: "stream-dock"` → `"StreamDock"`。メニューバー/Dock の
+  OS アプリ名（バンドル `.app` 名・CFBundleName）の出どころ。当初 029 は 098/099 への波及を理由に据え置き予定だったが、
+  実装後にユーザーへ影響を提示し「今変更する」と判断された（公開配布前が改名のクリーンなタイミング）。
+- **データ安全性を確認済み**: DB パスは `app_data_dir()`（＝`identifier` `com.tetsuya.stream-dock` 由来）＋ 固定
+  ファイル名 `stream-dock.db`（`lib.rs:39`）。localStorage キーも固定文字列。いずれも `productName` に依存しないため、
+  改名しても既存ユーザーのデータ/設定は移動・破損しない。据え置き理由はデータ破損ではなく配布成果物名への波及だった。
+- **波及チェック**: README / `.github` / `docs/tasks/099` に成果物名 `stream-dock_*.dmg` 等の直書き参照はなく、更新不要。
+  release.yml は tauri-action + glob 収集のため productName 変更を自動追従（成果物名が `StreamDock_*` になる）。
+- **dev では未反映**: `tauri dev` は実行バイナリ `target/debug/stream-dock`（Cargo `name`）を直接起動するため、dev の
+  メニューバー/Dock 名は `stream-dock` のまま。反映が見えるのは `pnpm tauri build` で作る実バンドルのみ。dev 名を
+  変えるには crate 改名が必要だが、既存ビルド/参照互換のため据え置く（下記）。
+
+#### 据え置いた技術識別子（変更すると壊れるため意図的に不変）
+
+- `tauri.conf.json:5` `identifier: com.tetsuya.stream-dock` / `package.json`（root `stream-dock-workspace` / desktop `stream-dock`）/
+  `src-tauri/Cargo.toml` の `name = "stream-dock"` / `stream_dock_lib` / `main.rs:5` `stream_dock_lib::run()` — 既存ビルド/パッケージ互換のため不変。
+- `src-tauri/src/lib.rs:39` DB ファイル名 `stream-dock.db`、localStorage キー `stream-dock.theme`（`theme.ts:5`）/ `stream-dock.tutorial.completed`（`tutorialStorage.ts:8`）— 既存ユーザーのデータ/設定を壊さないため不変。
+- 既に正しい `Header.tsx:43` wordmark / `tutorialSteps.ts:46`、プロトタイプ HTML・コメント内のプロジェクト名参照も対象外（再変更なし）。
+
+#### セキュリティ（docs/security.md 準拠）
+
+- 表示文字列と window タイトルのみの変更。OS/ファイル/プロセス操作を追加せず（§2/§4/§5）、新しい Tauri command / capabilities / 依存を追加していない（§3/§10）。外部通信・外部リソース読み込みを増やさず `csp: null` も不変（§1/§CSP）。
+
+#### 検証
+
+- `git diff` で `tauri.conf.json` は productName(:3) と window title(:15) の2行のみ変更、`identifier`(:5)・Cargo `name`/`stream_dock_lib`・DB ファイル名 `stream-dock.db`・localStorage キーは無傷を確認。`tauri.conf.json` は `python3 -c json.load` で妥当性確認済み。
+- `pnpm --filter ./apps/desktop typecheck` = pass（exit 0）。`pnpm --filter ./apps/desktop lint` = pass（exit 0）。※productName は tauri.conf.json のため typecheck/lint の検査対象外（JSON 妥当性で担保）。
+- Vite キャッシュ（`node_modules/.vite`）を削除済み（初回「反映されない」対応）。
+- 実機表示はユーザー環境で目視確認予定: 診断サマリー＝`StreamDock 診断サマリー`（dev で確認可）／window title＝`StreamDock`（`hiddenTitle:true` のため macOS タイトルバーには非表示・「ウィンドウ」メニュー等で確認）／メニューバー・Dock の OS 名＝`StreamDock` は **`pnpm tauri build` の実バンドルで確認**（dev では `stream-dock` のまま）。
+
+#### 変更ファイル
+
+- `apps/desktop/index.html` / `apps/desktop/src-tauri/tauri.conf.json`（title + productName） / `apps/desktop/src/screens/diagnostics/DiagnosticsScreen.tsx` / `docs/progress.md`（本節）。

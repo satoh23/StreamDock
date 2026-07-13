@@ -26,7 +26,7 @@ function formatTime(iso: string): string {
 /** 共有用の診断サマリーをプレーンテキストに整形する（full path / 環境変数は含まれない）。 */
 function buildSummaryText(summary: DiagnosticSummary): string {
   const lines: string[] = [];
-  lines.push("stream-dock 診断サマリー");
+  lines.push("StreamDock 診断サマリー");
   lines.push(`生成日時: ${formatTime(summary.generatedAt)}`);
   lines.push(`アプリバージョン: ${summary.appVersion}`);
   lines.push("");
