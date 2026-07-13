@@ -2557,3 +2557,42 @@ macOS でしか動かしていなかった MVP を、UTM(QEMU) の **Windows 11 
 ### 変更ファイル
 
 - `.github/workflows/release.yml`（新規）/ `docs/tasks/099-user-test-package.md`（新規）/ `README.md`（リリース手順追記）/ `docs/progress.md`（本節）
+
+## 2026-07-13
+
+### 032 らくらくツール設定 設計確定（棒読みちゃん×VOICEVOX 連携）
+
+別チャットで仕様を詰め、`docs/tasks/032-rakuraku-auto-setup-design.md` を「設計中プレースホルダ」から
+**設計確定版**へ書き換えた。実装は **032a（画面枠組み）/ 032b（棒読み×VOICEVOX 連携）** に分割し、
+`docs/task-board.md` の Todo に反映した。**本タスク（設計）はコード・依存・capability・security.md/product.md
+本文を一切変更していない**（改訂は 032b で security-review と同時に行う）。
+
+#### 確定した決定事項（論点 1〜5）
+
+- **自動化の境界＝「設定書換のみ自動」**。棒読みちゃん自身の設定（Socket 連携 ON・声質＝`VOICEVOX:ずんだもん`）
+  のみをバックアップ先取りで書換。**インストーラの自動DL/実行と SAPI 音声登録は自動化せず誘導のみ**
+  （未署名第三者バイナリ実行・昇格を伴うシステム全体への不可逆変更・中途半端な失敗・AV/SmartScreen 中断・
+  保守/信用リスクが高いため。ユーザーへリスクを明示し合意）。
+- **対応OS**: 画面枠組みは Windows/macOS 両対応＋**OS 対応バッジ（Windows専用/Mac専用/両OS対応）**。
+  棒読み×VOICEVOX 連携は**棒読みちゃん依存で Windows 専用**（028 前例に倣い mac では未検証、098 で初検証）。
+- **セキュリティ方針**: `docs/security.md` に**新章で限定解禁**（①ループバック 127.0.0.1 限定通信 ②自動DL/
+  実行なし＝公式ページ誘導 ③外部設定書換は可逆＋バックアップ必須・SAPI 等の不可逆変更は誘導のみ ④明示同意
+  ⑤security-review 必須）。`docs/product.md` の「設定ファイル自動上書き＝対象外」に本機能を例外として追記。
+- **技術/依存**: VOICEVOX REST 用に **`ureq`（ブロッキング HTTP・ループバックのみ）** を追加予定
+  （`reqwest` は tokio/async を引き込み同期コマンド構成と不整合のため不採用）。棒読みへのテスト送信は
+  `std::net::TcpStream`（新規依存なし）。**Tauri capability 追加なし・`csp: null` 不変**。
+- **MVP スコープ**: 棒読み×VOICEVOX 1 連携・**TTS 半分に限定**（コメントビューア連携＝コメント取り込みは対象外）。
+  設定解除・設定状況管理・設定更新は対象外。バックアップはファイルのみ（SQLite 状態記録なし）。
+
+#### per-integration アーキテクチャ
+
+- TS `src/features/rakuraku/`（連携の静的レジストリ: OS 対応可否・同意/免責テンプレ・ステップ定義）＋
+  `src/screens/rakuraku-tools/`（一覧→詳細→同意→実行）。
+- Rust `src-tauri/src/rakuraku/{mod,commands,service,model}` ＋ `integrations/bouyomi_voicevox`。
+  共通トレイト `Integration`（scan/configure/verify）。コマンドは `rakuraku_scan/configure/verify_integration`。
+
+#### 変更ファイル
+
+- `docs/tasks/032-rakuraku-auto-setup-design.md`（設計確定版へ書換）/ `docs/tasks/032a-rakuraku-tools-screen.md`（新規）/
+  `docs/tasks/032b-bouyomi-voicevox-integration.md`（新規）/ `docs/task-board.md`（032 分割・032a/032b 追加）/
+  `docs/progress.md`（本節）。
