@@ -21,7 +21,8 @@ export const HEADER_SECTIONS: readonly HeaderSection[] = [
     id: "rakuraku",
     label: "らくらくツール設定",
     screen: "rakuraku-tools",
-    implemented: false,
+    // 032a: 画面枠組み（一覧→詳細→同意→実行の器）を実装したため実画面へ遷移する。
+    implemented: true,
     comingSoonDescription:
       "おすすめの配信ツールをまとめて確認し、ワンクリックで設定できる機能を準備中です。",
   },

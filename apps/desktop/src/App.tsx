@@ -10,6 +10,7 @@ import { AddToolScreen } from "./screens/add-tool/AddToolScreen";
 import { AddPresetScreen } from "./screens/add-preset/AddPresetScreen";
 import { DiagnosticsScreen } from "./screens/diagnostics/DiagnosticsScreen";
 import { SettingsScreen } from "./screens/settings/SettingsScreen";
+import { RakurakuToolsScreen } from "./screens/rakuraku-tools/RakurakuToolsScreen";
 import { ComingSoonScreen } from "./screens/coming-soon/ComingSoonScreen";
 import { useTheme } from "./features/theme/useTheme";
 import { useHostOs } from "./features/platform/useHostOs";
@@ -309,6 +310,7 @@ function App() {
             onChangePreference={setThemePreference}
           />
         )}
+        {screen === "rakuraku-tools" && <RakurakuToolsScreen hostOs={hostOs} />}
         {comingSoonSection && (
           <ComingSoonScreen
             title={comingSoonSection.label}

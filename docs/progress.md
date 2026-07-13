@@ -2737,3 +2737,141 @@ OS/ファイル/プロセス操作・外部通信・依存は一切変更して�
 
 - `apps/desktop/src/components/headerSections.ts` / `apps/desktop/src/features/tutorial/tutorialSteps.ts` /
   `apps/desktop/src/screens/coming-soon/ComingSoonScreen.tsx` / `docs/progress.md`（本節）。
+
+## 2026-07-13 (032a Rakuraku Tools Screen 画面枠組み)
+
+### 完了したこと
+
+らくらくツール設定に「やりたいことベースの機能一覧 → 詳細 → 同意 → ワンクリック設定（実行）」の**画面枠組み（器）**を
+実装した。親設計 [032](tasks/032-rakuraku-auto-setup-design.md) の決定に従属する 032a として、**frontend 中心・
+Windows/macOS 両対応の器のみ**を作る。**実際の連携実行（検出・設定書換・疎通テスト・Rust コマンド・`ureq`・ループバック
+通信）は 032b で有効化**し、032a では**何も実行しない**（同意/免責は表示のみ、実行画面は「準備中」の器）。027/031 と
+同じ低リスク方針（外部通信・外部設定書換・新規依存・capability・CSP・DB を一切変更しない）。
+
+#### 親設計 032 のどの決定に基づくか
+
+- 決定 5（UI/UX）: 一覧→詳細→同意→実行の遷移。初回は棒読みちゃん×VOICEVOX の 1 連携のみ・TTS 半分に限定。
+- 決定 2（対応OS）: 枠組みは両OS対応、連携ごとに OS 対応可否メタデータ＋OS バッジ、非対応 OS は「ワンクリック設定」無効化。
+- 決定 4（per-integration）: TS 側 `features/rakuraku/` に静的レジストリ。ガイド手順は**実行せずデータとして UI に返す**。
+- 決定 1・ライセンス: 同意画面で新規DL可否・設定上書き可否・免責・**ずんだもんクレジット義務**（"VOICEVOX:ずんだもん"）を明示。
+
+#### (1) 静的レジストリ（型・初期エントリ）
+
+- `features/rakuraku/integrationRegistry.ts` を新規作成。`tutorialSteps.ts` に倣い**型＋`readonly` 配列**で定義し、
+  **表示専用データのみ・実行コードなし**。型: `Integration`（`id`/`title`/`summary`/`benefits`/`osAvailability`/
+  `requiredComponents`/`prerequisites?`/`consent`/`steps`/`executable`）、`OsAvailability`（`"windows"|"macos"|"both"`）、
+  `RequiredComponent`（`name`/`officialUrl?`/`setup`/`note?`）、`ComponentSetup`（`"guided"|"auto"`）、
+  `IntegrationConsent`（`allowsDownload`/`allowsConfigOverwrite`/`disclaimer`/`creditNotice`）、
+  `IntegrationStep`（`kind`/`label`/`description`）。ヘルパ `osAvailabilityLabel` / `supportedOsName` / `isOsSupported`
+  （`hostOs===null` は「不明＝安全側で非対応扱い＝無効化」）。
+- **初回エントリ 1 件**: `id:"bouyomi-voicevox"` / `osAvailability:"windows"` / `executable:false`。
+  必要部品＝VOICEVOX・SAPI For VOICEVOX（32bit 注記・配布元 URL は 032b で確定するため省略）・棒読みちゃん（すべて guided）。
+  consent＝`allowsDownload:false`（自動DLせず公式誘導のみ）／`allowsConfigOverwrite:true`（棒読み設定のみ・バックアップ
+  前提／実装は 032b）／免責文／ずんだもんクレジット義務。`steps`＝検出/導入準備/設定書換/音声登録/疎通テストの**表示用のみ**。
+- `officialUrl` は**プレーンテキスト表示のみ**（032a は開かない。開く導線 `open_url` と URL の最終確認は 032b）。
+
+#### (2) 画面（4 段の管理方式）
+
+- `screens/rakuraku-tools/RakurakuToolsScreen.tsx` ＋ `.module.css` を新規作成。props は `{ hostOs }` のみ。
+- **4 段（一覧→詳細→同意→実行）は `Screen` union を増やさず、画面内の判別可能ユニオン local state で管理**
+  （`type View = {stage:"list"} | {stage:"detail";id} | {stage:"consent";id} | {stage:"execution";id}`）。
+  `types.ts` の `Screen` と内部識別子 `rakuraku-tools` は不変。段間の戻りは画面内で完結（上位遷移は常時表示の Header が担う）。
+- 一覧: 連携カード＋OS バッジ。非対応 OS は「この機能は◯◯でご利用いただけます」を補足（カードから詳細へは遷移可）。
+- 詳細: summary/benefits・必要部品・前提・OS バッジ。主 CTA「ワンクリック設定」は `executable && OS対応` のときのみ活性。
+
+#### (3) OS バッジと非対応時の無効化
+
+- OS バッジは `osAvailability` を色分け（windows=info / macos=accent / both=ok）。生 hex なし・すべて role トークン。
+- 現在 OS は既存 `useHostOs()`（`host_os` コマンド・新規追加なし）を App から prop で受ける。`isOsSupported` で判定し、
+  `hostOs===null`（判定前/失敗）も安全側で非対応＝無効化。棒読み×VOICEVOX は mac で「ワンクリック設定」無効＋補足表示。
+
+#### (4) 器に留めた範囲（executable:false / 032b 待ち）と同意/実行の確認導線
+
+- 主 CTA は仕様どおり `executable && OS対応` で厳密にゲート → `executable:false` のため 032a では**全 OS で無効**。
+- そのままだと同意/実行の器がどの OS でも到達不可になり 032a 完了条件（実行画面が「準備中」の器であることの確認）を
+  満たせないため、詳細画面に**読み取り専用の「設定の流れ・同意内容を確認する（準備中プレビュー）」導線**を追加し、
+  詳細→同意→実行（準備中）を**非実行で辿れる**ようにした（ユーザー了承済み。動作確認は Windows VM で実施）。
+- 実行画面は steps を**全ステップ「待機」**の進捗リストで描画し「準備中（Windows で 032b 実装後に有効化）」を表示する器。
+  **invoke・タイマー・副作用なし**（同意の「同意する」も画面遷移のみ）。032b で `executable:true` 化＋主 CTA 配線予定。
+
+#### (5) 導線の差し替え
+
+- `headerSections.ts`: `rakuraku` エントリを `implemented:false → true`（コメント追記）。ComingSoon を回避し本画面へ。
+  `comingSoonDescription` は implemented=true では未使用のため残置（最小差分）。
+- `App.tsx`: import 追加＋描画分岐に `{screen === "rakuraku-tools" && <RakurakuToolsScreen hostOs={hostOs} />}` を追加
+  （既存 `hostOs`（L38）を流用）。ComingSoon（`obs-effects`）は現状維持。
+
+#### セキュリティ（docs/security.md 準拠）
+
+- **frontend のみ**の変更。OS/ファイル/プロセス操作・外部通信を追加せず（§1/§2/§4/§5）、新しい Tauri command /
+  capabilities / 依存を追加していない（§3/§10）。外部リソースを読み込まず `csp: null` 不変（§CSP）。
+- 同意/免責テンプレは**表示のみ**でこの段階では何も実行しない。ずんだもんのクレジット義務（"VOICEVOX:ずんだもん"）を明示。
+- `docs/security.md` / `docs/product.md` の改訂は 032b（security-review と同時）で行うため本タスクでは触れていない。
+
+#### 検証
+
+- `git diff --stat` / `git status --short` = 変更は frontend のみ（`App.tsx` / `headerSections.ts` の 2 変更＋新規 2 ディレクトリ
+  `features/rakuraku/` `screens/rakuraku-tools/`）。`src-tauri` / capabilities / `tauri.conf.json` / `Cargo.*` / `package.json` /
+  `pnpm-lock.yaml` に変更なし（grep で 0 件）。
+- 新規 `RakurakuToolsScreen.module.css` に生 hex/rgba なし（grep 0 件・すべて `var(--...)`）。
+- `pnpm --filter ./apps/desktop typecheck` = pass（exit 0）。`pnpm --filter ./apps/desktop lint` = pass（exit 0）。
+- 実機表示（`pnpm --filter ./apps/desktop tauri dev`）はユーザー環境で目視確認予定（mac／動作確認は Windows VM）:
+  らくらくツール設定が実画面になり ComingSoon でない／一覧に OS バッジ・棒読み×VOICEVOX が mac で「ワンクリック設定」
+  無効＋「Windows でご利用いただけます」／詳細・同意（新規DL/設定上書き/免責/ずんだもんクレジット義務）表示／実行画面が
+  「準備中（032b で有効化）」の器（何も実行しない）／ライト・ダーク両テーマで破綻しない。
+
+#### 未完了・032b へ持ち越し
+
+- 検出・設定書換・疎通テストの実装、Rust `rakuraku` ドメイン（scan/configure/verify）・`ureq` 追加・ループバック通信。
+- 主 CTA「ワンクリック設定」の活性化（`executable:true` 化）と実行フローの配線、公式 URL を開く導線（`open_url`）。
+- SAPI For VOICEVOX / 棒読みちゃんの配布元 URL・入手手順の最終確認、`docs/security.md` / `docs/product.md` 改訂・security-review。
+
+#### 変更ファイル
+
+- 新規: `apps/desktop/src/features/rakuraku/integrationRegistry.ts` /
+  `apps/desktop/src/screens/rakuraku-tools/RakurakuToolsScreen.tsx` /
+  `apps/desktop/src/screens/rakuraku-tools/RakurakuToolsScreen.module.css`。
+- 変更: `apps/desktop/src/components/headerSections.ts` / `apps/desktop/src/App.tsx` / `docs/progress.md`（本節）。
+
+### デザイン改訂（032a 追加対応・同日）
+
+ユーザー指摘（「全体的にデザインがダサい・詳細が読みにくい」）を受け、一覧/詳細のレイアウトを刷新。実行ロジック・
+境界（frontend のみ・外部リソースなし・`csp:null` 不変・新規依存/コマンドなし）は不変。
+
+- **レジストリ**: `Integration` に `icon`（絵文字グリフ・暫定 🎙️。将来ローカル画像へ差し替え可）を追加。`title` を
+  「配信コメントをずんだもんの声で読ませる」、`summary` を「棒読みちゃんとVOICEVOXで連携し、棒読みちゃんが読み上げる
+  声をずんだもんにします。」にコピー修正。
+- **一覧カード**: 左にアイコンタイル、右に太字・大きめのタイトル＋薄色サマリ＋「対応OS＋OS アイコン」、右下に
+  「詳細を見る →」ボタン（カード全体クリックを廃止しボタンに限定）。
+- **詳細**: ヘッダーをアイコン＋タイトルに。対応 OS バッジ（Windows専用）を右寄せ。導入後イメージの**動画プレビュー枠**
+  （中央寄せ・幅 78%・16:9 のプレースホルダ。動画は後で差し込み。ファイル読込なし）。「設定すると何ができるか／
+  できること／必要なもの／前提」を**1 枚のカードに統合**（見出し＋区切り線で可読性を上げ、複数枠を廃止）。
+- **OS アイコンはインライン SVG**（Windows/Apple・`Header.tsx` と同じ作法・currentColor でテーマ追従）。生 hex/rgba なし。
+- 検証: `typecheck` / `lint` = pass。module.css 生 hex 0 件。変更は frontend の rakuraku 3 ファイルのみ（Rust/capabilities 不変）。
+
+### デザイン微修正（032a 第2弾・同日）
+
+可読性・収まりのユーザー指摘を受けた追加調整。実行ロジック・境界（frontend のみ・外部リソースなし・`csp:null`・
+新規依存/コマンドなし・Rust/capabilities 不変・生 hex なし）は不変。
+
+- **一覧カード**: 「詳細を見る」ボタンを独立行にせず、`.card` を **[アイコン][本文 flex:1][ボタン列 下寄せ]** の 3 カラム
+  flex に変更（`.cardMain`/`.cardFooter` 廃止・`.cardAction` 追加）。カード高さ＝本文で、ボタンは本文の右下に収まる。
+- **詳細の説明カード**: 横線（ディバイダー）を廃止し**余白で区切る**（`.infoStack` の gap、`.infoBlock` の border/padding 撤去）。
+  見出しを大きく（`.infoSubTitle` 13→16px・h4→h3）。「設定すると何ができるか」と「できること」の重複を解消し
+  **「できること」1 つに統合**（`.infoTitle`/`.infoText` の summary 段落を撤去）。`benefits` を**配信への影響のみ**に
+  書き換え（アプリ機能説明・クレジット確認の項目を削除）。
+- **主 CTA**: 「ワンクリック設定」→**「確認画面に進む」**（primary・右下）に変更し consent へ遷移。準備中プレビュー導線
+  （`.previewLink`）と無効化理由テキストは撤去。`.ctaArea` を右寄せに。**第1弾の「厳密ゲート」判断を上書き**したが、
+  実行は依然 execution 画面の「準備中」で止まり invoke/副作用なし（器の境界は不変）。OS 対応は詳細の「Windows専用」バッジで表示。
+- **同意画面**: クレジットカードの枠線を他カードと統一（`.creditPanel` の `--warn-border-strong` 特別枠を撤去）。代わりに
+  **クレジット表記を赤文字**（`.creditHeading`/`.creditText` = `var(--danger)`）で強調。「同意する」ボタンを右下に配置。
+- 検証: `typecheck` / `lint` = pass。module.css 生 hex 0 件。変更は frontend の rakuraku 3 ファイル（screen 2 + registry）のみ。
+
+### 免責文の共通化（032a・同日）
+
+免責事項を全連携で使い回せるよう共通化。`integrationRegistry.ts` に `export const COMMON_DISCLAIMER`（連携非依存の
+汎用文面。032 のセキュリティ方針＝自己責任／変更前バックアップ・可逆／自動DL・実行しない／不可逆・昇格変更は誘導のみ）を
+新設し、`IntegrationConsent` から `disclaimer` フィールドを撤去、bouyomi エントリの個別免責文も削除。ConsentView は
+`COMMON_DISCLAIMER` を表示。棒読み固有情報（棒読み設定のみ・バックアップ／SAPI 誘導）は既存の `allowsConfigOverwrite`
+表示文と `prerequisites` で引き続き伝わる。`creditNotice`（ずんだもん固有）は連携固有のまま。境界不変（frontend の
+registry＋screen のみ・Rust/依存/CSP 不変・生 hex なし）。`typecheck` / `lint` = pass。
