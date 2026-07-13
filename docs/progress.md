@@ -2648,3 +2648,50 @@ OS/ファイル/プロセス操作・外部通信・依存は一切変更して�
 #### 変更ファイル
 
 - `apps/desktop/index.html` / `apps/desktop/src-tauri/tauri.conf.json`（title + productName） / `apps/desktop/src/screens/diagnostics/DiagnosticsScreen.tsx` / `docs/progress.md`（本節）。
+
+### 030 "登録" Wording Unification
+
+プリセット/ツールの**新規作成**アクションの動詞を、画面によって「追加」「登録」で割れていたのを既存の
+「ツールを登録」に揃え **新規作成は「登録」に統一**した。位置語（末尾/先頭に追加）・既存ツールをプリセットへ
+足す操作（＋ツールを追加・保存して追加）は意味が異なるため **「追加」のまま維持**。frontend の表示文字列のみで
+ロジック・API・DB スキーマ・Rust は一切変更していない。同一画面内で「変える追加」と「維持する追加」が混在する
+ため、機械的一括置換をせず**意味（新規作成 vs 位置語/既存ツール追加）で1件ずつ判別**した。
+
+#### 「登録」に統一した箇所（A・新規作成の動詞）
+
+- `Sidebar.tsx:39`（コメント `プリセット追加` → `プリセット登録`）/ `:113`（`＋ プリセットを追加` → `＋ プリセットを登録`）。
+- `MainScreen.tsx:532`（空状態文 `プリセットを追加して…` → `…登録して…`）/ `:538`（`＋ プリセットを追加` → `＋ プリセットを登録`）。
+- `AddPresetScreen.tsx:287` 新規時ページタイトル `プリセットを追加` → `プリセットを登録`（三項の新規側のみ・編集側 `プリセットを編集` は据え置き）。
+- `AddToolScreen.tsx:212` 新規時見出し `ツールを追加` → `ツールを登録` / `:416` `ツール追加後プレビュー` → `ツール登録後プレビュー`
+  （いずれも新規側のみ・編集側 `ツールを編集` / `編集後プレビュー` は据え置き）。
+- `tutorialSteps.ts:103` 引用 `『＋ プリセットを追加』` → `『＋ プリセットを登録』`（A 変更後の実ボタン名と同期）。
+
+#### サイドバー引用の不整合を是正した箇所（A2・ユーザー判断 B で追加）
+
+- `MainScreen.tsx:639` / `AddPresetScreen.tsx:357` の本文引用「**サイドバーの**「＋ ツールを追加」」は、
+  サイドバーの実ボタン `＋ ツールを登録`（`Sidebar.tsx:175`・本タスクで不変）と**既に不一致**だった（本タスク以前からの既存不整合）。
+- タスク doc は当初この2件を「維持」に列挙していたが、目的(2)「引用を実ボタン名に一致させる」の趣旨と衝突するため、
+  ユーザー判断（**B: 一緒に直す**）で引用語のみ `＋ ツールを追加` → `＋ ツールを登録` に是正した。
+- 先頭の非引用「追加できるツールがありません」（`MainScreen:638`）等の「追加」は据え置き。`MainScreen:668-669` の同種引用は
+  **プリセット内**ボタン（`:629`＝維持）を指すため整合しており不変。
+
+#### 「追加」のまま維持した箇所と理由（触っていない）
+
+- **位置語・追加位置**（意味が別）: `AddToolScreen.tsx:371`（プリセットには追加しない）/ `:382`（追加位置）/ `:389`（末尾に追加）/ `:390`（先頭に追加）。
+- **既存ツールをプリセットへ足す**: `MainScreen.tsx:629`（＋ ツールを追加）/ `:657`（picker「追加」）/ `:668-669`、`AddToolScreen.tsx:409`（保存して追加）、`tutorialSteps.ts:94`（『保存して追加』引用）。
+- **既に「登録」で正しい**: `Sidebar.tsx:175`、`tutorialSteps.ts:77-78`（変更不要）。
+- **コメント/内部記述**（ユーザー非可視・対象外）: `MainScreen.tsx:104/108/214`、`AddPresetScreen.tsx:164/197`、`AddToolScreen.tsx:47/64/95/97/101/157`、`tutorialSteps.ts:62`。
+
+#### セキュリティ（docs/security.md 準拠）
+
+- frontend の表示文字列のみの変更。OS/ファイル/プロセス操作を追加せず（§2/§4/§5）、新しい Tauri command / capabilities / 依存を追加していない（§3/§10）。外部通信・外部リソースを増やさず `csp: null` も不変（§1/§CSP）。
+
+#### 検証
+
+- `git diff --stat` = 5 ファイル・10 挿入/10 削除。`git diff` で変更が A/A2 の該当行のみで、維持対象（位置語・既存ツール追加・保存して追加・`Sidebar:175`・`tutorialSteps:94`）に波及していないこと、`MainScreen:638` の非引用「追加」が無傷なこと、`tutorialSteps.ts:103` の引用が実ボタン名と一致することを確認。
+- `pnpm --filter ./apps/desktop typecheck` = pass（exit 0）。`pnpm --filter ./apps/desktop lint` = pass（exit 0）。
+- 実機表示（`pnpm --filter ./apps/desktop tauri dev`）はユーザー環境で目視確認予定: サイドバー/メイン空状態/プリセット登録画面/ツール登録画面/プレビューが「登録」に統一／位置語・既存ツールのプリセット追加は「追加」のまま／チュートリアル引用が実ボタン名と一致。
+
+#### 変更ファイル
+
+- `apps/desktop/src/components/Sidebar.tsx` / `apps/desktop/src/screens/main/MainScreen.tsx` / `apps/desktop/src/screens/add-preset/AddPresetScreen.tsx` / `apps/desktop/src/screens/add-tool/AddToolScreen.tsx` / `apps/desktop/src/features/tutorial/tutorialSteps.ts` / `docs/progress.md`（本節）。

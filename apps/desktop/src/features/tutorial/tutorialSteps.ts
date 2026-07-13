@@ -100,7 +100,7 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
     mode: "spotlight-action",
     targetId: "sidebar-add-preset",
     title: "ツールを登録できました！",
-    body: "次は配信プリセットを作ります。サイドバーの『＋ プリセットを追加』を押してください。",
+    body: "次は配信プリセットを作ります。サイドバーの『＋ プリセットを登録』を押してください。",
     advanceOn: { kind: "screen", screen: "add-preset" },
   },
   {

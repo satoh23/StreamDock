@@ -36,7 +36,7 @@ export function Sidebar({
   onDeletePreset?: (id: string) => void;
   /** 登録済みツール一覧を表示する */
   showToolList?: boolean;
-  /** ghost ナビの active 表示 (プリセット追加 / ツール登録のとき) */
+  /** ghost ナビの active 表示 (プリセット登録 / ツール登録のとき) */
   activeNav?: Extract<Screen, "add-preset" | "add-tool">;
   onNavigate: (screen: Screen) => void;
   /** 登録済みツール（実データ） */
@@ -110,7 +110,7 @@ export function Sidebar({
           }
           data-tutorial-id="sidebar-add-preset"
         >
-          ＋ プリセットを追加
+          ＋ プリセットを登録
         </button>
         {!hasTools && (
           <div className={styles.emptyHint}>

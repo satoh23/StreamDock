@@ -529,13 +529,13 @@ export function MainScreen({
       <div className={styles.emptyState}>
         <h2>まだプリセットがありません</h2>
         <p>
-          プリセットを追加して、配信で使うツール構成を保存しましょう。
+          プリセットを登録して、配信で使うツール構成を保存しましょう。
         </p>
         <button
           className={styles.emptyAction}
           onClick={() => onNavigate("add-preset")}
         >
-          ＋ プリセットを追加
+          ＋ プリセットを登録
         </button>
       </div>
     ) : (
@@ -636,7 +636,7 @@ export function MainScreen({
           {availableTools.length === 0 ? (
             <div className={styles.pickerEmpty}>
               追加できるツールがありません。先にサイドバーの「＋
-              ツールを追加」でツールを登録してください。
+              ツールを登録」でツールを登録してください。
             </div>
           ) : (
             availableTools.map((tool) => (

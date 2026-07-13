@@ -284,7 +284,7 @@ export function AddPresetScreen({
                 ? "プリセットを編集"
                 : "起動設定"
               : currentStep === 1
-                ? "プリセットを追加"
+                ? "プリセットを登録"
                 : "起動設定"}
           </h2>
         </div>
@@ -354,7 +354,7 @@ export function AddPresetScreen({
                 {tools.length === 0 ? (
                   <div className={styles.emptyPreview}>
                     登録済みのツールがありません。先にサイドバーの「＋
-                    ツールを追加」でツールを登録してください。
+                    ツールを登録」でツールを登録してください。
                   </div>
                 ) : (
                   <div className={styles.toolSelectList}>

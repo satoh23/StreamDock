@@ -209,7 +209,7 @@ export function AddToolScreen({
     <>
       <div className={layout.top}>
         <div className={`${layout.title} ${layout.pageTitle}`}>
-          <h2>{isEdit ? "ツールを編集" : "ツールを追加"}</h2>
+          <h2>{isEdit ? "ツールを編集" : "ツールを登録"}</h2>
         </div>
       </div>
 
@@ -413,7 +413,7 @@ export function AddToolScreen({
         </section>
 
         <PreviewCard
-          title={isEdit ? "編集後プレビュー" : "ツール追加後プレビュー"}
+          title={isEdit ? "編集後プレビュー" : "ツール登録後プレビュー"}
           rows={previewRows}
           help={
             isEdit
