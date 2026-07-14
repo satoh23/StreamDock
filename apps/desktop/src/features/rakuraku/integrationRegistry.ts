@@ -83,6 +83,12 @@ export interface Integration {
   summary: string;
   /** メリットの箇条書き。 */
   benefits: readonly string[];
+  /**
+   * 詳細画面に埋め込む紹介動画の YouTube 動画 ID（11 桁）。
+   * 設定時は youtube-nocookie の iframe でインライン再生する（未設定・不正時は「準備中」プレースホルダ）。
+   * ※ アプリに動画を同梱すると容量が増えるため YouTube 埋め込みにしている（外部埋め込み・security-review 済み）。
+   */
+  demoVideoId?: string;
   /** OS 対応可否。 */
   osAvailability: OsAvailability;
   /** 必要な外部部品。 */
@@ -112,6 +118,7 @@ export const INTEGRATION_REGISTRY: readonly Integration[] = [
       "配信画面に集中していても、コメントを声で把握できます。",
       "ずんだもんの声で、配信に親しみやすい雰囲気を出せます。",
     ],
+    // demoVideoId: "XXXXXXXXXXX", // TODO: YouTube 動画 ID（11 桁）を設定するとインライン再生。未設定時は「準備中」表示。
     osAvailability: "windows",
     requiredComponents: [
       {
@@ -175,8 +182,9 @@ export const INTEGRATION_REGISTRY: readonly Integration[] = [
           "テスト文を棒読みちゃんに送り、ずんだもんの声で読み上げられるか確認します。",
       },
     ],
-    // 032b で実行ロジックを差し込むまで false（この間はワンクリック設定を無効化）。
-    executable: false,
+    // 032b で Rust 実行ロジック（scan/configure/verify）を配線したため true。
+    // 実処理は Windows 専用で、非対応 OS では実行画面が「Windows でご利用いただけます」を表示する。
+    executable: true,
   },
 ];
 

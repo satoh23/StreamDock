@@ -102,6 +102,10 @@
 .btn {
   font-family: inherit;
 }
+/* 非活性の共通アフォーダンス（全ボタン）。 */
+.btn:disabled {
+  cursor: not-allowed;
+}
 .primary {
   height: 38px;
   padding: 0 17px;
@@ -125,9 +129,12 @@
   background: var(--control-bg-hover);
   filter: none;
 }
-.primary:disabled {
-  opacity: 0.88;
-  cursor: default;
+/* 非活性は灰色で明示（ホバーの明転も打ち消す）。role トークンのみ。 */
+.primary:disabled,
+.primary:disabled:hover {
+  background: var(--control-bg);
+  color: var(--text-faint);
+  filter: none;
 }
 .secondary {
   height: 38px;

@@ -79,6 +79,11 @@ objc2-foundation = "0.3"
 # - Win32_Graphics_Gdi     : GetObjectW / GetDIBits / HBITMAP / BITMAP / DeleteObject / DC 系 / GetIconInfo（DIB 変換）
 # - Win32_System_Com       : CoInitializeEx / CoUninitialize（GetImage の COM 初期化）
 # - Win32_Storage_FileSystem: SHGetFileInfoW の第2引数 FILE_FLAGS_AND_ATTRIBUTES に必要（0.58 の feature gate 上必須）
+#
+# 032b 棒読みちゃん×VOICEVOX 連携: SAPI 音声トークン（"VOICEVOX"）の登録有無を読み取り専用で検出する
+# ため feature を追加する（書込なし・レジストリ読取のみ）。検出は `rakuraku/integrations/bouyomi_voicevox.rs`
+# の `#[cfg(windows)] mod imp`（`HKLM\...\Speech\Voices\Tokens` を KEY_READ で列挙）で行う。
+# - Win32_System_Registry  : RegOpenKeyExW / RegEnumKeyExW / RegCloseKey（SAPI トークンの読取列挙）
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
     "Win32_Foundation",
@@ -89,5 +94,18 @@ windows = { version = "0.58", features = [
     "Win32_Graphics_Gdi",
     "Win32_System_Com",
     "Win32_Storage_FileSystem",
+    "Win32_System_Registry",
 ] }
+
+# 032b 棒読みちゃん×VOICEVOX 連携（Windows 専用）: VOICEVOX ENGINE の 50021 ヘルスチェック
+# （`http://127.0.0.1:50021/version`）にブロッキング HTTP クライアントを使う。
+# - reqwest は tokio/async ランタイムを引き込み、全 Tauri command が同期の本構成と不整合になるため採らない。
+#   ureq は同期・小型で本構成に合う。
+# - 用途は 127.0.0.1:50021 の **平文ループバックのみ**。TLS は不要なため `default-features = false` で
+#   rustls/TLS スタックを外し、依存とビルド面を最小化する（外部通信は増やさない・§1/§10）。
+# - 使用箇所は `#[cfg(windows)] mod imp` のみのため windows ターゲット依存に置く（macOS ビルドには
+#   HTTP クライアントを一切載せない）。ureq 自体の初コンパイルは 098（Windows ビルド）が初
+#   （windows クレートと同じ「mac で書いて Windows で初検証」扱い）。Tauri capability は追加しない
+#   （ureq は IPC/ACL 対象外・frontend からネットワークを直接叩かせない）。
+ureq = { version = "2", default-features = false }
 

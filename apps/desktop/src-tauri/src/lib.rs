@@ -3,6 +3,7 @@ mod error;
 mod preset_items;
 mod presets;
 mod process;
+mod rakuraku;
 mod tools;
 mod util;
 
@@ -116,6 +117,10 @@ pub fn run() {
             app_logs::commands::list_app_logs,
             app_logs::commands::get_diagnostic_summary,
             app_logs::commands::clear_app_logs,
+            rakuraku::commands::rakuraku_scan_integration,
+            rakuraku::commands::rakuraku_configure_integration,
+            rakuraku::commands::rakuraku_verify_integration,
+            rakuraku::commands::rakuraku_open_official_page,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

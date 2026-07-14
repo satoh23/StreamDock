@@ -7,8 +7,16 @@ import {
   osAvailabilityLabel,
   supportedOsName,
   type Integration,
+  type IntegrationStepKind,
   type OsAvailability,
 } from "../../features/rakuraku/integrationRegistry";
+import {
+  configureIntegration,
+  openOfficialPage,
+  scanIntegration,
+  verifyIntegration,
+} from "../../features/rakuraku/rakurakuApi";
+import type { ConfigureResult, ScanResult, VerifyResult } from "../../features/rakuraku/types";
 import { Button } from "../../components/primitives";
 import layout from "../formLayout.module.css";
 import styles from "./RakurakuToolsScreen.module.css";
@@ -43,6 +51,7 @@ export function RakurakuToolsScreen({ hostOs }: { hostOs: HostOs }) {
     return (
       <DetailView
         integration={current}
+        hostOs={hostOs}
         onBack={() => setView({ stage: "list" })}
         onProceed={() => setView({ stage: "consent", id: current.id })}
       />
@@ -63,6 +72,7 @@ export function RakurakuToolsScreen({ hostOs }: { hostOs: HostOs }) {
     return (
       <ExecutionView
         integration={current}
+        hostOs={hostOs}
         onBack={() => setView({ stage: "detail", id: current.id })}
       />
     );
@@ -215,16 +225,27 @@ function ListView({
   );
 }
 
+/** YouTube 動画 ID の形式（11 桁の英数・ハイフン・アンダースコア）。不正値を src に載せないための多層防御。 */
+const YOUTUBE_ID_RE = /^[A-Za-z0-9_-]{11}$/;
+
 /** (2) 詳細: アイコン＋タイトル、対応 OS バッジ、動画プレビュー枠、統合カード、CTA。 */
 function DetailView({
   integration,
+  hostOs,
   onBack,
   onProceed,
 }: {
   integration: Integration;
+  hostOs: HostOs;
   onBack: () => void;
   onProceed: () => void;
 }) {
+  const supported = isOsSupported(integration.osAvailability, hostOs);
+  // 有効な YouTube 動画 ID があれば iframe 埋め込み、無ければ「準備中」プレースホルダ。
+  const videoId =
+    integration.demoVideoId && YOUTUBE_ID_RE.test(integration.demoVideoId)
+      ? integration.demoVideoId
+      : null;
   return (
     <>
       <div className={layout.top}>
@@ -249,16 +270,29 @@ function DetailView({
           />
         </div>
 
-        {/* 導入後のイメージ動画（後で差し込む器。動画ファイルの読込は行わない）。 */}
-        <div className={styles.videoPlaceholder}>
-          <span className={styles.videoPlayIcon} aria-hidden="true">
-            <PlayIcon />
-          </span>
-          <span className={styles.videoCaption}>動画プレビュー（準備中）</span>
-          <span className={styles.videoSub}>
-            設定後にどうなるかを、あとで動画でご確認いただけます。
-          </span>
-        </div>
+        {/* 導入後のイメージ動画。ID があれば YouTube(youtube-nocookie) をインライン埋め込み、無ければ準備中の器。 */}
+        {videoId ? (
+          <div className={styles.videoFrame}>
+            <iframe
+              src={`https://www.youtube-nocookie.com/embed/${videoId}?rel=0`}
+              title={`${integration.title} の紹介動画`}
+              loading="lazy"
+              referrerPolicy="strict-origin-when-cross-origin"
+              allow="encrypted-media; fullscreen; picture-in-picture"
+              allowFullScreen
+            />
+          </div>
+        ) : (
+          <div className={styles.videoPlaceholder}>
+            <span className={styles.videoPlayIcon} aria-hidden="true">
+              <PlayIcon />
+            </span>
+            <span className={styles.videoCaption}>動画プレビュー（準備中）</span>
+            <span className={styles.videoSub}>
+              設定後にどうなるかを、あとで動画でご確認いただけます。
+            </span>
+          </div>
+        )}
 
         {/* 各セクションを 1 枚のカードに統合。横線は使わず余白で区切る。 */}
         <section className={layout.panel}>
@@ -308,9 +342,19 @@ function DetailView({
         </section>
 
         <div className={styles.ctaArea}>
-          <Button type="button" variant="primary" onClick={onProceed}>
+          <Button
+            type="button"
+            variant="primary"
+            onClick={onProceed}
+            disabled={!supported}
+          >
             確認画面に進む
           </Button>
+          {!supported && (
+            <span className={styles.ctaDisabledNote}>
+              (このOSでは利用できません)
+            </span>
+          )}
         </div>
       </div>
     </>
@@ -396,14 +440,183 @@ function ConsentView({
   );
 }
 
-/** (4) 実行: ステップ進捗の器（全ステップ待機）＋「準備中」表示。何も実行しない。 */
+/* --- (4) 実行: scan → configure → verify を順に invoke するライブフロー（032b 配線） --- */
+
+/** 各ステップの実行状態。 */
+type StepRunState = "waiting" | "running" | "done" | "skipped" | "error" | "info";
+
+const STEP_STATE_LABEL: Record<StepRunState, string> = {
+  waiting: "待機",
+  running: "実行中…",
+  done: "完了",
+  skipped: "スキップ",
+  error: "失敗",
+  info: "確認",
+};
+
+const STEP_STATE_CLASS: Record<StepRunState, string> = {
+  waiting: "",
+  running: styles.stepStateRunning,
+  done: styles.stepStateDone,
+  skipped: styles.stepStateSkipped,
+  error: styles.stepStateError,
+  info: styles.stepStateInfo,
+};
+
+/** Rust の AppError（`{ code, message, ... }`）から安全な表示メッセージを取り出す。 */
+function errorMessage(e: unknown): string {
+  if (e && typeof e === "object" && "message" in e) {
+    const m = (e as { message?: unknown }).message;
+    if (typeof m === "string" && m.trim().length > 0) return m;
+  }
+  return "処理に失敗しました。しばらくしてからお試しください。";
+}
+
+/** 導入状況の表示ラベル（installed: true=導入済み / false=未導入 / null=不明）。 */
+function installedLabel(installed: boolean | null | undefined): {
+  text: string;
+  className: string;
+} {
+  if (installed === true) return { text: "導入済み", className: styles.compYes };
+  if (installed === false) return { text: "未導入", className: styles.compNo };
+  return { text: "未確認", className: styles.compUnknown };
+}
+
+/**
+ * ワンクリック設定の実行画面。
+ *
+ * 「設定を実行する」で scan → configure → verify を順に Rust の限定コマンドへ invoke する
+ * （進捗は逐次戻り値で管理し Tauri event は使わない）。導入準備（prepare）と音声登録（register）は
+ * ガイド（実行しない）で、scan 結果の公式ページ導線・付属ツール案内として表示する。
+ * 実処理は Windows 専用のため、非対応 OS では実行せず「Windows でご利用いただけます」を表示する（多重防御）。
+ */
 function ExecutionView({
   integration,
+  hostOs,
   onBack,
 }: {
   integration: Integration;
+  hostOs: HostOs;
   onBack: () => void;
 }) {
+  const supported = isOsSupported(integration.osAvailability, hostOs);
+  const canRun = integration.executable && supported;
+
+  const buildInitialStates = (): Record<IntegrationStepKind, StepRunState> => {
+    const states = {} as Record<IntegrationStepKind, StepRunState>;
+    for (const step of integration.steps) states[step.kind] = "waiting";
+    return states;
+  };
+
+  const [states, setStates] = useState<Record<IntegrationStepKind, StepRunState>>(
+    buildInitialStates,
+  );
+  const [scan, setScan] = useState<ScanResult | null>(null);
+  const [configure, setConfigure] = useState<ConfigureResult | null>(null);
+  const [verify, setVerify] = useState<VerifyResult | null>(null);
+  const [running, setRunning] = useState(false);
+  const [hasRun, setHasRun] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const setStep = (kind: IntegrationStepKind, state: StepRunState) =>
+    setStates((prev) => ({ ...prev, [kind]: state }));
+
+  async function runAll() {
+    setRunning(true);
+    setHasRun(true);
+    setErrorMsg(null);
+    setScan(null);
+    setConfigure(null);
+    setVerify(null);
+    setStates(buildInitialStates());
+    try {
+      // 検出（読み取り専用）
+      setStep("scan", "running");
+      const s = await scanIntegration(integration.id);
+      setScan(s);
+      if (!s.supported) {
+        setStep("scan", "error");
+        setErrorMsg(s.message ?? "この連携は Windows でご利用いただけます。");
+        return;
+      }
+      setStep("scan", "done");
+
+      // 導入準備（ガイド・実行しない）: 不足部品の公式ページ導線を表示する。
+      setStep("prepare", "info");
+
+      // 設定書換（棒読み設定のみ・バックアップ先取り）
+      setStep("configure", "running");
+      const c = await configureIntegration(integration.id);
+      setConfigure(c);
+      setStep("configure", c.status === "configured" ? "done" : "skipped");
+
+      // 音声登録（ガイド・実行しない）: 付属ツールでの SAPI 登録を案内する。
+      setStep("register", "info");
+
+      // 疎通テスト（ループバックのみ）: configure が Skipped/未導入でも、独立の best-effort 診断として
+      // 実行する（短絡しない）。VOICEVOX の起動・棒読みちゃんの Socket 状態を常にユーザーへ提示するため。
+      setStep("verify", "running");
+      const v = await verifyIntegration(integration.id);
+      setVerify(v);
+      setStep(
+        "verify",
+        v.status === "ok" ? "done" : v.status === "failed" ? "error" : "skipped",
+      );
+    } catch (e) {
+      setErrorMsg(errorMessage(e));
+      // 実行中だったステップを失敗にする。
+      setStates((prev) => {
+        const next = { ...prev };
+        for (const kind of Object.keys(next) as IntegrationStepKind[]) {
+          if (next[kind] === "running") next[kind] = "error";
+        }
+        return next;
+      });
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  async function openPage(component: string) {
+    // 公式ページを開くのは best-effort（失敗しても実行フローは止めない）。
+    try {
+      await openOfficialPage(integration.id, component);
+    } catch {
+      /* 誘導のみ・失敗は無視 */
+    }
+  }
+
+  // 非対応 OS（棒読みちゃんは Windows 専用）では実行しない。
+  if (!canRun) {
+    return (
+      <>
+        <PageHeader
+          title="ワンクリック設定"
+          subtitle={integration.title}
+          onBack={onBack}
+          backLabel="詳細へ戻る"
+        />
+        <div className={styles.stack}>
+          <div className={styles.preparingBanner}>
+            <span className={styles.preparingIcon} aria-hidden="true">
+              🪟
+            </span>
+            <div>
+              <p className={styles.preparingTitle}>
+                この機能は{supportedOsName(integration.osAvailability)}でご利用いただけます
+              </p>
+              <p className={styles.preparingDesc}>
+                {integration.title}
+                は{supportedOsName(integration.osAvailability)}
+                専用です。現在の OS では実行できません。
+              </p>
+            </div>
+          </div>
+        </div>
+      </>
+    );
+  }
+
   return (
     <>
       <PageHeader
@@ -414,34 +627,117 @@ function ExecutionView({
       />
 
       <div className={styles.stack}>
-        <div className={styles.preparingBanner}>
-          <span className={styles.preparingIcon} aria-hidden="true">
-            🚧
-          </span>
-          <div>
-            <p className={styles.preparingTitle}>準備中</p>
-            <p className={styles.preparingDesc}>
-              自動設定は Windows で 032b 実装後に有効化されます。ここでは実行の流れ（枠組み）だけを
-              表示しており、設定の変更や通信は行いません。
-            </p>
-          </div>
+        <div className={styles.runArea}>
+          <Button
+            type="button"
+            variant="primary"
+            onClick={runAll}
+            disabled={running}
+          >
+            {running ? "実行中…" : hasRun ? "もう一度実行する" : "設定を実行する"}
+          </Button>
         </div>
 
+        {errorMsg && <p className={styles.errorBanner}>{errorMsg}</p>}
+
         <ol className={styles.steps}>
-          {integration.steps.map((step, i) => (
-            <li key={step.kind} className={styles.step}>
-              <span className={styles.stepIndex} aria-hidden="true">
-                {i + 1}
-              </span>
-              <div className={styles.stepBody}>
-                <div className={styles.stepHead}>
-                  <span className={styles.stepLabel}>{step.label}</span>
-                  <span className={styles.stepState}>待機</span>
+          {integration.steps.map((step, i) => {
+            const state = states[step.kind];
+            return (
+              <li key={step.kind} className={styles.step}>
+                <span className={styles.stepIndex} aria-hidden="true">
+                  {i + 1}
+                </span>
+                <div className={styles.stepBody}>
+                  <div className={styles.stepHead}>
+                    <span className={styles.stepLabel}>{step.label}</span>
+                    <span className={`${styles.stepState} ${STEP_STATE_CLASS[state]}`}>
+                      {STEP_STATE_LABEL[state]}
+                    </span>
+                  </div>
+                  <span className={styles.stepDesc}>{step.description}</span>
+
+                  {/* 検出結果: 部品ごとの導入状況＋VOICEVOX 稼働。 */}
+                  {step.kind === "scan" && scan && (
+                    <div className={styles.stepResult}>
+                      <ul className={styles.stepComponents}>
+                        {scan.components.map((c) => {
+                          const label = installedLabel(c.installed);
+                          return (
+                            <li key={c.key} className={styles.stepComponent}>
+                              <span className={styles.compName}>{c.name}</span>
+                              <span className={label.className}>{label.text}</span>
+                            </li>
+                          );
+                        })}
+                        <li className={styles.stepComponent}>
+                          <span className={styles.compName}>VOICEVOX の起動</span>
+                          <span
+                            className={
+                              scan.engineRunning ? styles.compYes : styles.compNo
+                            }
+                          >
+                            {scan.engineRunning ? "起動中" : "未起動"}
+                          </span>
+                        </li>
+                      </ul>
+                    </div>
+                  )}
+
+                  {/* 導入準備（ガイド）: 不足部品の公式ページを開く導線（自動DLしない）。 */}
+                  {step.kind === "prepare" && scan && (
+                    <div className={styles.stepResult}>
+                      {scan.components.filter(
+                        (c) => c.hasOfficialPage && c.installed !== true,
+                      ).length === 0 ? (
+                        <span className={styles.resultNote}>
+                          追加で導入が必要な部品はありません。
+                        </span>
+                      ) : (
+                        <div className={styles.guideActions}>
+                          {scan.components
+                            .filter((c) => c.hasOfficialPage && c.installed !== true)
+                            .map((c) => (
+                              <Button
+                                key={c.key}
+                                type="button"
+                                onClick={() => openPage(c.key)}
+                              >
+                                {c.name} の公式ページを開く
+                              </Button>
+                            ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* 設定書換の結果: バックアップ取得・再起動要否。 */}
+                  {step.kind === "configure" && configure && (
+                    <div className={styles.stepResult}>
+                      <span className={styles.resultNote}>{configure.message}</span>
+                      {configure.backupCreated && configure.backupName && (
+                        <span className={styles.resultNote}>
+                          バックアップ: {configure.backupName}
+                        </span>
+                      )}
+                      {configure.restartRequired && (
+                        <span className={styles.resultNote}>
+                          設定を反映するには棒読みちゃんの再起動が必要な場合があります。
+                        </span>
+                      )}
+                    </div>
+                  )}
+
+                  {/* 疎通テストの結果。 */}
+                  {step.kind === "verify" && verify && (
+                    <div className={styles.stepResult}>
+                      <span className={styles.resultNote}>{verify.message}</span>
+                    </div>
+                  )}
                 </div>
-                <span className={styles.stepDesc}>{step.description}</span>
-              </div>
-            </li>
-          ))}
+              </li>
+            );
+          })}
         </ol>
       </div>
     </>

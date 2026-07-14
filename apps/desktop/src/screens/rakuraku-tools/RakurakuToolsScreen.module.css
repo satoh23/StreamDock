@@ -150,6 +150,24 @@
   border-radius: 16px;
   background: var(--surface-2);
 }
+/* YouTube デモ動画の埋め込み枠（placeholder と同じ中央寄せ・幅・16:9） */
+.videoFrame {
+  width: 78%;
+  max-width: 680px;
+  margin: 0 auto;
+  aspect-ratio: 16 / 9;
+  border-radius: 16px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+}
+.videoFrame iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
 .videoPlayIcon {
   display: grid;
   place-items: center;
@@ -262,6 +280,12 @@
   color: var(--muted);
   font-size: 12px;
   line-height: 1.6;
+  text-align: right;
+}
+/* 非対応 OS で「確認画面に進む」を無効化したときの補足（小さめの赤文字） */
+.ctaDisabledNote {
+  color: var(--danger);
+  font-size: 11px;
   text-align: right;
 }
 
@@ -390,5 +414,93 @@
 .stepDesc {
   color: var(--muted);
   font-size: 12px;
+  line-height: 1.6;
+}
+
+/* --- 032b 実行フロー（scan→configure→verify のライブ状態） --- */
+.runArea {
+  display: flex;
+  justify-content: flex-end;
+}
+/* ステップ状態バッジの色（既定＝.stepState の muted を上書き） */
+.stepStateRunning {
+  color: var(--info);
+  background: var(--info-soft);
+  border-color: var(--info-border);
+}
+.stepStateDone {
+  color: var(--ok);
+  background: var(--ok-soft);
+  border-color: var(--ok-border);
+}
+.stepStateError {
+  color: var(--danger);
+  background: var(--danger-soft);
+  border-color: var(--danger-border);
+}
+.stepStateSkipped {
+  color: var(--warn-text);
+  background: var(--warn-soft);
+  border-color: var(--warn-border);
+}
+.stepStateInfo {
+  color: var(--accent-text);
+  background: var(--accent-soft);
+  border-color: var(--accent-soft-border);
+}
+.stepResult {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.stepComponents {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.stepComponent {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+}
+.compName {
+  color: var(--text);
+  font-weight: 700;
+}
+.compYes {
+  color: var(--ok);
+  font-weight: 800;
+}
+.compNo {
+  color: var(--danger);
+  font-weight: 800;
+}
+.compUnknown {
+  color: var(--muted);
+  font-weight: 800;
+}
+.guideActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.resultNote {
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.errorBanner {
+  color: var(--danger-text);
+  background: var(--danger-soft);
+  border: 1px solid var(--danger-border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  font-size: 13px;
   line-height: 1.6;
 }

@@ -30,6 +30,10 @@ MVPでは、stream-dock は外部サーバーと通信しない。
 
 ただし、MVPではこれらも原則実装しない。
 
+**例外（032b・らくらくツール設定）**: `127.0.0.1` の既知ポート（VOICEVOX 50021 / 棒読みちゃん 50001）への
+**ループバック通信**は、下記「らくらくツール設定（外部アプリ連携）方針」の条件下でのみ許可する。インター
+ネット通信・telemetry・外部 API は引き続き禁止する。
+
 ### 2. frontendから自由なOS操作をさせない
 
 React / TypeScript側から、自由なshell実行・自由なファイル操作・自由なプロセス操作を行わない。
@@ -105,6 +109,11 @@ MVPで許可するファイル操作は、原則としてアプリの管理領�
 - 登録された外部アプリの設定ファイルを勝手に上書きする
 
 将来的に設定ファイルのバックアップ・上書きを行う場合は、別タスクでセキュリティレビューを必須とする。
+
+**例外（032b・らくらくツール設定）**: らくらくツール設定に限り、**棒読みちゃん自身の設定ファイルの書換**を
+**バックアップ必須・可逆・同意済み**の条件で許可する（書換前に app 管理領域へタイムスタンプ付きで退避し、
+バックアップに失敗したら書換しない）。SAPI レジストリ登録など**不可逆・昇格を伴う変更は自動化しない**
+（付属ツールへ誘導する）。詳細は下記「らくらくツール設定（外部アプリ連携）方針」を参照する。
 
 ### 6. プロセス停止はstream-dock経由で起動したPIDに限定する
 
@@ -226,6 +235,38 @@ MVPでは外部リソースを読み込まない。
 - TODO（別タスク）: CSP を実際に効かせる場合は `img-src 'self' data:` 等を設定し、`data:` inline を
   許可しつつ外部リソースをブロックする。値の変更はレビュー必須条件（下記）に該当するため別途対応する。
 
+### 例外（032 追加対応・らくらくツール設定 詳細画面の YouTube デモ動画埋め込み）
+
+上記「外部リソースを読み込まない」原則に対し、**らくらくツール設定の詳細画面のデモ動画に限り**、
+YouTube（`https://www.youtube-nocookie.com/embed/<id>`）の **iframe 埋め込み**を例外的に許容する
+（動画をアプリに同梱すると容量が増えるため。明示同意ではなくデモ表示のため security-review で担保）。
+
+- **プライバシー強化ドメイン（youtube-nocookie）**を使い、再生するまで Cookie を張らない。`rel=0` で関連動画を抑制。
+- iframe 属性は最小・安全側（`referrerpolicy="strict-origin-when-cross-origin"` / `allow="encrypted-media; fullscreen;
+  picture-in-picture"` / `loading="lazy"` / `title`）。動画 ID は **frontend の定数**（ユーザー入力でない）で、
+  `^[A-Za-z0-9_-]{11}$` の正規表現ガードを通してから src を組み立てる（未設定・不正時は「準備中」プレースホルダ）。
+- 新規依存・Tauri command・capability の追加なし（iframe は純 HTML・webview が描画し IPC に触れない）。`csp: null` 不変。
+  詳細画面を開くと YouTube/Google へ外部通信が発生する（§1 の一般禁止に対する限定例外）。telemetry は追加しない。
+- **TODO（別タスク・上記と同じ）**: CSP を実際に効かせる場合、本埋め込みのため `frame-src https://www.youtube-nocookie.com`
+  （および YouTube 側が要求する `googlevideo.com` 等の派生ドメイン）を許可する必要がある。
+
+## らくらくツール設定（外部アプリ連携）方針
+
+らくらくツール設定の「外部アプリ連携」機能に限り、以下の条件下で §1（外部通信）／§5（外部設定上書き）を
+限定的に解禁する（一般原則の禁止は維持する。詳細な設計判断は `docs/tasks/032-rakuraku-auto-setup-design.md`
+を正とする）。032b で棒読みちゃん×VOICEVOX 連携を実装する際に本方針を適用した。
+
+- **ローカルループバック通信のみ許可**する（`127.0.0.1` の既知ポート = VOICEVOX 50021 / 棒読みちゃん 50001）。
+  インターネット通信・telemetry・外部 API は引き続き禁止する。
+- **インストーラの自動DL・自動実行はしない**。不足アプリは公式配布元ページを開いて誘導するのみとする
+  （URL は Rust 側の固定定数で解決し、frontend は raw URL を渡さない）。
+- **外部アプリ設定の書換は、可逆な範囲＋バックアップ必須**とする。対象は棒読みちゃん自身の設定ファイルのみで、
+  書換前に app 管理領域へタイムスタンプ付きでバックアップし、バックアップに失敗したら書換しない（先取り）。
+- **SAPI レジストリ登録など不可逆・昇格を伴う変更は自動化せず**、付属ツールへ誘導する。
+- **明示同意（同意画面）＋ security-review を必須**とする。
+- **frontend からは raw なパス/URL/ポート/コマンドを受けず、限定コマンド（`rakuraku_*`）経由のみ**とする。
+  ネットワーク（`ureq` / `std::net`）は Rust 内で完結し IPC/ACL 対象外（capability は追加しない）。`csp: null` 不変。
+
 ## レビュー必須条件
 
 以下を変更する場合は、必ずセキュリティレビューを行う。
@@ -243,6 +284,8 @@ MVPでは外部リソースを読み込まない。
 - 設定ファイルのバックアップ・上書き
 - ユーザー入力をOS操作に渡す処理
 - ログイン項目（autostart / 永続 OS 連携）の登録・解除処理
+- らくらくツール設定の外部アプリ連携（ループバック通信・外部設定書換・新規依存 `ureq`）
+- 外部コンテンツの埋め込み（iframe・外部 script/style/image/media・外部ドメインの読込）
 
 ### 011 ログイン項目（autostart, 019 時点）
 
@@ -332,6 +375,49 @@ MVPでは外部リソースを読み込まない。
   低頻度。停止経路（§6）のような exe/start_time 照合の追加は前面化の低リスクに対し過剰なため据え置く。
 - **アプリアイコン（icon.ico）**: 098 で Windows 用 `icon.ico` を再生成した（読み取り専用の静的アセット変更のみ・
   OS 操作/通信/権限に影響なし）。macOS の `icon.icns` は不変。`tauri.conf.json` / capabilities は変更なし。
+
+### 032b らくらくツール設定 棒読みちゃん×VOICEVOX 連携（ループバック通信 / 外部設定書換 / `ureq` 追加・未検証・security-review 実施済み）
+
+- 新規 `rakuraku` ドメイン（`scan` / `configure` / `verify` / `open_official_page` コマンド）を追加。実処理は
+  `rakuraku/integrations/bouyomi_voicevox.rs` の `#[cfg(windows)] mod imp` に閉じ、非 Windows は「未対応」結果を返す。
+  上記「らくらくツール設定（外部アプリ連携）方針」を初めて適用した連携。
+- **security-review を実施し、判定＝問題なし**（修正必須なし）。確認事項:
+  - **外部通信＝ループバックのみ**: `ureq` は `http://127.0.0.1:50021/version`、`std::net::TcpStream` は
+    `127.0.0.1:50001` のみ。`ureq` は **`default-features=false` で TLS を外し**（Cargo.lock 新規は `ureq` 1件のみ・
+    rustls/ring/openssl なし）、**windows ターゲット依存**に置き macOS ビルドには HTTP クライアントを載せない（§1/§10）。
+  - **公式ページ誘導**: `rakuraku_open_official_page` は frontend から **id と部品名（固定語）だけ**を受け、URL は
+    **Rust 側の固定定数**から解決。多層防御で `validate_http_url` を通してから ACL 不要の opener Rust API で開く。
+    未確定の SAPI 配布元は `None`（誤 URL を開かせない）。自動DL・自動実行なし（誘導のみ・§1）。
+  - **外部設定書換（§5 解禁）**: 書換前に app 管理領域（`app_data_dir/rakuraku-backups`）へ**バックアップ先取り**し、
+    失敗時は書換を**中断**。書換対象は解決した棒読みちゃん設定パスのみで、**インストールフォルダ配下を再検証**
+    してから書く。汎用書込コマンドを frontend に公開しない。可逆（完全コピー）。SQLite への状態記録なし。
+  - **レジストリは読み取り専用**: `RegOpenKeyExW`（`KEY_READ` のみ）/`RegEnumKeyExW` で SAPI トークンを列挙するのみ、
+    `RegCloseKey` を RAII で全経路クローズ。**書込・SAPI 自動登録なし**（不可逆・昇格変更は誘導のみ）。
+  - **capability / CSP 不変**: `capabilities/default.json` / `tauri.conf.json` に差分なし。ネットワーク・opener は
+    Rust 内で完結し IPC/ACL 対象外（frontend からネットワーク/URL/パス/ポートを直接叩かせない・§2/§3）。
+  - **入力検証・エラー丸め**: 未知 id/component は `NotFound`。エラーは固定安全文言、`backup_name` は「タイムスタンプ/
+    ファイル名」のみでフルパス非露出。rakuraku は app_logs を増やさない（§9）。
+- **プラットフォーム限定（未検証）**: `#[cfg(windows)] mod imp` は macOS では `cargo check` 対象外＝**未コンパイル・
+  実機未確認**。`windows` 0.58 の `Win32_System_Registry` API・`ureq` 2.x API・棒読みちゃん Socket バイナリプロトコル・
+  棒読みちゃん設定スキーマ・配布元 URL は **机上整合＋`// 098-SPIKE` 仮実装のみ**。実コンパイル・実機 E2E は
+  098（Windows ARM64 VM）が初（028/013/019/021 と同じ扱い）。098 でコンパイルエラー/不具合が出たら 098 側で最小修正する。
+- **後回し（098 で確認）**: `set_xml_text` の素朴置換（対象要素の一意性）／バックアップの世代蓄積（復元 UI は仕様上対象外）／
+  `RegEnumKeyExW` の名前バッファ上限（256 u16）。いずれも書換は棒読み設定のみ・バックアップ済み・可逆で実害は限定的。
+
+### 032 追加対応 らくらくツール設定 詳細画面（YouTube デモ動画 iframe 埋め込み / 非対応 OS ガード・security-review 実施済み）
+
+- 詳細画面のデモ動画を **YouTube（youtube-nocookie）iframe でインライン埋め込み**（アプリ同梱による容量増を避けるため）。
+  非対応 OS では「確認画面に進む」を無効化＋小さめ赤文字「(このOSでは利用できません)」を表示。**frontend のみ**
+  （registry＋screen＋css）・Rust/Cargo/capabilities/`tauri.conf.json`（`csp: null`）不変。詳細は上記 CSP方針の「例外」を参照。
+- **security-review を実施し、判定＝問題なし**（修正必須なし）。確認済み: youtube-nocookie＋`rel=0`（Cookie/関連動画抑制・
+  telemetry 追加なし）／動画 ID は frontend 定数を `^[A-Za-z0-9_-]{11}$` でガードしてから src を組み立て（URL/属性の
+  ブレイクアウト不可・未設定/不正は「準備中」フォールバック）／iframe 属性は最小・安全側（`allow` は
+  encrypted-media/fullscreen/picture-in-picture のみ・`referrerpolicy=strict-origin-when-cross-origin`・`loading=lazy`・`title`）／
+  クロスオリジン外部フレームで Tauri IPC 非接触・新規依存/command/capability なし・`csp:null` 不変／OS ガードは UI のみで多重防御。
+- **留意点（動画 ID 設定後に `tauri dev` で確認）**: 現状 `demoVideoId` 未設定のため外部通信は未発生。実 ID 設定後、
+  ① インライン再生 ② フレーム内操作でアプリウィンドウが外部 URL へ遷移/想定外ポップアップしないこと を確認する。
+  top-navigation/popups が起きる場合は `sandbox="allow-scripts allow-same-origin allow-presentation"`（top-nav/popups 非付与）を
+  追加し再生維持を確認する。将来 CSP を効かせる際は `frame-src https://www.youtube-nocookie.com`（＋派生ドメイン）が必要。
 
 ## 004 Tool Registry時点のレビュー観点
 

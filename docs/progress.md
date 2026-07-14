@@ -2875,3 +2875,166 @@ Windows/macOS 両対応の器のみ**を作る。**実際の連携実行（検�
 `COMMON_DISCLAIMER` を表示。棒読み固有情報（棒読み設定のみ・バックアップ／SAPI 誘導）は既存の `allowsConfigOverwrite`
 表示文と `prerequisites` で引き続き伝わる。`creditNotice`（ずんだもん固有）は連携固有のまま。境界不変（frontend の
 registry＋screen のみ・Rust/依存/CSP 不変・生 hex なし）。`typecheck` / `lint` = pass。
+
+## 2026-07-14 (032b 棒読みちゃん×VOICEVOX 連携・Windows 専用・098 で実機検証)
+
+### 完了したこと
+
+らくらくツール設定の最初の連携として **棒読みちゃん×VOICEVOX** の実行ロジックを実装した。032a の画面枠組み（器）に、
+新規 Rust `rakuraku` ドメイン（検出・設定書換・疎通テスト・公式DL誘導）を差し込み、`executable:true` 化して実行画面を
+ライブフローに配線した。範囲は 032 決定どおり **TTS 半分**（棒読みちゃんがずんだもんの声で喋るまで）。**棒読みちゃん依存
+のため Windows 専用**。実処理は `#[cfg(windows)]` に閉じ、非 Windows は「未対応」を返す。docs/security.md §1/§5/§10/
+capabilities 方針に**限定的に抵触**するため、解禁範囲を守り security.md/product.md を改訂・security-review を実施した。
+
+**⚠️ Windows コードは未検証**（mac で `#[cfg(windows)]` 分岐は `cargo check` 対象外＝未コンパイル・実機未確認）。
+028/013/019/021 の前例に倣い**未検証のまま main に入れ、098（Windows ARM64 VM）で初コンパイル・初 E2E**する。
+
+#### (1) Rust `rakuraku` ドメイン（新規 vertical slice）
+
+- `src-tauri/src/rakuraku/{mod,commands,service,model}.rs` ＋ `integrations/{mod,bouyomi_voicevox}.rs`。永続化しないため
+  `repository.rs` は持たない（バックアップはファイルのみ・SQLite テーブル追加なし）。
+- 共通トレイト `Integration`（`id` / `scan → ScanResult` / `configure → ConfigureResult` / `verify → VerifyResult` /
+  `official_page(component) → Option<&'static str>`）。ガイド手順は実行せず scan の結果データとして UI に返す。
+  `service::find(id)` が登録済み実装一覧（`registry()`）から id で解決（連携追加＝1 行追加）。未知 id は `NotFound`。
+- コマンド **4 本**を `lib.rs` の `invoke_handler` に登録: `rakuraku_scan_integration(id)` /
+  `rakuraku_configure_integration(id)` / `rakuraku_verify_integration(id)` / `rakuraku_open_official_page(id, component)`。
+  ※ 公式ページを開く導線は 032 の「open_url 相当」方針をユーザー承認のうえ**限定コマンド1つ**で実現（3→4 コマンド）。
+- 実処理は `bouyomi_voicevox.rs` の `#[cfg(windows)] mod imp` に閉じ、非 Windows は各メソッドが `*::unsupported()` を返す
+  （`ScanResult`/`ConfigureResult`/`VerifyResult` に `unsupported()` コンストラクタ）。model は ts-rs で
+  `src/features/rakuraku/bindings/` に export（`gen:bindings` = `cargo test export_bindings` で生成）。
+
+#### (2) 検出（scan・読み取り専用）
+
+- VOICEVOX/棒読みちゃんの導入有無（既知パスの存在確認）、SAPI 音声「VOICEVOX」登録有無（`HKLM\...\Speech\Voices\Tokens`
+  を `KEY_READ` で列挙・32bit/64bit 両ビュー）、VOICEVOX ENGINE 稼働（`ureq` で `127.0.0.1:50021/version` 疎通）。
+- 書込・外部通信なし（ループバック疎通のみ）。best-effort（`Option<bool>`）で失敗は丸め、フルパス/OS エラー非露出（§9）。
+
+#### (3) 設定書換（configure・バックアップ先取り・§5 解禁）
+
+- **棒読みちゃん自身の設定のみ**を対象に、書換前に `app_data_dir/rakuraku-backups/bouyomi-voicevox/<TS>/` へ
+  **タイムスタンプ付きバックアップ**（`<TS>`＝コロンを含まないファイル名安全形式）。**バックアップ失敗時は書換しない**（先取り）。
+- 書換対象パスが**インストールフォルダ配下であることを `starts_with` で再検証**してから書く（想定外パスは書かない）。
+  Socket 連携 ON・声質＝`VOICEVOX:ずんだもん` を設定。**対応キーが見つからなければ書換せず `Skipped`**（設定を壊さない）。
+- 可逆（完全コピー）。復元 UI は作らない（対象外）。`backupName` は「タイムスタンプ/ファイル名」のみ返す（フルパス非露出）。
+
+#### (4) 導入・SAPI 登録の誘導（guided・自動実行しない）
+
+- 不足部品は公式DLページを開く（`rakuraku_open_official_page` → Rust 側固定定数 URL → `validate_http_url` → opener Rust API）。
+  frontend は id と部品名（`voicevox`/`bouyomichan`）だけ渡し **raw URL を渡さない**。SAPI For VOICEVOX は配布元 URL 未確定
+  のため `None`（開く導線を出さない・誤 URL を開かせない）。SAPI 登録は付属ツールへ誘導（自動化しない）。
+
+#### (5) 検証（verify・ループバックのみ・§1 解禁）
+
+- VOICEVOX 50021 ヘルスチェック（`ureq`）＋棒読みちゃんへ **TCP `127.0.0.1:50001`** にテスト文「接続テストなのだ」を
+  既知バイナリプロトコル（コマンド 0x0001＋速度/音程/音量/声質/文字コード/本文長/本文・リトルエンディアン）で送信
+  （`std::net::TcpStream`・新規依存なし）。接続＋書込成功を返す（実際に鳴るかは 098 実機で耳視）。
+
+#### (6) 依存追加（`ureq`・§10）と capability 非追加
+
+- `ureq = { version = "2", default-features = false }` を **`[target.'cfg(windows)'.dependencies]` に追加**（理由コメント明記）。
+  reqwest は tokio/async を引き込み同期構成と不整合のため不採用。用途は `127.0.0.1:50021` の**平文ループバックのみ**で
+  TLS 不要 → `default-features=false` で rustls/TLS を外す。**Cargo.lock 新規は `ureq` 1件のみ**（rustls/ring/openssl なし）。
+  windows-gate のため **macOS ビルドには HTTP クライアントを載せない**（ureq 自体の初コンパイルは 098）。
+- 既存 `windows` クレートに **feature `Win32_System_Registry` を追加**（SAPI トークン読取列挙用・feature 追加のみ）。
+- **Tauri capability は追加しない**（`ureq`/`std::net` は IPC/ACL 対象外・opener は Rust API で ACL 不要・frontend から
+  ネットワークを直接叩かせない）。`capabilities/default.json` / `tauri.conf.json` に差分なし。`csp: null` 不変。
+
+#### (7) 032a 実行画面への配線
+
+- `features/rakuraku/rakurakuApi.ts`（invoke ラッパ 4 本）＋ `types.ts`（bindings バレル）を新設（既存 `toolApi.ts` に倣う）。
+- `integrationRegistry.ts`: 棒読み×VOICEVOX を `executable: false → true`。
+- `RakurakuToolsScreen.tsx` の `ExecutionView`: 「準備中・全ステップ待機」の器を、`executable && OS対応` のとき
+  **scan → configure → verify を順に invoke** するライブフローに差し替え（進捗は逐次戻り値で管理・Tauri event 不使用）。
+  検出結果（部品導入状況・50021 稼働）表示、不足部品の公式ページを開く導線（prepare）、書換結果（バックアップ取得・再起動要否）、
+  疎通結果を各ステップに表示。非対応 OS（mac）は実行せず「Windows でご利用いただけます」を表示（多重防御）。生 hex なし。
+
+#### セキュリティ方針の改訂（security-review と同時）
+
+- `docs/security.md`: 新章「らくらくツール設定（外部アプリ連携）方針」（5 点）を追加。§1/§5 に例外注記、「レビュー必須条件」に
+  本連携（ループバック通信・外部設定書換・`ureq` 追加）を追加。`### 032b ...` に security-review 結果と未検証注記を記載。
+- `docs/product.md`: 「設定ファイルの自動上書き」に、らくらくツール設定に限る例外（同意＋バックアップ＋security-review・可逆）を追記。
+
+#### security-review 結果（実施済み・必須）
+
+- 判定＝**問題なし**（修正必須なし）。確認済み: 外部通信＝ループバックのみ（TLS 追加なし・windows-gate）／公式ページは固定定数 URL・
+  frontend は raw URL 非受領／書換はバックアップ先取り・棒読み設定のみ・インストールフォルダ配下再検証・可逆／レジストリは読み取り専用
+  （`KEY_READ` のみ・RAII クローズ）／capability・CSP 不変／未知 id/component は NotFound・エラー丸め・app_logs を増やさない。
+- 後回し（098 で確認）: `set_xml_text` 素朴置換の一意性／バックアップ世代蓄積（復元 UI は対象外）／`RegEnumKeyExW` 名前バッファ上限。
+
+#### 検証結果（本タスク＝macOS 上・非退行）
+
+- `cd apps/desktop/src-tauri && cargo check` → **成功**（非 Windows 経路は `unsupported` を返し非退行。`#[cfg(windows)] mod imp`
+  は macOS では**コンパイルされない**）。
+- `pnpm --filter ./apps/desktop gen:bindings` → rakuraku bindings 生成（6 型）。`typecheck` / `lint` → 成功。
+- 差分は Rust `rakuraku/`・Cargo.toml/lock・lib.rs・frontend rakuraku（api/types/registry/screen/css）・docs のみ。
+  `capabilities/default.json` / `tauri.conf.json` 変更なし。module.css 生 hex 0 件。
+
+#### 未検証範囲（本タスクの完了条件に含めない・098 Windows Build へ持ち越し）
+
+- `#[cfg(windows)] mod imp`（scan/configure/verify・SAPI レジストリ読取・`ureq` 50021・`TcpStream` 50001・棒読み設定書換）は
+  **macOS で `cargo check` 未走・実機未確認**。`windows` 0.58 の `Win32_System_Registry` API・`ureq` 2.x API・Socket バイナリ
+  プロトコル・棒読みちゃん設定スキーマ・配布元 URL は **机上整合＋`// 098-SPIKE` 仮実装のみ**。098 が初コンパイル・初 E2E。
+  098 でコンパイルエラー/不具合が出たら **098 側で最小修正**する前提。
+- **098 で確認**: Windows ARM64(VM) の `cargo check` / `cargo clippy`（rakuraku Windows 分岐 初コンパイル）／実機で VOICEVOX・
+  SAPI For VOICEVOX・棒読みちゃん導入 → ワンクリック設定 → 棒読み設定書換（バックアップ取得）→ 疎通テストでずんだもんが喋る／
+  検出が正しく効く（未導入はガイド・導入済みは設定/テストへ）／バックアップから手動復元でき書換が可逆であること。
+- **スパイクで 098 に確定を委ねた項目**: ①棒読みちゃん設定ファイルの実体（場所・ファイル名・スキーマ・「Socket 連携 ON」
+  「声質＝VOICEVOX:ずんだもん」の対応キー・書換後の反映=再起動要否）②VOICEVOX/棒読みちゃんの既知インストールパス・
+  アンインストールレジストリキー・SAPI トークン列挙条件 ③SAPI For VOICEVOX の配布元 URL/バージョン/32bit 入手手順
+  ④VOICEVOX/棒読みちゃん公式配布元 URL の最終確認 ⑤Socket プロトコルの声質フィールドの意味（アプリ現在設定を使う値）。
+
+#### やらないこと（維持）
+
+- インストーラ/zip の自動DL・自動実行、SAPI 音声登録の自動化（誘導のみ）／棒読みちゃん以外の外部アプリ設定の書換・SAPI
+  レジストリ等の不可逆・昇格変更／設定解除・状況管理・更新・復元 UI（バックアップは取るが restore UI なし）／コメントビューア連携／
+  ループバック以外の通信・telemetry／macOS/Linux での連携実行（`#[cfg(windows)]` 以外は「未対応」）／`ureq` 以外の新規 crate・
+  Tauri capability の追加。
+
+#### 変更ファイル
+
+- 新規: `apps/desktop/src-tauri/src/rakuraku/{mod,commands,service,model}.rs` /
+  `apps/desktop/src-tauri/src/rakuraku/integrations/{mod,bouyomi_voicevox}.rs` /
+  `apps/desktop/src/features/rakuraku/{rakurakuApi.ts,types.ts,bindings/*}`。
+- 変更: `apps/desktop/src-tauri/src/lib.rs`（`mod rakuraku;`＋4 コマンド登録） /
+  `apps/desktop/src-tauri/Cargo.toml`（`ureq` windows-gate 追加＋理由・`Win32_System_Registry` feature 追加）＋ `Cargo.lock` /
+  `apps/desktop/src/features/rakuraku/integrationRegistry.ts`（`executable:true`） /
+  `apps/desktop/src/screens/rakuraku-tools/RakurakuToolsScreen.tsx`＋`.module.css`（ExecutionView ライブフロー配線） /
+  `docs/security.md`（新章＋§1/§5 例外＋レビュー必須条件＋032b 節） / `docs/product.md`（自動上書き例外） / `docs/progress.md`（本節）。
+
+### 032 追加対応（詳細画面の YouTube デモ動画埋め込み ＋ 非対応 OS ガード・同日）
+
+032b の詳細画面（`RakurakuToolsScreen.tsx` の `DetailView`）への 2 点の UI 追加。**frontend のみ**（registry＋screen＋css）。
+Rust/Cargo/capabilities/`tauri.conf.json`（`csp: null`）不変・新規依存/command/capability なし。
+
+- **(1) YouTube デモ動画のアプリ内埋め込み**: 動画をアプリに同梱すると容量が増えるため、YouTube 埋め込み方式を採用
+  （ユーザー選択＝インライン再生）。`Integration` に `demoVideoId?: string`（11 桁 ID）を追加し、`DetailView` の
+  `.videoPlaceholder` を、ID があり `^[A-Za-z0-9_-]{11}$` に一致するときだけ **youtube-nocookie の iframe**
+  （`https://www.youtube-nocookie.com/embed/<id>?rel=0`）に差し替え（不正/未設定は「準備中」プレースホルダにフォールバック）。
+  iframe 属性は最小・安全側（`referrerpolicy=strict-origin-when-cross-origin`・`allow=encrypted-media; fullscreen;
+  picture-in-picture`・`loading=lazy`・`title`）。CSS `.videoFrame`（16:9・placeholder と同幅）。**現時点で実 ID は未設定**
+  （bouyomi エントリにコメントの TODO を置いた）＝実 ID を入れるとインライン再生される。
+- **(2) 非対応 OS で「確認画面に進む」を無効化**: `DetailView` に `hostOs` を渡し、`isOsSupported` で判定して
+  ボタンを `disabled`、下に小さめ赤文字「(このOSでは利用できません)」を表示（CSS `.ctaDisabledNote`＝`var(--danger)`・11px・右寄せ）。
+  `ExecutionView` の Windows 専用ガードと合わせ多重防御。
+- **セキュリティ**: YouTube iframe 埋め込みは §1（外部通信）/§CSP（外部リソース非読込）に**限定的に抵触**するため、
+  `docs/security.md` の CSP方針に「例外（YouTube デモ動画埋め込み）」を明記＋レビュー必須条件に「外部コンテンツの埋め込み」を追加＋
+  `### 032 追加対応` 節に security-review 結果を記録。**security-review 実施＝判定「問題なし」**（youtube-nocookie・ID の正規表現ガード・
+  最小 iframe 属性・IPC 非接触・capability/csp 不変）。留意点（ID 設定後に `tauri dev` でフレーム内操作のウィンドウ遷移/ポップアップ有無を確認・
+  必要なら sandbox 追加）を docs に明記。`docs/product.md` は変更なし（セキュリティ面は security.md で担保）。
+- **検証**: `typecheck` / `lint` = pass。`RakurakuToolsScreen.module.css` 生 hex/rgba 0 件。実機目視（`tauri dev`）は
+  実 ID 設定後にユーザー環境で確認予定（mac で「確認画面に進む」無効＋赤文字／対応 OS で活性）。
+- **変更ファイル**: `apps/desktop/src/features/rakuraku/integrationRegistry.ts` /
+  `apps/desktop/src/screens/rakuraku-tools/RakurakuToolsScreen.tsx`＋`.module.css` / `docs/security.md` / `docs/progress.md`（本節）。
+
+### 追加修正（無効化 primary ボタンの灰色化・同日）
+
+非対応 OS で `disabled` にした「確認画面に進む」が有効時とほぼ同じ見た目で非活性だと分かりにくかったため、共有 `Button`
+プリミティブの無効化スタイルを改善（`apps/desktop/src/components/primitives.module.css` のみ）。原因は `.primary:disabled` が
+`opacity: 0.88` だけで primary 色を保持し、`.primary:hover { filter: brightness }` が無効時にも効いていたこと。
+
+- `.primary:disabled`（＋`:disabled:hover`）を **灰色**（背景 `var(--control-bg)`・文字 `var(--text-faint)`）＋ `filter: none`
+  （ホバー明転を打ち消し）に変更。`.btn:disabled` に `cursor: not-allowed` を追加。role トークンのみ・生 hex/rgba なし。
+- 共有プリミティブのため無効化される primary ボタン全て（確認画面に進む＝`!supported`／設定を実行する＝実行中／ツール・プリセット保存＝保存中）に
+  一貫適用（いずれも正当な無効状態で灰色化は標準挙動＝回帰なし）。secondary は対象外。赤文字「(このOSでは利用できません)」と併せ非活性が明確化。
+- セキュリティ影響なし（CSS のみ）。`typecheck` / `lint` = pass。生 hex 0 件。実機目視は `tauri dev`（mac で「確認画面に進む」が灰色・ホバーで明るくならない／有効時は従来どおり）でユーザー確認予定。
+- 変更ファイル: `apps/desktop/src/components/primitives.module.css` / `docs/progress.md`（本節）。
