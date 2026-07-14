@@ -30,18 +30,21 @@
 - 026 Header Polish & Navigation Foundation
 - 027 First-Run Tutorial (Onboarding)
 - 028 Windows App Icon Auto-Extraction
-
-## Next
-
 - 029 StreamDock Naming Consistency
 - 030 "登録" Wording Unification
 - 031 Rakuraku Tool Settings Rename
+- 032 Rakuraku Auto-Setup Design — 設計確定（Bouyomi×VOICEVOX 方式は 032c で supersede／らくらく画面枠組みは継続）
+- 032a らくらくツール設定 画面枠組み（実装済）
+
+## Next
 
 ## Todo
 
-- 032 Rakuraku Auto-Setup Design (Bouyomi × VOICEVOX) — 設計確定（032a / 032b へ分割）
-- 032a らくらくツール設定 画面枠組み（Windows/macOS・mac 検証可）
-- 032b 棒読みちゃん×VOICEVOX 連携（Windows 専用・098 で実機検証）
+- 032c 内蔵コメントビューア × VOICEVOX 直接読み上げ 設計・方針転換（032b を supersede・実装は 032c-a〜d へ分割）
+- 032c-a コメビュ別ウィンドウ枠組み＋内蔵デフォルトツール＋032b 撤去（mac 検証可）
+- 032c-b Node sidecar 基盤＋Twitch コメント取得＋インターネット通信 初解禁（mac 検証可・security-review）
+- 032c-c VOICEVOX 直接合成＋TTS キュー（ずんだもん・Web Audio・loopback 例外拡張・mac 検証可）
+- 032c-d YouTube コメント取得有効化（OAuth PKCE・Google Cloud 運用・Client Secret 同梱・security 追記）
 
 ## MVP リリース前最後
 
