@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import type { HostOs } from "../../features/platform/useHostOs";
 import {
   COMMON_DISCLAIMER,
@@ -12,6 +12,7 @@ import {
 } from "../../features/rakuraku/integrationRegistry";
 import {
   configureIntegration,
+  launchComponent,
   openOfficialPage,
   scanIntegration,
   verifyIntegration,
@@ -34,7 +35,14 @@ type View =
   | { stage: "consent"; id: string }
   | { stage: "execution"; id: string };
 
-export function RakurakuToolsScreen({ hostOs }: { hostOs: HostOs }) {
+export function RakurakuToolsScreen({
+  hostOs,
+  onRequestAddTool,
+}: {
+  hostOs: HostOs;
+  /** 未登録部品を「ツール管理へ追加」で登録する導線（App が AddToolScreen へ遷移・名称プリフィル）。 */
+  onRequestAddTool?: (prefill: { name: string }) => void;
+}) {
   const [view, setView] = useState<View>({ stage: "list" });
 
   // 一覧以外は id から連携を引く。見つからなければ一覧へフォールバック。
@@ -74,6 +82,7 @@ export function RakurakuToolsScreen({ hostOs }: { hostOs: HostOs }) {
         integration={current}
         hostOs={hostOs}
         onBack={() => setView({ stage: "detail", id: current.id })}
+        onRequestAddTool={onRequestAddTool}
       />
     );
   }
@@ -404,6 +413,14 @@ function ConsentView({
                     : "しません"}
                 </span>
               </li>
+              <li>
+                <span className={styles.consentLabel}>アプリの自動起動</span>
+                <span className={styles.consentValue}>
+                  {consent.allowsAutoLaunch
+                    ? "あり（未起動の VOICEVOX・棒読みちゃんを起動します。ダウンロード・インストールはしません）"
+                    : "しません"}
+                </span>
+              </li>
             </ul>
           </div>
         </section>
@@ -428,8 +445,8 @@ function ConsentView({
 
         <div className={styles.ctaArea}>
           <p className={styles.ctaReason}>
-            この段階では設定は実行されません。実行画面の枠組みを確認できます（Windows で 032b
-            実装後に有効化）。
+            同意すると実行画面に進みます。ワンクリック設定（検出・自動起動・設定書換・疎通確認）は
+            Windows でご利用いただけます。
           </p>
           <Button type="button" variant="primary" onClick={onAgree}>
             同意する
@@ -442,8 +459,18 @@ function ConsentView({
 
 /* --- (4) 実行: scan → configure → verify を順に invoke するライブフロー（032b 配線） --- */
 
-/** 各ステップの実行状態。 */
-type StepRunState = "waiting" | "running" | "done" | "skipped" | "error" | "info";
+/**
+ * 各ステップの実行状態。
+ * `error`=実行して失敗 / `blocked`=前の手順が失敗したため実行しなかった（＝成功扱いにしない）。
+ */
+type StepRunState =
+  | "waiting"
+  | "running"
+  | "done"
+  | "skipped"
+  | "error"
+  | "blocked"
+  | "info";
 
 const STEP_STATE_LABEL: Record<StepRunState, string> = {
   waiting: "待機",
@@ -451,6 +478,7 @@ const STEP_STATE_LABEL: Record<StepRunState, string> = {
   done: "完了",
   skipped: "スキップ",
   error: "失敗",
+  blocked: "未実行",
   info: "確認",
 };
 
@@ -460,8 +488,20 @@ const STEP_STATE_CLASS: Record<StepRunState, string> = {
   done: styles.stepStateDone,
   skipped: styles.stepStateSkipped,
   error: styles.stepStateError,
+  blocked: styles.stepStateBlocked,
   info: styles.stepStateInfo,
 };
+
+/**
+ * 自動起動後、両アプリの起動を確認するための scan 再ポーリング（VOICEVOX エンジンは起動に数秒かかる）。
+ * 待ち時間の上限は概ね 15 回 ×（1s ＋ scan の connect timeout）。両方起動すれば即抜けるため通常は短く、
+ * 起動しない最悪ケースでも await 中は「実行中」表示のままで UI は固まらない（実行ボタンは disabled）。
+ * 体感の長さが問題化したら attempts/interval か scan 側の connect timeout を見直す。
+ */
+const LAUNCH_POLL_ATTEMPTS = 15;
+const LAUNCH_POLL_INTERVAL_MS = 1000;
+
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /** Rust の AppError（`{ code, message, ... }`）から安全な表示メッセージを取り出す。 */
 function errorMessage(e: unknown): string {
@@ -494,10 +534,12 @@ function ExecutionView({
   integration,
   hostOs,
   onBack,
+  onRequestAddTool,
 }: {
   integration: Integration;
   hostOs: HostOs;
   onBack: () => void;
+  onRequestAddTool?: (prefill: { name: string }) => void;
 }) {
   const supported = isOsSupported(integration.osAvailability, hostOs);
   const canRun = integration.executable && supported;
@@ -521,6 +563,17 @@ function ExecutionView({
   const setStep = (kind: IntegrationStepKind, state: StepRunState) =>
     setStates((prev) => ({ ...prev, [kind]: state }));
 
+  /** `kind` より後（後続）の未実行ステップを「未実行（blocked）」にし、失敗の波及を明示する。 */
+  const blockAfter = (kind: IntegrationStepKind) =>
+    setStates((prev) => {
+      const idx = integration.steps.findIndex((s) => s.kind === kind);
+      const next = { ...prev };
+      integration.steps.forEach((s, i) => {
+        if (i > idx && next[s.kind] === "waiting") next[s.kind] = "blocked";
+      });
+      return next;
+    });
+
   async function runAll() {
     setRunning(true);
     setHasRun(true);
@@ -530,45 +583,89 @@ function ExecutionView({
     setVerify(null);
     setStates(buildInitialStates());
     try {
-      // 検出（読み取り専用）
+      // 1. 検出（読み取り専用）。未対応 OS はここで中断し、以降を「未実行」にする。
       setStep("scan", "running");
       const s = await scanIntegration(integration.id);
       setScan(s);
       if (!s.supported) {
         setStep("scan", "error");
+        blockAfter("scan");
         setErrorMsg(s.message ?? "この連携は Windows でご利用いただけます。");
         return;
       }
       setStep("scan", "done");
 
-      // 導入準備（ガイド・実行しない）: 不足部品の公式ページ導線を表示する。
-      setStep("prepare", "info");
+      // 2. 導入準備（ガイド）。ツール管理へ登録できる部品（voicevox / 棒読みちゃん）が未登録/パス無効なら
+      //    「ツール管理へ追加」導線を出して中断する（登録・導入は自動化しない＝登録後に再実行）。
+      //    installed===false は未登録またはパス無効。null（不明）は best-effort で先へ進める。
+      //    SAPI For VOICEVOX はツール管理登録の対象外（付属 setup.exe での音声登録が正）で、未導入でも通常
+      //    installed===false になる。gate に含めると「ツール管理へ登録」しても抜けられない行き止まりになるため
+      //    ここでは中断せず、register ステップ／公式ページ導線でガイドする。
+      const missing = s.components.filter(
+        (c) =>
+          c.installed === false &&
+          (c.key === "voicevox" || c.key === "bouyomichan"),
+      );
+      if (missing.length > 0) {
+        setStep("prepare", "error");
+        blockAfter("prepare");
+        setErrorMsg(
+          "ツール管理に未登録の部品があります。ツール管理へ登録したうえで、もう一度実行してください。",
+        );
+        return;
+      }
+      setStep("prepare", "done");
 
-      // 設定書換（棒読み設定のみ・バックアップ先取り）
+      // 3. 設定書換（棒読み設定のみ・バックアップ先取り）。成功以外は中断し、以降を「未実行」にする
+      //    （前段が失敗しているのに疎通テストへ進めない＝ halt-on-failure）。
       setStep("configure", "running");
       const c = await configureIntegration(integration.id);
       setConfigure(c);
-      setStep("configure", c.status === "configured" ? "done" : "skipped");
+      if (c.status !== "configured") {
+        setStep("configure", "error");
+        blockAfter("configure");
+        setErrorMsg(c.message ?? "棒読みちゃんの設定を書き換えられませんでした。");
+        return;
+      }
+      setStep("configure", "done");
 
-      // 音声登録（ガイド・実行しない）: 付属ツールでの SAPI 登録を案内する。
+      // 4. 音声登録（ガイド・実行しない）: 付属ツールでの SAPI 登録を案内する。
       setStep("register", "info");
 
-      // 疎通テスト（ループバックのみ）: configure が Skipped/未導入でも、独立の best-effort 診断として
-      // 実行する（短絡しない）。VOICEVOX の起動・棒読みちゃんの Socket 状態を常にユーザーへ提示するため。
+      // 5. 起動。疎通確認には VOICEVOX・棒読みちゃんの両方が起動している必要があるため、未起動なら
+      //    自動起動して起動を待つ（既導入アプリの起動のみ＝DL/インストールはしない）。両方の起動を
+      //    確認できなければ中断し、verify を「未実行」にする。
+      setStep("launch", "running");
+      const running = await ensureRunning(s);
+      if (!running.engineRunning || !running.bouyomiRunning) {
+        setStep("launch", "error");
+        blockAfter("launch");
+        setErrorMsg(
+          "VOICEVOX・棒読みちゃんの起動を確認できませんでした。手動で起動してから、もう一度実行してください。",
+        );
+        return;
+      }
+      setStep("launch", "done");
+
+      // 6. 疎通テスト（ループバックのみ）。前段がすべて成功したときだけ実行する。
       setStep("verify", "running");
       const v = await verifyIntegration(integration.id);
       setVerify(v);
-      setStep(
-        "verify",
-        v.status === "ok" ? "done" : v.status === "failed" ? "error" : "skipped",
-      );
+      // launch で両アプリの起動を保証済みなので、ここでの ok 以外（failed/partial）は soft-skip せず
+      // すべて error 扱いにする（halt-on-failure：部分成功も実問題として明示する）。「configure が
+      // Skipped だから疎通も部分的」という旧来の言い訳が無くなったための判断。
+      setStep("verify", v.status === "ok" ? "done" : "error");
+      if (v.status !== "ok") {
+        setErrorMsg(v.message ?? "疎通確認に失敗しました。");
+      }
     } catch (e) {
       setErrorMsg(errorMessage(e));
-      // 実行中だったステップを失敗にする。
+      // 実行中だったステップを失敗にし、まだ待機中の後続を「未実行」にする。
       setStates((prev) => {
         const next = { ...prev };
         for (const kind of Object.keys(next) as IntegrationStepKind[]) {
           if (next[kind] === "running") next[kind] = "error";
+          else if (next[kind] === "waiting") next[kind] = "blocked";
         }
         return next;
       });
@@ -584,6 +681,37 @@ function ExecutionView({
     } catch {
       /* 誘導のみ・失敗は無視 */
     }
+  }
+
+  /**
+   * 未起動の VOICEVOX / 棒読みちゃんを自動起動し、両方が起動するまで scan を再ポーリングする。
+   * 既導入アプリの起動のみ（DL/インストールはしない）。起動要求の失敗は握りつぶし、起動状態は
+   * 再検出（scan）を唯一の真実として判断する。timeout までに両方起動しなければ最後の scan を返す。
+   */
+  async function ensureRunning(initial: ScanResult): Promise<ScanResult> {
+    let latest = initial;
+    if (latest.engineRunning && latest.bouyomiRunning) return latest;
+
+    // 未起動の部品だけ起動要求する（既に起動中のものは二重起動しない）。
+    if (!latest.engineRunning) {
+      await launchComponent(integration.id, "voicevox").catch(() => undefined);
+    }
+    if (!latest.bouyomiRunning) {
+      await launchComponent(integration.id, "bouyomichan").catch(() => undefined);
+    }
+
+    // 起動待ち（VOICEVOX エンジンは起動に数秒かかる）。両方起動したら即抜ける。
+    for (
+      let i = 0;
+      i < LAUNCH_POLL_ATTEMPTS &&
+      (!latest.engineRunning || !latest.bouyomiRunning);
+      i++
+    ) {
+      await delay(LAUNCH_POLL_INTERVAL_MS);
+      latest = await scanIntegration(integration.id);
+      setScan(latest);
+    }
+    return latest;
   }
 
   // 非対応 OS（棒読みちゃんは Windows 専用）では実行しない。
@@ -680,11 +808,24 @@ function ExecutionView({
                             {scan.engineRunning ? "起動中" : "未起動"}
                           </span>
                         </li>
+                        <li className={styles.stepComponent}>
+                          <span className={styles.compName}>
+                            棒読みちゃんの起動
+                          </span>
+                          <span
+                            className={
+                              scan.bouyomiRunning ? styles.compYes : styles.compNo
+                            }
+                          >
+                            {scan.bouyomiRunning ? "起動中" : "未起動"}
+                          </span>
+                        </li>
                       </ul>
                     </div>
                   )}
 
-                  {/* 導入準備（ガイド）: 不足部品の公式ページを開く導線（自動DLしない）。 */}
+                  {/* 導入準備（ガイド）: 未登録/未導入の部品に「ツール管理へ追加」＋公式ページ導線を
+                      出す（自動DL・自動登録はしない）。VOICEVOX/棒読みちゃんは登録対象、SAPI は誘導のみ。 */}
                   {step.kind === "prepare" && scan && (
                     <div className={styles.stepResult}>
                       {scan.components.filter(
@@ -697,15 +838,31 @@ function ExecutionView({
                         <div className={styles.guideActions}>
                           {scan.components
                             .filter((c) => c.hasOfficialPage && c.installed !== true)
-                            .map((c) => (
-                              <Button
-                                key={c.key}
-                                type="button"
-                                onClick={() => openPage(c.key)}
-                              >
-                                {c.name} の公式ページを開く
-                              </Button>
-                            ))}
+                            .map((c) => {
+                              // VOICEVOX / 棒読みちゃんは「ツール」として登録できる（SAPI は起動対象でも
+                              // 登録ツールでもないため誘導のみ）。
+                              const canAddTool =
+                                !!onRequestAddTool &&
+                                (c.key === "voicevox" || c.key === "bouyomichan");
+                              return (
+                                <Fragment key={c.key}>
+                                  {canAddTool && (
+                                    <Button
+                                      type="button"
+                                      onClick={() => onRequestAddTool?.({ name: c.name })}
+                                    >
+                                      {c.name} をツール管理へ追加
+                                    </Button>
+                                  )}
+                                  <Button
+                                    type="button"
+                                    onClick={() => openPage(c.key)}
+                                  >
+                                    {c.name} の公式ページを開く
+                                  </Button>
+                                </Fragment>
+                              );
+                            })}
                         </div>
                       )}
                     </div>

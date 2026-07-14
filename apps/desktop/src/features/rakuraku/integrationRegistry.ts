@@ -17,12 +17,13 @@ export type OsAvailability = "windows" | "macos" | "both";
 /** 必要部品の導入方式。032a は表示のみ（guided=公式誘導 / auto=自動）。 */
 export type ComponentSetup = "guided" | "auto";
 
-/** 連携ステップの種別（scan→prepare→configure→register→verify）。032a では実行しない。 */
+/** 連携ステップの種別（scan→prepare→configure→register→launch→verify）。 */
 export type IntegrationStepKind =
   | "scan"
   | "prepare"
   | "configure"
   | "register"
+  | "launch"
   | "verify";
 
 /** 連携に必要な外部部品（アプリ / プラグイン等）。 */
@@ -55,6 +56,11 @@ export interface IntegrationConsent {
   allowsDownload: boolean;
   /** 外部アプリ設定の上書き可否（032 決定 1: 棒読み設定のみ・バックアップ前提で可）。 */
   allowsConfigOverwrite: boolean;
+  /**
+   * 既導入アプリの自動起動の可否（未起動の VOICEVOX・棒読みちゃんを起動する。DL/インストールはしない）。
+   * 疎通確認には両アプリの起動が必須のため、同意のうえ自動起動する。
+   */
+  allowsAutoLaunch: boolean;
   /** ずんだもんのクレジット表記義務（"VOICEVOX:ずんだもん" 必須）。連携固有。 */
   creditNotice: string;
 }
@@ -129,8 +135,9 @@ export const INTEGRATION_REGISTRY: readonly Integration[] = [
       },
       {
         name: "SAPI For VOICEVOX",
+        officialUrl: "https://github.com/shigobu/SAPIForVOICEVOX/releases",
         setup: "guided",
-        note: "第三者製プラグイン。ずんだもんを Windows の音声（SAPI5）として登録します。棒読みちゃん連携用は 32bit 版。配布元・入手手順は 032b で確定します。",
+        note: "第三者製プラグイン。ずんだもんを Windows の音声（SAPI5）として登録します。棒読みちゃん連携用は 32bit 版。配布元（GitHub リリース）から setup.exe を実行し、付属の登録ツールで音声を登録します。",
       },
       {
         name: "棒読みちゃん",
@@ -147,6 +154,7 @@ export const INTEGRATION_REGISTRY: readonly Integration[] = [
     consent: {
       allowsDownload: false,
       allowsConfigOverwrite: true,
+      allowsAutoLaunch: true,
       creditNotice:
         "ずんだもんの音声を使う配信・動画では「VOICEVOX:ずんだもん」のクレジット表記が必須です（VOICEVOX 利用規約 https://voicevox.hiroshiba.jp/term/ に準拠）。",
     },
@@ -174,6 +182,12 @@ export const INTEGRATION_REGISTRY: readonly Integration[] = [
         label: "音声登録",
         description:
           "ずんだもんを Windows の音声として登録します。付属の登録ツールで行うよう案内します（自動化しません）。",
+      },
+      {
+        kind: "launch",
+        label: "起動",
+        description:
+          "VOICEVOX・棒読みちゃんが未起動なら自動で起動します（既に導入済みのアプリを起動するだけで、ダウンロード・インストールはしません）。",
       },
       {
         kind: "verify",

@@ -448,6 +448,13 @@
   background: var(--accent-soft);
   border-color: var(--accent-soft-border);
 }
+/* 前の手順が失敗したため実行されなかったステップ（成功扱いにしない・くすませて明示）。 */
+.stepStateBlocked {
+  color: var(--muted);
+  background: var(--muted-soft);
+  border-color: var(--muted-border);
+  opacity: 0.65;
+}
 .stepResult {
   margin-top: 8px;
   display: flex;

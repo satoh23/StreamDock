@@ -153,3 +153,77 @@ cargo clippy
 cd ../../..
 pnpm --filter ./apps/desktop tauri dev   # ワンクリック設定 → 設定書換 → 疎通テストを確認
 ```
+
+## 追補（032b 実装後の不具合修正・起動検出＋自動起動の必須化）
+
+初回実装がワンクリック設定として実用にならなかったため、以下を修正した（親設計 032 の決定 3 も改訂）。
+
+- **棒読みちゃん検出の堅牢化（問題2）**: zip 展開型で任意フォルダに置かれても検出できるよう、
+  **起動中プロセスの exe パス（sysinfo・読み取り専用）を最優先**し、無ければ一般的な展開先候補
+  （Desktop/Downloads/ユーザーフォルダ/ドライブ直下の `BouyomiChan*`）を探す。`configure` の設定ファイル解決も
+  同じ install_dir を使う。固定 2 パスのみ依存を解消。
+- **起動検出（問題3）**: `scan` に**棒読みちゃんの起動状態**（50001 connect のみ）を追加（`ScanResult.bouyomiRunning`）。
+  VOICEVOX（50021）と併せて両アプリの起動を UI に提示する。
+- **自動起動（問題3）**: 新コマンド `rakuraku_launch_component(id, component)` を追加。**既導入・同意済みアプリ**
+  （VOICEVOX / 棒読みちゃん）を **shell 非経由・検証済み絶対パス**（`process::service::spawn_detached`）で起動する。
+  **自動DL/インストール/SAPI 自動登録はしない**（誘導のみ）。frontend は未起動の部品にだけ呼び、起動を scan 再ポーリングで待つ。
+- **SAPI For VOICEVOX 導線復活（問題1）**: 配布元 URL（GitHub 公式リリース `shigobu/SAPIForVOICEVOX`）を確定し、
+  `official_page("sapi")=Some` / `has_official_page=true` に変更。導入準備ステップに「公式ページを開く」ボタンが出る。
+- **halt-on-failure（問題4）**: 実行フローを「前段が失敗したら中断し、以降を『未実行（blocked）』にする」逐次ゲートに変更
+  （verify の常時実行を撤回）。ステップ順は scan→prepare→configure→register→**launch**→verify。
+- **方針改訂**: `docs/security.md`「らくらくツール設定（外部アプリ連携）方針」に**既導入アプリの自動起動**を追加解禁
+  （§4/§5/§6 の一般原則は維持）。`docs/product.md`・親設計 032 も追記。security-review 実施。
+- **未検証範囲（098 で確定）**: Windows 実機での 棒読み検出候補の網羅性・プロセス名、自動起動の exe パス、
+  **棒読みちゃん起動中に configure すると終了時に設定を上書きされ得る順序問題**（現状は launch を configure の後に置き、
+  未起動時のみ起動＝新規起動が新設定を読む前提。既起動時の挙動は 098 で確認）、VOICEVOX エンジン起動の待ち時間。
+
+## 追補2（設計変更・ツール管理登録前提化）
+
+> この節は上の「追補（032b 修正）」の**検出/自動起動の実装方式を上書き（supersede）**する。上の追補で導入した
+> FS 広域走査・sysinfo プロセス列挙による導入検出/自動起動を撤回し、**「ツール管理」への登録を前提**にする。
+> **仕様更新のみ（本節の時点でコードは未改修・security-review 未実施）**。実コード改修とレビューは別ステップ。
+
+### 何を変えるか
+
+- **前提（gating）**: らくらくツール設定は、対象ツール（**VOICEVOX / 棒読みちゃん**）が既存の**「ツール管理」に
+  登録済み**であることを前提にする。未登録ならセットアップを開始できず、登録導線を表示する。
+- **導入済み判定 = 登録済み＋パス有効**: 「導入済み」＝ツール管理に該当ツールの登録があり、その `executablePath` が
+  **有効（絶対・実在・非ディレクトリ・`.lnk`/`.bat` でない）**か。**FS の広域走査（Desktop/Downloads/`%USERPROFILE%`/
+  ドライブ直下の `BouyomiChan*` を `read_dir`）・sysinfo プロセス列挙で導入を推測しない**。
+- **ツール↔部品の対応付け（案A）**: 登録済みツール一覧を **exe ファイル名一致**（`VOICEVOX.exe` / `BouyomiChan.exe`・
+  大小無視・種別 executable のみ）で部品へ自動対応する。照合対象は「登録済みの小さなリスト」であり FS 全体ではない。
+  **対応関係は永続化しない**（毎 scan で照合＝032 決定4「設定状況の永続化なし」を維持）。
+- **自動起動 = 登録済み executablePath を管理付き spawn（案X）**: 未起動なら、登録済み `executablePath` を
+  **既存の管理付き `process::service::spawn`＋PID registry 登録**（`launch_tool` と同経路）で起動する。起動プロセスは
+  **停止/監視の対象になる**（§6「停止は自 spawn PID 限定」と整合＝自分が起動した PID のみ）。`spawn_detached` は廃止。
+- **未登録時の導線（D3）**: らくらく画面から「**ツール管理へ追加**」（AddToolScreen へ遷移・**名称プリフィル**、
+  パスはファイル選択ダイアログ経由＝生パス注入なし）＋**公式DLページ導線を併記**する。
+
+### 維持する事項（退行させない）
+
+- **起動検知はループバック疎通のまま**（VOICEVOX 50021 は `ureq` GET、棒読み 50001 は `TcpStream` connect のみ・送信なし）。
+  **登録≠起動**のため、登録済みでも未起動なら自動起動して疎通を待つ流れは残す。
+- **自動DL/インストール/SAPI 自動登録はしない**（誘導のみ）。
+- **SAPI For VOICEVOX は起動アプリでも「ツール」でもない**ため登録モデルの対象外。従来どおりレジストリ `KEY_READ`
+  読取で SAPI 音声登録の有無を検出し、配布元（`shigobu/SAPIForVOICEVOX`）・付属登録ツールへ誘導する。
+- **棒読み設定書換はバックアップ必須・可逆・棒読み自身の設定ファイルのみ**。`install_dir` は**登録済み `executablePath`
+  の親ディレクトリ**から解決する（`config_path.starts_with(install_dir)` の担保は維持）。
+- **frontend は生パス/URL/ポート/コマンドを受けず `rakuraku_*` 経由のみ**。capabilities/CSP/依存は**増やさない**
+  （むしろ広域走査・Windows 経路の sysinfo 利用が消える）。`csp: null` 不変。
+
+### 削除/置換の範囲（実装時）
+
+- **削除**: `bouyomi_process_dir`（sysinfo）／`bouyomi_candidate_dirs`／`subdirs_starting_with`／`bouyomi_install_dir`／
+  `process::service::spawn_detached`／`bouyomi_exe_path`／`voicevox_exe_path`（固定パス）／`imp::launch`。
+- **作り替え**: `detect_voicevox_installed` / `detect_bouyomi_installed`（登録済み＋パス有効判定へ）、
+  `resolve_bouyomi_config`（install_dir＝登録パスの親へ）。`validate_launch_path` はクロスプラットフォームの
+  共有バリデータ（`validate_executable_path`）へ昇格して installed 判定に流用。
+- **副次効果**: `bouyomi_process_dir` が `#[cfg(windows)]` で使う sysinfo は Cargo.toml で `cfg(target_os="macos")`
+  依存のみ宣言されており、098 でコンパイルエラーになり得た**潜在バグ**が、この削除で同時に解消される。
+
+### 未検証範囲（098 で確定）の更新
+
+- **解消**: 広域走査由来のリスク（Downloads/ドライブ直下に置かれた**悪意ある同名 exe を自動起動し得る**問題）は、
+  起動パスを登録済み `executablePath` のみに限定したことで**排除**される。
+- **残る**: **棒読みちゃん起動中に configure すると終了時に設定を上書きされ得る順序問題**（launch を configure の後に
+  置く既存順序を維持）、VOICEVOX エンジン起動の待ち時間。

@@ -258,12 +258,26 @@ YouTube（`https://www.youtube-nocookie.com/embed/<id>`）の **iframe 埋め込
 
 - **ローカルループバック通信のみ許可**する（`127.0.0.1` の既知ポート = VOICEVOX 50021 / 棒読みちゃん 50001）。
   インターネット通信・telemetry・外部 API は引き続き禁止する。
-- **インストーラの自動DL・自動実行はしない**。不足アプリは公式配布元ページを開いて誘導するのみとする
-  （URL は Rust 側の固定定数で解決し、frontend は raw URL を渡さない）。
+- **インストーラの自動DL・自動インストールはしない**。不足アプリは公式配布元ページを開いて誘導するのみとする
+  （URL は Rust 側の固定定数で解決し、frontend は raw URL を渡さない）。SAPI For VOICEVOX の配布元 URL 採用は
+  security-review 対象（現状は GitHub 公式リリース `shigobu/SAPIForVOICEVOX`）。
+- **既導入・同意済みアプリの自動起動を許可**する（032b 修正・追加解禁 / **032b 修正2 で導入検出・起動経路を変更**）。
+  疎通確認には VOICEVOX・棒読みちゃんの起動が必須のため、**未起動なら自動起動**する。対象は**「ツール管理」に
+  登録済みで `executablePath` が有効**（絶対・実在・非ディレクトリ・`.lnk`/`.bat` でない）なアプリのみ。
+  **導入検出も自動起動も、解決は登録済み `executablePath` のみ**を用い、**FS 広域走査（Downloads/ドライブ直下等の
+  `read_dir`）・sysinfo によるプロセス列挙は行わない**（同名 exe 偽装の攻撃面を排除）。登録済みツールと部品の
+  対応付けは **exe ファイル名一致**（`VOICEVOX.exe` / `BouyomiChan.exe`・大小無視）で行い、**永続化しない**。
+  起動は **shell 非経由**で、登録時にユーザーが明示選択・検証済みの絶対パスを**既存の管理付き
+  `process::service::spawn`＋PID registry 登録**（`launch_tool` と同経路）で行う。これにより起動プロセスは
+  **停止/監視の対象になる**（§6「停止は自 spawn 起動 PID に限定」と整合＝自分が起動した PID のみ・従来の
+  `spawn_detached` による非管理起動は廃止）。frontend は部品名の固定語（"voicevox"/"bouyomichan"）だけを渡し、
+  raw パスは渡さない。**未署名バイナリの DL/インストールはしない**（誘導のみ）。登録済み≠起動のため、
+  登録済みでも未起動なら自動起動して疎通を待つ（棒読みちゃんの設定ファイル解決も**登録済み `executablePath` の
+  親ディレクトリ**を install_dir として用いる）。
 - **外部アプリ設定の書換は、可逆な範囲＋バックアップ必須**とする。対象は棒読みちゃん自身の設定ファイルのみで、
   書換前に app 管理領域へタイムスタンプ付きでバックアップし、バックアップに失敗したら書換しない（先取り）。
 - **SAPI レジストリ登録など不可逆・昇格を伴う変更は自動化せず**、付属ツールへ誘導する。
-- **明示同意（同意画面）＋ security-review を必須**とする。
+- **明示同意（同意画面）＋ security-review を必須**とする。自動起動は同意画面に明示する。
 - **frontend からは raw なパス/URL/ポート/コマンドを受けず、限定コマンド（`rakuraku_*`）経由のみ**とする。
   ネットワーク（`ureq` / `std::net`）は Rust 内で完結し IPC/ACL 対象外（capability は追加しない）。`csp: null` 不変。
 
@@ -284,7 +298,7 @@ YouTube（`https://www.youtube-nocookie.com/embed/<id>`）の **iframe 埋め込
 - 設定ファイルのバックアップ・上書き
 - ユーザー入力をOS操作に渡す処理
 - ログイン項目（autostart / 永続 OS 連携）の登録・解除処理
-- らくらくツール設定の外部アプリ連携（ループバック通信・外部設定書換・新規依存 `ureq`）
+- らくらくツール設定の外部アプリ連携（ループバック通信・外部設定書換・新規依存 `ureq`・**既導入アプリの自動起動**）
 - 外部コンテンツの埋め込み（iframe・外部 script/style/image/media・外部ドメインの読込）
 
 ### 011 ログイン項目（autostart, 019 時点）
@@ -403,6 +417,76 @@ YouTube（`https://www.youtube-nocookie.com/embed/<id>`）の **iframe 埋め込
   098（Windows ARM64 VM）が初（028/013/019/021 と同じ扱い）。098 でコンパイルエラー/不具合が出たら 098 側で最小修正する。
 - **後回し（098 で確認）**: `set_xml_text` の素朴置換（対象要素の一意性）／バックアップの世代蓄積（復元 UI は仕様上対象外）／
   `RegEnumKeyExW` の名前バッファ上限（256 u16）。いずれも書換は棒読み設定のみ・バックアップ済み・可逆で実害は限定的。
+
+### 032b 修正 らくらくツール設定 起動検出＋自動起動（既導入アプリの起動解禁 / SAPI 導線 / 棒読み検出堅牢化 / halt-on-failure・未検証）【⚠️ 032b 修正2 で全面置換・以下は歴史的記録】
+
+> **⚠️ この節が述べる設計は現行コードに存在しない（直後の「032b 修正2」で全面置換済み）。** 本節の
+> `spawn_detached`（非管理・PID registry 非登録）による起動・`sysinfo` プロセス列挙・`read_dir` 検出・Downloads/ドライブ
+> 直下の候補走査は、いずれも**単独ではコミットされないまま**「032b 修正2」で撤回・削除された（現在の src には存在しない）。
+> **現行実装とセキュリティ判断の正は下記「### 032b 修正2 …」節**（登録済み `executablePath` 前提・管理付き `spawn`＋`register`）。
+> 以下は設計経緯の記録としてのみ残す。
+
+- 初回 032b 実装がワンクリック設定として実用にならなかったため修正。**「起動検出」と「既導入アプリの自動起動」を
+  必須スコープに格上げ**した（親設計 032 決定 3・本章「らくらくツール設定（外部アプリ連携）方針」を改訂）。
+  **自動DL/インストール/SAPI 自動登録は引き続きしない**（誘導のみ）。
+- **security-review を実施し、判定＝問題なし**（修正必須なし）。確認事項:
+  - **capability / CSP / 依存 不変**: `capabilities/default.json` / `Cargo.toml` / `Cargo.lock` / `tauri.conf.json`（`csp: null`）
+    差分ゼロ。新規 crate/plugin/permission なし。
+  - **自動起動＝既導入アプリのみ・shell 非経由**: `process::service::spawn_detached` は検証済み絶対パス
+    （絶対・実在・非ディレクトリ・`.lnk`/`.bat` 拒否＝`spawn` と同水準）を `Command::new(path).spawn()` で起動。
+    起動パスは **Rust 側で検出した候補のみ**（frontend は部品名の固定語 "voicevox"/"bouyomichan" だけを渡し raw パス非受領・§2/§3）。
+    未知 component は起動しない。起動プロセスは **PID registry に載せない**（停止対象を増やさない・§6 不変）。
+  - **検出＝読み取り専用**: 棒読みちゃんは `sysinfo` のプロセス列挙（kill しない）＋展開先 `read_dir`（名前のみ参照）で
+    検出。戻り値はフルパスでなく bool（§9）。`bouyomi_running` は 50001 へ **connect のみ・送信なし**（§1 ループバック）。
+  - **公式ページ誘導**: SAPI For VOICEVOX の配布元（GitHub 公式リリース `shigobu/SAPIForVOICEVOX`）を `official_page` に
+    追加。既存経路（固定定数→`validate_http_url`→opener Rust API）で開くのみ。自動DL/実行なし。
+  - **入力検証・エラー丸め・ログ**: component/id は Rust 側で検証。エラーは固定安全文言・フルパス非露出。新規ログなし。
+- **留意点（記録のみ・修正不要）**: 検出候補を Downloads・ドライブ直下まで広げたため、そこに悪意ある同名 exe があれば
+  起動対象になり得る（攻撃者が既にユーザーフォルダへ書込権限を持つ前提＝より重大な侵害が既に成立。`.lnk`/`.bat`拒否・
+  明示同意＋ユーザー操作起点で緩和）。098 実機で候補範囲の妥当性を再確認する。
+- **プラットフォーム限定（未検証）**: Windows `imp`（launch / `spawn_detached` / 検出 / `bouyomi_running`）は mac では
+  `cargo check` 対象外＝**未コンパイル・実機未確認**。実コンパイル・実機 E2E は 098（ARM64 VM）が初。098 で
+  **棒読み起動中に configure したときの設定上書き有無**・候補網羅性・起動待ち時間を確認する。
+
+### 032b 修正2 らくらくツール設定 ツール管理登録前提化（広域走査・sysinfo 廃止 / 管理付き spawn へ一本化・security-review 実施済み）
+
+- 「032b 修正」で導入した **FS 広域走査（Downloads/ドライブ直下等の `read_dir`）＋sysinfo プロセス列挙**による
+  導入検出/自動起動を撤回し、**対象ツール（VOICEVOX / 棒読みちゃん）が「ツール管理」に登録済みであることを前提**にする
+  設計へ変更した（上記「らくらくツール設定（外部アプリ連携）方針」の自動起動条項を改訂・親設計 032 決定3・
+  032b 本体〔追補2〕も改訂）。**コード改修＋security-review を実施し、判定＝問題なし**（修正必須なし。攻撃面は縮小方向）。
+- **攻撃面縮小（security-review で確認）**:
+  - **導入検出＝登録済み判定**: ツール管理に登録があり `executablePath` が有効（絶対・実在・非ディレクトリ・
+    `.lnk`/`.bat` でない＝共有 `process::service::validate_executable_path`）かで判定。**FS 広域走査
+    （`bouyomi_process_dir`/`bouyomi_candidate_dirs`/`subdirs_starting_with`）・sysinfo プロセス列挙を削除**し、同名 exe
+    偽装の入り口を排除。ツールと部品の対応は登録済みリストとの **exe 名一致**（`resolve_tool_for_component`・大小無視・
+    kind==Executable）で行い**永続化しない**（毎 scan で照合）。
+  - **自動起動＝登録済み `executablePath` のみ**: `rakuraku_launch_component` は `component_exe`（固定語→exe 名）で解決した
+    登録済み Tool を**既存の管理付き `process::service::spawn`（絶対・実在・非dir・`.lnk`/`.bat` 拒否・shell 非経由）＋
+    `register`（PID registry）**で起動（`launch_tool` と同プリミティブ）。起動 PID は §6 の自 spawn 停止/監視対象に**含まれる**。
+    従来の非管理 `spawn_detached` は**削除**。frontend は固定語 "voicevox"/"bouyomichan" と `id` のみ渡し raw パス非受領
+    （§2/§3）。`db`/`registry` は Tauri 注入 State。**launch は app_logs を増やさない**（§9）。
+  - **未登録導線（frontend）**: らくらく画面「ツール管理へ追加」は表示名（scan の `name`・固定表示文字列）だけを
+    `onRequestAddTool` で App へ渡して AddToolScreen へ遷移し、**名称のみプリフィル・パスは従来のファイル選択ダイアログ
+    （readOnly）**＝生パス注入なし（§2）。対象は登録可能な voicevox/棒読みちゃんのみ（SAPI は誘導のみ）。
+  - **棒読み設定書換は不変**: バックアップ先取り・可逆・棒読み自身の設定のみ。install_dir は登録済み `executablePath`
+    の親から解決（`resolve_bouyomi_config(tools)`）し、`config_path.starts_with(install_dir)` を維持（§5）。
+  - **依存・権限**: `Cargo.toml`（sysinfo は macOS 依存のまま・`ureq`/`windows` Registry feature 維持）／`Cargo.lock`／
+    `capabilities/default.json`／`tauri.conf.json`（`csp: null`）は**対 HEAD で差分ゼロ**（実確認済み・§10。新規 crate/plugin/
+    permission なし）。**注意（baseline）**: 本コミットは未コミットの「032b 修正」を内包するため、対 HEAD では **`lib.rs` と
+    bindings は変更あり**＝`lib.rs` の `invoke_handler` に `rakuraku_launch_component` を新規登録（frontend 到達可能な起動コマンドが
+    1 本増える。攻撃面は本節「自動起動＝登録済み `executablePath` のみ」の項で分析）、bindings に `LaunchResult.ts` 新規・
+    `ScanResult.bouyomiRunning` 追加。Rust↔TS の `gen:bindings` **drift はゼロ**（生成物と Rust 構造体が一致・`installed:
+    Option<bool>` 等の型構造は 修正2 単体では不変）。
+  - **副次効果**: `bouyomi_process_dir` が `#[cfg(windows)]` で使っていた sysinfo（Cargo.toml は macOS 依存のみ宣言）の
+    潜在コンパイルエラーが削除で解消。以後 sysinfo の利用は macOS の PID 解決経路のみ。
+- **留意点の解消**: 上記「032b 修正」節の **留意点（Downloads・ドライブ直下の悪意ある同名 exe を自動起動し得る）は、
+  起動パスを登録済み `executablePath` のみに限定したことで解消**される。
+- **記録のみ（修正不要）**: `rakuraku_launch_component` 自体は多重起動をデデュープしない（frontend が scan の起動状態で
+  未起動部品にのみ呼ぶことで抑制）。起動対象はユーザー登録済みアプリで registry 登録＝停止可能なため実害は限定的。
+- **プラットフォーム限定（未検証）**: Windows `imp`（scan/configure/`bouyomi_running`）は mac では `cargo check` 対象外。
+  照合ヘルパ・共有バリデータ・管理付き spawn 経路（launch コマンド）はクロスプラットフォームで mac の `cargo check` を
+  通す。実コンパイル・実機 E2E は 098 が初。098 で **登録済みツール前提での scan/configure/launch/verify**・棒読み起動中
+  configure の順序問題・VOICEVOX 起動待ち時間を確認する。
 
 ### 032 追加対応 らくらくツール設定 詳細画面（YouTube デモ動画 iframe 埋め込み / 非対応 OS ガード・security-review 実施済み）
 

@@ -21,6 +21,10 @@ components: Array<ComponentStatus>,
  */
 engineRunning: boolean, 
 /**
+ * 棒読みちゃん（127.0.0.1:50001 Socket 連携）が待ち受けているか（疎通確認には起動が必須）。
+ */
+bouyomiRunning: boolean, 
+/**
  * UI 表示用の安全な短文（フルパス/環境情報を含めない）。
  */
 message?: string, };

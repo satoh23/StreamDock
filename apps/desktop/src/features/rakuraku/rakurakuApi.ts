@@ -1,5 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ConfigureResult, ScanResult, VerifyResult } from "./types";
+import type {
+  ConfigureResult,
+  LaunchResult,
+  ScanResult,
+  VerifyResult,
+} from "./types";
 
 /**
  * らくらくツール設定（外部アプリ連携・032b）の Tauri command 薄いラッパ。
@@ -13,6 +18,18 @@ import type { ConfigureResult, ScanResult, VerifyResult } from "./types";
 /** 検出（読み取り専用）: VOICEVOX/棒読みちゃんの導入・SAPI 登録・VOICEVOX 50021 稼働を確認する。 */
 export function scanIntegration(id: string): Promise<ScanResult> {
   return invoke<ScanResult>("rakuraku_scan_integration", { id });
+}
+
+/**
+ * 既導入・同意済みアプリ（未起動）の自動起動。component は "voicevox" / "bouyomichan" の固定語。
+ * 自動DL/インストールはしない（実行ファイル未検出は launched=false で導入を案内する）。
+ * パスは Rust 側で検出した候補から解決する（frontend は raw パスを渡さない）。
+ */
+export function launchComponent(
+  id: string,
+  component: string,
+): Promise<LaunchResult> {
+  return invoke<LaunchResult>("rakuraku_launch_component", { id, component });
 }
 
 /** 設定書換: 棒読みちゃん設定のみをバックアップ先取りしてから書き換える（可逆）。 */

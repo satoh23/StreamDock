@@ -61,6 +61,39 @@ pub fn spawn(tool: &Tool) -> AppResult<Handle> {
     Ok(Handle::Child(child))
 }
 
+/// Tool 非依存のパス検証（[`validate_executable`] の Tool 非依存版・検証強度は同一）。
+///
+/// 032b 修正2: らくらくツール設定の「導入済み判定＝登録済み Tool の executablePath が有効か」と、
+/// 部品自動起動の前段チェックに用いる共有バリデータ。絶対・実在・非ディレクトリ・`.lnk`/`.bat` 拒否。
+/// macOS `.app`（ディレクトリ）の例外は持たない（登録前提の対象は Windows exe）。クロスプラットフォーム
+/// （mac の `cargo check` を通す。実際に呼ぶのは windows の rakuraku 検出経路のみ＝mac では未使用）。
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn validate_executable_path(path: &Path) -> AppResult<()> {
+    if !path.is_absolute() {
+        return Err(AppError::validation(
+            "実行ファイルパスが絶対パスではありません",
+        ));
+    }
+    if !path.exists() {
+        return Err(AppError::path_not_found(
+            "起動対象の実行ファイルが見つかりません",
+        ));
+    }
+    if path.is_dir() {
+        return Err(AppError::validation("指定されたパスはディレクトリです"));
+    }
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    if matches!(ext.as_deref(), Some("lnk") | Some("bat")) {
+        return Err(AppError::unsupported_file_type(
+            "このファイル形式は現在未対応です。",
+        ));
+    }
+    Ok(())
+}
+
 /// 023: url 種別ツールを既定ブラウザで開く。
 ///
 /// frontend からは toolId のみを受け取り、URL は DB 保存値を Rust 側で **http/https スキーム限定**に

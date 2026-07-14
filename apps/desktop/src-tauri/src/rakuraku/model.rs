@@ -25,6 +25,8 @@ pub struct ScanResult {
     pub components: Vec<ComponentStatus>,
     /// VOICEVOX ENGINE（127.0.0.1:50021）が稼働しているか。
     pub engine_running: bool,
+    /// 棒読みちゃん（127.0.0.1:50001 Socket 連携）が待ち受けているか（疎通確認には起動が必須）。
+    pub bouyomi_running: bool,
     /// UI 表示用の安全な短文（フルパス/環境情報を含めない）。
     #[ts(optional)]
     pub message: Option<String>,
@@ -116,6 +118,22 @@ pub struct VerifyResult {
     pub message: String,
 }
 
+/// 自動起動（launch・§既導入アプリの起動解禁範囲）の結果。
+///
+/// 既導入・同意済みアプリ（未起動）の起動のみを行う（**自動DL/インストールはしない**）。
+/// 実行ファイルが見つからないときは `launched=false` で導入を案内する（エラーにはしない）。
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/features/rakuraku/bindings/")]
+pub struct LaunchResult {
+    /// 現在の OS でこの連携を実行できるか。
+    pub supported: bool,
+    /// 起動を試みられたか（実行ファイルを解決して spawn した=true / 実行ファイル未検出=false）。
+    pub launched: bool,
+    /// UI 表示用の安全な短文（フルパス/環境情報を含めない）。
+    pub message: String,
+}
+
 // 非対応 OS（非 Windows）で各コマンドが返す「未対応」結果。mac の非 Windows 経路でのみ使う。
 impl ScanResult {
     #[cfg_attr(windows, allow(dead_code))]
@@ -124,6 +142,7 @@ impl ScanResult {
             supported: false,
             components: Vec::new(),
             engine_running: false,
+            bouyomi_running: false,
             message: Some("この連携は Windows でご利用いただけます。".to_string()),
         }
     }

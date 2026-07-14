@@ -22,6 +22,15 @@ use super::{Integration, IntegrationCtx};
 // これらは 032a の integrationRegistry と同じ既知 URL。098 で最終確認する。
 const VOICEVOX_OFFICIAL_URL: &str = "https://voicevox.hiroshiba.jp/";
 const BOUYOMICHAN_OFFICIAL_URL: &str = "https://chi.usamimi.info/Program/Application/BouyomiChan/";
+// SAPI For VOICEVOX（第三者製プラグイン）の配布元。棒読みちゃん連携用は 32bit 版・setup.exe で音声を登録する。
+// 配布元は GitHub の公式リリースページ（shigobu/SAPIForVOICEVOX）。第三者URL採用は security-review 対象。
+const SAPI_FOR_VOICEVOX_OFFICIAL_URL: &str = "https://github.com/shigobu/SAPIForVOICEVOX/releases";
+
+// --- 部品の実行ファイル名（登録済みツールとの exe 名照合・自動起動に使う。大小無視で照合）---
+// 032b 修正2: 導入検出・自動起動・configure の install_dir 解決は「ツール管理の登録済み Tool」を
+// この exe 名で引き当てて行う（FS 広域走査は廃止）。`component_exe` 経由で自動起動が参照する。
+const VOICEVOX_EXE: &str = "VOICEVOX.exe";
+const BOUYOMI_EXE: &str = "BouyomiChan.exe";
 
 /// 棒読みちゃん×VOICEVOX 連携の実装（unit 構造体）。
 pub struct BouyomiVoicevox;
@@ -68,13 +77,22 @@ impl Integration for BouyomiVoicevox {
     }
 
     /// 公式ページ URL は OS 非依存（ブラウザで開くだけ）。固定定数から解決する。
-    /// SAPI For VOICEVOX は配布元 URL が未確定のため `None`（誤った URL を開かせない・098 で確定）。
+    /// SAPI For VOICEVOX も 3 部品連鎖の必須部品のため、配布元（GitHub リリース）へ誘導する。
     fn official_page(&self, component: &str) -> Option<&'static str> {
         match component {
             "voicevox" => Some(VOICEVOX_OFFICIAL_URL),
             "bouyomichan" => Some(BOUYOMICHAN_OFFICIAL_URL),
-            // 098-SPIKE: SAPI For VOICEVOX の配布元 URL・バージョン・32bit 入手手順は未確定。
-            // 確定するまで開く導線を出さない（scan の has_official_page=false と整合）。
+            "sapi" => Some(SAPI_FOR_VOICEVOX_OFFICIAL_URL),
+            _ => None,
+        }
+    }
+
+    /// 部品名（固定語）→ 実行ファイル名。SAPI For VOICEVOX は起動対象でも登録ツールでもないため None。
+    /// OS 非依存（登録済みツールとの exe 名照合・自動起動に使う）。
+    fn component_exe(&self, component: &str) -> Option<&'static str> {
+        match component {
+            "voicevox" => Some(VOICEVOX_EXE),
+            "bouyomichan" => Some(BOUYOMI_EXE),
             _ => None,
         }
     }
@@ -98,6 +116,7 @@ mod imp {
     };
 
     use crate::error::{AppError, AppResult};
+    use crate::tools::model::Tool;
 
     use super::super::super::model::{
         ComponentStatus, ConfigureResult, ConfigureStatus, ScanResult, VerifyResult, VerifyStatus,
@@ -115,11 +134,12 @@ mod imp {
     // scan（読み取り専用）
     // ---------------------------------------------------------------------------------------------
 
-    pub fn scan(_ctx: &IntegrationCtx) -> AppResult<ScanResult> {
-        let voicevox_installed = detect_voicevox_installed();
-        let bouyomi_installed = detect_bouyomi_installed();
+    pub fn scan(ctx: &IntegrationCtx) -> AppResult<ScanResult> {
+        let voicevox_installed = detect_installed(&ctx.tools, super::VOICEVOX_EXE);
+        let bouyomi_installed = detect_installed(&ctx.tools, super::BOUYOMI_EXE);
         let sapi_registered = detect_sapi_voice_registered();
         let engine_running = engine_running();
+        let bouyomi_up = bouyomi_running();
 
         let components = vec![
             ComponentStatus {
@@ -132,8 +152,8 @@ mod imp {
                 key: "sapi".to_string(),
                 name: "SAPI For VOICEVOX".to_string(),
                 installed: sapi_registered,
-                // 配布元 URL 未確定のため開く導線は出さない（official_page("sapi")==None と整合）。
-                has_official_page: false,
+                // 配布元（GitHub リリース）へ誘導する（official_page("sapi")==Some と整合）。
+                has_official_page: true,
             },
             ComponentStatus {
                 key: "bouyomichan".to_string(),
@@ -147,6 +167,7 @@ mod imp {
             supported: true,
             components,
             engine_running,
+            bouyomi_running: bouyomi_up,
             message: Some("検出が完了しました。".to_string()),
         })
     }
@@ -161,20 +182,24 @@ mod imp {
         agent.get(VOICEVOX_ENGINE_URL).call().is_ok()
     }
 
-    /// VOICEVOX の導入有無（既知パスの存在確認・読み取り専用・best-effort）。
-    /// 098-SPIKE: 実インストールパスを実機で確定する（暫定候補）。
-    fn detect_voicevox_installed() -> Option<bool> {
-        let candidates = [
-            env_join("LOCALAPPDATA", r"Programs\VOICEVOX\VOICEVOX.exe"),
-            env_join("PROGRAMFILES", r"VOICEVOX\VOICEVOX.exe"),
-        ];
-        Some(any_path_exists(&candidates))
+    /// 棒読みちゃんの Socket 連携（127.0.0.1:50001）が待ち受けているか（**connect のみ・送信しない**）。
+    /// 疎通確認には棒読みちゃんの起動が必須のため、scan でも起動状態を提示する（ループバックのみ・§1）。
+    fn bouyomi_running() -> bool {
+        let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, BOUYOMI_PORT));
+        TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT).is_ok()
     }
 
-    /// 棒読みちゃんの導入有無（既知パスの存在確認・読み取り専用・best-effort）。
-    /// 098-SPIKE: 実インストールパスを実機で確定する（暫定候補）。
-    fn detect_bouyomi_installed() -> Option<bool> {
-        Some(bouyomi_install_dir().is_some())
+    /// 032b 修正2: 導入済み判定＝ツール管理に該当 exe 名の Tool が登録済みで、その executablePath が
+    /// 有効（絶対・実在・非ディレクトリ・`.lnk`/`.bat` でない）か。未登録は `Some(false)`（＝未導入。
+    /// prepare gate が「ツール管理へ追加」導線を出す）。FS 広域走査・sysinfo プロセス列挙は行わない。
+    fn detect_installed(tools: &[Tool], expected_exe: &str) -> Option<bool> {
+        match crate::rakuraku::service::resolve_tool_for_component(tools, expected_exe) {
+            Some(tool) => Some(
+                crate::process::service::validate_executable_path(Path::new(&tool.executable_path))
+                    .is_ok(),
+            ),
+            None => Some(false),
+        }
     }
 
     /// SAPI 音声トークンに "VOICEVOX" を含む登録があるか（レジストリ読み取り専用・best-effort）。
@@ -267,14 +292,16 @@ mod imp {
     // ---------------------------------------------------------------------------------------------
 
     pub fn configure(ctx: &IntegrationCtx) -> AppResult<ConfigureResult> {
-        // 1. 棒読みちゃんのインストールフォルダと設定ファイルを解決する。未導入なら NotInstalled。
-        let Some((install_dir, config_path)) = resolve_bouyomi_config() else {
+        // 1. 登録済み棒読みちゃん Tool の executablePath 親を install_dir とし、設定ファイルを解決する。
+        //    未登録・設定ファイル不在なら NotInstalled（032b 修正2: FS 広域走査はしない）。
+        let Some((install_dir, config_path)) = resolve_bouyomi_config(&ctx.tools) else {
             return Ok(ConfigureResult {
                 supported: true,
                 status: ConfigureStatus::NotInstalled,
                 backup_created: false,
                 restart_required: false,
-                message: "棒読みちゃんが見つかりませんでした。先に導入してください。".to_string(),
+                message: "棒読みちゃんがツール管理に登録されていません。先に登録してください。"
+                    .to_string(),
                 backup_name: None,
             });
         };
@@ -474,23 +501,16 @@ mod imp {
     // パス解決ヘルパ（読み取り専用）
     // ---------------------------------------------------------------------------------------------
 
-    /// 棒読みちゃんのインストールフォルダを解決する（既知候補の存在確認）。
-    /// 098-SPIKE: 実インストールパスを実機で確定する（暫定候補）。
-    fn bouyomi_install_dir() -> Option<PathBuf> {
-        let candidates = [
-            env_join("PROGRAMFILES(X86)", r"BouyomiChan"),
-            env_join("PROGRAMFILES", r"BouyomiChan"),
-        ];
-        candidates
-            .into_iter()
-            .flatten()
-            .find(|dir| dir.join("BouyomiChan.exe").exists())
-    }
-
-    /// 棒読みちゃんのインストールフォルダと設定ファイルパスを解決する。
-    /// 098-SPIKE: 実際の設定ファイル名（SettingBase.xml 等）を実機で確定する。
-    fn resolve_bouyomi_config() -> Option<(PathBuf, PathBuf)> {
-        let install_dir = bouyomi_install_dir()?;
+    /// 棒読みちゃんの install_dir と設定ファイルパスを解決する（032b 修正2: 登録済み Tool ベース）。
+    ///
+    /// install_dir＝ツール管理に登録済みの `BouyomiChan.exe` の**親ディレクトリ**。設定ファイルは
+    /// install_dir 直下の `SettingBase.xml`（098-SPIKE 仮）。未登録・親なし・設定ファイル不在なら None
+    /// （configure は NotInstalled を返す）。**FS 広域走査・sysinfo プロセス列挙は行わない**（同名 exe
+    /// 偽装の入り口を排除）。configure 側で `config_path.starts_with(install_dir)` を再確認して書換対象を
+    /// install_dir 配下に限定する担保は維持する（§5）。
+    fn resolve_bouyomi_config(tools: &[Tool]) -> Option<(PathBuf, PathBuf)> {
+        let tool = crate::rakuraku::service::resolve_tool_for_component(tools, super::BOUYOMI_EXE)?;
+        let install_dir = Path::new(&tool.executable_path).parent()?.to_path_buf();
         // 098-SPIKE: ファイル名は仮。実機で確定する。
         let config = install_dir.join("SettingBase.xml");
         if config.exists() {
@@ -498,19 +518,6 @@ mod imp {
         } else {
             None
         }
-    }
-
-    /// 環境変数のディレクトリに相対パスを結合する（未設定・空なら None）。
-    fn env_join(var: &str, rel: &str) -> Option<PathBuf> {
-        let base = std::env::var_os(var)?;
-        if base.is_empty() {
-            return None;
-        }
-        Some(PathBuf::from(base).join(rel))
-    }
-
-    fn any_path_exists(candidates: &[Option<PathBuf>]) -> bool {
-        candidates.iter().flatten().any(|p| p.exists())
     }
 
     /// ファイル名安全なタイムスタンプ（コロンを含まない。Windows のファイル名に使える）。

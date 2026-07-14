@@ -50,6 +50,8 @@ type InsertMode = "tail" | "head" | "parallel";
 export function AddToolScreen({
   onNavigate,
   editingTool,
+  prefillName,
+  returnTo,
   onSaved,
   presets,
   presetItems,
@@ -57,6 +59,10 @@ export function AddToolScreen({
   onNavigate: (screen: Screen) => void;
   /** 編集対象。null なら新規登録。 */
   editingTool?: ToolRecord | null;
+  /** 新規登録時の表示名プリフィル（らくらく画面「ツール管理へ追加」から。パスは選択ダイアログのまま）。 */
+  prefillName?: string | null;
+  /** 保存/キャンセル後の戻り先（既定 main。らくらく画面から来たときは rakuraku-tools）。 */
+  returnTo?: Screen;
   /** 保存成功後に一覧を再読み込みするコールバック。 */
   onSaved?: () => Promise<void> | void;
   /** 登録先プリセットの選択肢（登録済みプリセットの実データ）。 */
@@ -79,16 +85,17 @@ export function AddToolScreen({
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  // 編集画面 / 新規画面 いずれもフォーム初期値を editingTool に同期する
+  // 編集画面 / 新規画面 いずれもフォーム初期値を editingTool に同期する。新規登録は prefillName を
+  // 表示名の初期値にする（未指定なら空。パスは選択ダイアログのまま＝生パス注入なし）。
   useEffect(() => {
-    setName(editingTool?.name ?? "");
+    setName(editingTool?.name ?? prefillName ?? "");
     setKind(editingTool?.kind ?? "executable");
     setExecutablePath(editingTool?.executablePath ?? "");
     setUrl(editingTool?.url ?? "");
     setDescription(editingTool?.description ?? "");
     setIconPng(editingTool?.iconPng ?? null);
     setError(null);
-  }, [editingTool]);
+  }, [editingTool, prefillName]);
 
   const isUrlKind = kind === "url";
 
@@ -180,7 +187,7 @@ export function AddToolScreen({
         }
       }
       await onSaved?.();
-      onNavigate("main");
+      onNavigate(returnTo ?? "main");
     } catch (e) {
       setError(toErrorMessage(e));
     } finally {
@@ -400,7 +407,7 @@ export function AddToolScreen({
 
             <div className={layout.bottomActions}>
               <Button
-                onClick={() => onNavigate("main")}
+                onClick={() => onNavigate(returnTo ?? "main")}
                 disabled={isCancelLockedByTutorial()}
               >
                 キャンセル

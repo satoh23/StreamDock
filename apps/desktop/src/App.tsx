@@ -45,6 +45,10 @@ function App() {
   const [activePresetId, setActivePresetId] = useState<string | null>(null);
   const [editingPresetId, setEditingPresetId] = useState<string | null>(null);
   const [editingToolId, setEditingToolId] = useState<string | null>(null);
+  // 新規ツール登録の表示名プリフィルと、保存/キャンセル後の戻り先（既定は main。らくらく画面から
+  // 「ツール管理へ追加」で来たときは rakuraku-tools へ戻す）。
+  const [addToolPrefillName, setAddToolPrefillName] = useState<string | null>(null);
+  const [addToolOrigin, setAddToolOrigin] = useState<Screen>("main");
 
   // プリセット一覧が変わったら、選択中IDが有効か検証し、無効なら先頭（無ければ null）へ寄せる
   useEffect(() => {
@@ -91,13 +95,17 @@ function App() {
   }, [presetItems]);
 
   // --- ツール ---
-  const openAddTool = () => {
+  const openAddTool = (opts?: { prefillName?: string; origin?: Screen }) => {
     setEditingToolId(null);
+    setAddToolPrefillName(opts?.prefillName ?? null);
+    setAddToolOrigin(opts?.origin ?? "main");
     setScreen("add-tool");
   };
 
   const openEditTool = (id: string) => {
     setEditingToolId(id);
+    setAddToolPrefillName(null);
+    setAddToolOrigin("main");
     setScreen("add-tool");
   };
 
@@ -285,6 +293,8 @@ function App() {
           <AddToolScreen
             onNavigate={setScreen}
             editingTool={editingTool}
+            prefillName={addToolPrefillName}
+            returnTo={addToolOrigin}
             presets={presets}
             presetItems={presetItems}
             onSaved={async () => {
@@ -310,7 +320,14 @@ function App() {
             onChangePreference={setThemePreference}
           />
         )}
-        {screen === "rakuraku-tools" && <RakurakuToolsScreen hostOs={hostOs} />}
+        {screen === "rakuraku-tools" && (
+          <RakurakuToolsScreen
+            hostOs={hostOs}
+            onRequestAddTool={({ name }) =>
+              openAddTool({ prefillName: name, origin: "rakuraku-tools" })
+            }
+          />
+        )}
         {comingSoonSection && (
           <ComingSoonScreen
             title={comingSoonSection.label}

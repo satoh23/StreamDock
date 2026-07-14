@@ -3038,3 +3038,71 @@ Rust/Cargo/capabilities/`tauri.conf.json`（`csp: null`）不変・新規依存/
   一貫適用（いずれも正当な無効状態で灰色化は標準挙動＝回帰なし）。secondary は対象外。赤文字「(このOSでは利用できません)」と併せ非活性が明確化。
 - セキュリティ影響なし（CSS のみ）。`typecheck` / `lint` = pass。生 hex 0 件。実機目視は `tauri dev`（mac で「確認画面に進む」が灰色・ホバーで明るくならない／有効時は従来どおり）でユーザー確認予定。
 - 変更ファイル: `apps/desktop/src/components/primitives.module.css` / `docs/progress.md`（本節）。
+
+### 032b 修正（起動検出＋自動起動の必須化・SAPI 導線・棒読み検出堅牢化・halt-on-failure）
+
+初回 032b 実装がワンクリック設定として実用にならなかった 4 点を修正（ユーザー報告）。**「起動検出＋既導入アプリの
+自動起動」を必須スコープに格上げ**し、親設計 032 決定 3・`docs/security.md`「らくらくツール設定（外部アプリ連携）方針」を改訂。
+**自動DL/インストール/SAPI 自動登録は引き続きしない**（誘導のみ）。
+
+- **問題1 SAPI 導線復活**: SAPI For VOICEVOX は 3 部品連鎖の必須部品だが配布元 URL 未確定（098-SPIKE）で導線が 3 層封印
+  されていた。配布元を **GitHub 公式リリース `shigobu/SAPIForVOICEVOX`** に確定し、`official_page("sapi")=Some` /
+  `has_official_page=true` / registry `officialUrl` を設定。導入準備ステップに「公式ページを開く」ボタンが出る。
+- **問題2 棒読み検出の誤判定**: zip 展開型で任意フォルダに置かれると固定 2 パスでは未検出だった。**起動中プロセスの
+  exe パス（sysinfo・読み取り専用）を最優先**し、無ければ展開先候補（Desktop/Downloads/ユーザーフォルダ/ドライブ直下の
+  `BouyomiChan*`）を探す。`configure` の設定ファイル解決も同じ install_dir を使う。
+- **問題3 起動検出＋自動起動**: `ScanResult` に `bouyomiRunning`（50001 connect のみ）を追加し UI に両アプリの起動を提示。
+  新コマンド `rakuraku_launch_component(id, component)` ＋ `process::service::spawn_detached`（shell 非経由・検証済み絶対パス・
+  PID 管理外）で **既導入・未起動アプリを自動起動**。frontend は未起動部品にだけ呼び、起動を scan 再ポーリングで待つ（VOICEVOX
+  エンジンは起動に数秒）。同意画面に自動起動を明示（`IntegrationConsent.allowsAutoLaunch`）。
+- **問題4 halt-on-failure**: `runAll` を「前段が失敗したら中断し、以降を『未実行（blocked）』にする」逐次ゲートに変更
+  （verify の常時実行を撤回）。ステップ順は scan→prepare→configure→register→**launch**→verify。新 StepRunState `blocked`＋CSS。
+- **セキュリティ**: security-review 実施＝**判定「問題なし」**（capability/CSP/依存 差分ゼロ・自動起動は既導入アプリのみ shell 非経由・
+  検出は読み取り専用・frontend は固定語のみ）。詳細は `docs/security.md`「### 032b 修正 …」節。
+- **検証**: mac で `cargo check`（非 Windows）/ `typecheck` / `lint` = pass。`gen:bindings` 再生成（`ScanResult` に `bouyomiRunning`・
+  新規 `LaunchResult.ts`）。**Windows `imp`（launch/spawn_detached/検出/bouyomi_running）は mac では未コンパイル**＝実コンパイル・
+  実機 E2E は 098 が初。
+- **098 へ持ち越し**: 棒読み検出候補の網羅性・プロセス名、自動起動 exe パス、**棒読み起動中に configure したときの設定
+  上書き有無**（launch を configure の後に置き未起動時のみ起動＝新規起動が新設定を読む前提。既起動時は要確認）、VOICEVOX 起動待ち時間。
+- **変更ファイル**: `src-tauri/src/rakuraku/integrations/bouyomi_voicevox.rs`・`model.rs`・`commands.rs`・`integrations/mod.rs` /
+  `src-tauri/src/process/service.rs`（`spawn_detached`）/ `src-tauri/src/lib.rs`（コマンド登録）/
+  `src/features/rakuraku/{integrationRegistry.ts,rakurakuApi.ts,types.ts,bindings/ScanResult.ts,bindings/LaunchResult.ts}` /
+  `src/screens/rakuraku-tools/RakurakuToolsScreen.tsx`＋`.module.css` /
+  `docs/{security.md,product.md,progress.md,tasks/032-rakuraku-auto-setup-design.md,tasks/032b-bouyomi-voicevox-integration.md}`。
+
+### 032b 修正2（ツール管理登録前提化・広域走査/sysinfo 廃止・管理付き spawn へ一本化）
+
+「032b 修正」で入れた **FS 広域走査（Downloads/ドライブ直下等の `read_dir`）＋sysinfo プロセス列挙**による導入検出/自動起動を
+撤回し、**対象ツール（VOICEVOX / 棒読みちゃん）が「ツール管理」に登録済みであることを前提**にする方式へ変更（設計 D1〜D5・
+docs は先行更新済み）。攻撃面（同名 exe 偽装の自動起動）を排除し、起動を既存基盤へ一本化した。
+
+- **Phase 1（照合・installed 判定）**: `process/service.rs::validate_launch_path` を `pub fn validate_executable_path`
+  （クロスプラットフォーム）へ昇格。`rakuraku/service.rs::resolve_tool_for_component`（exe 名一致・大小無視・kind==Executable・
+  非永続）を追加。`Integration` トレイトに `component_exe`（固定語→exe 名）を追加。`IntegrationCtx` に `tools: Vec<Tool>` を
+  追加し commands 層が `DbState`→`tools::service::list` で注入。`detect_installed` を「登録済み＋パス有効」判定へ作り替え。
+- **Phase 2（launch 一本化）**: `rakuraku_launch_component` を `component_exe`→`resolve_tool_for_component`→管理付き
+  `process::service::spawn`＋`register`（`launch_tool` と同プリミティブ）へ改修（State は Tauri 注入・frontend invoke 不変）。
+  **`spawn_detached` / `Integration::launch` / `imp::launch` / `LaunchResult::unsupported` を削除**。起動 PID は停止/監視対象に。
+- **Phase 3（configure）**: `resolve_bouyomi_config(tools)` を「登録済み棒読みちゃん Tool の `executablePath` 親＝install_dir →
+  `install_dir/SettingBase.xml`（098-SPIKE 仮）」へ作り替え。`starts_with(install_dir)`・バックアップ先取り・書換ロジックは不変。
+  広域走査群（`bouyomi_install_dir`/`bouyomi_process_dir`/`bouyomi_candidate_dirs`/`subdirs_starting_with`/`env_join`/
+  `voicevox_exe_path`/`bouyomi_exe_path`）を削除。**sysinfo の潜在コンパイルエラー（Cargo.toml macOS 依存）も同時に解消**。
+- **Phase 4（frontend 導線）**: prepare gate 文言を「ツール管理へ登録」へ更新。未登録部品に**「ツール管理へ追加」ボタン**を
+  併設（voicevox/棒読みちゃんのみ・SAPI は誘導のみ）。`RakurakuToolsScreen` に `onRequestAddTool` prop を追加し `App.tsx` から
+  配線（プリフィル名 state＋戻り先 origin）。`AddToolScreen` に `prefillName`/`returnTo` prop を軽微追加（**名称のみプリフィル・
+  パスは従来のファイル選択ダイアログ readOnly**＝生パス注入なし）。
+- **セキュリティ**: security-review 実施＝**判定「問題なし」**（広域走査・sysinfo 廃止で攻撃面縮小／自動起動は登録済み
+  `executablePath` のみ・管理付き spawn で §6 整合／frontend は固定語・表示名のみで生パス非受領／capability・CSP・依存は
+  差分ゼロ〔`lib.rs` の起動コマンド登録・bindings の `LaunchResult`/`bouyomiRunning` は本コミットが内包する「032b 修正」delta
+  として対 HEAD では変更あり・Rust↔TS drift ゼロ〕／バックアップ先取り・`starts_with` 維持／app_logs 非増加）。詳細は
+  `docs/security.md`「### 032b 修正2 …」節。
+- **検証**: 各 Phase 末で mac `cargo check`（非 Windows）/ `typecheck` / `lint` = pass。`gen:bindings` の **drift ゼロ**（型構造不変）。
+  **Windows `imp`（scan/configure/`bouyomi_running`）は mac では未コンパイル**＝実コンパイル・実機 E2E は 098 が初。
+- **098 へ持ち越し**: 登録済みツール前提での scan/configure/launch/verify、**棒読み起動中に configure したときの設定上書き有無**
+  （launch を configure の後に置く既存順序を維持）、VOICEVOX 起動待ち時間、SettingBase.xml スキーマ確定。
+- **変更ファイル**: `src-tauri/src/rakuraku/{integrations/bouyomi_voicevox.rs,integrations/mod.rs,commands.rs,service.rs,model.rs}` /
+  `src-tauri/src/process/service.rs` /
+  `src/App.tsx`・`src/screens/{rakuraku-tools/RakurakuToolsScreen.tsx,add-tool/AddToolScreen.tsx}` /
+  `docs/{security.md,product.md,progress.md,tasks/032-rakuraku-auto-setup-design.md,tasks/032b-bouyomi-voicevox-integration.md}`。
+  `Cargo.toml`/`Cargo.lock`/`capabilities/default.json`/`tauri.conf.json` は**不変**。`lib.rs`（`rakuraku_launch_component` 登録）・
+  bindings（`LaunchResult` 新規・`ScanResult.bouyomiRunning`）は本コミットが内包する「032b 修正」delta として対 HEAD では変更あり。
