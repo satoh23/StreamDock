@@ -11,10 +11,12 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use rusqlite::Connection;
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 use error::{AppError, AppResult};
-use process::registry::ManagedProcess;
+use process::registry::{ManagedProcess, ProcessRegistry};
+use rakuraku::model::LaunchResult;
+use tools::commands::DbState;
 
 /// 021: カスタムタイトルバーの出し分け（macOS=信号機回避の左余白 / Windows=自作制御ボタン）に使う
 /// ホスト OS 名。ユーザー入力を取らず固定文字列（"macos"/"windows"/"linux" 等）を返すのみ。
@@ -49,6 +51,46 @@ fn open_comment_viewer_window(app: AppHandle) -> AppResult<()> {
         .build()
         .map_err(|_| AppError::launch_failed("コメントビューアを開けませんでした"))?;
     Ok(())
+}
+
+/// 032c-c: コメントビューアの VOICEVOX 読み上げ用に、**ツール管理に登録済みの VOICEVOX** を
+/// 管理付き spawn（resolve→spawn→register）で起動する薄いコマンド。`rakuraku_launch_component` と
+/// 同経路で、frontend は raw なパス/ポートを渡さず、登録済みツールを exe 名一致で解決する
+/// （OS 別: macOS=`VOICEVOX.app` / Windows=`VOICEVOX.exe`）。未登録なら `launched=false` で登録を案内する
+/// （誘導のみ・絶対パス直起動しない）。起動プロセスは PID registry に登録され停止/監視の対象になる（§6）。
+/// ENGINE への合成 HTTP（127.0.0.1:50021）は viewer webview の fetch が担い、本コマンドは起動のみを行う。
+#[tauri::command]
+fn launch_voicevox_engine(
+    db: State<'_, DbState>,
+    registry: State<'_, ProcessRegistry>,
+) -> AppResult<LaunchResult> {
+    // 登録済みツールを list で取得する（DB ロックは list 取得だけで解放）。
+    let tools = {
+        let conn = db.lock().expect("db mutex poisoned");
+        tools::service::list(&conn)?
+    };
+    // 期待 exe 名は OS 別に解決する（mac は .app バンドル・Windows は .exe）。
+    let expected_exe = if cfg!(target_os = "macos") {
+        "VOICEVOX.app"
+    } else {
+        "VOICEVOX.exe"
+    };
+    let Some(tool) = rakuraku::service::resolve_tool_for_component(&tools, expected_exe) else {
+        return Ok(LaunchResult {
+            supported: true,
+            launched: false,
+            message: "VOICEVOX ENGINE をツール管理に登録してください。".to_string(),
+        });
+    };
+    // 管理付き spawn（検証＋起動）＋ registry 登録（launch_tool / rakuraku_launch_component と同経路）。
+    let handle = process::service::spawn(tool)?;
+    let _launch_id =
+        process::service::register(&registry, tool, None, None, handle, util::now_rfc3339());
+    Ok(LaunchResult {
+        supported: true,
+        launched: true,
+        message: "VOICEVOX ENGINE を起動しました。".to_string(),
+    })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -120,6 +162,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             host_os,
             open_comment_viewer_window,
+            launch_voicevox_engine,
             tools::commands::create_tool,
             tools::commands::list_tools,
             tools::commands::get_tool,

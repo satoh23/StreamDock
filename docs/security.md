@@ -30,6 +30,24 @@ MVPでは、stream-dock は外部サーバーと通信しない。
 
 ただし、MVPではこれらも原則実装しない。
 
+### 例外（032c-c・コメントビューアの VOICEVOX ローカル合成読み上げ）
+
+上記「外部通信をしない」原則に対し、**コメントビューア（別ウィンドウ label `comment-viewer`）の VOICEVOX
+読み上げに限り**、ローカルの VOICEVOX ENGINE（`http://127.0.0.1:50021`・ループバック）への通信を例外的に
+許容する（コメントをローカルで音声合成して読み上げるため。インターネット通信ではない）。032c-a で全撤去した
+loopback 例外を、合成＋ローカル再生に限定して（再）定義するもの。
+
+- **宛先はループバック `127.0.0.1:50021` のみ**。許可する通信は **GET `/version`（稼働検出）／POST `/audio_query`／
+  POST `/synthesis`（合成）** に限定し、返る WAV は **Web Audio でローカル再生**する（外部送信しない）。
+- **viewer webview の `fetch` のみ**で行い、**Rust 側に HTTP クライアント・音声再生ライブラリ（`reqwest`/`rodio` 等）は
+  追加しない**（新規依存ゼロ）。合成対象はコメント本文のみ・URL/絵文字を除去してから送る・著者名は送らない。
+- VOICEVOX ENGINE の**プロセス起動のみ** Rust の管理付き `spawn`＋PID registry（`launch_tool` と同経路）で行い、
+  frontend は raw なパス/ポートを渡さず**登録済みツールを exe 名一致で解決**して起動する（絶対パス直起動しない・
+  未登録は誘導のみ・`registry()` は空のまま触らない）。
+- **インターネット通信・Node sidecar・OAuth には一切波及しない**（Twitch/YouTube 取得は 032c-b/-d の別タスクで
+  security-review の上あらためて定義する）。新規 capability の広域追加・CSP 硬化はしない（`csp: null` 不変）。
+- 撤去済みの棒読みちゃん 50001 はこの例外に含めない（50021 のみ）。
+
 ### 2. frontendから自由なOS操作をさせない
 
 React / TypeScript側から、自由なshell実行・自由なファイル操作・自由なプロセス操作を行わない。
@@ -250,8 +268,9 @@ YouTube（`https://www.youtube-nocookie.com/embed/<id>`）の **iframe 埋め込
 （§1 の限定解禁分・VOICEVOX 50021 / 棒読みちゃん 50001）／棒読みちゃん設定ファイルの書換（§5 の限定解禁分・
 バックアップ付き）／新規依存 `ureq`／SAPI レジストリ読取（`Win32_System_Registry`）**は撤去した。これにより
 §1（外部通信をしない）・§5（外部設定を上書きしない）の一般原則へ復帰する（限定解禁は無し）。現時点で登録済みの
-連携実装は無い（`registry()` は空）。VOICEVOX 直接読み上げの通信方針は 032c-b で security-review の上あらためて
-定義する（本タスクでは外部通信の新規解禁は追記しない）。
+連携実装は無い（`registry()` は空）。なお VOICEVOX 直接読み上げ（ローカル合成）の loopback 50021 例外は、その後
+**032c-c で（再）定義した**（合成＋WAV ローカル再生に限定・上記 §1「例外（032c-c…）」を参照）。棒読みちゃん
+50001 は撤去済みで（再）定義しない。
 
 以下は温存する共有部（らくらく画面シェル・登録済みアプリの自動起動・公式ページ誘導）の方針。
 
@@ -377,6 +396,33 @@ YouTube（`https://www.youtube-nocookie.com/embed/<id>`）の **iframe 埋め込
   低頻度。停止経路（§6）のような exe/start_time 照合の追加は前面化の低リスクに対し過剰なため据え置く。
 - **アプリアイコン（icon.ico）**: 098 で Windows 用 `icon.ico` を再生成した（読み取り専用の静的アセット変更のみ・
   OS 操作/通信/権限に影響なし）。macOS の `icon.icns` は不変。`tauri.conf.json` / capabilities は変更なし。
+
+### 032c-c コメントビューア VOICEVOX ローカル合成読み上げ（loopback 50021 例外の（再）定義・security-review 実施済み）
+
+- 032c 方針転換の中核（内蔵コメントビューア × VOICEVOX 直接読み上げ）を実装した。viewer webview から**ローカルの
+  VOICEVOX ENGINE**（`http://127.0.0.1:50021`・ループバック）へ `fetch` で GET `/version`（稼働検出）／POST
+  `/audio_query`／POST `/synthesis`（合成）を投げ、返る WAV を **Web Audio** でローカル再生する（FIFO 直列 TTS キュー）。
+  032c-a で全撤去した loopback 例外を、合成＋ローカル再生に限定して**§1 に（再）定義**した（上記「例外（032c-c…）」）。
+- **security-review を実施し、判定＝問題なし**（修正必須なし）。確認事項:
+  - **通信はループバック 50021 のみ**: 宛先は `127.0.0.1:50021` に限定（GET /version・POST /audio_query・POST
+    /synthesis）。**インターネット通信・Node sidecar・OAuth には一切波及しない**（Twitch/YouTube 取得は 032c-b/-d）。
+    合成対象はコメント本文のみ・URL/絵文字を除去してから送る・**著者名は送らない**。text は `encodeURIComponent`／
+    `JSON.stringify` で安全に送出。返る WAV は外部送信せずローカル再生のみ。クレジット文中の URL は静的表示で fetch しない。
+  - **新規依存ゼロ**: 合成 HTTP と再生は viewer の `fetch`＋Web Audio（Web 標準 API）で行い、Rust に HTTP クライアント・
+    音声再生ライブラリ（`reqwest`/`rodio` 等）を追加しない（`Cargo.toml`/`package.json` 不変）。
+  - **プロセス起動は管理付き spawn のみ**: ENGINE 起動は薄い新 command `launch_voicevox_engine`（frontend 引数ゼロ）が
+    `resolve_tool_for_component`（**登録済みツールを exe 名一致で解決**・Executable 限定・OS 別 `VOICEVOX.app`/
+    `VOICEVOX.exe`）→ `process::service::spawn`（`validate_executable`・shell 非経由）＋PID registry 登録
+    （`launch_tool` と同経路）で行う。frontend は raw パス/ポートを渡さず**絶対パス直起動しない**・未登録なら誘導のみ
+    （`registry()` は空のまま）。§6「停止は自 spawn 起動 PID に限定」と整合。
+  - **capability / CSP 不変**: アプリ定義 command は本構成の capability permission に列挙不要のため
+    `capabilities/comment-viewer.json`（`core:default`）に per-command 許可を追加していない（viewer からの invoke 可否は
+    E2E で確認）。`capabilities/default.json`（main）・`tauri.conf.json`（`csp: null`）に差分なし。CSP 硬化はしない。
+  - **binding drift ゼロ**: 新 command は既存 `LaunchResult` を再利用し新規 ts-rs 型ゼロ（`gen:bindings` で 032c-c 由来の
+    差分ゼロ）。
+- **docs 整理**: §1 に 032c-c の loopback 50021 例外を（再）定義し、らくらく方針節（032c-a 撤去注記）の stale pointer
+  「VOICEVOX 直接読み上げの通信方針は 032c-b で定義」を「032c-c で（再）定義した」に修正。新例外は 50021 のみを列挙する
+  （棒読み 50001 は撤去済みとして含めない）。
 
 ### 032c-a らくらくツール設定 032b（棒読み×VOICEVOX）撤去（ループバック通信 / 外部設定書換 / `ureq` / SAPI レジストリ読取の削除・security-review 実施済み）
 

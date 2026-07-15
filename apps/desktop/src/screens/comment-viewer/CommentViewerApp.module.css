@@ -135,3 +135,46 @@
   line-height: 1.5;
   word-break: break-word;
 }
+
+/* ENGINE 未起動の起動誘導バナー（warn 系トークンで注意喚起）。 */
+.engineBanner {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 16px;
+  color: var(--warn-text);
+  background: var(--warn-soft);
+  border-bottom: 1px solid var(--warn-border);
+}
+
+.engineBannerText {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.engineBannerNotice {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* ずんだもんクレジット表記（必須）。らくらく画面の見出し体裁を踏襲し danger 色で強調する。 */
+.credit {
+  padding: 10px 16px;
+  border-top: 1px solid var(--line);
+}
+
+.creditHeading {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--danger);
+  margin-bottom: 4px;
+}
+
+.creditText {
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.6;
+  color: var(--danger);
+  word-break: break-word;
+}

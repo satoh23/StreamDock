@@ -3216,3 +3216,66 @@ sidecar・VOICEVOX API・Web Audio・OAuth は 032c-b/-c/-d）、コメントは
   `screens/add-tool/AddToolScreen.tsx`、`features/rakuraku/{integrationRegistry.ts,rakurakuApi.ts,types.ts}`、
   `screens/rakuraku-tools/RakurakuToolsScreen.tsx`、`features/tools/bindings/ToolKind.ts`（生成物）
 - docs: `docs/security.md`、`docs/product.md`、`docs/progress.md`
+
+### 032c-c VOICEVOX 直接合成 ＋ TTS キュー（ずんだもん・Web Audio・新依存ゼロ・mac 検証可・4 コミット）
+
+らくらくツール設定の中核目的「配信者が簡単にずんだもんの声でコメントを読ませる」を実現。viewer webview（別窓
+`comment-viewer`）から**ローカルの VOICEVOX ENGINE**（`http://127.0.0.1:50021`・ループバック）へ `fetch` で合成 API を
+直接投げ、返る WAV を **Web Audio** でローカル再生する。棒読み/SAPI は 032c-a で撤去済み。コメントは 032c-a のモック
+`CommentViewDto` で検証（Twitch/YouTube 取得・Node sidecar・OAuth は 032c-b/-d でスコープ外）。**新依存ゼロ**（Rust に
+`reqwest`/`rodio` を足さず fetch＋Web Audio のみ）。依存は 032c-a のみ・032c-b と相互独立・mac 完結で E2E 検証可。
+
+- **直接合成（新依存ゼロ）**: `features/comment-viewer/voicevox.ts` に `synthesize`（`POST /audio_query?text=&speaker=`
+  → query JSON → `POST /synthesis?speaker=`（body=query JSON）→ WAV `ArrayBuffer`）・`checkEngineRunning`（GET /version）・
+  `playWav`（AudioContext を受け取る純粋再生プリミティブ・`decodeAudioData`→`AudioBufferSourceNode`→`onended` 解決）・
+  `ZUNDAMON_NORMAL_SPEAKER_ID` 定数を実装。
+- **Web Audio 直列再生 ＋ TTS キュー**: `features/comment-viewer/ttsQueue.ts`（`createTtsQueue`）に FIFO 直列・再生中フラグ・
+  `onended` で次へ・バックログ上限 `MAX_BACKLOG=20`（超過は**古い未読から破棄**・破棄件数を `console.debug`）・最小整形
+  （URL 除去・絵文字 `\p{Extended_Pictographic}` 除去・空白畳み込み）・**著者名は読まない**・id 冪等（単一注入点の二重
+  enqueue 無害化）。AudioContext は viewer に 1 つ・ユーザー操作契機で `resume`（WKWebView autoplay 対策）。
+- **単一注入点（mergeComments）**: `CommentViewerApp.tsx` の `mergeComments(prev, incoming)` を **`{ next, added }`** を
+  返す形へ最小リファクタ（`added`＝重複排除後に実際に追加された新規行・クランプ前）。`addMock`（将来の実データハンドラも）
+  が `added` を TTS へ enqueue。再投入した `dup`（seed-1）は `added` に入らず読み上げられない＝注入点が正しく機能。
+- **ENGINE 検出 ＋ 起動誘導**: viewer で GET `/version` を 5 秒ポーリング。未起動時に起動誘導バナー（「VOICEVOX を起動」）を
+  表示。ボタンは `features/comment-viewer/voicevoxApi.ts` の `launchVoicevoxEngine()` → 薄い新 command
+  `launch_voicevox_engine`（`lib.rs`）。command は frontend 引数ゼロで、`resolve_tool_for_component`（登録済みツールを
+  exe 名一致で解決・Executable 限定・**OS 別 `VOICEVOX.app`/`VOICEVOX.exe`**）→ `process::service::spawn`＋`register` の
+  管理付き spawn（`rakuraku_launch_component` と同経路）。未登録なら `launched=false` で「ツール管理に登録してください」誘導・
+  絶対パス直起動しない・`registry()` は空のまま。
+- **comment-viewer.json 追加の有無**: **追加なし**。アプリ定義 command は本構成の capability permission に列挙不要
+  （main の `default.json` は約30個のアプリ command を1つも列挙せず invoke 成功）。viewer からの `launch_voicevox_engine`
+  invoke 可否は E2E ④で確認する（拒否時のみ最小 command 許可を 1 行追加する方針）。main capability・CSP（`csp: null`）不変。
+- **ずんだもんクレジット**: 032a の `creditNotice`（git 履歴 `22099e2` で削除）を復元し viewer に常時表示。文言＝
+  「ずんだもんの音声を使う配信・動画では「VOICEVOX:ずんだもん」のクレジット表記が必須です（VOICEVOX 利用規約
+  https://voicevox.hiroshiba.jp/term/ に準拠）。」。体裁は `RakurakuToolsScreen` の見出し（「クレジット表記のお願い（必須）」
+  ＋段落）を踏襲し `.credit*` を `--danger` で自己完結スタイル（外部通信は発生しない・URL は静的表示）。
+- **loopback 50021 例外の（再）定義**: `docs/security.md` §1 に「例外（032c-c…）」を新設し、許可範囲＝`127.0.0.1:50021` への
+  GET `/version`＋POST `/audio_query`＋POST `/synthesis`＋WAV の Web Audio ローカル再生に限定（インターネット・Node
+  sidecar・OAuth に波及しない旨を明記）。らくらく方針節の **stale pointer**（「032c-b で定義」）を「032c-c で（再）定義した」に
+  修正。新例外は **50021 のみ**を列挙（棒読み 50001 は撤去済みで含めない）。`csp: null` は当面維持。
+- **speaker id 実機スパイク（要フォロー）**: 既定はずんだもん（ノーマル）= VOICEVOX speaker **3**（親設計）で定数化済み
+  （`ZUNDAMON_NORMAL_SPEAKER_ID = 3`）。**本セッションでは ENGINE 未起動のためスパイク未実施**。ENGINE 起動状態で
+  `curl -s http://127.0.0.1:50021/speakers | jq '.[] | select(.name=="ずんだもん") | .styles[] | select(.name=="ノーマル") | .id'`
+  を実行し、観測値が **3 と一致するか**を確認する（異なれば定数を更新）。観測値は本節に追記する。
+- **security-review**: docs（§1 例外・stale pointer）＋コード差分に security-review スキルを適用し、**判定＝問題なし**
+  （修正必須なし）。loopback 50021 例外が合成＋WAV ローカル再生に限定され、インターネット・sidecar・OAuth に波及しないこと・
+  管理付き spawn（絶対パス直起動でない）・capability/CSP 不変・新依存ゼロ・binding drift ゼロを確認。詳細は
+  `docs/security.md` の「032c-c … security-review 実施済み」記録を参照。
+- **4 コミット構成**: ①単発合成＋Web Audio 再生（speaker 定数化・暫定テストボタン）②TTS キュー＋モック連動（mergeComments
+  `{next,added}`）③ENGINE 検出＋起動誘導＋新 command＋クレジット（bindings 再生成同梱）④docs/security.md 例外（再）定義＋
+  security-review＋progress.md。
+- **検証（mac で完結）**: `cargo check` / `pnpm typecheck` / `pnpm lint` すべて pass。`pnpm gen:bindings` は 032c-c 由来の
+  drift ゼロ（`LaunchResult` 再利用で新規 ts-rs 型なし）。**別件の既存 drift**: `rakuraku/bindings/ScanResult.ts` が 032c-a の
+  Rust doc 更新に対し未再生成のまま（doc コメントのみ・型 shape 不変・`check:bindings` が rakuraku を対象外のため未検出）。
+  032c-c では revert して混入させていない（別途整理推奨）。`Cargo.toml`/`package.json` 差分なし（新依存ゼロ）。実機
+  （`pnpm tauri dev`・ENGINE 起動状態）は macOS 環境で確認予定: ①モックがずんだもんの声で FIFO 直列に読まれ音が重ならない
+  ②上限超過で古い未読破棄 ③URL/絵文字除去 ④未起動検出→起動誘導→登録済み VOICEVOX を管理付き spawn 起動（未登録は誘導）
+  ⑤クレジット表示 ⑥通信は 127.0.0.1:50021 loopback のみ・インターネット無し／既存機能に退行なし。
+
+#### 変更ファイル
+- 新規: `apps/desktop/src/features/comment-viewer/voicevox.ts`、`ttsQueue.ts`、`voicevoxApi.ts`
+- Rust: `apps/desktop/src-tauri/src/lib.rs`（`launch_voicevox_engine` command ＋ `generate_handler!` 1 行）
+- frontend: `apps/desktop/src/screens/comment-viewer/CommentViewerApp.tsx`（＋`.module.css`）
+- docs: `docs/security.md`、`docs/progress.md`
+- 不変（確認済み）: `Cargo.toml`／`package.json`（新依存ゼロ）、`capabilities/{comment-viewer,default}.json`、
+  `tauri.conf.json`（`csp: null`）、`bindings/*`（032c-c 由来の drift ゼロ）

@@ -1,18 +1,39 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { CommentViewDto } from "../../features/comment-viewer/types";
+import { createTtsQueue, type TtsQueue } from "../../features/comment-viewer/ttsQueue";
+import { checkEngineRunning } from "../../features/comment-viewer/voicevox";
+import { launchVoicevoxEngine } from "../../features/comment-viewer/voicevoxApi";
 import styles from "./CommentViewerApp.module.css";
 
 /**
- * 032c-a: 内蔵コメントビューア（別ウィンドウ label `comment-viewer`）の描画本体。
+ * 032c-a/032c-c: 内蔵コメントビューア（別ウィンドウ label `comment-viewer`）の描画本体。
  *
- * 本タスクは枠組みのみで、**frontend 専用モック `CommentViewDto`** を最小描画する
- * （append ＋ id 重複排除 ＋ 上限クランプ）。実データ取得（Twitch/YouTube・Node sidecar・WebSocket）・
- * VOICEVOX 読み上げ・Web Audio は 032c-b/-c/-d で配線する。ネイティブタイトルバー（capability は
- * `core:default` のみ）で動くため、メイン画面のカスタム Header は再利用しない。
+ * frontend 専用モック `CommentViewDto` を最小描画（append ＋ id 重複排除 ＋ 上限クランプ）しつつ、
+ * 032c-c で **VOICEVOX ローカル合成読み上げ（Web Audio 直列 TTS キュー）** を配線する。新規追加コメントは
+ * `mergeComments` の戻り値 `added` を単一注入点として TTS キューへ enqueue する。実データ取得
+ * （Twitch/YouTube・Node sidecar・WebSocket）は 032c-b/-d で配線する。ネイティブタイトルバー
+ * （capability は `core:default` のみ）で動くため、メイン画面のカスタム Header は再利用しない。
  */
 
 /** 表示上限（超過分は古い方から捨てる＝末尾 MAX 件を保持）。 */
 const MAX_COMMENTS = 200;
+
+/** ENGINE 稼働の再確認間隔（ミリ秒）。ループバック GET /version の軽いポーリング。 */
+const ENGINE_POLL_INTERVAL_MS = 5000;
+
+/**
+ * 起動要求後にボタンを disabled 維持する猶予（ミリ秒）。多重 spawn 防止のため起動成功後もこの間は
+ * 押せないようにする。VOICEVOX の初回起動はモデル読込で時間がかかるため長め。猶予内に稼働確認できれば
+ * `engineRunning === true` 監視が先に解除する。猶予経過で自動解除し、起動が失敗した場合の永久 disabled を避ける。
+ */
+const LAUNCH_GRACE_MS = 30000;
+
+/**
+ * ずんだもんクレジット表記（VOICEVOX 利用規約に基づく必須表記）。032a の creditNotice を復元。
+ * 表示のみで外部通信は発生しない（URL は静的テキスト）。
+ */
+const CREDIT_NOTICE =
+  "ずんだもんの音声を使う配信・動画では「VOICEVOX:ずんだもん」のクレジット表記が必須です（VOICEVOX 利用規約 https://voicevox.hiroshiba.jp/term/ に準拠）。";
 
 /** 初期表示のモック（Twitch/YouTube・通常/投げ銭を混在）。 */
 const SEED_COMMENTS: CommentViewDto[] = [
@@ -58,22 +79,30 @@ const SOURCE_CLASS: Record<CommentViewDto["source"], string> = {
 /**
  * 既存リストに incoming を追加する。id 重複は排除し、上限を超えたら古い方から捨てる。
  * 実データ配線（032c-b/-d）でも同じ「append ＋ 重複排除 ＋ クランプ」を使う想定。
+ *
+ * 戻り値の `next` は表示用の全体リスト（上限クランプ後）、`added` は**重複排除後に実際に追加された
+ * 新規行**。`added` を TTS enqueue の単一注入点として使う（表示上限でクランプされても読み上げ対象に
+ * 含めるため、クランプ前の追加分を返す）。
  */
 function mergeComments(
   prev: CommentViewDto[],
   incoming: CommentViewDto[],
-): CommentViewDto[] {
+): { next: CommentViewDto[]; added: CommentViewDto[] } {
   const seen = new Set(prev.map((c) => c.id));
   const merged = [...prev];
+  const added: CommentViewDto[] = [];
   for (const c of incoming) {
     if (seen.has(c.id)) continue; // id 重複排除
     seen.add(c.id);
     merged.push(c);
+    added.push(c);
   }
   // 上限クランプ（新しい順に末尾 MAX 件を残す）。
-  return merged.length > MAX_COMMENTS
-    ? merged.slice(merged.length - MAX_COMMENTS)
-    : merged;
+  const next =
+    merged.length > MAX_COMMENTS
+      ? merged.slice(merged.length - MAX_COMMENTS)
+      : merged;
+  return { next, added };
 }
 
 /** モックコメントを 1 件生成する（連番 ID で安定・重複しない）。 */
@@ -93,13 +122,123 @@ export function CommentViewerApp() {
   const [comments, setComments] = useState<CommentViewDto[]>(SEED_COMMENTS);
   // 連番の払い出しカウンタ（生成 ID を安定させ、重複を意図的に注入できるようにする）。
   const seqRef = useRef(1);
+  // TTS キュー（AudioContext を 1 つ所有）。マウントで生成し、アンマウントで dispose する。
+  const ttsRef = useRef<TtsQueue | null>(null);
+  // ENGINE 稼働状態（null=未確認 / true=稼働 / false=未起動）と起動誘導の状態。
+  const [engineRunning, setEngineRunning] = useState<boolean | null>(null);
+  const [launchNotice, setLaunchNotice] = useState<string | null>(null);
+  const [launching, setLaunching] = useState(false);
+  // 起動要求済みフラグ。起動成功後、ENGINE が /version で稼働確認できるまで（または猶予経過まで）true に
+  // して「VOICEVOX を起動」ボタンを disabled 維持し、連打による多重 spawn を防ぐ（2 つ目以降は 50021 バインド
+  // 失敗で即終了するが registry に死んだ handle が溜まるため未然に抑止する）。未登録/失敗時はセットせず再試行可。
+  const [launchRequested, setLaunchRequested] = useState(false);
+
+  useEffect(() => {
+    const queue = createTtsQueue();
+    ttsRef.current = queue;
+    return () => {
+      queue.dispose();
+      ttsRef.current = null;
+    };
+  }, []);
+
+  // ENGINE 稼働を GET /version で定期確認する（未起動→起動誘導、起動後は自動でバナーが消える）。
+  // fetch にタイムアウト/signal は付けていない: 宛先は loopback で応答は即時、`checkEngineRunning` が
+  // 例外を bool 化するため、稀に前回リクエストと重なっても副作用が無い（`cancelled` ガードで unmount 後の
+  // setState も防ぐ）。再検討条件: loopback 以外へ宛先が広がる、または応答遅延で tick が滞留するなら
+  // AbortController + タイムアウトを導入する。
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      const ok = await checkEngineRunning();
+      if (!cancelled) setEngineRunning(ok);
+    };
+    void tick();
+    const id = window.setInterval(tick, ENGINE_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, []);
+
+  // 起動が稼働につながったら起動要求フラグを即解除する（このとき起動誘導バナー自体も消えるが、次に ENGINE が
+  // 落ちた際に再度起動できるよう false に戻しておく）。
+  useEffect(() => {
+    if (engineRunning === true) setLaunchRequested(false);
+  }, [engineRunning]);
+
+  // 多重 spawn 抑止の保険: 起動要求後、猶予内に稼働確認できなければ（＝起動失敗などで ENGINE が現れない）
+  // 自動でフラグを解除して再試行を許す（永久 disabled 回避）。稼働確認が先なら上の effect が解除する。
+  useEffect(() => {
+    if (!launchRequested) return;
+    const id = window.setTimeout(() => setLaunchRequested(false), LAUNCH_GRACE_MS);
+    return () => window.clearTimeout(id);
+  }, [launchRequested]);
+
+  // 新規追加コメントを読み上げキューへ積む単一注入点（addMock も将来の実データハンドラもここを通す）。
+  const enqueueForSpeech = (added: CommentViewDto[]) => {
+    const tts = ttsRef.current;
+    if (!tts || added.length === 0) return;
+    // 毎回 resume してよい（AudioContext が running なら no-op・suspended なら復帰）。現状の呼び出し元は
+    // すべてユーザー操作起点（ボタン）なので WKWebView の autoplay 制限に掛からない。
+    // 再検討条件: 実データ配線（032c-b/-d）で**ユーザー操作を伴わない**自動 enqueue が入ると resume が
+    // suspended のままになり得るため、初回ユーザー操作時に 1 度だけ resume する形へ寄せる。
+    void tts.resume();
+    added.forEach((c) => tts.enqueue(c));
+  };
+
+  // 登録済み VOICEVOX を管理付き spawn で起動する（未登録なら登録誘導文言を表示）。起動後は
+  // /version ポーリングがバナーを自動で消す。
+  const handleLaunch = async () => {
+    setLaunching(true);
+    setLaunchNotice(null);
+    void ttsRef.current?.resume(); // ユーザー操作契機で resume しておく。
+    try {
+      const result = await launchVoicevoxEngine();
+      if (result.launched) {
+        // 起動できたら、ENGINE が /version で稼働確認できるまでボタンを止めて多重 spawn を防ぐ。
+        setLaunchRequested(true);
+      } else {
+        // 未登録など（launched=false）は誘導文言を出す。再試行できるよう requested はセットしない。
+        setLaunchNotice(result.message);
+      }
+    } catch (e) {
+      console.error("VOICEVOX ENGINE の起動に失敗しました", e);
+      setLaunchNotice("VOICEVOX ENGINE の起動に失敗しました。");
+    } finally {
+      setLaunching(false);
+    }
+  };
+
+  // 暫定：固定文をキュー経由で読み上げる（手動検証用。id を毎回変えて連続テストできる）。
+  // 撤去条件: 実データ配線（032c-b/-d）で実コメントの読み上げが検証できるようになったら、この
+  // ボタン（下の toolbar の「読み上げテスト」）ごと削除する。
+  const testSpeak = () => {
+    enqueueForSpeech([
+      {
+        id: `test-${seqRef.current++}`,
+        source: "youtube",
+        author: { id: "u-test", name: "テスト" },
+        text: "ずんだもんなのだ。テスト読み上げなのだ。",
+        publishedAt: new Date().toISOString(),
+        eventType: "chat",
+      },
+    ]);
+  };
 
   const addMock = () => {
     const a = makeMock(seqRef.current++);
     const b = makeMock(seqRef.current++);
     // 既存の seed-1 を再投入して「重複排除」を実演する（追加されないのが正しい挙動）。
     const dup = SEED_COMMENTS[0];
-    setComments((prev) => mergeComments(prev, [a, b, dup]));
+    // 関数型 updater（`setComments(prev => …)`）ではなくスナップショット `comments` を使う理由:
+    // enqueue 対象の `added` を setState の外へ取り出す必要があり、updater 内で副作用（enqueue）を持たせる
+    // のは StrictMode の二重実行で重複 enqueue し得るため避ける。単発クリックのモック用途では stale の実害は
+    // 無い（seqRef で id は常に一意）。再検討条件: 実データ配線（032c-b/-d）で本注入点を高頻度・並行で使う
+    // 場合は、reducer 化するか `added` 抽出を updater 外の ref 経由にして stale を避ける。
+    const { next, added } = mergeComments(comments, [a, b, dup]);
+    setComments(next);
+    enqueueForSpeech(added); // dup は added に入らず読み上げられない＝単一注入点が正しく機能する。
   };
 
   const clearAll = () => setComments([]);
@@ -118,10 +257,32 @@ export function CommentViewerApp() {
         <button type="button" className={styles.btnGhost} onClick={clearAll}>
           クリア
         </button>
+        <button type="button" className={styles.btn} onClick={testSpeak}>
+          読み上げテスト
+        </button>
         <span className={styles.note}>
-          モック表示（実データ取得・読み上げは今後のタスク）
+          モック表示（実データ取得は今後のタスク・読み上げは VOICEVOX 稼働時）
         </span>
       </div>
+
+      {engineRunning === false && (
+        <div className={styles.engineBanner} role="alert">
+          <span className={styles.engineBannerText}>
+            VOICEVOX ENGINE が起動していません。読み上げには起動が必要です。
+          </span>
+          <button
+            type="button"
+            className={styles.btn}
+            onClick={handleLaunch}
+            disabled={launching || launchRequested}
+          >
+            {launching || launchRequested ? "起動中…" : "VOICEVOX を起動"}
+          </button>
+          {launchNotice && (
+            <span className={styles.engineBannerNotice}>{launchNotice}</span>
+          )}
+        </div>
+      )}
 
       <ol className={styles.list}>
         {comments.length === 0 ? (
@@ -143,6 +304,11 @@ export function CommentViewerApp() {
           ))
         )}
       </ol>
+
+      <section className={styles.credit}>
+        <h2 className={styles.creditHeading}>クレジット表記のお願い（必須）</h2>
+        <p className={styles.creditText}>{CREDIT_NOTICE}</p>
+      </section>
     </div>
   );
 }
