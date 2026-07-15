@@ -11,8 +11,9 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use rusqlite::Connection;
-use tauri::Manager;
+use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
+use error::{AppError, AppResult};
 use process::registry::ManagedProcess;
 
 /// 021: カスタムタイトルバーの出し分け（macOS=信号機回避の左余白 / Windows=自作制御ボタン）に使う
@@ -20,6 +21,31 @@ use process::registry::ManagedProcess;
 #[tauri::command]
 fn host_os() -> &'static str {
     std::env::consts::OS
+}
+
+/// 032c-a: 内蔵コメントビューアを別ウィンドウ（label `comment-viewer`）で開く。単一目的コマンド（§3）で、
+/// ウィンドウ生成の汎用権限を frontend に露出しない。単一インスタンスガード＝既に開いていれば前面化し、
+/// 無ければ生成する。内蔵ツール（`ToolKind::Internal`）の launch dispatch（両経路）からも呼ぶ。
+/// shell/spawn/ファイル操作を伴わず、アプリ内ウィンドウを開くのみ（§2/§3）。capability は
+/// `capabilities/comment-viewer.json`（最小権限・`main` 不変）に閉じる。
+#[tauri::command]
+fn open_comment_viewer_window(app: AppHandle) -> AppResult<()> {
+    // 既に開いていれば多重生成せず前面化して再利用する。
+    if let Some(window) = app.get_webview_window("comment-viewer") {
+        let _ = window.show();
+        window
+            .set_focus()
+            .map_err(|_| AppError::launch_failed("コメントビューアを前面に表示できませんでした"))?;
+        return Ok(());
+    }
+    // 同一 Vite バンドルを読み込み、frontend 側は `getCurrentWindow().label` で描画を分岐する。
+    WebviewWindowBuilder::new(&app, "comment-viewer", WebviewUrl::App("index.html".into()))
+        .title("コメントビューア")
+        .inner_size(420.0, 640.0)
+        .min_inner_size(320.0, 400.0)
+        .build()
+        .map_err(|_| AppError::launch_failed("コメントビューアを開けませんでした"))?;
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -90,6 +116,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             host_os,
+            open_comment_viewer_window,
             tools::commands::create_tool,
             tools::commands::list_tools,
             tools::commands::get_tool,

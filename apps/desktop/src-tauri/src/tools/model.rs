@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-/// 023: ツール種別。`executable`（実行ファイル）／`url`（既定ブラウザで開くサイト）。
-/// JSON は lowercase（`"executable"` / `"url"`）。既定は後方互換のため `Executable`。
+/// 023: ツール種別。`executable`（実行ファイル）／`url`（既定ブラウザで開くサイト）／
+/// `internal`（032c-a: 内蔵ツール。別ウィンドウを開くだけで spawn/shell を伴わない）。
+/// JSON は lowercase（`"executable"` / `"url"` / `"internal"`）。既定は後方互換のため `Executable`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
 #[serde(rename_all = "lowercase")]
 #[ts(export, export_to = "../../src/features/tools/bindings/")]
@@ -12,6 +13,9 @@ pub enum ToolKind {
     Executable,
     /// 既定ブラウザで URL を開く（023）。`url` を使い、`executable_path` は空。
     Url,
+    /// 032c-a: 内蔵ツール（コメントビューア等）。`executable_path` 空・`url` NULL で、起動は
+    /// アプリ内の別ウィンドウを開くのみ（validate_executable/spawn/PID registry を通さない）。
+    Internal,
 }
 
 impl ToolKind {
@@ -20,6 +24,7 @@ impl ToolKind {
         match self {
             ToolKind::Executable => "executable",
             ToolKind::Url => "url",
+            ToolKind::Internal => "internal",
         }
     }
 
@@ -27,6 +32,7 @@ impl ToolKind {
     pub fn from_str_lenient(value: &str) -> Self {
         match value {
             "url" => ToolKind::Url,
+            "internal" => ToolKind::Internal,
             _ => ToolKind::Executable,
         }
     }

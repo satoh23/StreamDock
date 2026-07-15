@@ -98,6 +98,8 @@ export function AddToolScreen({
   }, [editingTool, prefillName]);
 
   const isUrlKind = kind === "url";
+  // 032c-a: 内蔵ツール（コメビュ等）の編集。コア項目（表示名/種別/id）は変更不可・実行パス/URL は持たない。
+  const isInternal = editingTool?.kind === "internal";
 
   // 登録先プリセット。"" はセンチネル（プリセットには追加しない）で既定値。
   const [targetPreset, setTargetPreset] = useState("");
@@ -223,11 +225,15 @@ export function AddToolScreen({
       <div className={layout.content}>
         <section className={layout.panel} data-tutorial-id="add-tool-panel">
           <div className={layout.panelHead}>
-            <h3>{isUrlKind ? "URL を入力" : "アプリを選択"}</h3>
+            <h3>
+              {isInternal ? "内蔵ツール" : isUrlKind ? "URL を入力" : "アプリを選択"}
+            </h3>
             <p>
-              {isUrlKind
-                ? "ブラウザで開くサイトの URL（http / https）を登録します。"
-                : "起動したいアプリの実行ファイルを選びます。"}
+              {isInternal
+                ? "内蔵のコメントビューアです。表示名・種別は変更できません。"
+                : isUrlKind
+                  ? "ブラウザで開くサイトの URL（http / https）を登録します。"
+                  : "起動したいアプリの実行ファイルを選びます。"}
             </p>
           </div>
           <div className={layout.panelBody}>
@@ -267,7 +273,17 @@ export function AddToolScreen({
               </div>
             )}
 
-            {isUrlKind ? (
+            {isInternal ? (
+              <div className={styles.selectedApp}>
+                <div className={styles.appIcon}>🗪</div>
+                <div>
+                  <h3>{name || "コメントビューア"}</h3>
+                  <div className={styles.path}>
+                    内蔵ツール（別ウィンドウでコメントビューアを開きます）
+                  </div>
+                </div>
+              </div>
+            ) : isUrlKind ? (
               <div className={styles.selectedApp}>
                 <div className={styles.appIcon}>{previewIcon}</div>
                 <div>
@@ -315,14 +331,32 @@ export function AddToolScreen({
               <div className={layout.field}>
                 <label>表示名</label>
                 <input
+                  className={isInternal ? layout.readonlyInput : undefined}
                   value={name}
                   placeholder="表示名を入力"
                   onChange={(e) => setName(e.target.value)}
+                  readOnly={isInternal}
                 />
-                <div className={layout.fieldHelp}>サイドバーや一覧に表示される名前です。</div>
+                <div className={layout.fieldHelp}>
+                  {isInternal
+                    ? "内蔵ツールの表示名は変更できません。"
+                    : "サイドバーや一覧に表示される名前です。"}
+                </div>
               </div>
 
-              {isUrlKind ? (
+              {isInternal ? (
+                <div className={layout.field}>
+                  <label>種別</label>
+                  <input
+                    className={layout.readonlyInput}
+                    value="内蔵ツール"
+                    readOnly
+                  />
+                  <div className={layout.fieldHelp}>
+                    実行ファイル・URL の設定はありません（「開く」で別ウィンドウを表示します）。
+                  </div>
+                </div>
+              ) : isUrlKind ? (
                 <div className={layout.field}>
                   <label>URL</label>
                   <input

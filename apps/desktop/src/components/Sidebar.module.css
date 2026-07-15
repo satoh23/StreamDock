@@ -147,6 +147,18 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* 032c-a: 内蔵ツールの「内蔵」バッジ。上の `.sidebarTool span`（flex:1）に明示度で勝たせる。 */
+.sidebarTool span.builtinTag {
+  flex: none;
+  overflow: visible;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  color: var(--accent-text);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-soft-border);
+}
 
 .toolActions {
   display: flex;

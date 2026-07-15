@@ -36,6 +36,17 @@ pub fn init(conn: &Connection) -> rusqlite::Result<()> {
         CREATE UNIQUE INDEX IF NOT EXISTS idx_tools_executable_path_executable
             ON tools(executable_path) WHERE kind = 'executable';",
     )?;
+    // 032c-a: 内蔵コメントビューアを固定 id で冪等 seed する（既存なら何もしない＝毎起動安全）。
+    // kind='internal'・executable_path 空・url NULL。部分ユニーク index（WHERE kind='executable'）の
+    // 対象外なので executable_path 空でも衝突しない。id は PRIMARY KEY のため `INSERT OR IGNORE` が
+    // `ON CONFLICT(id) DO NOTHING` 相当になる（name などをユーザーが後から変えても再 seed で上書きしない）。
+    let now = crate::util::now_rfc3339();
+    conn.execute(
+        "INSERT OR IGNORE INTO tools
+            (id, name, executable_path, description, icon_label, kind, url, created_at, updated_at)
+         VALUES ('builtin-comment-viewer', 'コメントビューア', '', '', '', 'internal', NULL, ?1, ?1)",
+        rusqlite::params![now],
+    )?;
     Ok(())
 }
 

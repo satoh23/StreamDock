@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "comment-viewer",
+  "description": "Capability for the comment viewer window (032c-a). Native title bar, minimal permissions.",
+  "windows": ["comment-viewer"],
+  "permissions": ["core:default"]
+}

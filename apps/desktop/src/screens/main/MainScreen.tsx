@@ -693,8 +693,9 @@ export function MainScreen({
                 onStart={() => void handleStart(item.id, item.toolId, item.name)}
                 onStop={() => void handleStop(item.id, item.launchId, item.name)}
                 onOpen={() =>
-                  item.kind === "url"
-                    ? void handleOpenUrl(item.toolId, item.name)
+                  item.kind === "url" || item.kind === "internal"
+                    ? // 032c-a: internal は PID 管理外。launchTool 経由で Rust が別ウィンドウを開く（url と同経路）。
+                      void handleOpenUrl(item.toolId, item.name)
                     : void handleOpen(item.launchId, item.name)
                 }
                 onMoveUp={() => move(index, -1)}

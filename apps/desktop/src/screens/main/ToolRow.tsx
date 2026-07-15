@@ -67,8 +67,15 @@ export function ToolRow({
         <p>{parallel ? "順番なしで並行起動" : tool.description}</p>
       </div>
       {/* 023: url 種別は PID 管理下に入らないため status バッジを出さない。ただしグリッドの status 列
-          セルは空で占有し、アクション列（toolActions）が PC アプリ行と同じ位置に揃うようにする。 */}
-      {tool.kind === "url" ? <span aria-hidden /> : <StatusBadge state={tool.state} />}
+          セルは空で占有し、アクション列（toolActions）が PC アプリ行と同じ位置に揃うようにする。
+          032c-a: internal（内蔵ツール）も PID 管理外。status 列には「内蔵」バッジを出す。 */}
+      {tool.kind === "internal" ? (
+        <span className={styles.builtinBadge}>内蔵</span>
+      ) : tool.kind === "url" ? (
+        <span aria-hidden />
+      ) : (
+        <StatusBadge state={tool.state} />
+      )}
 
       <div className={styles.toolActions}>
         {editMode ? (
@@ -107,6 +114,16 @@ export function ToolRow({
             title="起動"
           >
             <StartIcon />
+          </button>
+        ) : tool.kind === "internal" ? (
+          // 032c-a: internal 種別は PID 管理外。state に依らず「開く」ボタンのみ（停止/状態表示なし）。
+          // onOpen が launchTool を呼び、Rust が別ウィンドウ（コメビュ）を開く。
+          <button
+            className={`${styles.runtimeAction} ${styles.startBtn}`}
+            onClick={onOpen}
+            title="開く"
+          >
+            <OpenIcon />
           </button>
         ) : tool.state === "running" || tool.state === "launched" ? (
           <>

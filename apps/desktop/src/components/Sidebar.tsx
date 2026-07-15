@@ -138,6 +138,10 @@ export function Sidebar({
                     )}
                   </div>
                   <span title={tool.name}>{tool.name}</span>
+                  {/* 032c-a: 内蔵ツール（コメビュ等）には「内蔵」バッジを出す。 */}
+                  {tool.kind === "internal" && (
+                    <span className={styles.builtinTag}>内蔵</span>
+                  )}
                   <div className={styles.toolActions}>
                     {onEditTool && (
                       <button
@@ -148,7 +152,8 @@ export function Sidebar({
                         ✎
                       </button>
                     )}
-                    {onDeleteTool && (
+                    {/* 032c-a: 内蔵ツールは削除不可（削除ボタンを出さない）。 */}
+                    {onDeleteTool && tool.kind !== "internal" && (
                       <button
                         className={`${styles.toolActionBtn} ${styles.danger}`}
                         title="削除"

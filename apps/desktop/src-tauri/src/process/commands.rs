@@ -123,6 +123,41 @@ pub fn launch_tool(
         };
     }
 
+    // 032c-a: internal 種別は validate_executable/spawn を通さず別ウィンドウを開くだけ（PID registry 非登録）。
+    // url と同様に停止/監視の対象外のため launch_id は空・process_id は 0 を返す。
+    if tool.kind == ToolKind::Internal {
+        return match crate::open_comment_viewer_window(app.clone()) {
+            Ok(()) => {
+                let started_at = now_rfc3339();
+                log(
+                    &db,
+                    NewLog::new(
+                        LogLevel::Info,
+                        LogCategory::ProcessLaunch,
+                        "launch_tool",
+                        format!("{} を開きました", tool.name),
+                    )
+                    .tool(tool.id.clone(), tool.name.clone()),
+                );
+                Ok(LaunchToolResult {
+                    launch_id: String::new(),
+                    tool_id: tool.id,
+                    process_id: 0,
+                    started_at,
+                })
+            }
+            Err(e) => {
+                log(
+                    &db,
+                    NewLog::new(LogLevel::Error, LogCategory::ProcessLaunch, "launch_tool", e.code.log_message())
+                        .error_code(e.code)
+                        .tool(tool.id.clone(), tool.name.clone()),
+                );
+                Err(e)
+            }
+        };
+    }
+
     match service::spawn(&tool) {
         Ok(handle) => {
             // macOS `.app` の未同定起動時は実 PID がまだ無い（resolved_pid = None）。ログには載せず、

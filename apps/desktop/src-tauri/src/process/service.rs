@@ -820,6 +820,14 @@ fn launch_one(
             Ok(()) => (true, None, None, Some(now_rfc3339()), None),
             Err(err) => (false, None, None, None, Some(safe_launch_message(&err))),
         },
+        // 032c-a: internal 種別は validate_executable/spawn を通さず別ウィンドウを開くだけ。
+        // url と同様に registry 非登録（launch_id / process_id は None・停止/監視の対象外）。
+        Some(tool) if tool.kind == ToolKind::Internal => {
+            match crate::open_comment_viewer_window(app.clone()) {
+                Ok(()) => (true, None, None, Some(now_rfc3339()), None),
+                Err(err) => (false, None, None, None, Some(safe_launch_message(&err))),
+            }
+        }
         Some(tool) => match spawn(tool) {
             Ok(handle) => {
                 // macOS `.app` 未同定時は実 PID がまだ無い（None）。BulkLaunchToolResult.process_id は

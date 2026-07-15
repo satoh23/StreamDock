@@ -3144,3 +3144,75 @@ capability・security.md/product.md 本文は変更しない（実改訂は 032c
   032b 撤去範囲へのポインタを追加。032b は独立行を持たず 032c で supersede・撤去は 032c-a と整理済み（既存）。
 - **やらないこと/次**: osareview リッチ機能移植・TTS 高度化・YouTube+Twitch 同時表示・OAuth keyring 永続化・CSP 硬化は
   ミニマム対象外。次は 032c-a 着手時に詳細実装計画を提示。
+
+### 032c-a コメビュ別ウィンドウ枠組み ＋ 内蔵デフォルトツール ＋ 032b 撤去（ネットワーク無・mac 検証可・2 コミット）
+
+032c 方針転換の第一歩。内蔵コメントビューアを別ウィンドウ（label `comment-viewer`）で開く枠組みと、それを内蔵
+デフォルトツール（`ToolKind::Internal`）としてツール管理／プリセットに組み込める状態を用意。あわせて方針転換で不要に
+なった 032b（棒読み/SAPI 依存）を撤去し docs を整理した。**ネットワーク通信は一切含まず**（Twitch/YouTube 取得・Node
+sidecar・VOICEVOX API・Web Audio・OAuth は 032c-b/-c/-d）、コメントは**モック `CommentViewDto`** のみ描画＝mac で E2E 完結。
+退行切り分けのため **2 コミット**に分割した。
+
+- **別ウィンドウ枠組み**: `lib.rs` に `#[tauri::command] fn open_comment_viewer_window`（単一目的コマンド）を追加。
+  単一インスタンスガード＝`get_webview_window("comment-viewer")` があれば `show()+set_focus()`、無ければ
+  `WebviewWindowBuilder`（label `comment-viewer`・`WebviewUrl::App("index.html")`・420×640）で生成。invoke_handler に登録。
+  内蔵ツールの launch dispatch 両経路からも `crate::open_comment_viewer_window(app.clone())` で呼ぶ（`pub(crate)` にすると
+  tauri command マクロの再エクスポートと衝突するため plain `fn`＝子モジュールから可視）。
+- **comment-viewer capability**: `capabilities/comment-viewer.json` 新設。**ネイティブタイトルバー方式**を採用し
+  `permissions: ["core:default"]` の 1 つのみ（カスタム Header 再利用はせず window 操作権限は不要）。`windows: ["comment-viewer"]`。
+  **`default.json`／main capability は不変**。
+- **ToolKind::Internal**: `model.rs` に `Internal` 追加（`as_str`→"internal"／`from_str_lenient` に "internal"、`_=>Executable`
+  フォールバック維持・`#[default]` は Executable のまま）。`tools/service.rs` の create/update の kind 分岐に Internal арм
+  （executable_path 空・url None）。`repository::init` に固定 id `builtin-comment-viewer` の**冪等 seed**
+  （`INSERT OR IGNORE`・kind='internal'・path 空・url NULL・部分ユニーク index の対象外で非衝突）。TS binding 再生成で
+  `ToolKind.ts` が `"executable" | "url" | "internal"` に更新。
+- **launch dispatch 両経路**（Internal 分岐を spawn catch-all の前に・validate_executable/spawn skip・PID registry 非登録）:
+  `process::service::launch_one`（url guard と同位置に match arm）と `process::commands::launch_tool`（url early-return と spawn
+  の間に if）。autostart 経路（`launch_preset_targets`→`launch_one`）も同分岐を通る。
+- **モックコメント描画**: 新設 `features/comment-viewer/types.ts`（手書き `CommentViewDto = {id, source, author{id,name}, text,
+  publishedAt, eventType, monetaryAmount?}`）と `screens/comment-viewer/CommentViewerApp.tsx`（seed＋「モックを追加」で
+  **append＋id 重複排除（Set）＋上限クランプ（200）**を実演。role トークン CSS でライト/ダーク両対応）。`App.tsx` は
+  現本体を `MainWindowApp` にリネームし、`getCurrentWindow().label` で `comment-viewer`→CommentViewerApp を出し分ける薄い
+  ラッパに（同一 Vite バンドル・main.tsx 不変・マルチ HTML 不要）。
+- **internal UI ガード**: 削除不可（Sidebar の削除ボタン非表示＋`App.handleDeleteTool` 多重防御）／コア（name/kind/id）編集不可
+  （`AddToolScreen` で内蔵編集時は表示名 readonly・種別は「内蔵ツール」固定表示・実行パス/URL 欄なし）／「内蔵」バッジ
+  （Sidebar・`ToolRow` の status 列）／`ToolRow`・`MainScreen` で url と同様に「開く」ボタンのみ（PID 管理外・`launchTool`→Rust
+  dispatch）。プリセット組込は通常ツールと同様に可能。
+- **032b 撤去範囲**:
+  - 削除（Rust）: `rakuraku/integrations/bouyomi_voicevox.rs` 全体／`Integration` trait の `configure`/`verify`／
+    `IntegrationCtx.backup_root`／`service.rs::registry()`→空 `Vec::new()`／`commands.rs` の `rakuraku_configure_integration`・
+    `rakuraku_verify_integration` と `backup_root`・`context` の app 依存／`model.rs` の `Configure*`/`Verify*` 型／`lib.rs`
+    invoke_handler の 2 行。
+  - 削除（frontend）: `integrationRegistry.ts` の bouyomi-voicevox エントリ→`[]`／`rakurakuApi.ts` の configure/verify ラッパ／
+    `RakurakuToolsScreen` ExecutionView の設定書換/疎通経路（scan/prepare/launch の器は温存）。
+  - 条件付き削除（**grep で他用途ゼロを確認済み・両方 YES**）: `Cargo.toml` の `ureq`（実利用は bouyomi_voicevox.rs:178 のみ）と
+    windows feature `Win32_System_Registry`（Reg*/HKEY 参照は同ファイルのみ）。Cargo.lock は `ureq` 1 パッケージのみ削除。
+  - binding: ts-rs は削除型の .ts を消さないため残骸 4 ファイル（Configure/Verify Result/Status）を手動 rm。
+  - 残した共有部: rakuraku slice（scan/launch/open_official_page・Integration trait 骨格・`resolve_tool_for_component`）／
+    spawn＋PID registry・open_url／`validate_executable`／らくらく画面シェル 032a（ListView/DetailView/ConsentView）。空
+    `registry()` でも `find` は NotFound を返すのみでらくらく画面はクラッシュしない。
+- **docs 整理**: `security.md` の §1 ループバック例外・§5 設定書換例外・らくらく方針節の棒読み/SAPI/ureq/config-rewrite 部分・
+  §032b/§032b修正/§032b修正2 レビュー記録を撤去し、代わりに **§032c-a 撤去のレビュー記録**（判定＝問題なし）へ集約。
+  `product.md` の棒読み/SAPI/設定書換の例外を整理。**外部通信の新規解禁追記は含めない**（VOICEVOX 通信方針は 032c-b で再定義）。
+- **security-review（コミット1 の docs＋撤去差分に実施）＝判定 問題なし**: 外部通信（ureq/loopback）・外部設定書換・レジストリ
+  読取の限定解禁を全撤去し §1/§5 の一般原則へ復帰。新規 command/capability/依存の追加なし（`rakuraku_*` は 2 本削減）。
+  internal のパス検証 skip は別窓オープンのみで shell/spawn/ファイル操作を伴わない。docs は撤去/整理に留まり外部通信の解禁
+  追記なし。
+- **2 コミット構成**: ①032b 撤去＋docs 整理（退行を切り分け・security-review 適用）②別窓枠組み＋内蔵ツール＋モック描画＋
+  binding 再生成同梱。
+- **検証（mac で完結）**: `cargo check` / `pnpm typecheck` / `pnpm lint` すべて pass。`pnpm gen:bindings` の drift ゼロ
+  （コミット1=rakuraku 残骸 4 削除のみ・コミット2=ToolKind.ts の internal 追加のみ）。`comment-viewer.json` は JSON 妥当。
+  空 registry でらくらく画面がクラッシュしないことをコード経路で確認。実機表示（`pnpm tauri dev`）は macOS 環境で確認予定
+  （別窓オープン＋モック描画の append/重複排除/クランプ・内蔵ツールの冪等 seed/プリセット組込/削除不可/コア編集不可/内蔵
+  バッジ・ライト/ダーク両テーマ）。
+
+#### 変更ファイル
+- 新規: `apps/desktop/src-tauri/capabilities/comment-viewer.json`、`apps/desktop/src/features/comment-viewer/types.ts`、
+  `apps/desktop/src/screens/comment-viewer/CommentViewerApp.tsx`（＋`.module.css`）
+- Rust: `src-tauri/src/lib.rs`、`tools/model.rs`、`tools/repository.rs`、`tools/service.rs`、`process/service.rs`、
+  `process/commands.rs`、`rakuraku/{integrations/mod.rs,service.rs,commands.rs,model.rs}`、`Cargo.toml`、`Cargo.lock`
+- 削除: `src-tauri/src/rakuraku/integrations/bouyomi_voicevox.rs`、`src/features/rakuraku/bindings/{ConfigureResult,ConfigureStatus,VerifyResult,VerifyStatus}.ts`
+- frontend: `src/App.tsx`、`components/Sidebar.tsx`（＋`.module.css`）、`screens/main/{ToolRow.tsx,MainScreen.tsx}`（＋`MainScreen.module.css`）、
+  `screens/add-tool/AddToolScreen.tsx`、`features/rakuraku/{integrationRegistry.ts,rakurakuApi.ts,types.ts}`、
+  `screens/rakuraku-tools/RakurakuToolsScreen.tsx`、`features/tools/bindings/ToolKind.ts`（生成物）
+- docs: `docs/security.md`、`docs/product.md`、`docs/progress.md`

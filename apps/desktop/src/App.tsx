@@ -29,8 +29,10 @@ import { withTools } from "./features/presets/types";
 import type { LaunchMode, PresetItemMeta } from "./features/presets/types";
 import { TutorialProvider } from "./features/tutorial/TutorialProvider";
 import { TutorialOverlay } from "./components/tutorial/TutorialOverlay";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { CommentViewerApp } from "./screens/comment-viewer/CommentViewerApp";
 
-function App() {
+function MainWindowApp() {
   const [screen, setScreen] = useState<Screen>("main");
 
   const { preference: themePreference, setPreference: setThemePreference } =
@@ -111,6 +113,8 @@ function App() {
 
   const handleDeleteTool = async (id: string) => {
     const target = tools.find((t) => t.id === id);
+    // 032c-a: 内蔵ツール（コメビュ等）は削除不可。UI で削除ボタンを出さないが多重防御でここでも弾く。
+    if (target?.kind === "internal") return;
     const label = target ? target.name : "このツール";
     const ok = await ask(`「${label}」を削除しますか？`, {
       title: "ツールの削除",
@@ -338,6 +342,19 @@ function App() {
       <TutorialOverlay />
     </TutorialProvider>
   );
+}
+
+/**
+ * 032c-a: 同一 Vite バンドルをウィンドウラベルで分岐する薄いルート。
+ * `main`（既定）= 管理画面（MainWindowApp）／`comment-viewer` = 内蔵コメントビューア。
+ * ウィンドウ生成は Rust の `open_comment_viewer_window` に閉じ、frontend からは生成しない。
+ */
+function App() {
+  const label = getCurrentWindow().label;
+  if (label === "comment-viewer") {
+    return <CommentViewerApp />;
+  }
+  return <MainWindowApp />;
 }
 
 export default App;

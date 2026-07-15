@@ -101,6 +101,8 @@ pub fn create(conn: &Connection, input: CreateToolInput) -> AppResult<Tool> {
             // url 種別は executable_path を空文字で保存する。
             (String::new(), Some(url))
         }
+        // 032c-a: 内蔵ツールは実行パス/URL を持たず別ウィンドウを開くのみ。executable_path 空・url None で保存。
+        ToolKind::Internal => (String::new(), None),
     };
 
     let tool = Tool {
@@ -150,6 +152,8 @@ pub fn update(conn: &Connection, id: &str, input: UpdateToolInput) -> AppResult<
             let url = validate_url_kind(conn, &input.url, Some(id))?;
             (String::new(), Some(url))
         }
+        // 032c-a: 内蔵ツールは実行パス/URL を持たず別ウィンドウを開くのみ。executable_path 空・url None で保存。
+        ToolKind::Internal => (String::new(), None),
     };
 
     let updated = Tool {
