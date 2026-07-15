@@ -3106,3 +3106,41 @@ docs は先行更新済み）。攻撃面（同名 exe 偽装の自動起動）�
   `docs/{security.md,product.md,progress.md,tasks/032-rakuraku-auto-setup-design.md,tasks/032b-bouyomi-voicevox-integration.md}`。
   `Cargo.toml`/`Cargo.lock`/`capabilities/default.json`/`tauri.conf.json` は**不変**。`lib.rs`（`rakuraku_launch_component` 登録）・
   bindings（`LaunchResult` 新規・`ScanResult.bouyomiRunning`）は本コミットが内包する「032b 修正」delta として対 HEAD では変更あり。
+
+## 2026-07-15 (032c 方針転換設計・棒読み/SAPI 撤去→VOICEVOX 直接合成の2段化・mac 検証可へ)
+
+### 032c 内蔵コメントビューア × VOICEVOX 直接読み上げ（設計確定・実装は 032c-a〜d へ分割）
+
+らくらくツール設定の中核目的（配信者が簡単にずんだもんの声でコメントを読ませる）を、手段を全面転換して達成する
+設計を確定。032b（棒読みちゃん×VOICEVOX・4段連鎖・Windows 専用・SAPI レジストリ昇格が必要・098 まで未検証で main
+投入という重い前提）を目的について全面 supersede し、**内蔵コメビュ ＋ VOICEVOX ENGINE の HTTP 合成 API
+（/audio_query + /synthesis）直叩き → WAV ローカル再生**の2段方式へ置換する。本タスクは設計のみでコード・依存・
+capability・security.md/product.md 本文は変更しない（実改訂は 032c-a〜d）。変更は docs/task-board.md（実装順注記）と
+本 progress.md の2ファイルのみ。設計ファイルは既に設計確定のため再編集せず。
+
+- **方針転換の要旨**: 棒読みちゃん/SAPI 経路を撤去し、osareview 由来の簡易コメントビューアを内蔵＋VOICEVOX 合成 API
+  直叩きへ2段化。Windows 専用・実機未検証という 032b の前提を解消し、**mac 開発機で E2E 検証可能**になる。ミニマムは
+  YouTube と Twitch。
+- **論点1〜7 の確定**: ①取得対象＝YouTube+Twitch 両方 ②取得アーキ＝osareview backend を単一実行ファイル化し Node
+  sidecar（externalBin）同梱・viewer は localhost WS(17331) ③合成＝viewer webview で 127.0.0.1:50021 を fetch＋Web Audio
+  再生・TTS 直列 FIFO キュー・話者ずんだもん(speaker 3 既定) ④別窓＝Rust WebviewWindowBuilder で
+  open_comment_viewer_window（ラベル comment-viewer・単一インスタンス）・新 capability 追加/main 不変 ⑤内蔵コメビュ＝
+  ToolKind::Internal 新設で SQLite へ冪等 seed・プリセット組込可 ⑥セキュリティ＝§1 初解禁ほか（下記）⑦コスト＝両
+  サービス金銭$0、YouTube のみ無料クォータ 10,000 units/日。
+- **実装分割と順序**: 032c-a（コメビュ別窓枠組み＋内蔵デフォルトツール＋032b 撤去・ネットワーク無・mac 検証可）→
+  032c-c（VOICEVOX 直接合成＋TTS キュー・モックで先行可）→ 032c-b（Node sidecar 基盤＋Twitch 取得＋インターネット通信
+  初解禁・security-review 必須）→ 032c-d（YouTube 取得有効化・OAuth PKCE/Client Secret 同梱）→ E2E 統合。
+- **032b の撤去範囲と supersede**: 撤去は 032c-a で実施（本設計では範囲の確定・記録のみ）。対象＝bouyomi_voicevox.rs／
+  棒読み専用コマンド（rakuraku_configure_integration 等）／integrationRegistry の bouyomi-voicevox エントリ／
+  RakurakuToolsScreen の棒読み実行経路／Cargo.toml の ureq（用途が残らなければ）／security.md・product.md の 032b 記述。
+  残すもの＝rakuraku slice・process spawn/PID registry・open_url・らくらく画面枠組み（032a）。
+- **セキュリティ方針の改訂方針（§1 初解禁ほか・実改訂は 032c-b/-c/-d）**: security.md に新章「コメントビューア
+  （配信サービス連携）方針」を追加。§1 を **StreamDock 初の能動的インターネット通信として allow-list 宛先限定・ユーザー
+  明示接続時のみ**解禁（Twitch/YouTube 宛先。telemetry/analytics は全面禁止）。通信面は Node sidecar と viewer webview に
+  封じ込め、main は no-internet 維持。§4（Node sidecar/externalBin）・loopback 50021 を合成 API へ拡張・§9（OAuth トークン
+  取扱）・§10（依存・capabilities）・CSP 方針を明文化。明示同意＋security-review 必須。product.md は「外部通信をしない」の
+  例外と YouTube クォータ制限を記録。
+- **task-board 反映**: Todo の 032c 行直下に実装順注記（032c-a → 032c-c → 032c-b → 032c-d → E2E 統合）と設計ファイル・
+  032b 撤去範囲へのポインタを追加。032b は独立行を持たず 032c で supersede・撤去は 032c-a と整理済み（既存）。
+- **やらないこと/次**: osareview リッチ機能移植・TTS 高度化・YouTube+Twitch 同時表示・OAuth keyring 永続化・CSP 硬化は
+  ミニマム対象外。次は 032c-a 着手時に詳細実装計画を提示。
