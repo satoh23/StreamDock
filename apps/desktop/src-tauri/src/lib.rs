@@ -32,6 +32,9 @@ fn host_os() -> &'static str {
 fn open_comment_viewer_window(app: AppHandle) -> AppResult<()> {
     // 既に開いていれば多重生成せず前面化して再利用する。
     if let Some(window) = app.get_webview_window("comment-viewer") {
+        // show() の戻り値は意図的に破棄する（`let _`）: 直後の set_focus() が失敗時にエラーを返すため
+        // 前面化の可否はそちらで担保でき、show() 単体の失敗（既に可視・最小化復帰失敗等）は実害が小さい。
+        // 再検討条件: 最小化からの復帰失敗をユーザーへ明示する必要が出た場合は show() の結果もハンドルする。
         let _ = window.show();
         window
             .set_focus()

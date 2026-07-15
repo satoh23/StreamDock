@@ -99,6 +99,9 @@ export function AddToolScreen({
 
   const isUrlKind = kind === "url";
   // 032c-a: 内蔵ツール（コメビュ等）の編集。コア項目（表示名/種別/id）は変更不可・実行パス/URL は持たない。
+  // 説明（description）だけは通常ツールと同様に編集可のままにしている（コアではなく表示補助のため）。冪等 seed
+  //   （INSERT OR IGNORE）は既存行を上書きしないので、編集した説明が再起動 seed で戻ることも無い。
+  //   再検討条件: 内蔵ツールを完全不変（説明も固定）にしたい場合は、ここで description も readOnly にする。
   const isInternal = editingTool?.kind === "internal";
 
   // 登録先プリセット。"" はセンチネル（プリセットには追加しない）で既定値。

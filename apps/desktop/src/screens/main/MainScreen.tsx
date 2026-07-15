@@ -224,7 +224,12 @@ export function MainScreen({
   // 「起動済み」カウントと一括停止トグルの対象にする。
   const isActive = (s: ToolState) => s === "launched" || s === "running";
   // 023: url 種別は「開く」のみで PID 管理下に入らないため、「起動済み」カウント・一括停止の対象から除外する。
-  const isActiveRow = (t: RuntimeItem) => t.kind !== "url" && isActive(t.state);
+  // 032c-a: internal 種別も PID 管理外で同様に除外する。一括起動（launchAll）は成功行を url/internal も含めて
+  //   "launched" にするが、これらは registry 非登録で reconcile が降格できず状態が残る。ここで除外しないと
+  //   「起動済み」件数が水増しされ、停止対象が無いのに一括停止トグルが点灯し続ける（url と対称に扱う）。
+  //   ToolRow は url/internal を state 非依存の専用ブランチで描くため、除外しても表示は壊れない。
+  const isActiveRow = (t: RuntimeItem) =>
+    t.kind !== "url" && t.kind !== "internal" && isActive(t.state);
   const launchedCount = runtime.filter(isActiveRow).length;
   // 009/010: 起動中（launched/running）の行が1つでもあれば一括ボタンを「一括停止」に切り替える。
   const anyLaunched = runtime.some(isActiveRow);

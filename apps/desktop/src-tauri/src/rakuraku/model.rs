@@ -14,8 +14,11 @@ use ts_rs::TS;
 
 /// 検出（scan・読み取り専用）の結果。
 ///
-/// 書込・外部通信なし（VOICEVOX 50021 のループバック疎通のみ）で導出する。失敗詳細は丸め、
-/// フルパス/OS エラーを露出しない（docs/security.md §9）。
+/// 032c-a: 棒読み×VOICEVOX 実装の撤去で `registry()` が空になり `find` が常に NotFound を返すため、現状この
+/// 結果を生成する経路は無い（全フィールド未使用）。VOICEVOX 直接読み上げ連携（032c-b）で scan を再登録する
+/// 際の器として構造だけ温存する。下の `engine_running`/`bouyomi_running` は 032b のループバック疎通
+/// （50021/50001）由来の名残で、実処理は撤去済み（現状は書込・外部通信を一切伴わない）。032c-b で意味を
+/// 再定義するまでは値の生産者が無い前提。失敗詳細は丸め、フルパス/OS エラーを露出しない（docs/security.md §9）。
 #[derive(Debug, Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/features/rakuraku/bindings/")]

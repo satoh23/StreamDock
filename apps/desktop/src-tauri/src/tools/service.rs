@@ -102,6 +102,13 @@ pub fn create(conn: &Connection, input: CreateToolInput) -> AppResult<Tool> {
             (String::new(), Some(url))
         }
         // 032c-a: 内蔵ツールは実行パス/URL を持たず別ウィンドウを開くのみ。executable_path 空・url None で保存。
+        // 備考（セキュリティ・多層防御）: backend は kind=internal を無検証で受理する（builtin 以外の internal 作成を
+        //   弾いていない）。UI は種別トグルに internal を出さず編集も封じるため通常経路では作れず、仮に IPC 直叩きで
+        //   任意の internal ツールが作られても launch dispatch は open_comment_viewer_window（別窓を開くだけ・
+        //   spawn/shell/fs を伴わない）に閉じるため実害が無い。ゆえに MVP では拒否を入れていない。
+        //   再検討条件: internal に別窓オープン以外の特権挙動（プロセス起動・ファイル操作等）を持たせる場合、または
+        //   internal を seed 済み builtin（builtin-comment-viewer）1 件に限定する硬化を行う場合は、ここで id/kind を
+        //   検証して弾く。
         ToolKind::Internal => (String::new(), None),
     };
 
@@ -153,6 +160,7 @@ pub fn update(conn: &Connection, id: &str, input: UpdateToolInput) -> AppResult<
             (String::new(), Some(url))
         }
         // 032c-a: 内蔵ツールは実行パス/URL を持たず別ウィンドウを開くのみ。executable_path 空・url None で保存。
+        // backend が kind=internal を無検証受理する理由・再検討条件は create 側の同 arm コメントを参照。
         ToolKind::Internal => (String::new(), None),
     };
 
