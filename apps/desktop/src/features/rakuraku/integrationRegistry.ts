@@ -112,95 +112,10 @@ export interface Integration {
   executable: boolean;
 }
 
-export const INTEGRATION_REGISTRY: readonly Integration[] = [
-  {
-    id: "bouyomi-voicevox",
-    icon: "🎙️",
-    title: "配信コメントをずんだもんの声で読ませる",
-    summary:
-      "棒読みちゃんとVOICEVOXで連携し、棒読みちゃんが読み上げる声をずんだもんにします。",
-    benefits: [
-      "配信に届いたコメントが、ずんだもんの声で読み上げられます。",
-      "配信画面に集中していても、コメントを声で把握できます。",
-      "ずんだもんの声で、配信に親しみやすい雰囲気を出せます。",
-    ],
-    // demoVideoId: "XXXXXXXXXXX", // TODO: YouTube 動画 ID（11 桁）を設定するとインライン再生。未設定時は「準備中」表示。
-    osAvailability: "windows",
-    requiredComponents: [
-      {
-        name: "VOICEVOX",
-        officialUrl: "https://voicevox.hiroshiba.jp/",
-        setup: "guided",
-        note: "ずんだもんの音声エンジン。ローカルで音声を生成します。",
-      },
-      {
-        name: "SAPI For VOICEVOX",
-        officialUrl: "https://github.com/shigobu/SAPIForVOICEVOX/releases",
-        setup: "guided",
-        note: "第三者製プラグイン。ずんだもんを Windows の音声（SAPI5）として登録します。棒読みちゃん連携用は 32bit 版。配布元（GitHub リリース）から setup.exe を実行し、付属の登録ツールで音声を登録します。",
-      },
-      {
-        name: "棒読みちゃん",
-        officialUrl: "https://chi.usamimi.info/Program/Application/BouyomiChan/",
-        setup: "guided",
-        note: "Windows 専用の読み上げソフト。「声質」でずんだもんを選びます。",
-      },
-    ],
-    prerequisites: [
-      "Windows 環境（棒読みちゃんは Windows 専用のため、この連携は Windows 限定です）。",
-      "VOICEVOX・SAPI For VOICEVOX・棒読みちゃんを導入できること（未導入の場合は公式ページへ誘導します）。",
-      "SAPI 音声登録は付属の登録ツールで行います（システムへの登録・昇格を伴うため自動化しません）。",
-    ],
-    consent: {
-      allowsDownload: false,
-      allowsConfigOverwrite: true,
-      allowsAutoLaunch: true,
-      creditNotice:
-        "ずんだもんの音声を使う配信・動画では「VOICEVOX:ずんだもん」のクレジット表記が必須です（VOICEVOX 利用規約 https://voicevox.hiroshiba.jp/term/ に準拠）。",
-    },
-    steps: [
-      {
-        kind: "scan",
-        label: "検出",
-        description:
-          "VOICEVOX・棒読みちゃんの導入状況、ずんだもんの音声登録、VOICEVOX の起動を確認します（読み取りのみ）。",
-      },
-      {
-        kind: "prepare",
-        label: "導入準備",
-        description:
-          "不足している部品があれば公式ページを開いて導入を案内します（自動ダウンロード・実行はしません）。",
-      },
-      {
-        kind: "configure",
-        label: "設定書換",
-        description:
-          "棒読みちゃんの設定をバックアップしてから、ずんだもんの声で読み上げる設定に書き換えます。",
-      },
-      {
-        kind: "register",
-        label: "音声登録",
-        description:
-          "ずんだもんを Windows の音声として登録します。付属の登録ツールで行うよう案内します（自動化しません）。",
-      },
-      {
-        kind: "launch",
-        label: "起動",
-        description:
-          "VOICEVOX・棒読みちゃんが未起動なら自動で起動します（既に導入済みのアプリを起動するだけで、ダウンロード・インストールはしません）。",
-      },
-      {
-        kind: "verify",
-        label: "疎通テスト",
-        description:
-          "テスト文を棒読みちゃんに送り、ずんだもんの声で読み上げられるか確認します。",
-      },
-    ],
-    // 032b で Rust 実行ロジック（scan/configure/verify）を配線したため true。
-    // 実処理は Windows 専用で、非対応 OS では実行画面が「Windows でご利用いただけます」を表示する。
-    executable: true,
-  },
-];
+// 032c-a: 方針転換に伴い唯一の連携だった「bouyomi-voicevox」（棒読みちゃん×VOICEVOX）エントリを撤去した。
+// らくらく画面シェル（一覧/詳細/同意）と型・OS ヘルパは温存し、一覧は空表示になる（クラッシュしない）。
+// VOICEVOX 直接読み上げの連携は 032c-b 以降であらためて定義・登録する。
+export const INTEGRATION_REGISTRY: readonly Integration[] = [];
 
 /** OS 対応バッジの表示ラベル。 */
 export function osAvailabilityLabel(availability: OsAvailability): string {

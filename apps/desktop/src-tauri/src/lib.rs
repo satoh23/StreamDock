@@ -119,8 +119,6 @@ pub fn run() {
             app_logs::commands::clear_app_logs,
             rakuraku::commands::rakuraku_scan_integration,
             rakuraku::commands::rakuraku_launch_component,
-            rakuraku::commands::rakuraku_configure_integration,
-            rakuraku::commands::rakuraku_verify_integration,
             rakuraku::commands::rakuraku_open_official_page,
         ])
         .run(tauri::generate_context!())

@@ -5,12 +5,13 @@
 use crate::error::{AppError, AppResult};
 use crate::tools::model::{Tool, ToolKind};
 
-use super::integrations::bouyomi_voicevox::BouyomiVoicevox;
 use super::integrations::Integration;
 
 /// 登録済みの連携実装一覧（連携追加＝ここに 1 つ足すだけ）。
+/// 032c-a: 棒読みちゃん×VOICEVOX 実装は方針転換で撤去したため現在は空。`find` は常に NotFound を返す
+/// （空でも panic しない）。VOICEVOX 直接読み上げの連携は 032c-b 以降で再登録する。
 fn registry() -> Vec<Box<dyn Integration>> {
-    vec![Box::new(BouyomiVoicevox)]
+    Vec::new()
 }
 
 /// 連携 id に対応する実装を返す。未知 id は NotFound（frontend は登録済み id のみ渡す想定だが、

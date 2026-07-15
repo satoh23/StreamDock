@@ -5,7 +5,3 @@
 export type { ScanResult } from "./bindings/ScanResult";
 export type { ComponentStatus } from "./bindings/ComponentStatus";
 export type { LaunchResult } from "./bindings/LaunchResult";
-export type { ConfigureResult } from "./bindings/ConfigureResult";
-export type { ConfigureStatus } from "./bindings/ConfigureStatus";
-export type { VerifyResult } from "./bindings/VerifyResult";
-export type { VerifyStatus } from "./bindings/VerifyStatus";

@@ -11,13 +11,11 @@ import {
   type OsAvailability,
 } from "../../features/rakuraku/integrationRegistry";
 import {
-  configureIntegration,
   launchComponent,
   openOfficialPage,
   scanIntegration,
-  verifyIntegration,
 } from "../../features/rakuraku/rakurakuApi";
-import type { ConfigureResult, ScanResult, VerifyResult } from "../../features/rakuraku/types";
+import type { ScanResult } from "../../features/rakuraku/types";
 import { Button } from "../../components/primitives";
 import layout from "../formLayout.module.css";
 import styles from "./RakurakuToolsScreen.module.css";
@@ -523,11 +521,13 @@ function installedLabel(installed: boolean | null | undefined): {
 }
 
 /**
- * ワンクリック設定の実行画面。
+ * ワンクリック設定の実行画面（器）。
  *
- * 「設定を実行する」で scan → configure → verify を順に Rust の限定コマンドへ invoke する
+ * 「設定を実行する」で scan → 導入準備 → 起動 を順に Rust の限定コマンドへ invoke する
  * （進捗は逐次戻り値で管理し Tauri event は使わない）。導入準備（prepare）と音声登録（register）は
  * ガイド（実行しない）で、scan 結果の公式ページ導線・付属ツール案内として表示する。
+ * 032c-a: 方針転換で棒読み設定書換（configure）・ループバック疎通（verify）の実行経路は撤去した。
+ * 現時点で登録済み連携は無く（INTEGRATION_REGISTRY は空）この画面は到達しないが、器として温存する。
  * 実処理は Windows 専用のため、非対応 OS では実行せず「Windows でご利用いただけます」を表示する（多重防御）。
  */
 function ExecutionView({
@@ -554,8 +554,6 @@ function ExecutionView({
     buildInitialStates,
   );
   const [scan, setScan] = useState<ScanResult | null>(null);
-  const [configure, setConfigure] = useState<ConfigureResult | null>(null);
-  const [verify, setVerify] = useState<VerifyResult | null>(null);
   const [running, setRunning] = useState(false);
   const [hasRun, setHasRun] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -579,8 +577,6 @@ function ExecutionView({
     setHasRun(true);
     setErrorMsg(null);
     setScan(null);
-    setConfigure(null);
-    setVerify(null);
     setStates(buildInitialStates());
     try {
       // 1. 検出（読み取り専用）。未対応 OS はここで中断し、以降を「未実行」にする。
@@ -616,25 +612,11 @@ function ExecutionView({
       }
       setStep("prepare", "done");
 
-      // 3. 設定書換（棒読み設定のみ・バックアップ先取り）。成功以外は中断し、以降を「未実行」にする
-      //    （前段が失敗しているのに疎通テストへ進めない＝ halt-on-failure）。
-      setStep("configure", "running");
-      const c = await configureIntegration(integration.id);
-      setConfigure(c);
-      if (c.status !== "configured") {
-        setStep("configure", "error");
-        blockAfter("configure");
-        setErrorMsg(c.message ?? "棒読みちゃんの設定を書き換えられませんでした。");
-        return;
-      }
-      setStep("configure", "done");
-
-      // 4. 音声登録（ガイド・実行しない）: 付属ツールでの SAPI 登録を案内する。
+      // 3. 音声登録（ガイド・実行しない）: 付属ツールでの SAPI 登録を案内する。
       setStep("register", "info");
 
-      // 5. 起動。疎通確認には VOICEVOX・棒読みちゃんの両方が起動している必要があるため、未起動なら
-      //    自動起動して起動を待つ（既導入アプリの起動のみ＝DL/インストールはしない）。両方の起動を
-      //    確認できなければ中断し、verify を「未実行」にする。
+      // 4. 起動。VOICEVOX・棒読みちゃんの両方が起動している必要があるため、未起動なら自動起動して
+      //    起動を待つ（既導入アプリの起動のみ＝DL/インストールはしない）。両方の起動を確認できなければ中断する。
       setStep("launch", "running");
       const running = await ensureRunning(s);
       if (!running.engineRunning || !running.bouyomiRunning) {
@@ -646,18 +628,6 @@ function ExecutionView({
         return;
       }
       setStep("launch", "done");
-
-      // 6. 疎通テスト（ループバックのみ）。前段がすべて成功したときだけ実行する。
-      setStep("verify", "running");
-      const v = await verifyIntegration(integration.id);
-      setVerify(v);
-      // launch で両アプリの起動を保証済みなので、ここでの ok 以外（failed/partial）は soft-skip せず
-      // すべて error 扱いにする（halt-on-failure：部分成功も実問題として明示する）。「configure が
-      // Skipped だから疎通も部分的」という旧来の言い訳が無くなったための判断。
-      setStep("verify", v.status === "ok" ? "done" : "error");
-      if (v.status !== "ok") {
-        setErrorMsg(v.message ?? "疎通確認に失敗しました。");
-      }
     } catch (e) {
       setErrorMsg(errorMessage(e));
       // 実行中だったステップを失敗にし、まだ待機中の後続を「未実行」にする。
@@ -868,29 +838,6 @@ function ExecutionView({
                     </div>
                   )}
 
-                  {/* 設定書換の結果: バックアップ取得・再起動要否。 */}
-                  {step.kind === "configure" && configure && (
-                    <div className={styles.stepResult}>
-                      <span className={styles.resultNote}>{configure.message}</span>
-                      {configure.backupCreated && configure.backupName && (
-                        <span className={styles.resultNote}>
-                          バックアップ: {configure.backupName}
-                        </span>
-                      )}
-                      {configure.restartRequired && (
-                        <span className={styles.resultNote}>
-                          設定を反映するには棒読みちゃんの再起動が必要な場合があります。
-                        </span>
-                      )}
-                    </div>
-                  )}
-
-                  {/* 疎通テストの結果。 */}
-                  {step.kind === "verify" && verify && (
-                    <div className={styles.stepResult}>
-                      <span className={styles.resultNote}>{verify.message}</span>
-                    </div>
-                  )}
                 </div>
               </li>
             );

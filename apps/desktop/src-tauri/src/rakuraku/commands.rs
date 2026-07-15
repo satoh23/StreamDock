@@ -1,10 +1,10 @@
 //! らくらくツール設定（外部アプリ連携）の Tauri コマンド（最小・明示・§3）。
 //!
 //! frontend からは raw なパス/URL/ポート/コマンドを受けず、`id`（＋公式ページは部品名の固定語）だけを
-//! 受け取る。ネットワーク（ureq / `std::net`）は Rust 内で完結し IPC/ACL 対象外。公式ページを開くのは
-//! opener の Rust API（ACL 不要）に限定する。非 Windows は各実装が「未対応」結果を返す。
+//! 受け取る。公式ページを開くのは opener の Rust API（ACL 不要）に限定する。非 Windows は各実装が
+//! 「未対応」結果を返す。032c-a: 設定書換（configure）・ループバック疎通（verify）は方針転換で撤去した。
 
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, State};
 use tauri_plugin_opener::OpenerExt;
 
 use crate::error::{AppError, AppResult};
@@ -13,41 +13,28 @@ use crate::tools::commands::DbState;
 use crate::util::validate_http_url;
 
 use super::integrations::IntegrationCtx;
-use super::model::{ConfigureResult, LaunchResult, ScanResult, VerifyResult};
+use super::model::{LaunchResult, ScanResult};
 use super::service;
 
-/// 書換前バックアップの保存ルート（app 管理領域）。`<app_data_dir>/rakuraku-backups`。
-fn backup_root(app: &AppHandle) -> AppResult<std::path::PathBuf> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|_| AppError::storage("保存先の解決に失敗しました"))?;
-    Ok(dir.join("rakuraku-backups"))
-}
-
-/// 連携実行コンテキストを組み立てる。032b 修正2: 導入検出・自動起動・configure の解決元として、
-/// ツール管理に登録済みのツール一覧（`tools::service::list`）を DB から読んで注入する（imp は
-/// global state を触らず、渡された `ctx.tools` だけを見る）。DB ロックは list 取得だけで解放する。
-fn context(app: &AppHandle, db: &State<'_, DbState>) -> AppResult<IntegrationCtx> {
+/// 連携実行コンテキストを組み立てる。032b 修正2: 導入検出・自動起動の解決元として、ツール管理に登録済みの
+/// ツール一覧（`tools::service::list`）を DB から読んで注入する（imp は global state を触らず、渡された
+/// `ctx.tools` だけを見る）。DB ロックは list 取得だけで解放する。
+fn context(db: &State<'_, DbState>) -> AppResult<IntegrationCtx> {
     let tools = {
         let conn = db.lock().expect("db mutex poisoned");
         crate::tools::service::list(&conn)?
     };
-    Ok(IntegrationCtx {
-        backup_root: backup_root(app)?,
-        tools,
-    })
+    Ok(IntegrationCtx { tools })
 }
 
 /// 検出（scan・読み取り専用）。VOICEVOX/棒読みちゃんの導入（＝登録済み＆パス有効）・SAPI 登録・
 /// 50021 稼働を確認する。`db` State は Tauri が注入する（frontend は `id` のみ渡す）。
 #[tauri::command]
 pub fn rakuraku_scan_integration(
-    app: AppHandle,
     db: State<'_, DbState>,
     id: String,
 ) -> AppResult<ScanResult> {
-    let ctx = context(&app, &db)?;
+    let ctx = context(&db)?;
     service::find(&id)?.scan(&ctx)
 }
 
@@ -103,28 +90,6 @@ pub fn rakuraku_launch_component(
         launched: true,
         message: "アプリを起動しました。".to_string(),
     })
-}
-
-/// 設定書換（configure）。棒読みちゃん設定のみをバックアップ先取りしてから書き換える（§5 解禁範囲）。
-#[tauri::command]
-pub fn rakuraku_configure_integration(
-    app: AppHandle,
-    db: State<'_, DbState>,
-    id: String,
-) -> AppResult<ConfigureResult> {
-    let ctx = context(&app, &db)?;
-    service::find(&id)?.configure(&ctx)
-}
-
-/// 検証（verify）。VOICEVOX 50021 ヘルスチェック＋棒読みちゃん 50001 テスト送信（ループバックのみ・§1）。
-#[tauri::command]
-pub fn rakuraku_verify_integration(
-    app: AppHandle,
-    db: State<'_, DbState>,
-    id: String,
-) -> AppResult<VerifyResult> {
-    let ctx = context(&app, &db)?;
-    service::find(&id)?.verify(&ctx)
 }
 
 /// 不足部品の公式配布ページを開く（誘導のみ・自動DLはしない）。
