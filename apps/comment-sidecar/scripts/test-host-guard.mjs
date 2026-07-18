@@ -5,7 +5,8 @@ import {
   installHttpHostGuard,
 } from "../dist/src/host-guard.js";
 
-const { assertAllowedHttpUrl, assertAllowedWsUrl } = __hostGuardInternals;
+const { assertAllowedHttpUrl, assertAllowedWsUrl, assertAllowedGrpcTarget } =
+  __hostGuardInternals;
 
 let failures = 0;
 const ok = (label, fn, shouldThrow) => {
@@ -34,6 +35,26 @@ ok("http https://api.twitch.tv@evil.com (credential-embedded → host is evil.co
 ok("http https://API.TWITCH.TV (uppercase host normalized)", () => assertAllowedHttpUrl("https://API.TWITCH.TV/oauth2/device"), false);
 // 許可ホスト＋非標準ポート: hostname は変わらない（同じ Twitch 宛先）ため許可する（意図した挙動の固定）。
 ok("http https://api.twitch.tv:8443 (port on allowed host)", () => assertAllowedHttpUrl("https://api.twitch.tv:8443/helix/users"), false);
+
+// 032c-d コミット1: YouTube OAuth のトークン交換/更新エンドポイント（認可コード → token）は許可。
+ok("http https://oauth2.googleapis.com/token (youtube token)", () => assertAllowedHttpUrl("https://oauth2.googleapis.com/token"), false);
+// 認可画面 accounts.google.com は **ブラウザ側**（Rust opener が開く）で sidecar の fetch は張らない → 拒否のまま。
+ok("http https://accounts.google.com/o/oauth2 (browser-side, not a sidecar fetch host)", () => assertAllowedHttpUrl("https://accounts.google.com/o/oauth2/v2/auth"), true);
+// Google 宛先のサブドメイン偽装は拒否。
+ok("http https://oauth2.googleapis.com.evil.com (spoof)", () => assertAllowedHttpUrl("https://oauth2.googleapis.com.evil.com/token"), true);
+// 032c-d コミット2: YouTube Data API v3（REST 検出 search/videos/channels）は www.googleapis.com を許可。
+ok("http https://www.googleapis.com/youtube/v3/channels (REST detection)", () => assertAllowedHttpUrl("https://www.googleapis.com/youtube/v3/channels?mine=true"), false);
+
+// 032c-d コミット2: gRPC チャネルガード（streamList の target = "host:port"）。www.googleapis.com:443 のみ許可。
+ok("grpc www.googleapis.com:443 (streamList)", () => assertAllowedGrpcTarget("www.googleapis.com:443"), false);
+ok("grpc www.googleapis.com:80 (wrong port)", () => assertAllowedGrpcTarget("www.googleapis.com:80"), true);
+ok("grpc www.googleapis.com (no port)", () => assertAllowedGrpcTarget("www.googleapis.com"), true);
+// fetch allow-list には居るが gRPC allow-list には居ない host は gRPC target にできない（gRPC は狭い）。
+ok("grpc api.twitch.tv:443 (not a gRPC host)", () => assertAllowedGrpcTarget("api.twitch.tv:443"), true);
+ok("grpc oauth2.googleapis.com:443 (not a gRPC host)", () => assertAllowedGrpcTarget("oauth2.googleapis.com:443"), true);
+// サブドメイン偽装・別 host は拒否。
+ok("grpc www.googleapis.com.evil.com:443 (spoof)", () => assertAllowedGrpcTarget("www.googleapis.com.evil.com:443"), true);
+ok("grpc evil.com:443", () => assertAllowedGrpcTarget("evil.com:443"), true);
 
 // WS: 許可 = wss の eventsub.wss.twitch.tv / *.wss.twitch.tv
 ok("ws wss://eventsub.wss.twitch.tv/ws", () => assertAllowedWsUrl("wss://eventsub.wss.twitch.tv/ws"), false);

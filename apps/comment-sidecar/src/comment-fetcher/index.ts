@@ -9,6 +9,9 @@ export type {
 export {
   runTwitchPipeline,
   createTwitchPipeline,
+  // 032c-d: YouTube 取得パイプライン（gRPC streamList）。
+  runYouTubePipeline,
+  createYouTubePipeline,
 } from "../../vendor/comment-fetcher/src/app/main.js";
 export type {
   PipelineRunOptions,
@@ -20,4 +23,10 @@ export {
   registerCommentFetcherDependencies,
   type RegisterCommentFetcherDependenciesOptions,
 } from "./register-twitch-deps.js";
+// 032c-d: YouTube 取得の DI 登録＋proto-under-SEA gate。
+export {
+  registerYouTubeDependencies,
+  type RegisterYouTubeDependenciesOptions,
+} from "./register-youtube-deps.js";
+export { selfCheckStreamListProto } from "./youtube-grpc-runtime.js";
 export type { CommentOutputPort } from "../../vendor/comment-fetcher/src/usecases/comment-collection/comment-collection.interface.js";

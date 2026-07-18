@@ -163,6 +163,22 @@
   gap: 8px;
 }
 
+/* 032c-d: YouTube 連携パネル（Authorization Code ログイン・ブラウザ同意）。Twitch と同レイアウトで併存。 */
+.youtubePanel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.youtubeRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .input {
   flex: 1;
   min-width: 120px;

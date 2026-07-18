@@ -3389,3 +3389,76 @@ sidecar・VOICEVOX API・Web Audio・OAuth は 032c-b/-c/-d）、コメントは
   取得開始で resume・接続済み UI）、`ttsQueue.ts`（suspended ハングガード）
 - docs: `docs/security.md`（§9/§10 改訂・032c-b′ 追補記録）、`docs/product.md`、`docs/progress.md`
 - 不変: 封じ込めライフサイクル・§1 明示接続・§4 `shell:*` ゼロ・`csp: null`・capability・sidecar 単一 SEA 構成
+
+### 032c-d コメントビューア YouTube コメント取得有効化（OAuth PKCE＋Client Secret 同梱＋gRPC streamList＋クォータ管理・mac 検証可・3 コミット）
+
+032c シリーズ最終。032c-b の Node sidecar 封じ込め基盤（sidecar→localhost WS(17331)→viewer・§1 二層 fail-closed）の上に **YouTube 宛先を
+追加解禁**した（新しい通信基盤は作らない）。これで「YouTube と Twitch の両方でずんだもん読み上げ（各サービス個別選択）」のミニマムが完成。
+Twitch 経路のロジック・VOICEVOX/TTS・§1 封じ込めフレームは不変（フレーム再利用のみ）。依存前提は 032c-a＋032c-b（ハード依存）。
+
+- **YouTube OAuth ログイン（PKCE＋loopback＋Client Secret 同梱・in-memory）**: osareview の YouTube 認可経路（`adapters/shared/{pkce,state,
+  loopback}`＋`adapters/youtube/*`＋config 型）を `apps/comment-sidecar/vendor/auth` へ distill（追加ネット依存無し＝`node:crypto`/`node:http`）。
+  `auth/index.ts` に youtube 配線（`assertSupportedProvider` を youtube 許可・`loginStrategyByProvider`/`oauthTokenRefresherByProvider` 登録）。
+  新規 `src/youtube-config.ts`＝`PinnedYouTubeOAuthConfigProvider`（endpoint 定数固定＝env override 排除・**Client ID＋Secret を esbuild define で
+  焼き込み**）。**YouTube トークンは共有 `PersistingTokenStore` 経由でも in-memory のみ**（persisting-token-store が twitch 以外を通知しない＝
+  keyring 永続化しない・§9・Twitch と対比）。generic `login("youtube")` で loopback→code 受領→`oauth2.googleapis.com` で token 交換。
+- **同意 URL は Rust opener で host 検証して開く（新設 stdout 行）**: sidecar は `CallbackBrowserLauncher`→`onOpenAuthUrl`→stdout 専用行
+  `COMMENT_SIDECAR_OPEN_URL=<url>` で URL を渡す。Rust（`comment_sidecar/mod.rs`）が **host=accounts.google.com を fail-closed 検証**
+  （`validate_http_url`＋authority 完全一致・http/port/userinfo/サブドメイン偽装を拒否・Rust ユニットテスト2件 PASS）してから既存
+  `tauri-plugin-opener`（IPC 非経由・新規 capability なし）で開く。URL 全体はログに出さず host のみ・`code_verifier` は URL に載らない。
+- **gRPC streamList 取得→CommentViewDto 統合→viewer 描画**: osareview の YouTube 取得経路（検出 REST `mine=true`→search→videos→
+  `activeLiveChatId`→gRPC streamList・mapper・repos・dto）を `vendor/comment-fetcher` へ取り込み、`app/main.ts` に `createYouTubePipeline`/
+  `runYouTubePipeline` 追加（`collectComments` エンジンは provider 非依存で流用）。`start-session(youtube)`→pipeline→`comments.append`
+  （既存パス再利用・source:'youtube'）→viewer の `mergeComments`→ずんだもん TTS。event-type マッピングは `wire.ts` で total を確認
+  （membership→subscription に畳む＝osareview 準拠・Rust `Membership` variant は当面未使用）。
+- **allow-list 二層拡張（fetch ガード＋gRPC チャネルガード新設）**: `host-guard.ts` の `ALLOWED_EXACT_HOSTS` に `oauth2.googleapis.com`
+  （token 交換）＋`www.googleapis.com`（REST 検出）を追加（`accounts.google.com` はブラウザ側で fetch には入れない）。**gRPC は fetch/ws を
+  通らないため `assertAllowedGrpcTarget` を新設**＝streamList の target を `www.googleapis.com:443` のみに照合（fetch より狭い fail-closed）。
+  DI で `guardedStreamListRuntime`（[youtube-grpc-runtime.ts]）を注入し channel 生成前に照合。Data API base URL は定数ピン留め＝二層(a)。
+  ユニットテストに Google 宛先・gRPC target host/port・サブドメイン偽装拒否を追加（全 PASS）。
+- **クォータ graceful stop（hot-loop しない）**: `QuotaExceededError`＋分類（REST 403 `quotaExceeded` / gRPC `RESOURCE_EXHAUSTED`）を新設。
+  osareview の欠陥（全エラーを 1 秒間隔で無限再接続＝クォータをさらに消費）を持ち込まず、枯渇時は**再接続せず停止**して viewer に
+  `session.state='failed'`＋理由を通知（クラッシュしない）。通常の切断は従来どおり pageToken 付き再接続。
+- **proto-under-SEA（スパイク1）**: proto-loader が単一 SEA 内で `stream_list.proto` を実ファイルとして読めない問題を、proto を**文字列同梱**
+  （`stream-list-proto.ts`）→起動時に OS 一時ファイルへ展開→その一時パスを `loadSync` で解決（`import.meta.url` 依存を排除）。api.client.ts を
+  注入 runtime（`getProtoPath`/`createClient`）経由に改修。**実 SEA バイナリ起動で `stream_list.proto loadable (spike1 OK)` を確認**。
+- **追加依存の理由**: `@grpc/grpc-js`＋`@grpc/proto-loader`（YouTube streamList gRPC ストリーミング・純 JS＝ネイティブアドオン無し・032c-b が
+  「YouTube 除外」で落としたものを理由付きで再導入）。SEA 禁止依存アサートから `@grpc/*` を外し、`@napi-rs/keyring`/`@hono/node-server`/
+  `dotenv` は引き続き不在を exact 検査で確認。`open`/`googleapis`/`node-fetch` は足さない（Rust opener＋グローバル fetch）。Rust は完全同期のまま。
+- **封じ込め検証結果（mac ヘッドレス分）**: `build:sea` で bundle に禁止依存不在・SEA 生成・**postject→codesign `--verify` 通過（スパイク5＝
+  gRPC 追加後の再署名 PASS）**。SEA 起動で twitch/youtube DI グラフ解決（decorator metadata 生存）＋proto-under-SEA OK＋ppid self-exit。
+  host-guard ユニット（fetch＋gRPC）全 PASS。**実機の `lsof` 封じ込め（Google/YouTube＋gRPC egress が sidecar PID 下のみ・main no-internet）と
+  実 YouTube ライブ E2E・クォータ unit 会計は、Google「Desktop app」OAuth クライアント焼き込み＋実配信で mac GUI 実施予定**。
+- **security.md/product.md 改訂＋security-review**: security.md に §1「例外（032c-d…）」追加＋032c-c/032c-b の forward-ref 更新、§4（Rust opener で
+  host 検証）・§9（YouTube トークン in-memory）・§10（@grpc/* 再導入の理由）・「## コメントビューア方針」①④拡張＋**新規⑧**（Client Secret 同梱の
+  根拠・consent screen 本番公開運用前提・クォータ）・032c-d security-review 記録を追記。product.md にクォータ記録。**security-review スキルを
+  適用し判定＝問題なし**（修正必須なし。後回し＝loopback OAuth サーバは state＋PKCE で保護・実機 E2E は要 OAuth クライアント）。
+- **実機スパイク 5 件の結果**: ①**proto-under-SEA＝PASS**（文字列同梱→一時展開→loadSync・SEA 起動で確認）②gRPC 封じ込め＝ガードのユニット
+  拒否は PASS・**実 lsof egress は実機 E2E**③クォータ unit 会計＝**実ライブで実測予定**（会計は product.md へ）④OAuth 運用＝consent 本番公開の
+  要否・refresh_token 7 日失効を docs 明記⑤**SEA 再署名＝PASS**（gRPC 追加後も codesign 通過）。
+- **Google Cloud 用意状況（着手前確認）**: ✅ Data API v3 有効化・✅ 実ライブ配信を用意可／⬜ Desktop app OAuth クライアント（Client ID/Secret）
+  未作成→OAuth E2E は焼き込み後・⬜ consent 本番公開 未実施→テストモードだと refresh_token 7 日失効（docs 明記）。
+- **3 コミット構成**: ①YouTube OAuth ログイン→token 取得（vendor 認可経路・in-memory・youtube-config 焼き込み・ControlFrame service 拡張・
+  `COMMENT_SIDECAR_OPEN_URL`→Rust opener host 検証・viewer YouTube ログイン UI／proto-under-SEA gate 先行確認）②streamList 取得→CommentViewDto→
+  描画（@grpc 再導入・proto 同梱・start-session(youtube)→pipeline・gRPC チャネルガード・クォータ graceful stop・取得開始/停止 UI）
+  ③docs 改訂＋security-review。
+- **検証（mac で完結）**: `pnpm --filter @stream-dock/comment-sidecar typecheck`／`pnpm --filter ./apps/desktop typecheck`／`lint`／`cargo check`＋
+  Rust host 検証ユニット2件／`build:sea`（proto-under-SEA・codesign）／host-guard ユニット（fetch＋gRPC）すべて pass。`check:bindings` drift ゼロ
+  （Rust model 不変）。**既存 drift（別件）**: `rakuraku/bindings/ScanResult.ts` は 032c-b/-c 同様 revert し混入させていない。
+
+#### 変更ファイル（032c-d）
+- 新規（sidecar）: `src/youtube-config.ts`（Pinned OAuth/Data API config・ID/Secret 焼き込み）、`src/auth/callback-browser-launcher.ts`、
+  `src/comment-fetcher/{register-youtube-deps,youtube-grpc-runtime}.ts`、`vendor/auth/src/adapters/{shared/{pkce,state,loopback},youtube/*}`＋
+  `infrastructure/youtube/config/oauth-config.ts`（distill）、`vendor/comment-fetcher/src/adapters/{youtube/*,shared/quota/error.ts}`＋
+  `adapters/youtube/client/stream-list-proto.ts`（proto 文字列同梱）＋`infrastructure/youtube/config/*`＋`usecases/comment-collection/youtube/*`（distill）
+- 変更（sidecar）: `src/index.ts`（ControlFrame service・platform 別 session/link state・startYouTubeLogin/Session・onOpenAuthUrl→stdout・
+  registerYouTubeDependencies・proto self-check）、`src/host-guard.ts`（Google 宛先＋`assertAllowedGrpcTarget`）、`src/auth/index.ts`（youtube 配線）、
+  `src/comment-fetcher/index.ts`（barrel）、`vendor/comment-fetcher/src/app/main.ts`（YouTube pipeline＋quota FAILED 分岐）、
+  `vendor/comment-fetcher/src/adapters/youtube/client/{api,live-stream}.client.ts`（SEA proto＋gRPC guard／403 quota）、
+  `.../usecases/comment-collection/youtube/collect-comments.usecase.ts`（quota graceful stop）、`scripts/{build-sea,test-host-guard}.mjs`、`package.json`（@grpc/*）
+- 変更（Rust）: `src-tauri/src/comment_sidecar/mod.rs`（`OPEN_URL_PREFIX` アーム＋`open_consent_url`＝host=accounts.google.com 検証・ユニットテスト）
+- 変更（frontend）: `features/comment-viewer/commentStream.ts`（service 付き startLogin/startSession/stopSession・platform 分岐）、
+  `screens/comment-viewer/CommentViewerApp.tsx`（＋`.module.css`・YouTube パネル併存・取得開始/停止）
+- docs: `docs/security.md`／`docs/product.md`／`docs/task-board.md`／`docs/progress.md`
+- 不変（確認済み）: Twitch 経路ロジック・VOICEVOX/TTS・Node sidecar 基盤/viewer WS/§1 封じ込めフレーム・`capabilities/*`（`shell:*` ゼロ）・
+  `tauri.conf.json`（`csp: null`）・Rust の同期性（async/WS/HTTP crate 不追加）・ts-rs `CommentViewDto`（drift ゼロ）・`token_vault`（Twitch 用のまま）

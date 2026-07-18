@@ -11,6 +11,8 @@
     "build:sea": "node scripts/build-sea.mjs"
   },
   "dependencies": {
+    "@grpc/grpc-js": "^1.14.3",
+    "@grpc/proto-loader": "^0.8.0",
     "reflect-metadata": "^0.2.2",
     "tsyringe": "^4.10.0",
     "ws": "^8.20.0"

@@ -74,9 +74,17 @@ await step("esbuild (bundle to single CJS)", async () => {
     // ws の optional native addon は含めない（pure-JS で動作）。
     external: ["bufferutil", "utf-8-validate"],
     // 032c-b: Twitch アプリ Client ID（public・非機密）をビルド時に焼き込む（ランタイム env/dotenv を使わない）。
-    // 例: TWITCH_CLIENT_ID=xxxx pnpm --filter @stream-dock/comment-sidecar build:sea
+    // 032c-d: YouTube（Google Desktop app）OAuth の Client ID/Secret も同様に焼き込む。Desktop app の secret は
+    //   Google 上「機密扱いされない」（インストール型は抽出前提）が、抽出されても PKCE(S256)＋インストール型
+    //   モデルで被害限定される（docs/security.md「コメントビューア方針」⑧）。ランタイム env/dotenv は使わない。
+    // 例: TWITCH_CLIENT_ID=xxxx YOUTUBE_CLIENT_ID=yyyy YOUTUBE_CLIENT_SECRET=zzzz \
+    //       pnpm --filter @stream-dock/comment-sidecar build:sea
     define: {
       __TWITCH_CLIENT_ID__: JSON.stringify(process.env.TWITCH_CLIENT_ID ?? ""),
+      __YOUTUBE_CLIENT_ID__: JSON.stringify(process.env.YOUTUBE_CLIENT_ID ?? ""),
+      __YOUTUBE_CLIENT_SECRET__: JSON.stringify(
+        process.env.YOUTUBE_CLIENT_SECRET ?? "",
+      ),
     },
     alias: {
       "@comment-dock/shared": d("vendor/shared/src/index.js"),
@@ -98,22 +106,25 @@ await step("esbuild (bundle to single CJS)", async () => {
 // `open` / `zod` は短すぎて（"socket.open" / 変数名等に一致）substring 検査に向かないため、
 // このアサートには**入れない**。それらの排除は「package.json の dependencies に無い＝解決不能」
 // （import グラフに現れない）で担保しており、src/vendor の import グレップでも別途確認している。
+// 032c-d: `googleapis`（npm パッケージ）も同様に**このアサートから外す**。YouTube 宛先 URL の
+//   `oauth2.googleapis.com` / `www.googleapis.com`（正規の allow-list 宛先）に substring 一致して誤検知するため。
+//   `googleapis` パッケージ自体は使わず（グローバル fetch を使う）、package.json の dependencies に無い＝
+//   解決不能で担保する（node-fetch / open / @napi-rs/keyring も同じく package.json 非依存で排除）。
 // 追加/削除する依存が増えたら、ユニークな名前のものはこの配列へ足すこと。
 step("verify no forbidden deps in bundle (spike 2)", () => {
   const src = readFileSync(bundleFile, "utf8");
   const forbidden = [
-    "@grpc/grpc-js",
-    "@grpc/proto-loader",
+    // 032c-d コミット2: @grpc/grpc-js・@grpc/proto-loader は YouTube streamList 用に再導入したため
+    // forbidden から外した（純 JS・ネイティブアドオン無し・§10 に理由記載）。以下は引き続き混入禁止。
     "@napi-rs/keyring",
     "@hono/node-server",
-    "googleapis", // YouTube 経路（032c-d まで持ち込まない）
     "dotenv", // ランタイム env ロード（宛先 override 経路を持ち込まない）
   ];
   const hits = forbidden.filter((name) => src.includes(name));
   if (hits.length > 0) {
     throw new Error(`[build-sea] forbidden deps leaked into bundle: ${hits.join(", ")}`);
   }
-  process.stderr.write("no grpc/keyring/hono/googleapis/dotenv in bundle ✓\n");
+  process.stderr.write("no keyring/hono/dotenv in bundle ✓\n");
 });
 
 if (BUNDLE_ONLY) {

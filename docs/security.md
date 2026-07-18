@@ -46,7 +46,7 @@ loopback 例外を、合成＋ローカル再生に限定して（再）定義�
   未登録は誘導のみ・`registry()` は空のまま触らない）。
 - **本例外（032c-c）自体はインターネット通信・OAuth に波及しない**（ローカル合成のみ）。Twitch コメント取得の
   インターネット通信は **032c-b で下記「例外（032c-b…）」＋「## コメントビューア（配信サービス連携）方針」に定義した**
-  （YouTube 取得は 032c-d で別途 security-review の上定義する）。新規 capability の広域追加・CSP 硬化はしない（`csp: null` 不変）。
+  （YouTube 取得は **032c-d で定義済み**＝上記「例外（032c-d…）」）。新規 capability の広域追加・CSP 硬化はしない（`csp: null` 不変）。
 - 撤去済みの棒読みちゃん 50001 はこの例外に含めない（50021 のみ）。
 
 ### 例外（032c-b・コメントビューアの Twitch コメント取得＝StreamDock 初の能動的インターネット通信）
@@ -69,6 +69,32 @@ loopback 例外を、合成＋ローカル再生に限定して（再）定義�
 - **明示同意（ユーザーの接続操作）＋ security-review を必須**とする。`user_code` / `verification_uri` は**テキスト提示**し、
   ブラウザ shell-out（`open`）はしない。`csp: null` は当面維持（TODO：将来 viewer CSP を効かせる際は `connect-src` に
   `https://id.twitch.tv https://api.twitch.tv wss://eventsub.wss.twitch.tv wss://*.wss.twitch.tv ws://127.0.0.1:*` を許可する）。
+
+### 例外（032c-d・コメントビューアの YouTube コメント取得）
+
+上記「外部通信をしない」原則に対し、**内蔵コメントビューア（別ウィンドウ label `comment-viewer`）の YouTube
+コメント取得に限り**、ユーザーが**明示接続した時のみ**、allow-list 宛先への通信を例外的に許可する（032c-b の Twitch
+例外に YouTube 宛先を追加解禁するもの・新しい通信基盤は作らない）。詳細方針は下記「## コメントビューア（配信サービス
+連携）方針」を正とし、設計は `docs/tasks/032c-d-youtube-comments.md` と親設計 `docs/tasks/032c-comment-viewer-voicevox-design.md`
+を正とする。
+
+- **宛先は allow-list のみ**＝`accounts.google.com`（OAuth 同意画面・**ブラウザ側**で Rust opener が開く先。sidecar の fetch は
+  張らない）／`oauth2.googleapis.com`（OAuth トークン交換/更新）／`www.googleapis.com`（YouTube Data API v3・REST 検出＋
+  gRPC `liveChatMessages.streamList`）。**三面で fail-closed 強制**する: (a) **env ピン留め**（OAuth endpoint・Data API base URL を
+  sidecar 内の定数に固定し env override を排除）、(b) **fetch ホストガード**（OAuth トークン交換・REST 検出が通る global `fetch`
+  を包み allow-list 以外は throw）、(c) **gRPC チャネルガード（新設）**（gRPC は `fetch`/`ws` を通らないため、streamList の channel
+  生成時に target を `www.googleapis.com:443` のみに照合して throw する）。ユーザーが「YouTube に接続」を押した時のみログインを開始する。
+- **通信面は Node sidecar と viewer webview に封じ込め**、**main ウィンドウ・その Rust command は no-internet を維持**する
+  （Rust は完全同期のまま・async/WS/HTTP crate を足さない・**gRPC egress も sidecar プロセスのみ**）。OAuth 同意 URL は sidecar→Rust の
+  stdout 専用行 `COMMENT_SIDECAR_OPEN_URL=<url>` で渡し、Rust が **host=accounts.google.com を検証**してから `tauri-plugin-opener`
+  （既存 dep・IPC 非経由・capability 不要）で既定ブラウザに開く（sidecar に `open` を足さない・**URL 全体はログに出さず host のみ**）。
+- **telemetry / analytics / crash-report は全面禁止**（依存にも入れない）。**取得コメントは画面表示のみで端末外へ出さない**。
+  OAuth アクセス/リフレッシュトークン・code_verifier・Client Secret は**非ログ・非外部送信・in-memory のみ（keyring 永続化しない
+  ＝Twitch と対比）**（§9）。
+- **無料クォータ 10,000 units/日**（金銭課金 $0）。枯渇時（REST 403 `quotaExceeded` / gRPC `RESOURCE_EXHAUSTED`）は取得を
+  **graceful に停止**して viewer へ通知する（クラッシュせず・1 秒 hot-loop しない）。
+- **明示同意（ユーザーの接続操作）＋ security-review を必須**とする。`csp: null` は当面維持（TODO：将来 viewer CSP を効かせる際は
+  下記方針⑦の `connect-src` に `https://accounts.google.com https://oauth2.googleapis.com https://www.googleapis.com` を追加する）。
 
 ### 2. frontendから自由なOS操作をさせない
 
@@ -131,6 +157,12 @@ MVPでは、自由なshell実行は使わない。
 （詳細は「## コメントビューア（配信サービス連携）方針」）。`tauri-plugin-shell` を追加するが **capability に `shell:*` を
 ゼロ付与**し、sidecar spawn は IPC を通らない（frontend から shell 実行はできない）。自由な shell 実行・ユーザー入力を
 結合したコマンド実行は引き続き禁止で、frontend には raw なパス/ポート/コマンドを渡さない。
+
+**例外（032c-d・YouTube 同意画面を既定ブラウザで開く）**: YouTube OAuth の同意画面（`https://accounts.google.com/...`）は、
+sidecar が stdout 専用行 `COMMENT_SIDECAR_OPEN_URL=<url>` で URL を渡し、**Rust 側が host=accounts.google.com を検証**してから
+既存の `tauri-plugin-opener`（Rust API・IPC 非経由）で開く（`open` パッケージは sidecar に足さない）。frontend は URL に触れず、
+opener コマンドを frontend に公開しない（capability 追加なし）。既存の url 種別ツール（023）と同じ opener 委譲方式で、
+**host 検証を追加**した点のみ差分（`012` の `validate_http_url`＋host 完全一致・port/userinfo/サブドメイン偽装を fail-closed 拒否）。
 
 ### 5. ファイル操作はアプリ管理領域に限定する
 
@@ -235,6 +267,12 @@ Rust に寄せる）。トークンは **sidecar↔Rust の親子プロセス pr
 受け渡し専用（ポート行＋トークン行）で、人間向け診断ログは stderr に分離してトークン類を載せない。取得したコメント本文も
 ログ/DB に保存しない（詳細は「## コメントビューア（配信サービス連携）方針」）。
 
+**追補（032c-d・YouTube トークン）**: YouTube 連携で扱う OAuth アクセス/リフレッシュトークン・PKCE `code_verifier`・
+**Client Secret** は、**非ログ・非外部送信・in-memory のみ**とする（**keyring 永続化しない**＝Twitch と対比。sidecar 再起動で
+YouTube ログインは消える）。同意 URL の受け渡し（stdout `COMMENT_SIDECAR_OPEN_URL=`）には token/secret/code_verifier を
+一切載せない（URL に載るのは `code_challenge`＝S256・非機密で、`code_verifier` は sidecar メモリのみ）。Rust は URL 全体を
+ログに出さず host のみ扱う。取得コメント本文もログ/DB に保存しない（Twitch と同様）。
+
 ### 10. 依存関係を増やしすぎない
 
 新しいnpm package、Rust crate、Tauri pluginを追加する場合は、理由を説明する。
@@ -260,6 +298,16 @@ Rust に寄せる）。トークンは **sidecar↔Rust の親子プロセス pr
   `@napi-rs/keyring`（in-memory 化・native addon 排除）、`open`（テキスト提示に変更）、`hono`/`@hono/node-server`/`zod`
   （HTTP 制御を単一 WS に統合）、`dotenv`（env を注入しない）。telemetry/analytics 系は入れない。
   詳細は「## コメントビューア（配信サービス連携）方針」。
+
+**追加した依存（032c-d・コメントビューアの YouTube コメント取得）**:
+- Node（sidecar）: `@grpc/grpc-js`＋`@grpc/proto-loader`（YouTube `liveChatMessages.streamList` の gRPC ストリーミング。
+  **純 JS＝ネイティブアドオン無し**で、032c-b が「YouTube 除外」として落としたものを理由付きで**再導入**）。`stream_list.proto` は
+  proto-loader が単一 SEA 内で実ファイルを読めないため**文字列として同梱**し、起動時に OS の一時ファイルへ展開して `loadSync` する
+  （スパイク1）。SEA ビルドの禁止依存アサートから `@grpc/*` を外した（`@napi-rs/keyring`/`@hono/node-server`/`dotenv` は引き続き禁止）。
+- **新規に足さないもの**: `open`（**Rust opener** を使う）・`@napi-rs/keyring`（YouTube は in-memory）・`googleapis`/`node-fetch`
+  （グローバル `fetch`）。`tauri-plugin-opener` は既存 dep（新規 Rust crate は無し）。**Rust は完全同期のまま**（async/WS/HTTP crate を
+  足さない・child ハンドル管理＋URL open のみ）。Client ID/Secret は Twitch Client ID と同様に **esbuild define でビルド時に焼き込む**
+  （ランタイム env/dotenv 不使用）。
 
 ## Tauri Permissions / Capabilities 方針
 
@@ -349,20 +397,28 @@ YouTube（`https://www.youtube-nocookie.com/embed/<id>`）の **iframe 埋め込
 ## コメントビューア（配信サービス連携）方針
 
 内蔵コメントビューア（別ウィンドウ label `comment-viewer`）の配信サービス連携（032c-b で Twitch を初解禁・
-YouTube は 032c-d 予定）の方針。**StreamDock で初めての能動的インターネット通信**であり、詳細な設計判断は
-`docs/tasks/032c-b-node-sidecar-twitch-comments.md` と親設計 `docs/tasks/032c-comment-viewer-voicevox-design.md` を正とする。
+**032c-d で YouTube を追加解禁**）の方針。**StreamDock で初めての能動的インターネット通信**であり、詳細な設計判断は
+`docs/tasks/032c-b-node-sidecar-twitch-comments.md`／`docs/tasks/032c-d-youtube-comments.md` と親設計
+`docs/tasks/032c-comment-viewer-voicevox-design.md` を正とする。**Twitch と YouTube は併存し各サービス個別選択**（同時取得・
+マージ表示はしない）。
 
 **構成**: インターネット通信は **Node sidecar（`bundle.externalBin` 同梱の単一実行ファイル `comment-sidecar-<triple>`）**
 に封じ込め、viewer webview は **localhost の WebSocket（`ws://127.0.0.1:<実ポート>`）のみ**で sidecar と通信する。
 main ウィンドウと Rust command は **no-internet を維持**する（Rust は完全同期のまま・tokio/WS/HTTP/OAuth の async を持ち込まない・
-sidecar の stdout は別スレッドで同期的に読む）。sidecar は osareview の Twitch 経路を distill（vendor）したもので、
-YouTube/gRPC・keyring・`open`・hono/zod・dotenv を import グラフから排除している。
+sidecar の stdout は別スレッドで同期的に読む・**gRPC egress も sidecar のみ**）。sidecar は osareview の Twitch/YouTube 経路を
+distill（vendor）したもので、keyring・`open`・hono/zod・dotenv・googleapis/node-fetch を import グラフから排除している
+（gRPC＝`@grpc/grpc-js`/`@grpc/proto-loader` は YouTube streamList のため 032c-d で再導入し、チャネルガードで封じ込める）。
 
 - **①外部通信は allow-list 宛先・ユーザー明示接続時のみ（§1 の限定解禁）**。宛先＝`id.twitch.tv`（Device Code / token）／
   `api.twitch.tv`（Helix）／`eventsub.wss.twitch.tv`（EventSub WS）／`*.wss.twitch.tv`（`reconnect_url` は Twitch 由来）。
   **二層で fail-closed 強制**する: (a) **env ピン留め**＝全 base URL を sidecar 内の定数に固定し env override 分岐を削除
   （Rust から宛先 env を渡さない）、(b) **ホストガード**＝global `fetch` と ws クライアント生成を包み、allow-list 以外
   （host 不一致・非 HTTPS/WSS）は throw する。ユーザーが「Twitch に接続」を押した時のみログインを開始する。
+  **（032c-d・YouTube 追加）** 宛先に `accounts.google.com`（OAuth 同意画面・**ブラウザ側**で Rust opener が開く先。sidecar の
+  fetch は張らない）／`oauth2.googleapis.com`（OAuth トークン交換/更新）／`www.googleapis.com`（Data API v3・REST 検出＋gRPC
+  streamList）を追加。gRPC は `fetch`/`ws` を通らないため **(c) gRPC チャネルガードを新設**し、streamList の channel 生成時に
+  target を **`www.googleapis.com:443` のみ**に照合して throw する（fetch の allow-list より狭い）。ユーザーが「YouTube に接続」を
+  押した時のみログインを開始する。
 - **②通信面の封じ込め（最重要の安全論拠）**。インターネットに出るのは sidecar プロセスのみ。main は出ない。
   検証は `lsof -i` で外部 ESTABLISHED ソケットが **sidecar PID 下のみ**に出て StreamDock 本体 PID に出ないことで確認する。
 - **③§4（shell）例外**。sidecar 起動/停止は Rust の `app.shell().sidecar()` からのみ。`tauri-plugin-shell` を追加するが
@@ -373,12 +429,27 @@ YouTube/gRPC・keyring・`open`・hono/zod・dotenv を import グラフから�
   `COMMENT_SIDECAR_TOKEN=`／破棄＝`COMMENT_SIDECAR_TOKEN_CLEAR`）。**loopback WS にはトークンを載せない**。device code /
   code verifier は in-memory のみ・非永続。`user_code` / `verification_uri`（非機密）は viewer に**テキスト提示**し、ブラウザ
   shell-out（`open`）はしない。**取得したコメントは画面表示のみ**で、端末外へ出さず Rust の DB / ログにも保存しない。
+  **（032c-d・YouTube 追加）** YouTube の OAuth トークン・PKCE `code_verifier`・**Client Secret** は **in-memory のみ（keyring
+  永続化しない＝Twitch と対比・sidecar 再起動でログインは消える）**・非ログ・非外部送信。同意 URL は Twitch のテキスト提示と異なり
+  **Rust opener で開く**＝sidecar→Rust stdout `COMMENT_SIDECAR_OPEN_URL=`→Rust が `host=accounts.google.com` を検証して
+  `tauri-plugin-opener` で開く（URL 全体はログに出さず host のみ・URL に載るのは `code_challenge` で `code_verifier` は載らない）。
 - **⑤telemetry / analytics / crash-report は全面禁止**（依存にも入れない）。
 - **⑥Twitch アプリ Client ID の扱い**。Device Code（public client・secret 無し）で必須の**公開**アプリ識別子であり秘密情報ではない。
   sidecar のビルド時に焼き込む（ランタイム env / dotenv は使わない）。ユーザーのログイン/連携はビューア画面からのランタイム操作で、
   Client ID はエンドユーザーに露出しない。
 - **⑦明示同意（接続操作）＋ security-review を必須**とする。`csp: null` は当面維持（TODO：将来 viewer CSP を効かせる際は
-  `connect-src https://id.twitch.tv https://api.twitch.tv wss://eventsub.wss.twitch.tv wss://*.wss.twitch.tv ws://127.0.0.1:*` を許可）。
+  `connect-src https://id.twitch.tv https://api.twitch.tv wss://eventsub.wss.twitch.tv wss://*.wss.twitch.tv ws://127.0.0.1:*`
+  ＋YouTube 分 `https://accounts.google.com https://oauth2.googleapis.com https://www.googleapis.com` を許可）。
+- **⑧（032c-d）YouTube「Desktop app」OAuth の Client Secret 同梱の根拠 ＋ consent screen 運用前提 ＋ クォータ**。
+  - **Client Secret 同梱**: Google の **「Desktop app」種別**の OAuth クライアントでは、secret は **機密として扱われない**
+    （インストール型アプリはバイナリからの抽出前提）。secret が抽出されても **PKCE(S256)＋インストール型モデル**で被害は限定される
+    （認可コード横取り防止・ユーザーごとの個別同意が必要）。よって Twitch Client ID と同様に **ビルド時に焼き込む**（ランタイム
+    env/dotenv は使わない・§9/§10）。クライアント種別は **Desktop app**（loopback リダイレクト）。
+  - **consent screen 運用前提**: refresh_token を実運用寿命にするには consent screen を **本番公開**する必要がある
+    （テストモードのままだと **refresh_token が 7 日で失効・登録 100 ユーザー上限**）。これは開発者側の運用前提（コードではない）。
+  - **クォータ**: YouTube Data API v3 は金銭課金 $0 だが **無料枠 10,000 units/日**（PT 深夜リセット・セルフ課金購入不可）。
+    枯渇時（REST 403 `quotaExceeded` / gRPC `RESOURCE_EXHAUSTED`）は取得を **graceful に停止**して viewer へ通知する
+    （クラッシュ・hot-loop しない）。長時間運用では無料の増枠申請が要り得る（自動申請・課金有効化はしない）。
 
 ## レビュー必須条件
 
@@ -562,6 +633,48 @@ YouTube/gRPC・keyring・`open`・hono/zod・dotenv を import グラフから�
     pipe を許容・Rust `keyring` 追加）。viewer は `link.state` フレームで「接続済み/未接続」を表示（getLinkStatus・非機密の bool のみ）。
   - **マージ前 GUI 検証（追加）**: 再ログイン不要（窓再オープン／アプリ再起動）・logout/失効で keychain クリア・`lsof`/`app_logs`/
     stdout/stderr に token が出ない（token は private pipe のみ）・macOS Keychain に `stream-dock`/`twitch-comment-viewer` エントリ 1 件。
+
+### 032c-d コメントビューア YouTube コメント取得有効化（OAuth PKCE＋Client Secret 同梱＋gRPC streamList＋クォータ管理・security-review 実施済み）
+
+- 032c-b の Node sidecar 封じ込め基盤の上に **YouTube 宛先を追加解禁**した（新しい通信基盤は作らない）。OAuth 認可コード＋PKCE(S256)＋
+  loopback＋Client Secret 同梱でログイン→gRPC `liveChatMessages.streamList` で取得→既存 CommentViewDto パスへ流す。Twitch と併存・各サービス
+  個別選択。設計は `docs/tasks/032c-d-youtube-comments.md`。
+- **security-review を実施し、判定＝問題なし**（修正必須なし）。確認事項:
+  - **allow-list 三面 fail-closed**: (a) env ピン留め＝OAuth endpoint／Data API base URL を sidecar 内定数に固定（`Pinned*ConfigProvider`・
+    env override 排除）、(b) fetch ホストガード＝global `fetch` に `oauth2.googleapis.com`（token 交換）／`www.googleapis.com`（REST 検出）を
+    追加（`accounts.google.com` はブラウザ側で fetch には入れない）、(c) **gRPC チャネルガード新設**＝gRPC は `fetch`/`ws` を通らないため、
+    channel 生成時に target を `www.googleapis.com:443` のみに照合して throw（fetch より狭い allow-list）。ユニットテスト
+    （`scripts/test-host-guard.mjs`）で Google 宛先許可・非許可 host/port・サブドメイン偽装（`www.googleapis.com.evil.com`）・Twitch/oauth を
+    gRPC target に不可、を全 PASS。
+  - **封じ込め**: インターネットは sidecar プロセスのみ・**main は no-internet 維持**（gRPC egress も sidecar のみ）。**Rust は完全同期**
+    （async/WS/HTTP crate を足さない・`Cargo.toml` 不変）。同意 URL は sidecar→Rust stdout `COMMENT_SIDECAR_OPEN_URL=` で渡し、
+    **Rust が host=accounts.google.com を fail-closed 検証**（http/port/userinfo/サブドメイン偽装を拒否・Rust ユニットテスト2件 PASS）してから
+    既存 `tauri-plugin-opener`（IPC 非経由・新規 capability なし）で開く。`open` パッケージは sidecar に足さない。frontend は URL に触れない。
+  - **資格情報（§9）**: YouTube の OAuth トークン・PKCE `code_verifier`・**Client Secret** は **in-memory のみ（keyring 永続化しない
+    ＝Twitch と対比）**・非ログ・非外部送信。stdout の OPEN_URL 行に載るのは URL の `code_challenge`（S256・非機密）で `code_verifier`・secret は
+    載らない。Rust は URL 全体をログに出さず host のみ。取得コメントは画面表示のみで端末外に出さない。ソース grep で token/secret/verifier の
+    console 出力ゼロを確認。
+  - **Client Secret 同梱の根拠**: Google「Desktop app」OAuth の secret は機密扱いされず抽出前提だが、抽出されても **PKCE＋インストール型
+    モデル**で被害限定（上記方針⑧）。Twitch Client ID と同様に esbuild define でビルド時に焼き込む（ランタイム env/dotenv 不使用・
+    エンドユーザー非露出）。テスト焼き込みの SEA バイナリは `.gitignore`（未追跡）。
+  - **クォータ graceful stop**: REST 403 `quotaExceeded` / gRPC `RESOURCE_EXHAUSTED` を分類し、**再接続せず停止**して viewer に FAILED＋理由を
+    通知する（osareview の 1 秒 hot-loop 欠陥を持ち込まない・クラッシュしない）。無料枠 10,000 units/日は `product.md` に記録。
+  - **依存**: `@grpc/grpc-js`＋`@grpc/proto-loader`（純 JS・ネイティブアドオン無し）を再導入し SEA 禁止依存アサートから外した
+    （`@napi-rs/keyring`/`@hono/node-server`/`dotenv` は引き続き bundle に不在を exact 検査で確認）。`open`/`googleapis`/`node-fetch` は足さない。
+  - **proto-under-SEA（スパイク1）＋SEA 再署名（スパイク5）＝PASS**: `stream_list.proto` を文字列同梱→起動時に一時ファイル展開→`loadSync`。
+    実 SEA バイナリ起動で `stream_list.proto loadable (spike1 OK)`・`codesign --verify` 通過を確認。proto は非機密スキーマで OS 一時領域への
+    scratch 書込のみ（ユーザーデータ・秘密ではない）。
+  - **capability / CSP 不変**: `capabilities/{default,comment-viewer}.json`・`tauri.conf.json`（`csp: null`）に差分なし。lib.rs に新規 command なし
+    （opener は sidecar stdout リーダースレッドから呼び IPC 非経由）。**binding drift ゼロ**（ts-rs `CommentViewDto` は `source: youtube`・
+    eventType 4 種が既存で不変・`check:bindings` PASS）。
+- **後回し（記録のみ）**: ①ログイン中の **loopback OAuth コールバックサーバ**（`127.0.0.1:ephemeral`・～180 秒の一時 listener）は未認証だが、
+  **ランダム state（CSRF）＋PKCE**で保護（偽 code は matching `code_verifier` 無しに Google 側で交換不可）＝viewer WS と同レベルの localhost
+  信頼モデル。②event-type は osareview 準拠で **メンバーシップ（NEW_SPONSOR/MEMBER_MILESTONE）→ subscription に畳む**（Rust の `Membership`
+  variant は当面未使用）。③**実機の `lsof` 封じ込め（Google/YouTube＋gRPC egress が sidecar PID 下のみ・main no-internet）と実 YouTube ライブ
+  E2E・クォータ unit 会計は、Google「Desktop app」OAuth クライアント焼き込み＋実配信で mac GUI（`tauri dev`）実施**（Twitch 032c-b と同様）。
+- **docs 整理**: §1 に「例外（032c-d…）」追加＋032c-c/032c-b の forward-ref を「定義済み」に更新、§4（Rust opener で host 検証）・§9（YouTube
+  トークン in-memory）・§10/コメントビューア方針①④拡張＋新規⑧（Client Secret 根拠・consent 運用・クォータ）を追記。`product.md` にクォータ記録、
+  `task-board.md`/`progress.md` 更新。
 
 ### 032c-a らくらくツール設定 032b（棒読み×VOICEVOX）撤去（ループバック通信 / 外部設定書換 / `ureq` / SAPI レジストリ読取の削除・security-review 実施済み）
 

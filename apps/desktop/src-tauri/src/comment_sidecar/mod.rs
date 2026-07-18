@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use tauri::{AppHandle, Manager};
+use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
@@ -39,6 +40,12 @@ const TOKEN_PREFIX: &str = "COMMENT_SIDECAR_TOKEN=";
 const TOKEN_CLEAR_LINE: &str = "COMMENT_SIDECAR_TOKEN_CLEAR";
 /// 起動時に Rust→sidecar の **stdin** へ復元トークン(JSON)を渡す行の prefix。
 const RESTORE_PREFIX: &str = "COMMENT_SIDECAR_RESTORE=";
+/// 032c-d: sidecar が YouTube 同意画面の認可 URL を渡す stdout 行の prefix。
+/// Rust が `host=accounts.google.com`（https）に限定して既定ブラウザで開く（fail-closed）。
+/// **この行の URL 全体はログに出さない**（載るのは code_challenge・非機密で code_verifier は載らない）。
+const OPEN_URL_PREFIX: &str = "COMMENT_SIDECAR_OPEN_URL=";
+/// 032c-d: 同意画面として開いてよい唯一のホスト（Google OAuth 認可エンドポイント）。
+const CONSENT_ALLOWED_HOST: &str = "accounts.google.com";
 
 /// sidecar 起動インスタンスごとに払い出す世代 ID のカウンタ。
 /// 旧 sidecar の stdout 読取スレッドが遅れて `Terminated` を受けても、既に差し替わった
@@ -124,6 +131,10 @@ pub fn ensure_started(app: &AppHandle) -> AppResult<()> {
                         } else if trimmed == TOKEN_CLEAR_LINE {
                             // logout / 認可失効: 保存済みトークンを削除する。
                             token_vault::clear();
+                        } else if let Some(url) = trimmed.strip_prefix(OPEN_URL_PREFIX) {
+                            // 032c-d: YouTube 同意画面 URL。host=accounts.google.com を検証してから
+                            // 既定ブラウザで開く（fail-closed）。**URL 全体はログに出さない**。
+                            open_consent_url(&app_handle, url);
                         }
                     }
                 }
@@ -163,5 +174,74 @@ pub fn shutdown(app: &AppHandle) {
     if let Some(sidecar) = taken {
         // CommandChild::kill は子プロセスに SIGKILL を送る。sidecar 側 ppid 監視と併せ孤児を残さない。
         let _ = sidecar.child.kill();
+    }
+}
+
+/// 032c-d: sidecar が stdout の `COMMENT_SIDECAR_OPEN_URL=` 行で渡す YouTube 同意画面 URL を、
+/// **`https://accounts.google.com` に限定して**既定ブラウザで開く（fail-closed）。
+///
+/// - `validate_http_url` で http/https スキーム・制御文字を検証（多層防御）。
+/// - [`is_google_consent_url`] で host を `accounts.google.com`（https・port/userinfo/サブドメイン偽装なし）に限定。
+/// - opener の Rust API（`OpenerExt`）は **IPC 非経由**で capabilities の許可を必要としない（§4・opener 方針）。
+/// - 失敗しても **URL/OS エラーは露出させない**（best-effort・**URL 全体はログに出さない**）。
+fn open_consent_url(app: &AppHandle, raw: &str) {
+    let Ok(url) = crate::util::validate_http_url(raw) else {
+        return;
+    };
+    if !is_google_consent_url(&url) {
+        // sidecar 側は pinned config で accounts.google.com 固定だが、Rust 側でも fail-closed に再検証する。
+        return;
+    }
+    let _ = app.opener().open_url(url, None::<&str>);
+}
+
+/// `https://accounts.google.com`（host 完全一致）のみ true。
+/// port（`:443`）/ userinfo（`user@`）/ サブドメイン偽装（`accounts.google.com.evil.com`）は
+/// authority がホスト名と完全一致しないため false になる（fail-closed）。
+fn is_google_consent_url(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    let Some(rest) = lower.strip_prefix("https://") else {
+        return false;
+    };
+    // authority = scheme 直後から最初の '/', '?', '#' まで（= `[userinfo@]host[:port]`）。
+    let authority = rest.split(&['/', '?', '#'][..]).next().unwrap_or("");
+    authority == CONSENT_ALLOWED_HOST
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_google_consent_url;
+
+    #[test]
+    fn accepts_google_consent_url() {
+        assert!(is_google_consent_url(
+            "https://accounts.google.com/o/oauth2/v2/auth?client_id=x&scope=y"
+        ));
+        // host のみで path/query が無い場合も許可（authority が完全一致）。
+        assert!(is_google_consent_url("https://accounts.google.com"));
+        // scheme の大小は無視する。
+        assert!(is_google_consent_url("HTTPS://ACCOUNTS.GOOGLE.COM/o/oauth2"));
+    }
+
+    #[test]
+    fn rejects_spoofed_and_non_https() {
+        // http（非 https）は拒否。
+        assert!(!is_google_consent_url("http://accounts.google.com/o/oauth2"));
+        // サブドメイン偽装。
+        assert!(!is_google_consent_url(
+            "https://accounts.google.com.evil.com/o/oauth2"
+        ));
+        // 前方偽装。
+        assert!(!is_google_consent_url("https://evil-accounts.google.com/"));
+        // userinfo による偽装（実 host は evil.com）。
+        assert!(!is_google_consent_url(
+            "https://accounts.google.com@evil.com/"
+        ));
+        // 明示 port は拒否（正規 URL は port を持たない）。
+        assert!(!is_google_consent_url("https://accounts.google.com:8443/"));
+        // path に埋め込んだだけの別 host。
+        assert!(!is_google_consent_url("https://evil.com/accounts.google.com"));
+        // 別 Google ホスト（token/Data API はブラウザで開かない）。
+        assert!(!is_google_consent_url("https://oauth2.googleapis.com/token"));
     }
 }

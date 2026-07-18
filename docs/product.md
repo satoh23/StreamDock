@@ -34,9 +34,13 @@ stream-dock は、配信者が配信前に使う複数のPCツールを、プリ
   （原則 stream-dock は外部通信をしない。ただし**内蔵コメントビューアの Twitch コメント取得に限り**、
   ユーザーの**明示接続**＋**allow-list 宛先（Twitch）**＋**Node sidecar への封じ込め**（main はインターネットに出ない）
   ＋**security-review** を条件に例外的に許可する（032c-b）。取得コメントは**画面表示のみ**で端末外へ出さず、
-  telemetry/analytics は行わない。OAuth トークンは非ログ・非外部送信で、ログイン維持のため **OS キーチェーンに保存**する
-  （Rust 所有・親子プロセス private pipe のみで受け渡し・loopback WS には載せない／032c-b′）。YouTube 取得は 032c-d で別途。
-  詳細は docs/security.md）
+  telemetry/analytics は行わない。Twitch の OAuth トークンは非ログ・非外部送信で、ログイン維持のため **OS キーチェーンに保存**する
+  （Rust 所有・親子プロセス private pipe のみで受け渡し・loopback WS には載せない／032c-b′）。
+  **YouTube 取得も 032c-d で同様に許可**する（allow-list 宛先＝`accounts.google.com`[ブラウザ側で開く]／`oauth2.googleapis.com`／
+  `www.googleapis.com`・ユーザー明示接続時のみ・Node sidecar 封じ込め・gRPC チャネルガード）。**YouTube の OAuth トークン・
+  Client Secret は in-memory のみ**（keyring 永続化しない＝Twitch と対比）。YouTube は金銭課金 $0 だが **無料クォータ 10,000 units/日**の
+  制限があり、**枯渇時は取得を自動停止**（graceful・クラッシュしない）する。長時間運用では無料の増枠申請が要り得る（自動申請・課金
+  有効化はしない）。詳細は docs/security.md）
 - クラウド同期
 - ユーザーアカウント
 - 課金

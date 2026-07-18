@@ -50,7 +50,16 @@ import {
   type TokenPersistListener,
 } from "./persisting-token-store.js";
 import { NoopBrowserLauncher } from "./noop-browser-launcher.js";
+import { CallbackBrowserLauncher } from "./callback-browser-launcher.js";
 import { PinnedTwitchOAuthConfigProvider } from "../twitch-config.js";
+// 032c-d: YouTube（Authorization Code + loopback / PKCE / state）経路。in-memory トークンのみ（keyring 無し）。
+import { YouTubeOAuthClient } from "../../vendor/auth/src/adapters/youtube/client/oauth.client.js";
+import { YouTubeLoginPolicy } from "../../vendor/auth/src/adapters/youtube/config/login-policy.js";
+import { AuthorizationCodeLoopbackLoginStrategy } from "../../vendor/auth/src/adapters/youtube/login/authorization-code-loopback-login-strategy.js";
+import { RandomPkceGenerator } from "../../vendor/auth/src/adapters/shared/pkce/pkce.js";
+import { RandomStateGenerator } from "../../vendor/auth/src/adapters/shared/state/random-state.generator.js";
+import { LoopbackOAuthCallbackReceiver } from "../../vendor/auth/src/adapters/shared/loopback/loopback.callback-receiver.js";
+import { PinnedYouTubeOAuthConfigProvider } from "../youtube-config.js";
 
 /** Device Code の画面提示情報（viewer にテキスト提示する user_code / verification_uri）。 */
 export interface DeviceCodePrompt {
@@ -104,11 +113,18 @@ export type CreateAuthClientOptions = {
    * save 時は最新の `TokenSetPlain`、clear 時は `null`。未指定なら永続化しない（従来どおり in-memory のみ）。
    */
   onTokenPersist?: TokenPersistListener;
+  /**
+   * 032c-d: YouTube 認可フローで「同意画面を開く」ための URL を外へ渡す hook。sidecar はブラウザ
+   * shell-out せず、この URL を stdout の専用行（COMMENT_SIDECAR_OPEN_URL=）で Rust へ渡して Rust が
+   * host=accounts.google.com を検証して開く。未指定なら YouTube ログインは URL を開けず失敗する。
+   * URL 全体はログに出さない（載るのは code_challenge・非機密で code_verifier は載らない）。
+   */
+  onOpenAuthUrl?: (url: string) => void;
 };
 
-// 032c-b: Twitch のみサポート（YouTube は distill 対象外）。
+// 032c-b/032c-d: Twitch（Device Code）と YouTube（Authorization Code + loopback）をサポート。
 function assertSupportedProvider(provider: Provider): void {
-  if (provider !== "twitch") {
+  if (provider !== "twitch" && provider !== "youtube") {
     throw new Error(`対応していない連携先です: ${provider}`);
   }
 }
@@ -133,11 +149,34 @@ export function createAuthClient(
     twitchLoginPolicy,
   );
 
+  // 032c-d: YouTube（Authorization Code + loopback / PKCE(S256) / state）。env ピン留め config を定数 new し
+  // （Twitch と同様に @inject 経由でなく直接構築）、同意画面のブラウザ起動は Rust opener へ委譲する
+  // （CallbackBrowserLauncher → onOpenAuthUrl → stdout 行 → Rust が host 検証して開く）。
+  const youtubeConfigProvider = new PinnedYouTubeOAuthConfigProvider();
+  const youtubeOAuthClient = new YouTubeOAuthClient(youtubeConfigProvider);
+  const youtubeLoginPolicy = new YouTubeLoginPolicy(youtubeConfigProvider);
+  const youtubeBrowserLauncher = new CallbackBrowserLauncher(
+    options.onOpenAuthUrl ??
+      (() => {
+        throw new Error("YouTube 同意画面を開く導線が未設定です。");
+      }),
+  );
+  const youtubeLoginStrategy = new AuthorizationCodeLoopbackLoginStrategy(
+    youtubeOAuthClient,
+    youtubeBrowserLauncher,
+    new LoopbackOAuthCallbackReceiver(),
+    new RandomPkceGenerator(),
+    new RandomStateGenerator(),
+    youtubeLoginPolicy,
+  );
+
   const loginStrategyByProvider = new Map<Provider, LoginStrategy>();
   loginStrategyByProvider.set("twitch", twitchLoginStrategy);
+  loginStrategyByProvider.set("youtube", youtubeLoginStrategy);
 
   const oauthTokenRefresherByProvider = new Map<Provider, OAuthTokenRefresher>();
   oauthTokenRefresherByProvider.set("twitch", twitchDeviceCodeOAuthClient);
+  oauthTokenRefresherByProvider.set("youtube", youtubeOAuthClient);
 
   // 032c-b: ログイン永続化。InMemoryTokenStore を PersistingTokenStore でラップし、save/clear を
   // onTokenPersist（→ Rust が OS キーチェーンへ保存）へ通知する。restore は通知せずメモリへ載せるだけ。

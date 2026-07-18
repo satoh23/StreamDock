@@ -1,8 +1,12 @@
 # 032c-d YouTube コメント取得有効化（OAuth PKCE ＋ gRPC streamList ＋ Client Secret 同梱 ＋ Google Cloud 運用 ＋ クォータ管理）
 
-> 状態: **未着手（実装サブタスク）**。本ファイルは [032c（親設計・方針転換の正）](032c-comment-viewer-voicevox-design.md)
-> の「## 実装タスクへの分割」032c-d 節・「## 決定事項」論点 1 / 6 / 7・「## セキュリティ方針の改訂方針」を
-> distill したもの。**スコープ・決定の線引きは 032c を正とする**。
+> 状態: **実装済（ヘッドレス検証 pass・実機 E2E 待ち）**。3 コミット（①OAuth ログイン ②gRPC streamList 取得＋クォータ graceful stop
+> ③docs＋security-review）で実装し、security-review スキル判定＝問題なし。実施記録は `docs/progress.md`「032c-d …」を正とする。
+> **残（実機）**: Google「Desktop app」OAuth クライアント（Client ID/Secret）焼き込み＋実 YouTube ライブで、①OAuth ログイン E2E
+> ②実チャットの sidecar→WS→viewer 描画＋ずんだもん読み上げ ③`lsof` 封じ込め（gRPC egress 含め sidecar PID 下のみ）④クォータ unit 会計。
+> consent screen 本番公開が未実施だとテストモードで refresh_token 7 日失効（§9・方針⑧）。本ファイルは
+> [032c（親設計・方針転換の正）](032c-comment-viewer-voicevox-design.md) の「## 実装タスクへの分割」032c-d 節・「## 決定事項」論点
+> 1 / 6 / 7・「## セキュリティ方針の改訂方針」を distill したもの。**スコープ・決定の線引きは 032c を正とする**。
 >
 > **必読前提**: [032c（親設計）](032c-comment-viewer-voicevox-design.md) と `docs/security.md`（特に §1 外部通信 /
 > §4 shell / §9 ログ・資格情報 / §10 依存 / Capabilities 方針 / CSP 方針 / レビュー必須条件 / 「## コメントビューア

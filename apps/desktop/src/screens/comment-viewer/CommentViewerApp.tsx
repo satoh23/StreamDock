@@ -156,6 +156,13 @@ export function CommentViewerApp() {
   // 032c-b: Twitch ログイン済みか（sidecar が keychain 復元・ログイン成功・失効で link.state を送る）。
   // これで再オープン時に「毎回ログインし直し」を避け、接続済みなら取得開始だけで済ませる。
   const [linked, setLinked] = useState(false);
+  // 032c-d: YouTube 連携（Authorization Code ログイン）の状態。Twitch と併存し各サービス個別に選択する。
+  // YouTube は in-memory トークンのため sidecar 再起動でログインは消える（keychain 永続化しない）。
+  const [youtubeLinked, setYoutubeLinked] = useState(false);
+  const [youtubeSessionState, setYoutubeSessionState] = useState<string>("idle");
+  const [youtubeSessionReason, setYoutubeSessionReason] = useState<
+    string | null
+  >(null);
   // 032c-b: チャンネル名は localStorage から復元し、変更のたびに保存する（窓を閉じても空欄化しない）。
   const [channel, setChannel] = useState(() => loadChannel());
 
@@ -202,14 +209,24 @@ export function CommentViewerApp() {
           return next;
         }),
       onDeviceCode: (prompt) => setDeviceCode(prompt),
-      onSessionState: (state, reason) => {
+      onSessionState: (platform, state, reason) => {
+        // 032c-d: platform 別に反映（Twitch と YouTube を別パネルに）。
+        if (platform === "youtube") {
+          setYoutubeSessionState(state);
+          setYoutubeSessionReason(reason ?? null);
+          return;
+        }
         setSessionState(state);
         setSessionReason(reason ?? null);
         // 接続済み（connected）になったら Device Code 提示は不要なので消す。
         if (state === "connected") setDeviceCode(null);
       },
       onConnectionChange: (connected) => setStreamConnected(connected),
-      onLinkState: (isLinked) => {
+      onLinkState: (platform, isLinked) => {
+        if (platform === "youtube") {
+          setYoutubeLinked(isLinked);
+          return;
+        }
         setLinked(isLinked);
         // ログイン済み（復元含む）なら Device Code 提示は不要なので消す。
         if (isLinked) setDeviceCode(null);
@@ -227,6 +244,11 @@ export function CommentViewerApp() {
     setSessionReason(null);
     streamRef.current?.startLogin();
   };
+  // 032c-d: YouTube ログイン開始（ユーザー明示操作でのみ発火）。Rust がブラウザで accounts.google.com を開く。
+  const handleYouTubeConnect = () => {
+    setYoutubeSessionReason(null);
+    streamRef.current?.startLogin("youtube");
+  };
   const handleStartSession = () => {
     const ch = channel.trim();
     if (!ch) return;
@@ -234,10 +256,19 @@ export function CommentViewerApp() {
     // 032c-b: 取得開始はユーザー操作なので、ここで AudioContext を resume しておく。以降 sidecar から
     // （非操作起点で）届く実コメントの読み上げが suspended で無音化しないようにする単一の resume 契機。
     void ttsRef.current?.resume();
-    streamRef.current?.startSession(ch);
+    streamRef.current?.startSession("twitch", ch);
   };
   const handleStopSession = () => {
-    streamRef.current?.stopSession();
+    streamRef.current?.stopSession("twitch");
+  };
+  // 032c-d: YouTube 取得開始/停止（チャンネル名不要＝mine=true）。取得開始はユーザー操作なので TTS resume する。
+  const handleYouTubeStartSession = () => {
+    setYoutubeSessionReason(null);
+    void ttsRef.current?.resume();
+    streamRef.current?.startSession("youtube");
+  };
+  const handleYouTubeStopSession = () => {
+    streamRef.current?.stopSession("youtube");
   };
 
   // ENGINE 稼働を GET /version で定期確認する（未起動→起動誘導、起動後は自動でバナーが消える）。
@@ -407,6 +438,52 @@ export function CommentViewerApp() {
             <span className={styles.verifyUri}>{deviceCode.verificationUri}</span>
           </div>
         )}
+      </div>
+
+      {/* 032c-d: YouTube 連携（Authorization Code ログイン → ブラウザ同意 → 取得開始）。Twitch と併存・各サービス
+          個別選択（同時取得はしない）。チャンネル名入力は不要（mine=true の自アカウントのアクティブ配信）。
+          認可画面は Rust がシステムブラウザで accounts.google.com を開く（sidecar は URL に触らず・
+          code_verifier は載らない）。ユーザー明示操作でのみ発火する（§1）。 */}
+      <div className={styles.youtubePanel}>
+        <div className={styles.youtubeRow}>
+          <button
+            type="button"
+            className={styles.btn}
+            onClick={handleYouTubeConnect}
+            disabled={!streamConnected || youtubeLinked}
+          >
+            {youtubeLinked ? "YouTube 接続済み" : "YouTube に接続"}
+          </button>
+          <button
+            type="button"
+            className={styles.btn}
+            onClick={handleYouTubeStartSession}
+            disabled={!streamConnected || !youtubeLinked}
+          >
+            コメント取得開始
+          </button>
+          <button
+            type="button"
+            className={styles.btnGhost}
+            onClick={handleYouTubeStopSession}
+            disabled={!streamConnected}
+          >
+            停止
+          </button>
+          <span className={styles.status}>
+            状態:{" "}
+            {!streamConnected
+              ? "コメント取得プロセスに接続中…"
+              : !youtubeLinked && youtubeSessionState === "connecting"
+                ? "ブラウザで同意してください…"
+                : `${SESSION_STATE_LABEL[youtubeSessionState] ?? youtubeSessionState}${
+                    youtubeSessionReason ? `（${youtubeSessionReason}）` : ""
+                  }`}
+          </span>
+        </div>
+        <span className={styles.note}>
+          YouTube はチャンネル名入力不要（自分のアクティブ配信を取得）。無料クォータ（10,000 units/日）を使い切ると取得は自動停止します。
+        </span>
       </div>
 
       {engineRunning === false && (

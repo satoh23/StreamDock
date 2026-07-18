@@ -7,14 +7,19 @@ import type {
   SessionPlatform,
   SessionState,
 } from "@comment-dock/shared";
-// 032c-b(stream-dock): YouTube 経路は distill 時に除外（grpc を import グラフから外す）。
+// 032c-d(stream-dock): YouTube 経路（gRPC streamList）を追加。Twitch と併存・各サービス個別選択。
 import { TwitchCommentRepository } from "../adapters/twitch/repository/comment.repository.js";
 import { TwitchLiveStreamRepository } from "../adapters/twitch/repository/live-stream.repository.js";
+import { YouTubeCommentRepository } from "../adapters/youtube/repository/comment.repository.js";
+import { YouTubeLiveStreamRepository } from "../adapters/youtube/repository/live-stream.repository.js";
+import { YouTubeLiveStreamClient } from "../adapters/youtube/client/live-stream.client.js";
 import {
   DetectLiveStreamUseCase,
   LiveStreamNotFoundError,
 } from "../usecases/live-stream-detection/index.js";
 import { CollectTwitchCommentsUseCase } from "../usecases/comment-collection/twitch/collect-comments.usecase.js";
+import { CollectYouTubeCommentsUseCase } from "../usecases/comment-collection/youtube/collect-comments.usecase.js";
+import { isQuotaExceededError } from "../adapters/shared/quota/error.js";
 import type {
   CollectCommentsInput,
   CollectCommentsStream,
@@ -29,6 +34,9 @@ import { getLiveStreamPollingIntervalMs } from "../infrastructure/shared/config/
 type CommentProvider = CommentSource;
 
 export type RunCommentFetcherAppOptions = {
+  // 032c-d(stream-dock): 実運用では未指定（mine=true で自アカウントのアクティブ配信を検出）。
+  // osareview 原本の明示指定経路で stream-dock では dead（viewer はチャンネル名を渡さない）。
+  youtubeTargetChannelId?: string;
   retryOnLiveStreamNotFound?: boolean;
   liveStreamRetryIntervalMs?: number;
 };
@@ -258,6 +266,45 @@ const createTwitchPipeline = (channelId?: string): CommentFetchPipeline => {
   };
 };
 
+// 032c-d(stream-dock): YouTube パイプライン（gRPC streamList）。mine=true で自アカウントのアクティブ配信を
+// 検出する（チャンネル名入力不要）。collectComments は provider 非依存なのでそのまま流用する。
+const createYouTubePipeline = (
+  options: RunCommentFetcherAppOptions,
+): CommentFetchPipeline => {
+  const liveStreamRepository = container.resolve(YouTubeLiveStreamRepository);
+  const liveStreamClient = container.resolve(YouTubeLiveStreamClient);
+  const commentRepository = container.resolve(YouTubeCommentRepository);
+  const detectLiveStreamUseCase = new DetectLiveStreamUseCase(
+    liveStreamRepository,
+  );
+  const collectCommentsUseCase = new CollectYouTubeCommentsUseCase(
+    commentRepository,
+  );
+
+  return {
+    provider: COMMENT_SOURCES.YOUTUBE,
+    resolveTargetChannelId: async () => {
+      if (options.youtubeTargetChannelId) {
+        return options.youtubeTargetChannelId;
+      }
+      const ownChannelId = await liveStreamClient.resolveOwnChannelId();
+      if (!ownChannelId) {
+        console.warn(
+          "[comment-fetcher] ログイン中の YouTube アカウントからチャンネルを特定できませんでした。",
+        );
+        return null;
+      }
+      return ownChannelId;
+    },
+    findCurrentLiveStream: (input) =>
+      liveStreamRepository.findLiveStream(input),
+    findActiveLiveStream: (input, findOptions) =>
+      detectLiveStreamUseCase.findActiveLiveStream(input, findOptions),
+    streamCommentsFromLiveChat: (input) =>
+      collectCommentsUseCase.streamCommentsFromLiveChat(input),
+  };
+};
+
 const collectComments = async (
   pipeline: CommentFetchPipeline,
   outputPort: CommentOutputPort,
@@ -357,6 +404,14 @@ const collectComments = async (
       }
       await waitForRetry(options.liveStreamRetryIntervalMs, controls.signal);
     } catch (error) {
+      // 032c-d(stream-dock): クォータ枯渇（403 quotaExceeded / gRPC RESOURCE_EXHAUSTED）は再検知せず
+      // graceful stop する（FAILED を viewer へ通知・hot-loop しない・クラッシュさせない）。
+      if (isQuotaExceededError(error)) {
+        await emitStateChange(pipeline, controls, SESSION_STATES.FAILED, {
+          reason: error.message,
+        });
+        return;
+      }
       if (isLiveStreamEndedError(error)) {
         await emitStateChange(pipeline, controls, SESSION_STATES.IDLE);
         return;
@@ -406,6 +461,23 @@ export const runTwitchPipeline = async (
     controls,
   );
 };
+
+// 032c-d(stream-dock): YouTube 取得パイプライン。start-session(youtube) から起動する（チャンネル名不要）。
+export const runYouTubePipeline = async (
+  options: PipelineRunOptions,
+  outputPort: CommentOutputPort,
+  controls: PipelineControlOptions = {},
+): Promise<void> => {
+  await collectComments(
+    createYouTubePipeline(options),
+    outputPort,
+    resolveRuntimeOptions(options, false),
+    controls,
+  );
+};
+
+// 032c-d(stream-dock): createYouTubePipeline を単独 export（DI 解決＋proto-under-SEA のスパイクにも使える）。
+export { createYouTubePipeline };
 
 // 032c-b(stream-dock): createTwitchPipeline() を単独 export し、DI 解決の疎通確認
 // （decorator metadata が SEA を生存しているかのスパイク）にも使えるようにする。

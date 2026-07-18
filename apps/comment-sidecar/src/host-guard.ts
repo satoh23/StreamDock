@@ -13,10 +13,23 @@ const ALLOWED_EXACT_HOSTS = new Set<string>([
   "id.twitch.tv",
   "api.twitch.tv",
   "eventsub.wss.twitch.tv",
+  // 032c-d コミット1: YouTube OAuth のトークン交換/更新エンドポイント（認可コード → token）。
+  // 認可画面 accounts.google.com はブラウザ側（Rust opener が開く）で sidecar の fetch は張らないため
+  // ここには入れない。
+  "oauth2.googleapis.com",
+  // 032c-d コミット2: YouTube Data API v3。REST 検出（search/videos/channels・mine=true）の fetch がここを通る。
+  // gRPC streamList も同 host（別途 gRPC チャネルガードで照合）。
+  "www.googleapis.com",
 ]);
 
 /** ワイルドカード許可（reconnect_url は `*.wss.twitch.tv`。Twitch 由来のサブドメイン）。 */
 const ALLOWED_WILDCARD_SUFFIX = ".wss.twitch.tv";
+
+// 032c-d コミット2: gRPC チャネルガード用の allow-list。gRPC は fetch/ws を通らないため独立に持つ。
+// **www.googleapis.com:443 のみ**を許可する（fetch の allow-list より狭い＝Twitch/oauth を gRPC target に
+// できない・fail-closed）。streamList の target は Data API base URL（定数）から導出される。
+const ALLOWED_GRPC_EXACT_HOSTS = new Set<string>(["www.googleapis.com"]);
+const ALLOWED_GRPC_PORT = "443";
 
 function isAllowedHost(host: string): boolean {
   return ALLOWED_EXACT_HOSTS.has(host) || host.endsWith(ALLOWED_WILDCARD_SUFFIX);
@@ -63,6 +76,23 @@ function assertAllowedWsUrl(raw: string): void {
   }
 }
 
+/**
+ * 032c-d コミット2: gRPC streamList の接続先 `target`（"host:port"）を allow-list 照合する（fail-closed）。
+ * gRPC は `fetch`/`ws` を通らないため独立のガード。**www.googleapis.com:443 のみ**を許可し、port 欠落・別 host・
+ * 別 port・サブドメイン偽装（`www.googleapis.com.evil.com`）は throw する。api.client の client 生成前に呼ぶ。
+ */
+export function assertAllowedGrpcTarget(target: string): void {
+  const lastColon = target.lastIndexOf(":");
+  if (lastColon === -1) {
+    throw new DisallowedHostError(`grpc://${target}`);
+  }
+  const host = target.slice(0, lastColon);
+  const port = target.slice(lastColon + 1);
+  if (port !== ALLOWED_GRPC_PORT || !ALLOWED_GRPC_EXACT_HOSTS.has(host)) {
+    throw new DisallowedHostError(`grpc://${target}`);
+  }
+}
+
 /** URL 入力を文字列へ正規化する（fetch は string / URL / Request を受ける）。 */
 function urlOf(input: unknown): string {
   if (typeof input === "string") return input;
@@ -104,5 +134,6 @@ export const guardedWebSocketRuntime = {
 export const __hostGuardInternals = {
   assertAllowedHttpUrl,
   assertAllowedWsUrl,
+  assertAllowedGrpcTarget,
   isAllowedHost,
 };

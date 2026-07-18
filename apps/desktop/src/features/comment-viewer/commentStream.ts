@@ -21,20 +21,35 @@ export interface DeviceCodePrompt {
   verificationUri: string;
 }
 
+/** 032c-d: 配信サービス（各サービス個別選択・併存）。 */
+export type CommentService = "twitch" | "youtube";
+
 export interface CommentStreamHandlers {
   onComments: (comments: CommentViewDto[]) => void;
   onDeviceCode?: (prompt: DeviceCodePrompt) => void;
-  onSessionState?: (state: string, reason?: string) => void;
+  /** 032c-d: session.state を platform 別に受け取る（twitch/youtube を viewer が別パネルに反映）。 */
+  onSessionState?: (
+    platform: CommentService,
+    state: string,
+    reason?: string,
+  ) => void;
   onConnectionChange?: (connected: boolean) => void;
-  /** 032c-b: Twitch ログイン済みか（keychain 復元・ログイン成功・失効で更新される）。 */
-  onLinkState?: (linked: boolean) => void;
+  /** 032c-b/032c-d: ログイン済みか（platform 別）。twitch=keychain 復元/成功/失効、youtube=in-memory の当該セッション。 */
+  onLinkState?: (platform: CommentService, linked: boolean) => void;
 }
 
 export interface CommentStreamHandle {
   disconnect(): void;
-  startLogin(): void;
-  startSession(channel: string): void;
-  stopSession(): void;
+  /** 032c-d: service 省略時は twitch（後方互換）。youtube はブラウザ同意フロー。 */
+  startLogin(service?: CommentService): void;
+  /** 032c-d: service ごとに取得開始。twitch は channel 必須／youtube は channel 不要（mine=true）。 */
+  startSession(service: CommentService, channel?: string): void;
+  stopSession(service: CommentService): void;
+}
+
+/** sidecar から届く platform を正規化する（未指定・不正は既定 twitch＝後方互換）。 */
+function parsePlatform(v: unknown): CommentService {
+  return v === "youtube" ? "youtube" : "twitch";
 }
 
 /** ポート未確定時・切断時の再試行間隔（ミリ秒）。 */
@@ -107,16 +122,23 @@ export function connectCommentStream(
       } else if (m.type === "device_code") {
         if (isDeviceCodePrompt(m.payload)) handlers.onDeviceCode?.(m.payload);
       } else if (m.type === "session.state") {
-        const p = m.payload as { state?: unknown; reason?: unknown } | undefined;
+        const p = m.payload as
+          | { platform?: unknown; state?: unknown; reason?: unknown }
+          | undefined;
         if (typeof p?.state === "string") {
           handlers.onSessionState?.(
+            parsePlatform(p.platform),
             p.state,
             typeof p.reason === "string" ? p.reason : undefined,
           );
         }
       } else if (m.type === "link.state") {
-        const p = m.payload as { linked?: unknown } | undefined;
-        if (typeof p?.linked === "boolean") handlers.onLinkState?.(p.linked);
+        const p = m.payload as
+          | { platform?: unknown; linked?: unknown }
+          | undefined;
+        if (typeof p?.linked === "boolean") {
+          handlers.onLinkState?.(parsePlatform(p.platform), p.linked);
+        }
       }
     };
     socket.onclose = () => {
@@ -148,14 +170,14 @@ export function connectCommentStream(
         ws = null;
       }
     },
-    startLogin(): void {
-      send({ type: "start-login" });
+    startLogin(service?: CommentService): void {
+      send({ type: "start-login", ...(service ? { service } : {}) });
     },
-    startSession(channel: string): void {
-      send({ type: "start-session", channel });
+    startSession(service: CommentService, channel?: string): void {
+      send({ type: "start-session", service, ...(channel ? { channel } : {}) });
     },
-    stopSession(): void {
-      send({ type: "stop-session" });
+    stopSession(service: CommentService): void {
+      send({ type: "stop-session", service });
     },
   };
 }
