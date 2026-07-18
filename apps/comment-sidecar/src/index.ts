@@ -47,10 +47,13 @@ const PORT_STDOUT_PREFIX = "COMMENT_SIDECAR_PORT=";
 const PPID_WATCH_INTERVAL_MS = 1000;
 const DEVICE_CODE_FRAME = "device_code";
 const LINK_STATE_FRAME = "link.state";
-// 032c-b: ログイン永続化。token(JSON) は viewer WS には流さず、**stdout の専用行**（親子 private pipe）で
-// のみ Rust へ渡し、Rust が OS キーチェーンへ保存する。復元は Rust→**stdin** の専用行で受ける（§9）。
+// 032c-b/032c-d′: ログイン永続化。token(JSON) は viewer WS には流さず、**stdout の専用行**（親子 private pipe）
+// でのみ Rust へ渡し、Rust が OS キーチェーンへ保存する。復元は Rust→**stdin** の専用行で受ける（§9）。
+// 032c-d′: twitch/youtube を統一するため各行に **provider を付与**する:
+//   保存 = `COMMENT_SIDECAR_TOKEN=<provider> <json>` / 破棄 = `COMMENT_SIDECAR_TOKEN_CLEAR=<provider>` /
+//   復元 = `COMMENT_SIDECAR_RESTORE=<provider> <json>`（json は JSON.stringify＝改行/空白なしなので先頭空白で分割可）。
 const TOKEN_STDOUT_PREFIX = "COMMENT_SIDECAR_TOKEN=";
-const TOKEN_CLEAR_STDOUT = "COMMENT_SIDECAR_TOKEN_CLEAR";
+const TOKEN_CLEAR_STDOUT_PREFIX = "COMMENT_SIDECAR_TOKEN_CLEAR=";
 const RESTORE_STDIN_PREFIX = "COMMENT_SIDECAR_RESTORE=";
 // 032c-d: YouTube 同意画面の認可 URL を Rust へ渡す stdout 専用行（親子 private pipe）。Rust が
 // host=accounts.google.com を検証して opener で開く。**URL 全体はログに出さない**（載るのは code_challenge・
@@ -134,14 +137,16 @@ function parseTokenPlain(json: string): TokenSetPlain | null {
 }
 
 async function main(): Promise<void> {
-  // 032c-b: token の save/clear を stdout の専用行で Rust へ伝え、Rust が OS キーチェーンへ永続化する。
-  // token は viewer WS には流さず、親子 private pipe（stdout）のみを通る（§9）。
+  // 032c-b/032c-d′: token の save/clear を stdout の専用行（provider 付き）で Rust へ伝え、Rust が OS
+  // キーチェーンへ永続化する。token は viewer WS には流さず、親子 private pipe（stdout）のみを通る（§9）。
   const authClient = createAuthClient({
-    onTokenPersist: (plain) => {
+    onTokenPersist: (provider, plain) => {
       if (plain === null) {
-        process.stdout.write(`${TOKEN_CLEAR_STDOUT}\n`);
+        process.stdout.write(`${TOKEN_CLEAR_STDOUT_PREFIX}${provider}\n`);
       } else {
-        process.stdout.write(`${TOKEN_STDOUT_PREFIX}${JSON.stringify(plain)}\n`);
+        process.stdout.write(
+          `${TOKEN_STDOUT_PREFIX}${provider} ${JSON.stringify(plain)}\n`,
+        );
       }
     },
     // 032c-d: YouTube 同意画面の認可 URL を Rust へ渡す（Rust が host=accounts.google.com を検証して
@@ -182,8 +187,8 @@ async function main(): Promise<void> {
   };
 
   // 032c-b/032c-d: 現在のログイン状態を viewer へ通知する（getLinkStatus はメモリのトークン有無を見る・非機密）。
-  // 再接続時・ログイン成功時・keychain 復元時（twitch のみ）・認可失効時に送り、viewer が platform 別に
-  // 「接続済み/未接続」を反映できる。YouTube は in-memory のみのため復元は無く、sidecar 起動直後は未接続。
+  // 再接続時・ログイン成功時・keychain 復元時・認可失効時に送り、viewer が platform 別に「接続済み/未接続」を
+  // 反映できる。032c-d′: YouTube も keychain 復元されるため、起動直後に復元済みなら「接続済み」を反映する。
   const sendLinkState = async (platform: Provider): Promise<void> => {
     let linked = false;
     try {
@@ -198,17 +203,21 @@ async function main(): Promise<void> {
     });
   };
 
-  // 032c-b: Rust が stdin へ書いた復元行のトークンをメモリへ復元する（keychain→メモリ）。ネットワークは
-  // 張らない（取得は start-session で明示）。復元できたら link.state を送って viewer に「接続済み」を反映。
-  const restoreFromJson = async (json: string): Promise<void> => {
+  // 032c-b/032c-d′: Rust が stdin へ書いた復元行のトークンをメモリへ復元する（keychain→メモリ）。provider
+  // 別（twitch/youtube）に復元する。ネットワークは張らない（取得は start-session で明示）。復元できたら
+  // link.state を送って viewer に「接続済み」を反映。
+  const restoreToken = async (
+    provider: Provider,
+    json: string,
+  ): Promise<void> => {
     const plain = parseTokenPlain(json);
     if (!plain) return;
     try {
-      await authClient.restoreTwitchToken(plain);
-      logInfo("[comment-sidecar] twitch login restored from keychain");
-      void sendLinkState("twitch");
+      await authClient.restoreToken(provider, plain);
+      logInfo(`[comment-sidecar] ${provider} login restored from keychain`);
+      void sendLinkState(provider);
     } catch {
-      logInfo("[comment-sidecar] twitch token restore failed");
+      logInfo(`[comment-sidecar] ${provider} token restore failed`);
     }
   };
 
@@ -251,7 +260,7 @@ async function main(): Promise<void> {
   };
 
   // 032c-d: YouTube ログイン（Authorization Code + loopback / PKCE）。device code は無く、認可 URL は
-  // Rust opener で開く（onOpenAuthUrl → stdout）。成功でトークンは in-memory（keyring 無し）。取得は commit2。
+  // Rust opener で開く（onOpenAuthUrl → stdout）。032c-d′: 成功でトークンは keychain 永続化（Twitch と同様）。
   let youtubeLoginInFlight = false;
   const startYouTubeLogin = async (): Promise<void> => {
     if (youtubeLoginInFlight) return;
@@ -364,15 +373,15 @@ async function main(): Promise<void> {
     }
   });
 
-  // 032c-b/032c-d: viewer が（再）接続したら現在のログイン状態を platform 別に送る（twitch は keychain
-  // 復元済みログインを反映・youtube は in-memory のため sidecar 起動後の当該セッションのログイン有無）。
+  // 032c-b/032c-d/032c-d′: viewer が（再）接続したら現在のログイン状態を platform 別に送る（twitch/youtube とも
+  // keychain 復元済みログインを反映する）。
   output.setConnectionHandler(() => {
     void sendLinkState("twitch");
     void sendLinkState("youtube");
   });
 
   // 032c-b/032c-d: 認可失効（refresh 失敗など）で token が破棄されたら link.state を更新する
-  //（twitch: PersistingTokenStore.clear → Rust が keychain 削除。youtube: in-memory 破棄）。両 platform を更新。
+  //（032c-d′: twitch/youtube とも PersistingTokenStore.clear → Rust が該当 provider の keychain を削除）。両 platform を更新。
   authClient.onAuthorizationLost(() => {
     void sendLinkState("twitch");
     void sendLinkState("youtube");
@@ -406,8 +415,9 @@ async function main(): Promise<void> {
   process.on("SIGINT", () => shutdown(0));
   process.stdin.on("close", () => shutdown(0));
 
-  // 032c-b: Rust が起動時に stdin へ書く復元行（COMMENT_SIDECAR_RESTORE=<json>）を読み、ログインを
-  // メモリへ復元する。行区切りでバッファリングして解析する（stdin は close 監視にも使うので data も購読）。
+  // 032c-b/032c-d′: Rust が起動時に stdin へ書く復元行（COMMENT_SIDECAR_RESTORE=<provider> <json>）を読み、
+  // provider 別にログインをメモリへ復元する。行区切りでバッファリングして解析する（stdin は close 監視にも
+  // 使うので data も購読）。
   let stdinBuf = "";
   process.stdin.on("data", (chunk: Buffer) => {
     stdinBuf += chunk.toString("utf8");
@@ -416,7 +426,17 @@ async function main(): Promise<void> {
       const line = stdinBuf.slice(0, nl).trim();
       stdinBuf = stdinBuf.slice(nl + 1);
       if (line.startsWith(RESTORE_STDIN_PREFIX)) {
-        void restoreFromJson(line.slice(RESTORE_STDIN_PREFIX.length));
+        // 先頭の provider（twitch/youtube・空白区切り）を切り出し、残りを token JSON として復元する。
+        const rest = line.slice(RESTORE_STDIN_PREFIX.length);
+        const sep = rest.indexOf(" ");
+        if (sep !== -1) {
+          const rawProvider = rest.slice(0, sep);
+          const provider: Provider | null =
+            rawProvider === "twitch" || rawProvider === "youtube"
+              ? rawProvider
+              : null;
+          if (provider) void restoreToken(provider, rest.slice(sep + 1));
+        }
       }
     }
   });

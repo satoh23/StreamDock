@@ -212,7 +212,10 @@ no-internet を維持**し、YouTube のインターネット通信も **Node si
 - **Twitch 経路の変更**（032c-b 完了・フレームは再利用するが Twitch のロジックは触らない）。
 - **VOICEVOX 合成・TTS キュー・Web Audio の変更**（032c-c・実装済み）。YouTube コメントの読み上げは c の既存パイプラインに流すだけ。
 - **Node sidecar 基盤・viewer WS・§1 封じ込めフレームの作り直し**（032c-b の再利用）。
-- **OAuth トークンの keyring 永続化**（対象外・§9 準拠で in-memory で扱う）。
+- ~~**OAuth トークンの keyring 永続化**（対象外・§9 準拠で in-memory で扱う）。~~
+  → **032c-d′ で方針変更**: 使い心地を Twitch と統一するため、OAuth アクセス/リフレッシュトークンのみ Twitch と
+  同型に OS キーチェーンへ永続化する（code_verifier/Client Secret は引き続き非永続）。§9 のポリシー変更のため
+  **security-review を再実施済み**。詳細は docs/security.md「### 032c-d …」節の**追補（032c-d′）**。
 - **YouTube + Twitch の同時 / マージ表示**（対象外・各サービス個別選択）。
 - **CSP 硬化**（`csp: null` は当面維持）。
 - **クォータ増枠の自動申請・金銭課金の有効化**（金銭課金は使わない・枯渇時は graceful stop で対応）。
@@ -227,7 +230,9 @@ no-internet を維持**し、YouTube のインターネット通信も **Node si
 - **解禁範囲**: YouTube のインターネット通信は **allow-list 宛先（`oauth2.googleapis.com`／`www.googleapis.com`＋ブラウザ側
   `accounts.google.com`）限定・ユーザー明示接続時のみ**。通信面は **Node sidecar と viewer webview に封じ込め**（main は
   no-internet 維持・gRPC チャネルもガード）。telemetry/analytics/crash-report は全面禁止。取得コメントは端末外へ出さない。
-  OAuth トークン・code_verifier・Client Secret は §9 準拠（**非ログ・非外部送信・in-memory 保存＝keyring 永続化しない**）。
+  OAuth トークン・code_verifier・Client Secret は §9 準拠（**非ログ・非外部送信**）。当初（032c-d）は in-memory 保存
+  （keyring 非永続）だったが、**032c-d′ で OAuth アクセス/リフレッシュトークンのみ OS キーチェーンへ永続化**へ変更した
+  （code_verifier/Client Secret は引き続き非永続。§9 ポリシー変更のため再 security-review 済み。docs/security.md 追補 032c-d′ 参照）。
   **明示同意＋security-review 必須**。
 - **Client Secret 同梱の根拠**: Google「Desktop app」OAuth クライアントの secret は**機密扱いされない**（インストール型は抽出前提）。
   抽出されても **PKCE 併用＋インストール型モデル**で被害は限定（認可コード横取り防止・ユーザー個別同意）。この根拠を security.md に明記。

@@ -37,10 +37,12 @@ stream-dock は、配信者が配信前に使う複数のPCツールを、プリ
   telemetry/analytics は行わない。Twitch の OAuth トークンは非ログ・非外部送信で、ログイン維持のため **OS キーチェーンに保存**する
   （Rust 所有・親子プロセス private pipe のみで受け渡し・loopback WS には載せない／032c-b′）。
   **YouTube 取得も 032c-d で同様に許可**する（allow-list 宛先＝`accounts.google.com`[ブラウザ側で開く]／`oauth2.googleapis.com`／
-  `www.googleapis.com`・ユーザー明示接続時のみ・Node sidecar 封じ込め・gRPC チャネルガード）。**YouTube の OAuth トークン・
-  Client Secret は in-memory のみ**（keyring 永続化しない＝Twitch と対比）。YouTube は金銭課金 $0 だが **無料クォータ 10,000 units/日**の
-  制限があり、**枯渇時は取得を自動停止**（graceful・クラッシュしない）する。長時間運用では無料の増枠申請が要り得る（自動申請・課金
-  有効化はしない）。詳細は docs/security.md）
+  `www.googleapis.com`・ユーザー明示接続時のみ・Node sidecar 封じ込め・gRPC チャネルガード）。**YouTube の OAuth トークンも
+  Twitch と同様に OS キーチェーンに保存**する（032c-d′・使い心地統一。Client Secret＝焼き込み／code_verifier＝一時値は非永続）。
+  YouTube は金銭課金 $0 だが **無料クォータ 10,000 units/日**の
+  制限があり、**枯渇時は取得を自動停止**（graceful・クラッシュしない）する。消費を抑えるため、配信検出は `liveBroadcasts.list`（1 unit）で
+  行い、配信終了監視は **silence-gated（コメントが流れている間は生存確認せず、途切れた時だけ確認）** とする（活発な配信の監視消費は実質ゼロ）。
+  長時間運用では無料の増枠申請が要り得る（自動申請・課金有効化はしない）。詳細は docs/security.md）
 - クラウド同期
 - ユーザーアカウント
 - 課金

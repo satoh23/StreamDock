@@ -12,10 +12,11 @@
 //!   （17331 が使用中なら sidecar が空きポートにフォールバックするため、実ポートは動的）。
 //! - no-orphan の 3 段 kill の Rust 側 2 段（① viewer 窓の Destroyed/CloseRequested、② RunEvent::Exit）から
 //!   `shutdown()` を呼ぶ。3 段目は sidecar 側の ppid 監視 self-exit（mac に PDEATHSIG が無いため）。
-//! - 032c-b(ログイン永続化): Twitch OAuth トークンは Rust 側で OS キーチェーンに保存する（[token_vault]）。
-//!   起動時に `load()` して sidecar の **stdin** へ復元行（`COMMENT_SIDECAR_RESTORE=`）を書き、sidecar が
-//!   login/refresh で更新すると **stdout** の専用行（`COMMENT_SIDECAR_TOKEN=` / `..._TOKEN_CLEAR`）で受けて
-//!   keychain を更新する。token は親子プロセス間の private pipe のみを通り、**ログ/DB/端末外に出さない**（§9）。
+//! - 032c-b/032c-d′(ログイン永続化): Twitch/YouTube の OAuth トークンは Rust 側で OS キーチェーンに保存する
+//!   （[token_vault]・provider 別 account）。起動時に `load()` して sidecar の **stdin** へ復元行
+//!   （`COMMENT_SIDECAR_RESTORE=<provider> <json>`）を書き、sidecar が login/refresh で更新すると **stdout** の
+//!   専用行（`COMMENT_SIDECAR_TOKEN=<provider> <json>` / `..._TOKEN_CLEAR=<provider>`）で受けて keychain を更新する。
+//!   token は親子プロセス間の private pipe のみを通り、**ログ/DB/端末外に出さない**（§9）。
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -33,12 +34,12 @@ mod token_vault;
 const SIDECAR_NAME: &str = "comment-sidecar";
 /// sidecar が実ポートを報告する stdout 行の prefix。
 const PORT_PREFIX: &str = "COMMENT_SIDECAR_PORT=";
-/// sidecar が login/refresh 後にトークン(JSON)を報告する stdout 行の prefix（親子 private pipe）。
-/// 受けたら keychain へ保存する。**この行の内容（token）はログに出さない**。
+/// sidecar が login/refresh 後にトークンを報告する stdout 行の prefix（親子 private pipe）。
+/// 032c-d′: 内容は `<provider> <json>`。受けたら provider 別 keychain へ保存する。**token はログに出さない**。
 const TOKEN_PREFIX: &str = "COMMENT_SIDECAR_TOKEN=";
-/// sidecar が logout/認可失効でトークン破棄を要求する stdout 行（内容なし）。
-const TOKEN_CLEAR_LINE: &str = "COMMENT_SIDECAR_TOKEN_CLEAR";
-/// 起動時に Rust→sidecar の **stdin** へ復元トークン(JSON)を渡す行の prefix。
+/// sidecar が logout/認可失効でトークン破棄を要求する stdout 行の prefix。032c-d′: 内容は `<provider>`。
+const TOKEN_CLEAR_PREFIX: &str = "COMMENT_SIDECAR_TOKEN_CLEAR=";
+/// 起動時に Rust→sidecar の **stdin** へ復元トークンを渡す行の prefix。032c-d′: 内容は `<provider> <json>`。
 const RESTORE_PREFIX: &str = "COMMENT_SIDECAR_RESTORE=";
 /// 032c-d: sidecar が YouTube 同意画面の認可 URL を渡す stdout 行の prefix。
 /// Rust が `host=accounts.google.com`（https）に限定して既定ブラウザで開く（fail-closed）。
@@ -82,12 +83,14 @@ pub fn ensure_started(app: &AppHandle) -> AppResult<()> {
         .spawn()
         .map_err(|_| AppError::launch_failed("コメント取得プロセスを起動できませんでした"))?;
 
-    // 032c-b: 保存済みトークンがあれば sidecar の stdin へ復元行を書き、ログイン状態を復元する
-    // （keychain→メモリの移動のみ。ネットワークは張らず、§1 の明示接続は取得開始ボタンで別途行う）。
+    // 032c-b/032c-d′: 保存済みトークンがあれば sidecar の stdin へ復元行を **provider 別**に書き、ログイン状態を
+    // 復元する（keychain→メモリの移動のみ。ネットワークは張らず、§1 の明示接続は取得開始ボタンで別途行う）。
     // best-effort（書込失敗は未ログイン扱い）。**token 内容はログに出さない**。
-    if let Some(token_json) = token_vault::load() {
-        let line = format!("{RESTORE_PREFIX}{token_json}\n");
-        let _ = child.write(line.as_bytes());
+    for provider in ["twitch", "youtube"] {
+        if let Some(token_json) = token_vault::load(provider) {
+            let line = format!("{RESTORE_PREFIX}{provider} {token_json}\n");
+            let _ = child.write(line.as_bytes());
+        }
     }
 
     let generation = SIDECAR_GENERATION.fetch_add(1, Ordering::Relaxed);
@@ -124,13 +127,15 @@ pub fn ensure_started(app: &AppHandle) -> AppResult<()> {
                                     }
                                 }
                             }
-                        } else if let Some(token_json) = trimmed.strip_prefix(TOKEN_PREFIX) {
-                            // 032c-b: login/refresh で更新されたトークン(JSON)を keychain へ保存する。
-                            // **token 文字列はログに出さない**（token_vault も内容を露出しない）。
-                            token_vault::save(token_json);
-                        } else if trimmed == TOKEN_CLEAR_LINE {
-                            // logout / 認可失効: 保存済みトークンを削除する。
-                            token_vault::clear();
+                        } else if let Some(rest) = trimmed.strip_prefix(TOKEN_PREFIX) {
+                            // 032c-b/032c-d′: login/refresh で更新されたトークンを provider 別 keychain へ保存する。
+                            // 行は `<provider> <json>`。**token 文字列はログに出さない**（token_vault も露出しない）。
+                            if let Some((provider, token_json)) = rest.split_once(' ') {
+                                token_vault::save(provider, token_json);
+                            }
+                        } else if let Some(provider) = trimmed.strip_prefix(TOKEN_CLEAR_PREFIX) {
+                            // logout / 認可失効: 該当 provider の保存済みトークンを削除する。
+                            token_vault::clear(provider);
                         } else if let Some(url) = trimmed.strip_prefix(OPEN_URL_PREFIX) {
                             // 032c-d: YouTube 同意画面 URL。host=accounts.google.com を検証してから
                             // 既定ブラウザで開く（fail-closed）。**URL 全体はログに出さない**。
@@ -148,6 +153,12 @@ pub fn ensure_started(app: &AppHandle) -> AppResult<()> {
                         *guard = None;
                     }
                     break;
+                }
+                CommandEvent::Stderr(bytes) => {
+                    // 032c-d′: sidecar の診断 stderr を Rust の stderr へ透過する（`pnpm tauri dev` の端末で見える）。
+                    // 従来は握りつぶしており、取得失敗（例: YouTube 配信検出・gRPC エラー）の原因が全く見えなかった。
+                    // token/secret は §9 で stderr に載せない設計のため露出しない。外部送信・DB 保存はせず端末出力のみ。
+                    eprint!("{}", String::from_utf8_lossy(&bytes));
                 }
                 _ => {}
             }

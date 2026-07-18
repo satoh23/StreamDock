@@ -157,7 +157,7 @@ export function CommentViewerApp() {
   // これで再オープン時に「毎回ログインし直し」を避け、接続済みなら取得開始だけで済ませる。
   const [linked, setLinked] = useState(false);
   // 032c-d: YouTube 連携（Authorization Code ログイン）の状態。Twitch と併存し各サービス個別に選択する。
-  // YouTube は in-memory トークンのため sidecar 再起動でログインは消える（keychain 永続化しない）。
+  // 032c-d′: YouTube も Twitch 同様 OS キーチェーンに永続化するため、窓再オープン／再起動でも再ログイン不要。
   const [youtubeLinked, setYoutubeLinked] = useState(false);
   const [youtubeSessionState, setYoutubeSessionState] = useState<string>("idle");
   const [youtubeSessionReason, setYoutubeSessionReason] = useState<

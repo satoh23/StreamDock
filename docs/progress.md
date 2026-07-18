@@ -3462,3 +3462,47 @@ Twitch 経路のロジック・VOICEVOX/TTS・§1 封じ込めフレームは不
 - docs: `docs/security.md`／`docs/product.md`／`docs/task-board.md`／`docs/progress.md`
 - 不変（確認済み）: Twitch 経路ロジック・VOICEVOX/TTS・Node sidecar 基盤/viewer WS/§1 封じ込めフレーム・`capabilities/*`（`shell:*` ゼロ）・
   `tauri.conf.json`（`csp: null`）・Rust の同期性（async/WS/HTTP crate 不追加）・ts-rs `CommentViewDto`（drift ゼロ）・`token_vault`（Twitch 用のまま）
+
+## 2026-07-19 (032c-d′/″/‴ YouTube ログイン永続化＋取得継続性/観測性＋クォータ削減)
+
+### 完了したこと
+
+- **032c-d′ ログイン永続化（§9 ポリシー変更・再 security-review 済み）**: YouTube ログインを Twitch と同型に **OS キーチェーンへ永続化**する
+  （従来は in-memory のみ）。既存の Twitch 永続化パイプ（sidecar↔Rust 親子 private pipe）を **provider 対応へ一般化**。`token_vault` に
+  `account_for(provider)`（`twitch`→`twitch-comment-viewer` / `youtube`→`youtube-comment-viewer` / **その他→None＝fail-closed**）を新設し
+  `entry/load/save/clear` を provider 引数化。private pipe プロトコルを provider 付きへ拡張（保存 `COMMENT_SIDECAR_TOKEN=<provider> <json>` /
+  破棄 `..._TOKEN_CLEAR=<provider>` / 復元 `COMMENT_SIDECAR_RESTORE=<provider> <json>`）。sidecar 側も `=== "twitch"|"youtube"` の厳格判定＋
+  `assertSupportedProvider`。**永続対象は TokenSetPlain（access/refresh/expiry/scope）のみ**で code_verifier/Client Secret は非永続。restore は
+  onPersist を呼ばず書き戻さない。**新規 crate/npm・宛先・スコープ・capability・CSP・binding は不変**。
+- **032c-d″ 取得継続性の修正＋観測性**: 実ライブで出た「取得開始→数秒で待機」バグを修正。`retryOnStreamEnd` を開始時再検出フラグ
+  （`retryOnLiveStreamNotFound`）から**分離**（YouTube=true で nextPageToken 再接続・継続取得／Twitch=false 不変）。配信終了監視を
+  `search.list`(100u・遅延) から `videos.list`(by-id・1u・整合) へ置換。sidecar の診断 **stderr を Rust stderr へ透過**（従来は握りつぶし）。
+  token/secret は §9 で stderr に載せない設計のため非露出（grep 再確認済み）。
+- **032c-d‴ クォータ削減**: 検出を `search.list`(100u) → `liveBroadcasts.list`(broadcastStatus=active・1u・即時整合) へ置換。配信終了監視を
+  **silence-gated（無言監視）**化＝コメントが流れている間（直近受信から 90s 未満）は videos.list を叩かず（活発時 ~0u）、無言時のみ 45s ごとに
+  生存確認し連続 2 miss で終了確定（検知遅延 典型 ~135s／最悪 ~180s＝設計許容）。一時エラーは inconclusive（miss 非加算・誤終了防止）、
+  QuotaExceededError は即 rethrow→FAILED。宛先 `www.googleapis.com`・スコープ `youtube.readonly` 不変（再同意不要）。
+
+### レビュー / 検証
+
+- **security-review／code-review(effort high) 実施＝問題なし**（致命的な指摘なし）。§9 永続化の核心（TokenSetPlain のみ・private pipe のみ・
+  非ログ・provider 別 fail-closed・restore 非書き戻し・logout/失効で確実クリア）と §1 不変（宛先/スコープ/gRPC チャネルガード/依存/capability/CSP
+  差分ゼロ）を確認。stderr 透過後の `console.*` に token/secret を載せる箇所ゼロ（gRPC ServiceError は応答 metadata で Authorization 非含有）。
+- **ヘッドレス検証 PASS**: `pnpm --filter @stream-dock/comment-sidecar typecheck` / `pnpm --filter ./apps/desktop typecheck` / `lint` /
+  `cargo check` / `node apps/comment-sidecar/scripts/test-host-guard.mjs`（16 ケース PASS）。binding drift ゼロ。
+- **残課題（実機）**: GUI E2E（再ログイン不要・logout/失効で keychain クリア・token 非露出）／テストモード consent の refresh_token 7 日失効／
+  gRPC streamList 実クォータ計測。テスト網（*.test.ts）がリポジトリに無いため回帰は typecheck/lint/cargo check＋実機 GUI に依存。
+
+### 変更ファイル（032c-d′/″/‴）
+
+- Rust: `src-tauri/src/comment_sidecar/{token_vault.rs（provider 一般化）,mod.rs（private pipe provider 化＋stderr 透過）}`
+- sidecar(app): `src/index.ts`（provider 付きプロトコル・厳格判定）、`src/auth/index.ts`（`restoreToken(provider,…)`）、
+  `src/auth/persisting-token-store.ts`（twitch 限定撤去・provider 付き通知）
+- sidecar(vendored comment-fetcher): `src/app/main.ts`（retryOnStreamEnd 分離・silence-gated 監視）、
+  `src/adapters/youtube/client/live-stream.client.ts`（findActiveOwnBroadcast＝liveBroadcasts・isLiveStreamActive＝videos.list）、
+  `src/adapters/youtube/dto/live-stream.dto.ts`（liveBroadcasts DTO 追加・search DTO 削除）
+- frontend: `screens/comment-viewer/CommentViewerApp.tsx`（コメントのみ・ロジック不変）
+- docs: `docs/security.md`（§9 更新＋追補 032c-d′/″/‴＋旧判定に再レビュー注記）／`docs/product.md`（検出/監視/枯渇の記述更新）／
+  `docs/tasks/032c-d-youtube-comments.md`（keyring 永続化=対象外 の記述を 032c-d′ 方針変更へ追記）／`docs/task-board.md`／`docs/progress.md`
+- 不変（確認済み）: `capabilities/*`・`tauri.conf.json`（`csp: null`）・`Cargo.toml`/`Cargo.lock`・`package.json`/`pnpm-lock.yaml`（新規 crate/npm ゼロ）・
+  gRPC チャネルガード（`www.googleapis.com:443`）・OAuth スコープ（`youtube.readonly`）・ts-rs binding（新規 command なし）

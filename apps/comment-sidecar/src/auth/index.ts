@@ -89,11 +89,11 @@ export interface AuthClient {
     onDeviceCode: (prompt: DeviceCodePrompt) => void,
   ): Promise<void>;
   /**
-   * 032c-b: 起動時に OS キーチェーンから読んだトークンをメモリのストアへ復元する（ログイン永続化）。
-   * これ自体はネットワークを張らない（取得は start-session で明示的に開始）。復元は Rust への
-   * 書き戻し通知を出さない（PersistingTokenStore.restore 経由）。
+   * 032c-b/032c-d′: 起動時に OS キーチェーンから読んだトークンをメモリのストアへ復元する（ログイン永続化）。
+   * provider（twitch/youtube）を指定でき、使い心地を統一する。これ自体はネットワークを張らない
+   * （取得は start-session で明示的に開始）。復元は Rust への書き戻し通知を出さない（PersistingTokenStore.restore 経由）。
    */
-  restoreTwitchToken(plain: TokenSetPlain): Promise<void>;
+  restoreToken(provider: Provider, plain: TokenSetPlain): Promise<void>;
   getLinkStatus(provider: Provider): Promise<LinkStatus>;
   getValidAccessToken(provider: Provider): Promise<string>;
   withAuthorizedRequest<T>(
@@ -109,8 +109,9 @@ export interface AuthClient {
 export type CreateAuthClientOptions = {
   accessTokenClockSkewMs?: number;
   /**
-   * 032c-b: twitch トークンの save/clear を外へ通知する（Rust が OS キーチェーンへ永続化するための hook）。
-   * save 時は最新の `TokenSetPlain`、clear 時は `null`。未指定なら永続化しない（従来どおり in-memory のみ）。
+   * 032c-b/032c-d′: トークンの save/clear を **provider 付き**で外へ通知する（Rust が OS キーチェーンへ
+   * 永続化するための hook）。twitch/youtube 双方を通知する。save 時は最新の `TokenSetPlain`、clear 時は `null`。
+   * 未指定なら永続化しない（従来どおり in-memory のみ）。
    */
   onTokenPersist?: TokenPersistListener;
   /**
@@ -241,8 +242,9 @@ export function createAuthClient(
       await tokenStore.save("twitch", tokenSet);
     },
 
-    async restoreTwitchToken(plain: TokenSetPlain): Promise<void> {
-      await tokenStore.restore("twitch", TokenSet.create(plain));
+    async restoreToken(provider: Provider, plain: TokenSetPlain): Promise<void> {
+      assertSupportedProvider(provider);
+      await tokenStore.restore(provider, TokenSet.create(plain));
     },
 
     async getLinkStatus(provider: Provider): Promise<LinkStatus> {

@@ -3,15 +3,27 @@
  * Step4 で必要な最小項目だけ定義する。
  */
 
-/** 配信中かどうかを調べる問い合わせの結果。配信動画IDの取得に使う。 */
-export type YouTubeSearchListResponseDto = {
-  items: YouTubeSearchItemDto[];
+/**
+ * liveBroadcasts.list(broadcastStatus=active) の結果。
+ * 032c-d″(stream-dock): 自分のアクティブ配信の検出を search.list(eventType=live・**100 unit**・検索
+ * インデックス反映が遅い) から liveBroadcasts.list(**1 unit**・配信管理APIで即時整合) へ置換するため追加。
+ * id=videoId、snippet.liveChatId/title が 1 コールで揃うため、従来の videos.list 追い打ちも不要になる。
+ */
+export type YouTubeLiveBroadcastsListResponseDto = {
+  items: YouTubeLiveBroadcastItemDto[];
 };
 
-export type YouTubeSearchItemDto = {
-  id?: {
-    /** ライブ配信動画ID */
-    videoId?: string;
+export type YouTubeLiveBroadcastItemDto = {
+  /** 配信動画ID（= videoId） */
+  id?: string;
+  snippet?: {
+    title?: string;
+    /** アクティブなライブチャットID（コメント取得問い合わせに渡す） */
+    liveChatId?: string;
+  };
+  status?: {
+    /** "live" のとき配信中 */
+    lifeCycleStatus?: string;
   };
 };
 
