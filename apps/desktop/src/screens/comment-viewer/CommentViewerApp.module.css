@@ -55,6 +55,17 @@
   background: var(--btn-ghost-bg);
 }
 
+/* 032c-b: 非活性の明示アフォーダンス（primitives.module.css の .primary:disabled と同方式の role トークン）。
+   これが無いと disabled ボタンが通常色のまま「押せそうなのに無反応」に見え、sidecar 未接続
+   （streamConnected=false）や未ログイン（linked=false）時に 032c-b の無反応バグと同型の混乱を招く。
+   button 要素の :disabled にのみ効き、有効時の見た目は不変。 */
+.btn:disabled,
+.btnGhost:disabled {
+  background: var(--control-bg);
+  color: var(--text-faint);
+  cursor: not-allowed;
+}
+
 .note {
   font-size: 11px;
   color: var(--text-faint);
@@ -134,6 +145,71 @@
   font-size: 13px;
   line-height: 1.5;
   word-break: break-word;
+}
+
+/* 032c-b: Twitch 連携パネル（Device Code ログイン・チャンネル指定で取得開始/停止）。役割トークンで両テーマ追従。 */
+.twitchPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.twitchRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.input {
+  flex: 1;
+  min-width: 120px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+}
+
+.deviceCode {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  color: var(--accent-text);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-soft-border);
+}
+
+.deviceCodeLabel {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.codeValue {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: 2px;
+  user-select: all;
+}
+
+.verifyUri {
+  font-size: 12px;
+  font-weight: 700;
+  word-break: break-all;
+  user-select: all;
+}
+
+.status {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
 }
 
 /* ENGINE 未起動の起動誘導バナー（warn 系トークンで注意喚起）。 */

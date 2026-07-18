@@ -44,9 +44,31 @@ loopback 例外を、合成＋ローカル再生に限定して（再）定義�
 - VOICEVOX ENGINE の**プロセス起動のみ** Rust の管理付き `spawn`＋PID registry（`launch_tool` と同経路）で行い、
   frontend は raw なパス/ポートを渡さず**登録済みツールを exe 名一致で解決**して起動する（絶対パス直起動しない・
   未登録は誘導のみ・`registry()` は空のまま触らない）。
-- **インターネット通信・Node sidecar・OAuth には一切波及しない**（Twitch/YouTube 取得は 032c-b/-d の別タスクで
-  security-review の上あらためて定義する）。新規 capability の広域追加・CSP 硬化はしない（`csp: null` 不変）。
+- **本例外（032c-c）自体はインターネット通信・OAuth に波及しない**（ローカル合成のみ）。Twitch コメント取得の
+  インターネット通信は **032c-b で下記「例外（032c-b…）」＋「## コメントビューア（配信サービス連携）方針」に定義した**
+  （YouTube 取得は 032c-d で別途 security-review の上定義する）。新規 capability の広域追加・CSP 硬化はしない（`csp: null` 不変）。
 - 撤去済みの棒読みちゃん 50001 はこの例外に含めない（50021 のみ）。
+
+### 例外（032c-b・コメントビューアの Twitch コメント取得＝StreamDock 初の能動的インターネット通信）
+
+上記「外部通信をしない」原則に対し、**内蔵コメントビューア（別ウィンドウ label `comment-viewer`）の Twitch
+コメント取得に限り**、ユーザーが自チャンネルへ**明示接続した時のみ**、allow-list 宛先への通信を例外的に許可する
+（配信サービスのコメントを取得して画面表示するため。StreamDock で初めての能動的インターネット通信）。詳細方針は
+下記「## コメントビューア（配信サービス連携）方針」を正とし、設計は `docs/tasks/032c-b-node-sidecar-twitch-comments.md`
+と親設計 `docs/tasks/032c-comment-viewer-voicevox-design.md` を正とする。
+
+- **宛先は allow-list のみ**＝`id.twitch.tv`（Device Code / token）／`api.twitch.tv`（Helix）／
+  `eventsub.wss.twitch.tv`（EventSub WS）／`*.wss.twitch.tv`（`reconnect_url` は Twitch 由来）。二層強制で担保する:
+  ①**env ピン留め**（全 base URL を sidecar 内の定数に固定し env override 分岐を削除・Rust から宛先 env を渡さない）、
+  ②**fail-closed ホストガード**（`fetch` と ws クライアント生成を包み、allow-list 以外は throw）。
+- **通信面は Node sidecar と viewer webview に封じ込め**、**main ウィンドウ・その Rust command は no-internet を維持**する
+  （Rust は完全同期のまま・async/WS/HTTP crate を足さない）。sidecar 起動/停止は Rust の `app.shell().sidecar()` からのみで、
+  capability に `shell:*` はゼロ付与（frontend に shell 面を出さない）。
+- **telemetry / analytics / crash-report は全面禁止**（依存にも入れない）。**取得コメントは画面表示のみで端末外へ出さない**
+  （Rust の DB / ログにも保存しない）。OAuth トークン・device code・code verifier は**非ログ・非外部送信・in-memory のみ**（§9）。
+- **明示同意（ユーザーの接続操作）＋ security-review を必須**とする。`user_code` / `verification_uri` は**テキスト提示**し、
+  ブラウザ shell-out（`open`）はしない。`csp: null` は当面維持（TODO：将来 viewer CSP を効かせる際は `connect-src` に
+  `https://id.twitch.tv https://api.twitch.tv wss://eventsub.wss.twitch.tv wss://*.wss.twitch.tv ws://127.0.0.1:*` を許可する）。
 
 ### 2. frontendから自由なOS操作をさせない
 
@@ -103,6 +125,12 @@ MVPでは、自由なshell実行は使わない。
 
 - 登録済みの `executablePath` を、Rust側で検証したうえで起動する
 - 引数が必要な場合も、文字列結合ではなく配列として明示的に渡す
+
+**例外（032c-b・コメントビューアの Twitch コメント取得）**: コメント取得の Node sidecar（`bundle.externalBin`
+同梱の `comment-sidecar-<triple>`）を **Rust の `app.shell().sidecar()` からのみ**起動/停止することを例外的に許可する
+（詳細は「## コメントビューア（配信サービス連携）方針」）。`tauri-plugin-shell` を追加するが **capability に `shell:*` を
+ゼロ付与**し、sidecar spawn は IPC を通らない（frontend から shell 実行はできない）。自由な shell 実行・ユーザー入力を
+結合したコマンド実行は引き続き禁止で、frontend には raw なパス/ポート/コマンドを渡さない。
 
 ### 5. ファイル操作はアプリ管理領域に限定する
 
@@ -195,6 +223,18 @@ frontend側でバリデーションしていても、Rust側でも必ず検証�
 
 MVPではログはローカル保存のみとし、外部送信しない。
 
+**例外運用（032c-b・OAuth トークン）**: コメントビューアの Twitch 連携で扱う OAuth アクセス/リフレッシュトークンは、
+**ログに出さない・外部（インターネット/loopback WS）へ送信しない**。ログイン永続化のため、トークン一式
+（`TokenSetPlain` の JSON）は **Rust 側で OS キーチェーン**（macOS Keychain / Windows Credential Manager /
+Linux Secret Service）に保存する（sidecar は単一ファイル SEA のため native keyring addon を持てず、keychain 所有は
+Rust に寄せる）。トークンは **sidecar↔Rust の親子プロセス private pipe のみ**を通る＝起動時の復元は Rust→sidecar の
+**stdin**（`COMMENT_SIDECAR_RESTORE=<json>`）、更新（login/refresh）の再保存は sidecar→Rust の **stdout の専用行**
+（`COMMENT_SIDECAR_TOKEN=<json>` / `COMMENT_SIDECAR_TOKEN_CLEAR`）で、Rust はこれをキーチェーンへ反映し**その内容を
+ログに出さない**。**loopback WS（未認証）にはトークンを一切載せない**（載せるのは `user_code`/`verification_uri` 等の
+非機密のみ）。device code・code verifier は従来どおり **in-memory のみ・永続化しない**。sidecar の stdout は Rust への
+受け渡し専用（ポート行＋トークン行）で、人間向け診断ログは stderr に分離してトークン類を載せない。取得したコメント本文も
+ログ/DB に保存しない（詳細は「## コメントビューア（配信サービス連携）方針」）。
+
 ### 10. 依存関係を増やしすぎない
 
 新しいnpm package、Rust crate、Tauri pluginを追加する場合は、理由を説明する。
@@ -209,6 +249,18 @@ MVPではログはローカル保存のみとし、外部送信しない。
 - updater系
 - plugin経由で強い権限を要求するもの
 
+**追加した依存（032c-b・コメントビューアの Twitch コメント取得）**:
+- Rust/Tauri: `tauri-plugin-shell`（externalBin sidecar を **Rust から**起動/停止・パス解決・stdout ポート受け渡し。
+  **capability に `shell:*` はゼロ付与**）。`keyring`（v3・ログイン永続化: Twitch トークンを OS キーチェーンへ保存する。
+  sidecar が native addon を持てないため keychain 所有を Rust に寄せる最小・イディオム的手段で、**同期 API**＝Rust 完全同期
+  の要件に適合。各 OS の native backend のみ有効化）。他に汎用 Rust crate の新規追加は無し（singleton は `std::sync::Mutex`＋
+  `app.manage`。**async/WS/HTTP crate は足さない**）。`bundle.externalBin` に Node sidecar（`comment-sidecar-<triple>`）を同梱する。
+- Node（sidecar・アプリ本体には同梱しない別実行ファイル）: ランタイム＝`ws`/`tsyringe`/`reflect-metadata`、
+  ビルド時のみ＝`esbuild`/`postject`。**明示的に落とした依存**＝`@grpc/grpc-js`・`@grpc/proto-loader`（YouTube 除外）、
+  `@napi-rs/keyring`（in-memory 化・native addon 排除）、`open`（テキスト提示に変更）、`hono`/`@hono/node-server`/`zod`
+  （HTTP 制御を単一 WS に統合）、`dotenv`（env を注入しない）。telemetry/analytics 系は入れない。
+  詳細は「## コメントビューア（配信サービス連携）方針」。
+
 ## Tauri Permissions / Capabilities 方針
 
 Tauriのpermissions/capabilitiesは最小限にする。
@@ -220,6 +272,12 @@ Tauriのpermissions/capabilitiesは最小限にする。
 - 使っていないplugin権限をcapabilitiesに追加しない
 - frontendから呼べるcommandを必要最小限にする
 - 危険なscopeを広げない
+
+**032c-b（tauri-plugin-shell を追加するが shell 権限はゼロ）**: `tauri-plugin-shell` を依存に追加したが、
+sidecar の spawn は Rust の `app.shell().sidecar()` から行い IPC を通らないため、`capabilities/comment-viewer.json`
+にも `capabilities/default.json` にも **`shell:*` permission を一切追加しない**（`comment-viewer.json` は `core:default`
+のまま／`default.json`（main）不変）。viewer は読み取り専用の新 command `get_comment_stream_port` と既存パターンの
+`open_comment_viewer_window` のみを invoke する（アプリ定義 command は ACL 列挙不要）。`csp: null` 不変。
 
 ## CSP方針
 
@@ -288,6 +346,40 @@ YouTube（`https://www.youtube-nocookie.com/embed/<id>`）の **iframe 埋め込
 - **frontend からは raw なパス/URL/ポート/コマンドを受けず、限定コマンド（`rakuraku_*`）経由のみ**とする。
   外部通信は追加しない（capability は追加しない）。`csp: null` 不変。
 
+## コメントビューア（配信サービス連携）方針
+
+内蔵コメントビューア（別ウィンドウ label `comment-viewer`）の配信サービス連携（032c-b で Twitch を初解禁・
+YouTube は 032c-d 予定）の方針。**StreamDock で初めての能動的インターネット通信**であり、詳細な設計判断は
+`docs/tasks/032c-b-node-sidecar-twitch-comments.md` と親設計 `docs/tasks/032c-comment-viewer-voicevox-design.md` を正とする。
+
+**構成**: インターネット通信は **Node sidecar（`bundle.externalBin` 同梱の単一実行ファイル `comment-sidecar-<triple>`）**
+に封じ込め、viewer webview は **localhost の WebSocket（`ws://127.0.0.1:<実ポート>`）のみ**で sidecar と通信する。
+main ウィンドウと Rust command は **no-internet を維持**する（Rust は完全同期のまま・tokio/WS/HTTP/OAuth の async を持ち込まない・
+sidecar の stdout は別スレッドで同期的に読む）。sidecar は osareview の Twitch 経路を distill（vendor）したもので、
+YouTube/gRPC・keyring・`open`・hono/zod・dotenv を import グラフから排除している。
+
+- **①外部通信は allow-list 宛先・ユーザー明示接続時のみ（§1 の限定解禁）**。宛先＝`id.twitch.tv`（Device Code / token）／
+  `api.twitch.tv`（Helix）／`eventsub.wss.twitch.tv`（EventSub WS）／`*.wss.twitch.tv`（`reconnect_url` は Twitch 由来）。
+  **二層で fail-closed 強制**する: (a) **env ピン留め**＝全 base URL を sidecar 内の定数に固定し env override 分岐を削除
+  （Rust から宛先 env を渡さない）、(b) **ホストガード**＝global `fetch` と ws クライアント生成を包み、allow-list 以外
+  （host 不一致・非 HTTPS/WSS）は throw する。ユーザーが「Twitch に接続」を押した時のみログインを開始する。
+- **②通信面の封じ込め（最重要の安全論拠）**。インターネットに出るのは sidecar プロセスのみ。main は出ない。
+  検証は `lsof -i` で外部 ESTABLISHED ソケットが **sidecar PID 下のみ**に出て StreamDock 本体 PID に出ないことで確認する。
+- **③§4（shell）例外**。sidecar 起動/停止は Rust の `app.shell().sidecar()` からのみ。`tauri-plugin-shell` を追加するが
+  **capability に `shell:*` はゼロ付与**（IPC を通らない）。frontend に shell 面・raw パス/ポートを出さない。
+- **④§9（資格情報）**。OAuth アクセス/リフレッシュトークンは **非ログ・非外部送信**。ログイン永続化のため、
+  トークン一式は **Rust 側で OS キーチェーンに保存**し（sidecar は native keyring を持てないため keychain 所有は Rust）、
+  sidecar↔Rust の **親子 private pipe のみ**で受け渡す（復元＝stdin `COMMENT_SIDECAR_RESTORE=`、再保存＝stdout の専用行
+  `COMMENT_SIDECAR_TOKEN=`／破棄＝`COMMENT_SIDECAR_TOKEN_CLEAR`）。**loopback WS にはトークンを載せない**。device code /
+  code verifier は in-memory のみ・非永続。`user_code` / `verification_uri`（非機密）は viewer に**テキスト提示**し、ブラウザ
+  shell-out（`open`）はしない。**取得したコメントは画面表示のみ**で、端末外へ出さず Rust の DB / ログにも保存しない。
+- **⑤telemetry / analytics / crash-report は全面禁止**（依存にも入れない）。
+- **⑥Twitch アプリ Client ID の扱い**。Device Code（public client・secret 無し）で必須の**公開**アプリ識別子であり秘密情報ではない。
+  sidecar のビルド時に焼き込む（ランタイム env / dotenv は使わない）。ユーザーのログイン/連携はビューア画面からのランタイム操作で、
+  Client ID はエンドユーザーに露出しない。
+- **⑦明示同意（接続操作）＋ security-review を必須**とする。`csp: null` は当面維持（TODO：将来 viewer CSP を効かせる際は
+  `connect-src https://id.twitch.tv https://api.twitch.tv wss://eventsub.wss.twitch.tv wss://*.wss.twitch.tv ws://127.0.0.1:*` を許可）。
+
 ## レビュー必須条件
 
 以下を変更する場合は、必ずセキュリティレビューを行う。
@@ -307,6 +399,7 @@ YouTube（`https://www.youtube-nocookie.com/embed/<id>`）の **iframe 埋め込
 - ログイン項目（autostart / 永続 OS 連携）の登録・解除処理
 - らくらくツール設定の外部アプリ連携（**既導入アプリの自動起動**・公式ページ誘導）
 - 外部コンテンツの埋め込み（iframe・外部 script/style/image/media・外部ドメインの読込）
+- 内蔵コメントビューアの配信サービス連携（**インターネット通信**・**Node sidecar（externalBin）同梱**・OAuth トークン取扱）
 
 ### 011 ログイン項目（autostart, 019 時点）
 
@@ -423,6 +516,52 @@ YouTube（`https://www.youtube-nocookie.com/embed/<id>`）の **iframe 埋め込
 - **docs 整理**: §1 に 032c-c の loopback 50021 例外を（再）定義し、らくらく方針節（032c-a 撤去注記）の stale pointer
   「VOICEVOX 直接読み上げの通信方針は 032c-b で定義」を「032c-c で（再）定義した」に修正。新例外は 50021 のみを列挙する
   （棒読み 50001 は撤去済みとして含めない）。
+
+### 032c-b コメントビューア Twitch コメント取得＋Node sidecar 初解禁（StreamDock 初の能動的インターネット通信・security-review 実施済み）
+
+- StreamDock で初めての能動的インターネット通信を、**Twitch allow-list 宛先・ユーザー明示接続時のみ・Node sidecar 封じ込め**
+  で初解禁した。osareview の Twitch 経路を distill（vendor）した単一実行ファイル sidecar（`bundle.externalBin`）を **Rust の
+  `app.shell().sidecar()` から**起動/停止し、viewer は localhost WS で受信描画する（Device Code ログイン＋EventSub/Helix・TTS 無し）。
+- **security-review を実施し、判定＝問題なし**（修正必須なし）。確認事項:
+  - **allow-list 二層強制（fail-closed）**: ①env ピン留め（全 base URL を sidecar 内定数に固定・env override 分岐削除・
+    Rust から宛先 env を渡さない）②ホストガード（global `fetch` と ws クライアント生成を包み、`{id.twitch.tv, api.twitch.tv,
+    eventsub.wss.twitch.tv, *.wss.twitch.tv}` 以外・非 HTTPS/WSS を throw）。ユニットテストで `evil.com`・スキーム不一致・
+    サブドメイン偽装（`api.twitch.tv.evil.com`）を全拒否、reconnect `*.wss.twitch.tv` のみ許可を確認。全 fetch/ws 経路
+    （Device Code / Helix / EventSub の初回＋reconnect）がガードを通ることを grep で確認。
+  - **封じ込め**: インターネットは sidecar プロセスのみ・**main とその Rust command は no-internet 維持**。**Rust は完全同期**
+    （tokio/reqwest/websocket crate を足さない・sidecar stdout は別スレッドで `blocking_recv`）。`tauri-plugin-shell` は追加したが
+    **capability に `shell:*` ゼロ付与**（IPC 非経由・frontend に shell 面/raw パス/ポートを出さない）。`get_comment_stream_port` は
+    読み取り専用・引数なし。no-orphan の 3 段 kill（窓 Destroyed/CloseRequested・RunEvent::Exit 新設・sidecar ppid 監視 self-exit）。
+  - **資格情報（§9）**: OAuth アクセス/リフレッシュトークン・device code・code verifier は **in-memory・非ログ・非外部送信**
+    （keyring 永続化しない）。診断は stderr（stdout はポート受け渡し専用）。`user_code`/`verification_uri`（非機密）はテキスト提示、
+    `open` 廃止。**取得コメントは画面表示のみ**で端末外へ出さず DB/ログにも保存しない。
+  - **依存**: `@grpc/grpc-js`/`@grpc/proto-loader`（YouTube 除外）・`@napi-rs/keyring`（in-memory 化）・`open`・`hono`/
+    `@hono/node-server`/`zod`・`dotenv` を落とし、bundle・binary の exact 検査で不在を確認。telemetry/analytics 系なし。
+  - **capability / CSP 不変**: `capabilities/default.json`（main）・`comment-viewer.json`（`core:default`）・`tauri.conf.json` の
+    `csp: null` に差分なし（`bundle.externalBin` 追加のみ）。**binding drift ゼロ**（`check:bindings` に `comment-viewer/bindings` を追加）。
+  - **Twitch アプリ Client ID** は Device Code（public client・secret 無し）の**公開**識別子で、sidecar のビルド時に焼き込む
+    （ランタイム env/dotenv 不使用・エンドユーザーに露出しない）。ユーザーのログイン/連携はビューア画面からのランタイム操作。
+- **後回し（記録のみ）**: loopback WS は未認証で、同一 PC の任意プロセスが制御フレーム送信・`comments.append`/`user_code` 受信し得る
+  （token/device_code は WS に流さない・宛先 allow-list 限定のため実害は公開コメント＋非機密 `user_code` の露出に留まる。032c-c の
+  ループバックと同レベル）。将来 nonce ハンドシェイクを検討。**実機の封じ込め確認（`lsof` で外部ソケットが sidecar PID 下のみ・
+  main no-internet）と実 Twitch E2E は mac GUI（`tauri dev`）で実施**（`TWITCH_CLIENT_ID` 設定後）。
+- **docs 整理**: §1 に「例外（032c-b…）」を追加＋032c-c 例外の forward-ref（「Twitch/YouTube は 032c-b/-d で定義」）を
+  「Twitch は 032c-b で定義済み・YouTube は 032c-d」に更新。§4（sidecar 例外）・§9（トークン取扱）・§10/Capabilities（tauri-plugin-shell
+  権限ゼロ＋externalBin・落とした依存）・レビュー必須条件（本連携）を追記。新章「## コメントビューア（配信サービス連携）方針」を追加。
+  `docs/product.md`「MVP でやらないこと」に外部通信の例外を追記。
+- **追補（032c-b′・ログイン永続化＝§9 ポリシー変更・⚠ 再 security-review 必要）**: 上記レビュー後、実利用の UX 改善として
+  Twitch ログインを **OS キーチェーンに永続化**する変更を追加した（窓の再オープン／アプリ再起動でも再ログイン不要）。これは §9 の
+  「in-memory のみ・keyring 永続化しない」を改める**ポリシー変更**なので、**マージ前に security-review を再実施すること**。設計前提:
+  - **keychain 所有は Rust 側**（`keyring` crate v3・同期）。sidecar は pure-JS/単一 SEA のまま（native keyring を持ち込まない＝
+    封じ込めライフサイクルと SEA 構成・spike-2 禁止依存アサートは不変）。トークンは **sidecar↔Rust の親子 private pipe のみ**を通る
+    ＝復元＝Rust→sidecar stdin `COMMENT_SIDECAR_RESTORE=<json>`、更新の再保存＝sidecar→Rust stdout `COMMENT_SIDECAR_TOKEN=<json>`／
+    破棄＝`COMMENT_SIDECAR_TOKEN_CLEAR`。Rust はその内容を**ログに出さず keychain のみへ反映**。**loopback WS にはトークンを載せない**
+    （従来どおり・device code(秘密) も非送出）。
+  - 封じ込め・§1（ユーザー明示接続時のみ通信）・§4（shell 権限ゼロ）・CSP・capability・sidecar 窓ライフサイクルは**不変**
+    （token 復元はネットワークを張らず、取得は従来どおり「コメント取得開始」で明示開始）。改訂は §9/§10 のみ（keychain 保存＋private
+    pipe を許容・Rust `keyring` 追加）。viewer は `link.state` フレームで「接続済み/未接続」を表示（getLinkStatus・非機密の bool のみ）。
+  - **マージ前 GUI 検証（追加）**: 再ログイン不要（窓再オープン／アプリ再起動）・logout/失効で keychain クリア・`lsof`/`app_logs`/
+    stdout/stderr に token が出ない（token は private pipe のみ）・macOS Keychain に `stream-dock`/`twitch-comment-viewer` エントリ 1 件。
 
 ### 032c-a らくらくツール設定 032b（棒読み×VOICEVOX）撤去（ループバック通信 / 外部設定書換 / `ureq` / SAPI レジストリ読取の削除・security-review 実施済み）
 

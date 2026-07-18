@@ -1,0 +1,179 @@
+// 032c-b(stream-dock): Twitch sidecar を単一実行ファイル化するビルドスクリプト。
+// パイプライン: tsc(emitDecoratorMetadata) → esbuild(単一 CJS) → Node SEA(postject) → codesign 再署名。
+//   - decorator metadata は esbuild が出力しないため、必ず tsc で先に JS(+__metadata) を emit する。
+//   - `ws` の optional native addon（bufferutil / utf-8-validate）は external にして pure-JS で動かす。
+//   - 出力は apps/desktop/src-tauri/binaries/comment-sidecar-<target-triple>（gitignore・Tauri externalBin）。
+// 使い方:
+//   node scripts/build-sea.mjs               … フルビルド（SEA まで）
+//   node scripts/build-sea.mjs --bundle-only … tsc + esbuild まで（SEA/署名なし・疎通確認用）
+import { build } from "esbuild";
+import { execFileSync } from "node:child_process";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const BUNDLE_ONLY = process.argv.includes("--bundle-only");
+const scriptDir = dirname(fileURLToPath(import.meta.url));
+const pkgDir = resolve(scriptDir, "..");
+const distDir = join(pkgDir, "dist");
+const buildDir = join(pkgDir, "build");
+const bundleFile = join(buildDir, "sidecar.cjs");
+
+const run = (cmd, args, opts = {}) =>
+  execFileSync(cmd, args, { stdio: "inherit", cwd: pkgDir, ...opts });
+
+// Tauri externalBin が要求する <name>-<target-triple>。mac の host triple を rustc から取得。
+function hostTargetTriple() {
+  try {
+    const out = execFileSync("rustc", ["-Vv"], { encoding: "utf8" });
+    const line = out.split("\n").find((l) => l.startsWith("host:"));
+    if (line) return line.replace("host:", "").trim();
+  } catch {
+    /* rustc 不在 → arch から推定 */
+  }
+  if (process.platform === "darwin") {
+    return process.arch === "arm64"
+      ? "aarch64-apple-darwin"
+      : "x86_64-apple-darwin";
+  }
+  throw new Error(
+    `[build-sea] cannot determine target triple for ${process.platform}/${process.arch}`,
+  );
+}
+
+function step(label, fn) {
+  process.stderr.write(`\n=== ${label} ===\n`);
+  return fn();
+}
+
+// 1) tsc: decorator metadata 付きで ESM JS を dist へ emit。
+step("tsc (emit dist with decorator metadata)", () => {
+  rmSync(distDir, { recursive: true, force: true });
+  run("pnpm", ["exec", "tsc"]);
+});
+
+// 2) esbuild: dist の JS を単一 CJS へ束ねる。@comment-dock/* は dist 側の実体へ alias。
+await step("esbuild (bundle to single CJS)", async () => {
+  rmSync(buildDir, { recursive: true, force: true });
+  mkdirSync(buildDir, { recursive: true });
+  const d = (p) => join(distDir, p);
+  const result = await build({
+    entryPoints: [d("src/index.js")],
+    outfile: bundleFile,
+    bundle: true,
+    platform: "node",
+    format: "cjs",
+    target: "node22",
+    // ws の optional native addon は含めない（pure-JS で動作）。
+    external: ["bufferutil", "utf-8-validate"],
+    // 032c-b: Twitch アプリ Client ID（public・非機密）をビルド時に焼き込む（ランタイム env/dotenv を使わない）。
+    // 例: TWITCH_CLIENT_ID=xxxx pnpm --filter @stream-dock/comment-sidecar build:sea
+    define: {
+      __TWITCH_CLIENT_ID__: JSON.stringify(process.env.TWITCH_CLIENT_ID ?? ""),
+    },
+    alias: {
+      "@comment-dock/shared": d("vendor/shared/src/index.js"),
+      "@comment-dock/comment-delivery": d("vendor/comment-delivery/src/lib.js"),
+      "@comment-dock/auth": d("src/auth/index.js"),
+      "@comment-dock/comment-fetcher": d("src/comment-fetcher/index.js"),
+    },
+    logLevel: "info",
+    metafile: true,
+  });
+  writeFileSync(
+    join(buildDir, "meta.json"),
+    JSON.stringify(result.metafile, null, 2),
+  );
+});
+
+// 2.5) 封じ込め検証: バンドルに distill で落としたはずの依存が混入していないこと（スパイク2）。
+// ここに載せるのは「パッケージ名が十分ユニークで、substring 一致が誤検知しにくい」ものだけ。
+// `open` / `zod` は短すぎて（"socket.open" / 変数名等に一致）substring 検査に向かないため、
+// このアサートには**入れない**。それらの排除は「package.json の dependencies に無い＝解決不能」
+// （import グラフに現れない）で担保しており、src/vendor の import グレップでも別途確認している。
+// 追加/削除する依存が増えたら、ユニークな名前のものはこの配列へ足すこと。
+step("verify no forbidden deps in bundle (spike 2)", () => {
+  const src = readFileSync(bundleFile, "utf8");
+  const forbidden = [
+    "@grpc/grpc-js",
+    "@grpc/proto-loader",
+    "@napi-rs/keyring",
+    "@hono/node-server",
+    "googleapis", // YouTube 経路（032c-d まで持ち込まない）
+    "dotenv", // ランタイム env ロード（宛先 override 経路を持ち込まない）
+  ];
+  const hits = forbidden.filter((name) => src.includes(name));
+  if (hits.length > 0) {
+    throw new Error(`[build-sea] forbidden deps leaked into bundle: ${hits.join(", ")}`);
+  }
+  process.stderr.write("no grpc/keyring/hono/googleapis/dotenv in bundle ✓\n");
+});
+
+if (BUNDLE_ONLY) {
+  process.stderr.write(`\n[build-sea] bundle-only done: ${bundleFile}\n`);
+  process.exit(0);
+}
+
+// 3) Node SEA blob を生成。
+const seaConfigPath = join(buildDir, "sea-config.json");
+const blobPath = join(buildDir, "sidecar.blob");
+step("node --experimental-sea-config (create blob)", () => {
+  writeFileSync(
+    seaConfigPath,
+    JSON.stringify(
+      {
+        main: bundleFile,
+        output: blobPath,
+        disableExperimentalSEAWarning: true,
+        useSnapshot: false,
+        useCodeCache: false,
+      },
+      null,
+      2,
+    ),
+  );
+  run("node", ["--experimental-sea-config", seaConfigPath]);
+});
+
+// 4) node バイナリを複製し、5) 署名を外し、6) postject で blob 注入、7) 再署名。
+const triple = hostTargetTriple();
+const outDir = resolve(pkgDir, "..", "desktop", "src-tauri", "binaries");
+const outBin = join(outDir, `comment-sidecar-${triple}`);
+step(`postject inject → ${outBin}`, () => {
+  mkdirSync(outDir, { recursive: true });
+  const nodeBin = process.execPath;
+  copyFileSync(nodeBin, outBin);
+  const isMac = process.platform === "darwin";
+  if (isMac) {
+    // postject が署名を無効化するため、いったん署名を外す。
+    run("codesign", ["--remove-signature", outBin]);
+  }
+  const postjectArgs = [
+    "postject",
+    outBin,
+    "NODE_SEA_BLOB",
+    blobPath,
+    "--sentinel-fuse",
+    "NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2",
+  ];
+  if (isMac) {
+    postjectArgs.push("--macho-segment-name", "NODE_SEA");
+  }
+  run("pnpm", ["exec", ...postjectArgs]);
+  if (isMac) {
+    // ad-hoc 再署名（hardened runtime 内で Gatekeeper に殺されないように）。
+    run("codesign", ["--sign", "-", outBin]);
+    run("codesign", ["--verify", "--verbose", outBin]);
+  } else {
+    execFileSync("chmod", ["+x", outBin]);
+  }
+});
+
+process.stderr.write(`\n[build-sea] done: ${outBin}\n`);

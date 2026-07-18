@@ -26,12 +26,25 @@ tauri-plugin-dialog = "2"
 # reconcile（フラグ付きプリセットが 1 つ以上 ⇔ 有効）で enable/disable し、OS 起動時は `--autostart`
 # 付きで起動して手動起動と区別する。
 tauri-plugin-autostart = "2"
+# 032c-b コメントビューア Twitch 連携: Twitch コメント取得 Node sidecar（externalBin
+# `comment-sidecar-<triple>`）を **Rust から** 起動/停止・パス解決（`-<triple>`）・stdout でのポート
+# 受け渡しに使う。sidecar spawn は `app.shell().sidecar()`（Rust 専用）からのみで、frontend に shell 面を
+# 出さない＝capability に `shell:*` はゼロ付与（`app.shell().sidecar()` は IPC を通らない）。
+# 自由な shell 実行（§4）は解禁しない。詳細は docs/security.md「コメントビューア（配信サービス連携）方針」。
+tauri-plugin-shell = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["clock"] }
 ts-rs = "10"
+# 032c-b コメントビューア Twitch 連携（ログイン永続化）: Twitch OAuth の refresh/access token を
+# **OS のキーチェーン**（macOS Keychain / Windows Credential Manager / Linux Secret Service）へ保存し、
+# アプリ/窓の再起動後もログインを維持する。sidecar は単一ファイル SEA のため native addon（keyring）を
+# 持ち込めず、キーチェーン所有は Rust 側に寄せる（token は親子プロセス間の private pipe で受け渡す）。
+# 単一小シークレット保存の最小・イディオム的手段で、**同期 API**（Rust 完全同期の要件に適合・tokio 不要）。
+# 各 OS のネイティブ backend のみ有効化（*-native / sync-secret-service = 同期版）。docs/security.md §9/§10。
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 
 # 018/028 アイコン抽出の共通 PNG エンコード経路（`tools/icon.rs::encode_png_base64`）で使用する。
 # 018 では macOS 限定ブロックにあったが、028 で Windows 抽出も同じ `encode_png_base64`（≤128px PNG →

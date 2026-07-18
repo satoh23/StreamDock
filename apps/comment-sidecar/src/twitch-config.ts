@@ -1,0 +1,56 @@
+// 032c-b コミット2: allow-list 二層強制の①「env ピン留め」。
+// osareview の Env*ConfigProvider（process.env で base URL を override 可能）を使わず、Twitch の base URL を
+// **定数**に固定した Provider に置き換える（override 分岐を削除）。これにより Rust から env で宛先を差し替える
+// 経路を無くす（docs/security.md の allow-list 限定）。
+//
+// TWITCH_CLIENT_ID は Device Code（public client・secret 無し）に必要な**公開**アプリ識別子。秘密情報ではない。
+// esbuild の define で **ビルド時に** `__TWITCH_CLIENT_ID__` へ焼き込む（`TWITCH_CLIENT_ID=xxxx pnpm ... build:sea`）。
+// ランタイム env / dotenv は使わない（未設定ならログイン時に「未設定」エラーになる）。
+import type {
+  TwitchConfigProvider,
+} from "../vendor/comment-fetcher/src/infrastructure/twitch/config/api-config.js";
+import type {
+  TwitchOAuthConfig,
+  TwitchOAuthConfigProvider,
+} from "../vendor/auth/src/infrastructure/twitch/config/oauth-config.js";
+
+declare const __TWITCH_CLIENT_ID__: string | undefined;
+
+/** ビルド時に焼き込まれる Twitch アプリ Client ID（未設定なら空文字）。 */
+export const TWITCH_CLIENT_ID: string =
+  typeof __TWITCH_CLIENT_ID__ === "string" ? __TWITCH_CLIENT_ID__ : "";
+
+// allow-list の宛先（定数・env override 不可）。
+export const TWITCH_HELIX_API_BASE_URL = "https://api.twitch.tv/helix";
+export const TWITCH_EVENTSUB_WS_URL = "wss://eventsub.wss.twitch.tv/ws";
+export const TWITCH_DEVICE_AUTHORIZATION_ENDPOINT =
+  "https://id.twitch.tv/oauth2/device";
+export const TWITCH_TOKEN_ENDPOINT = "https://id.twitch.tv/oauth2/token";
+export const TWITCH_SCOPES: readonly string[] = ["user:read:chat"];
+
+/** Helix/EventSub の base URL を定数で返す（env 参照なし）。 */
+export class PinnedTwitchConfigProvider implements TwitchConfigProvider {
+  getHelixApiBaseUrl(): string {
+    return TWITCH_HELIX_API_BASE_URL;
+  }
+  getEventSubWebSocketUrl(): string {
+    return TWITCH_EVENTSUB_WS_URL;
+  }
+  getClientId(): string {
+    return TWITCH_CLIENT_ID;
+  }
+}
+
+/** Device Code OAuth の endpoint/scope を定数で返す（env 参照なし）。 */
+export class PinnedTwitchOAuthConfigProvider
+  implements TwitchOAuthConfigProvider
+{
+  getOAuthConfig(): TwitchOAuthConfig {
+    return {
+      clientId: TWITCH_CLIENT_ID,
+      deviceAuthorizationEndpoint: TWITCH_DEVICE_AUTHORIZATION_ENDPOINT,
+      tokenEndpoint: TWITCH_TOKEN_ENDPOINT,
+      scopes: TWITCH_SCOPES,
+    };
+  }
+}

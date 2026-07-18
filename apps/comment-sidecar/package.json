@@ -1,0 +1,25 @@
+{
+  "name": "@stream-dock/comment-sidecar",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "032c-b: Twitch コメント取得 Node sidecar（osareview から distill・単一実行ファイル化して Tauri externalBin として同梱）",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build:tsc": "tsc",
+    "build:bundle": "node scripts/build-sea.mjs --bundle-only",
+    "build:sea": "node scripts/build-sea.mjs"
+  },
+  "dependencies": {
+    "reflect-metadata": "^0.2.2",
+    "tsyringe": "^4.10.0",
+    "ws": "^8.20.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.3",
+    "@types/ws": "^8.18.1",
+    "esbuild": "^0.24.2",
+    "postject": "^1.0.0-alpha.6",
+    "typescript": "~5.8.3"
+  }
+}

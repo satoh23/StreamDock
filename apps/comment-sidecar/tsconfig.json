@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "types": ["node"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "declaration": false,
+    "sourceMap": false,
+    "outDir": "dist",
+    "rootDir": ".",
+    "baseUrl": ".",
+    "paths": {
+      "@comment-dock/shared": ["./vendor/shared/src/index.ts"],
+      "@comment-dock/comment-delivery": ["./vendor/comment-delivery/src/lib.ts"],
+      "@comment-dock/auth": ["./src/auth/index.ts"],
+      "@comment-dock/comment-fetcher": ["./src/comment-fetcher/index.ts"]
+    }
+  },
+  "include": ["src", "vendor"]
+}

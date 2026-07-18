@@ -60,6 +60,22 @@ export function createTtsQueue(): TtsQueue {
     if (text === undefined) return;
     playing = true;
     try {
+      // 032c-b: 実データ配線でコメントはユーザー操作を伴わず届く。AudioContext が suspended のまま
+      // playWav に入ると src.start() の onended が発火せず Promise が解決されない＝playing が true 固定で
+      // キュー全体が無音ハングする。再生前に resume を試み、それでも running でなければこの 1 件はスキップ
+      // する（永久ハングを塞ぐ）。通常フローでは「コメント取得開始」ボタン（ユーザー操作）で先に resume
+      // 済みのため、このスキップは初回操作前の例外ケースの保険。
+      if (ctx.state !== "running") {
+        try {
+          await ctx.resume();
+        } catch {
+          /* resume 不可（gesture 未取得など）はスキップ側で処理する */
+        }
+      }
+      if (ctx.state !== "running") {
+        console.debug("TTS: AudioContext が running でないため、この 1 件の読み上げをスキップしました");
+        return;
+      }
       // `synthesize` は AbortSignal 対応だが、ここでは渡さない（in-flight の合成を dispose で中断しない）。
       // 理由: 宛先は loopback 50021 のみで 1 件の合成は軽量、dispose 後は `disposed` ガードで再生を抑止する
       // ため実害が無い（残るのは高々 1 件の完了済み合成の破棄）。

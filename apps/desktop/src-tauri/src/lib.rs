@@ -1,4 +1,6 @@
 mod app_logs;
+mod comment_sidecar;
+mod comment_viewer;
 mod error;
 mod preset_items;
 mod presets;
@@ -11,8 +13,11 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use rusqlite::Connection;
-use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{
+    AppHandle, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder, WindowEvent,
+};
 
+use comment_sidecar::CommentSidecarState;
 use error::{AppError, AppResult};
 use process::registry::{ManagedProcess, ProcessRegistry};
 use rakuraku::model::LaunchResult;
@@ -32,6 +37,10 @@ fn host_os() -> &'static str {
 /// `capabilities/comment-viewer.json`（最小権限・`main` 不変）に閉じる。
 #[tauri::command]
 fn open_comment_viewer_window(app: AppHandle) -> AppResult<()> {
+    // 032c-b: コメントビューアを開くとき、Twitch コメント取得 sidecar を起動する（多重起動しない）。
+    // インターネットは sidecar 内に封じ込め、main ウィンドウは no-internet を維持する。
+    comment_sidecar::ensure_started(&app)?;
+
     // 既に開いていれば多重生成せず前面化して再利用する。
     if let Some(window) = app.get_webview_window("comment-viewer") {
         // show() の戻り値は意図的に破棄する（`let _`）: 直後の set_focus() が失敗時にエラーを返すため
@@ -44,13 +53,31 @@ fn open_comment_viewer_window(app: AppHandle) -> AppResult<()> {
         return Ok(());
     }
     // 同一 Vite バンドルを読み込み、frontend 側は `getCurrentWindow().label` で描画を分岐する。
-    WebviewWindowBuilder::new(&app, "comment-viewer", WebviewUrl::App("index.html".into()))
-        .title("コメントビューア")
-        .inner_size(420.0, 640.0)
-        .min_inner_size(320.0, 400.0)
-        .build()
-        .map_err(|_| AppError::launch_failed("コメントビューアを開けませんでした"))?;
+    let window =
+        WebviewWindowBuilder::new(&app, "comment-viewer", WebviewUrl::App("index.html".into()))
+            .title("コメントビューア")
+            .inner_size(420.0, 640.0)
+            .min_inner_size(320.0, 400.0)
+            .build()
+            .map_err(|_| AppError::launch_failed("コメントビューアを開けませんでした"))?;
+
+    // 032c-b: no-orphan 3 段 kill の①。viewer 窓が閉じたら sidecar を停止する（idempotent）。
+    let app_for_event = app.clone();
+    window.on_window_event(move |event| match event {
+        WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed => {
+            comment_sidecar::shutdown(&app_for_event);
+        }
+        _ => {}
+    });
     Ok(())
+}
+
+/// 032c-b: viewer が接続する Twitch コメント WS の実ポートを返す読み取り専用コマンド（§3・単一目的）。
+/// sidecar が bind した実ポート（既定 17331・使用中なら空きポート）を返す。未確定なら `None`。
+/// frontend からは raw なパス/ポート/コマンドを受け取らない（ポートは Rust が sidecar の stdout から受領）。
+#[tauri::command]
+fn get_comment_stream_port(app: AppHandle) -> Option<u16> {
+    comment_sidecar::port(&app)
 }
 
 /// 032c-c: コメントビューアの VOICEVOX 読み上げ用に、**ツール管理に登録済みの VOICEVOX** を
@@ -104,6 +131,9 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--autostart"]),
         ))
+        // 032c-b: Twitch コメント取得 sidecar を Rust から起動/停止するためのプラグイン。
+        // capability に `shell:*` を付与しないため frontend から shell 実行はできない（Rust 専用）。
+        .plugin(tauri_plugin_shell::init())
         .setup(|app| {
             // アプリデータディレクトリに SQLite を開き、State として共有する
             let data_dir = app.path().app_data_dir()?;
@@ -121,6 +151,8 @@ pub fn run() {
             // stream-dock がこのセッション中に起動したプロセスを保持する runtime process registry。
             // 009 の停止は raw PID ではなくここに保持した Child ハンドル経由で行う。
             app.manage(Mutex::new(HashMap::<String, ManagedProcess>::new()));
+            // 032c-b: Twitch コメント取得 sidecar の singleton state（None = 未起動）。
+            app.manage::<CommentSidecarState>(Mutex::new(None));
 
             // 019: 起動時フック。`--autostart`（OS がログイン時に起動）かどうかで挙動を分ける。
             // 任意のローカルプロセスが本バイナリを `--autostart` 付きで起動して無人一括起動を誘発しうるが、
@@ -162,6 +194,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             host_os,
             open_comment_viewer_window,
+            get_comment_stream_port,
             launch_voicevox_engine,
             tools::commands::create_tool,
             tools::commands::list_tools,
@@ -194,8 +227,16 @@ pub fn run() {
             rakuraku::commands::rakuraku_launch_component,
             rakuraku::commands::rakuraku_open_official_page,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        // 032c-b: RunEvent::Exit フックを追加するため .run() を .build()+.run(closure) に分割した
+        //（従来は lib.rs に exit フックが無かった）。no-orphan 3 段 kill の②。
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            if let RunEvent::Exit = event {
+                // アプリ終了時に Twitch コメント取得 sidecar を確実に停止する（孤児を残さない）。
+                comment_sidecar::shutdown(app_handle);
+            }
+        });
 }
 
 /// 019: `--autostart` 起動時に、auto_launch_on_boot フラグ付きプリセットのツールを

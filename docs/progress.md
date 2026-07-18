@@ -3279,3 +3279,113 @@ sidecar・VOICEVOX API・Web Audio・OAuth は 032c-b/-c/-d）、コメントは
 - docs: `docs/security.md`、`docs/progress.md`
 - 不変（確認済み）: `Cargo.toml`／`package.json`（新依存ゼロ）、`capabilities/{comment-viewer,default}.json`、
   `tauri.conf.json`（`csp: null`）、`bindings/*`（032c-c 由来の drift ゼロ）
+
+### 032c-b Node sidecar 基盤 ＋ Twitch コメント取得 ＋ viewer WS 接続 ＋ インターネット通信 初解禁（StreamDock 初の能動的インターネット通信・mac 検証可・3 コミット）
+
+032c 方針転換の高リスク中核。内蔵コメントビューア（032c-a で枠実装済み）に **実 Twitch コメント**を流して描画するまでを、
+**Twitch allow-list 宛先・ユーザー明示接続時のみ・Node sidecar 封じ込め**の条件付きで実装し、StreamDock で初めての能動的
+インターネット通信を解禁した。TTS は繋がない（032c-c 実装済み・表示まで）／YouTube は含めない（032c-d）。依存前提は 032c-a のみ。
+
+- **sidecar 実行方式（tsc→esbuild→SEA）**: osareview の Twitch 経路のみを **vendor（コピー）**した新パッケージ
+  `apps/comment-sidecar` を新設。`createTwitchPipeline`/DI 登録を Twitch 専用に distill、auth entry を fork して in-memory
+  `TokenStore`＋no-op BrowserLauncher に差替（YouTube/gRPC・keyring・`open`・hono/zod・dotenv を import グラフから排除）。
+  ビルドは `tsc`（`emitDecoratorMetadata`）→`esbuild`（単一 CJS・`ws` の `bufferutil`/`utf-8-validate` を external）→**Node SEA**
+  （`postject` 注入→`codesign` 再署名）。出力 `apps/desktop/src-tauri/binaries/comment-sidecar-<triple>`（gitignore・build:sea で生成）。
+- **ライフサイクル/ポート管理（Rust は同期のまま）**: `tauri-plugin-shell` を追加（Rust 専用・**capability に `shell:*` ゼロ**）。
+  singleton `Mutex<Option<CommentSidecar>>` を `app.manage`、`open_comment_viewer_window` 内で `app.shell().sidecar()` spawn。
+  実ポートは sidecar が `COMMENT_SIDECAR_PORT=<port>` を stdout に出し、Rust が別スレッド `blocking_recv` で受領（async crate 不追加）。
+  viewer は読み取り専用 command `get_comment_stream_port` で実ポートを取得してから `ws://127.0.0.1:<port>` に接続。
+  17331 が使用中なら sidecar が空きポートへフォールバック。
+- **3 段 no-orphan kill＋RunEvent::Exit 追加**: ①viewer 窓の `WindowEvent::Destroyed`/`CloseRequested`（`on_window_event`）
+  ②`RunEvent::Exit`（**従来 lib.rs に無く新設**＝`.run(ctx)` を `.build(ctx).run(|_,e|…)` に分割）③sidecar 側 ppid 監視
+  （`process.kill(parentPid,0)` の生存確認で親消滅時 self-exit・mac に PDEATHSIG が無い保険）。
+- **単一双方向 WS トランスポート**: `WebSocketCommentOutputPort`（osareview）を再利用＋inbound 制御ハンドラを新設。
+  viewer→sidecar＝`start-login`/`start-session`(channel)/`stop-session`、sidecar→viewer＝`device_code`/`session.state`/`comments.append`。
+  api-gateway の hono/zod/17332 は使わない（YouTube/gRPC を top-level import で引きずるため）。
+- **Device Code UI（open 廃止・spike 3 解消）**: auth fork に `loginTwitchWithDeviceCode` を新設し、polling 前に
+  `user_code`/`verification_uri` を WS 提示（osareview が user_code を破棄していたギャップを解消）。viewer は Device Code パネル
+  （Twitch 接続・チャンネル入力・取得開始/停止・コード/URL テキスト提示・状態表示・両テーマ）でユーザー明示操作時のみ発火。
+- **Rust 正規化 CommentViewDto＋ts-rs binding**: `src-tauri/src/comment_viewer/model.rs` を ts-rs 化→`comment-viewer/bindings/`
+  生成、`features/comment-viewer/types.ts` を binding 再エクスポートへ置換（frontend 専用モック撤去）。sidecar が osareview→正規化
+  して送るので **wire＝型＝描画が一致**。`check:bindings` に `comment-viewer/bindings` を追加。
+- **allow-list 二層強制（fail-closed）**: ①env ピン留め＝`Pinned*ConfigProvider` で全 base URL を定数化（override 分岐撤去・
+  Client ID は esbuild define でビルド時焼き込み・ランタイム env/dotenv 不使用）②ホストガード＝global `fetch` と ws 生成を包み
+  `{id.twitch.tv, api.twitch.tv, eventsub.wss.twitch.tv, *.wss.twitch.tv}`・非 HTTPS/WSS 以外を throw。**ユニットテスト
+  （`scripts/test-host-guard.mjs`）で全 10 ケース PASS**（`evil.com`・スキーム・サブドメイン偽装 `api.twitch.tv.evil.com` 拒否、
+  reconnect wildcard 許可）。全 fetch/ws 経路（初回＋reconnect）がガードを通ることを grep 確認。
+- **追加/落とした依存の理由**: 追加＝Rust `tauri-plugin-shell`（sidecar を Rust から起動/停止・権限ゼロ）、Node ビルド時
+  `esbuild`/`postject`、Node ランタイム `ws`/`tsyringe`/`reflect-metadata`。落とした＝`@grpc/grpc-js`+`proto-loader`（YouTube 除外）・
+  `@napi-rs/keyring`（in-memory 化・native addon 排除）・`open`（テキスト提示）・`hono`+`@hono/node-server`+`zod`（単一 WS に統合）・
+  `dotenv`（env 注入しない）。汎用 Rust crate・async/WS/HTTP crate は追加なし。
+- **封じ込め検証結果（mac ヘッドレス分）**: SEA バイナリ実行で **decorator metadata 生存（実 tsyringe DI で Twitch グラフ解決）**・
+  ポート受け渡し・pure-JS `ws` 疎通・codesign 通過を確認（smoke）。**親 kill -9 で ppid self-exit（orphan テスト PASS）**。
+  grpc/keyring/hono が bundle・binary に**不在（exact 検査）**。**実機の `lsof` 封じ込め（外部ソケットが sidecar PID 下のみ・
+  main no-internet）と実 Twitch E2E は mac GUI（`TWITCH_CLIENT_ID` 設定→`tauri dev`）で実施予定**。
+- **security.md/product.md 改訂＋security-review**: security.md に新章「## コメントビューア（配信サービス連携）方針」を追加、
+  §1 に「例外（032c-b…）」＋032c-c forward-ref 更新、§4（sidecar 例外）・§9（トークン取扱）・§10/Capabilities（`tauri-plugin-shell`
+  権限ゼロ＋externalBin・落とした依存）・レビュー必須条件（本連携）・032c-b security-review 記録を追記。product.md に外部通信例外。
+  **security-review スキルを適用し判定＝問題なし**（修正必須なし。後回し＝loopback WS 未認証のみ・token/device_code は WS 非送出で実害小）。
+- **実機スパイク 8 件の結果**: ①decorator metadata が tsc→esbuild→SEA 生存＝**PASS**（SEA 内で `container.resolve` 動作）
+  ②YouTube/gRPC transitive 排除＝**PASS**（bundle/binary exact grep で不在）③device-code user_code 表出ギャップ＝**解消**
+  （sidecar-local orchestration＋`open` 廃止・コミット2）④externalBin パス解決＋target-triple＝命名 `comment-sidecar-<host-triple>`
+  一致を確認（`app.shell().sidecar()` の dev/bundle 実解決は GUI で最終確認）⑤macOS 孤児化＝**PASS**（親 kill -9 で self-exit。
+  当初 `process.ppid` キャッシュで検知漏れ→`process.kill(ppid,0)` 生存確認に修正）⑥ポート受け渡しタイミング＝**PASS**（viewer は
+  実ポート確定までポーリング）⑦SEA 署名＝**PASS**（postject 後 `codesign -s -`→`--verify` 通過）⑧`ws` optional native addon＝**PASS**
+  （external 化で pure-JS 動作）。
+- **3 コミット構成**: ①sidecar 基盤（インターネット無し・ダミー comments_append で疎通実証／spike 1/2/4/5/6/7/8）②Twitch Device Code
+  ＋EventSub/Helix＋正規化 CommentViewDto＋binding＋allow-list 二層強制（インターネット解禁／spike 3 解消）③docs 改訂＋security-review。
+- **検証（mac で完結）**: `pnpm --filter @stream-dock/comment-sidecar typecheck`／`pnpm --filter ./apps/desktop typecheck`／`lint`／
+  `cargo check`／`build:sea`／host-guard ユニット／smoke／orphan すべて pass。`gen:bindings` は comment-viewer/bindings 新規のみで
+  既存 drift ゼロ（`check:bindings` PASS）。**既存 drift（別件）**: `rakuraku/bindings/ScanResult.ts` は 032c-c 同様 revert し混入させていない。
+
+#### 変更ファイル
+- 新規: `apps/comment-sidecar/`（package.json・tsconfig・`scripts/{build-sea,smoke,test-host-guard}.mjs`・vendor 済み Twitch ソース・
+  `src/{index,host-guard,wire,twitch-config}.ts`・`src/auth/*`・`src/comment-fetcher/*`）、
+  `apps/desktop/src-tauri/src/comment_sidecar/mod.rs`、`apps/desktop/src-tauri/src/comment_viewer/{mod,model}.rs`、
+  `apps/desktop/src/features/comment-viewer/{commentStream.ts,bindings/*}`
+- Rust: `apps/desktop/src-tauri/src/lib.rs`（`get_comment_stream_port`・spawn＋`on_window_event`・`RunEvent::Exit`・mod 宣言）、
+  `Cargo.toml`（`tauri-plugin-shell`）
+- 設定: `apps/desktop/src-tauri/tauri.conf.json`（`bundle.externalBin`・`csp: null` 不変）、`.gitignore`（sidecar バイナリ）、
+  `apps/desktop/package.json`（`check:bindings` 拡張）
+- frontend: `apps/desktop/src/features/comment-viewer/types.ts`（binding 再エクスポートへ置換）、
+  `apps/desktop/src/screens/comment-viewer/CommentViewerApp.tsx`（＋`.module.css`・Device Code UI／WS 接続）
+- docs: `docs/security.md`（新章＋§1/§4/§9/§10/レビュー必須条件/032c-b 記録）、`docs/product.md`、`docs/progress.md`
+- 不変（確認済み）: `capabilities/{comment-viewer,default}.json`（`shell:*` ゼロ）、`tauri.conf.json` の `csp: null`、
+  Rust の同期性（async crate 不追加）
+
+### 032c-b′ コメントビューア 実利用UX修正（再ログイン解消＝ログイン永続化 ／ チャンネル保持 ／ 実コメント読み上げ・要 再 security-review）
+
+実 Twitch 接続テストで判明した 3 つの UX/機能問題を修正した。
+
+- **issue 3（実コメントを読み上げない・モックは読む）**: `onComments` が `mergeComments(...).added` を捨てて `enqueueForSpeech`
+  を呼んでいなかった（032c-b は意図的に「表示まで」）。実データを TTS に配線。実データはユーザー操作を伴わず届くため、
+  「コメント取得開始」ボタン（ユーザー操作）で AudioContext を resume し、`ttsQueue.pump` に suspended ハングガード
+  （running でなければ resume 試行→不可ならその 1 件スキップ）を追加して無音ハングを塞いだ。
+- **issue 2（チャンネル名が空欄化）**: `channel` を `localStorage`（`channelStorage.ts`・theme.ts と同方式）で保持。窓の
+  再オープン・アプリ再起動でも復元。
+- **issue 1（毎回ログインし直し）＝§9 ポリシー変更**: Twitch OAuth トークンを **OS キーチェーンに永続化**（Rust 所有・
+  `keyring` crate v3・同期）。sidecar は pure-JS/単一 SEA のまま（native keyring を持ち込まない＝**封じ込めライフサイクル・
+  SEA 構成は不変**）。トークンは **sidecar↔Rust の親子 private pipe のみ**を通る＝復元＝Rust→sidecar stdin
+  `COMMENT_SIDECAR_RESTORE=`、更新の再保存＝sidecar→Rust stdout `COMMENT_SIDECAR_TOKEN=`／破棄＝`..._TOKEN_CLEAR`。
+  Rust はログに出さず keychain のみへ反映。**loopback WS にはトークンを載せない**（従来どおり）。viewer は `link.state`
+  フレーム（非機密 bool）で「接続済み/未接続」を表示し、復元済みなら再ログイン不要で取得開始できる。窓の kill-on-close は
+  据え置き（再 spawn 時に Rust が keychain から復元注入）。
+- **ヘッドレス検証（PASS）**: sidecar typecheck / `build:bundle`（禁止依存アサート＝keyring は sidecar bundle に無い・PASS）/
+  host-guard 単体 / smoke（stdin 復元行・stdout token 行を足しても port 受領・ws 接続が壊れない）/ desktop typecheck・lint /
+  `cargo check`（keyring v3＋security-framework 解決）。
+- **⚠ マージ前**: §9 を変更したため **security-review を再実施**。GUI 検証: 再ログイン不要（窓再オープン／アプリ再起動）・
+  logout/失効で keychain クリア・`lsof`/`app_logs`/stdout/stderr に token 非露出（token は private pipe のみ）・Keychain に
+  `stream-dock`/`twitch-comment-viewer` エントリ 1 件・実 Twitch コメントの読み上げ・チャンネル復元。
+
+#### 変更ファイル（032c-b′）
+- 新規: `apps/desktop/src-tauri/src/comment_sidecar/token_vault.rs`（keychain load/save/clear）、
+  `apps/comment-sidecar/src/auth/persisting-token-store.ts`（save/clear→通知）、
+  `apps/desktop/src/features/comment-viewer/channelStorage.ts`（localStorage）
+- Rust: `Cargo.toml`（`keyring` v3）、`comment_sidecar/mod.rs`（mod 宣言・stdin 復元書込・stdout token/clear→keychain）
+- sidecar: `src/index.ts`（onTokenPersist→stdout・stdin 復元リーダ・`sendLinkState`・connection/auth-lost 配線）、
+  `src/auth/index.ts`（PersistingTokenStore 配線・`restoreTwitchToken`・`onTokenPersist`）、
+  `vendor/gateway/.../websocket-comment.output-port.ts`（`setConnectionHandler`）
+- frontend: `commentStream.ts`（`link.state` ハンドラ）、`CommentViewerApp.tsx`（`linked` state・onComments→TTS・
+  取得開始で resume・接続済み UI）、`ttsQueue.ts`（suspended ハングガード）
+- docs: `docs/security.md`（§9/§10 改訂・032c-b′ 追補記録）、`docs/product.md`、`docs/progress.md`
+- 不変: 封じ込めライフサイクル・§1 明示接続・§4 `shell:*` ゼロ・`csp: null`・capability・sidecar 単一 SEA 構成

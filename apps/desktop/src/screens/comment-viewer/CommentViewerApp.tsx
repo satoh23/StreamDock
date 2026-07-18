@@ -1,8 +1,14 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { CommentViewDto } from "../../features/comment-viewer/types";
 import { createTtsQueue, type TtsQueue } from "../../features/comment-viewer/ttsQueue";
 import { checkEngineRunning } from "../../features/comment-viewer/voicevox";
 import { launchVoicevoxEngine } from "../../features/comment-viewer/voicevoxApi";
+import {
+  connectCommentStream,
+  type CommentStreamHandle,
+  type DeviceCodePrompt,
+} from "../../features/comment-viewer/commentStream";
+import { loadChannel, saveChannel } from "../../features/comment-viewer/channelStorage";
 import styles from "./CommentViewerApp.module.css";
 
 /**
@@ -76,6 +82,14 @@ const SOURCE_CLASS: Record<CommentViewDto["source"], string> = {
   youtube: styles.srcYoutube,
 };
 
+/** 取得セッション状態の日本語ラベル（sidecar の session.state に対応）。 */
+const SESSION_STATE_LABEL: Record<string, string> = {
+  idle: "待機",
+  connecting: "接続中",
+  connected: "取得中",
+  failed: "失敗",
+};
+
 /**
  * 既存リストに incoming を追加する。id 重複は排除し、上限を超えたら古い方から捨てる。
  * 実データ配線（032c-b/-d）でも同じ「append ＋ 重複排除 ＋ クランプ」を使う想定。
@@ -133,6 +147,22 @@ export function CommentViewerApp() {
   // 失敗で即終了するが registry に死んだ handle が溜まるため未然に抑止する）。未登録/失敗時はセットせず再試行可。
   const [launchRequested, setLaunchRequested] = useState(false);
 
+  // 032c-b: Twitch 連携（Device Code ログイン・取得セッション）の状態。
+  const streamRef = useRef<CommentStreamHandle | null>(null);
+  const [streamConnected, setStreamConnected] = useState(false);
+  const [deviceCode, setDeviceCode] = useState<DeviceCodePrompt | null>(null);
+  const [sessionState, setSessionState] = useState<string>("idle");
+  const [sessionReason, setSessionReason] = useState<string | null>(null);
+  // 032c-b: Twitch ログイン済みか（sidecar が keychain 復元・ログイン成功・失効で link.state を送る）。
+  // これで再オープン時に「毎回ログインし直し」を避け、接続済みなら取得開始だけで済ませる。
+  const [linked, setLinked] = useState(false);
+  // 032c-b: チャンネル名は localStorage から復元し、変更のたびに保存する（窓を閉じても空欄化しない）。
+  const [channel, setChannel] = useState(() => loadChannel());
+
+  useEffect(() => {
+    saveChannel(channel);
+  }, [channel]);
+
   useEffect(() => {
     const queue = createTtsQueue();
     ttsRef.current = queue;
@@ -141,6 +171,74 @@ export function CommentViewerApp() {
       ttsRef.current = null;
     };
   }, []);
+
+  // 新規追加コメントを読み上げキューへ積む単一注入点（addMock も実データハンドラ onComments もここを通す）。
+  // ttsRef のみ参照する安定コールバック（useCallback []）にして、マウント専用の接続 effect の依存にしても
+  // 再接続を起こさない＆ TDZ を避ける（onComments より前に定義する必要があるため上へ移動した）。
+  // resume は「毎回呼んでよい（running なら no-op）」が、WKWebView の autoplay 制限で **suspended→running の
+  // 遷移はユーザー操作起点でしか効かない**。実データ（非操作起点）で初回が鳴るよう、取得開始ボタン
+  // （handleStartSession）で resume 済みにし、万一 suspended のままでも ttsQueue.pump 側のガードで
+  // 無音ハングを防ぐ（該当 1 件はスキップ）。
+  const enqueueForSpeech = useCallback((added: CommentViewDto[]) => {
+    const tts = ttsRef.current;
+    if (!tts || added.length === 0) return;
+    void tts.resume();
+    added.forEach((c) => tts.enqueue(c));
+  }, []);
+
+  // 032c-b: Twitch コメント取得 sidecar の単一双方向 WS に接続する。受信コメントは表示へ流し
+  // （単一注入点 mergeComments）、新規追加分（added）を TTS キューへ enqueue して読み上げる。
+  // enqueue は comment.id 冪等（ttsQueue の seenIds）なので、StrictMode で updater が二重実行されても
+  // 重複読み上げにはならない（updater 内で enqueue しても安全）。バースト受信でも React が prev を直列化
+  // するため取りこぼさない。読み上げには AudioContext の resume が要るが、それは「コメント取得開始」
+  // ボタン（ユーザー操作）で行う（handleStartSession）。
+  // Device Code の user_code / verification_uri と session.state を受け取り UI に反映する。
+  useEffect(() => {
+    const handle = connectCommentStream({
+      onComments: (incoming) =>
+        setComments((prev) => {
+          const { next, added } = mergeComments(prev, incoming);
+          enqueueForSpeech(added);
+          return next;
+        }),
+      onDeviceCode: (prompt) => setDeviceCode(prompt),
+      onSessionState: (state, reason) => {
+        setSessionState(state);
+        setSessionReason(reason ?? null);
+        // 接続済み（connected）になったら Device Code 提示は不要なので消す。
+        if (state === "connected") setDeviceCode(null);
+      },
+      onConnectionChange: (connected) => setStreamConnected(connected),
+      onLinkState: (isLinked) => {
+        setLinked(isLinked);
+        // ログイン済み（復元含む）なら Device Code 提示は不要なので消す。
+        if (isLinked) setDeviceCode(null);
+      },
+    });
+    streamRef.current = handle;
+    return () => {
+      handle.disconnect();
+      streamRef.current = null;
+    };
+  }, [enqueueForSpeech]);
+
+  // ユーザー明示操作でのみ発火する（§1 の「ユーザーが明示接続した時のみ」）。
+  const handleTwitchConnect = () => {
+    setSessionReason(null);
+    streamRef.current?.startLogin();
+  };
+  const handleStartSession = () => {
+    const ch = channel.trim();
+    if (!ch) return;
+    setSessionReason(null);
+    // 032c-b: 取得開始はユーザー操作なので、ここで AudioContext を resume しておく。以降 sidecar から
+    // （非操作起点で）届く実コメントの読み上げが suspended で無音化しないようにする単一の resume 契機。
+    void ttsRef.current?.resume();
+    streamRef.current?.startSession(ch);
+  };
+  const handleStopSession = () => {
+    streamRef.current?.stopSession();
+  };
 
   // ENGINE 稼働を GET /version で定期確認する（未起動→起動誘導、起動後は自動でバナーが消える）。
   // fetch にタイムアウト/signal は付けていない: 宛先は loopback で応答は即時、`checkEngineRunning` が
@@ -174,18 +272,6 @@ export function CommentViewerApp() {
     const id = window.setTimeout(() => setLaunchRequested(false), LAUNCH_GRACE_MS);
     return () => window.clearTimeout(id);
   }, [launchRequested]);
-
-  // 新規追加コメントを読み上げキューへ積む単一注入点（addMock も将来の実データハンドラもここを通す）。
-  const enqueueForSpeech = (added: CommentViewDto[]) => {
-    const tts = ttsRef.current;
-    if (!tts || added.length === 0) return;
-    // 毎回 resume してよい（AudioContext が running なら no-op・suspended なら復帰）。現状の呼び出し元は
-    // すべてユーザー操作起点（ボタン）なので WKWebView の autoplay 制限に掛からない。
-    // 再検討条件: 実データ配線（032c-b/-d）で**ユーザー操作を伴わない**自動 enqueue が入ると resume が
-    // suspended のままになり得るため、初回ユーザー操作時に 1 度だけ resume する形へ寄せる。
-    void tts.resume();
-    added.forEach((c) => tts.enqueue(c));
-  };
 
   // 登録済み VOICEVOX を管理付き spawn で起動する（未登録なら登録誘導文言を表示）。起動後は
   // /version ポーリングがバナーを自動で消す。
@@ -261,8 +347,66 @@ export function CommentViewerApp() {
           読み上げテスト
         </button>
         <span className={styles.note}>
-          モック表示（実データ取得は今後のタスク・読み上げは VOICEVOX 稼働時）
+          モック（手動確認用）。Twitch 実コメントは下の「Twitch に接続」から取得します。
         </span>
+      </div>
+
+      {/* 032c-b: Twitch 連携（Device Code ログイン → チャンネル指定で取得開始）。ユーザー明示操作でのみ発火。 */}
+      <div className={styles.twitchPanel}>
+        <div className={styles.twitchRow}>
+          <button
+            type="button"
+            className={styles.btn}
+            onClick={handleTwitchConnect}
+            disabled={!streamConnected || linked}
+          >
+            {linked ? "接続済み" : "Twitch に接続"}
+          </button>
+          <input
+            type="text"
+            className={styles.input}
+            placeholder="チャンネル名（例: shroud）"
+            value={channel}
+            onChange={(e) => setChannel(e.target.value)}
+          />
+          <button
+            type="button"
+            className={styles.btn}
+            onClick={handleStartSession}
+            disabled={!streamConnected || !linked || channel.trim() === ""}
+          >
+            コメント取得開始
+          </button>
+          <button
+            type="button"
+            className={styles.btnGhost}
+            onClick={handleStopSession}
+            disabled={!streamConnected}
+          >
+            停止
+          </button>
+          {/* 032c-b: sidecar 未接続（streamConnected=false）のときは session.state（既定 idle=「待機」）を
+              出すと「準備完了なのに無反応」に見えてしまう（今回の無反応バグの温床）。接続確立までは
+              接続状態を優先表示し、上のボタン群の disabled 表示（:disabled のグレーアウト）と合わせて
+              「まだ操作できない」ことを可視化する。接続確立後は従来どおり取得セッション状態を表示する。 */}
+          <span className={styles.status}>
+            状態:{" "}
+            {!streamConnected
+              ? "コメント取得プロセスに接続中…"
+              : `${SESSION_STATE_LABEL[sessionState] ?? sessionState}${
+                  sessionReason ? `（${sessionReason}）` : ""
+                }`}
+          </span>
+        </div>
+        {deviceCode && (
+          <div className={styles.deviceCode} role="status">
+            <span className={styles.deviceCodeLabel}>
+              下記 URL をブラウザで開き、次のコードを入力して連携を許可してください:
+            </span>
+            <span className={styles.codeValue}>{deviceCode.userCode}</span>
+            <span className={styles.verifyUri}>{deviceCode.verificationUri}</span>
+          </div>
+        )}
       </div>
 
       {engineRunning === false && (
