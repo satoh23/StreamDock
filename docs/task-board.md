@@ -45,19 +45,28 @@
   - 032c-d′/″/‴（セッション増分・**実装済**・再 security-review／code-review(high) 済＝問題なし・実機 GUI E2E は要実配信）:
     ′ YouTube ログインを OS キーチェーン永続化（§9 ポリシー変更・Twitch と同型）／″ 取得継続性修正（retryOnStreamEnd 分離・
     終了監視 videos.list 化）＋sidecar stderr 透過（観測性）／‴ クォータ削減（検出 liveBroadcasts.list=1u・監視 silence-gated 化）
+- 033 コメントビューア UX 刷新（第1弾・親設計 [docs/tasks/033-comment-viewer-ux-revamp.md](tasks/033-comment-viewer-ux-revamp.md)／設定ビュー分離・VOICEVOX 制御・OBS オーバーレイ・ツール管理統一）
+  - 直近コミットで 033a〜f 実装反映済み（本番でギリギリ運用可）。UX 追い込みは第2弾 034 へ継続
+  - 033a コメビュ本体の軽量化・レイアウト整理（タイトル削除・総数右上・モック撤去・窓サイズ拡大）
+  - 033b 設定ビュー新設＋接続UI移設＋接続状態インジケータ（円アイコン＋テキスト）
+  - 033c VOICEVOX 読み上げ ON/OFF トグル＋クレジット条件表示＋自動起動/自動連携
+  - 033d VOICEVOX 話者選択＋「ずんだもん読み上げ」→「VOICEVOX読み上げ」改名（loopback に `/speakers` 追加）
+  - 033e ツール管理でコメビュを再生/停止・起動済み表示（他ツールと統一・窓/プロセス ライフサイクル）
+  - 033f OBS 用透過オーバーレイ窓（ワンクリック・新規窓/透過/新規 capability）
 
 ## Next
 
-- 033 コメントビューア UX 刷新（親設計・[docs/tasks/033-comment-viewer-ux-revamp.md](tasks/033-comment-viewer-ux-revamp.md)／設定ビュー分離・VOICEVOX 制御・OBS オーバーレイ・ツール管理統一）
-  - 実装順: 033a → 033b → 033c → 033d、並行で 033e、最後に 033f
-  - 033a コメビュ本体の軽量化・レイアウト整理（タイトル削除・総数右上・モック撤去・窓サイズ拡大／security-review 不要）
-  - 033b 設定ビュー新設＋接続UI移設＋接続状態インジケータ（円アイコン＋テキスト／軽レビュー）
-  - 033c VOICEVOX 読み上げ ON/OFF トグル＋クレジット条件表示＋自動起動/自動連携（security-review 不要）
-  - 033d VOICEVOX 話者選択＋「ずんだもん読み上げ」→「VOICEVOX読み上げ」改名（loopback に `/speakers` 追加・**security-review 必須**）
-  - 033e ツール管理でコメビュを再生/停止・起動済み表示（他ツールと統一・窓/プロセス ライフサイクル・**security-review 必須**）
-  - 033f OBS 用透過オーバーレイ窓（ワンクリック・新規窓/透過/新規 capability・**security-review 必須**）
+- 034 コメントビューア/OBSオーバーレイ UX 改善（第2弾・親設計 [docs/tasks/034-comment-viewer-obs-ux-round2.md](tasks/034-comment-viewer-obs-ux-round2.md)／最新コメント追従・VOICEVOX 試聴・オーバーレイ状態表示/設定移設/意匠刷新）
+  - 実装順: 034a → 034b、並行で 034c、034d → 034e
+  - 034a コメビュ本体 最新コメント自動追従＋「最新コメント N件 ↓」ジャンプボタン（security-review 不要）
+  - 034b OBSオーバーレイ 常時追従＋サイドバー(スクロールバー)抑止（security-review 不要）
+  - 034c VOICEVOX 話者サンプルボイス試聴（選択で即再生・再生中は中断切替／既存 loopback 合成の再利用・security-review 不要）
+  - 034d OBSオーバーレイ表示 ON/OFF を設定ビューへ移設＋開閉状態インジケータ（読み取りコマンド追加・**軽レビュー**）
+  - 034e OBSオーバーレイ デザイン刷新（透過・本文＋アカウント名のみ・文字拡大・サイト名表示トグル／表示専用・**軽レビュー**）
 
 ## Todo
+
+- （将来）OBSオーバーレイ 複数デザイン＋プレビュー選択 UI（画像/GIF で意匠を選べる／034e の単一デザイン刷新の次段）
 
 ## MVP リリース前最後
 
