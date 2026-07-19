@@ -3670,3 +3670,57 @@ Twitch 経路のロジック・VOICEVOX/TTS・§1 封じ込めフレームは不
   永続化・「新規 command/capability/依存ゼロ・`csp:null` 不変」は据え置き。
 - 変更ファイル追補: 新規 `screens/comment-viewer/ToggleSwitch.tsx`／変更 `CommentViewerApp.tsx`（本体にトグル＋クレジット・
   `CREDIT_NOTICE` 復帰）・`SettingsView.tsx`（読み上げ関連を撤去し自動連携のみ）・`CommentViewerApp.module.css`（`.voicevoxBar` 追加）。
+
+## 2026-07-19 (033d VOICEVOX 話者選択＋「ずんだもん読み上げ」→「VOICEVOX読み上げ」改名)
+
+親 [033](tasks/033-comment-viewer-ux-revamp.md) の問題 6 に対応。読み上げ話者が `ZUNDAMON_NORMAL_SPEAKER_ID = 3` 固定だったのを、
+設定ビューで **VOICEVOX 話者・スタイルを選べる**ようにした（話者→スタイルの 2 段 select）。話者固定でなくなるため、ユーザー向け
+クレジット表記を**選択話者名に追従**させ（「VOICEVOX:<話者名>」）、表記を「VOICEVOX読み上げ」に統一。話者一覧取得のため
+loopback allow-list に **`GET /speakers` を追加**（宛先 `127.0.0.1:50021` 不変・一覧のみ取得・端末外送信なし・新規依存ゼロ）。
+
+### 実装内容
+
+- **(1) `fetchSpeakers()`（`features/comment-viewer/voicevox.ts`）**: `GET ${VOICEVOX_BASE}/speakers` で `VoicevoxSpeaker[]`
+  （`{ name, styles: [{ id, name }] }`）を取得。**GET・body 無し**でコメント本文/著者名/認証情報を送らず、応答は **name＋styles[{id,name}]
+  のみ**に写像（丸ごと持ち回らない）。非 200/例外/非配列はすべて空配列（既存 `checkEngineRunning` の「例外を握って落とさない」作法）。
+- **(2) 永続化（新規 `features/comment-viewer/speakerStorage.ts`）**: 選択 style id 1 個を localStorage 永続化。キー＝
+  `stream-dock.comment-viewer.voicevox-speaker-id`、**未選択/不正/例外は既定 `DEFAULT_SPEAKER_ID = 3`（ずんだもんノーマル）**。
+  `channelStorage.ts` と同方式（名前空間キー・直 read/write・握りつぶし・非機密・外部送信なし）。style id は話者横断で一意なので
+  これだけで話者＋スタイルを復元できる。
+- **(3) ttsQueue が選択話者を使う（`ttsQueue.ts`）**: `createTtsQueue({ getSpeakerId })` を追加し、`ttsQueue.ts:84` の固定
+  `ZUNDAMON_NORMAL_SPEAKER_ID` を **合成直前に getter で読む選択値**へ差し替え（`getSpeakerId?.() ?? ZUNDAMON_NORMAL_SPEAKER_ID`）。
+  グローバル直参照を避け、話者変更でキューを作り直さない（033c の ref 同期と同じ狙い）。既定フォールバック 3 は維持。
+- **(4) 話者選択 UI／state 配線（`CommentViewerApp.tsx` / `SettingsView.tsx`）**: `CommentViewerApp` に `selectedSpeakerId`
+  （`loadSpeakerId()` 初期化・`saveSpeakerId` 永続化 effect・`selectedSpeakerIdRef` 同期）と `speakers` state を追加。
+  **ENGINE 稼働検知（`engineRunning === true`）で `fetchSpeakers()`** を 1 回叩いて一覧を埋める（`cancelled` ガード）。
+  取得一覧に現在の選択 id が無ければ**先頭スタイルへ寄せる reconcile**（別バージョン ENGINE で消えた話者の未知 id 合成失敗を回避）。
+  `SettingsView` の VOICEVOX セクションに**話者 select →スタイル select の 2 段**を追加（一覧空＝ENGINE 未起動時は現在の選択 id を
+  保持したまま案内文）。`createTtsQueue` に `getSpeakerId: () => selectedSpeakerIdRef.current` を渡す。
+- **(5) 改名（CREDIT_NOTICE 一般化）**: `CREDIT_NOTICE` 定数を `creditNotice(speakerName)` 関数へ。選択 style id を含む話者名を
+  一覧から解決して「VOICEVOX:<話者名>」を促し、未取得時は「VOICEVOX:<話者名>」プレースホルダの汎用文にフォールバック（URL・規約準拠据え置き）。
+  トグルラベルは 033c で既に「VOICEVOX読み上げ」。**らくらくツール（別機能）の「ずんだもん」表記は対象外**。内部定数
+  `ZUNDAMON_NORMAL_SPEAKER_ID`（既定 3 を正しく表す）は維持。
+- **(6) `docs/security.md` §1 例外(032c-c) 追記**: 許可メソッド列挙に **`GET /speakers`（話者・スタイル一覧の取得）** を追加し、
+  「一覧取得のみ・本文/著者/認証を送らず端末外送信なし」を明記。宛先ループバック不変・`csp: null` 不変。
+
+### 検証
+
+- `pnpm --filter ./apps/desktop typecheck` / `lint` いずれも **0 error / 0 warning**（`git diff --stat`＝6 変更＋1 新規 / +223）。
+- **security-review 通過（指摘なし）**: ① 宛先 `127.0.0.1:50021` ループバック不変（`VOICEVOX_BASE` 不変・新規ホストなし）② `/speakers` は
+  GET・一覧取得のみで本文/著者/認証を送らず、返る一覧は state 保持のみ＝端末外送信なし・ログ出力なし ③ Rust に HTTP/音声ライブラリ・
+  新規依存・新規 command/capability を足していない（`git status` で `.rs`/`Cargo.*`/`package.json`/`pnpm-lock.yaml`/`capabilities*`/
+  `*.conf.json` 変更ゼロ確認）④ `docs/security.md` の許可メソッド列挙と実装の実叩き先（`/version`・`/speakers`・`/audio_query`・`/synthesis`）が一致。
+- **残課題（実機・本人環境・要ローカル VOICEVOX ENGINE 起動）**: `pnpm --filter ./apps/desktop tauri dev` で 設定→話者・スタイル選択→
+  選択話者で読み上げ／表記が「VOICEVOX読み上げ」統一／未選択時は既定 3（ずんだもんノーマル）／選択が再起動後も保持、を目視。
+
+### 変更ファイル（033d）
+
+- frontend（新規）: `features/comment-viewer/speakerStorage.ts`（style id の load/save・既定 3）
+- frontend（変更）: `features/comment-viewer/voicevox.ts`（`VoicevoxSpeaker`/`VoicevoxStyle` 型＋`fetchSpeakers()`）、
+  `features/comment-viewer/ttsQueue.ts`（`TtsQueueOptions.getSpeakerId`・合成の固定 id を getter へ）、
+  `screens/comment-viewer/CommentViewerApp.tsx`（選択 state/ref・永続化/同期 effect・話者一覧 fetch＋reconcile・queue へ getter・
+  `creditNotice()` 一般化・SettingsView へ props）、`screens/comment-viewer/SettingsView.tsx`（話者→スタイルの 2 段 select）、
+  `screens/comment-viewer/CommentViewerApp.module.css`（`.voicevoxRow`/`.speakerField`/`.select` 追加）
+- docs: `docs/security.md`（§1 例外(032c-c) の許可メソッドに `GET /speakers` 追記）、`docs/progress.md`（本記録）
+- 不変（確認済み）: `lib.rs`/Rust command 表面・`capabilities/*`・`tauri.conf.json`（`csp: null`）・依存（新規 crate/npm ゼロ）・
+  `voicevoxApi.ts`（`launch_voicevox_engine` ラッパ）

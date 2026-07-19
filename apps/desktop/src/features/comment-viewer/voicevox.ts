@@ -38,6 +38,54 @@ export async function checkEngineRunning(signal?: AbortSignal): Promise<boolean>
   }
 }
 
+/** VOICEVOX の 1 スタイル（話者内の声色バリエーション）。`id` が合成時の speaker 引数になる。 */
+export interface VoicevoxStyle {
+  id: number;
+  name: string;
+}
+/** VOICEVOX の 1 話者（`name` ＝ずんだもん等・複数スタイルを持つ）。 */
+export interface VoicevoxSpeaker {
+  name: string;
+  styles: VoicevoxStyle[];
+}
+
+/**
+ * 033d: `GET /speakers` で話者＋スタイル一覧を取得する（話者選択 UI の選択肢に使う）。
+ *
+ * 宛先は既存 `VOICEVOX_BASE`（`127.0.0.1:50021`・ループバック）不変。**GET・body 無し**で、
+ * コメント本文・著者名・認証情報は一切送らない。抽出するのは **話者名 ＋ styles[{id,name}] のみ**で、
+ * 返る一覧は呼び出し側で選択肢に使うだけ（端末外へは送信しない・docs/security.md §1 例外 032c-c）。
+ *
+ * ENGINE 未起動・到達不能・非 200・不正応答はすべて空配列を返す（`checkEngineRunning` と同じく
+ * 「例外を握って落とさない」作法）。呼び出し側は空一覧＝起動誘導（033c のバナー/トグル）で扱う。
+ */
+export async function fetchSpeakers(signal?: AbortSignal): Promise<VoicevoxSpeaker[]> {
+  try {
+    const res = await fetch(`${VOICEVOX_BASE}/speakers`, { method: "GET", signal });
+    if (!res.ok) return [];
+    const data: unknown = await res.json();
+    if (!Array.isArray(data)) return [];
+    const mapped = data.map((sp): VoicevoxSpeaker => {
+      const rawStyles = (sp as { styles?: unknown })?.styles;
+      const styles = Array.isArray(rawStyles)
+        ? rawStyles
+            .map((st): VoicevoxStyle => ({
+              id: Number((st as { id?: unknown })?.id),
+              name: String((st as { name?: unknown })?.name ?? ""),
+            }))
+            .filter((st) => Number.isInteger(st.id))
+        : [];
+      return { name: String((sp as { name?: unknown })?.name ?? ""), styles };
+    });
+    // 033d: スタイルが 0 個の話者は選択肢・合成の単位（style id）を持たず選べない。病的応答（id が
+    // 非整数で全 filter 除去された等）由来の styles 空話者を落とし、reconcile の list[0].styles[0].id
+    // 参照や話者/スタイル select の controlled-value 不整合を根から防ぐ。
+    return mapped.filter((sp) => sp.styles.length > 0);
+  } catch {
+    return [];
+  }
+}
+
 /**
  * `text` を VOICEVOX で合成し、WAV を `ArrayBuffer` で返す。
  * (1) `POST /audio_query?text=&speaker=`（text/speaker はクエリパラメータ・body 空）→ query JSON
@@ -49,6 +97,8 @@ export async function synthesize(
   signal?: AbortSignal,
 ): Promise<ArrayBuffer> {
   // (1) audio_query: text/speaker はクエリパラメータで渡す（body は空）。
+  // speaker は常に検証済みの数値（loadSpeakerId の整数検証／fetchSpeakers の Number.isInteger filter／
+  // Number(select.value)）のため encodeURIComponent は不要。speaker が非数値を取り得る経路が増えたら要エンコード。
   const queryUrl = `${VOICEVOX_BASE}/audio_query?text=${encodeURIComponent(text)}&speaker=${speaker}`;
   const queryRes = await fetch(queryUrl, { method: "POST", signal });
   if (!queryRes.ok) {

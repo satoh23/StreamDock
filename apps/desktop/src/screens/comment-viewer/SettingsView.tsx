@@ -1,4 +1,5 @@
 import type { DeviceCodePrompt } from "../../features/comment-viewer/commentStream";
+import type { VoicevoxSpeaker } from "../../features/comment-viewer/voicevox";
 import { ToggleSwitch } from "./ToggleSwitch";
 import styles from "./CommentViewerApp.module.css";
 
@@ -43,6 +44,10 @@ interface SettingsViewProps {
   // 033c: VOICEVOX 自動連携 ON/OFF（読み上げトグルは本体コメントビューへ・state は CommentViewerApp が保持）。
   voicevoxAutolink: boolean;
   onVoicevoxAutolinkChange: (value: boolean) => void;
+  // 033d: 読み上げ話者の選択（話者・スタイル一覧と選択中 style id。state は CommentViewerApp が保持）。
+  speakers: VoicevoxSpeaker[];
+  selectedSpeakerId: number;
+  onSpeakerIdChange: (id: number) => void;
 }
 
 export function SettingsView({
@@ -65,7 +70,15 @@ export function SettingsView({
   onYouTubeStopSession,
   voicevoxAutolink,
   onVoicevoxAutolinkChange,
+  speakers,
+  selectedSpeakerId,
+  onSpeakerIdChange,
 }: SettingsViewProps) {
+  // 033d: 選択中 style id を含む話者を導出（話者 select の現在値）。一覧が空/未一致なら先頭話者にフォールバック。
+  const selectedSpeaker =
+    speakers.find((sp) => sp.styles.some((st) => st.id === selectedSpeakerId)) ??
+    speakers[0];
+
   return (
     <div className={styles.settingsView}>
       <div className={styles.settingsHeader}>
@@ -196,6 +209,49 @@ export function SettingsView({
         <span className={styles.note}>
           自動連携が ON だと、コメントビューアを開いたときに VOICEVOX を自動起動します（要: ツール管理に VOICEVOX を登録）。
         </span>
+
+        {/* 033d: 読み上げ話者・スタイルの選択（話者→スタイルの 2 段）。ENGINE 稼働後に一覧（GET /speakers）が
+            埋まると選べるようになる。未取得（空）のときは現在の選択（style id）を保持したまま案内文を出す。 */}
+        {speakers.length === 0 ? (
+          <span className={styles.note}>
+            読み上げ話者は VOICEVOX ENGINE を起動すると選べます（現在の選択: id={selectedSpeakerId}）。
+          </span>
+        ) : (
+          <div className={styles.voicevoxRow}>
+            <label className={styles.speakerField}>
+              話者
+              <select
+                className={styles.select}
+                value={speakers.indexOf(selectedSpeaker)}
+                onChange={(e) => {
+                  const sp = speakers[Number(e.target.value)];
+                  const firstId = sp?.styles[0]?.id;
+                  if (firstId !== undefined) onSpeakerIdChange(firstId);
+                }}
+              >
+                {speakers.map((sp, i) => (
+                  <option key={i} value={i}>
+                    {sp.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className={styles.speakerField}>
+              スタイル
+              <select
+                className={styles.select}
+                value={selectedSpeakerId}
+                onChange={(e) => onSpeakerIdChange(Number(e.target.value))}
+              >
+                {selectedSpeaker?.styles.map((st) => (
+                  <option key={st.id} value={st.id}>
+                    {st.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+        )}
       </div>
     </div>
   );

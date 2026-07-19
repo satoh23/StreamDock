@@ -43,11 +43,22 @@ export interface TtsQueue {
   dispose: () => void;
 }
 
+/** 033d: TTS キュー生成時のオプション。 */
+export interface TtsQueueOptions {
+  /**
+   * 合成に使う話者（VOICEVOX style id）を返す getter。合成の直前に呼び、**その時点の選択値**を読む。
+   * キューはマウント時に 1 回だけ生成されるため、静的値ではなく getter で受け取ることで、話者変更のたびに
+   * キューを作り直さずに済む（グローバル直参照も避ける）。省略・戻り値なしのときは既定 3（ずんだもんノーマル）。
+   */
+  getSpeakerId?: () => number;
+}
+
 /**
  * FIFO 直列の TTS キューを生成する。
  * 再生中は `pump` を起動せず、`onended`（= `playWav` の解決）で次の 1 件へ進む。
  */
-export function createTtsQueue(): TtsQueue {
+export function createTtsQueue(options: TtsQueueOptions = {}): TtsQueue {
+  const getSpeakerId = options.getSpeakerId;
   const queue: string[] = [];
   const seenIds = new Set<string>();
   let playing = false;
@@ -81,7 +92,9 @@ export function createTtsQueue(): TtsQueue {
       // ため実害が無い（残るのは高々 1 件の完了済み合成の破棄）。
       // 再検討条件: 実データ配線（032c-b/-d）で高頻度・長文合成が常態化し、アンマウント連打時の無駄合成が
       // 目立つようになったら、queue に AbortController を持たせ dispose で abort する。
-      const wav = await synthesize(text, ZUNDAMON_NORMAL_SPEAKER_ID);
+      // 033d: 選択話者（style id）で合成する。未選択/getter 未指定は既定 3（ずんだもんノーマル）を維持。
+      const speaker = getSpeakerId?.() ?? ZUNDAMON_NORMAL_SPEAKER_ID;
+      const wav = await synthesize(text, speaker);
       if (!disposed) await playWav(ctx, wav);
     } catch (e) {
       // 合成/再生に失敗しても直列を止めず次へ継続する（ENGINE 停止などは誘導 UI 側で扱う）。

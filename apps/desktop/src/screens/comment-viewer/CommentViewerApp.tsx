@@ -1,20 +1,34 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { CommentViewDto } from "../../features/comment-viewer/types";
-import { createTtsQueue, type TtsQueue } from "../../features/comment-viewer/ttsQueue";
-import { checkEngineRunning } from "../../features/comment-viewer/voicevox";
+import {
+  createTtsQueue,
+  type TtsQueue,
+} from "../../features/comment-viewer/ttsQueue";
+import {
+  checkEngineRunning,
+  fetchSpeakers,
+  type VoicevoxSpeaker,
+} from "../../features/comment-viewer/voicevox";
 import { launchVoicevoxEngine } from "../../features/comment-viewer/voicevoxApi";
 import {
   connectCommentStream,
   type CommentStreamHandle,
   type DeviceCodePrompt,
 } from "../../features/comment-viewer/commentStream";
-import { loadChannel, saveChannel } from "../../features/comment-viewer/channelStorage";
+import {
+  loadChannel,
+  saveChannel,
+} from "../../features/comment-viewer/channelStorage";
 import {
   loadTtsEnabled,
   saveTtsEnabled,
   loadVoicevoxAutolink,
   saveVoicevoxAutolink,
 } from "../../features/comment-viewer/ttsPrefs";
+import {
+  loadSpeakerId,
+  saveSpeakerId,
+} from "../../features/comment-viewer/speakerStorage";
 import { CommentList } from "./CommentList";
 import { SettingsView } from "./SettingsView";
 import { StatusIndicator } from "./StatusIndicator";
@@ -45,11 +59,26 @@ const ENGINE_POLL_INTERVAL_MS = 5000;
 const LAUNCH_GRACE_MS = 30000;
 
 /**
- * 033c: ずんだもんクレジット表記（VOICEVOX 利用規約に基づく必須表記）。読み上げトグルが ON のときだけ、本体
- * コメントビューのトグル直下に表示する（従来は常時表示していた）。表示のみで外部通信は発生しない（URL は静的テキスト）。
+ * 033c/033d: VOICEVOX クレジット表記の案内。読み上げトグルが ON のときだけ、本体コメントビューのトグル直下に
+ * 表示する。表示のみで外部通信は発生しない（URL は静的テキスト）。
+ *
+ * 033d: VOICEVOX の規約は「ソフトウェア規約」＋「音声ライブラリ（話者）ごとの個別規約」の 2 層で、クレジットの
+ * 細則・許可範囲・禁止用途は**話者ごとに異なる**（公式 Q&A: キャラとソフトで権利者が別・各話者の規約を確認、
+ * https://voicevox.hiroshiba.jp/qa/ ）。そのためアプリ側では条件を断定せず、①VOICEVOX クレジットが必要という
+ * 共通事項 ②書き方の一般例「VOICEVOX:<話者名>」 ③公式規約と選択話者の規約を各自確認する誘導、に留める
+ * （アプリが個別条件を保証しない＝責任回避）。話者名が未解決（ENGINE 未起動で一覧未取得）のときは一般例の
+ * プレースホルダにフォールバックする。文面/URL は静的テキストで外部通信は発生しない。
  */
-const CREDIT_NOTICE =
-  "ずんだもんの音声を使う配信・動画では「VOICEVOX:ずんだもん」のクレジット表記が必須です（VOICEVOX 利用規約 https://voicevox.hiroshiba.jp/term/ に準拠）。";
+function creditNotice(speakerName: string | null): string {
+  const target = speakerName
+    ? `VOICEVOX:${speakerName}`
+    : "VOICEVOX:（話者名）";
+  return (
+    `VOICEVOX の音声を配信・動画で使う場合、VOICEVOX を利用したことがわかるクレジット表記が必要です` +
+    `（一般的な書き方は「${target}」）。ただし、表記の条件や利用できる範囲は話者（音声ライブラリ）ごとに異なります。` +
+    `ご利用前に必ず VOICEVOX 利用規約 https://voicevox.hiroshiba.jp/term/ と、選択中の話者の利用規約をご確認ください。`
+  );
+}
 
 /**
  * 既存リストに incoming を追加する。id 重複は排除し、上限を超えたら古い方から捨てる。
@@ -98,18 +127,28 @@ export function CommentViewerApp() {
   const [launchRequested, setLaunchRequested] = useState(false);
 
   // 033c: VOICEVOX 読み上げ ON/OFF（既定 OFF・localStorage 永続）。ON のときだけコメントを読み上げ、
-  // ON のときだけクレジット表記を出す。全員がずんだもんで読ませたい訳ではないため既定は無効。
+  // ON のときだけクレジット表記を出す。全員が読み上げを使う訳ではないため既定は無効。
   const [ttsEnabled, setTtsEnabled] = useState(() => loadTtsEnabled());
   // 033c: VOICEVOX 自動連携（既定 OFF・localStorage 永続）。ON なら窓オープン時に ENGINE を 1 回自動起動する。
   const [voicevoxAutolink, setVoicevoxAutolink] = useState(() =>
     loadVoicevoxAutolink(),
   );
 
+  // 033d: 読み上げ話者（VOICEVOX style id・localStorage 永続）。未選択時の既定は 3（ずんだもんノーマル）。
+  const [selectedSpeakerId, setSelectedSpeakerId] = useState(() =>
+    loadSpeakerId(),
+  );
+  // 033d: 話者・スタイル一覧（ENGINE 稼働後に GET /speakers で取得して埋める）。未起動時は空のまま。
+  const [speakers, setSpeakers] = useState<VoicevoxSpeaker[]>([]);
+
   // 033c: 起動の各契機（読み上げ ON / 自動連携 / 手動ボタン）が参照するガード用 ref 群。stale closure を避け、
   // 安定な launchEngine / enqueueForSpeech から最新値を読む。同期は下の useEffect 群で行う。
   const ttsEnabledRef = useRef(ttsEnabled);
   const engineRunningRef = useRef(engineRunning);
   const launchRequestedRef = useRef(launchRequested);
+  // 033d: TTS キューは合成直前に getter で最新の選択話者を読む（キューを作り直さない）。state の stale closure を
+  // 避けるため ref に同期し、createTtsQueue の getSpeakerId から参照する。
+  const selectedSpeakerIdRef = useRef(selectedSpeakerId);
   // 起動中フラグ（state ではなく ref）。launchEngine 先頭で最初の await より前に立て、同一 tick/並行の
   // 複数契機が来ても spawn を 1 回に抑える同期ガード（launchRequested は起動成功後の窓を守る別レイヤ）。
   const launchInFlightRef = useRef(false);
@@ -126,7 +165,8 @@ export function CommentViewerApp() {
   // 032c-d: YouTube 連携（Authorization Code ログイン）の状態。Twitch と併存し各サービス個別に選択する。
   // 032c-d′: YouTube も Twitch 同様 OS キーチェーンに永続化するため、窓再オープン／再起動でも再ログイン不要。
   const [youtubeLinked, setYoutubeLinked] = useState(false);
-  const [youtubeSessionState, setYoutubeSessionState] = useState<string>("idle");
+  const [youtubeSessionState, setYoutubeSessionState] =
+    useState<string>("idle");
   const [youtubeSessionReason, setYoutubeSessionReason] = useState<
     string | null
   >(null);
@@ -144,6 +184,10 @@ export function CommentViewerApp() {
   useEffect(() => {
     saveVoicevoxAutolink(voicevoxAutolink);
   }, [voicevoxAutolink]);
+  // 033d: 選択話者を localStorage に永続化する（再オープン・再起動で復元）。
+  useEffect(() => {
+    saveSpeakerId(selectedSpeakerId);
+  }, [selectedSpeakerId]);
 
   // 033c: 安定コールバック（enqueueForSpeech / launchEngine）から最新値を読むための ref 同期。
   useEffect(() => {
@@ -155,9 +199,15 @@ export function CommentViewerApp() {
   useEffect(() => {
     launchRequestedRef.current = launchRequested;
   }, [launchRequested]);
+  useEffect(() => {
+    selectedSpeakerIdRef.current = selectedSpeakerId;
+  }, [selectedSpeakerId]);
 
   useEffect(() => {
-    const queue = createTtsQueue();
+    // 033d: 合成直前に選択話者（style id）を ref から読む getter を渡す。話者変更でキューを作り直さない。
+    const queue = createTtsQueue({
+      getSpeakerId: () => selectedSpeakerIdRef.current,
+    });
     ttsRef.current = queue;
     return () => {
       queue.dispose();
@@ -287,11 +337,49 @@ export function CommentViewerApp() {
     if (engineRunning === true) setLaunchRequested(false);
   }, [engineRunning]);
 
+  // 033d: ENGINE 稼働を検知したら GET /speakers で話者一覧を取得して選択肢を埋める（未取得のときのみ）。
+  // 宛先はループバック 50021・一覧のみ取得で端末外送信なし（fetchSpeakers 参照）。起動前は空一覧のままで、
+  // 前回選択値（selectedSpeakerId）は保持・表示される。cancelled ガードで unmount 後の setState を防ぐ。
+  //
+  // 一度一覧を得たら（speakers.length > 0）再取得しない意図的挙動: ENGINE の話者集合が変わるのは稀で、
+  // engine 再起動ごとの再取得は不要と判断した。副作用として、初回が transient に空応答だと engineRunning が
+  // トグルするまで再取得されない（実害小）。話者集合の差し替えが実運用で問題化したら、engineRunning の
+  // 立ち上がりエッジで再取得する設計へ見直す（deps/ガードを変更する）。
+  useEffect(() => {
+    if (engineRunning !== true || speakers.length > 0) return;
+    let cancelled = false;
+    void fetchSpeakers().then((list) => {
+      if (cancelled || list.length === 0) return;
+      // setSpeakers と下の setSelectedSpeakerId は React 18 の同 tick バッチングで同時反映される。よって
+      // SettingsView は「一覧充填」と「reconcile 後の選択 id」を同じ描画で受け取り、style select の
+      // controlled value が常に一覧内に収まる（一時的な value mismatch 警告を避ける）。
+      setSpeakers(list);
+      // 取得した一覧に現在の選択 id が無ければ（別バージョンの ENGINE 等で消えた話者）、先頭スタイルへ寄せる。
+      // 未知 id のまま合成すると毎回失敗するため。ref から最新値を読み deps を増やさない。ここでの
+      // setSelectedSpeakerId は saveSpeakerId effect 経由で localStorage を上書きするが、これは未知 id での
+      // 恒常的な合成失敗を避けるための意図的なユーザー操作なし書換（据え置き＋警告案より合成成立を優先）。
+      const exists = list.some((sp) =>
+        sp.styles.some((st) => st.id === selectedSpeakerIdRef.current),
+      );
+      if (!exists) {
+        // fetchSpeakers が styles 空の話者を除くため list[0].styles[0] は存在する（防御的に ?. は残す）。
+        const firstId = list[0]?.styles[0]?.id;
+        if (firstId !== undefined) setSelectedSpeakerId(firstId);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [engineRunning, speakers.length]);
+
   // 多重 spawn 抑止の保険: 起動要求後、猶予内に稼働確認できなければ（＝起動失敗などで ENGINE が現れない）
   // 自動でフラグを解除して再試行を許す（永久 disabled 回避）。稼働確認が先なら上の effect が解除する。
   useEffect(() => {
     if (!launchRequested) return;
-    const id = window.setTimeout(() => setLaunchRequested(false), LAUNCH_GRACE_MS);
+    const id = window.setTimeout(
+      () => setLaunchRequested(false),
+      LAUNCH_GRACE_MS,
+    );
     return () => window.clearTimeout(id);
   }, [launchRequested]);
 
@@ -349,6 +437,12 @@ export function CommentViewerApp() {
     if (enabled) void ttsRef.current?.resume();
   };
 
+  // 033d: クレジット表記に使う選択話者名。一覧から選択 style id を含む話者名を引く。ENGINE 未起動で一覧が
+  // 未取得なら null（creditNotice が話者名を省いた汎用文にフォールバックする）。
+  const selectedSpeakerName =
+    speakers.find((sp) => sp.styles.some((st) => st.id === selectedSpeakerId))
+      ?.name ?? null;
+
   return (
     <div className={styles.root}>
       {view === "settings" ? (
@@ -374,6 +468,9 @@ export function CommentViewerApp() {
           onYouTubeStopSession={handleYouTubeStopSession}
           voicevoxAutolink={voicevoxAutolink}
           onVoicevoxAutolinkChange={setVoicevoxAutolink}
+          speakers={speakers}
+          selectedSpeakerId={selectedSpeakerId}
+          onSpeakerIdChange={setSelectedSpeakerId}
         />
       ) : (
         <>
@@ -408,7 +505,9 @@ export function CommentViewerApp() {
                 <h2 className={styles.creditHeading}>
                   クレジット表記のお願い（必須）
                 </h2>
-                <p className={styles.creditText}>{CREDIT_NOTICE}</p>
+                <p className={styles.creditText}>
+                  {creditNotice(selectedSpeakerName)}
+                </p>
               </section>
             )}
           </div>
@@ -430,7 +529,9 @@ export function CommentViewerApp() {
                 {launching || launchRequested ? "起動中…" : "VOICEVOX を起動"}
               </button>
               {launchNotice && (
-                <span className={styles.engineBannerNotice}>{launchNotice}</span>
+                <span className={styles.engineBannerNotice}>
+                  {launchNotice}
+                </span>
               )}
             </div>
           )}
