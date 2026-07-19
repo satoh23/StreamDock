@@ -3544,3 +3544,63 @@ Twitch 経路のロジック・VOICEVOX/TTS・§1 封じ込めフレームは不
 - docs: `docs/progress.md`（本記録）
 - 不変（確認済み）: Tauri command 表面・`capabilities/*`・`tauri.conf.json`（`csp: null`）・依存（`Cargo.toml`/`package.json`／新規 crate/npm
   ゼロ）・データ取得/TTS/sidecar ロジック・接続 UI/VOICEVOX バナー/クレジットの残置要素
+
+## 2026-07-19 (033b 設定ビュー新設＋接続UI移設＋接続状態インジケータ)
+
+### 完了したこと
+
+- **033b（問題 4／UI 再構成のみ・通信面不変）**: Twitch/YouTube の接続操作をコメビュ窓内の「設定ビュー」へ移設して本体をすっきりさせ、
+  本体には接続ボタンの代わりに「円アイコン色＋テキスト」の接続状態インジケータを置いた。**新しい WS・宛先・sidecar・Tauri
+  command・capability・依存は一切足していない**（UI の置き換えに徹する）。
+- **(1) ビュー切替（comment / settings）**: `CommentViewerApp` に `view: "comment" | "settings"` state を追加。comment ビュー
+  上部の小さなツールバー（`.toolbar`）右端に**歯車ボタン**（`⚙`・`aria-label="設定"`・既存 Sidebar の `✎`/`×` と同じ文字グリフ方式＝
+  アイコン依存を足さない）で `settings` へ、設定ビュー先頭の**戻るボタン**（`←`）で `comment` へ戻る。**切替は描画のみ**で、state・
+  WS・TTS は本体に残るため、設定表示中もコメント受信・蓄積は継続し（WS は窓内 1 本のまま）本体へ戻れば全件が並ぶ。
+- **(2) 接続 UI を設定ビューへ移設**: Twitch パネル・YouTube パネル・Device Code 提示を新規 `SettingsView` へ移動。既存 state・
+  ハンドラ（`handleTwitchConnect`/`handleStartSession`/`handleStopSession`/`handleYouTubeConnect`/`handleYouTubeStartSession`/
+  `handleYouTubeStopSession`）・制御フレーム（`startLogin`/`startSession`/`stopSession`）を**props で渡してそのまま再利用**（新規 WS/
+  宛先/sidecar なし）。`streamConnected===false` の間「コメント取得プロセスに接続中…」を優先表示する配慮、YouTube の
+  `!youtubeLinked && connecting` →「ブラウザで同意してください…」表示、`channel.trim()` ガードも踏襲。`SESSION_STATE_LABEL`
+  （待機/接続中/取得中/失敗）は `SettingsView` へ移動。
+- **(3) 接続状態インジケータ（`StatusIndicator`）**: comment ビューのツールバー左に配置。**サービス別 2 行**（Twitch / YouTube）で、
+  各行 = 色付き円＋サービス名＋状態ラベル。色対応＝**未接続=灰(--muted) / 接続中=黄(--warn) / 接続済み=青(--primary) /
+  取得中=緑(--ok) / 失敗=赤(--danger)**（全て role トークン経由・生 hex なし）。導出は純関数 `deriveConnectionStatus(streamConnected,
+  linked, sessionState)`（失敗 > sidecar 準備中/接続中 > 取得中 > 接続済み待機 > 未接続）。**サービスごとに独立導出**で相互参照や
+  「取得中を 1 つだけ優先」ロジックを持たないため、将来 Twitch/YouTube の**併存・同時取得**が前提になっても両行が同時に「取得中」を
+  表示でき UI 変更不要（ユーザー要望「後々併存・同時取得前提になってもそのまま使えるUI」を反映）。
+- **(4) コンポーネント分割**: 442 行の `CommentViewerApp` から `SettingsView` / `StatusIndicator` / `CommentList` を切り出し（配置は
+  既存慣習どおり `screens/comment-viewer/` に co-locate＝React 表示、`features/comment-viewer/` は非 React ロジック専用）。
+  **state は全て `CommentViewerApp` に残し props で受け渡す**。**WS 接続 useEffect は分割せず窓内 1 本のまま**。`SOURCE_LABEL`/
+  `SOURCE_CLASS` は `CommentList` へ移動。VOICEVOX の engineBanner・credit は線引きどおり comment ビューに残置（→033c）。
+- **CSS 方針**: 既存 `CommentViewerApp.module.css` を 3 コンポーネントで共有 import（`.btn`/`.btnGhost`/`.status` を移動・複製せず
+  既存クラスの diff をほぼ 0 に）。追加クラス＝`.toolbar`/`.iconBtn`/`.statusIndicator`/`.statusRow`/`.statusDot`＋状態別
+  `.dotDisconnected`/`.dotConnecting`/`.dotConnected`/`.dotFetching`/`.dotFailed`/`.statusService`/`.statusLabel`/`.settingsView`/
+  `.settingsHeader`/`.settingsTitle`。削除クラスなし。
+- **lint 微調整**: `deriveConnectionStatus`／`ConnectionStatus` 型は `StatusIndicator.tsx` 内 file-local に留めた（他所未参照のため。
+  export すると `react-refresh/only-export-components` 警告が出るため）。将来バレ derive が必要になった時点で切り出す。
+
+### レビュー / 検証
+
+- **security-review 実施＝問題なし**（修正必須ゼロ）。①複数 WS を張っていない（`connectCommentStream` の useEffect は本体 1 箇所・
+  `new WebSocket` は `commentStream.ts` の `ws://127.0.0.1:<port>` のみ）②設定をメイン窓へ漏らしていない（変更は全て
+  `screens/comment-viewer/` 配下・`App.tsx`/`SettingsScreen`/main features に差分ゼロ＝main no-internet 維持）③新規 command/
+  capability/依存なし（`capabilities/*`・`tauri.conf.json`〈`csp:null`〉・`Cargo.*`・`package.json`・`pnpm-lock.yaml` に差分ゼロ）。
+  新規 3 ファイルは表示専用で invoke/fetch/WebSocket/console/shell を持たない。コメント本文のログ/DB 出力も増やしていない。
+- **ヘッドレス検証 PASS**: `pnpm --filter ./apps/desktop typecheck` / `lint`（0 error / 0 warning）いずれもエラーなし。
+  `*.module.css` に生 hex/rgba なし（追加クラスはすべて `var(--...)`）。
+- **残課題（実機）**: `pnpm --filter ./apps/desktop tauri dev` で ①歯車→設定ビュー切替／接続・取得開始/停止・Device Code 提示が
+  設定側で完結 ②本体に接続ボタンが無く円アイコン色＋テキストで Twitch/YouTube の状態が分かる ③設定表示中もコメント受信が継続し
+  戻ると全件表示（退行なし）、を目視確認。no-internet は `lsof -i` で外部 ESTABLISHED が sidecar PID 下のみ・main 本体 PID に
+  出ないことを確認。
+
+### 変更ファイル（033b）
+
+- frontend（変更）: `screens/comment-viewer/CommentViewerApp.tsx`（`view` state・ツールバー＋StatusIndicator 追加・接続UI/一覧を
+  新コンポーネントへ委譲・接続系ハンドラは維持し props で受け渡し。WS useEffect・VOICEVOX ロジック・credit は不変）、
+  `screens/comment-viewer/CommentViewerApp.module.css`（上記クラスを追加のみ）
+- frontend（新規）: `screens/comment-viewer/SettingsView.tsx`（接続UI 移設）、`StatusIndicator.tsx`（状態インジケータ＋
+  `deriveConnectionStatus`）、`CommentList.tsx`（listHeader 総数＋一覧・`SOURCE_LABEL`/`SOURCE_CLASS`）
+- docs: `docs/progress.md`（本記録）
+- 不変（確認済み）: `commentStream.ts`（制御フレーム・WS）・Node sidecar・`lib.rs`/Rust command 表面・`capabilities/*`・
+  `tauri.conf.json`（`csp: null`）・依存（`Cargo.toml`/`package.json`/`pnpm-lock.yaml`／新規 crate/npm ゼロ）・接続フロー（OAuth/
+  Device Code/gRPC）

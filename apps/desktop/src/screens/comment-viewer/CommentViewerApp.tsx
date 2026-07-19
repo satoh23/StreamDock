@@ -9,6 +9,9 @@ import {
   type DeviceCodePrompt,
 } from "../../features/comment-viewer/commentStream";
 import { loadChannel, saveChannel } from "../../features/comment-viewer/channelStorage";
+import { CommentList } from "./CommentList";
+import { SettingsView } from "./SettingsView";
+import { StatusIndicator } from "./StatusIndicator";
 import styles from "./CommentViewerApp.module.css";
 
 /**
@@ -41,26 +44,6 @@ const LAUNCH_GRACE_MS = 30000;
 const CREDIT_NOTICE =
   "ずんだもんの音声を使う配信・動画では「VOICEVOX:ずんだもん」のクレジット表記が必須です（VOICEVOX 利用規約 https://voicevox.hiroshiba.jp/term/ に準拠）。";
 
-/** 配信元の表示ラベル。 */
-const SOURCE_LABEL: Record<CommentViewDto["source"], string> = {
-  twitch: "Twitch",
-  youtube: "YouTube",
-};
-
-/** 配信元バッジの色分けクラス。 */
-const SOURCE_CLASS: Record<CommentViewDto["source"], string> = {
-  twitch: styles.srcTwitch,
-  youtube: styles.srcYoutube,
-};
-
-/** 取得セッション状態の日本語ラベル（sidecar の session.state に対応）。 */
-const SESSION_STATE_LABEL: Record<string, string> = {
-  idle: "待機",
-  connecting: "接続中",
-  connected: "取得中",
-  failed: "失敗",
-};
-
 /**
  * 既存リストに incoming を追加する。id 重複は排除し、上限を超えたら古い方から捨てる。
  * 実データ配線（032c-b/-d）でも同じ「append ＋ 重複排除 ＋ クランプ」を使う想定。
@@ -92,6 +75,10 @@ function mergeComments(
 
 export function CommentViewerApp() {
   const [comments, setComments] = useState<CommentViewDto[]>([]);
+  // 033b: 表示モード（本体コメント / 設定）。歯車ボタンで settings へ、戻るボタンで comment へ切替。
+  // 切替は描画のみで、接続 state・WS・TTS は本コンポーネントに残るため、設定表示中もコメント受信・蓄積は継続し
+  // （WS は窓内 1 本のまま）、本体へ戻ると全件が並ぶ。
+  const [view, setView] = useState<"comment" | "settings">("comment");
   // TTS キュー（AudioContext を 1 つ所有）。マウントで生成し、アンマウントで dispose する。
   const ttsRef = useRef<TtsQueue | null>(null);
   // ENGINE 稼働状態（null=未確認 / true=稼働 / false=未起動）と起動誘導の状態。
@@ -285,158 +272,74 @@ export function CommentViewerApp() {
 
   return (
     <div className={styles.root}>
-      {/* 032c-b: Twitch 連携（Device Code ログイン → チャンネル指定で取得開始）。ユーザー明示操作でのみ発火。 */}
-      <div className={styles.twitchPanel}>
-        <div className={styles.twitchRow}>
-          <button
-            type="button"
-            className={styles.btn}
-            onClick={handleTwitchConnect}
-            disabled={!streamConnected || linked}
-          >
-            {linked ? "接続済み" : "Twitch に接続"}
-          </button>
-          <input
-            type="text"
-            className={styles.input}
-            placeholder="チャンネル名（例: shroud）"
-            value={channel}
-            onChange={(e) => setChannel(e.target.value)}
-          />
-          <button
-            type="button"
-            className={styles.btn}
-            onClick={handleStartSession}
-            disabled={!streamConnected || !linked || channel.trim() === ""}
-          >
-            コメント取得開始
-          </button>
-          <button
-            type="button"
-            className={styles.btnGhost}
-            onClick={handleStopSession}
-            disabled={!streamConnected}
-          >
-            停止
-          </button>
-          {/* 032c-b: sidecar 未接続（streamConnected=false）のときは session.state（既定 idle=「待機」）を
-              出すと「準備完了なのに無反応」に見えてしまう（今回の無反応バグの温床）。接続確立までは
-              接続状態を優先表示し、上のボタン群の disabled 表示（:disabled のグレーアウト）と合わせて
-              「まだ操作できない」ことを可視化する。接続確立後は従来どおり取得セッション状態を表示する。 */}
-          <span className={styles.status}>
-            状態:{" "}
-            {!streamConnected
-              ? "コメント取得プロセスに接続中…"
-              : `${SESSION_STATE_LABEL[sessionState] ?? sessionState}${
-                  sessionReason ? `（${sessionReason}）` : ""
-                }`}
-          </span>
-        </div>
-        {deviceCode && (
-          <div className={styles.deviceCode} role="status">
-            <span className={styles.deviceCodeLabel}>
-              下記 URL をブラウザで開き、次のコードを入力して連携を許可してください:
-            </span>
-            <span className={styles.codeValue}>{deviceCode.userCode}</span>
-            <span className={styles.verifyUri}>{deviceCode.verificationUri}</span>
+      {view === "settings" ? (
+        // 033b: 接続 UI（Twitch/YouTube の接続・取得開始/停止・Device Code 提示）は設定ビューへ集約。
+        // 既存 state・ハンドラを props で渡すだけで、SettingsView は WS を持たない（窓内 1 本のまま）。
+        <SettingsView
+          onBack={() => setView("comment")}
+          streamConnected={streamConnected}
+          linked={linked}
+          sessionState={sessionState}
+          sessionReason={sessionReason}
+          deviceCode={deviceCode}
+          channel={channel}
+          onChannelChange={setChannel}
+          onTwitchConnect={handleTwitchConnect}
+          onStartSession={handleStartSession}
+          onStopSession={handleStopSession}
+          youtubeLinked={youtubeLinked}
+          youtubeSessionState={youtubeSessionState}
+          youtubeSessionReason={youtubeSessionReason}
+          onYouTubeConnect={handleYouTubeConnect}
+          onYouTubeStartSession={handleYouTubeStartSession}
+          onYouTubeStopSession={handleYouTubeStopSession}
+        />
+      ) : (
+        <>
+          {/* 033b: 本体上部の小さなツールバー。左に接続状態インジケータ（接続ボタンの代わり）、右に設定への歯車。 */}
+          <div className={styles.toolbar}>
+            <StatusIndicator
+              twitchSessionState={sessionState}
+              youtubeSessionState={youtubeSessionState}
+            />
+            <button
+              type="button"
+              className={styles.iconBtn}
+              onClick={() => setView("settings")}
+              title="設定"
+              aria-label="設定"
+            >
+              ⚙
+            </button>
           </div>
-        )}
-      </div>
 
-      {/* 032c-d: YouTube 連携（Authorization Code ログイン → ブラウザ同意 → 取得開始）。Twitch と併存・各サービス
-          個別選択（同時取得はしない）。チャンネル名入力は不要（mine=true の自アカウントのアクティブ配信）。
-          認可画面は Rust がシステムブラウザで accounts.google.com を開く（sidecar は URL に触らず・
-          code_verifier は載らない）。ユーザー明示操作でのみ発火する（§1）。 */}
-      <div className={styles.youtubePanel}>
-        <div className={styles.youtubeRow}>
-          <button
-            type="button"
-            className={styles.btn}
-            onClick={handleYouTubeConnect}
-            disabled={!streamConnected || youtubeLinked}
-          >
-            {youtubeLinked ? "YouTube 接続済み" : "YouTube に接続"}
-          </button>
-          <button
-            type="button"
-            className={styles.btn}
-            onClick={handleYouTubeStartSession}
-            disabled={!streamConnected || !youtubeLinked}
-          >
-            コメント取得開始
-          </button>
-          <button
-            type="button"
-            className={styles.btnGhost}
-            onClick={handleYouTubeStopSession}
-            disabled={!streamConnected}
-          >
-            停止
-          </button>
-          <span className={styles.status}>
-            状態:{" "}
-            {!streamConnected
-              ? "コメント取得プロセスに接続中…"
-              : !youtubeLinked && youtubeSessionState === "connecting"
-                ? "ブラウザで同意してください…"
-                : `${SESSION_STATE_LABEL[youtubeSessionState] ?? youtubeSessionState}${
-                    youtubeSessionReason ? `（${youtubeSessionReason}）` : ""
-                  }`}
-          </span>
-        </div>
-        <span className={styles.note}>
-          YouTube はチャンネル名入力不要（自分のアクティブ配信を取得）。無料クォータ（10,000 units/日）を使い切ると取得は自動停止します。
-        </span>
-      </div>
-
-      {engineRunning === false && (
-        <div className={styles.engineBanner} role="alert">
-          <span className={styles.engineBannerText}>
-            VOICEVOX ENGINE が起動していません。読み上げには起動が必要です。
-          </span>
-          <button
-            type="button"
-            className={styles.btn}
-            onClick={handleLaunch}
-            disabled={launching || launchRequested}
-          >
-            {launching || launchRequested ? "起動中…" : "VOICEVOX を起動"}
-          </button>
-          {launchNotice && (
-            <span className={styles.engineBannerNotice}>{launchNotice}</span>
+          {engineRunning === false && (
+            <div className={styles.engineBanner} role="alert">
+              <span className={styles.engineBannerText}>
+                VOICEVOX ENGINE が起動していません。読み上げには起動が必要です。
+              </span>
+              <button
+                type="button"
+                className={styles.btn}
+                onClick={handleLaunch}
+                disabled={launching || launchRequested}
+              >
+                {launching || launchRequested ? "起動中…" : "VOICEVOX を起動"}
+              </button>
+              {launchNotice && (
+                <span className={styles.engineBannerNotice}>{launchNotice}</span>
+              )}
+            </div>
           )}
-        </div>
+
+          <CommentList comments={comments} />
+
+          <section className={styles.credit}>
+            <h2 className={styles.creditHeading}>クレジット表記のお願い（必須）</h2>
+            <p className={styles.creditText}>{CREDIT_NOTICE}</p>
+          </section>
+        </>
       )}
-
-      <div className={styles.listHeader}>
-        <span className={styles.count}>{comments.length} 件</span>
-      </div>
-
-      <ol className={styles.list}>
-        {comments.length === 0 ? (
-          <li className={styles.empty}>コメントはまだありません</li>
-        ) : (
-          comments.map((c) => (
-            <li key={c.id} className={styles.item}>
-              <div className={styles.meta}>
-                <span className={`${styles.badge} ${SOURCE_CLASS[c.source]}`}>
-                  {SOURCE_LABEL[c.source]}
-                </span>
-                <span className={styles.author}>{c.author.name}</span>
-                {c.monetaryAmount && (
-                  <span className={styles.amount}>{c.monetaryAmount}</span>
-                )}
-              </div>
-              <p className={styles.text}>{c.text}</p>
-            </li>
-          ))
-        )}
-      </ol>
-
-      <section className={styles.credit}>
-        <h2 className={styles.creditHeading}>クレジット表記のお願い（必須）</h2>
-        <p className={styles.creditText}>{CREDIT_NOTICE}</p>
-      </section>
     </div>
   );
 }
