@@ -335,6 +335,78 @@
   color: var(--muted);
 }
 
+/* 033c: 設定ビューの VOICEVOX 自動連携パネル。他パネルと同レイアウト・両テーマ追従。 */
+.voicevoxPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+/* 033c: 本体コメントビュー上部の VOICEVOX 読み上げトグル行（ON 時はトグル直下にクレジット）。ツールバー直下に置く。 */
+.voicevoxBar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+/* 033c: ラベル（左）＋トグル（右）の 1 行。 */
+.toggleRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.toggleLabel {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+/* 033c: role="switch" のトグル本体。OFF=control-bg トラック / ON=primary-soft。役割トークンのみで両テーマ追従。 */
+.switch {
+  position: relative;
+  width: 40px;
+  height: 22px;
+  flex: none;
+  border-radius: 999px;
+  background: var(--control-bg);
+  border: 1px solid var(--border-soft);
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.switchOn {
+  background: var(--primary-soft);
+  border-color: var(--primary-soft-border);
+}
+
+/* つまみ。OFF は左端、ON は右へスライド（色も muted→primary へ）。 */
+.knob {
+  position: absolute;
+  top: 50%;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--muted);
+  transform: translateY(-50%);
+  transition:
+    transform 0.15s ease,
+    background 0.15s ease;
+}
+
+.switchOn .knob {
+  background: var(--primary);
+  transform: translate(18px, -50%);
+}
+
 /* ずんだもんクレジット表記（必須）。らくらく画面の見出し体裁を踏襲し danger 色で強調する。 */
 .credit {
   padding: 10px 16px;

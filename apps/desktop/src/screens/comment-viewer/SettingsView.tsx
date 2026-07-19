@@ -1,4 +1,5 @@
 import type { DeviceCodePrompt } from "../../features/comment-viewer/commentStream";
+import { ToggleSwitch } from "./ToggleSwitch";
 import styles from "./CommentViewerApp.module.css";
 
 /**
@@ -39,6 +40,9 @@ interface SettingsViewProps {
   onYouTubeConnect: () => void;
   onYouTubeStartSession: () => void;
   onYouTubeStopSession: () => void;
+  // 033c: VOICEVOX 自動連携 ON/OFF（読み上げトグルは本体コメントビューへ・state は CommentViewerApp が保持）。
+  voicevoxAutolink: boolean;
+  onVoicevoxAutolinkChange: (value: boolean) => void;
 }
 
 export function SettingsView({
@@ -59,6 +63,8 @@ export function SettingsView({
   onYouTubeConnect,
   onYouTubeStartSession,
   onYouTubeStopSession,
+  voicevoxAutolink,
+  onVoicevoxAutolinkChange,
 }: SettingsViewProps) {
   return (
     <div className={styles.settingsView}>
@@ -176,6 +182,19 @@ export function SettingsView({
         </div>
         <span className={styles.note}>
           YouTube はチャンネル名入力不要（自分のアクティブ配信を取得）。無料クォータ（10,000 units/日）を使い切ると取得は自動停止します。
+        </span>
+      </div>
+
+      {/* 033c: VOICEVOX 自動連携（設定向けの一度きり設定）。読み上げ ON/OFF は配信中に頻繁に切り替えるため本体
+          コメントビューへ置く。起動は既存 launch_voicevox_engine の再利用。 */}
+      <div className={styles.voicevoxPanel}>
+        <ToggleSwitch
+          label="VOICEVOX自動連携"
+          checked={voicevoxAutolink}
+          onChange={onVoicevoxAutolinkChange}
+        />
+        <span className={styles.note}>
+          自動連携が ON だと、コメントビューアを開いたときに VOICEVOX を自動起動します（要: ツール管理に VOICEVOX を登録）。
         </span>
       </div>
     </div>

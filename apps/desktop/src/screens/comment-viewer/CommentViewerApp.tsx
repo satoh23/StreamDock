@@ -9,9 +9,16 @@ import {
   type DeviceCodePrompt,
 } from "../../features/comment-viewer/commentStream";
 import { loadChannel, saveChannel } from "../../features/comment-viewer/channelStorage";
+import {
+  loadTtsEnabled,
+  saveTtsEnabled,
+  loadVoicevoxAutolink,
+  saveVoicevoxAutolink,
+} from "../../features/comment-viewer/ttsPrefs";
 import { CommentList } from "./CommentList";
 import { SettingsView } from "./SettingsView";
 import { StatusIndicator } from "./StatusIndicator";
+import { ToggleSwitch } from "./ToggleSwitch";
 import styles from "./CommentViewerApp.module.css";
 
 /**
@@ -38,8 +45,8 @@ const ENGINE_POLL_INTERVAL_MS = 5000;
 const LAUNCH_GRACE_MS = 30000;
 
 /**
- * ずんだもんクレジット表記（VOICEVOX 利用規約に基づく必須表記）。032a の creditNotice を復元。
- * 表示のみで外部通信は発生しない（URL は静的テキスト）。
+ * 033c: ずんだもんクレジット表記（VOICEVOX 利用規約に基づく必須表記）。読み上げトグルが ON のときだけ、本体
+ * コメントビューのトグル直下に表示する（従来は常時表示していた）。表示のみで外部通信は発生しない（URL は静的テキスト）。
  */
 const CREDIT_NOTICE =
   "ずんだもんの音声を使う配信・動画では「VOICEVOX:ずんだもん」のクレジット表記が必須です（VOICEVOX 利用規約 https://voicevox.hiroshiba.jp/term/ に準拠）。";
@@ -90,6 +97,23 @@ export function CommentViewerApp() {
   // 失敗で即終了するが registry に死んだ handle が溜まるため未然に抑止する）。未登録/失敗時はセットせず再試行可。
   const [launchRequested, setLaunchRequested] = useState(false);
 
+  // 033c: VOICEVOX 読み上げ ON/OFF（既定 OFF・localStorage 永続）。ON のときだけコメントを読み上げ、
+  // ON のときだけクレジット表記を出す。全員がずんだもんで読ませたい訳ではないため既定は無効。
+  const [ttsEnabled, setTtsEnabled] = useState(() => loadTtsEnabled());
+  // 033c: VOICEVOX 自動連携（既定 OFF・localStorage 永続）。ON なら窓オープン時に ENGINE を 1 回自動起動する。
+  const [voicevoxAutolink, setVoicevoxAutolink] = useState(() =>
+    loadVoicevoxAutolink(),
+  );
+
+  // 033c: 起動の各契機（読み上げ ON / 自動連携 / 手動ボタン）が参照するガード用 ref 群。stale closure を避け、
+  // 安定な launchEngine / enqueueForSpeech から最新値を読む。同期は下の useEffect 群で行う。
+  const ttsEnabledRef = useRef(ttsEnabled);
+  const engineRunningRef = useRef(engineRunning);
+  const launchRequestedRef = useRef(launchRequested);
+  // 起動中フラグ（state ではなく ref）。launchEngine 先頭で最初の await より前に立て、同一 tick/並行の
+  // 複数契機が来ても spawn を 1 回に抑える同期ガード（launchRequested は起動成功後の窓を守る別レイヤ）。
+  const launchInFlightRef = useRef(false);
+
   // 032c-b: Twitch 連携（Device Code ログイン・取得セッション）の状態。
   const streamRef = useRef<CommentStreamHandle | null>(null);
   const [streamConnected, setStreamConnected] = useState(false);
@@ -113,6 +137,25 @@ export function CommentViewerApp() {
     saveChannel(channel);
   }, [channel]);
 
+  // 033c: トグル状態を localStorage に永続化する（channel と同型）。再オープン・再起動で復元される。
+  useEffect(() => {
+    saveTtsEnabled(ttsEnabled);
+  }, [ttsEnabled]);
+  useEffect(() => {
+    saveVoicevoxAutolink(voicevoxAutolink);
+  }, [voicevoxAutolink]);
+
+  // 033c: 安定コールバック（enqueueForSpeech / launchEngine）から最新値を読むための ref 同期。
+  useEffect(() => {
+    ttsEnabledRef.current = ttsEnabled;
+  }, [ttsEnabled]);
+  useEffect(() => {
+    engineRunningRef.current = engineRunning;
+  }, [engineRunning]);
+  useEffect(() => {
+    launchRequestedRef.current = launchRequested;
+  }, [launchRequested]);
+
   useEffect(() => {
     const queue = createTtsQueue();
     ttsRef.current = queue;
@@ -129,7 +172,12 @@ export function CommentViewerApp() {
   // 遷移はユーザー操作起点でしか効かない**。実データ（非操作起点）で初回が鳴るよう、取得開始ボタン
   // （handleStartSession）で resume 済みにし、万一 suspended のままでも ttsQueue.pump 側のガードで
   // 無音ハングを防ぐ（該当 1 件はスキップ）。
+  // 033c: 読み上げトグルが OFF のときは何もしない（no-op）。トグル state を直接この useCallback の依存に
+  // 入れると enqueueForSpeech が作り直され、それを依存に持つ WS 接続 effect が張り直されて「窓内 1 本」原則に
+  // 反する。よって state ではなく ttsEnabledRef を参照して安定（useCallback []）を保つ。OFF 中に来たコメントは
+  // enqueue しない＝ttsQueue の seenIds にも載らないため、後で ON にしても遡って読み上げない（期待挙動）。
   const enqueueForSpeech = useCallback((added: CommentViewDto[]) => {
+    if (!ttsEnabledRef.current) return;
     const tts = ttsRef.current;
     if (!tts || added.length === 0) return;
     void tts.resume();
@@ -247,12 +295,21 @@ export function CommentViewerApp() {
     return () => window.clearTimeout(id);
   }, [launchRequested]);
 
-  // 登録済み VOICEVOX を管理付き spawn で起動する（未登録なら登録誘導文言を表示）。起動後は
-  // /version ポーリングがバナーを自動で消す。
-  const handleLaunch = async () => {
+  // 033c: 登録済み VOICEVOX を管理付き spawn で起動する唯一の入口（読み上げ ON 契機・自動連携・手動ボタンが
+  // すべてここを通る＝導線を増やさない）。Rust command（launch_voicevox_engine）・引数・経路は不変で「呼ぶ契機」
+  // だけを増やす。未登録なら登録誘導文言を表示。起動後は /version ポーリングがバナーを自動で消す。
+  // 二重 spawn を 3 段で抑止する（安定 useCallback []・ガードは ref から最新値を読む）:
+  //   1. launchInFlightRef … 最初の await より前に立てる同期ガード（同一 tick/並行の複数契機を 1 回に）。
+  //   2. launchRequestedRef … 起動成功後〜稼働確認/猶予経過までの窓を守る（launchRequested state ＋ LAUNCH_GRACE_MS）。
+  //   3. engineRunningRef  … 既に稼働中（true）なら起動しない。
+  const launchEngine = useCallback(async () => {
+    if (launchInFlightRef.current) return; // 同期ガード（最優先・最初の await より前で判定）。
+    if (engineRunningRef.current === true) return; // 既に稼働中。
+    if (launchRequestedRef.current) return; // 直近に起動要求済み（猶予内）。
+    launchInFlightRef.current = true;
     setLaunching(true);
     setLaunchNotice(null);
-    void ttsRef.current?.resume(); // ユーザー操作契機で resume しておく。
+    void ttsRef.current?.resume(); // 起動契機に合わせて resume を試みる（running なら no-op）。
     try {
       const result = await launchVoicevoxEngine();
       if (result.launched) {
@@ -266,8 +323,30 @@ export function CommentViewerApp() {
       console.error("VOICEVOX ENGINE の起動に失敗しました", e);
       setLaunchNotice("VOICEVOX ENGINE の起動に失敗しました。");
     } finally {
+      launchInFlightRef.current = false;
       setLaunching(false);
     }
+  }, []);
+
+  // 033c(A): 読み上げ ON かつ ENGINE 未起動なら自動起動する。トグル ON（ttsEnabled 変化）と、ポーリングで
+  // engine 落ちを検知（engineRunning が false 化）の両方をこの 1 effect が拾う。engineRunning の初期値は null の
+  // ため未確認時は発火しない（=false のときだけ）。二重 spawn は launchEngine 側のガードが吸収する。
+  useEffect(() => {
+    if (ttsEnabled && engineRunning === false) void launchEngine();
+  }, [ttsEnabled, engineRunning, launchEngine]);
+
+  // 033c(B): 自動連携 ON なら「窓オープン時」に 1 回だけ ENGINE を起動する。永続値を直読みしてマウント契機に
+  // 限定し（lint clean）、StrictMode の二重実行や (A) との同時発火は launchEngine のガードが吸収する。
+  useEffect(() => {
+    if (loadVoicevoxAutolink()) void launchEngine();
+  }, [launchEngine]);
+
+  // 033c: 読み上げトグルの切替。ON はユーザー操作契機なので AudioContext を resume しておく（WKWebView の
+  // autoplay 対策・以降 sidecar から非操作起点で届く実コメントの初回読み上げが無音化しないように）。
+  // ENGINE 未起動時の自動起動は上の effect(A)（ttsEnabled 変化を拾う）が担う。
+  const handleTtsEnabledChange = (enabled: boolean) => {
+    setTtsEnabled(enabled);
+    if (enabled) void ttsRef.current?.resume();
   };
 
   return (
@@ -293,6 +372,8 @@ export function CommentViewerApp() {
           onYouTubeConnect={handleYouTubeConnect}
           onYouTubeStartSession={handleYouTubeStartSession}
           onYouTubeStopSession={handleYouTubeStopSession}
+          voicevoxAutolink={voicevoxAutolink}
+          onVoicevoxAutolinkChange={setVoicevoxAutolink}
         />
       ) : (
         <>
@@ -313,7 +394,29 @@ export function CommentViewerApp() {
             </button>
           </div>
 
-          {engineRunning === false && (
+          {/* 033c: 読み上げ ON/OFF は配信中に頻繁に切り替えるため本体コメントビュー上部に置く（設定ビューではなく
+              ここに置くほうが UX が良い）。ON のときだけコメントを読み上げ、ON のときだけクレジット表記をトグル
+              直下に出す。 */}
+          <div className={styles.voicevoxBar}>
+            <ToggleSwitch
+              label="VOICEVOX読み上げ"
+              checked={ttsEnabled}
+              onChange={handleTtsEnabledChange}
+            />
+            {ttsEnabled && (
+              <section className={styles.credit}>
+                <h2 className={styles.creditHeading}>
+                  クレジット表記のお願い（必須）
+                </h2>
+                <p className={styles.creditText}>{CREDIT_NOTICE}</p>
+              </section>
+            )}
+          </div>
+
+          {/* 033c: 読み上げ ON かつ ENGINE 未起動のときだけ表示（OFF の人には出さない）。上の effect(A) が同時に
+              自動起動を走らせるため、ボタンは同じ launchEngine を叩く再試行/未登録誘導のフォールバック（通常は
+              launchRequested で「起動中…」表示・disabled、未登録や失敗時のみ押せる）＝別導線を増やさない。 */}
+          {ttsEnabled && engineRunning === false && (
             <div className={styles.engineBanner} role="alert">
               <span className={styles.engineBannerText}>
                 VOICEVOX ENGINE が起動していません。読み上げには起動が必要です。
@@ -321,7 +424,7 @@ export function CommentViewerApp() {
               <button
                 type="button"
                 className={styles.btn}
-                onClick={handleLaunch}
+                onClick={() => void launchEngine()}
                 disabled={launching || launchRequested}
               >
                 {launching || launchRequested ? "起動中…" : "VOICEVOX を起動"}
@@ -333,11 +436,6 @@ export function CommentViewerApp() {
           )}
 
           <CommentList comments={comments} />
-
-          <section className={styles.credit}>
-            <h2 className={styles.creditHeading}>クレジット表記のお願い（必須）</h2>
-            <p className={styles.creditText}>{CREDIT_NOTICE}</p>
-          </section>
         </>
       )}
     </div>

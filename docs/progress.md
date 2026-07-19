@@ -3604,3 +3604,69 @@ Twitch 経路のロジック・VOICEVOX/TTS・§1 封じ込めフレームは不
 - 不変（確認済み）: `commentStream.ts`（制御フレーム・WS）・Node sidecar・`lib.rs`/Rust command 表面・`capabilities/*`・
   `tauri.conf.json`（`csp: null`）・依存（`Cargo.toml`/`package.json`/`pnpm-lock.yaml`／新規 crate/npm ゼロ）・接続フロー（OAuth/
   Device Code/gRPC）
+
+## 2026-07-19 (033c VOICEVOX 読み上げトグル＋クレジット条件表示＋自動起動/自動連携)
+
+親 [033](tasks/033-comment-viewer-ux-revamp.md) の問題 6,7 に対応。VOICEVOX 読み上げを **ON/OFF トグル化**（既定 OFF）し、
+**ON のときだけ読み上げ・ON のときだけクレジット**を出すようにした。加えて **自動連携トグル**（ON で窓オープン時に自動起動）と
+**読み上げ ON かつ ENGINE 未起動での自動起動**を追加。起動は既存 `launch_voicevox_engine` 経路を再利用し、「呼ぶ契機」だけを増やした。
+
+### 実装内容
+
+- **(1) トグル永続化（新規 `features/comment-viewer/ttsPrefs.ts`）**: `channelStorage.ts`/`tutorial/tutorialStorage.ts` の boolean 規約
+  （文字列 `"true"` 保存・`=== "true"` 判定・既定 false・`try/catch` 握りつぶし）に倣う。キー＝`stream-dock.comment-viewer.tts-enabled`
+  （読み上げ ON/OFF）と `stream-dock.comment-viewer.voicevox-autolink`（自動連携 ON/OFF）。どちらも**既定 OFF**・非機密の UI 値のみ。
+- **(2) 読み上げゲート**: `enqueueForSpeech` を **`ttsEnabledRef.current` で OFF 時 no-op** 化。トグル state を直接 `useCallback` 依存に
+  入れると WS 接続 effect（`enqueueForSpeech` を依存に持つ）が張り直され「窓内 1 本」原則に反するため、**ref 経由**で参照し
+  `useCallback([])` の安定を維持（＝WS は 1 本のまま）。OFF 中のコメントは `ttsQueue` の `seenIds` に載らず、後で ON にしても遡らない。
+- **(3) 自動起動の一本化 `launchEngine`**: 旧 `handleLaunch` を唯一の起動入口 `launchEngine`（`useCallback([])`）へ整理。**二重 spawn を
+  3 段で抑止**＝①`launchInFlightRef`（最初の await 前に立てる同期ガード・同一 tick/並行を 1 回に）②`launchRequestedRef`（起動成功後〜
+  稼働確認/`LAUNCH_GRACE_MS` 猶予の窓）③`engineRunningRef`（稼働中なら起動しない）。ガードはすべて ref で最新値を読む。
+  Rust command・引数・経路は不変。契機は (A) `useEffect([ttsEnabled, engineRunning, launchEngine])` で「読み上げ ON かつ engineRunning
+  ===false」（トグル ON も engine 落ち検知も拾う／初期 null では空振りしない）、(B) マウント時 `loadVoicevoxAutolink()` 直読みで
+  「窓オープン時 1 回」、(C) バナー手動ボタン（同じ `launchEngine`）。
+- **(4) 二重発火なし（両方 ON）**: マウント時 `engineRunning` は null のため (A) は発火せず (B) が先に `launchInFlightRef` を立てる。以降
+  (A) がポーリング後に発火してもガードに阻まれ **spawn は 1 回**。StrictMode 二重実行も同ガードが吸収。
+- **(5) 起動バナー整理（重複導線にしない）**: 表示条件を `engineRunning===false` → **`ttsEnabled && engineRunning===false`** に変更
+  （OFF の人には出さない）。ボタンは同じ `launchEngine` を叩く再試行/未登録誘導のフォールバック（通常は `launchRequested` で
+  「起動中…」disabled、未登録・失敗時のみ押せる）。`launchNotice`（未登録の登録誘導文言）は従来どおりバナー内表示。
+- **(6) クレジット移設**: 本体コメントビューの**常時表示 `<section>` を削除**し、`SettingsView` の**読み上げトグル直下・`ttsEnabled` 時のみ**
+  へ移動。`CREDIT_NOTICE` 定数は唯一の描画元 `SettingsView.tsx` へ移した（文言・URL・CSS クラス据え置き・静的テキスト・外部通信なし）。
+- **(7) トグル UI**: 再利用可能な Switch 部品は既存になかったため、`SettingsView` 内に file-local な `ToggleSwitch`（`role="switch"`
+  `aria-checked`・テーマ設定の radio パターンに倣う）を新設。ラベルは先取りで **「VOICEVOX読み上げ」**／**「VOICEVOX自動連携」**
+  （全面改名は 033d）。CSS は `CommentViewerApp.module.css` に `.voicevoxPanel`/`.toggleRow`/`.toggleLabel`/`.switch`/`.switchOn`/`.knob`
+  を追加（OFF=`--control-bg`/ON=`--primary-soft`・生 hex なし）。`.credit` 系クラスは流用（削除・改名なし）。
+
+### 検証
+
+- `pnpm --filter ./apps/desktop typecheck` / `lint` いずれも **0 error / 0 warning**（`git diff --stat`＝3 変更＋1 新規 / +224）。
+- 自己確認: ① `launchVoicevoxEngine()` は従来どおり引数なし `invoke("launch_voicevox_engine")` ＝経路・引数不変 ② 新規 Tauri command/
+  capability/依存ゼロ・`csp: null` 不変 ③ 永続化は localStorage 非機密 boolean 2 値のみ ④ 読み上げ OFF 時に enqueue が走らない
+  （`ttsEnabledRef` ゲート）⑤ WS は 1 本のまま（`enqueueForSpeech` 安定＝接続 effect 再実行なし）。
+- **残課題（実機・本人環境）**: `pnpm --filter ./apps/desktop tauri dev` で トグル OFF で無音／ON で読み上げ＋クレジット（トグル直下）／
+  読み上げ ON かつ ENGINE 未起動で自動起動（未登録は登録誘導）／自動連携 ON で窓オープン時に自動起動／両方 ON でも二重 spawn なし／
+  再起動後もトグル状態保持、を目視。※実起動・実読み上げは要ローカル VOICEVOX ENGINE 登録。
+
+### 変更ファイル（033c）
+
+- frontend（新規）: `features/comment-viewer/ttsPrefs.ts`（トグル 2 値の load/save）
+- frontend（変更）: `screens/comment-viewer/CommentViewerApp.tsx`（トグル state・永続化/ref 同期 effect・`enqueueForSpeech` ゲート・
+  `handleLaunch`→`launchEngine`（3 段ガード）・自動起動 effect(A)/(B)・バナー条件に `ttsEnabled &&`・常時 credit 削除・SettingsView へ props
+  受け渡し・`CREDIT_NOTICE` 削除）、`screens/comment-viewer/SettingsView.tsx`（`ToggleSwitch`・VOICEVOX パネル・`CREDIT_NOTICE` 受け入れ）、
+  `screens/comment-viewer/CommentViewerApp.module.css`（`.voicevoxPanel`/`.toggleRow`/`.toggleLabel`/`.switch`/`.switchOn`/`.knob` 追加）
+- docs: `docs/progress.md`（本記録）
+- 不変（確認済み）: `ttsQueue.ts`/`voicevox.ts`（話者・合成ロジック＝033d）・`voicevoxApi.ts`（`launch_voicevox_engine` ラッパ）・
+  `lib.rs`/Rust command 表面・`capabilities/*`・`tauri.conf.json`（`csp: null`）・依存（新規 crate/npm ゼロ）
+
+### 修正（UX フィードバック反映）
+
+- 本人指摘「**読み上げトグルは設定画面ではなく本体コメントビューに表示したい（そのほうが UX が良い）**」を反映。読み上げ
+  ON/OFF は配信中に頻繁に切り替えるため、**「VOICEVOX読み上げ」トグルとクレジット（ON 時のみ・トグル直下）を本体
+  コメントビューのツールバー直下へ移設**（新 `.voicevoxBar`）。**「VOICEVOX自動連携」は一度きりの設定なので設定ビューに残置**。
+- `ToggleSwitch` を `SettingsView` の file-local 定義から `screens/comment-viewer/ToggleSwitch.tsx`（新規）へ切り出し、本体
+  （読み上げ）と設定（自動連携）で共用。`CREDIT_NOTICE` は描画元の `CommentViewerApp.tsx` へ戻した。ゲート/自動起動/二重発火
+  ガードのロジックは不変（トグルの表示位置のみ変更）。
+- 検証: `pnpm --filter ./apps/desktop typecheck` / `lint` いずれも 0 error / 0 warning。ゲート・自動起動・二重 spawn 抑止・
+  永続化・「新規 command/capability/依存ゼロ・`csp:null` 不変」は据え置き。
+- 変更ファイル追補: 新規 `screens/comment-viewer/ToggleSwitch.tsx`／変更 `CommentViewerApp.tsx`（本体にトグル＋クレジット・
+  `CREDIT_NOTICE` 復帰）・`SettingsView.tsx`（読み上げ関連を撤去し自動連携のみ）・`CommentViewerApp.module.css`（`.voicevoxBar` 追加）。
