@@ -18,7 +18,14 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+# 033f OBS 透過オーバーレイ窓: 背景透過のオーバーレイ窓（label `comment-overlay`）を OBS の
+# ウィンドウキャプチャで取り込むため、macOS では `WebviewWindowBuilder.transparent()` が
+# `macos-private-api` feature でのみコンパイル・実行時適用される（tauri crate 側で cfg gate）。
+# tauri.conf.json の `macOSPrivateApi: true` は Tauri CLI 経路（tauri dev/build）でのみ feature を自動付与する
+# ため、CLI を通らない `cargo check` でも透過窓が通るよう **既存 tauri crate の feature 追加**として明示有効化する
+# （新規 crate 追加ではない＝028 の windows feature 追加と同型）。macOS 私的 API 使用のため Mac App Store 配布不可に
+# なるが、本アプリは .app/.dmg 直配布で MAS 経路は無いため受容（docs/security.md §10）。
+tauri = { version = "2", features = ["macos-private-api"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 # 019 Preset Auto-Launch on Boot: OS のログイン項目に stream-dock を登録/解除する公式プラグイン。

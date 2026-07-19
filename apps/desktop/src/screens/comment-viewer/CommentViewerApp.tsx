@@ -29,6 +29,11 @@ import {
   loadSpeakerId,
   saveSpeakerId,
 } from "../../features/comment-viewer/speakerStorage";
+import { mergeComments } from "../../features/comment-viewer/mergeComments";
+import {
+  openCommentOverlayWindow,
+  closeCommentOverlayWindow,
+} from "../../features/comment-viewer/windowApi";
 import { CommentList } from "./CommentList";
 import { SettingsView } from "./SettingsView";
 import { StatusIndicator } from "./StatusIndicator";
@@ -44,9 +49,6 @@ import styles from "./CommentViewerApp.module.css";
  * （Twitch/YouTube・Node sidecar・WebSocket）は 032c-b/-d で配線する。ネイティブタイトルバー
  * （capability は `core:default` のみ）で動くため、メイン画面のカスタム Header は再利用しない。
  */
-
-/** 表示上限（超過分は古い方から捨てる＝末尾 MAX 件を保持）。 */
-const MAX_COMMENTS = 200;
 
 /** ENGINE 稼働の再確認間隔（ミリ秒）。ループバック GET /version の軽いポーリング。 */
 const ENGINE_POLL_INTERVAL_MS = 5000;
@@ -78,35 +80,6 @@ function creditNotice(speakerName: string | null): string {
     `（一般的な書き方は「${target}」）。ただし、表記の条件や利用できる範囲は話者（音声ライブラリ）ごとに異なります。` +
     `ご利用前に必ず VOICEVOX 利用規約 https://voicevox.hiroshiba.jp/term/ と、選択中の話者の利用規約をご確認ください。`
   );
-}
-
-/**
- * 既存リストに incoming を追加する。id 重複は排除し、上限を超えたら古い方から捨てる。
- * 実データ配線（032c-b/-d）でも同じ「append ＋ 重複排除 ＋ クランプ」を使う想定。
- *
- * 戻り値の `next` は表示用の全体リスト（上限クランプ後）、`added` は**重複排除後に実際に追加された
- * 新規行**。`added` を TTS enqueue の単一注入点として使う（表示上限でクランプされても読み上げ対象に
- * 含めるため、クランプ前の追加分を返す）。
- */
-function mergeComments(
-  prev: CommentViewDto[],
-  incoming: CommentViewDto[],
-): { next: CommentViewDto[]; added: CommentViewDto[] } {
-  const seen = new Set(prev.map((c) => c.id));
-  const merged = [...prev];
-  const added: CommentViewDto[] = [];
-  for (const c of incoming) {
-    if (seen.has(c.id)) continue; // id 重複排除
-    seen.add(c.id);
-    merged.push(c);
-    added.push(c);
-  }
-  // 上限クランプ（新しい順に末尾 MAX 件を残す）。
-  const next =
-    merged.length > MAX_COMMENTS
-      ? merged.slice(merged.length - MAX_COMMENTS)
-      : merged;
-  return { next, added };
 }
 
 export function CommentViewerApp() {
@@ -437,6 +410,19 @@ export function CommentViewerApp() {
     if (enabled) void ttsRef.current?.resume();
   };
 
+  // 033f: OBS 用の背景透過オーバーレイ窓をワンクリックで開く。Rust が透過・フレームレス・最背面（always_on_bottom）・
+  // 非フォーカスで生成する（open_comment_overlay_window。追修正①で最前面→最背面に変更）。オーバーレイは表示専用で
+  // loopback WS の読み取り専用接続のみ・sidecar には関与しない（起動/停止契機はコメビュ窓に集約のまま＝no-orphan kill 不変）。
+  const handleOpenOverlay = () => {
+    void openCommentOverlayWindow();
+  };
+
+  // 033f 追修正: OBS 用オーバーレイ窓を閉じる。最背面・非フォーカスで開き Cmd+W で掴みにくいため本体から明示的に
+  // 閉じられるようにする。窓が無ければ Rust 側 no-op（冪等）。sidecar には関与しない（no-orphan kill 不変）。
+  const handleCloseOverlay = () => {
+    void closeCommentOverlayWindow();
+  };
+
   // 033d: クレジット表記に使う選択話者名。一覧から選択 style id を含む話者名を引く。ENGINE 未起動で一覧が
   // 未取得なら null（creditNotice が話者名を省いた汎用文にフォールバックする）。
   const selectedSpeakerName =
@@ -474,22 +460,49 @@ export function CommentViewerApp() {
         />
       ) : (
         <>
-          {/* 033b: 本体上部の小さなツールバー。左に接続状態インジケータ（接続ボタンの代わり）、右に設定への歯車。 */}
+          {/* 033b/033f: 本体上部の小さなツールバー。左に接続状態インジケータ（接続ボタンの代わり）、
+              右に OBS オーバーレイを開くボタン＋設定への歯車。 */}
           <div className={styles.toolbar}>
             <StatusIndicator
               twitchSessionState={sessionState}
               youtubeSessionState={youtubeSessionState}
             />
-            <button
-              type="button"
-              className={styles.iconBtn}
-              onClick={() => setView("settings")}
-              title="設定"
-              aria-label="設定"
-            >
-              ⚙
-            </button>
+            <div className={styles.toolbarActions}>
+              <button
+                type="button"
+                className={styles.btnGhost}
+                onClick={handleOpenOverlay}
+                title="OBS 用の背景透過オーバーレイ窓を最背面で開きます"
+              >
+                OBS オーバーレイ
+              </button>
+              {/* 修正不要（据え置き）: ラベルは「閉じる」の短縮のまま。意図＝ツールバー幅が狭く、直前の「OBS オーバーレイ」
+                  ボタンと隣接する文脈＋title 属性（下記）でオーバーレイ窓が対象と読めるため。再修正トリガー＝「コメビュ本体を
+                  閉じる」と誤解する報告が出たら「オーバーレイを閉じる」等に改名する。 */}
+              <button
+                type="button"
+                className={styles.btnGhost}
+                onClick={handleCloseOverlay}
+                title="OBS 用オーバーレイ窓を閉じます"
+              >
+                閉じる
+              </button>
+              <button
+                type="button"
+                className={styles.iconBtn}
+                onClick={() => setView("settings")}
+                title="設定"
+                aria-label="設定"
+              >
+                ⚙
+              </button>
+            </div>
           </div>
+          {/* 033f: OBS 取り込みの案内（ボタン近傍の小さな注記）。表示のみで外部通信なし。オーバーレイは最背面で開くため
+              配信者の画面には前面表示されず、OBS のウィンドウキャプチャにだけ映る（033f 追修正）。 */}
+          <p className={styles.overlayHint}>
+            OBS の「ウィンドウキャプチャ」で「StreamDock コメントオーバーレイ」を選ぶとコメントを重ねられます（背景は透過）。オーバーレイは常に最背面で開くので、配信者の画面には前面表示されません。閉じるときは「閉じる」を押してください。
+          </p>
 
           {/* 033c: 読み上げ ON/OFF は配信中に頻繁に切り替えるため本体コメントビュー上部に置く（設定ビューではなく
               ここに置くほうが UX が良い）。ON のときだけコメントを読み上げ、ON のときだけクレジット表記をトグル

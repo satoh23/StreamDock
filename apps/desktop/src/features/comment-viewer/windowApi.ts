@@ -28,3 +28,22 @@ export function closeCommentViewerWindow(): Promise<void> {
 export function isCommentViewerOpen(): Promise<boolean> {
   return invoke<boolean>("is_comment_viewer_open");
 }
+
+/**
+ * 033f: OBS 用の背景透過オーバーレイ窓（label `comment-overlay`）を開く（ワンクリック）。窓が既に開いていれば
+ * Rust 側で再利用する（冪等）。033f 追修正で**最背面・非フォーカス**で開くため、配信者の画面に前面表示されず
+ * OBS のウィンドウキャプチャにだけ映る。オーバーレイは**表示専用**で、sidecar の起動/停止には関与しない
+ * （no-orphan kill 契機はコメビュ窓に集約のまま）。data 源は既存の loopback WS の読み取り専用接続のみ。
+ */
+export function openCommentOverlayWindow(): Promise<void> {
+  return invoke<void>("open_comment_overlay_window");
+}
+
+/**
+ * 033f 追修正: OBS 用オーバーレイ窓を閉じる（コメビュ本体の「閉じる」用）。窓が無ければ Rust 側 no-op（冪等）。
+ * オーバーレイは最背面・非フォーカスで開き Cmd+W で掴みにくいため、本体から明示的に閉じられるよう用意する。
+ * オーバーレイは sidecar を起動していないため、閉じても sidecar は落ちない（no-orphan kill 契機は不変）。
+ */
+export function closeCommentOverlayWindow(): Promise<void> {
+  return invoke<void>("close_comment_overlay_window");
+}

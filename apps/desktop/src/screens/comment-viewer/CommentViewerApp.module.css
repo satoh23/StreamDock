@@ -31,6 +31,21 @@
   border-bottom: 1px solid var(--border-soft);
 }
 
+/* 033f: ツールバー右クラスタ（OBS オーバーレイを開くボタン＋設定歯車）を右寄せで並べる。 */
+.toolbarActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 033f: OBS 取り込みの初回セットアップ／閉じ方の小さな注記（ツールバー直下）。役割トークンで両テーマ追従。 */
+.overlayHint {
+  padding: 4px 16px 8px;
+  font-size: 11px;
+  color: var(--text-faint);
+  border-bottom: 1px solid var(--border-soft);
+}
+
 /* 033b: 歯車（設定へ）・戻る（コメントへ）の文字グリフボタン。Sidebar の .toolActionBtn と同方式の role トークン。 */
 .iconBtn {
   width: 28px;

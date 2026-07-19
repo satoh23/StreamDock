@@ -20,6 +20,7 @@
         "trafficLightPosition": { "x": 16, "y": 28 }
       }
     ],
+    "macOSPrivateApi": true,
     "security": {
       "csp": null
     }

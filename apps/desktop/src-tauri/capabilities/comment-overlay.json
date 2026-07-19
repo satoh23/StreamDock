@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "comment-overlay",
+  "description": "Capability for the OBS transparent overlay window (033f). Display-only, minimal permissions.",
+  "windows": ["comment-overlay"],
+  "permissions": ["core:default"]
+}

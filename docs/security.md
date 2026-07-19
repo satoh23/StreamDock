@@ -761,6 +761,35 @@ distill（vendor）したもので、keyring・`open`・hono/zod・dotenv・goog
   top-navigation/popups が起きる場合は `sandbox="allow-scripts allow-same-origin allow-presentation"`（top-nav/popups 非付与）を
   追加し再生維持を確認する。将来 CSP を効かせる際は `frame-src https://www.youtube-nocookie.com`（＋派生ドメイン）が必要。
 
+### 033f コメントビューア OBS 透過オーバーレイ窓（新規 per-window capability＋`macos-private-api` feature・security-review 実施済み）
+
+- コメント一覧を OBS の「ウィンドウキャプチャ」へ載せるため、背景透過のオーバーレイ窓（label `comment-overlay`）を
+  ワンクリックで開く機能を追加した（親 033・問題 9）。obs-websocket は不採用（新規 localhost 接続面を作らない）。
+  データ源は**既存の loopback sidecar WS（`ws://127.0.0.1:<port>`）の読み取り専用接続のみ**で、**新規外部通信ゼロ・新規依存ゼロ**。
+- **security-review を実施し、判定＝問題なし**（修正必須なし）。確認事項:
+  - **新規外部通信ゼロ・読み取り専用**: `OverlayApp` は `connectCommentStream({ onComments })` のみで制御フレーム
+    （start-login / start-session / stop-session）を一切送らない＝送信フレームゼロ。外部 http(s)/WS 宛先の新規追加なし。
+    **main とその Rust command は no-internet 維持**（§1／方針②）。新通信面を作らないため security.md 本体への §1 例外追記は不要。
+  - **capability 最小・main/comment-viewer 不変**: 新設 `capabilities/comment-overlay.json` は `core:default` のみ＋
+    `windows:["comment-overlay"]` に scope 限定。`default.json`（`windows:["main"]`）・`comment-viewer.json` は差分ゼロで、
+    overlay 窓は main の `core:window`（close/minimize 等）/dialog/autostart 権限を継承しない。アプリ定義 command
+    （`open/close_comment_overlay_window`・引数は `AppHandle` のみ・固定ラベル/固定オプション）は本構成では ACL 列挙不要。
+  - **プロセス/no-orphan kill 不変（§6）**: overlay は表示専用で sidecar を起動/停止しない（`ensure_started` 無し・
+    窓イベント登録無し・close で `shutdown` 連動無し）。PID kill・プロセス名 kill なし。sidecar 起動/停止契機は
+    コメビュ窓（`open_comment_viewer_window` の窓イベント／`RunEvent::Exit`）に集約のまま。
+  - **依存（§10）・CSP 不変**: 新規 crate/npm/plugin ゼロ。透過描画のため既存 `tauri` crate に **`macos-private-api`
+    feature を追加**（新規 crate ではなく feature 追加＝028 の `windows` feature と同型）＋`tauri.conf.json` に
+    `app.macOSPrivateApi: true`。`csp: null` 不変・外部 script/style/image 非増加。透過 CSS は overlay 窓の document
+    （`data-overlay="1"`）にだけ効き main/comment-viewer に波及しない。
+  - **MAS 配布不可の受容**: macOS 私的 API 使用のため Mac App Store 配布不可になるが、本アプリは .app/.dmg 直配布で
+    MAS 経路が無いため受容（IPC/権限/ネットワークの攻撃面は増えず、透過描画に閉じる）。`background_throttling(Disabled)`
+    は webview の描画/タイマー スケジューリング設定のみで通信/権限/プロセスに触れない（macOS14+ のみ有効・Windows/Linux は no-op）。
+  - **binding drift ゼロ**: 追加 command は引数 `AppHandle`・戻り `AppResult<()>` で新規 ts-rs 型なし（`check:bindings` 32 passed）。
+- **後回し（記録のみ）**: overlay を開くと sidecar への loopback WS 接続が 1 本増える（コメビュ本体に加えて）が、
+  sidecar は全クライアントへ同報するだけで overlay は読み取り専用購読＝本体セッションに影響せず、close/unmount で
+  `disconnect()` される（032c-b の loopback WS と同レベルの localhost 信頼モデル）。**実機（macOS 14.6.1）で `lsof -i` の
+  外部 ESTABLISHED が sidecar PID 下のみ・overlay/main に出ないこと、OBS ウィンドウキャプチャの透過ライブ合成を目視**（`tauri dev`）。
+
 ## 004 Tool Registry時点のレビュー観点
 
 004では、以下を確認する。

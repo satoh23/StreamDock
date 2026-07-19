@@ -3780,3 +3780,182 @@ sidecar 停止（`lsof -i` で sidecar 由来ソケット消滅）／窓を直�
 - docs: `docs/progress.md`（本記録）
 - 不変（確認済み）: `capabilities/*`・`tauri.conf.json`（`csp: null`）・`process/*`（一括停止 `stop_preset_processes` の Rust 表面）・
   ts-rs 型（新規ゼロ）・依存（新規 crate/npm ゼロ）・`open_comment_viewer_window`
+
+## 2026-07-19 (033f OBS 用透過オーバーレイ窓（ワンクリック）)
+
+コメント一覧を OBS へ載せるため、**背景透過のオーバーレイ窓をワンクリックで開ける**ようにした（親 [033](tasks/033-comment-viewer-ux-revamp.md)
+の問題 9）。ユーザーは OBS の「ウィンドウキャプチャ」でこの窓を取り込み、透過背景がそのまま抜ける。**追加依存・新規外部通信ゼロ**で、
+既存のウィンドウ生成方式（`WebviewWindowBuilder`）と sidecar の loopback WS を再利用。obs-websocket 自動連携は親 033 方針どおり不採用。
+**これで 033 系（033a〜f）が完了**。
+
+> ※本節は 033f 本体時点（オーバーレイを **最前面 `always_on_top`** で開く）の記録。開いた窓の挙動はこの後の
+> 「**追修正①**（最背面・非フォーカス化）」で **最背面 `always_on_bottom`＋`focused(false)`** に変更した。窓挙動の
+> 最終状態は下記「追修正①／②」節を正とする（本節の `always_on_top`／`show()+set_focus()`／「最前面」記述は履歴）。
+
+### 完了したこと
+
+- **(1) Rust: 透過オーバーレイ窓を開くコマンド**（`lib.rs`・`open_comment_overlay_window` 新設＋`invoke_handler` 登録）:
+  - Builder 設定: `.transparent(true).decorations(false).always_on_top(true).shadow(false)`＋`.inner_size(400,720)`／
+    `.min_inner_size(240,320)`／`.title("StreamDock コメントオーバーレイ")`（OBS のウィンドウ一覧で選びやすく）。単一インスタンス
+    ガード（既存なら `show()`＋`set_focus()` で前面化）は `open_comment_viewer_window` に倣う。
+  - **sidecar 連動なし**: `comment_sidecar::ensure_started` を呼ばず・close イベントで `comment_sidecar::shutdown` も登録しない。
+    sidecar 起動/停止契機はコメビュ窓の既存イベントに集約したまま＝**no-orphan 3 段 kill を壊さない**（オーバーレイ close で
+    sidecar を落とさない）。sidecar 未起動時は WS 接続待ち＝0 件表示になるだけで副作用なし。
+- **(2) tauri.conf 透過対応の要否＝要（macOS 私的 API）**（`tauri.conf.json`／`Cargo.toml`）: 実 crate ソースで確認したとおり
+  macOS では `WebviewWindowBuilder.transparent()` が `feature = "macos-private-api"` で cfg gate され、**feature 無しでは
+  `cargo check` がコンパイル不可**（実行時適用も同 feature gate）。`tauri.conf.json` の `macOSPrivateApi` は Tauri CLI
+  （tauri dev/build）経路でのみ feature を自動付与するため、CLI を通らない `cargo check`（本タスクの検証コマンド）でも通るよう
+  **`tauri` crate に `macos-private-api` feature を明示追加**（新規 crate 追加ではなく feature 追加＝028 の windows feature と同型）。
+  `app.macOSPrivateApi: true` も併記（公式ドキュメント準拠）。`security.csp: null` は不変。macOS 私的 API 使用で MAS 配布不可に
+  なるが .app/.dmg 直配布のため受容。
+- **(3) capability 新設（最小権限）**（`capabilities/comment-overlay.json`）: `windows: ["comment-overlay"]`＋
+  `permissions: ["core:default"]` のみ。`default.json`（main）・`comment-viewer.json` は**不変**（広い window scope・shell/fs 権限なし）。
+- **(4) 共有 mergeComments 抽出**（新規 `features/comment-viewer/mergeComments.ts`）: 032c-a 以来 `CommentViewerApp` 内 local だった
+  `mergeComments`＋`MAX_COMMENTS` を挙動不変で切り出し・export。`CommentViewerApp.tsx` は import に差し替え（`added` の TTS 用途は
+  不変）。**本体とオーバーレイで完全に同じ append＋id 重複排除＋200 件クランプ**を保証。
+- **(5) OverlayApp（背景透過・表示専用）**（新規 `screens/comment-viewer/OverlayApp.tsx`／`OverlayApp.module.css`）:
+  - **読み取り専用接続**: `connectCommentStream({ onComments })` のみ。制御フレームメソッド（`startLogin`/`startSession`/`stopSession`）は
+    一切呼ばない＝**送信フレームゼロ・新規外部通信ゼロ**。受信は共有 `mergeComments` で蓄積し `CommentList`（033b 分割）で描画。
+    操作 UI（接続・設定・トグル）は持たない。cleanup の `disconnect()` もクライアント側 close のみ。
+  - **背景透過**: 同一バンドルを全窓が読むため、`OverlayApp` の `useEffect` でこの窓の document にだけ `data-overlay="1"` を立て、
+    module 内の属性ガード付き `:global(html[data-overlay="1"] …)` で `html`/`body`/`#root` を透明化（unmount で属性除去）。
+    main/comment-viewer 窓には波及しない。コメントカードは `CommentList` 既存の不透明 surface のままで透明窓に浮く（装飾は最小・
+    `CommentList` と共有 CSS は無改変）。
+- **(6) App 分岐＋ラッパ＋本体ボタン**（`App.tsx`／`windowApi.ts`／`CommentViewerApp.tsx`＋module.css）:
+  - `App.tsx` に `comment-overlay` ラベル分岐（→`OverlayApp`）。`windowApi.ts` に `openCommentOverlayWindow` invoke ラッパ。
+  - **ボタン設置＝本体コメントビュー上部**（ユーザー選択）: `.toolbar` 右クラスタ（`.toolbarActions`）に「OBS オーバーレイ」ボタンを
+    歯車の隣に追加。ツールバー直下に小さな注記（`.overlayHint`）で「初回のみ OBS でウィンドウキャプチャを追加し本窓を選択・背景は
+    透過・閉じるは Cmd+W」を常時表示。`SettingsView.tsx` は無改変。閉じ方は標準 macOS メニュー（Cmd+W）で足りるため専用 close
+    コマンドは作らない。
+
+**やらないこと（線引き遵守）**: obs-websocket 自動ソース追加／オーバーレイの装飾・アニメ作り込み／オーバーレイからの接続・設定操作／
+コメビュ本体 UI（033a〜d）・ツール管理（033e）／sidecar・no-orphan kill 契機の変更。
+
+**bindings drift**: 追加コマンドは引数 `AppHandle`・戻り `AppResult<()>`（`open_comment_viewer_window` と同型）で**新規 ts-rs 型ゼロ**。
+`pnpm --filter ./apps/desktop check:bindings`＝**32 passed・drift ゼロ**を確認。
+
+**security-review 通過（指摘なし）**: ① オーバーレイ通信は loopback WS 読み取り専用に限定（制御フレーム送信なし・新規外部通信ゼロ・
+main は no-internet 維持） ② `comment-overlay.json` は `core:default` 最小権限で `main`/`comment-viewer` を広げない ③ 新規依存ゼロ
+（既存 `tauri` の feature 追加のみ）・`csp: null` 不変 ④ オーバーレイは sidecar を起動/停止せず close で落とさない（no-orphan kill 契機不変）。
+透過・最前面窓は操作 UI を持たない表示専用でクリックジャック対象なし。
+
+**検証**: `pnpm --filter ./apps/desktop typecheck` / `lint`＝**0 error / 0 warning**、`cargo check`（`macos-private-api` feature 有効で
+`.transparent()` がコンパイル）＝**Finished（0 error）**、`check:bindings`＝**drift ゼロ**。
+**残課題（実機・本人環境）**: `pnpm --filter ./apps/desktop tauri dev` で 「OBS オーバーレイ」→背景透過・フレームレス・最前面で開く／
+オーバーレイとコメビュ本体で同一コメント／OBS ウィンドウキャプチャで透過合成／オーバーレイを Cmd+W で閉じても sidecar が落ちない／
+`lsof -i` で外部 ESTABLISHED が sidecar PID 下のみ（オーバーレイ/main 本体 PID に出ない）、を目視。
+
+### 変更ファイル（033f）
+
+- Rust（変更）: `apps/desktop/src-tauri/src/lib.rs`（`open_comment_overlay_window` 追加＋`invoke_handler` 登録）
+- 設定（変更）: `apps/desktop/src-tauri/tauri.conf.json`（`app.macOSPrivateApi: true`）、
+  `apps/desktop/src-tauri/Cargo.toml`（`tauri` に `macos-private-api` feature＋理由コメント）
+- capability（新規）: `apps/desktop/src-tauri/capabilities/comment-overlay.json`（`core:default` 最小権限）
+- frontend（新規）: `apps/desktop/src/screens/comment-viewer/OverlayApp.tsx`／`OverlayApp.module.css`、
+  `apps/desktop/src/features/comment-viewer/mergeComments.ts`
+- frontend（変更）: `apps/desktop/src/App.tsx`（ラベル分岐）、`apps/desktop/src/features/comment-viewer/windowApi.ts`（ラッパ追加）、
+  `apps/desktop/src/screens/comment-viewer/CommentViewerApp.tsx`（mergeComments を import 化・本体上部に OBS ボタン＋注記＋handler）、
+  `apps/desktop/src/screens/comment-viewer/CommentViewerApp.module.css`（`.toolbarActions`／`.overlayHint` 追加）
+- docs: `docs/progress.md`（本記録）
+- 不変（確認済み）: `default.json`（main）・`comment-viewer.json`・`csp: null`・sidecar／no-orphan kill 経路・
+  ts-rs 型（新規ゼロ）・依存（新規 crate/npm/plugin ゼロ）
+
+### 033 系（033a〜f）完了
+
+親 [033](tasks/033-comment-viewer-ux-revamp.md) の分割どおり 033a（デクラター）→033b（設定ビュー/接続UI移設）→033c（VOICEVOX トグル/
+自動連携）→033d（話者選択/改名）→033e（ツール管理 再生/停止）→**033f（OBS 透過オーバーレイ）**をすべて実装・検証・security-review 済み。
+コメビュ UX 刷新バッチは完了。
+
+### 033f 追修正: オーバーレイを「最背面・非フォーカス」で開く（配信者の画面に前面表示しない）＋「閉じる」導線
+
+**症状**: 033f のオーバーレイが `always_on_top(true)` で開くため、配信者自身の画面の**最前面に常時浮かんで邪魔**だった
+（本人報告）。要望は「オーバーレイのコメントを自分の画面には前面表示せず OBS にだけライブ反映したい」。
+
+**調査で確定**: macOS では OBS「ウィンドウキャプチャ」は窓を**画面上に存在（非最小化）**させないとライブ更新が凍結/黒画面に
+なりやすい（最小化・別 Space・完全画面外は不安定）。一方 **背後に隠れた（occluded）窓は ScreenCaptureKit がライブ取り込み
+できる**。よって「完全不可視」ではなく **最背面固定**が「前面に出さない × ライブ維持」の堅実解（**ユーザー選択も最背面方式**）。
+Tauri Builder の実 API（`webview_window.rs`）で `always_on_bottom` / `focused` / `position` の存在を確認。
+
+**修正内容**:
+- **(1) Rust: オーバーレイを最背面・非フォーカスで開く**（`lib.rs` `open_comment_overlay_window`）:
+  Builder を `.always_on_top(true)` → **`.always_on_bottom(true)` ＋ `.focused(false)`**（開くとき前面フォーカスを奪わない）に変更。
+  `.position(24.0, 48.0)` で空デスクトップ時の「見え」を左上隅に寄せる。`.transparent/.decorations(false)/.shadow(false)`・
+  サイズは不変。**再オープンガードの `set_focus()` を除去**（最背面窓を前面へ引き上げてちらつかせないため・`show()` のみ）。
+- **(2) Rust: `close_comment_overlay_window` を新設＋登録**（`lib.rs`）: 033e の `close_comment_viewer_window` と同型
+  （特定ラベル窓の `.close()`・無ければ no-op）。最背面・非フォーカスで Cmd+W が掴みにくいため本体から閉じられるようにする。
+  **オーバーレイは sidecar を起動していないため `.close()` に shutdown 連動なし＝no-orphan kill 契機は不変**・PID/プロセス名 kill なし。
+- **(3) frontend: 閉じる導線＋案内更新**（`windowApi.ts`／`CommentViewerApp.tsx`）: `closeCommentOverlayWindow()` ラッパ追加。
+  本体上部ツールバー（`.toolbarActions`）に「OBS オーバーレイ」開くボタンの隣へ**「閉じる」ghost ボタン**を追加し配線
+  （close は窓が無ければ no-op なので open 状態ポーリング不要）。注記（`.overlayHint`）を最背面挙動に更新
+  （「常に最背面で開くので配信者の画面には前面表示されません／閉じるときは『閉じる』を押す」）。`SettingsView.tsx` 無改変・CSS 追加なし。
+
+**やらないこと**: 完全不可視（最小化/別 Space/画面外・キャプチャ凍結リスク）／OBS ブラウザソース化（ローカル HTTP 新設＝新規
+待受ソケット・親 033 方針外・別 security-review。将来検討）／sidecar・no-orphan kill 契機・main の no-internet・
+オーバーレイの loopback WS 読み取り専用接続の変更。
+
+**security-review 通過（指摘なし）**: 窓の表示属性変更のみで**新規外部通信・依存・capability・CSP 変更ゼロ**。
+`close_comment_overlay_window` は特定ラベル窓 `.close()` のみ（PID/プロセス名 kill なし・sidecar 非連動＝no-orphan kill 契機不変・
+§6 非該当）。新規 ts-rs 型ゼロ。
+
+**検証**: `typecheck` / `lint`＝**0 error / 0 warning**、`cargo check`＝**Finished（0 error）**、`check:bindings`＝**drift ゼロ**。
+**残課題（実機・本人環境）**: `tauri dev` で 「OBS オーバーレイ」→最背面で開き**自分の画面の前面に浮かない**／OBS ウィンドウ
+キャプチャで**ライブ**透過合成（新規コメントで OBS 側も更新＝凍結しない）／「閉じる」で閉じ**コメビュ本体・sidecar は継続**、を目視
+（※空デスクトップ部分で最背面のオーバーレイが小さく覗く場合は許容）。
+
+### 変更ファイル（033f 追修正）
+
+- Rust（変更）: `apps/desktop/src-tauri/src/lib.rs`（`open_comment_overlay_window` の Builder を最背面/非フォーカス化・
+  再オープンの set_focus 除去／`close_comment_overlay_window` 追加＋`invoke_handler` 登録）
+- frontend（変更）: `apps/desktop/src/features/comment-viewer/windowApi.ts`（`closeCommentOverlayWindow` 追加）、
+  `apps/desktop/src/screens/comment-viewer/CommentViewerApp.tsx`（「閉じる」ボタン＋handler・注記文言更新）
+- docs: `docs/progress.md`（本記録）
+- 不変（確認済み）: `capabilities/comment-overlay.json`・`tauri.conf.json`（`macOSPrivateApi`）・`Cargo.toml`（`macos-private-api`）・
+  `OverlayApp.tsx`／`OverlayApp.module.css`（読み取り専用・透過）・`csp: null`・依存（新規ゼロ）・ts-rs 型（新規ゼロ）
+
+### 033f 追修正②: オーバーレイの「接続前は表示されない／反映ラグ」を解消（背景スロットリング無効化）＋合計表示を除去
+
+**症状（本人報告）**: ①配信サイトに接続しないとオーバーレイが表示されない（接続前でも表示したい）②コメント取得から
+オーバーレイ反映まで大きなラグがある（即時反映したい）③オーバーレイにコメント合計（「N 件」）は不要・コメントだけでよい。
+
+**根本原因（①②の共通原因・実 crate ソース＋sidecar 調査で確定）**: 追修正①でオーバーレイを **最背面
+（`always_on_bottom`）＋非フォーカス（`focused(false)`）** で開くようにしたため、その webview が macOS 上で「非アクティブ
+（inactive）webview」となり、**WKWebView の既定 inactive scheduling ポリシー（＝タスクを完全 suspend）** が効いていた
+→ 初回描画が接続まで paint されず（①）・受信後の描画/タイマーが throttle されてラグ（②）。
+- Tauri は `WebviewWindowBuilder::background_throttling(BackgroundThrottlingPolicy)` を提供し、**未設定時の既定は
+  Suspend**（`tauri_utils::config` doc）。wry は macOS14+/iOS17+ で `WKWebViewConfiguration.inactiveSchedulingPolicy` に反映
+  （`Disabled → None`）。本機は **macOS 14.6.1** で有効。
+- **sidecar は無罪（調査確定）**: comment-sidecar の WS サーバ（`apps/comment-sidecar/vendor/gateway/.../websocket-comment.output-port.ts`
+  `broadcastMessage` `:197-205`）は `WebSocketServer.clients` 全員へ `comments.append` を**同期即ブロードキャスト**（単一
+  クライアント上書き・per-client バッファ/throttle なし）。コメビュ本体と overlay は同時刻に同じフレームを受信するため、
+  両窓の差は**受信後の窓側（webview アクティブ性＝throttling）**が原因。late-join への replay は無い（接続後のコメントから
+  表示＝仕様どおり）・overlay は制御フレームを送らない読み取り専用でセッションに影響しない（追修正①の設計どおり）。
+
+**修正内容（3 点・すべて最小・表示層）**:
+- **(1) オーバーレイ webview の背景スロットリング無効化**（`lib.rs` `open_comment_overlay_window`）:
+  Builder に **`.background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)`** を追加。最背面・非フォーカス
+  でも suspend/throttle されず、**接続前でも即描画**（①）＋**コメントをリアルタイム反映**（②）。影響は overlay 窓のみ
+  （comment-viewer / main は不変）。doc に理由追記。
+- **(2) コメント合計を非表示**（`CommentList.tsx`／`OverlayApp.tsx`）: `CommentList` に任意 prop **`showCount?: boolean`**（既定 true）
+  を追加し、false のとき先頭の `listHeader`（「N 件」）を描画しない。オーバーレイは `showCount={false}` を渡す（③）。コメビュ本体は
+  prop 省略＝従来どおり合計表示。空時の `.empty`（「コメントはまだありません」）は残す（接続前に OBS で存在確認できる＝①の体験改善）。
+
+**やらないこと**: 最背面/非フォーカス方針（追修正①）の変更／sidecar のプロトコル変更（無罪確定・Node sidecar は触らない）／
+オーバーレイの装飾作り込み／main の no-internet・no-orphan kill 契機・loopback WS 読み取り専用の変更。
+
+**security 自己確認（指摘なし）**: `background_throttling` は webview の描画/タイマーのスケジューリング設定のみ・`showCount` は
+表示 prop のみで、**新規外部通信・依存・capability・CSP・tauri.conf・ts-rs 型ゼロ**。overlay の loopback WS 読み取り専用・
+sidecar 非連動・no-orphan kill 契機は不変（通信/権限/プロセスに触れないため軽い自己確認で足りると判断）。
+
+**検証**: `typecheck` / `lint`＝**0 error / 0 warning**、`cargo check`＝**Finished（0 error）**（`BackgroundThrottlingPolicy::Disabled`
+がコンパイル）、`check:bindings`＝**drift ゼロ**。
+**残課題（実機・本人環境 macOS 14.6.1）**: `tauri dev` で 「OBS オーバーレイ」→**接続前でも**空一覧が OBS に即表示／接続後は
+コメントが**ラグなくリアルタイム**反映（コメビュ本体と同等）／オーバーレイに**合計が出ない**（本体は従来どおり表示）、を目視。
+
+### 変更ファイル（033f 追修正②）
+
+- Rust（変更）: `apps/desktop/src-tauri/src/lib.rs`（overlay Builder に `background_throttling(Disabled)` 追加＋doc）
+- frontend（変更）: `apps/desktop/src/screens/comment-viewer/CommentList.tsx`（`showCount?: boolean` 追加）、
+  `apps/desktop/src/screens/comment-viewer/OverlayApp.tsx`（`showCount={false}` を渡す）
+- docs: `docs/progress.md`（本記録）
+- 不変（確認済み）: sidecar（Node・無罪確定）・`capabilities/*`・`tauri.conf.json`・`Cargo.toml`・`csp: null`・
+  comment-viewer / main 窓の Builder・依存（新規ゼロ）・ts-rs 型（新規ゼロ）

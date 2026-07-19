@@ -72,6 +72,71 @@ fn open_comment_viewer_window(app: AppHandle) -> AppResult<()> {
     Ok(())
 }
 
+/// 033f: コメント一覧を OBS へ載せるための**背景透過オーバーレイ窓**（label `comment-overlay`）を開く。
+/// 単一目的コマンド（§3）で、任意ラベル・任意オプションの窓生成は露出しない。単一インスタンスガード＝
+/// 既に開いていれば再利用し、無ければ透過・フレームレス・**最背面**で生成する。
+///
+/// **配信者の画面に前面表示しない**（033f 追修正）: `.always_on_bottom(true)` で常に他ウィンドウの後ろへ置き、
+/// `.focused(false)` で開くときに前面フォーカスを奪わない。OBS の「ウィンドウキャプチャ」は背後に隠れた
+/// （occluded）窓もライブ取り込みできるため、最前面に浮かせなくてもコメントは OBS に反映される（macOS で
+/// 最小化・別 Space・完全画面外にするとキャプチャが凍結しやすいため、最背面に留めるのが堅実）。
+///
+/// **表示専用**: `open_comment_viewer_window` と異なり sidecar には一切触れない
+/// （`comment_sidecar::ensure_started` を呼ばない／窓イベントで `comment_sidecar::shutdown` を登録しない）。
+/// sidecar の起動・停止契機はコメビュ窓の既存イベントに集約したまま＝no-orphan 3 段 kill を壊さない
+/// （オーバーレイの close で sidecar を落とさない）。sidecar 未起動時はオーバーレイの loopback WS が接続待ちに
+/// なりコメント 0 件表示になるだけで副作用は無い。capability は `capabilities/comment-overlay.json`
+/// （最小権限・`main`/`comment-viewer` 不変）に閉じる。macOS の透過描画には tauri.conf の `macOSPrivateApi` と
+/// Cargo の `tauri/macos-private-api` feature が要る（`.transparent()` は macOS でこの feature でのみコンパイルされる）。
+#[tauri::command]
+fn open_comment_overlay_window(app: AppHandle) -> AppResult<()> {
+    // 既に開いていれば多重生成せず再利用する。最背面窓を前面へ引き上げてちらつかせないよう、
+    // set_focus はせず show のみ（既に可視なら実質 no-op）。
+    if let Some(window) = app.get_webview_window("comment-overlay") {
+        let _ = window.show();
+        return Ok(());
+    }
+    // 同一 Vite バンドルを読み込み、frontend は `getCurrentWindow().label` で OverlayApp を描画する。
+    // 透過・装飾なし・最背面・非フォーカス・影なし（配信者の画面に前面表示せず OBS 取り込みだけに使うため）。
+    //
+    // 033f 追修正②: 最背面・非フォーカスだと webview が「非アクティブ」扱いになり、WKWebView の既定
+    // inactive scheduling ポリシー（＝タスクを完全 suspend）が効いて「初回描画が接続まで出ない／コメント反映が
+    // 大幅に遅れる」不具合が出る。`background_throttling(Disabled)` で非アクティブ窓でも throttle/suspend させず、
+    // 即描画＋リアルタイム反映にする（wry は macOS 14+/iOS 17+ で `inactiveSchedulingPolicy` に反映・本機は 14.6）。
+    let _window =
+        WebviewWindowBuilder::new(&app, "comment-overlay", WebviewUrl::App("index.html".into()))
+            .title("StreamDock コメントオーバーレイ")
+            .transparent(true)
+            .decorations(false)
+            .always_on_bottom(true)
+            .focused(false)
+            .shadow(false)
+            .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
+            .position(24.0, 48.0)
+            .inner_size(400.0, 720.0)
+            .min_inner_size(240.0, 320.0)
+            .build()
+            .map_err(|_| AppError::launch_failed("オーバーレイを開けませんでした"))?;
+    // 意図的に window イベントを登録しない: オーバーレイは sidecar を起動/停止しないため、
+    // close 時の shutdown 連動（open_comment_viewer_window の 64-71）は付けない。
+    Ok(())
+}
+
+/// 033f 追修正: OBS 用の背景透過オーバーレイ窓（label `comment-overlay`）を閉じる。コメビュ本体の「閉じる」用。
+/// 最背面・非フォーカスで開くため Cmd+W で掴みにくく、コメビュ本体から明示的に閉じられるよう用意する。
+/// 単一目的コマンド（§3）で、任意ラベルの窓操作は露出しない。窓が無ければ no-op（冪等）。オーバーレイは
+/// sidecar を起動していないため `.close()` に shutdown 連動は無く、PID kill・プロセス名 kill も行わず自アプリの
+/// ウィンドウを閉じるのみ（§6 の PID kill はそもそも発生せず・no-orphan kill 契機は不変）。
+#[tauri::command]
+fn close_comment_overlay_window(app: AppHandle) -> AppResult<()> {
+    if let Some(window) = app.get_webview_window("comment-overlay") {
+        window
+            .close()
+            .map_err(|_| AppError::launch_failed("オーバーレイを閉じられませんでした"))?;
+    }
+    Ok(())
+}
+
 /// 033e: 内蔵コメントビューア窓（label `comment-viewer`）を閉じる。ツール管理の「停止」ボタン用。
 /// 単一目的コマンド（§3）で、任意ラベルの窓操作は露出しない。窓が無ければ no-op（冪等）。
 /// `.close()` は既存の `CloseRequested | Destroyed` イベント経由で sidecar shutdown も連動する
@@ -217,6 +282,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             host_os,
             open_comment_viewer_window,
+            open_comment_overlay_window,
+            close_comment_overlay_window,
             close_comment_viewer_window,
             is_comment_viewer_open,
             get_comment_stream_port,

@@ -1,0 +1,19 @@
+/* 033f: OBS 用の背景透過オーバーレイ（別ウィンドウ label `comment-overlay`）。窓の背景を透明にして OBS の
+   ウィンドウキャプチャで背景が抜けるようにする。コメントカードは CommentList 既存の不透明 surface
+   （var(--surface)）のままで、透明な窓に浮かぶ典型的なチャットオーバーレイ体裁にする（装飾は最小・共有 CSS は無改変）。 */
+
+/* この窓の document だけ背景を透明化する。OverlayApp が data-overlay="1" を立てた時のみ効くので、同一バンドルを
+   読み込む main / comment-viewer 窓には波及しない（theme.css の body/#root の不透明 var(--bg) をこの窓でのみ上書き）。 */
+:global(html[data-overlay="1"]),
+:global(html[data-overlay="1"] body),
+:global(html[data-overlay="1"] #root) {
+  background: transparent;
+}
+
+.root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: transparent;
+  color: var(--text);
+}

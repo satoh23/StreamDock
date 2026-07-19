@@ -31,6 +31,7 @@ import { TutorialProvider } from "./features/tutorial/TutorialProvider";
 import { TutorialOverlay } from "./components/tutorial/TutorialOverlay";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { CommentViewerApp } from "./screens/comment-viewer/CommentViewerApp";
+import { OverlayApp } from "./screens/comment-viewer/OverlayApp";
 
 function MainWindowApp() {
   const [screen, setScreen] = useState<Screen>("main");
@@ -345,14 +346,19 @@ function MainWindowApp() {
 }
 
 /**
- * 032c-a: 同一 Vite バンドルをウィンドウラベルで分岐する薄いルート。
- * `main`（既定）= 管理画面（MainWindowApp）／`comment-viewer` = 内蔵コメントビューア。
- * ウィンドウ生成は Rust の `open_comment_viewer_window` に閉じ、frontend からは生成しない。
+ * 032c-a/033f: 同一 Vite バンドルをウィンドウラベルで分岐する薄いルート。
+ * `main`（既定）= 管理画面（MainWindowApp）／`comment-viewer` = 内蔵コメントビューア／
+ * `comment-overlay` = OBS 用の背景透過オーバーレイ（表示専用）。
+ * ウィンドウ生成は Rust の `open_comment_viewer_window` / `open_comment_overlay_window` に閉じ、
+ * frontend からは生成しない。
  */
 function App() {
   const label = getCurrentWindow().label;
   if (label === "comment-viewer") {
     return <CommentViewerApp />;
+  }
+  if (label === "comment-overlay") {
+    return <OverlayApp />;
   }
   return <MainWindowApp />;
 }

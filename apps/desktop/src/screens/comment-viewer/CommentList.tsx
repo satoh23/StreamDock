@@ -21,14 +21,21 @@ const SOURCE_CLASS: Record<CommentViewDto["source"], string> = {
 
 interface CommentListProps {
   comments: CommentViewDto[];
+  /**
+   * 033f 追修正: コメント合計（「N 件」）見出しを出すか。既定 true（コメビュ本体）。OBS 用オーバーレイは
+   * コメントだけ映したいので false を渡す。
+   */
+  showCount?: boolean;
 }
 
-export function CommentList({ comments }: CommentListProps) {
+export function CommentList({ comments, showCount = true }: CommentListProps) {
   return (
     <>
-      <div className={styles.listHeader}>
-        <span className={styles.count}>{comments.length} 件</span>
-      </div>
+      {showCount && (
+        <div className={styles.listHeader}>
+          <span className={styles.count}>{comments.length} 件</span>
+        </div>
+      )}
 
       <ol className={styles.list}>
         {comments.length === 0 ? (
