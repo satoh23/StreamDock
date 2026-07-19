@@ -68,10 +68,9 @@ export function ToolRow({
       </div>
       {/* 023: url 種別は PID 管理下に入らないため status バッジを出さない。ただしグリッドの status 列
           セルは空で占有し、アクション列（toolActions）が PC アプリ行と同じ位置に揃うようにする。
-          032c-a: internal（内蔵ツール）も PID 管理外。status 列には「内蔵」バッジを出す。 */}
-      {tool.kind === "internal" ? (
-        <span className={styles.builtinBadge}>内蔵</span>
-      ) : tool.kind === "url" ? (
+          033e: internal（コメビュ）は窓の開閉から state を導出するようになったため、他ツールと同じ
+          StatusBadge を出す（開＝「起動済み」/ 閉＝「停止済み」）。032c-a の「内蔵」バッジは廃止。 */}
+      {tool.kind === "url" ? (
         <span aria-hidden />
       ) : (
         <StatusBadge state={tool.state} />
@@ -116,15 +115,39 @@ export function ToolRow({
             <StartIcon />
           </button>
         ) : tool.kind === "internal" ? (
-          // 032c-a: internal 種別は PID 管理外。state に依らず「開く」ボタンのみ（停止/状態表示なし）。
-          // onOpen が launchTool を呼び、Rust が別ウィンドウ（コメビュ）を開く。
-          <button
-            className={`${styles.runtimeAction} ${styles.startBtn}`}
-            onClick={onOpen}
-            title="開く"
-          >
-            <OpenIcon />
-          </button>
+          // 033e: internal（コメビュ）は PID ではなく Tauri ウィンドウの開閉で管理し、他ツールと同じ
+          // state 依存表示にする。開＝「開く」（前面化=onOpen）＋「停止」（窓 close=onStop）、
+          // 起動/停止の遷移中は Spinner、閉＝「起動」（窓 open=onStart）。
+          tool.state === "running" || tool.state === "launched" ? (
+            <>
+              <button
+                className={styles.runtimeAction}
+                onClick={onOpen}
+                title="開く"
+              >
+                <OpenIcon />
+              </button>
+              <button
+                className={`${styles.runtimeAction} ${styles.stopBtn}`}
+                onClick={onStop}
+                title="停止"
+              >
+                <StopIcon />
+              </button>
+            </>
+          ) : tool.state === "starting" || tool.state === "stopping" ? (
+            <div className={styles.loadingAction}>
+              <Spinner />
+            </div>
+          ) : (
+            <button
+              className={`${styles.runtimeAction} ${styles.startBtn}`}
+              onClick={onStart}
+              title="起動"
+            >
+              <StartIcon />
+            </button>
+          )
         ) : tool.state === "running" || tool.state === "launched" ? (
           <>
             <button

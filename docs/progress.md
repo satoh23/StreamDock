@@ -3724,3 +3724,59 @@ loopback allow-list に **`GET /speakers` を追加**（宛先 `127.0.0.1:50021`
 - docs: `docs/security.md`（§1 例外(032c-c) の許可メソッドに `GET /speakers` 追記）、`docs/progress.md`（本記録）
 - 不変（確認済み）: `lib.rs`/Rust command 表面・`capabilities/*`・`tauri.conf.json`（`csp: null`）・依存（新規 crate/npm ゼロ）・
   `voicevoxApi.ts`（`launch_voicevox_engine` ラッパ）
+
+### 033e ツール管理でコメビュを再生/停止・起動済み表示（他ツールと統一・窓開閉から導出・mac 検証可）
+
+内蔵コメントビューア（`ToolKind::Internal`）だけが「開く」ボタン 1 個（状態非依存）＋常時「内蔵」バッジという特別扱いだったのを、
+他ツールと同じ **未起動＝再生／起動中＝停止＋「起動済み」表示** に揃えた。コメビュは PID プロセスではなく Tauri ウィンドウ
+（label `comment-viewer`）のため、**PID registry には載せず窓の開閉状態から起動状態を導出**する（032c-a の「別窓を開くだけで PID 管理外」を踏襲）。
+
+- **(1) Rust: 窓の停止/状態取得コマンドを追加（最小権限・自窓のみ・PID kill なし）**（`lib.rs`）:
+  - `close_comment_viewer_window(app) -> AppResult<()>`: `get_webview_window("comment-viewer")` があれば `.close()`（無ければ no-op＝冪等）。
+    `.close()` は既存の `CloseRequested | Destroyed → comment_sidecar::shutdown`（`open_comment_viewer_window` 内で登録・032c-b）を経由し
+    **sidecar 停止も自動連動**する。エラーは固定安全文言に丸め、パス/OS エラーを露出しない。
+  - `is_comment_viewer_open(app) -> bool`: `get_webview_window("comment-viewer").is_some()` を返す読み取り専用。
+  - **窓状態取得は独立コマンド方式を採用**（`list_runtime_processes` へ合成しない）。理由: 合成は PID 用 `RuntimeProcess` 契約に window を
+    混ぜて semantics を汚し実質「PID registry で管理」に寄る。独立読み取り専用の方が単一目的・最小権限で線引きが明確。
+    **reconcile の呼び出し回数は不変**（既存 4 秒ポーラー 1 本のまま。1 回の reconcile 内で internal 行があるときだけ 1 IPC 追加）。
+  - 両コマンドを `invoke_handler` の `open_comment_viewer_window` 直後に登録。`open_comment_viewer_window` の既存挙動は不変。
+- **(2) frontend: ToolRow の internal 分岐を state 依存化**（`ToolRow.tsx`）:
+  - status 列: 「内蔵」バッジを廃止し、url 以外は他ツールと同じ `StatusBadge`（開＝「起動済み」/ 閉＝「停止済み」）に統一（**ユーザー選択**）。
+  - アクション列: `executable` と同型に。`running|launched`→「開く」（前面化）＋「停止」／`starting|stopping`→Spinner／それ以外→「起動」。
+- **(3) frontend: MainScreen が窓状態を反映**（`MainScreen.tsx`・新規 `features/comment-viewer/windowApi.ts`）:
+  - `reconcile()`: ガードを `hasInternal` も考慮（内蔵行があればポーリングでも窓状態を確認＝**窓を直接閉じた場合の「停止済み」追従**）。
+    PID プロセスは `force || hasPid` のときだけ `listRuntimeProcesses()`（内蔵のみの preset では PID 用 IPC を打たない）。internal 行は
+    `isCommentViewerOpen()` の結果から **開＝`running`／閉＝`stopped`** を導出（`starting|stopping` は据え置き・PID 分岐に入れない）。
+  - internal 専用ハンドラ: 起動は既存 `launchTool`（→`open_comment_viewer_window`）を再利用、停止は `closeCommentViewerWindow()`。
+    停止直後は窓存在判定のラグ回避のため `reconcile(true)` を呼ばず楽観更新＋4 秒ポーラーで確定（フリッカ回避）。
+  - **除外条件の見直し**: `isCountedRow`（起動済みカウント用）は **internal を含める**（他ツールと表示統一）。`isBulkStoppableRow`
+    （一括停止トグル用）は **internal を除外**（一括停止 `stop_preset_processes` は PID registry 経由で窓を閉じられないため。
+    含めると「停止対象が無いのにトグル点灯」になる）。**コメビュは個別停止のみ・008/014 の一括停止の動作は不変**。`stopAll` の楽観
+    「停止中」表示も `isBulkStoppableRow` に変更（閉じないのに「停止済み」になる誤り防止・Rust の停止対象は不変）。
+
+**やらないこと（線引き遵守）**: internal を PID registry で管理／PID・プロセス名 kill／一括停止に窓 close を足す／`ToolKind` 拡張／
+新規 capability・依存・外部通信／`csp: null` 変更／コメビュ本体 UI（033a〜d）・OBS（033f）。
+
+**bindings drift**: 追加コマンドの戻り値は `AppResult<()>`（既存 `open_comment_viewer_window` と同型）と `bool`（プリミティブ）で
+**新規 ts-rs 型ゼロ＝drift なし**。`pnpm --filter ./apps/desktop gen:bindings` 後に `features/**/bindings/**` の差分ゼロを確認
+（regenerate で出た `rakuraku/bindings/ScanResult.ts` の差分は 032c-a のドキュメント更新由来の**既存 drift** で 033e とは無関係のため revert）。
+
+**security-review 通過（指摘なし）**: ① 追加コマンドは自窓の open/close/存在確認に限定・PID kill／プロセス名 kill なし
+② label `comment-viewer` ハードコードでラベル引数を frontend に露出しない単一目的（任意ラベル窓操作の汎用強権でない）
+③ capability 不拡張（アプリ定義 command＝ACL 不要・`capabilities/*`・`tauri.conf.json` 変更ゼロを `git status` で確認）
+④ `open_comment_viewer_window` 既存挙動不変・close 連動 sidecar 停止は既存経路（032c-b）どおり。新規外部通信・依存・ログ増なし。
+
+**検証**: `pnpm --filter ./apps/desktop typecheck` / `lint`＝**0 error / 0 warning**、`cargo check`＝**Finished（0 error）**、
+bindings drift ゼロ。変更 3 ファイル＋新規 1（`git diff --stat`: `lib.rs` +25 / `MainScreen.tsx` / `ToolRow.tsx`＋新規 `windowApi.ts`）。
+**残課題（実機・本人環境）**: `pnpm --filter ./apps/desktop tauri dev` で 再生→窓オープン＋「起動済み」／停止→窓クローズ＋
+sidecar 停止（`lsof -i` で sidecar 由来ソケット消滅）／窓を直接閉じて 4 秒以内に「停止済み」追従／PID ツールの起動・停止・一括起動/停止に退行なし、を目視。
+
+### 変更ファイル（033e）
+
+- Rust（変更）: `apps/desktop/src-tauri/src/lib.rs`（`close_comment_viewer_window`／`is_comment_viewer_open` 追加＋`invoke_handler` 登録）
+- frontend（新規）: `apps/desktop/src/features/comment-viewer/windowApi.ts`（`closeCommentViewerWindow`／`isCommentViewerOpen` invoke ラッパ）
+- frontend（変更）: `apps/desktop/src/screens/main/ToolRow.tsx`（status 列を StatusBadge に統一・internal アクション分岐を state 依存化）、
+  `apps/desktop/src/screens/main/MainScreen.tsx`（reconcile の窓状態導出・internal 起動/停止ハンドラ・`isCountedRow`/`isBulkStoppableRow`・配線）
+- docs: `docs/progress.md`（本記録）
+- 不変（確認済み）: `capabilities/*`・`tauri.conf.json`（`csp: null`）・`process/*`（一括停止 `stop_preset_processes` の Rust 表面）・
+  ts-rs 型（新規ゼロ）・依存（新規 crate/npm ゼロ）・`open_comment_viewer_window`

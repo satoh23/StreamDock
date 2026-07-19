@@ -4,6 +4,7 @@ import type { ToolKind, ToolRecord } from "../../features/tools/types";
 import type {
   LaunchMode,
   PresetItemWithTool,
+  RuntimeProcess,
   RuntimeProcessStatus,
 } from "../../features/presets/types";
 import { iconDataUri, toIconLetter } from "../../features/tools/display";
@@ -13,6 +14,10 @@ import {
   stopPresetProcesses,
 } from "../../features/presets/presetLaunchApi";
 import { listRuntimeProcesses } from "../../features/presets/runtimeApi";
+import {
+  closeCommentViewerWindow,
+  isCommentViewerOpen,
+} from "../../features/comment-viewer/windowApi";
 import { toErrorMessage } from "../../features/tools/useTools";
 import { Button, IconTile, Spinner } from "../../components/primitives";
 import { ToolRow } from "./ToolRow";
@@ -159,14 +164,40 @@ export function MainScreen({
   // force=false（polling）: 起動中プロセス（launchId 保持行）が無ければ IPC しない。
   // force=true（明示再取得: マウント/プリセット切替/起動・停止直後）: 常に取得して復元・昇格する。
   const reconcile = useCallback(async (force = false) => {
-    if (!force && !runtimeRef.current.some((t) => t.launchId)) return;
+    // 033e: PID プロセス（launchId 保持行）に加え、internal（コメビュ窓）行も追従対象にする。
+    // どちらも無ければポーリングでは IPC しない（従来どおり no-op）。internal 行があれば、窓を直接
+    // 閉じた場合の「未起動（停止済み）」への追従のためポーリングでも窓状態を確認する。
+    const hasPid = runtimeRef.current.some((t) => t.launchId);
+    const hasInternal = runtimeRef.current.some((t) => t.kind === "internal");
+    if (!force && !hasPid && !hasInternal) return;
     const targetPresetId = presetIdRef.current;
-    let procs;
-    try {
-      procs = await listRuntimeProcesses();
-    } catch {
-      // 状態取得の失敗は致命的でないため握りつぶす（次の再取得で回復する）。
-      return;
+
+    // PID プロセスの状態。復元・昇格が要る force 時と、launchId 保持行がある時だけ取得する
+    // （internal のみの preset では PID 用 IPC を打たない）。
+    let procs: RuntimeProcess[] = [];
+    if (force || hasPid) {
+      try {
+        procs = await listRuntimeProcesses();
+      } catch {
+        // 状態取得の失敗は致命的でないため握りつぶす（次の再取得で回復する）。
+        // ここで return するのは意図的: procs=[] のまま先へ進むと、下の突合で launchId 保持行が
+        //   全て「registry から消えた＝stopped」に誤降格するため、PID 行を守る目的で中断する。
+        // 副作用として、独立なはずの internal 窓状態（viewerOpen）取得も今サイクルはスキップされるが、
+        //   internal のみの preset は poll 経路（force=false・hasPid=false）で listRuntimeProcesses を
+        //   そもそも打たず 4 秒以内に追従するため self-heal する（許容範囲）。
+        // 再修正トリガー: PID 用 IPC が継続的に失敗する状況でも窓状態追従を保証したくなったら、
+        //   procsOk フラグを導入し「PID 突合はスキップ・internal 反映は続行」に分離する。
+        return;
+      }
+    }
+    // internal（コメビュ窓）の開閉状態。窓を直接閉じた場合の追従にも使う（PID registry には載せない）。
+    let viewerOpen = false;
+    if (hasInternal) {
+      try {
+        viewerOpen = await isCommentViewerOpen();
+      } catch {
+        // 窓状態の取得失敗は致命的でないため握りつぶす（次の再取得で回復する）。
+      }
     }
     // 取得中にアンマウント/プリセット切替が起きたら、古い結果は反映しない。
     if (!mountedRef.current || presetIdRef.current !== targetPresetId) return;
@@ -181,6 +212,11 @@ export function MainScreen({
       prev.map((row) => {
         // 操作送信中（starting / stopping）の行は楽観的表示を優先し、上書きしない。
         if (row.state === "starting" || row.state === "stopping") return row;
+        // 033e: internal（コメビュ）は PID registry ではなく窓の開閉から state を導出する。
+        // 開＝「起動済み」（running）/ 閉＝「停止済み」（stopped）。launchId は使わない。
+        if (row.kind === "internal") {
+          return { ...row, state: viewerOpen ? "running" : "stopped" };
+        }
         if (row.launchId) {
           const p = byLaunchId.get(row.launchId);
           // registry から消えている＝終了して除去済み → 停止済みへ。
@@ -223,16 +259,18 @@ export function MainScreen({
   // spawn 成功は "launched"（起動中）、reconcile 後は "running"（稼働確認済み）。どちらも起動中扱いとし、
   // 「起動済み」カウントと一括停止トグルの対象にする。
   const isActive = (s: ToolState) => s === "launched" || s === "running";
-  // 023: url 種別は「開く」のみで PID 管理下に入らないため、「起動済み」カウント・一括停止の対象から除外する。
-  // 032c-a: internal 種別も PID 管理外で同様に除外する。一括起動（launchAll）は成功行を url/internal も含めて
-  //   "launched" にするが、これらは registry 非登録で reconcile が降格できず状態が残る。ここで除外しないと
-  //   「起動済み」件数が水増しされ、停止対象が無いのに一括停止トグルが点灯し続ける（url と対称に扱う）。
-  //   ToolRow は url/internal を state 非依存の専用ブランチで描くため、除外しても表示は壊れない。
-  const isActiveRow = (t: RuntimeItem) =>
+  // 023: url 種別は「開く」のみで PID 管理下に入らないため、カウント・一括停止の対象から除外する。
+  // 033e: internal（コメビュ）は窓の開閉から state を導出でき reconcile が降格できるようになったため、
+  //   「起動済み」カウント（isCountedRow）には含める＝他ツールと表示を揃える。ただし一括停止は
+  //   stop_preset_processes（PID registry 経由）で窓を閉じられないため、一括トグル（isBulkStoppableRow）の
+  //   対象からは外す。含めると「停止対象が無いのに一括停止トグルが点灯し続ける」ため。コメビュは個別の
+  //   停止ボタンで閉じる（008/014 の一括停止の動作は変えない）。
+  const isCountedRow = (t: RuntimeItem) => t.kind !== "url" && isActive(t.state);
+  const isBulkStoppableRow = (t: RuntimeItem) =>
     t.kind !== "url" && t.kind !== "internal" && isActive(t.state);
-  const launchedCount = runtime.filter(isActiveRow).length;
-  // 009/010: 起動中（launched/running）の行が1つでもあれば一括ボタンを「一括停止」に切り替える。
-  const anyLaunched = runtime.some(isActiveRow);
+  const launchedCount = runtime.filter(isCountedRow).length;
+  // 009/010: 一括停止で止められる（launched/running）行が1つでもあれば一括ボタンを「一括停止」に切り替える。
+  const anyLaunched = runtime.some(isBulkStoppableRow);
 
   // --- 単体起動（007: 実プロセス起動）---
   // frontend からは toolId のみを渡し、Tool 取得・パス検証・起動は Rust 側で行う。
@@ -303,6 +341,55 @@ export function MainScreen({
       setLaunchFeedback({ kind: "success", text: `${name} を開きました` });
     } catch (e) {
       if (!mountedRef.current) return;
+      setLaunchFeedback({ kind: "error", text: toErrorMessage(e) });
+    }
+  };
+
+  // --- 033e: internal（内蔵コメビュ）の起動/停止 ---
+  // コメビュは PID プロセスではなく Tauri ウィンドウのため、PID registry ではなく窓の開閉で管理する。
+  // 起動（窓を開く）は既存 launchTool を再利用する（Rust が open_comment_viewer_window を呼ぶ＝新規
+  // spawn 面を作らない）。launchId は返らない（窓は PID の停止/監視対象外）。
+  const handleStartInternal = async (
+    id: string,
+    toolId: string,
+    name: string,
+  ) => {
+    setLaunchFeedback(null);
+    setToolState(id, "starting");
+    try {
+      await launchTool(toolId);
+      if (!mountedRef.current) return;
+      // 窓が開いた＝「起動済み」（open_comment_viewer_window 成功で確定）。以降は 4 秒ポーラーが
+      // 窓状態から state を同期し、窓を直接閉じた場合は「停止済み」へ追従する。
+      setToolState(id, "running");
+      setLaunchFeedback({ kind: "success", text: `${name} を開きました` });
+    } catch (e) {
+      if (!mountedRef.current) return;
+      setToolState(id, "error");
+      setLaunchFeedback({ kind: "error", text: toErrorMessage(e) });
+    }
+  };
+
+  // 停止は close_comment_viewer_window で窓を閉じる（既存の窓イベント経由で sidecar も連動停止）。
+  // 窓 close 直後は窓存在判定に一瞬ラグがあり得るため、停止直後に reconcile(true) は呼ばず、楽観更新
+  // （stopped）＋4 秒ポーラー（窓状態）で確定する（「停止済み↔起動済み」フリッカを避ける）。
+  // 前提: 本緩和は「窓 close 完了が次 poll（4 秒）までに終わる」ことに依存する。close が 1 poll 周期を
+  //   超えて残ると、直後の isCommentViewerOpen() が is_some()=true を返して一時的に stopped→running→
+  //   stopped と戻り得る（Tauri の close は実測 ≪4 秒で通常は発生しないが E2E で要確認）。
+  // 再修正トリガー: E2E で上記フリッカが観測されたら、poll 任せにせず停止直後に一定時間だけ
+  //   internal 行の running 昇格を抑止する（stopping 据え置き等の短い抑制窓）ガードを入れる。
+  const handleStopInternal = async (id: string, name: string) => {
+    setLaunchFeedback(null);
+    setToolState(id, "stopping");
+    try {
+      await closeCommentViewerWindow();
+      if (!mountedRef.current) return;
+      setToolState(id, "stopped");
+      setLaunchFeedback({ kind: "success", text: `${name} を停止しました` });
+    } catch (e) {
+      if (!mountedRef.current) return;
+      // 失敗時は起動中へ戻し、再試行できるようにする（handleStop と同型）。
+      setToolState(id, "launched");
       setLaunchFeedback({ kind: "error", text: toErrorMessage(e) });
     }
   };
@@ -437,10 +524,12 @@ export function MainScreen({
     if (!presetId) return;
     setLaunchFeedback(null);
     setStopping(true);
-    // 起動中（launched/running）の行を停止中表示に。
+    // 起動中（launched/running）の行を停止中表示に。033e: internal（コメビュ）は一括停止で窓を
+    // 閉じられない（stop_preset_processes は PID registry 経由）ため、一括の「停止中」表示にはしない
+    // ＝閉じないのに「停止済み」になる誤りを避ける（一括停止の対象は Rust 側で不変・個別停止で閉じる）。
     setRuntime((prev) =>
       prev.map((t) =>
-        isActive(t.state) ? { ...t, state: "stopping" as ToolState } : t,
+        isBulkStoppableRow(t) ? { ...t, state: "stopping" as ToolState } : t,
       ),
     );
     try {
@@ -695,11 +784,22 @@ export function MainScreen({
                 orderLabel={parallel ? "並行" : String(orderedIndexFor(runtime, index))}
                 parallel={parallel}
                 editMode={editMode}
-                onStart={() => void handleStart(item.id, item.toolId, item.name)}
-                onStop={() => void handleStop(item.id, item.launchId, item.name)}
+                onStart={() =>
+                  item.kind === "internal"
+                    ? // 033e: internal は窓を開く（launchTool→open_comment_viewer_window）。
+                      void handleStartInternal(item.id, item.toolId, item.name)
+                    : void handleStart(item.id, item.toolId, item.name)
+                }
+                onStop={() =>
+                  item.kind === "internal"
+                    ? // 033e: internal は窓を閉じる（close_comment_viewer_window・PID kill しない）。
+                      void handleStopInternal(item.id, item.name)
+                    : void handleStop(item.id, item.launchId, item.name)
+                }
                 onOpen={() =>
                   item.kind === "url" || item.kind === "internal"
-                    ? // 032c-a: internal は PID 管理外。launchTool 経由で Rust が別ウィンドウを開く（url と同経路）。
+                    ? // 023/033e: url は既定ブラウザ、internal は launchTool 経由で Rust が別ウィンドウを
+                      //   開く/前面化する（開いていれば open_comment_viewer_window が front-focus する）。
                       void handleOpenUrl(item.toolId, item.name)
                     : void handleOpen(item.launchId, item.name)
                 }

@@ -72,6 +72,29 @@ fn open_comment_viewer_window(app: AppHandle) -> AppResult<()> {
     Ok(())
 }
 
+/// 033e: 内蔵コメントビューア窓（label `comment-viewer`）を閉じる。ツール管理の「停止」ボタン用。
+/// 単一目的コマンド（§3）で、任意ラベルの窓操作は露出しない。窓が無ければ no-op（冪等）。
+/// `.close()` は既存の `CloseRequested | Destroyed` イベント経由で sidecar shutdown も連動する
+/// （`open_comment_viewer_window` の 64-71・032c-b）。PID kill・プロセス名 kill は一切行わず、
+/// 自アプリのウィンドウを閉じるのみ（§6 の PID kill はそもそも発生しない）。
+#[tauri::command]
+fn close_comment_viewer_window(app: AppHandle) -> AppResult<()> {
+    if let Some(window) = app.get_webview_window("comment-viewer") {
+        window
+            .close()
+            .map_err(|_| AppError::launch_failed("コメントビューアを閉じられませんでした"))?;
+    }
+    Ok(())
+}
+
+/// 033e: 内蔵コメントビューア窓が開いているかを返す読み取り専用コマンド（§3・単一目的）。
+/// ツール管理（`MainScreen` の reconcile）が窓の開閉から internal 行の起動状態を導出するために使う。
+/// PID registry には載せず、窓の存在（`get_webview_window("comment-viewer").is_some()`）だけを見る。
+#[tauri::command]
+fn is_comment_viewer_open(app: AppHandle) -> bool {
+    app.get_webview_window("comment-viewer").is_some()
+}
+
 /// 032c-b: viewer が接続する Twitch コメント WS の実ポートを返す読み取り専用コマンド（§3・単一目的）。
 /// sidecar が bind した実ポート（既定 17331・使用中なら空きポート）を返す。未確定なら `None`。
 /// frontend からは raw なパス/ポート/コマンドを受け取らない（ポートは Rust が sidecar の stdout から受領）。
@@ -194,6 +217,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             host_os,
             open_comment_viewer_window,
+            close_comment_viewer_window,
+            is_comment_viewer_open,
             get_comment_stream_port,
             launch_voicevox_engine,
             tools::commands::create_tool,
