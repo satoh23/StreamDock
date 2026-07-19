@@ -56,8 +56,8 @@ fn open_comment_viewer_window(app: AppHandle) -> AppResult<()> {
     let window =
         WebviewWindowBuilder::new(&app, "comment-viewer", WebviewUrl::App("index.html".into()))
             .title("コメントビューア")
-            .inner_size(420.0, 640.0)
-            .min_inner_size(320.0, 400.0)
+            .inner_size(960.0, 720.0)
+            .min_inner_size(560.0, 520.0)
             .build()
             .map_err(|_| AppError::launch_failed("コメントビューアを開けませんでした"))?;
 

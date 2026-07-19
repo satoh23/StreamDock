@@ -14,7 +14,7 @@ import styles from "./CommentViewerApp.module.css";
 /**
  * 032c-a/032c-c: 内蔵コメントビューア（別ウィンドウ label `comment-viewer`）の描画本体。
  *
- * frontend 専用モック `CommentViewDto` を最小描画（append ＋ id 重複排除 ＋ 上限クランプ）しつつ、
+ * 受信コメント（`CommentViewDto`）を最小描画（append ＋ id 重複排除 ＋ 上限クランプ）しつつ、
  * 032c-c で **VOICEVOX ローカル合成読み上げ（Web Audio 直列 TTS キュー）** を配線する。新規追加コメントは
  * `mergeComments` の戻り値 `added` を単一注入点として TTS キューへ enqueue する。実データ取得
  * （Twitch/YouTube・Node sidecar・WebSocket）は 032c-b/-d で配線する。ネイティブタイトルバー
@@ -40,35 +40,6 @@ const LAUNCH_GRACE_MS = 30000;
  */
 const CREDIT_NOTICE =
   "ずんだもんの音声を使う配信・動画では「VOICEVOX:ずんだもん」のクレジット表記が必須です（VOICEVOX 利用規約 https://voicevox.hiroshiba.jp/term/ に準拠）。";
-
-/** 初期表示のモック（Twitch/YouTube・通常/投げ銭を混在）。 */
-const SEED_COMMENTS: CommentViewDto[] = [
-  {
-    id: "seed-1",
-    source: "youtube",
-    author: { id: "u-aoi", name: "あおいそら" },
-    text: "配信お疲れさまです！今日も楽しみにしてました",
-    publishedAt: "2026-07-15T12:00:00.000Z",
-    eventType: "chat",
-  },
-  {
-    id: "seed-2",
-    source: "twitch",
-    author: { id: "u-kuro", name: "くろねこ" },
-    text: "この場面すごい",
-    publishedAt: "2026-07-15T12:00:05.000Z",
-    eventType: "chat",
-  },
-  {
-    id: "seed-3",
-    source: "youtube",
-    author: { id: "u-momo", name: "ももか" },
-    text: "スパチャで応援します！これからも頑張ってください",
-    publishedAt: "2026-07-15T12:00:12.000Z",
-    eventType: "superchat",
-    monetaryAmount: "¥1,000",
-  },
-];
 
 /** 配信元の表示ラベル。 */
 const SOURCE_LABEL: Record<CommentViewDto["source"], string> = {
@@ -119,23 +90,8 @@ function mergeComments(
   return { next, added };
 }
 
-/** モックコメントを 1 件生成する（連番 ID で安定・重複しない）。 */
-function makeMock(seq: number): CommentViewDto {
-  const source: CommentViewDto["source"] = seq % 2 === 0 ? "twitch" : "youtube";
-  return {
-    id: `mock-${seq}`,
-    source,
-    author: { id: `u-${seq}`, name: `視聴者${seq}` },
-    text: `モックコメント #${seq}`,
-    publishedAt: new Date().toISOString(),
-    eventType: "chat",
-  };
-}
-
 export function CommentViewerApp() {
-  const [comments, setComments] = useState<CommentViewDto[]>(SEED_COMMENTS);
-  // 連番の払い出しカウンタ（生成 ID を安定させ、重複を意図的に注入できるようにする）。
-  const seqRef = useRef(1);
+  const [comments, setComments] = useState<CommentViewDto[]>([]);
   // TTS キュー（AudioContext を 1 つ所有）。マウントで生成し、アンマウントで dispose する。
   const ttsRef = useRef<TtsQueue | null>(null);
   // ENGINE 稼働状態（null=未確認 / true=稼働 / false=未起動）と起動誘導の状態。
@@ -179,7 +135,7 @@ export function CommentViewerApp() {
     };
   }, []);
 
-  // 新規追加コメントを読み上げキューへ積む単一注入点（addMock も実データハンドラ onComments もここを通す）。
+  // 新規追加コメントを読み上げキューへ積む単一注入点（実データハンドラ onComments はここを通す）。
   // ttsRef のみ参照する安定コールバック（useCallback []）にして、マウント専用の接続 effect の依存にしても
   // 再接続を起こさない＆ TDZ を避ける（onComments より前に定義する必要があるため上へ移動した）。
   // resume は「毎回呼んでよい（running なら no-op）」が、WKWebView の autoplay 制限で **suspended→running の
@@ -327,61 +283,8 @@ export function CommentViewerApp() {
     }
   };
 
-  // 暫定：固定文をキュー経由で読み上げる（手動検証用。id を毎回変えて連続テストできる）。
-  // 撤去条件: 実データ配線（032c-b/-d）で実コメントの読み上げが検証できるようになったら、この
-  // ボタン（下の toolbar の「読み上げテスト」）ごと削除する。
-  const testSpeak = () => {
-    enqueueForSpeech([
-      {
-        id: `test-${seqRef.current++}`,
-        source: "youtube",
-        author: { id: "u-test", name: "テスト" },
-        text: "ずんだもんなのだ。テスト読み上げなのだ。",
-        publishedAt: new Date().toISOString(),
-        eventType: "chat",
-      },
-    ]);
-  };
-
-  const addMock = () => {
-    const a = makeMock(seqRef.current++);
-    const b = makeMock(seqRef.current++);
-    // 既存の seed-1 を再投入して「重複排除」を実演する（追加されないのが正しい挙動）。
-    const dup = SEED_COMMENTS[0];
-    // 関数型 updater（`setComments(prev => …)`）ではなくスナップショット `comments` を使う理由:
-    // enqueue 対象の `added` を setState の外へ取り出す必要があり、updater 内で副作用（enqueue）を持たせる
-    // のは StrictMode の二重実行で重複 enqueue し得るため避ける。単発クリックのモック用途では stale の実害は
-    // 無い（seqRef で id は常に一意）。再検討条件: 実データ配線（032c-b/-d）で本注入点を高頻度・並行で使う
-    // 場合は、reducer 化するか `added` 抽出を updater 外の ref 経由にして stale を避ける。
-    const { next, added } = mergeComments(comments, [a, b, dup]);
-    setComments(next);
-    enqueueForSpeech(added); // dup は added に入らず読み上げられない＝単一注入点が正しく機能する。
-  };
-
-  const clearAll = () => setComments([]);
-
   return (
     <div className={styles.root}>
-      <header className={styles.header}>
-        <h1 className={styles.title}>コメントビューア</h1>
-        <span className={styles.count}>{comments.length} 件</span>
-      </header>
-
-      <div className={styles.toolbar}>
-        <button type="button" className={styles.btn} onClick={addMock}>
-          モックを追加
-        </button>
-        <button type="button" className={styles.btnGhost} onClick={clearAll}>
-          クリア
-        </button>
-        <button type="button" className={styles.btn} onClick={testSpeak}>
-          読み上げテスト
-        </button>
-        <span className={styles.note}>
-          モック（手動確認用）。Twitch 実コメントは下の「Twitch に接続」から取得します。
-        </span>
-      </div>
-
       {/* 032c-b: Twitch 連携（Device Code ログイン → チャンネル指定で取得開始）。ユーザー明示操作でのみ発火。 */}
       <div className={styles.twitchPanel}>
         <div className={styles.twitchRow}>
@@ -504,6 +407,10 @@ export function CommentViewerApp() {
           )}
         </div>
       )}
+
+      <div className={styles.listHeader}>
+        <span className={styles.count}>{comments.length} 件</span>
+      </div>
 
       <ol className={styles.list}>
         {comments.length === 0 ? (

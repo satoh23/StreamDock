@@ -3506,3 +3506,41 @@ Twitch 経路のロジック・VOICEVOX/TTS・§1 封じ込めフレームは不
   `docs/tasks/032c-d-youtube-comments.md`（keyring 永続化=対象外 の記述を 032c-d′ 方針変更へ追記）／`docs/task-board.md`／`docs/progress.md`
 - 不変（確認済み）: `capabilities/*`・`tauri.conf.json`（`csp: null`）・`Cargo.toml`/`Cargo.lock`・`package.json`/`pnpm-lock.yaml`（新規 crate/npm ゼロ）・
   gRPC チャネルガード（`www.googleapis.com:443`）・OAuth スコープ（`youtube.readonly`）・ts-rs binding（新規 command なし）
+
+## 2026-07-19 (033a コメビュ本体の軽量化・レイアウト整理)
+
+### 完了したこと
+
+- **033a（問題 1,2,3,5 のみ／純粋な frontend 整理＋窓サイズ数値変更）**: 検証用の UI を撤去し、窓を実運用サイズへ拡大した。
+  機能配線（Twitch/YouTube 取得・VOICEVOX 読み上げ・sidecar）と Rust command ロジックは不変。接続 UI（→033b）・VOICEVOX
+  バナー/クレジット（→033c）は**残置**。
+- **(1) ヘッダー削除**: `<header>`（`<h1>コメントビューア</h1>` ＋ 総数 span）を丸ごと除去。OS 窓タイトル（`lib.rs` の
+  `.title("コメントビューア")`）と重複のため冗長。
+- **(2) 総数を一覧右上へ移設**: `<ol>` 直上に `listHeader` 行を新設し `{comments.length} 件` を右寄せ表示（`justify-content:flex-end`）。
+  文言「件」踏襲・`.count` を移設先で再利用。
+- **(3) モック撤去**: toolbar（モック追加/クリア/読み上げテスト）と検証専用の `SEED_COMMENTS`/`makeMock`/`seqRef`/`testSpeak`/
+  `addMock`/`clearAll` を削除。初期表示を空配列（`useState<CommentViewDto[]>([])`）にし、空状態は既存「コメントはまだありません」を活用。
+  **`mergeComments`／`enqueueForSpeech` は実データ経路（`onComments`）で使用中のため残置**。未使用 import は発生せず（`useRef` は
+  `ttsRef`/`streamRef` で継続使用）。ファイル冒頭 JSDoc の stale 表現「frontend 専用モック `CommentViewDto` を最小描画」（032c-b/-d の
+  実データ配線後から残っていた既存記述）を「受信コメント（`CommentViewDto`）を最小描画」へ訂正し、モック撤去後の記述整合を取った。
+- **(4) 窓サイズ拡大（縦長→横広）**: `lib.rs` の `inner_size(420,640)→(960,720)` / `min_inner_size(320,400)→(560,520)`。
+  `open_comment_viewer_window` のロジック（sidecar 連動・単一インスタンスガード・窓イベント）は不変、引数値のみ変更。**実値は実機 tauri dev で
+  目視微調整して確定予定**（本コミットは提案値 960×720 / 560×520）。
+
+### レビュー / 検証
+
+- **ヘッドレス検証 PASS**: `pnpm --filter ./apps/desktop typecheck` / `lint` / `cargo check`（`src-tauri`）いずれもエラーなし。
+- **自己確認**: `*.module.css` に生 hex/rgba なし（すべて `var(--...)` 経由）。残置要素（接続 UI・VOICEVOX バナー・クレジット）への
+  diff 変更行ゼロ（無傷）。CSS は `.header`/`.title`/`.toolbar` を削除し `.listHeader` を追加、`.count`（移設先で再利用）・`.note`
+  （YouTube パネルで継続使用）は残置。
+- **残課題（実機）**: `pnpm --filter ./apps/desktop tauri dev` で ①タイトル削除 ②総数の右上表示 ③モック撤去＋初期空表示 ④横広サイズ
+  ⑤Twitch/YouTube 取得・VOICEVOX 読み上げの退行なし、を目視確認。窓サイズ実値はここで確定する。
+
+### 変更ファイル（033a）
+
+- frontend: `screens/comment-viewer/CommentViewerApp.tsx`（ヘッダー撤去・総数移設・モック/検証コード削除・初期値空配列）、
+  `screens/comment-viewer/CommentViewerApp.module.css`（`.header`/`.title`/`.toolbar` 削除・`.listHeader` 追加）
+- Rust: `src-tauri/src/lib.rs`（`open_comment_viewer_window` の `inner_size`/`min_inner_size` 引数値のみ）
+- docs: `docs/progress.md`（本記録）
+- 不変（確認済み）: Tauri command 表面・`capabilities/*`・`tauri.conf.json`（`csp: null`）・依存（`Cargo.toml`/`package.json`／新規 crate/npm
+  ゼロ）・データ取得/TTS/sidecar ロジック・接続 UI/VOICEVOX バナー/クレジットの残置要素
