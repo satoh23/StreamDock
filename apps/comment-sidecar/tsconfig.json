@@ -15,7 +15,6 @@
     "sourceMap": false,
     "outDir": "dist",
     "rootDir": ".",
-    "baseUrl": ".",
     "paths": {
       "@comment-dock/shared": ["./vendor/shared/src/index.ts"],
       "@comment-dock/comment-delivery": ["./vendor/comment-delivery/src/lib.ts"],
