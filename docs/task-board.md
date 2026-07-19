@@ -48,6 +48,15 @@
 
 ## Next
 
+- 033 コメントビューア UX 刷新（親設計・[docs/tasks/033-comment-viewer-ux-revamp.md](tasks/033-comment-viewer-ux-revamp.md)／設定ビュー分離・VOICEVOX 制御・OBS オーバーレイ・ツール管理統一）
+  - 実装順: 033a → 033b → 033c → 033d、並行で 033e、最後に 033f
+  - 033a コメビュ本体の軽量化・レイアウト整理（タイトル削除・総数右上・モック撤去・窓サイズ拡大／security-review 不要）
+  - 033b 設定ビュー新設＋接続UI移設＋接続状態インジケータ（円アイコン＋テキスト／軽レビュー）
+  - 033c VOICEVOX 読み上げ ON/OFF トグル＋クレジット条件表示＋自動起動/自動連携（security-review 不要）
+  - 033d VOICEVOX 話者選択＋「ずんだもん読み上げ」→「VOICEVOX読み上げ」改名（loopback に `/speakers` 追加・**security-review 必須**）
+  - 033e ツール管理でコメビュを再生/停止・起動済み表示（他ツールと統一・窓/プロセス ライフサイクル・**security-review 必須**）
+  - 033f OBS 用透過オーバーレイ窓（ワンクリック・新規窓/透過/新規 capability・**security-review 必須**）
+
 ## Todo
 
 ## MVP リリース前最後
