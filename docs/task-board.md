@@ -68,6 +68,11 @@
   - 035a sidecar の取得セッション排他を provider 別化（`Map<Provider, AbortController>`）＋security.md 方針更新（**security-review 必須**・方針反転／新規宛先は増やさない）
   - 035b viewer/overlay の同時（mixed）表示 検証＋UI 微調整（両接続インジケータ・source バッジ常時表示・片方 stop の UX・表示のみ）
   - 035c TTS ソース別読み上げフィルタ（source 別 読み上げ ON/OFF・両稼働時の読み上げ暴発対策・軽レビュー）
+- 036 OBSオーバーレイ 実ユーザーアイコン表示（親設計 [docs/tasks/036-overlay-user-avatar.md](tasks/036-overlay-user-avatar.md)／sidecar が YouTube/Twitch のアイコンを取得→data URI 化して WS で送る・webview はオフライン維持/CSP 不変）
+  - 実装順: 036a → 036b → 036c
+  - 036a アバター ワイヤ契約拡張（`CommentAuthor.avatar?`・model.rs→bindings/`User`/`UserSummaryDto`/converter）＋overlay 描画（data URI があれば `<img>`・無ければグレー丸/イニシャル・**軽レビュー**・送り側未実装でも無害で先行可）
+  - 036b sidecar アバター取得基盤（fetch→縮小→data URI→上限付きキャッシュ）＋YouTube 対応（proto/DTO に profileImageUrl 追加）＋画像 CDN 宛先を allow-list 追加（**security-review 必須**・新規 egress）
+  - 036c Twitch 対応（chat イベントにアイコン無し→Helix `users` で URL 解決＋036b 基盤を再利用）＋`*.jtvnw.net` を allow-list 追加（**security-review 必須**・新規 egress）
 
 ## Todo
 
