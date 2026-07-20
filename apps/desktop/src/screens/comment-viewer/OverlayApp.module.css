@@ -17,3 +17,18 @@
   background: transparent;
   color: var(--text);
 }
+
+/* 034b: OBS 透過オーバーレイの一覧に出る WKWebView 既定の縦スクロールバー（配信画面で「サイドバー」に見える）を
+   data-overlay スコープ限定で抑止する。実スクロール要素の `.list` は CommentViewerApp.module.css の別モジュール
+   ハッシュクラスなので、この OverlayApp.module.css からクラス名では当てられない。そのため要素/属性スコープに
+   :global で当てる（この窓の唯一の <ol> がコメント一覧＝showCount=false で listHeader も無い）。本体
+   (comment-viewer) / main 窓は data-overlay を持たないので波及せず、034a の追従/ジャンプボタン・本体の
+   スクロールバーには影響しない。透過合成の見た目維持のためバーは「極細」ではなく完全非表示にする。
+   `height:0` は縦バーだけでなく横バーも抑止するが、これは意図どおり（表示専用オーバーレイはバーを一切出さない方が
+   完了条件「バーが出ない」と整合。`.list` の子 `.text` は word-break:break-word で横溢れ自体まれ）。
+   再修正トリガー: 将来 overlay 窓に別のスクロール可能な <ol> を足す場合、この type セレクタは全 <ol> に当たるので
+   コメント一覧側 <ol> に目印属性を付けて `ol[data-…]` で絞る（現状は overlay 窓の <ol> が一覧の 1 つだけなので不要）。 */
+:global(html[data-overlay="1"] ol)::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}

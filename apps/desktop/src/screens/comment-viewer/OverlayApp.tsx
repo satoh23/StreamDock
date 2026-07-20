@@ -53,7 +53,11 @@ export function OverlayApp() {
           本当に 0 件のときも文言が出るが実害は軽微なので、overlay 専用の空表示分岐は設けない。
           再修正トリガー＝配信者から「配信中の空文言が邪魔」との要望が出たら、overlay（showCount=false）時のみ .empty を
           非表示にする分岐を CommentList に足す。 */}
-      <CommentList comments={comments} showCount={false} />
+      {/* 034b: オーバーレイは操作 UI を持たない表示専用のため、034a の追従フックを常時追従モード
+          （followMode="always"）で再利用する（解除・「最新コメント N件 ↓」ボタンは付けない）。新着が来るたび
+          useFollowScroll が最下部へスクロールし、配信画面に最新コメントが映り続ける。DOM は素の <ol> のまま
+          （release のときだけ出る listWrap ラッパ/ボタンは付かない）＝033f の透過体裁を非退行で維持する。 */}
+      <CommentList comments={comments} showCount={false} followMode="always" />
     </div>
   );
 }

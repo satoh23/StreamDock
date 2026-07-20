@@ -4009,3 +4009,57 @@ sidecar 非連動・no-orphan kill 契機は不変（通信/権限/プロセス�
 - docs: `docs/progress.md`（本記録）
 - 不変（確認済み）: sidecar（Node）・`mergeComments`（上限 200）・`OverlayApp.tsx`／`OverlayApp.module.css`・`capabilities/*`・
   `tauri.conf.json`・`Cargo.toml`・`csp: null`・依存（新規ゼロ）・ts-rs 型（新規ゼロ）
+
+## 2026-07-20 (034b OBSオーバーレイ 常時追従＋サイドバー(スクロールバー)抑止)
+
+親 [034](tasks/034-comment-viewer-obs-ux-round2.md) 第2弾。要望5（オーバーレイ側）・要望7 を潰す。034a が
+`CommentList` に用意した追従の仕組みを **常時追従モードで再利用** し、透過オーバーレイ窓（`comment-overlay`）に出る
+既定の縦スクロールバーを **`data-overlay` スコープ限定で抑止** する。frontend のスクロール制御（prop 1 つ）と CSS
+追加のみで、通信・sidecar・WS・Rust command・capability・依存には一切触れない。
+
+### 実装内容
+
+- **常時追従の載せ方**（`OverlayApp.tsx`）: `<CommentList>` に **`followMode="always"` を追加するだけ**（新規ロジック
+  ゼロ）。034a の `useFollowScroll(mode:"always")` をそのまま再利用し、`useLayoutEffect([items])` が items 変化のたび
+  最下部へ（`el.scrollTop = el.scrollHeight`）追従＝配信画面に最新コメントが映り続ける。`onScroll` は `mode!=="release"`
+  で no-op、`listWrap` ラッパ/「最新コメント N件 ↓」ボタンは付かない（`release` 限定）＝オーバーレイの DOM は素の
+  `<ol>` のままで 033f の透過体裁を非退行維持。読み取り専用接続（`onComments` のみ・制御フレーム送信ゼロ）も無改変。
+- **スクロールバー抑止セレクタ**（`OverlayApp.module.css`）: 実スクロール要素の `<ol>` は `CommentViewerApp.module.css`
+  の `.list`（**別モジュールのハッシュクラス**）なので `OverlayApp.module.css` からクラス名では当てられない。既存の透過
+  CSS と同じ作法で **要素/属性スコープに `:global` で当てる**:
+
+  ```css
+  :global(html[data-overlay="1"] ol)::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+  }
+  ```
+
+  `ol` は type selector で CSS Modules がスコープしない。オーバーレイ窓の `<ol>` はコメント一覧のみ
+  （`showCount={false}` で listHeader も無い）なので過不足なく命中。完了条件「バーが出ない」に合わせ **完全非表示**
+  （`--overlay-scrollbar` の極細/半透明は"見せる"手本なので不採用・token 参照なし）。
+- **本体・他窓非影響の担保**: 追加 CSS は全て `html[data-overlay="1"]` 配下限定。`data-overlay` は `OverlayApp.tsx`
+  が overlay 窓の documentElement にだけ立て unmount で外す（無改変）。main / comment-viewer 窓は属性を持たないため、
+  034a の本体追従・ジャンプボタン・本体スクロールバーには一切影響しない。
+
+### 検証
+
+- `pnpm --filter ./apps/desktop typecheck`＝**0 error**、`pnpm --filter ./apps/desktop lint`＝**0 error / 0 warning**。
+- コード差分は 2 ファイル・+16/-1（`OverlayApp.tsx` / `OverlayApp.module.css` のみ。`git diff --stat` は本記録
+  `docs/progress.md` を含め 3 ファイルになる）。
+- 自己確認: ①オーバーレイの読み取り専用性維持（`onComments` のみ・制御フレーム送信ゼロ・新規通信面/宛先ゼロ＝差分は
+  `followMode` prop 追加のみで接続コード無変更）②スクロールバー抑止が `data-overlay` スコープ限定で本体側に非影響
+  ③新規 command/capability/依存なし・`csp: null` 不変 ④`open_comment_overlay_window`/no-orphan kill 契機 不変
+  （Rust 無改変）。
+- **残課題（実機・本人環境）**: `tauri dev` で オーバーレイを開き 常に最下部へ追従して最新が映り続ける／透過オーバー
+  レイに縦スクロールバー（サイドバー）が出ない／本体（コメビュ）のスクロールバーと 034a の追従/ジャンプボタンに影響
+  なし／OBS のウィンドウキャプチャで従来どおり透過合成できる（033f 挙動維持）、を目視。
+
+### 変更ファイル（034b）
+
+- frontend（変更）: `apps/desktop/src/screens/comment-viewer/OverlayApp.tsx`（`<CommentList>` に `followMode="always"`）、
+  `apps/desktop/src/screens/comment-viewer/OverlayApp.module.css`（`data-overlay` スコープの `::-webkit-scrollbar` 抑止）
+- docs: `docs/progress.md`（本記録）
+- 不変（確認済み）: `useFollowScroll.ts`／`CommentList.tsx`（034a を再利用のみ）・`CommentViewerApp.module.css`・
+  sidecar・WS・`mergeComments`（上限 200）・`open_comment_overlay_window`／no-orphan kill 契機・`capabilities/*`・
+  `tauri.conf.json`・`Cargo.toml`・`csp: null`・依存（新規ゼロ）
