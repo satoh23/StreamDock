@@ -4193,3 +4193,120 @@ OBS オーバーレイ窓の開閉は本体ツールバーの 2 ボタン（`OBS
 - docs: `docs/progress.md`（本記録）
 - 不変（確認済み）: `capabilities/*`（`comment-overlay`/`comment-viewer`/`default` すべて `core:default` のまま）・
   `tauri.conf.json`（`csp: null`）・`Cargo.toml`・`package.json`・sidecar・WS・オーバーレイ開閉ラッパ挙動・依存（新規ゼロ）
+
+## 2026-07-20 (034e OBSオーバーレイ デザイン刷新（アイコン＋吹き出しチャット意匠・文字拡大・フォント選択・サイト名トグル）)
+
+### 背景 / 目的
+
+OBS オーバーレイは本体と同じ不透明カード（`CommentViewerApp.module.css` の `.item`）を小さい文字で並べているだけで、
+親 034 の要望「3=ダサい / 6=文字が小さい / 4=意匠を設定」に未対応だった。**本人指示でデザイン方針を差し替え**、各コメントを
+**「左にアイコン＋ユーザー名（縦積み）／右に半透過グレーの吹き出しに本文」**というチャット体裁へ刷新した（当初 034e の
+「透過・本文＋名前のフラット表示」から変更）。窓の透過（033f/034b）は維持し、意匠はオーバーレイのときだけ当てる。
+**実アイコンの取得（Twitch/YouTube CDN・sidecar 経由）は本タスクでは行わず、アイコン枠だけ確保して次タスク 034f へ分離**した。
+
+### 新意匠（`data-overlay` スコープ・`variant` 分岐に限定）
+
+- **意匠の当て方＝`CommentList` の `variant` プロップ**。新意匠は DOM 構造が違う（アイコン要素・名前要素・吹き出し要素が要る）
+  ため `data-overlay` の CSS 上書きだけでは作れないと判断。`CommentList` に `variant?: "default" | "overlay"`（既定 `default`）と
+  `showSource?: boolean`（既定 false）を足し、`variant==="overlay"` のときだけ**新クラスの別マークアップ**を描く。既定分岐は現行の
+  ままで**本体（comment-viewer）の見た目は不変**。新クラスは**新規 CSS モジュール** `OverlayComment.module.css` に隔離し、本体
+  `CommentViewerApp.module.css`・窓透過専用 `OverlayApp.module.css` には触れない。
+- マークアップ: `li(flex row)` ＝ `div.left(縦積み: div.icon＋span.name)` ＋ `div.bubble(p.text＋任意の span.source)`。overlay 項目は
+  不透明 `.item`（`var(--surface)`）を使わないので**背景は透過のまま＝吹き出しだけ半透過グレー**（OBS 合成で背景が抜ける挙動を維持）。
+- **アイコン枠（034f を見据える）**: `div.icon` を **44×44 の丸＋白枠のグレー プレースホルダ**（CSS のみ・外部画像/data-URI なし）で
+  描画。034f では `background-image` インライン指定 or `<img>` 追加だけで済むよう `background-size:cover`/`position:center` を先置き。
+
+### 配色トークン（theme.css・`:root` 基底のみ＝テーマ非依存）
+
+- オーバーレイは OBS 映像の上に合成されるためアプリのテーマ（ライト/ダーク）に依らず一定にする方針で、per-theme 上書きは置かない。
+  追加トークン: `--overlay-name-fg`（太め黒 `#0a0a0a`）/ `--overlay-body-fg`（少し薄い黒 `#2b2b2b`）/ `--overlay-outline`（白）/
+  `--overlay-bubble-bg`（`color-mix(in srgb, #6b7280 80%, transparent)`＝半透過グレー）/ `--overlay-bubble-border`（白枠）/
+  `--overlay-icon-bg` / `--overlay-icon-border` / `--overlay-source-fg`。生 hex は theme.css のみ（トークン定義元）。縁取りは
+  **多重 `text-shadow`（白・上下左右＋ぼかし）**で作る（`-webkit-text-stroke` はグリフが痩せるので不採用）。`OverlayComment.module.css`
+  は全色 `var(--overlay-*)` 経由で**生 hex/rgba を残さない**（grep 確認）。文字サイズ（本文 19px 等）は tauri dev で目視調整前提の初期値。
+
+### フォント選択（OS 標準 4 種・外部フォント無し）
+
+- 新規 `overlaySettings.ts` にフォント登録簿（`OVERLAY_FONTS`）を持たせ、`OverlayApp` の `.root` に inline `font-family` で適用
+  （子孫の名前/本文が継承・モジュール CSS に font-family を書かない）。候補は **システム標準 / ゴシック(Yu Gothic 系) / 丸ゴシック
+  (Hiragino Maru→gothic フォールバック) / 明朝(Yu Mincho 系)** の 4 種で、すべて OS 標準スタック。**外部 Web フォント・新規 @font-face は
+  追加しない**（CSP 方針。新 CSS に `url()`/`@font-face`/`@import` 無し＝grep 確認）。
+
+### サイト名（配信サービス）表示トグル
+
+- 設定ビュー（034d のオーバーレイ節）に「サイト名を表示する」`ToggleSwitch` を追加（既定 OFF）。ON でオーバーレイの各コメントに
+  `source`（Twitch/YouTube）を吹き出し右下へ小さく添える。**受信済み `CommentViewDto.source` の表示のみ・新規取得なし**。
+
+### 永続化＋クロス窓 即時反映（storage 購読）
+
+- `overlaySettings.ts`（`ttsPrefs`/`channelStorage` の load/save 手本）。キー `stream-dock.comment-viewer.overlay-font`（string・既定
+  `system`）/ `overlay-show-source`（bool・既定 OFF）。設定窓（`CommentViewerApp`）は `useState(()=>load…())`＋保存 effect で永続化し、
+  props で `SettingsView` へ。オーバーレイ窓（`OverlayApp`）は起動時に `load…()`＋**`window.addEventListener("storage", …)`** で対象キーの
+  変更を再読込＝**設定窓での変更が開いたままのオーバーレイへ即反映**（両窓は別 webview・同一 localStorage）。unmount で解除。
+  storage イベントは DOM イベントでネットワーク非経由・表示専用性は不変。
+
+### security-review 結果
+
+- **問題なし**（修正必須なし）。①新規外部通信ゼロ（`fetch`/`http`/`ws`/`invoke`/`WebSocket` の追加なし＝grep 確認。storage 購読は
+  DOM イベント）②外部アセットなし（新 CSS に `url()`/`@font-face`/`@import` 無し・アイコンは CSS プレースホルダ・フォントは OS 標準
+  スタックで URL 参照ゼロ）③`tauri.conf.json`/`capabilities/*`/`Cargo.toml`/`package.json`/lock は git diff 空＝`csp: null` 不変・
+  新規 command / capability / 依存ゼロ④サイト名は受信済み `source` の表示のみ・コメント本文はログ/DB に出さない⑤本体 CSS・窓透過 CSS
+  無変更で `variant` 分岐＋新モジュールに波及を限定⑥フォント値は固定登録簿 id に照合してからスタック解決＝CSS 注入面なし・localStorage は
+  非機密 UI 値のみ。034f（実アイコン CDN 取得）着手時は新規外部通信・宛先追加のため**再 security-review 必須**。
+
+### 検証
+
+- `pnpm --filter ./apps/desktop typecheck`＝**0 error**、`pnpm --filter ./apps/desktop lint`＝**0 error / 0 warning**。
+  Rust 差分ゼロのため `cargo check` は対象外（無影響）。
+- `git diff --stat`＝変更 6 ファイル（`theme.css` / `CommentList.tsx` / `OverlayApp.tsx` / `SettingsView.tsx` / `CommentViewerApp.tsx` /
+  `034e-overlay-design-refresh.md`）＋新規 2 ファイル（`overlaySettings.ts` / `OverlayComment.module.css`）。本記録 `docs/progress.md` を含む。
+- **残課題（実機・本人環境）**: `pnpm --filter ./apps/desktop tauri dev` で ①アイコン（デフォルト）＋名前（黒＋白縁取り）＋半透過グレー
+  吹き出し（白枠）＋本文（薄め黒＋白縁取り・大きめ）で表示 ②フォント選択が効く ③サイト名トグル ON/OFF が即反映 ④本体（コメビュ）の
+  見た目は不変 ⑤OBS ウィンドウキャプチャで従来どおり透過合成、を目視。文字サイズ/グレー濃度の微調整も実機で行う。
+
+### 変更ファイル（034e）
+
+- frontend（新規）: `apps/desktop/src/features/comment-viewer/overlaySettings.ts`（フォント登録簿＋2 設定の load/save/resolve＋キー定数）、
+  `apps/desktop/src/screens/comment-viewer/OverlayComment.module.css`（オーバーレイ チャット意匠・`--overlay-*` トークン参照）
+- frontend（変更）: `apps/desktop/src/screens/comment-viewer/CommentList.tsx`（`variant`/`showSource` プロップ＋overlay 分岐マークアップ）、
+  `apps/desktop/src/screens/comment-viewer/OverlayApp.tsx`（設定読込＋storage 購読＋`.root` inline font-family＋`variant="overlay"`/`showSource`）、
+  `apps/desktop/src/screens/comment-viewer/SettingsView.tsx`（フォント `<select>`＋「サイト名を表示する」トグル＋props 4 つ）、
+  `apps/desktop/src/screens/comment-viewer/CommentViewerApp.tsx`（`overlayFont`/`overlayShowSource` state＋保存 effect＋props 受け渡し）、
+  `apps/desktop/src/styles/theme.css`（`--overlay-*` トークン新設・`:root` 基底のみ）
+- docs: `docs/tasks/034e-overlay-design-refresh.md`（デザイン方針を刷新・034f 分離を明記）、`docs/progress.md`（本記録）
+- 不変（確認済み・git diff 空）: `capabilities/*`・`tauri.conf.json`（`csp: null`）・`Cargo.toml`・`package.json`・pnpm-lock・sidecar・WS・
+  本体 `CommentViewerApp.module.css`・窓透過 `OverlayApp.module.css`・bindings/`CommentViewDto`/`CommentAuthor`・Rust・依存（新規ゼロ）
+
+### 追修正（デザイン微調整・本人フィードバック反映）
+
+初版（上記）の実機イメージとのズレ 4 点を frontend の描画/CSS のみで調整した（新規外部通信・依存・capability・外部アセット
+ゼロ／`csp: null` 不変／配色は `--overlay-*` トークン経由・`OverlayComment.module.css` に生 hex/rgba なし＝grep 確認、を維持）。
+
+- **吹き出しをほぼ純白へ**: `--overlay-bubble-bg` を半透過グレー（`#6b7280 80%`）→ ほぼ純白（`#ffffff 90%`）。近白だと白枠が明るい
+  映像で消えるため `--overlay-bubble-border` をごく薄い暗色に寄せ、新設 `--overlay-bubble-shadow` で `.bubble` に `filter: drop-shadow`
+  を掛けて輪郭を出す（しっぽ疑似要素にも及ぶ）。本文 `.text` の白縁取りは近白背景では不要なので撤去。
+- **レイアウト刷新（名前折りたたみ解消）**: overlay 項目を「名前行（`.header`）＋アイコン｜吹き出し行（`.row`）」の縦積みに変更。
+  旧 `.left`（48px 固定・アイコン＋名前の縦積み）を廃止し、名前は狭いカラムから解放（1 行流し・長名は ellipsis）。`renderOverlayItem`
+  のマークアップを `li.item > (div.header > span.name + span.source) + (div.row > div.icon + div.bubble > p.text)` へ再構成。
+- **サイト名を名前の横・色付きピルバッジへ**: `span.source` を吹き出し内右下から名前の右隣（`.header`）へ移動。サービス別の色付き
+  ピル（Twitch=紫 `--overlay-source-twitch-bg` / YouTube=赤 `--overlay-source-youtube-bg`・白文字）にし、`CommentList` に overlay 用
+  `OVERLAY_SOURCE_CLASS`（source→class マップ・default の `SOURCE_CLASS` と同型）を追加。旧 `--overlay-source-shadow`（吹き出し内明色前提の
+  暗色ハロー）は不要になり削除。
+- **吹き出しのしっぽ追加**: `.bubble::before` を `clip-path: polygon()` の単一三角（左向き・左辺上寄り＝アイコン方向）で新設。半透過どうしの
+  二重不透明を避けるため border 三角の二枚重ねは採らず、輪郭は上記 drop-shadow に委ねる。位置/サイズは tauri dev で微調整前提の初期値。
+- 変更ファイル（追修正）: `CommentList.tsx`（マップ＋overlay マークアップ）・`OverlayComment.module.css`（新レイアウト/しっぽ）・
+  `theme.css`（overlay トークン調整）。本体 default 分岐・`CommentViewerApp.module.css`・`OverlayApp.module.css`・`src-tauri`/依存は不変。
+- 検証: `typecheck`/`lint`＝0 error・`OverlayComment.module.css` の生 hex/rgba なし（grep）。**残課題（実機）**: tauri dev で ①吹き出しが
+  近白 ②名前が折り返さず別行 ③サイト名ピルが名前の横 ④しっぽがアイコン方向 ⑤本体不変 ⑥OBS 透過合成維持、を目視。近白の濃度/しっぽ
+  位置/文字サイズは実機微調整。
+
+### さらに微調整（本人フィードバック2）
+
+- **しっぽを長く＋透け解消（不透明化で一体化）**: 半透過（`#ffffff 90%`）だとしっぽと吹き出しの重なりで不透明度が二重に乗り「吹き出しの
+  下にしっぽが透けて見える」ため、`--overlay-bubble-bg` を**不透明のほぼ純白**（記述時 `#fafafa`・最終コミット値は `#f0f1f3`＝目視調整の初期値）に変更。しっぽは clip-path 単一三角 → **border 三角の
+  2 枚重ね（外＝枠色 `::before`／内＝塗り色 `::after`）**に変更し、塗り三角を本体へ +2px 重ねて継ぎ目を隠す（不透明なので継ぎ目なく一体化）。
+  長さは ≒10px → ≒20px に延長。位置/長さは tauri dev で微調整前提。
+- **アイコンの枠を削除**: `.icon` の `border` と未使用化した `--overlay-icon-border` トークンを削除（グレー丸のみ）。
+- **吹き出しの枠を太く**: `.bubble` の border を `1px` → `2.5px`（`--overlay-bubble-border` を `#0a0a0a 16%` にわずかに強め）。
+- 変更ファイル: `OverlayComment.module.css`（しっぽ 2 枚三角・枠太め・アイコン枠削除）・`theme.css`（bubble 不透明化・border 強め・
+  icon-border トークン削除）。`CommentList.tsx` は変更なし。検証: `typecheck`/`lint`＝0 error・生 hex/rgba なし（grep）・トークン未定義参照なし。

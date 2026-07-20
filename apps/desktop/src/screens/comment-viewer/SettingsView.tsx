@@ -1,5 +1,9 @@
 import type { DeviceCodePrompt } from "../../features/comment-viewer/commentStream";
 import type { VoicevoxSpeaker } from "../../features/comment-viewer/voicevox";
+import {
+  OVERLAY_FONTS,
+  type OverlayFontId,
+} from "../../features/comment-viewer/overlaySettings";
 import { ToggleSwitch } from "./ToggleSwitch";
 import styles from "./CommentViewerApp.module.css";
 
@@ -53,6 +57,12 @@ interface SettingsViewProps {
   // 034d: OBS オーバーレイ窓の開閉（開＝ON / 閉＝OFF）。state は CommentViewerApp が保持し、外部 close も購読で同期。
   overlayOpen: boolean;
   onOverlayToggle: (next: boolean) => void;
+  // 034e: オーバーレイの意匠設定（フォント選択・サイト名表示）。値は CommentViewerApp が保持し localStorage 永続。
+  // 実際の描画反映はオーバーレイ窓（OverlayApp）が同一 localStorage を storage 購読で受けて行う（この設定ビューは表示専用）。
+  overlayFont: OverlayFontId;
+  onOverlayFontChange: (id: OverlayFontId) => void;
+  overlayShowSource: boolean;
+  onOverlayShowSourceChange: (value: boolean) => void;
 }
 
 export function SettingsView({
@@ -81,6 +91,10 @@ export function SettingsView({
   onPreview,
   overlayOpen,
   onOverlayToggle,
+  overlayFont,
+  onOverlayFontChange,
+  overlayShowSource,
+  onOverlayShowSourceChange,
 }: SettingsViewProps) {
   // 033d: 選択中 style id を含む話者を導出（話者 select の現在値）。一覧が空/未一致なら先頭話者にフォールバック。
   const selectedSpeaker =
@@ -298,6 +312,34 @@ export function SettingsView({
         />
         <span className={styles.note}>
           OBS の「ウィンドウキャプチャ」で「StreamDock コメントオーバーレイ」を選ぶとコメントを重ねられます（背景は透過）。オーバーレイは常に最背面で開くので、配信者の画面には前面表示されません。
+        </span>
+
+        {/* 034e: オーバーレイの意匠設定（フォント選択・サイト名表示）。値は同一 localStorage を介してオーバーレイ窓へ
+            即反映する（OverlayApp が storage 購読）。フォントはすべて OS 標準で外部フォントは使わない（CSP 方針）。
+            サイト名は受信済み source（Twitch/YouTube）の表示のみで新規取得はしない。 */}
+        <label className={styles.speakerField}>
+          フォント
+          <select
+            className={styles.select}
+            value={overlayFont}
+            onChange={(e) =>
+              onOverlayFontChange(e.target.value as OverlayFontId)
+            }
+          >
+            {OVERLAY_FONTS.map((f) => (
+              <option key={f.id} value={f.id}>
+                {f.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <ToggleSwitch
+          label="サイト名を表示する"
+          checked={overlayShowSource}
+          onChange={onOverlayShowSourceChange}
+        />
+        <span className={styles.note}>
+          ON にすると、オーバーレイの各コメントに配信サービス名（Twitch / YouTube）を小さく表示します。
         </span>
       </div>
     </div>

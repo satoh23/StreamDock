@@ -1,0 +1,147 @@
+/* 034e: OBS オーバーレイのチャット意匠（LINE 風）。上段＝名前＋サイト名ピルバッジ、下段＝アイコン｜吹き出し（同じ
+   行の 2 列）で、吹き出し左辺のしっぽがアイコン方向へ向く。CommentList が variant="overlay" のときだけこのクラス群を
+   当てる（本体コメビュの CommentViewerApp.module.css には触れず・波及もしない）。窓自体は透過のまま（OverlayApp.module.css
+   の :global ルール）で、吹き出しだけがほぼ純白＝OBS ウィンドウキャプチャで背景が抜ける（033f/034b の合成挙動を壊さない）。
+   色はすべて theme.css の --overlay-* トークン経由（このファイルに生 hex/rgba を残さない）。名前の縁取りは多重
+   text-shadow（白）で作る。フォントサイズ等の px は OBS 取り込み時の可読性優先で、tauri dev で目視調整する前提の初期値。 */
+
+/* 1 コメント＝名前行（上）とアイコン｜吹き出し行（下）の縦積み。
+   レイアウト用ローカル変数（色トークンではなく寸法）: --icon-size=アイコン径 / --icon-gap=アイコン⇔吹き出しの間隔。
+   間隔はしっぽの突き出し（≒20px）より広くしてアイコンと被らないようにする。名前行のインデントもこの 2 値から算出する
+   ので、間隔を変えても名前が吹き出し左辺に揃ったままになる。 */
+.item {
+  --icon-size: 44px;
+  --icon-gap: 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px 4px;
+}
+
+/* 名前行：ユーザー名＋サイト名ピルバッジを横並び。吹き出しの上に来るよう、アイコン幅（44）＋行 gap（8）ぶん
+   インデントして本文吹き出しの左端に揃える（インデント量は tauri dev で微調整）。 */
+.header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  /* 名前の開始 x を吹き出しの左上に合わせる（アイコン幅＋間隔ぶん右へ寄せる）。 */
+  margin-left: calc(var(--icon-size) + var(--icon-gap));
+}
+
+/* ユーザー名：太めの黒＋白い縁取り（透過映像の上に出るので縁取りで可読性を確保）。狭いカラムではなくなったので
+   折り返さず 1 行で流し、長すぎる場合だけ ellipsis で切る（旧レイアウトの折りたたみ問題を解消）。 */
+.name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.3;
+  color: var(--overlay-name-fg);
+  text-shadow:
+    -1px -1px 0 var(--overlay-outline),
+    1px -1px 0 var(--overlay-outline),
+    -1px 1px 0 var(--overlay-outline),
+    1px 1px 0 var(--overlay-outline),
+    0 0 3px var(--overlay-outline);
+}
+
+/* サイト名：名前の横に置く色付きの丸枠（ピル型）バッジ。ソリッドな色なので透過映像の上でも視認しやすい。
+   色はサービス別（.sourceTwitch / .sourceYoutube）で出し分ける。showSource=true のときだけ CommentList が描く。 */
+.source {
+  flex-shrink: 0;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.5;
+  white-space: nowrap;
+  color: var(--overlay-source-fg);
+}
+
+.sourceTwitch {
+  background: var(--overlay-source-twitch-bg);
+}
+
+.sourceYoutube {
+  background: var(--overlay-source-youtube-bg);
+}
+
+/* アイコン｜吹き出しの行（同じ行の 2 列）。アイコンは吹き出しの上端に揃える。間隔はしっぽの突き出しより広くして
+   アイコンと吹き出し（しっぽ）が被らないようにする。 */
+.row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--icon-gap);
+}
+
+/* デフォルトのグレー丸プレースホルダ（外部画像を使わず CSS のみ・枠線は付けない）。
+   034f: 実アイコン取得後は、この枠に background-image をインライン指定するか <img> を内側に足すだけで済む
+   （サイズ/位置＝枠は確保済み）。background-size/position は差替後にそのまま効くよう先に指定しておく。 */
+.icon {
+  flex-shrink: 0;
+  width: var(--icon-size);
+  height: var(--icon-size);
+  border-radius: 999px;
+  background: var(--overlay-icon-bg);
+  background-size: cover;
+  background-position: center;
+}
+
+/* 吹き出し：ほぼ純白の不透明カード＋太めの枠＋ソフト影。position:relative は下のしっぽ（::before/::after）の基準。 */
+.bubble {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  background: var(--overlay-bubble-bg);
+  border: 2.5px solid var(--overlay-bubble-border);
+  border-radius: 14px;
+  padding: 8px 12px;
+  filter: drop-shadow(0 1px 3px var(--overlay-bubble-shadow));
+}
+
+/* 吹き出しのしっぽ（左辺の上寄り→アイコン方向）。吹き出しが不透明（ほぼ純白）なので、しっぽも同じ不透明色で本体に
+   少しだけ重ねて描くと継ぎ目なく一体化する（半透過時に出ていた「吹き出しの下にしっぽが透ける」問題を解消）。
+   枠付きに見せるため border 三角を 2 枚重ねる（外＝枠色 ::before・大きめ／内＝塗り色 ::after・枠ぶん内側へ寄せて
+   本体に +2px 重ね継ぎ目を隠す）。長さ（≒20px）・位置は tauri dev で微調整する前提の初期値。 */
+.bubble::before,
+.bubble::after {
+  content: "";
+  position: absolute;
+  width: 0;
+  height: 0;
+  border-style: solid;
+  border-color: transparent;
+  border-left-width: 0;
+}
+
+/* 外側＝枠色の三角（やや大きく頂点が最も左）。 */
+.bubble::before {
+  top: 12px;
+  left: -20px;
+  border-top-width: 12px;
+  border-bottom-width: 12px;
+  border-right-width: 20px;
+  border-right-color: var(--overlay-bubble-border);
+}
+
+/* 内側＝塗り色の三角（枠ぶん内側・本体へ +2px 重ねて join を隠す。上下は外側より 2px 小さく枠を覗かせる）。 */
+.bubble::after {
+  top: 14px;
+  left: -16px;
+  border-top-width: 10px;
+  border-bottom-width: 10px;
+  border-right-width: 18px;
+  border-right-color: var(--overlay-bubble-bg);
+}
+
+/* 本文：名前より少し薄い黒。大きめ（OBS で読めるサイズ）。ほぼ純白の吹き出し上なので白縁取りは付けない。 */
+.text {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 700;
+  line-height: 1.5;
+  color: var(--overlay-body-fg);
+  word-break: break-word;
+}

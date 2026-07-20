@@ -33,6 +33,12 @@ import {
   loadSpeakerId,
   saveSpeakerId,
 } from "../../features/comment-viewer/speakerStorage";
+import {
+  loadOverlayFont,
+  saveOverlayFont,
+  loadOverlayShowSource,
+  saveOverlayShowSource,
+} from "../../features/comment-viewer/overlaySettings";
 import { mergeComments } from "../../features/comment-viewer/mergeComments";
 import {
   openCommentOverlayWindow,
@@ -162,6 +168,13 @@ export function CommentViewerApp() {
   // 034d: comment-overlay 窓の close 購読の解除関数。開くたびに張り直し、閉じる/解除時にクリアして購読リークを防ぐ。
   const overlayUnlistenRef = useRef<(() => void) | null>(null);
 
+  // 034e: OBS オーバーレイの表示設定（フォント / サイト名表示・localStorage 永続）。この窓は設定 UI と永続化のみ担い、
+  // 実際の描画反映はオーバーレイ窓（OverlayApp）が同一 localStorage を storage 購読で受けて行う（両窓は別 webview）。
+  const [overlayFont, setOverlayFont] = useState(() => loadOverlayFont());
+  const [overlayShowSource, setOverlayShowSource] = useState(() =>
+    loadOverlayShowSource(),
+  );
+
   useEffect(() => {
     saveChannel(channel);
   }, [channel]);
@@ -186,6 +199,14 @@ export function CommentViewerApp() {
   useEffect(() => {
     saveSpeakerId(selectedSpeakerId);
   }, [selectedSpeakerId]);
+  // 034e: オーバーレイの表示設定を localStorage に永続化する（channel と同型）。書換で他窓（オーバーレイ窓）の
+  // storage イベントが発火し、開いたままのオーバーレイへ即反映される。
+  useEffect(() => {
+    saveOverlayFont(overlayFont);
+  }, [overlayFont]);
+  useEffect(() => {
+    saveOverlayShowSource(overlayShowSource);
+  }, [overlayShowSource]);
 
   // 033c: 安定コールバック（enqueueForSpeech / launchEngine）から最新値を読むための ref 同期。
   useEffect(() => {
@@ -526,6 +547,10 @@ export function CommentViewerApp() {
           onPreview={(id) => previewRef.current?.play(id)}
           overlayOpen={overlayOpen}
           onOverlayToggle={handleOverlayToggle}
+          overlayFont={overlayFont}
+          onOverlayFontChange={setOverlayFont}
+          overlayShowSource={overlayShowSource}
+          onOverlayShowSourceChange={setOverlayShowSource}
         />
       ) : (
         <>

@@ -112,6 +112,21 @@
   --tutorial-ring-soft: color-mix(in srgb, var(--color-secondary) 28%, transparent);
   --tutorial-shadow: color-mix(in srgb, #05070d 55%, transparent);
 
+  /* 034e: OBS オーバーレイ（アイコン＋吹き出しチャット意匠）専用トークン。オーバーレイは OBS 映像の上に合成される
+     ため、アプリのテーマ（ライト/ダーク）に依らず一定にする（ここ :root 基底のみに置き、per-theme 上書きはしない）。
+     名前は黒＋白縁取り、吹き出しはほぼ純白＋ソフト影、サイト名はサービス別の色付きピルバッジ。*.module.css には
+     生 hex/rgba を残さず本トークン経由で参照する。実値は tauri dev で OBS 取り込み時の可読性を見て微調整する前提。 */
+  --overlay-name-fg: #0a0a0a; /* 名前：太めの黒 */
+  --overlay-body-fg: #2b2b2b; /* 本文：名前より少し薄い黒 */
+  --overlay-outline: #ffffff; /* 縁取り：白（名前の多重 text-shadow で使う） */
+  --overlay-bubble-bg: #f0f1f3; /* 吹き出し：白に近いごく薄いグレー・不透明（半透過だとしっぽが透けて見えるため不透明） */
+  --overlay-bubble-border: color-mix(in srgb, #0a0a0a 16%, transparent); /* 吹き出し外枠：薄い暗色（太めの枠で輪郭を出す） */
+  --overlay-bubble-shadow: color-mix(in srgb, #000000 35%, transparent); /* 吹き出し/しっぽの drop-shadow（映像上で輪郭を出す） */
+  --overlay-icon-bg: color-mix(in srgb, #d1d5db 92%, transparent); /* デフォルトアイコンのグレー（034f で実画像に差替） */
+  --overlay-source-fg: #ffffff; /* サイト名ピルの文字：白（色付き背景の上） */
+  --overlay-source-twitch-bg: #9146ff; /* サイト名ピル：Twitch 紫 */
+  --overlay-source-youtube-bg: #ff0000; /* サイト名ピル：YouTube 赤 */
+
   --radius: 18px;
 
   color: var(--text);

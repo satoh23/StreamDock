@@ -5,6 +5,7 @@ import {
   type FollowMode,
 } from "../../features/comment-viewer/useFollowScroll";
 import styles from "./CommentViewerApp.module.css";
+import overlayStyles from "./OverlayComment.module.css";
 
 /**
  * 033b: 受信コメントの一覧描画（listHeader の総数＋`<ol>` 本体）。`CommentViewerApp` の肥大化対策で切り出した
@@ -24,6 +25,12 @@ const SOURCE_CLASS: Record<CommentViewDto["source"], string> = {
   youtube: styles.srcYoutube,
 };
 
+/** 034e: overlay 意匠のサイト名ピルバッジの色分けクラス（Twitch=紫 / YouTube=赤）。default の SOURCE_CLASS と同型。 */
+const OVERLAY_SOURCE_CLASS: Record<CommentViewDto["source"], string> = {
+  twitch: overlayStyles.sourceTwitch,
+  youtube: overlayStyles.sourceYoutube,
+};
+
 interface CommentListProps {
   comments: CommentViewDto[];
   /**
@@ -38,15 +45,73 @@ interface CommentListProps {
    * `useFollowScroll` に切り出してあり、CommentList は表示専用（接続/WS/TTS の業務 state を持たない）ままにする。
    */
   followMode?: FollowMode;
+  /**
+   * 034e: 表示バリアント。既定 "default"（コメビュ本体＝現行の item/meta/badge/author/text マークアップで不変）。
+   * "overlay" のとき OBS オーバーレイ用のチャット意匠（アイコン枠＋名前の左カラム＋半透過グレーの吹き出しに本文）で
+   * 描く。意匠クラスは OverlayComment.module.css に隔離してあり本体 CSS には波及しない。
+   */
+  variant?: "default" | "overlay";
+  /**
+   * 034e: overlay 意匠でサイト名（Twitch/YouTube）を吹き出しに小さく添えるか。既定 false。設定ビューの
+   * 「サイト名を表示する」トグル値をオーバーレイ窓が渡す（受信済み source の表示のみ・新規取得はしない）。
+   */
+  showSource?: boolean;
 }
 
 export function CommentList({
   comments,
   showCount = true,
   followMode = "off",
+  variant = "default",
+  showSource = false,
 }: CommentListProps) {
   const olRef = useRef<HTMLOListElement>(null);
   const follow = useFollowScroll(olRef, comments, { mode: followMode });
+
+  // 034e(review L5・修正不要): renderDefaultItem/renderOverlayItem は毎レンダー再生成され、使わない分岐も生成される。
+  // この一覧（最大 200 件クランプ）の規模では無視できるコストで、分岐マークアップを素直に読める形を優先した意図的な書き方。
+  // 再修正トリガー＝将来コメント上限を大幅に増やす等で map 再生成のコストが実測で問題化したら、useCallback 化や
+  // 分岐選択のメモ化を検討する。
+  // 既定（コメビュ本体）のコメント項目。現行マークアップから一切変えない（本体の見た目を不変に保つ）。
+  const renderDefaultItem = (c: CommentViewDto) => (
+    <li key={c.id} className={styles.item}>
+      <div className={styles.meta}>
+        <span className={`${styles.badge} ${SOURCE_CLASS[c.source]}`}>
+          {SOURCE_LABEL[c.source]}
+        </span>
+        <span className={styles.author}>{c.author.name}</span>
+        {c.monetaryAmount && (
+          <span className={styles.amount}>{c.monetaryAmount}</span>
+        )}
+      </div>
+      <p className={styles.text}>{c.text}</p>
+    </li>
+  );
+
+  // 034e: OBS オーバーレイ用チャット意匠（LINE 風）。上段＝名前＋サイト名ピルバッジ（別の行）／下段＝アイコン｜吹き出し
+  // （同じ行の 2 列）。吹き出し左辺のしっぽがアイコン方向へ向く。showSource=true のときだけサイト名ピルを名前の横に
+  // 添える（受信済み source の表示のみ・新規取得はしない）。
+  const renderOverlayItem = (c: CommentViewDto) => (
+    <li key={c.id} className={overlayStyles.item}>
+      <div className={overlayStyles.header}>
+        <span className={overlayStyles.name}>{c.author.name}</span>
+        {showSource && (
+          <span
+            className={`${overlayStyles.source} ${OVERLAY_SOURCE_CLASS[c.source]}`}
+          >
+            {SOURCE_LABEL[c.source]}
+          </span>
+        )}
+      </div>
+      <div className={overlayStyles.row}>
+        {/* 034f: 実アイコン取得後はこの枠に画像を差すだけ（サイズ/位置は確保済み）。今はデフォルトのグレー丸。 */}
+        <div className={overlayStyles.icon} aria-hidden="true" />
+        <div className={overlayStyles.bubble}>
+          <p className={overlayStyles.text}>{c.text}</p>
+        </div>
+      </div>
+    </li>
+  );
 
   // 追従有無で共有する一覧本体（map は不変）。ref/onScroll は "off" のとき no-op なので付けても素の挙動のまま。
   const list = (
@@ -54,20 +119,9 @@ export function CommentList({
       {comments.length === 0 ? (
         <li className={styles.empty}>コメントはまだありません</li>
       ) : (
-        comments.map((c) => (
-          <li key={c.id} className={styles.item}>
-            <div className={styles.meta}>
-              <span className={`${styles.badge} ${SOURCE_CLASS[c.source]}`}>
-                {SOURCE_LABEL[c.source]}
-              </span>
-              <span className={styles.author}>{c.author.name}</span>
-              {c.monetaryAmount && (
-                <span className={styles.amount}>{c.monetaryAmount}</span>
-              )}
-            </div>
-            <p className={styles.text}>{c.text}</p>
-          </li>
-        ))
+        comments.map(
+          variant === "overlay" ? renderOverlayItem : renderDefaultItem,
+        )
       )}
     </ol>
   );
