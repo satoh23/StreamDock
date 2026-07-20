@@ -53,6 +53,14 @@ interface SettingsViewProps {
   // 033c: VOICEVOX 自動連携 ON/OFF（読み上げトグルは本体コメントビューへ・state は CommentViewerApp が保持）。
   voicevoxAutolink: boolean;
   onVoicevoxAutolinkChange: (value: boolean) => void;
+  // 035c: source 別読み上げ ON/OFF（既定 両 ON・state/永続化は CommentViewerApp が保持）。VOICEVOX 読み上げが OFF
+  // （ttsEnabled=false）のときは両トグルを無効表示にするため、判定用に ttsEnabled も受け取る（読み上げトグル本体は
+  // 本体コメントビューのツールバーにあり、この設定ビューは状態を受け取って disabled 表示するだけ）。
+  ttsEnabled: boolean;
+  speakTwitch: boolean;
+  onSpeakTwitchChange: (value: boolean) => void;
+  speakYoutube: boolean;
+  onSpeakYoutubeChange: (value: boolean) => void;
   // 033d: 読み上げ話者の選択（話者・スタイル一覧と選択中 style id。state は CommentViewerApp が保持）。
   speakers: VoicevoxSpeaker[];
   selectedSpeakerId: number;
@@ -90,6 +98,11 @@ export function SettingsView({
   onYouTubeStopSession,
   voicevoxAutolink,
   onVoicevoxAutolinkChange,
+  ttsEnabled,
+  speakTwitch,
+  onSpeakTwitchChange,
+  speakYoutube,
+  onSpeakYoutubeChange,
   speakers,
   selectedSpeakerId,
   onSpeakerIdChange,
@@ -247,6 +260,25 @@ export function SettingsView({
           />
           <span className={styles.note}>
             自動連携が ON だと、コメントビューアを開いたときに VOICEVOX を自動起動します（要: ツール管理に VOICEVOX を登録）。
+          </span>
+
+          {/* 035c: 配信元（Twitch/YouTube）別の読み上げ ON/OFF。両プラットフォーム同時取得時の読み上げ暴発を抑えるための
+              フィルタで、既定は両 ON（現行踏襲）。OFF の配信元はコメントを読み上げないが、表示・一覧には残る。読み上げ
+              フィルタのみで、VOICEVOX 読み上げ本体が OFF（ttsEnabled=false）のときは両トグルを無効表示にする。 */}
+          <ToggleSwitch
+            label="Twitch を読み上げる"
+            checked={speakTwitch}
+            onChange={onSpeakTwitchChange}
+            disabled={!ttsEnabled}
+          />
+          <ToggleSwitch
+            label="YouTube を読み上げる"
+            checked={speakYoutube}
+            onChange={onSpeakYoutubeChange}
+            disabled={!ttsEnabled}
+          />
+          <span className={styles.note}>
+            配信元ごとに読み上げの ON/OFF を切り替えられます（OFF の配信元は読み上げませんが、コメント表示は残ります）。VOICEVOX 読み上げが ON のときだけ設定できます。
           </span>
 
           {/* 033d: 読み上げ話者・スタイルの選択（話者→スタイルの 2 段）。ENGINE 稼働後に一覧（GET /speakers）が

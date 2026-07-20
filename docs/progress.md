@@ -4431,3 +4431,44 @@ OBS オーバーレイは本体と同じ不透明カード（`CommentViewerApp.m
 - ON 目視: `COMMENT_SIDECAR_MOCK=1` ＋ `build:sidecar`（secrets）＋ `tauri dev` で、viewer・overlay の両方で ①両 source が 1 リストに混在・
   バッジ/色リングで判別 ②SettingsView/StatusIndicator の両インジケータが並列に「取得中」③片方 stop で他方継続・停止側のみ idle・表示済み破綻なし。
 - OFF 回帰: env なし `tauri dev` で実取得が従来どおり（回帰なし）。任意: `lsof -i` で ON 時に sidecar PID から外部 ESTABLISHED が出ないこと。
+
+## 2026-07-20 (035c TTS ソース別読み上げフィルタ)
+
+- 035a（provider 別並行取得）/035b（同時表示）で **Twitch/YouTube のコメントが 1 リストに混在**して届くようになり、
+  現行の `enqueueForSpeech` が **source 問わず**全コメントを VOICEVOX へ流す＝両稼働時に**読み上げが暴発**（詰まる/やかましい）。
+  これを **source 別に読み上げ ON/OFF** できるようにして制御した。**既定は両 ON で現行踏襲**・**フィルタは読み上げのみ**
+  （表示・一覧・overlay は全 source を従来どおり出す）。スコープ変更（2026-07-20）どおり **クォータ保護 UI/警告は除外**。
+- **永続化（既定 true）**: `ttsPrefs.ts` に source 別読み上げ ON/OFF を追加。キー＝`stream-dock.comment-viewer.speak-twitch`
+  / `speak-youtube`（既存の名前空間・`String()` 保存・例外握りつぶしを踏襲）。**判定だけ `getItem(KEY) !== "false"` で既定 ON**に
+  した（未保存・不正値・例外はすべて true にフォールバック＝現行の全読み上げを壊さない）。`tts-enabled`/`voicevox-autolink`
+  （既定 OFF・`=== "true"`）とは**逆**である点をファイル冒頭コメントに明記。追加関数＝`loadSpeakTwitch`/`saveSpeakTwitch`/
+  `loadSpeakYoutube`/`saveSpeakYoutube`（既存 2 関数と同形）。
+- **per-source フィルタ方式**: `CommentViewerApp.tsx` の `enqueueForSpeech`（単一注入点）で、既存の「VOICEVOX読み上げ ON の
+  ときだけ enqueue」ゲート（`ttsEnabledRef`）と**併用**して **`comment.source` が OFF の source を per-comment で除外**（呼び出し
+  全体は止めず 1 件ずつ判定＝混在時も片方だけ読み上げる）。`enqueueForSpeech` は安定 `useCallback([])` を保つため、source 別 state は
+  `ttsEnabledRef` と同じく **ref 経由**（`speakTwitchRef`/`speakYoutubeRef`）で参照し、WS 接続 effect の張り直し（「窓内 1 本」
+  原則）を崩さない。**表示は `mergeComments` の `next` を不変で `setComments` に渡す**（絞りは enqueue 側だけ）。OFF の source の
+  コメントは `ttsQueue` の `seenIds` に載らないため、後で ON にしても遡って読み上げない（`ttsEnabled` OFF 時と同じ期待挙動）。
+- **SettingsView トグル**: 「読み上げ（VOICEVOX）」カードに「Twitch を読み上げる」「YouTube を読み上げる」トグルを追加。
+  **VOICEVOX 読み上げ本体が OFF（`ttsEnabled=false`）のときは両トグルを `disabled`（グレーアウト）**にする（読み上げトグル本体は
+  本体ビューのツールバーにあり、設定ビューは `ttsEnabled` を受け取って無効表示するだけ）。`ToggleSwitch` に最小の `disabled?` prop
+  を追加（button 無効化＋行 dim。既存の利用箇所＝読み上げ・自動連携・オーバーレイは未指定で挙動不変）。CSS は `.toggleRowDisabled`
+  （opacity）＋ `.switch:disabled`（not-allowed）を役割トークンのみで追加。
+- **レイアウト修正（潜在バグ是正）**: source トグル追加で読み上げカードの高さが増え、設定画面のカードがはみ出す/他カードの高さも
+  崩れる不具合が顕在化。原因＝`.card`（`overflow:hidden`）は flex 自動最小高さが 0 になり、内容が窓を超えると `.settingsView`
+  （flex column・`overflow-y:auto`）が全カードを縮めて `overflow:hidden` でクリップしていた（=親がスクロールしない）。
+  `.card`／`.settingsHeader` に `flex-shrink: 0` を足し、はみ出す分を `.settingsView` 側で縦スクロールさせる形に是正
+  （`overflow:hidden` は cardHead の角丸クリップに必要なので温存。`.connGrid` の水平 grid は縦 flex-shrink と無関係で不変）。
+- **security-review 結果（軽）＝問題なし（修正必須なし）**。frontend の設定/表示追加のみ（localStorage の bool 2 キー・enqueue の
+  per-comment 分岐・トグル UI）。**外部通信宛先・API・capability・依存を追加せず**（Rust 変更ゼロ）・`csp: null` 不変・VOICEVOX の
+  loopback 例外（`127.0.0.1:50021`）を広げていない（OFF の source は `synthesize` へ送らない＝送信は減る方向）。**コメント本文の
+  ログ/DB 出力は追加なし**（enqueue 経路・ttsQueue 不変）。§⑨（035a・security.md）が「source 別 ON/OFF は 035c で扱う」と予定して
+  いた範囲内。
+- **検証結果**: `pnpm --filter ./apps/desktop typecheck`＝0 error／`lint`＝0 error。`git diff --stat`＝frontend 5 ファイルのみ
+  （`ttsPrefs.ts`・`CommentViewerApp.tsx`・`SettingsView.tsx`・`ToggleSwitch.tsx`・`CommentViewerApp.module.css`）で
+  `src-tauri`/capabilities/依存は不変。
+- **未確認（ユーザー環境・実機）**: 両接続（実配信 or 035b のモック）で source 別読み上げトグルを操作 → 片方 OFF でその source は
+  読み上げされない・表示は残る／既定 両 ON で現行どおり全読み上げ／VOICEVOX 読み上げ OFF 時は source トグルが disabled／再起動後も
+  トグル状態が保持される。
+- **035 系（035a〜c）完了**: 035a（sidecar 同時取得の解禁）→035b（viewer/overlay 同時表示 検証・微調整・動作確認モック）→
+  035c（TTS source 別読み上げフィルタ）で、親 035「YouTube/Twitch 同時取得・マージ表示・読み上げ制御」が一通り揃った。

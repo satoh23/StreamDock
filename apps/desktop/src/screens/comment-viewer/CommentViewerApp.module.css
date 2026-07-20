@@ -150,6 +150,8 @@
   gap: 10px;
   padding: 8px 16px;
   border-bottom: 1px solid var(--border-soft);
+  /* 035c: 固定ヘッダは縮めない（カードが増えて縦スクロールしても戻る導線と見出しを保つ）。 */
+  flex-shrink: 0;
 }
 
 .settingsTitle {
@@ -307,6 +309,10 @@
   background: var(--surface);
   border: 1px solid var(--border-soft);
   overflow: hidden;
+  /* 035c: カードは自然な高さを保ち、はみ出す分は .settingsView 側で縦スクロールさせる。カードは overflow:hidden の
+     ため flex 自動最小高さが 0 になり、内容が窓を超えると .settingsView（flex column）が全カードを縮めて overflow:hidden で
+     内容をクリップしてしまう（読み上げカードに要素を足して総高さが窓を超えると顕在化した）。flex-shrink を止めて回避する。 */
+  flex-shrink: 0;
 }
 
 .cardHead {
@@ -571,6 +577,16 @@
 .switchOn .knob {
   background: var(--primary);
   transform: translate(18px, -50%);
+}
+
+/* 035c: 無効トグル（source 別読み上げが VOICEVOX 読み上げ OFF で操作不可のとき）。.btn:disabled と同じく
+   「押せそうなのに無反応」を避けるため、行を dim し switch を not-allowed にする。役割トークンのみで両テーマ追従。 */
+.toggleRowDisabled {
+  opacity: 0.5;
+}
+
+.switch:disabled {
+  cursor: not-allowed;
 }
 
 /* VOICEVOX クレジット表記（必須・033d で選択話者名に追従）。034(UI刷新): 全文 danger 赤の壁から、danger-soft の

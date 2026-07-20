@@ -28,6 +28,10 @@ import {
   saveTtsEnabled,
   loadVoicevoxAutolink,
   saveVoicevoxAutolink,
+  loadSpeakTwitch,
+  saveSpeakTwitch,
+  loadSpeakYoutube,
+  saveSpeakYoutube,
 } from "../../features/comment-viewer/ttsPrefs";
 import {
   loadSpeakerId,
@@ -123,6 +127,12 @@ export function CommentViewerApp() {
     loadVoicevoxAutolink(),
   );
 
+  // 035c: source 別の読み上げ ON/OFF（既定は両方 ON・localStorage 永続）。両プラットフォーム同時取得時の読み上げ暴発を
+  // 抑えるため source 単位で読み上げを絞る。既定 ON で現行の全読み上げ挙動を踏襲する。OFF でも表示・一覧は全 source
+  // 継続で、絞るのは読み上げキュー投入（enqueueForSpeech）だけ。
+  const [speakTwitch, setSpeakTwitch] = useState(() => loadSpeakTwitch());
+  const [speakYoutube, setSpeakYoutube] = useState(() => loadSpeakYoutube());
+
   // 033d: 読み上げ話者（VOICEVOX style id・localStorage 永続）。未選択時の既定は 3（ずんだもんノーマル）。
   const [selectedSpeakerId, setSelectedSpeakerId] = useState(() =>
     loadSpeakerId(),
@@ -135,6 +145,11 @@ export function CommentViewerApp() {
   const ttsEnabledRef = useRef(ttsEnabled);
   const engineRunningRef = useRef(engineRunning);
   const launchRequestedRef = useRef(launchRequested);
+  // 035c: source 別読み上げ ON/OFF を安定 enqueueForSpeech（useCallback []）から最新値で読むための ref。
+  // state を直接 useCallback の依存に入れると enqueueForSpeech が作り直され、それを依存に持つ WS 接続 effect が
+  // 張り直されて「窓内 1 本」原則に反するため、ttsEnabledRef と同様に ref 経由で参照する。
+  const speakTwitchRef = useRef(speakTwitch);
+  const speakYoutubeRef = useRef(speakYoutube);
   // 033d: TTS キューは合成直前に getter で最新の選択話者を読む（キューを作り直さない）。state の stale closure を
   // 避けるため ref に同期し、createTtsQueue の getSpeakerId から参照する。
   const selectedSpeakerIdRef = useRef(selectedSpeakerId);
@@ -195,6 +210,13 @@ export function CommentViewerApp() {
   useEffect(() => {
     saveVoicevoxAutolink(voicevoxAutolink);
   }, [voicevoxAutolink]);
+  // 035c: source 別読み上げ ON/OFF を localStorage に永続化する（再オープン・再起動で復元）。
+  useEffect(() => {
+    saveSpeakTwitch(speakTwitch);
+  }, [speakTwitch]);
+  useEffect(() => {
+    saveSpeakYoutube(speakYoutube);
+  }, [speakYoutube]);
   // 033d: 選択話者を localStorage に永続化する（再オープン・再起動で復元）。
   useEffect(() => {
     saveSpeakerId(selectedSpeakerId);
@@ -221,6 +243,13 @@ export function CommentViewerApp() {
   useEffect(() => {
     selectedSpeakerIdRef.current = selectedSpeakerId;
   }, [selectedSpeakerId]);
+  // 035c: source 別読み上げ ON/OFF を ref に同期（enqueueForSpeech から最新値を読む）。
+  useEffect(() => {
+    speakTwitchRef.current = speakTwitch;
+  }, [speakTwitch]);
+  useEffect(() => {
+    speakYoutubeRef.current = speakYoutube;
+  }, [speakYoutube]);
 
   useEffect(() => {
     // 033d: 合成直前に選択話者（style id）を ref から読む getter を渡す。話者変更でキューを作り直さない。
@@ -256,12 +285,25 @@ export function CommentViewerApp() {
   // 入れると enqueueForSpeech が作り直され、それを依存に持つ WS 接続 effect が張り直されて「窓内 1 本」原則に
   // 反する。よって state ではなく ttsEnabledRef を参照して安定（useCallback []）を保つ。OFF 中に来たコメントは
   // enqueue しない＝ttsQueue の seenIds にも載らないため、後で ON にしても遡って読み上げない（期待挙動）。
+  // 035c: 読み上げ全体 ON（ttsEnabledRef）の上で、さらに **source 別トグルと併用**して per-comment で絞る。
+  // OFF の source（speakTwitch/speakYoutube が false）のコメントは enqueue しない。呼び出し全体は止めず、
+  // 混在した added を 1 件ずつ判定して混在時も片方だけ読み上げる。表示（mergeComments の next）は不変で全 source
+  // 継続。OFF の source のコメントも seenIds に載らないため、後でその source を ON にしても遡って読み上げない。
   const enqueueForSpeech = useCallback((added: CommentViewDto[]) => {
     if (!ttsEnabledRef.current) return;
     const tts = ttsRef.current;
     if (!tts || added.length === 0) return;
     void tts.resume();
-    added.forEach((c) => tts.enqueue(c));
+    added.forEach((c) => {
+      // 035c: source 別トグルは twitch/youtube のみ明示除外。CommentSource（"twitch" | "youtube"）以外は
+      // 該当トグルが無いので安全側（読み上げ ON）でそのまま enqueue する。今 source を増やすと state・永続化
+      // （ttsPrefs）・この分岐の 3 箇所を同時に足す必要があり、この分岐だけ漏らすと新 source が黙って常時読み上げに
+      // なる。再修正トリガー: CommentSource に 3 つ目以降を追加するとき（追従漏れ検知が要れば switch(c.source) の
+      // 網羅を satisfies never で強制する形に寄せる）。
+      if (c.source === "twitch" && !speakTwitchRef.current) return;
+      if (c.source === "youtube" && !speakYoutubeRef.current) return;
+      tts.enqueue(c);
+    });
   }, []);
 
   // 032c-b: Twitch コメント取得 sidecar の単一双方向 WS に接続する。受信コメントは表示へ流し
@@ -541,6 +583,11 @@ export function CommentViewerApp() {
           onYouTubeStopSession={handleYouTubeStopSession}
           voicevoxAutolink={voicevoxAutolink}
           onVoicevoxAutolinkChange={setVoicevoxAutolink}
+          ttsEnabled={ttsEnabled}
+          speakTwitch={speakTwitch}
+          onSpeakTwitchChange={setSpeakTwitch}
+          speakYoutube={speakYoutube}
+          onSpeakYoutubeChange={setSpeakYoutube}
           speakers={speakers}
           selectedSpeakerId={selectedSpeakerId}
           onSpeakerIdChange={setSelectedSpeakerId}
