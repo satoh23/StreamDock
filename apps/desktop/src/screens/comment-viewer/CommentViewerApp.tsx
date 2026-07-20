@@ -554,17 +554,24 @@ export function CommentViewerApp() {
         />
       ) : (
         <>
-          {/* 033b/034d: 本体上部の小さなツールバー。左に接続状態インジケータ（接続ボタンの代わり）、右に設定への歯車。
-              OBS オーバーレイの開閉は 034d で設定ビューの「OBS オーバーレイ」節（1 トグル）へ移設した。 */}
+          {/* 033b/034d/034(UI刷新): 本体上部の小さなツールバーを 1 行に集約。左に接続状態インジケータ（横並び 1 行）、
+              右クラスタに VOICEVOX 読み上げトグル（配信中に頻繁に切り替えるためここが UX 上ベスト）と『⚙ 設定』ボタン。
+              OBS オーバーレイの開閉は 034d で設定ビューの「OBS オーバーレイ」節（1 トグル）へ移設済み。 */}
           <div className={styles.toolbar}>
             <StatusIndicator
               twitchSessionState={sessionState}
               youtubeSessionState={youtubeSessionState}
             />
             <div className={styles.toolbarActions}>
+              <ToggleSwitch
+                label="VOICEVOX読み上げ"
+                checked={ttsEnabled}
+                onChange={handleTtsEnabledChange}
+                inline
+              />
               <button
                 type="button"
-                className={styles.iconBtn}
+                className={styles.settingsBtn}
                 onClick={() => setView("settings")}
                 title="設定"
                 aria-label="設定"
@@ -574,26 +581,18 @@ export function CommentViewerApp() {
             </div>
           </div>
 
-          {/* 033c: 読み上げ ON/OFF は配信中に頻繁に切り替えるため本体コメントビュー上部に置く（設定ビューではなく
-              ここに置くほうが UX が良い）。ON のときだけコメントを読み上げ、ON のときだけクレジット表記をトグル
-              直下に出す。 */}
-          <div className={styles.voicevoxBar}>
-            <ToggleSwitch
-              label="VOICEVOX読み上げ"
-              checked={ttsEnabled}
-              onChange={handleTtsEnabledChange}
-            />
-            {ttsEnabled && (
-              <section className={styles.credit}>
-                <h2 className={styles.creditHeading}>
-                  クレジット表記のお願い（必須）
-                </h2>
-                <p className={styles.creditText}>
-                  {creditNotice(selectedSpeakerName)}
-                </p>
-              </section>
-            )}
-          </div>
+          {/* 033c/034(UI刷新): 読み上げ ON のときだけ、ツールバー直下にクレジット表記（必須）をコンパクトな通知カードで
+              出す（OFF の人には出さない）。選択話者名に追従（creditNotice）。 */}
+          {ttsEnabled && (
+            <section className={styles.credit}>
+              <h2 className={styles.creditHeading}>
+                クレジット表記のお願い（必須）
+              </h2>
+              <p className={styles.creditText}>
+                {creditNotice(selectedSpeakerName)}
+              </p>
+            </section>
+          )}
 
           {/* 033c: 読み上げ ON かつ ENGINE 未起動のときだけ表示（OFF の人には出さない）。上の effect(A) が同時に
               自動起動を走らせるため、ボタンは同じ launchEngine を叩く再試行/未登録誘導のフォールバック（通常は

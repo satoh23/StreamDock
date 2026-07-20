@@ -21,24 +21,26 @@
   color: var(--muted);
 }
 
-/* 033b: comment ビュー上部の小さなツールバー。左=接続状態インジケータ／右=設定への歯車。 */
+/* 033b/034(UI刷新): comment ビュー上部の小さなツールバー。左=接続状態インジケータ／
+   右クラスタ=読み上げトグル＋『⚙ 設定』ボタン（3 ゾーンを 1 行に集約）。狭い窓では折り返す。 */
 .toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 8px 12px;
   padding: 8px 16px;
   border-bottom: 1px solid var(--border-soft);
 }
 
-/* 033f: ツールバー右クラスタ（OBS オーバーレイを開くボタン＋設定歯車）を右寄せで並べる。 */
+/* 034(UI刷新): ツールバー右クラスタ（VOICEVOX 読み上げトグル＋設定ボタン）を右寄せで並べる。 */
 .toolbarActions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
 }
 
-/* 033b: 歯車（設定へ）・戻る（コメントへ）の文字グリフボタン。Sidebar の .toolActionBtn と同方式の role トークン。 */
+/* 033b: 戻る（コメントへ）の文字グリフボタン。Sidebar の .toolActionBtn と同方式の role トークン。 */
 .iconBtn {
   width: 28px;
   height: 28px;
@@ -56,11 +58,39 @@
   background: var(--control-bg-hover);
 }
 
-/* 033b: 接続状態インジケータ（サービス別 2 行・色付き円＋テキスト）。接続ボタンの代わりに本体へ置く。 */
+/* 034(UI刷新): 設定へ切り替える歯車ボタン。枠・背景を持たないゴーストボタンで、歯車グリフを大きくして
+   視認性を確保する（テキスト無し・title/aria-label で用途を担保）。hover で色を muted→text にして押下対象を示す。 */
+.settingsBtn {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 26px;
+  line-height: 1;
+}
+
+.settingsBtn:hover {
+  color: var(--text);
+}
+
+/* レビュー(L1): テキスト無しゴーストボタンはキーボードフォーカスが hover 色変化だけだと分かりづらいため、
+   .selectCustom と同じ role トークンでフォーカスリングを明示する（UA 既定リング頼みにしない）。
+   再修正トリガー＝設定ボタンをアイコン以外（ラベル付き等）に戻し、別のフォーカス表現へ変える場合。 */
+.settingsBtn:focus-visible {
+  outline: 2px solid var(--primary-soft-border);
+  outline-offset: 1px;
+}
+
+/* 033b/034(UI刷新): 接続状態インジケータ。接続ボタンの代わりに本体へ置く。サービス別 2 行 → 横並び 1 行へ
+   （情報密度を下げつつ一目確認）。狭い窓では折り返す。 */
 .statusIndicator {
   display: flex;
-  flex-direction: column;
-  gap: 3px;
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16px;
 }
 
 .statusRow {
@@ -98,7 +128,6 @@
   font-size: 12px;
   font-weight: 700;
   color: var(--text);
-  min-width: 52px;
 }
 
 .statusLabel {
@@ -270,41 +299,63 @@
   word-break: break-word;
 }
 
-/* 032c-b: Twitch 連携パネル（Device Code ログイン・チャンネル指定で取得開始/停止）。役割トークンで両テーマ追従。 */
-.twitchPanel {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px 16px;
+/* 034(UI刷新): 設定ビューを 3 つのカード（接続 / 読み上げ / OBSオーバーレイ）へ再編する土台。役割トークン運用は
+   settings/SettingsScreen の option カードに倣う（生 hex を持ち込まない）。 */
+.card {
+  margin: 12px 16px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  overflow: hidden;
+}
+
+.cardHead {
+  padding: 10px 14px;
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--text);
+  background: var(--surface-2);
   border-bottom: 1px solid var(--border-soft);
 }
 
-.twitchRow {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-/* 032c-d: YouTube 連携パネル（Authorization Code ログイン・ブラウザ同意）。Twitch と同レイアウトで併存。 */
-.youtubePanel {
+.cardBody {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 10px 16px;
-  border-bottom: 1px solid var(--border-soft);
+  gap: 10px;
+  padding: 14px;
 }
 
-.youtubeRow {
-  display: flex;
+/* 034(UI刷新): 接続カードは Twitch/YouTube を 1 つの共有グリッドに載せて列を揃える。列＝
+   [サービス名｜接続｜チャンネル｜取得開始｜停止｜状態]。auto 列は両行の最大幅で確定するので、YouTube 側に
+   チャンネル列の空セルを置けば取得開始/停止の x 位置が Twitch と一致する。状態列は 1fr で余白を吸収し折り返す。
+   レビュー(M1): チャンネル列は minmax(0, 200px)。通常幅では 1fr の状態列が余白を吸うので 200px 上限に張り付き
+   従来と同じ見え方だが、窓が狭いときは 0 まで縮んでオーバーフローの主因（固定 200px）を防ぐ（.input は width:100% で追従）。
+   なお .card の overflow:hidden は cardHead 背景を角丸へクリップするための意図的指定（横スクロールは付けない）。
+   再修正トリガー＝実機の最小窓幅でボタン列（auto）自体がはみ出して「停止」等が切れる場合は、
+   ボタンの短縮 or ボタン群だけを折り返す行構成へ変える。 */
+.connGrid {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 200px) auto auto minmax(0, 1fr);
   align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
+  justify-items: start;
+  gap: 8px 8px;
+}
+
+/* deviceCode / 注記など、行全体に渡す要素はグリッドの全列にまたがる。 */
+.connSpan {
+  grid-column: 1 / -1;
+}
+
+.connService {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--text);
 }
 
 .input {
-  flex: 1;
-  min-width: 120px;
+  justify-self: stretch;
+  min-width: 0;
+  width: 100%;
   padding: 6px 10px;
   border-radius: 8px;
   font-size: 12px;
@@ -373,24 +424,6 @@
   color: var(--muted);
 }
 
-/* 033c: 設定ビューの VOICEVOX 自動連携パネル。他パネルと同レイアウト・両テーマ追従。 */
-.voicevoxPanel {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px 16px;
-  border-bottom: 1px solid var(--border-soft);
-}
-
-/* 034d: OBS オーバーレイの開閉節（設定ビュー）。他パネルと同レイアウト。034e がサイト名トグル等を隣に足す土台。 */
-.overlayPanel {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px 16px;
-  border-bottom: 1px solid var(--border-soft);
-}
-
 /* 033d: 話者 select ＋ スタイル select を並べる 1 行（狭い窓では折り返す）。 */
 .voicevoxRow {
   display: flex;
@@ -408,32 +441,90 @@
   color: var(--text-faint);
 }
 
-/* 033d: 話者/スタイル選択の select。.input と同じ見た目トークンで両テーマ追従。 */
-.select {
+/* 034(UI刷新): フォント select（左）＋プレビュー（右）を横並びにする行。 */
+.fontRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+/* 034(UI刷新): 選択フォントの見え方プレビュー。フォーム部品に見えないよう枠・背景は持たせず、「プレビュー」ラベル＋
+   サンプル文の並びで示す。sample の font-family は inline で当てる（OS 標準フォントのみ）。 */
+.fontPreview {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+/* 「プレビュー」の見出し。小さく淡色で、右のサンプルが表示見本だと分かるようにする。 */
+.fontPreviewLabel {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-faint);
+}
+
+/* サンプル文（選択フォントで実際に描画される）。 */
+.fontPreviewSample {
+  font-size: 16px;
+  color: var(--text);
+}
+
+/* 034(UI刷新): 自作スタイルの選択ボックス（Select.tsx）。native select を appearance:none で素の見た目だけ消し、
+   文字グリフ ▾ を重ねる（画像/data-URI なし＝CSP 安全）。話者・スタイル・フォントで共用し、アプリのトークン
+   （角丸・枠・配色）で統一する。native select 維持でキーボード/OS ポップアップ/アクセシビリティはそのまま。 */
+.selectWrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.selectCustom {
+  appearance: none;
+  -webkit-appearance: none;
   min-width: 140px;
-  padding: 6px 10px;
+  padding: 6px 28px 6px 10px;
   border-radius: 8px;
   font-size: 12px;
   color: var(--text);
   background: var(--surface);
   border: 1px solid var(--border-soft);
+  cursor: pointer;
 }
 
-/* 033c: 本体コメントビュー上部の VOICEVOX 読み上げトグル行（ON 時はトグル直下にクレジット）。ツールバー直下に置く。 */
-.voicevoxBar {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 8px 16px;
-  border-bottom: 1px solid var(--border-soft);
+.selectCustom:hover {
+  border-color: var(--primary-soft-border);
 }
 
-/* 033c: ラベル（左）＋トグル（右）の 1 行。 */
+.selectCustom:focus-visible {
+  outline: 2px solid var(--primary-soft-border);
+  outline-offset: 1px;
+}
+
+/* シェブロン。native の矢印を消した分を文字グリフで補う（クリックは下の select へ透過）。 */
+.chevron {
+  position: absolute;
+  right: 10px;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+/* 033c: ラベル（左）＋トグル（右）の全幅 1 行（設定ビュー向け）。 */
 .toggleRow {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+/* 034(UI刷新): ラベルとトグルを隣接させる幅可変のコンパクト版（メイン画面ツールバー右クラスタ向け）。 */
+.toggleRowInline {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .toggleLabel {
@@ -482,10 +573,14 @@
   transform: translate(18px, -50%);
 }
 
-/* VOICEVOX クレジット表記（必須・033d で選択話者名に追従）。らくらく画面の見出し体裁を踏襲し danger 色で強調する。 */
+/* VOICEVOX クレジット表記（必須・033d で選択話者名に追従）。034(UI刷新): 全文 danger 赤の壁から、danger-soft の
+   枠付き通知カードへ。必須表記としての存在感は見出しの danger 色で保ちつつ、本文は --text で可読性を上げ圧迫感を下げる。 */
 .credit {
-  padding: 10px 16px;
-  border-top: 1px solid var(--line);
+  margin: 8px 16px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--danger-soft);
+  border: 1px solid var(--danger-border);
 }
 
 .creditHeading {
@@ -497,8 +592,8 @@
 
 .creditText {
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 500;
   line-height: 1.6;
-  color: var(--danger);
+  color: var(--text);
   word-break: break-word;
 }

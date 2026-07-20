@@ -2,9 +2,11 @@ import type { DeviceCodePrompt } from "../../features/comment-viewer/commentStre
 import type { VoicevoxSpeaker } from "../../features/comment-viewer/voicevox";
 import {
   OVERLAY_FONTS,
+  resolveOverlayFontStack,
   type OverlayFontId,
 } from "../../features/comment-viewer/overlaySettings";
 import { ToggleSwitch } from "./ToggleSwitch";
+import { Select } from "./Select";
 import styles from "./CommentViewerApp.module.css";
 
 /**
@@ -15,6 +17,9 @@ import styles from "./CommentViewerApp.module.css";
  * `CommentViewerApp` が保持し、既存ハンドラ（`handleTwitchConnect` / `handleStartSession` / `handleStopSession` /
  * `handleYouTubeConnect` / `handleYouTubeStartSession` / `handleYouTubeStopSession`）を props でそのまま受け取って
  * 呼ぶだけ。よって WS 接続は窓内 1 本のまま・宛先も不変で、メイン窓 no-internet 境界に影響しない。
+ *
+ * 034(UI刷新): 帯の縦積みを 3 カード（接続 / 読み上げ(VOICEVOX) / OBSオーバーレイ）へ再編し、選択 UI は自作 Select に
+ * 統一する。表示・レイアウトのみの変更で、上記ハンドラ・disabled 条件・localStorage 連携などの挙動は不変。
  */
 
 /** 取得セッション状態の日本語ラベル（sidecar の session.state に対応）。 */
@@ -116,16 +121,22 @@ export function SettingsView({
         <h1 className={styles.settingsTitle}>設定</h1>
       </div>
 
-      {/* 032c-b: Twitch 連携（Device Code ログイン → チャンネル指定で取得開始）。ユーザー明示操作でのみ発火。 */}
-      <div className={styles.twitchPanel}>
-        <div className={styles.twitchRow}>
+      {/* 034(UI刷新): 接続カード（Twitch + YouTube を 1 枚に整列）。ボタンの意味・disabled 条件・ハンドラは不変で、
+          先頭にサービス名の見出し列を足して 2 行を揃えた。ユーザー明示操作でのみ発火する（§1）。 */}
+      <div className={styles.card}>
+        <div className={styles.cardHead}>接続</div>
+        {/* 034(UI刷新): Twitch/YouTube を共有グリッドに載せ、列（サービス名・接続・チャンネル・取得開始・停止・状態）を
+            揃える。YouTube はチャンネル入力が無いので同列に空セルを置いて、取得開始/停止の x 位置を Twitch と一致させる。 */}
+        <div className={`${styles.cardBody} ${styles.connGrid}`}>
+          {/* 032c-b: Twitch 連携（Device Code ログイン → チャンネル指定で取得開始）。 */}
+          <span className={styles.connService}>Twitch</span>
           <button
             type="button"
             className={styles.btn}
             onClick={onTwitchConnect}
             disabled={!streamConnected || linked}
           >
-            {linked ? "接続済み" : "Twitch に接続"}
+            {linked ? "接続済み" : "接続"}
           </button>
           <input
             type="text"
@@ -162,32 +173,36 @@ export function SettingsView({
                   sessionReason ? `（${sessionReason}）` : ""
                 }`}
           </span>
-        </div>
-        {deviceCode && (
-          <div className={styles.deviceCode} role="status">
-            <span className={styles.deviceCodeLabel}>
-              下記 URL をブラウザで開き、次のコードを入力して連携を許可してください:
-            </span>
-            <span className={styles.codeValue}>{deviceCode.userCode}</span>
-            <span className={styles.verifyUri}>{deviceCode.verificationUri}</span>
-          </div>
-        )}
-      </div>
+          {deviceCode && (
+            <div
+              className={`${styles.deviceCode} ${styles.connSpan}`}
+              role="status"
+            >
+              <span className={styles.deviceCodeLabel}>
+                下記 URL をブラウザで開き、次のコードを入力して連携を許可してください:
+              </span>
+              <span className={styles.codeValue}>{deviceCode.userCode}</span>
+              <span className={styles.verifyUri}>
+                {deviceCode.verificationUri}
+              </span>
+            </div>
+          )}
 
-      {/* 032c-d: YouTube 連携（Authorization Code ログイン → ブラウザ同意 → 取得開始）。Twitch と併存・各サービス
-          個別選択（同時取得はしない）。チャンネル名入力は不要（mine=true の自アカウントのアクティブ配信）。
-          認可画面は Rust がシステムブラウザで accounts.google.com を開く（sidecar は URL に触らず・
-          code_verifier は載らない）。ユーザー明示操作でのみ発火する（§1）。 */}
-      <div className={styles.youtubePanel}>
-        <div className={styles.youtubeRow}>
+          {/* 032c-d: YouTube 連携（Authorization Code ログイン → ブラウザ同意 → 取得開始）。Twitch と併存・各サービス
+              個別選択（同時取得はしない）。チャンネル名入力は不要（mine=true の自アカウントのアクティブ配信）。
+              認可画面は Rust がシステムブラウザで accounts.google.com を開く（sidecar は URL に触らず・
+              code_verifier は載らない）。ユーザー明示操作でのみ発火する（§1）。 */}
+          <span className={styles.connService}>YouTube</span>
           <button
             type="button"
             className={styles.btn}
             onClick={onYouTubeConnect}
             disabled={!streamConnected || youtubeLinked}
           >
-            {youtubeLinked ? "YouTube 接続済み" : "YouTube に接続"}
+            {youtubeLinked ? "接続済み" : "接続"}
           </button>
+          {/* チャンネル列の空セル（Twitch のチャンネル入力と桁を合わせて取得開始/停止を揃える）。 */}
+          <span aria-hidden="true" />
           <button
             type="button"
             className={styles.btn}
@@ -214,133 +229,153 @@ export function SettingsView({
                     youtubeSessionReason ? `（${youtubeSessionReason}）` : ""
                   }`}
           </span>
-        </div>
-        <span className={styles.note}>
-          YouTube はチャンネル名入力不要（自分のアクティブ配信を取得）。無料クォータ（10,000 units/日）を使い切ると取得は自動停止します。
-        </span>
-      </div>
-
-      {/* 033c: VOICEVOX 自動連携（設定向けの一度きり設定）。読み上げ ON/OFF は配信中に頻繁に切り替えるため本体
-          コメントビューへ置く。起動は既存 launch_voicevox_engine の再利用。 */}
-      <div className={styles.voicevoxPanel}>
-        <ToggleSwitch
-          label="VOICEVOX自動連携"
-          checked={voicevoxAutolink}
-          onChange={onVoicevoxAutolinkChange}
-        />
-        <span className={styles.note}>
-          自動連携が ON だと、コメントビューアを開いたときに VOICEVOX を自動起動します（要: ツール管理に VOICEVOX を登録）。
-        </span>
-
-        {/* 033d: 読み上げ話者・スタイルの選択（話者→スタイルの 2 段）。ENGINE 稼働後に一覧（GET /speakers）が
-            埋まると選べるようになる。未取得（空）のときは現在の選択（style id）を保持したまま案内文を出す。 */}
-        {speakers.length === 0 ? (
-          <span className={styles.note}>
-            読み上げ話者は VOICEVOX ENGINE を起動すると選べます（現在の選択: id={selectedSpeakerId}）。
+          <span className={`${styles.note} ${styles.connSpan}`}>
+            YouTube はチャンネル名入力不要（自分のアクティブ配信を取得）。無料クォータ（10,000 units/日）を使い切ると取得は自動停止します。
           </span>
-        ) : (
-          <div className={styles.voicevoxRow}>
-            {/* 034c: 話者/スタイルを選ぶたびに onPreview を呼ぶ（キーボード矢印での選択走査でも都度発火する）。
-                デバウンスは入れない: 「選択で即再生」の要件を損なうため。連続選択は preview プレイヤー側の中断切替
-                （前の合成 abort ＋ 再生 stop）で吸収され、宛先は loopback で軽量。
-                再修正トリガー: 実機で矢印走査時に 50021 への合成連打が負荷になった場合のみ、ここにデバウンスを検討する。 */}
-            <label className={styles.speakerField}>
-              話者
-              <select
-                className={styles.select}
-                value={speakers.indexOf(selectedSpeaker)}
-                onChange={(e) => {
-                  const sp = speakers[Number(e.target.value)];
-                  const firstId = sp?.styles[0]?.id;
-                  if (firstId !== undefined) {
-                    onSpeakerIdChange(firstId);
-                    onPreview(firstId); // 034c: 話者切替＝先頭スタイルの声を即試聴（前の再生は中断切替）。
-                  }
-                }}
-              >
-                {speakers.map((sp, i) => (
-                  <option key={i} value={i}>
-                    {sp.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className={styles.speakerField}>
-              スタイル
-              <select
-                className={styles.select}
-                value={selectedSpeakerId}
-                onChange={(e) => {
-                  const id = Number(e.target.value);
-                  onSpeakerIdChange(id);
-                  onPreview(id); // 034c: スタイル切替＝その声を即試聴（前の再生は中断切替）。
-                }}
-              >
-                {selectedSpeaker?.styles.map((st) => (
-                  <option key={st.id} value={st.id}>
-                    {st.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            {/* 034c: 同じ声をもう一度鳴らす小さな試聴ボタン（選択を変えずに聴き直せる）。選択トリガーと同じ
-                onPreview を呼ぶだけ（別導線を増やさない）。前の再生中なら中断して鳴らし直す。 */}
-            <button
-              type="button"
-              className={styles.btnGhost}
-              onClick={() => onPreview(selectedSpeakerId)}
-              title="選択中の声のサンプルをもう一度再生します"
-            >
-              試聴 ▶
-            </button>
-          </div>
-        )}
+        </div>
       </div>
 
-      {/* 034d: OBS オーバーレイの開閉（本体ツールバーから移設）。1 つのトグルで開閉し、現在の状態を配色＋
-          aria-checked（ToggleSwitch は role="switch"）で明示する。ON=開く / OFF=閉じる。オーバーレイは
-          表示専用で、閉じても sidecar は落とさない（no-orphan kill 契機はコメビュ窓に集約のまま）。
-          034e はこの節の隣にサイト名トグル等のデザイン設定を足す。
-          レビュー（ARIA 逸脱 / 修正不要）: 仕様は aria-pressed だが、switch ロールでは aria-checked が正しい等価
-          表現のため既存 ToggleSwitch を流用した（034e が隣に足すトグル群とも揃う）。再修正トリガー＝トグルを
-          switch でなく通常の押しボタン（toggle button）に置き換えるなら aria-pressed へ戻す。 */}
-      <div className={styles.overlayPanel}>
-        <ToggleSwitch
-          label="OBS オーバーレイを表示"
-          checked={overlayOpen}
-          onChange={onOverlayToggle}
-        />
-        <span className={styles.note}>
-          OBS の「ウィンドウキャプチャ」で「StreamDock コメントオーバーレイ」を選ぶとコメントを重ねられます（背景は透過）。オーバーレイは常に最背面で開くので、配信者の画面には前面表示されません。
-        </span>
+      {/* 033c/034(UI刷新): 読み上げ（VOICEVOX）カード。自動連携は設定向けの一度きり設定（読み上げ ON/OFF は配信中に
+          頻繁に切り替えるため本体コメントビューへ置く）。起動は既存 launch_voicevox_engine の再利用。 */}
+      <div className={styles.card}>
+        <div className={styles.cardHead}>読み上げ（VOICEVOX）</div>
+        <div className={styles.cardBody}>
+          <ToggleSwitch
+            label="VOICEVOX自動連携"
+            checked={voicevoxAutolink}
+            onChange={onVoicevoxAutolinkChange}
+          />
+          <span className={styles.note}>
+            自動連携が ON だと、コメントビューアを開いたときに VOICEVOX を自動起動します（要: ツール管理に VOICEVOX を登録）。
+          </span>
 
-        {/* 034e: オーバーレイの意匠設定（フォント選択・サイト名表示）。値は同一 localStorage を介してオーバーレイ窓へ
-            即反映する（OverlayApp が storage 購読）。フォントはすべて OS 標準で外部フォントは使わない（CSP 方針）。
-            サイト名は受信済み source（Twitch/YouTube）の表示のみで新規取得はしない。 */}
-        <label className={styles.speakerField}>
-          フォント
-          <select
-            className={styles.select}
-            value={overlayFont}
-            onChange={(e) =>
-              onOverlayFontChange(e.target.value as OverlayFontId)
-            }
-          >
-            {OVERLAY_FONTS.map((f) => (
-              <option key={f.id} value={f.id}>
-                {f.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <ToggleSwitch
-          label="サイト名を表示する"
-          checked={overlayShowSource}
-          onChange={onOverlayShowSourceChange}
-        />
-        <span className={styles.note}>
-          ON にすると、オーバーレイの各コメントに配信サービス名（Twitch / YouTube）を小さく表示します。
-        </span>
+          {/* 033d: 読み上げ話者・スタイルの選択（話者→スタイルの 2 段）。ENGINE 稼働後に一覧（GET /speakers）が
+              埋まると選べるようになる。未取得（空）のときは現在の選択（style id）を保持したまま案内文を出す。 */}
+          {speakers.length === 0 ? (
+            <span className={styles.note}>
+              読み上げ話者は VOICEVOX ENGINE を起動すると選べます（現在の選択: id=
+              {selectedSpeakerId}）。
+            </span>
+          ) : (
+            <div className={styles.voicevoxRow}>
+              {/* 034c: 話者/スタイルを選ぶたびに onPreview を呼ぶ（キーボード矢印での選択走査でも都度発火する）。
+                  デバウンスは入れない: 「選択で即再生」の要件を損なうため。連続選択は preview プレイヤー側の中断切替
+                  （前の合成 abort ＋ 再生 stop）で吸収され、宛先は loopback で軽量。
+                  再修正トリガー: 実機で矢印走査時に 50021 への合成連打が負荷になった場合のみ、ここにデバウンスを検討する。 */}
+              <label className={styles.speakerField}>
+                話者
+                <Select
+                  ariaLabel="話者"
+                  value={speakers.indexOf(selectedSpeaker)}
+                  onChange={(e) => {
+                    const sp = speakers[Number(e.target.value)];
+                    const firstId = sp?.styles[0]?.id;
+                    if (firstId !== undefined) {
+                      onSpeakerIdChange(firstId);
+                      onPreview(firstId); // 034c: 話者切替＝先頭スタイルの声を即試聴（前の再生は中断切替）。
+                    }
+                  }}
+                >
+                  {speakers.map((sp, i) => (
+                    <option key={i} value={i}>
+                      {sp.name}
+                    </option>
+                  ))}
+                </Select>
+              </label>
+              <label className={styles.speakerField}>
+                スタイル
+                <Select
+                  ariaLabel="スタイル"
+                  value={selectedSpeakerId}
+                  onChange={(e) => {
+                    const id = Number(e.target.value);
+                    onSpeakerIdChange(id);
+                    onPreview(id); // 034c: スタイル切替＝その声を即試聴（前の再生は中断切替）。
+                  }}
+                >
+                  {selectedSpeaker?.styles.map((st) => (
+                    <option key={st.id} value={st.id}>
+                      {st.name}
+                    </option>
+                  ))}
+                </Select>
+              </label>
+              {/* 034c: 同じ声をもう一度鳴らす小さな試聴ボタン（選択を変えずに聴き直せる）。選択トリガーと同じ
+                  onPreview を呼ぶだけ（別導線を増やさない）。前の再生中なら中断して鳴らし直す。 */}
+              <button
+                type="button"
+                className={styles.btnGhost}
+                onClick={() => onPreview(selectedSpeakerId)}
+                title="選択中の声のサンプルをもう一度再生します"
+              >
+                試聴 ▶
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* 034d/034(UI刷新): OBSオーバーレイカード。1 つのトグルで開閉し、現在の状態を配色＋aria-checked
+          （ToggleSwitch は role="switch"）で明示する。ON=開く / OFF=閉じる。オーバーレイは表示専用で、閉じても
+          sidecar は落とさない（no-orphan kill 契機はコメビュ窓に集約のまま）。
+          レビュー（ARIA 逸脱 / 修正不要）: 仕様は aria-pressed だが、switch ロールでは aria-checked が正しい等価
+          表現のため既存 ToggleSwitch を流用した。再修正トリガー＝トグルを switch でなく通常の押しボタン
+          （toggle button）に置き換えるなら aria-pressed へ戻す。 */}
+      <div className={styles.card}>
+        <div className={styles.cardHead}>OBSオーバーレイ</div>
+        <div className={styles.cardBody}>
+          <ToggleSwitch
+            label="OBS オーバーレイを表示"
+            checked={overlayOpen}
+            onChange={onOverlayToggle}
+          />
+          <span className={styles.note}>
+            OBS の「ウィンドウキャプチャ」で「StreamDock コメントオーバーレイ」を選ぶとコメントを重ねられます（背景は透過）。オーバーレイは常に最背面で開くので、配信者の画面には前面表示されません。
+          </span>
+
+          {/* 034e: オーバーレイの意匠設定（フォント選択・サイト名表示）。値は同一 localStorage を介してオーバーレイ窓へ
+              即反映する（OverlayApp が storage 購読）。フォントはすべて OS 標準で外部フォントは使わない（CSP 方針）。
+              サイト名は受信済み source（Twitch/YouTube）の表示のみで新規取得はしない。 */}
+          <label className={styles.speakerField}>
+            フォント
+            {/* 034(UI刷新): 選択したフォントで実際にどう表示されるかを右側でプレビューする。resolveOverlayFontStack で
+                id → font-family スタックへ解決し inline 適用（オーバーレイ本体と同じ解決経路・OS 標準フォントのみで
+                外部フォントは参照しない）。 */}
+            <div className={styles.fontRow}>
+              <Select
+                ariaLabel="フォント"
+                value={overlayFont}
+                onChange={(e) =>
+                  onOverlayFontChange(e.target.value as OverlayFontId)
+                }
+              >
+                {OVERLAY_FONTS.map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {f.label}
+                  </option>
+                ))}
+              </Select>
+              <span className={styles.fontPreview} aria-hidden="true">
+                <span className={styles.fontPreviewLabel}>プレビュー</span>
+                <span
+                  className={styles.fontPreviewSample}
+                  style={{ fontFamily: resolveOverlayFontStack(overlayFont) }}
+                >
+                  あア亜Ag 123
+                </span>
+              </span>
+            </div>
+          </label>
+          <ToggleSwitch
+            label="サイト名を表示する"
+            checked={overlayShowSource}
+            onChange={onOverlayShowSourceChange}
+          />
+          <span className={styles.note}>
+            ON にすると、オーバーレイの各コメントに配信サービス名（Twitch / YouTube）を小さく表示します。
+          </span>
+        </div>
       </div>
     </div>
   );
