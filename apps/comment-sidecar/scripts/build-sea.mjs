@@ -53,6 +53,29 @@ function step(label, fn) {
   return fn();
 }
 
+// 0) 焼き込み必須の Client ID/Secret ガード（再発防止）。
+// これらは下記 esbuild の define でビルド時にバイナリへ焼き込む（ランタイム env/dotenv 不使用）。
+// env 無しでフルビルドすると空文字が焼き込まれ、正常だった ID を黙って消してしまう（実際に 035a 検証で発生）。
+// 配布バイナリを生成するフルビルド時のみ、未設定を fail-fast で弾く。--bundle-only（オフライン疎通/DI 解決
+// 確認・ネットワークを張らない）は Client ID 不要のため対象外。
+if (!BUNDLE_ONLY) {
+  const requiredBakedSecrets = [
+    "TWITCH_CLIENT_ID",
+    "YOUTUBE_CLIENT_ID",
+    "YOUTUBE_CLIENT_SECRET",
+  ];
+  const missing = requiredBakedSecrets.filter((k) => !process.env[k]);
+  if (missing.length > 0) {
+    process.stderr.write(
+      `\n[build-sea] 焼き込み必須の値が未設定です: ${missing.join(", ")}\n` +
+        `  空のままビルドすると配布バイナリの Client ID が空になり、Twitch/YouTube 連携が動きません。\n` +
+        `  値を渡して再実行してください:\n` +
+        `    TWITCH_CLIENT_ID=<...> YOUTUBE_CLIENT_ID=<...> YOUTUBE_CLIENT_SECRET=<...> pnpm --filter ./apps/desktop build:sidecar\n\n`,
+    );
+    process.exit(1);
+  }
+}
+
 // 1) tsc: decorator metadata 付きで ESM JS を dist へ emit。
 step("tsc (emit dist with decorator metadata)", () => {
   rmSync(distDir, { recursive: true, force: true });

@@ -214,7 +214,7 @@ YouTube は含めない（032c-d）。実装全体像は [032c](032c-comment-vie
 - **CSP 硬化**（`csp: null` は当面維持・別途）。
 - **main ウィンドウをインターネット可能にすること**（封じ込めを崩さない）。
 - osareview のリッチ機能（ピン留め・タグ・スパチャ装飾・統計・SQLite 永続化・複数窓・リッチ整形）の移植。
-- YouTube + Twitch の同時 / マージ表示。
+- YouTube + Twitch の同時 / マージ表示。（**当時。035a で同時取得・マージ表示を解禁**＝`docs/tasks/035-simultaneous-youtube-twitch-comments.md`。本タスク時点のスコープとしては対象外だった記録として残す）
 
 ## セキュリティ制約（docs/security.md 準拠・抵触点と解禁範囲）
 

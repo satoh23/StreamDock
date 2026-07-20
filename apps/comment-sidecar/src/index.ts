@@ -234,10 +234,10 @@ async function main(): Promise<void> {
     },
   };
 
-  let sessionAbort: AbortController | null = null;
-  // 032c-d: 現在アクティブな取得セッションの platform（各サービス個別選択＝同時取得しない・1 つだけ）。
-  // 別サービスの取得開始は前セッションを abort する（sessionAbort を差し替え）。
-  let activeSessionPlatform: Provider | null = null;
+  // 035a: 取得セッションの排他を provider 別に分離する（Twitch と YouTube を同時取得できるようにする）。
+  // provider ごとに独立した AbortController を保持し、片方の取得開始は他方を止めない。取得コメントは
+  // 従来どおり comments.append（source 別）で流れ、下流のマージ/表示は無改修で両者が 1 リストに並ぶ。
+  const sessionAborts = new Map<Provider, AbortController>();
   let loginInFlight = false;
 
   const startLogin = async (): Promise<void> => {
@@ -281,10 +281,10 @@ async function main(): Promise<void> {
   };
 
   const startSession = async (channel: string): Promise<void> => {
-    if (sessionAbort) sessionAbort.abort();
+    // 035a: 自 provider（twitch）の既存セッションのみ差し替える（youtube は温存＝並行取得を維持）。
+    sessionAborts.get("twitch")?.abort();
     const abort = new AbortController();
-    sessionAbort = abort;
-    activeSessionPlatform = "twitch";
+    sessionAborts.set("twitch", abort);
     sendSessionState("twitch", "connecting");
     try {
       await runTwitchPipeline(
@@ -304,22 +304,22 @@ async function main(): Promise<void> {
         logInfo("[comment-sidecar] twitch session error");
       }
     } finally {
-      if (sessionAbort === abort) {
-        sessionAbort = null;
-        activeSessionPlatform = null;
+      // 自分が現在の entry の時だけ削除する（再開始で差し替わっていたら触らない＝レース回避）。
+      if (sessionAborts.get("twitch") === abort) {
+        sessionAborts.delete("twitch");
       }
     }
   };
 
   // 032c-d: YouTube 取得セッション（gRPC streamList）。チャンネル名不要（mine=true で自アカウントの
-  // アクティブ配信を検出）。Twitch と同時には走らせない（前セッションを abort）。取得コメントは既存の
-  // outputPort（→ comments.append・source:'youtube'）に流す。クォータ枯渇は runYouTubePipeline 内で
-  // graceful stop（FAILED 通知・hot-loop しない）。
+  // アクティブ配信を検出）。035a: provider 別セッションで Twitch と並行取得する（自 provider の既存
+  // セッションのみ差し替え、twitch は温存）。取得コメントは既存の outputPort（→ comments.append・
+  // source:'youtube'）に流す。クォータ枯渇は runYouTubePipeline 内で graceful stop（FAILED 通知・hot-loop しない）。
   const startYouTubeSession = async (): Promise<void> => {
-    if (sessionAbort) sessionAbort.abort();
+    // 035a: 自 provider（youtube）の既存セッションのみ差し替える（twitch は温存＝並行取得を維持）。
+    sessionAborts.get("youtube")?.abort();
     const abort = new AbortController();
-    sessionAbort = abort;
-    activeSessionPlatform = "youtube";
+    sessionAborts.set("youtube", abort);
     sendSessionState("youtube", "connecting");
     try {
       await runYouTubePipeline({}, outputPort, {
@@ -338,9 +338,9 @@ async function main(): Promise<void> {
         logInfo("[comment-sidecar] youtube session error");
       }
     } finally {
-      if (sessionAbort === abort) {
-        sessionAbort = null;
-        activeSessionPlatform = null;
+      // 自分が現在の entry の時だけ削除する（再開始で差し替わっていたら触らない＝レース回避）。
+      if (sessionAborts.get("youtube") === abort) {
+        sessionAborts.delete("youtube");
       }
     }
   };
@@ -363,12 +363,11 @@ async function main(): Promise<void> {
         void startSession(frame.channel);
       }
     } else if (frame.type === "stop-session") {
-      // 032c-d: 該当サービスがアクティブなら停止。アクティブでなくても該当パネルは idle 表示にする。
-      if (activeSessionPlatform === frame.service) {
-        sessionAbort?.abort();
-        sessionAbort = null;
-        activeSessionPlatform = null;
-      }
+      // 035a: 該当 provider の取得のみ停止する（他 provider は継続＝並行取得を止めない）。
+      // アクティブでなくても該当パネルは idle 表示にする。delete と startXxx の finally の
+      // `=== abort` ガードは両立する（entry 消失後は finally が no-op）。
+      sessionAborts.get(frame.service)?.abort();
+      sessionAborts.delete(frame.service);
       sendSessionState(frame.service, "idle");
     }
   });
@@ -396,7 +395,8 @@ async function main(): Promise<void> {
   let ppidTimer: NodeJS.Timeout | null = null;
   const shutdown = (code: number): void => {
     if (ppidTimer) clearInterval(ppidTimer);
-    sessionAbort?.abort();
+    // 035a: no-orphan / シグナル / stdin close いずれでも全 provider の取得を止める（片方も止め残さない）。
+    for (const abort of sessionAborts.values()) abort.abort();
     void output.close().finally(() => process.exit(code));
   };
   ppidTimer = setInterval(() => {

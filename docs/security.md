@@ -403,8 +403,9 @@ YouTube（`https://www.youtube-nocookie.com/embed/<id>`）の **iframe 埋め込
 内蔵コメントビューア（別ウィンドウ label `comment-viewer`）の配信サービス連携（032c-b で Twitch を初解禁・
 **032c-d で YouTube を追加解禁**）の方針。**StreamDock で初めての能動的インターネット通信**であり、詳細な設計判断は
 `docs/tasks/032c-b-node-sidecar-twitch-comments.md`／`docs/tasks/032c-d-youtube-comments.md` と親設計
-`docs/tasks/032c-comment-viewer-voicevox-design.md` を正とする。**Twitch と YouTube は併存し各サービス個別選択**（同時取得・
-マージ表示はしない）。
+`docs/tasks/032c-comment-viewer-voicevox-design.md` を正とする。**Twitch と YouTube は併存し同時取得・マージ表示する**
+（provider 別セッションで並行取得。**035a で「各サービス個別選択・同時取得しない」から反転**。sidecar のセッション排他を
+`Map<Provider, AbortController>` へ分離しただけで、宛先・二層 fail-closed・no-internet 境界は不変＝通信面の拡大ではない）。
 
 **構成**: インターネット通信は **Node sidecar（`bundle.externalBin` 同梱の単一実行ファイル `comment-sidecar-<triple>`）**
 に封じ込め、viewer webview は **localhost の WebSocket（`ws://127.0.0.1:<実ポート>`）のみ**で sidecar と通信する。
@@ -455,6 +456,11 @@ distill（vendor）したもので、keyring・`open`・hono/zod・dotenv・goog
   - **クォータ**: YouTube Data API v3 は金銭課金 $0 だが **無料枠 10,000 units/日**（PT 深夜リセット・セルフ課金購入不可）。
     枯渇時（REST 403 `quotaExceeded` / gRPC `RESOURCE_EXHAUSTED`）は取得を **graceful に停止**して viewer へ通知する
     （クラッシュ・hot-loop しない）。長時間運用では無料の増枠申請が要り得る（自動申請・課金有効化はしない）。
+- **⑨（035a）同時取得の並行 egress・リソース留意**。Twitch と YouTube を同時取得すると、上記①の既存 allow-list 宛先へ
+  **並行に egress**する（**新規宛先は増やさない**・env ピン留め・fetch/gRPC ガードは不変）。YouTube は**両稼働で無料クォータ
+  （10,000 units/日）の消費が早まり**、枯渇が早期化し得る（枯渇時は⑧の graceful stop で viewer へ通知）。CPU/メモリ/ソケットも
+  2 セッション分に増える。ユーザーが**明示接続した provider のみ**取得を開始する点は不変で、UI 上のクォータ保護・読み上げ制御は
+  035c で扱う。
 
 ## レビュー必須条件
 
@@ -643,7 +649,7 @@ distill（vendor）したもので、keyring・`open`・hono/zod・dotenv・goog
 
 - 032c-b の Node sidecar 封じ込め基盤の上に **YouTube 宛先を追加解禁**した（新しい通信基盤は作らない）。OAuth 認可コード＋PKCE(S256)＋
   loopback＋Client Secret 同梱でログイン→gRPC `liveChatMessages.streamList` で取得→既存 CommentViewDto パスへ流す。Twitch と併存・各サービス
-  個別選択。設計は `docs/tasks/032c-d-youtube-comments.md`。
+  個別選択（**当時。035a で同時取得・マージ表示を解禁**＝上記「## コメントビューア（配信サービス連携）方針」を参照）。設計は `docs/tasks/032c-d-youtube-comments.md`。
 - **security-review を実施し、判定＝問題なし**（修正必須なし）。確認事項:
   - **allow-list 三面 fail-closed**: (a) env ピン留め＝OAuth endpoint／Data API base URL を sidecar 内定数に固定（`Pinned*ConfigProvider`・
     env override 排除）、(b) fetch ホストガード＝global `fetch` に `oauth2.googleapis.com`（token 交換）／`www.googleapis.com`（REST 検出）を

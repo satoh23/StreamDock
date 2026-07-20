@@ -123,7 +123,7 @@ export class TwitchHelixClient {
     const clientId = this.configProvider.getClientId();
     if (!clientId) {
       throw new Error(
-        "Twitch のクライアント ID が未設定です。環境変数を確認してください。",
+        "Twitch 連携を利用できません。アプリを再インストール／アップデートしてください。",
       );
     }
 

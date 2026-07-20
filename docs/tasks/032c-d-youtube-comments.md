@@ -216,7 +216,9 @@ no-internet を維持**し、YouTube のインターネット通信も **Node si
   → **032c-d′ で方針変更**: 使い心地を Twitch と統一するため、OAuth アクセス/リフレッシュトークンのみ Twitch と
   同型に OS キーチェーンへ永続化する（code_verifier/Client Secret は引き続き非永続）。§9 のポリシー変更のため
   **security-review を再実施済み**。詳細は docs/security.md「### 032c-d …」節の**追補（032c-d′）**。
-- **YouTube + Twitch の同時 / マージ表示**（対象外・各サービス個別選択）。
+- ~~**YouTube + Twitch の同時 / マージ表示**（対象外・各サービス個別選択）。~~
+  → **035a で解禁**: sidecar のセッション排他を provider 別（`Map<Provider, AbortController>`）へ分離し同時取得・マージ表示を有効化。
+  方針反転のため **security-review を再実施**。詳細は `docs/tasks/035-simultaneous-youtube-twitch-comments.md` と docs/security.md「## コメントビューア（配信サービス連携）方針」。
 - **CSP 硬化**（`csp: null` は当面維持）。
 - **クォータ増枠の自動申請・金銭課金の有効化**（金銭課金は使わない・枯渇時は graceful stop で対応）。
 - osareview のリッチ機能（ピン留め・タグ・スパチャ装飾・統計・SQLite 永続化）の移植。

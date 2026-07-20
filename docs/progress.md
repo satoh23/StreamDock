@@ -4310,3 +4310,46 @@ OBS オーバーレイは本体と同じ不透明カード（`CommentViewerApp.m
 - **吹き出しの枠を太く**: `.bubble` の border を `1px` → `2.5px`（`--overlay-bubble-border` を `#0a0a0a 16%` にわずかに強め）。
 - 変更ファイル: `OverlayComment.module.css`（しっぽ 2 枚三角・枠太め・アイコン枠削除）・`theme.css`（bubble 不透明化・border 強め・
   icon-border トークン削除）。`CommentList.tsx` は変更なし。検証: `typecheck`/`lint`＝0 error・生 hex/rgba なし（grep）・トークン未定義参照なし。
+
+## 2026-07-20 (035a sidecar 取得セッション排他を provider 別化＝Twitch/YouTube 同時取得の解禁)
+
+### 完了したこと
+
+- sidecar の**単一セッション排他**（片方の取得開始が他方を abort）を **provider 別**に分離し、**Twitch と YouTube を同時取得**できるようにした。
+  取得コメントは既存 `comments.append`（`source` 別）で流れ、**下流のマージ/表示（`mergeComments.ts`・`CommentList.tsx`）は無改修**で両者が 1 リストに並ぶ。
+  変更は **sidecar のセッション管理のみ**で、宛先・二層 fail-closed・no-internet 境界は不変。
+
+### provider 別セッション化の diff 要点（`apps/comment-sidecar/src/index.ts`）
+
+- 単一 `let sessionAbort` / `let activeSessionPlatform` を廃し、**`const sessionAborts = new Map<Provider, AbortController>()`** へ置換。
+- `startSession`（twitch）/`startYouTubeSession`（youtube）は**自 provider の既存セッションのみ** `get(provider)?.abort()` → `set(provider, abort)`
+  （他 provider は温存＝並行取得を維持）。`finally` は**自分が現在の entry の時だけ** `if (sessionAborts.get(provider) === abort) delete`（再開始レース回避）。
+  パイプラインへ渡す `signal` は自 provider の `abort.signal`（現行どおり）。
+- `stop-session` は `activeSessionPlatform` 分岐を除去し、**該当 provider のみ** `get(frame.service)?.abort()` + `delete`（他 provider は継続）。停止後は該当 provider を `session.state = idle`。
+- `shutdown`（no-orphan / SIGTERM / SIGINT / stdin close）は `for (const abort of sessionAborts.values()) abort.abort()` で**全 provider を停止**（止め残さない）。
+- `sessionAbort`/`activeSessionPlatform` の参照はこの 1 ファイルに閉じていた（全リポ grep 済み・他ファイル/フロント/Rust は無参照）。**新規依存ゼロ**（組込 `Map`・SEA 禁止依存ゲート通過）。
+
+### security.md 方針反転の差分・並行 egress/クォータ留意
+
+- 「## コメントビューア（配信サービス連携）方針」冒頭を **「Twitch と YouTube は併存し各サービス個別選択（同時取得・マージ表示はしない）」→
+  「…同時取得・マージ表示する（provider 別セッションで並行取得。035a で反転）」** に更新。
+- **⑨（035a）並行 egress・リソース留意**を追記: 両稼働時は既存 allow-list 宛先へ**並行に egress**（新規宛先は増やさない）／YouTube は
+  **両稼働でクォータ（10,000 units/日）消費が早まる**（枯渇時は⑧ graceful stop で通知）／CPU/メモリ/ソケットも 2 セッション分。UI 保護は 035c。
+- 032c 系の追随: 032c-d 完了記録（security.md）・032c-b/032c-d task doc の「やらないこと」該当行に**前方参照**（「035a/035 で同時取得を解禁」）を追記（当時スコープの記録本体は据え置き）。
+
+### security-review 結果
+
+- **判定＝問題なし（修正必須なし）**。確認: ①新規宛先ゼロ（既存 allow-list への並行接続のみ）②host-guard/gRPC ガード/env ピン留めのロジック不変
+  ③main/Rust の no-internet・loopback WS 境界不変（`src-tauri`/capabilities/`tauri.conf.json` に差分 0）④token/device_code 非ログ維持
+  ⑤security.md 文言が実装（同時取得する）と一致し並行 egress/クォータ留意を明記。共有 `outputPort` は意図的マージ先・host-guard はステートレス
+  allow-list・gRPC ガードは channel 生成時照合で、同時実行による状態汚染/ガードすり抜けなし。`finally` の `=== abort` ガードで二重 delete/leak も回避。
+
+### 検証結果
+
+- `pnpm --filter ./apps/desktop typecheck`＝0 error／`lint`＝0 error／`build:sidecar`（tsc→esbuild→SEA）成功・「no keyring/hono/dotenv in bundle ✓」。
+- 変更ファイル（tracked）: `apps/comment-sidecar/src/index.ts`・`docs/security.md`・`docs/tasks/032c-b-…md`・`docs/tasks/032c-d-…md`（＋本 progress）。
+
+### 未確認（ユーザー環境・実機）
+
+- `pnpm --filter ./apps/desktop tauri dev` で **Twitch 接続 → YouTube も接続 → 両者のコメントが 1 リストに並ぶ／片方 stop で他方継続／終了で両方停止**（実配信＝両プラットフォームのライブが必要）。
+- 任意: `lsof -i` で外部 ESTABLISHED が **sidecar PID 下のみ**に出ること（封じ込め不変の実証）。
