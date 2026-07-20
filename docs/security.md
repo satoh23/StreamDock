@@ -457,10 +457,12 @@ distill（vendor）したもので、keyring・`open`・hono/zod・dotenv・goog
     枯渇時（REST 403 `quotaExceeded` / gRPC `RESOURCE_EXHAUSTED`）は取得を **graceful に停止**して viewer へ通知する
     （クラッシュ・hot-loop しない）。長時間運用では無料の増枠申請が要り得る（自動申請・課金有効化はしない）。
 - **⑨（035a）同時取得の並行 egress・リソース留意**。Twitch と YouTube を同時取得すると、上記①の既存 allow-list 宛先へ
-  **並行に egress**する（**新規宛先は増やさない**・env ピン留め・fetch/gRPC ガードは不変）。YouTube は**両稼働で無料クォータ
-  （10,000 units/日）の消費が早まり**、枯渇が早期化し得る（枯渇時は⑧の graceful stop で viewer へ通知）。CPU/メモリ/ソケットも
-  2 セッション分に増える。ユーザーが**明示接続した provider のみ**取得を開始する点は不変で、UI 上のクォータ保護・読み上げ制御は
-  035c で扱う。
+  **並行に egress**する（**新規宛先は増やさない**・env ピン留め・fetch/gRPC ガードは不変）。CPU/メモリ/ソケットは
+  2 セッション分に増える。**YouTube の無料クォータ（10,000 units/日）消費は Twitch 併走の影響を受けない**（消費源は
+  YouTube Data API のみで、Twitch は EventSub WS＝別勘定。現行の検出/生存監視は各 1 unit・チャットは gRPC streamList で
+  低消費のため実運用の枯渇はまず起きず、枯渇時は⑧の graceful stop で viewer へ通知＝032c-d 既実装）。ユーザーが**明示接続
+  した provider のみ**取得を開始する点は不変。UI 上の読み上げ制御（source 別 ON/OFF）は 035c で扱う（クォータ保護 UI は
+  不要と判断し 035c から除外＝2026-07-20）。
 
 ## レビュー必須条件
 

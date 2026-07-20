@@ -33,7 +33,7 @@
   は source 非依存で id 重複排除しつつ末尾 append（上限 200）、[`CommentList.tsx`](../../apps/desktop/src/screens/comment-viewer/CommentList.tsx)
   は `source` バッジ（Twitch/YouTube）を持ち、WS はブロードキャストで viewer/overlay の両窓へ届く。よって 035b は
   **同時表示の検証と UI 微調整**が中心。
-- **1 タスク 1 機能で分割**（CLAUDE.md）。035a〜c ＋ 本親 035。ユーザー選択「フル一式」に従い TTS/クォータ強化（035c）を含む。
+- **1 タスク 1 機能で分割**（CLAUDE.md）。035a〜c ＋ 本親 035。ユーザー選択「フル一式」に従い TTS ソース別フィルタ（035c）を含む。
 
 ## サブタスク分割
 
@@ -41,7 +41,7 @@
 |----|------|---------|-----------------|
 | [035a](035a-sidecar-concurrent-sessions.md) | sidecar のセッション排他を provider 別化（`Map<Provider, AbortController>`）＋security.md 方針を「同時取得する」へ更新 | 同時取得できない（排他） | **必須**（方針反転・並行 egress） |
 | [035b](035b-viewer-overlay-simultaneous-display.md) | viewer/overlay の同時表示 検証＋UI 微調整（両接続インジケータ・source バッジ常時表示・片方 stop の UX） | mixed 表示の見え方 | 不要〜軽（表示のみ） |
-| [035c](035c-tts-source-filter-and-quota-guard.md) | TTS ソース別読み上げフィルタ＋YouTube クォータ保護・警告 | 両稼働時の読み上げ暴発・クォータ枯渇 | 軽（表示/設定・宛先不変） |
+| [035c](035c-tts-source-filter.md) | TTS ソース別読み上げフィルタ（source 別 読み上げ ON/OFF） | 両稼働時の読み上げ暴発 | 軽（表示/設定・宛先不変） |
 
 ## 依存関係と推奨実装順
 
@@ -50,7 +50,7 @@
 ```
 
 - **035a が土台**（これで両セッション並行が可能になる）。**035b** は 035a 後に「両稼働時の表示」を検証・調整。
-  **035c** は 035a/035b 後に、両稼働で顕在化する「読み上げ暴発・クォータ枯渇」を制御する。
+  **035c** は 035a/035b 後に、両稼働で顕在化する「読み上げ暴発」を制御する。
 - 035b は既存のマージ/バッジ/ブロードキャストを再利用するため実装量は小さい見込み（検証中心）。
 
 ## 横断セキュリティ方針（docs/security.md 準拠）
@@ -59,8 +59,9 @@
   ホストガード・gRPC チャネルガード・env ピン留めのロジックは**一切変更しない**（035a はセッション管理のみ）。
 - **main 窓と Rust の no-internet 維持**・loopback WS（`ws://127.0.0.1:<port>`）・token/device_code 非ログは不変。
   取得コメント本文は端末外に出さない（既存踏襲）。
-- **方針文言の更新は 035a で実施**（「同時取得・マージ表示はしない」→「する」）。並行 egress・クォータ/リソース増の
-  留意点も同時に追記する。035c のクォータ保護は既存 `QuotaExceededError` 経路の UI 反映に留め、新規宛先/算定変更はしない。
+- **方針文言の更新は 035a で実施**（「同時取得・マージ表示はしない」→「する」）。並行 egress・リソース増（CPU/メモリ/
+  ソケットが 2 セッション分）の留意点も同時に追記する。YouTube クォータの枯渇時 graceful stop は 032c-d で既実装のため、
+  035 系で新規宛先・クォータ算定/監視ロジックは変更しない（Twitch 併走は YouTube クォータに影響しない）。
 - 新規 npm/crate/plugin・`csp` 変更は入れない。
 
 ## 完了条件

@@ -57,14 +57,16 @@ sidecar の**単一セッション排他**（片方の取得開始が他方を a
 
 - [`docs/security.md`](../security.md) の「## コメントビューア（配信サービス連携）方針」の
   **「同時取得・マージ表示はしない」→「同時取得・マージ表示する（provider 別セッションで並行取得）」** に更新し、
-  **並行 egress・YouTube クォータ/リソース消費増**の留意点（両稼働は quota 枯渇を早める・035c で UI 保護）を追記する。
+  **並行 egress・リソース消費増**の留意点（既存 allow-list 宛先への並行接続・CPU/メモリ/ソケットが 2 セッション分）を
+  追記する。**YouTube クォータは Twitch 併走の影響を受けない**（消費源は YouTube Data API のみ・枯渇時 graceful stop は
+  032c-d 既実装）ため、クォータ保護 UI は 035 系では扱わない。
   032c 系の親設計ドキュメントの該当記述（「同時取得しない」旨）も整合する形で追随更新の要否を確認する。
 
 ## このタスクでやらないこと
 
 - **新規の外部通信宛先の追加**・host-guard/gRPC チャネルガード・env ピン留めの**ロジック変更**（本タスクはセッション
   管理のみ／宛先・二層 fail-closed は不変）。
-- **フロントエンドの変更**（両接続 UI/インジケータ/バッジは 035b、TTS/クォータ UI は 035c）。
+- **フロントエンドの変更**（両接続 UI/インジケータ/バッジは 035b、TTS ソース別読み上げフィルタは 035c）。
 - **mergeComments/上限 200 件・WS ブロードキャスト・Rust command の変更**（下流は変更なしで両 source が並ぶ）。
 - ログイン/トークン永続化の変更（両 provider の keychain 併存は既に成立）。
 
@@ -82,7 +84,7 @@ sidecar の**単一セッション排他**（片方の取得開始が他方を a
 - `comments.append` が **両 `source` で届き**、viewer/overlay に両者が 1 リストで並ぶ（下流無改修で成立）。
 - `stop-session` は**該当 provider のみ停止**し、他方は継続する。プロセス終了時は両 provider が確実に停止する。
 - **新規宛先・capability・依存の追加が無い**。host-guard/gRPC ガード/env ピン留めのロジックは不変。`csp: null` 不変。
-- [`docs/security.md`](../security.md) の「同時取得・マージ表示はしない」が「する」へ更新され、クォータ/並行留意点が追記されている。
+- [`docs/security.md`](../security.md) の「同時取得・マージ表示はしない」が「する」へ更新され、並行 egress/リソース留意点が追記されている。
 - `pnpm --filter ./apps/desktop typecheck` / `lint`、sidecar ビルドが通る。**security-review を通過**している。
   [`docs/progress.md`](../progress.md) が更新されている。
 
@@ -102,4 +104,4 @@ pnpm --filter ./apps/desktop tauri dev          # Twitch 接続 → YouTube も�
 - security-review（必須）: **同時取得の解禁が「既存 allow-list 宛先への並行接続」に限定**され、**新規宛先・host-guard/
   gRPC ガードのロジック変更・env ピン留めの緩和・capability 追加が無い**こと、**main/Rust の no-internet と loopback WS
   境界が不変**であること、token/device_code を非ログのまま保っていること、**security.md の方針文言が実装と一致
-  （同時取得する）** し並行 egress/クォータの留意が明記されていることを確認する。
+  （同時取得する）** し並行 egress/リソースの留意が明記されていることを確認する。

@@ -67,7 +67,7 @@
   - 実装順: 035a → 035b → 035c
   - 035a sidecar の取得セッション排他を provider 別化（`Map<Provider, AbortController>`）＋security.md 方針更新（**security-review 必須**・方針反転／新規宛先は増やさない）
   - 035b viewer/overlay の同時（mixed）表示 検証＋UI 微調整（両接続インジケータ・source バッジ常時表示・片方 stop の UX・表示のみ）
-  - 035c TTS ソース別読み上げフィルタ＋YouTube クォータ保護・警告（両稼働時の読み上げ暴発/クォータ枯渇対策・軽レビュー）
+  - 035c TTS ソース別読み上げフィルタ（source 別 読み上げ ON/OFF・両稼働時の読み上げ暴発対策・軽レビュー）
 
 ## Todo
 

@@ -4335,6 +4335,10 @@ OBS オーバーレイは本体と同じ不透明カード（`CommentViewerApp.m
   「…同時取得・マージ表示する（provider 別セッションで並行取得。035a で反転）」** に更新。
 - **⑨（035a）並行 egress・リソース留意**を追記: 両稼働時は既存 allow-list 宛先へ**並行に egress**（新規宛先は増やさない）／YouTube は
   **両稼働でクォータ（10,000 units/日）消費が早まる**（枯渇時は⑧ graceful stop で通知）／CPU/メモリ/ソケットも 2 セッション分。UI 保護は 035c。
+  - **訂正（2026-07-20）**: ⑨ の「両稼働でクォータ消費が早まる」は誤り。YouTube クォータの消費源は YouTube Data API のみで、
+    **Twitch 併走（EventSub WS＝別勘定）は YouTube クォータに影響しない**。security.md ⑨ を「消費は Twitch 併走の影響を受けない」へ訂正済み。
+    併せて 035c は「TTS ソース別読み上げフィルタ」のみに縮小し、**クォータ保護・警告 UI を除外**した（枯渇時 graceful stop は 032c-d 既実装・
+    片方停止の見せ方は 035b が担当）。詳細は `docs/tasks/035c-tts-source-filter.md` の「スコープ変更」注記を参照。
 - 032c 系の追随: 032c-d 完了記録（security.md）・032c-b/032c-d task doc の「やらないこと」該当行に**前方参照**（「035a/035 で同時取得を解禁」）を追記（当時スコープの記録本体は据え置き）。
 
 ### security-review 結果
@@ -4353,3 +4357,77 @@ OBS オーバーレイは本体と同じ不透明カード（`CommentViewerApp.m
 
 - `pnpm --filter ./apps/desktop tauri dev` で **Twitch 接続 → YouTube も接続 → 両者のコメントが 1 リストに並ぶ／片方 stop で他方継続／終了で両方停止**（実配信＝両プラットフォームのライブが必要）。
 - 任意: `lsof -i` で外部 ESTABLISHED が **sidecar PID 下のみ**に出ること（封じ込め不変の実証）。
+
+## 2026-07-20 (035b viewer/overlay 同時表示 検証＋UI 微調整＋動作確認用モック)
+
+### 完了したこと
+
+- 035a（provider 別並行取得）後の**両稼働時の表示**を検証・微調整。表示層は既にマージ対応のため**本体の実コード変更は overlay の
+  source 色アクセント 1 点のみ**、他（両接続インジケータ並列・片方 stop の継続）は既存実装で成立を確認。
+- 同時配信ができない環境で 3 点を目視するため、**sidecar の env ゲート・モックモード**（`COMMENT_SIDECAR_MOCK=1`）を一時テスト補助として追加。
+
+### 本体の微調整点（純 frontend の表示調整）
+
+- **(2) overlay の source 常時判別**: viewer 本体（`variant="default"`）は `showSource` 非依存で常時バッジ表示済み＝変更不要。overlay
+  （`variant="overlay"`）は 034e「サイト名を表示する」トグル（既定 OFF・名前横の色ピル）だけが source 表示だったため、既定で source 不可視だった。
+  → **サイト名テキスト/ピルはトグル制御のまま**（034e の意図を壊さない）、**アイコン枠に source 別の色リングを `showSource` 非依存で常時付与**し、
+  mixed 表示でも Twitch/YouTube を色で常に判別できるようにした。色は既存 `--overlay-source-twitch-bg`/`--overlay-source-youtube-bg` トークンを
+  再利用（新規 hex/トークンなし）。`box-shadow` リングなので 034f の実アイコン差替（background-image）とレイアウトを壊さない。
+- **(1) 両接続インジケータ**（`StatusIndicator`・`SettingsView`）は provider 別に独立導出済みで両「取得中」並列表示が成立＝**変更なし**（目視確認のみ）。
+- **(3) 片方 stop**: `mergeComments` は source で消さない＋sidecar は該当 provider のみ idle（035a）＝表示済みが残り他方継続＝**変更なし**（目視確認のみ）。
+- 変更ファイル（本体・初版）: `CommentList.tsx`（overlay アイコンに `OVERLAY_ICON_SOURCE_CLASS` を常時付与）・`OverlayComment.module.css`
+  （`.iconTwitch`/`.iconYoutube` リング）。`csp: null`・新規 command/capability/依存なし・overlay は表示専用（制御フレーム非送信）維持。
+
+### 本人フィードバック（overlay 微調整・初版から変更）
+
+- **アイコンの色リングを撤去**: 本人目視で「アイコン外枠の色（Twitch=紫/YouTube=赤）がノイズ」との指摘。上記(2)で足した
+  常時色リング（`.iconTwitch`/`.iconYoutube` ＋ `OVERLAY_ICON_SOURCE_CLASS`）を**削除**し、アイコンは 034e/034f のグレー丸（枠なし）へ戻した。
+  → **overlay の source 判別は 034e「サイト名を表示する」トグルの色ピル（opt-in）に戻る**（viewer 本体は従来どおり常時バッジで判別可）。
+  overlay で常時 source を出したい場合は、トグル既定 ON か、枠でない控えめな表示（例: 名前の色分け）を別途検討（今回は未実施）。
+- **コメント間の余白を追加**: 「詰めすぎ」との指摘で、overlay `.item` の縦 padding を `2px`→`6px` に拡大（共有 `.list` の `gap:6px` は
+  default 本体にも波及するため触らず、overlay 専用の `.item` 縦余白のみ増やす）。
+- 変更ファイル: `CommentList.tsx`（リング付与を撤去・アイコンは `overlayStyles.icon` のみ）・`OverlayComment.module.css`
+  （`.iconTwitch`/`.iconYoutube` 削除・`.item` padding 6px）。**sidecar 無変更＝再ビルド不要**。`typecheck`/`lint`＝0 error・生 hex/rgba 追加なし。
+
+### 動作確認用モック（一時テスト補助・sidecar env ゲート・**既定 OFF・env ゲートのまま維持**）
+
+- **方式**: `COMMENT_SIDECAR_MOCK=1` のときだけ sidecar が**実ネットに出ず**、ユーザーの「接続→取得開始→停止」操作に応じて**既存 WS
+  ブロードキャスト経路**へ合成フレーム（`link.state`/`session.state`/`comments.append`・一部 superchat/bits 額つき）を流す。viewer・overlay の
+  両窓に同一コメントが届き、3 点（混在表示・両インジケータ並列・片方 stop で他方継続）を end-to-end で目視できる。
+- **集約先**: `apps/comment-sidecar/src/dev-mock.ts`（**新規**・`isMockEnabled()` ＋ `createMockCommentSource()`・top-level 副作用ゼロの純関数のみ）。
+  `index.ts` は **1 ゲートのみ**（import ＋ 構築 `const mockSource = isMockEnabled() ? create... : null` ＋ handler 先頭の null ガード早期 return
+  ＋ shutdown の `mockSource?.stopAll()`）。**OFF（既定）は全て null ガード no-op ＝実取得経路がバイト等価で無改変**。
+- **有効化手順**（Rust 無改変・shell plugin 2.3.5 の env 既定継承を利用）:
+  1. `TWITCH_CLIENT_ID=… YOUTUBE_CLIENT_ID=… YOUTUBE_CLIENT_SECRET=… pnpm --filter ./apps/desktop build:sidecar`（SEA 再ビルド。runtime は SEA のため必須）
+  2. `COMMENT_SIDECAR_MOCK=1 pnpm --filter ./apps/desktop tauri dev` → コメビュ窓で Twitch を「接続→取得開始」、YouTube も「接続→取得開始」。
+  - OFF（既定）= env なしで `tauri dev` → 現行どおり実取得。
+- **撤去方法**: `dev-mock.ts` を削除し、`index.ts` の import／構築／handler 早期 return 1 行／shutdown 1 行を外すだけ（1 ファイル＋1 ゲート）。
+  → 今回は**マージ前撤去はせず env ゲートのまま維持**（既定 OFF・同時配信なしでの回帰目視に再利用可）。
+
+### security-review 結果（軽・モックが sidecar に触れるため）
+
+- **判定＝問題なし（修正必須なし）**。確認: ①既定 OFF（`=="1"` の明示 env 必須）②新規外部宛先ゼロ（合成フレームは既存 loopback WS のみ）
+  ③**ON 時にネットに出ない**（`runTwitch/YouTubePipeline`・`authClient.login*` を呼ばない）④fail-closed 不変（host-guard は index.ts:20 で無条件
+  インストール・env ピン留め・gRPC ガードは無改変。モックは**ガード対象の実通信呼び出しの手前**で早期 return）⑤新規 env は真偽ゲート
+  `COMMENT_SIDECAR_MOCK` のみで**宛先 env override ではない**＝env ピン留めを弱めない ⑥token 非関与・loopback WS に載るのは非機密の
+  `{platform,linked}` と合成コメント（偽名/偽本文）・ログは provider 名のみ（本文非ログ）⑦Rust/capability/依存の追加ゼロ・`build:bundle` の
+  禁止依存アサート（keyring/hono/dotenv）通過。**後回しメモ**: モックは env ゲート付きで本番 SEA にも同梱されるが、有効化には明示 env が必要で
+  ON でも機能低下（合成表示・ネット非送出）に留まり権限昇格/漏洩はない＝低リスク（撤去容易）。
+
+### 検証結果
+
+- `pnpm --filter @stream-dock/comment-sidecar typecheck`＝0 error／`pnpm --filter ./apps/desktop typecheck`＝0 error／`lint`＝0 error。
+- `pnpm --filter @stream-dock/comment-sidecar build:bundle`（tsc→esbuild・secret 不要の疎通確認パス）成功・「no keyring/hono/dotenv in bundle ✓」。
+  ※ full `build:sidecar`（SEA）は焼き込み secret が必要なゲートで未実行（モック変更とは無関係）。ユーザーが ON 目視時に secret 付きで実施。
+- **モック headless e2e**（bundled sidecar を `COMMENT_SIDECAR_MOCK=1` で起動し loopback WS へ制御フレーム送出）で PASS を確認:
+  `link.state` 両 linked／`session.state` 両 connecting→connected／`comments.append` 両 source 混在／**twitch stop 後は twitch=0・youtube 継続・
+  twitch のみ idle 復帰**／合成コメントが `CanonicalComment` と同形（id/source/author.name/text/publishedAt/eventType）。
+- 変更ファイル（tracked）: `apps/comment-sidecar/src/index.ts`・
+  `apps/desktop/src/screens/comment-viewer/OverlayComment.module.css`・`apps/comment-sidecar/src/dev-mock.ts`（新規・＋本 progress）。`src-tauri`/capabilities/依存は不変。
+  ※ `CommentList.tsx` は色リング撤去で **HEAD に戻り差分ゼロ**（`git diff` 実確認）なので tracked 変更には含めない（上「本人フィードバック」の記述は初版→撤去の経緯記録）。
+
+### 未確認（ユーザー環境・実機）
+
+- ON 目視: `COMMENT_SIDECAR_MOCK=1` ＋ `build:sidecar`（secrets）＋ `tauri dev` で、viewer・overlay の両方で ①両 source が 1 リストに混在・
+  バッジ/色リングで判別 ②SettingsView/StatusIndicator の両インジケータが並列に「取得中」③片方 stop で他方継続・停止側のみ idle・表示済み破綻なし。
+- OFF 回帰: env なし `tauri dev` で実取得が従来どおり（回帰なし）。任意: `lsof -i` で ON 時に sidecar PID から外部 ESTABLISHED が出ないこと。

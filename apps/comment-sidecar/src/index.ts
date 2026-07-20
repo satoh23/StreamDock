@@ -40,6 +40,10 @@ import {
   type CommentOutputPort,
 } from "./comment-fetcher/index.js";
 import { toCanonicalComment } from "./wire.js";
+// 035b（モック・一時・dev 動作確認補助）: env ゲート（COMMENT_SIDECAR_MOCK=1）でのみ有効な合成コメントソース。
+// OFF（既定）では isMockEnabled() が false を返し mockSource=null＝現行の実取得経路が完全に無改変。副作用のない
+// 純関数のみを import する（top-level 副作用ゼロ）。撤去はこの import と下の 1 ゲートを外し dev-mock.ts を消すだけ。
+import { isMockEnabled, createMockCommentSource } from "./dev-mock.js";
 
 const WS_HOST = "127.0.0.1";
 const PREFERRED_PORT = 17331;
@@ -345,9 +349,25 @@ async function main(): Promise<void> {
     }
   };
 
+  // 035b（モック・一時・env ゲート）: COMMENT_SIDECAR_MOCK=1 のときだけ合成コメントソースを構築する。既定は null で、
+  // 下の setControlMessageHandler / shutdown の分岐はすべて null ガード＝OFF 時は現行経路が無改変。ON 時も実ネットには
+  // 出ない（runTwitch/YouTubePipeline・authClient.login* を呼ばず、既存 WS へ合成フレームを流すだけ）。
+  const mockSource = isMockEnabled()
+    ? createMockCommentSource({ output, sendSessionState, logInfo })
+    : null;
+  if (mockSource) {
+    logInfo("[comment-sidecar] MOCK MODE enabled (COMMENT_SIDECAR_MOCK=1; no real network egress)");
+  }
+
   output.setControlMessageHandler((raw) => {
     const frame = parseControlFrame(raw);
     if (!frame) return;
+    // 035b（モック・一時）: ON のときは実ハンドラの手前で合成応答へ振り分けて早期 return する（実取得は起動しない）。
+    // OFF（mockSource=null）ではこの 1 行を素通りし、以降の実ハンドラ本体は無改変。
+    if (mockSource) {
+      mockSource.handleControl(frame);
+      return;
+    }
     if (frame.type === "start-login") {
       // 032c-d: service で分岐（youtube=Authorization Code / twitch=Device Code）。
       if (frame.service === "youtube") {
@@ -397,6 +417,8 @@ async function main(): Promise<void> {
     if (ppidTimer) clearInterval(ppidTimer);
     // 035a: no-orphan / シグナル / stdin close いずれでも全 provider の取得を止める（片方も止め残さない）。
     for (const abort of sessionAborts.values()) abort.abort();
+    // 035b（モック・一時）: モック ON なら合成タイマーも全停止する（OFF=null で no-op）。
+    mockSource?.stopAll();
     void output.close().finally(() => process.exit(code));
   };
   ppidTimer = setInterval(() => {

@@ -15,7 +15,9 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 2px 4px;
+  /* 035b(本人フィードバック): コメントが詰まって見えたので縦余白を広げる（共有の .list gap は default 本体にも
+     波及するため触らず、overlay 専用の .item 縦 padding を 2px→6px に増やして 1 コメントの上下に余白を足す）。 */
+  padding: 6px 4px;
 }
 
 /* 名前行：ユーザー名＋サイト名ピルバッジを横並び。吹き出しの上に来るよう、アイコン幅（44）＋行 gap（8）ぶん
