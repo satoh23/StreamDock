@@ -63,6 +63,11 @@
   - 034c VOICEVOX 話者サンプルボイス試聴（選択で即再生・再生中は中断切替／既存 loopback 合成の再利用・security-review 不要）
   - 034d OBSオーバーレイ表示 ON/OFF を設定ビューへ移設＋開閉状態インジケータ（読み取りコマンド追加・**軽レビュー**）
   - 034e OBSオーバーレイ デザイン刷新（透過・本文＋アカウント名のみ・文字拡大・サイト名表示トグル／表示専用・**軽レビュー**）
+- 035 YouTube+Twitch コメント同時取得・マージ表示（親設計 [docs/tasks/035-simultaneous-youtube-twitch-comments.md](tasks/035-simultaneous-youtube-twitch-comments.md)／sidecar の単一セッション排他を provider 別化・security.md「同時取得しない」方針を反転）
+  - 実装順: 035a → 035b → 035c
+  - 035a sidecar の取得セッション排他を provider 別化（`Map<Provider, AbortController>`）＋security.md 方針更新（**security-review 必須**・方針反転／新規宛先は増やさない）
+  - 035b viewer/overlay の同時（mixed）表示 検証＋UI 微調整（両接続インジケータ・source バッジ常時表示・片方 stop の UX・表示のみ）
+  - 035c TTS ソース別読み上げフィルタ＋YouTube クォータ保護・警告（両稼働時の読み上げ暴発/クォータ枯渇対策・軽レビュー）
 
 ## Todo
 
@@ -71,4 +76,5 @@
 ## MVP リリース前最後
 
 - 098 Windows Build
-- 099 User Test Package
+- 099 User Test Package（フェーズ1＝未署名 CI ビルド）
+  - 099a Windows コード署名（Azure Trusted Signing・フェーズ2／署名タスク [docs/tasks/099a-windows-code-signing.md](tasks/099a-windows-code-signing.md)・証明書取得後に着手・軽レビュー）

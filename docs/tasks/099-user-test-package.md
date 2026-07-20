@@ -42,6 +42,7 @@ GitHub Actions（クラウド CI）で自動化し、**VM も Docker も使わ�
 
 ### フェーズ2 — Windows 署名を CI に統合（証明書取得後）
 
+- **実装は [099a](099a-windows-code-signing.md)**（証明書方式は **Azure Trusted Signing** に確定）。
 - 証明書はユーザーが取得（費用・本人確認あり）: **Azure Trusted Signing**（最安・要身元確認）/
   **OV 証明書 + Azure Key Vault** / **OV/EV 証明書（ハードトークン）** のいずれか。発行に数日〜数週間。
 - `tauri.conf.json` に `bundle.windows.signCommand`（＋ `timestampUrl` 等）、workflow に署名ステップと
