@@ -58,13 +58,15 @@ const inputs = [
 ];
 
 const triple = hostTargetTriple();
+// Windows の Tauri externalBin は `<name>-<triple>.exe`。build-sea.mjs の出力名と揃える（.exe 有無の不一致で
+// 「未生成」と誤検知しないように）。
 const binPath = resolve(
   pkgDir,
   "..",
   "desktop",
   "src-tauri",
   "binaries",
-  `comment-sidecar-${triple}`,
+  `comment-sidecar-${triple}${process.platform === "win32" ? ".exe" : ""}`,
 );
 
 const rebuildHint = `TWITCH_CLIENT_ID=<Client ID> pnpm build:sidecar`;

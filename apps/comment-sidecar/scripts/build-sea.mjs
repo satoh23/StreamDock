@@ -26,8 +26,11 @@ const distDir = join(pkgDir, "dist");
 const buildDir = join(pkgDir, "build");
 const bundleFile = join(buildDir, "sidecar.cjs");
 
+// Windows では `pnpm` の実体が `pnpm.cmd`（`.exe` 無し）で、シェル無し spawn だと ENOENT になる。
+// Windows のときだけ shell 経由にして `.cmd` を解決する。引数は本スクリプト内の固定値のみ（外部入力を渡さない）
+// ＝注入面なし。これはビルドツールの spawn であり、アプリ実行時に frontend から shell を叩く §4 とは別物。
 const run = (cmd, args, opts = {}) =>
-  execFileSync(cmd, args, { stdio: "inherit", cwd: pkgDir, ...opts });
+  execFileSync(cmd, args, { stdio: "inherit", cwd: pkgDir, shell: process.platform === "win32", ...opts });
 
 // Tauri externalBin が要求する <name>-<target-triple>。mac の host triple を rustc から取得。
 function hostTargetTriple() {
@@ -179,7 +182,8 @@ step("node --experimental-sea-config (create blob)", () => {
 // 4) node バイナリを複製し、5) 署名を外し、6) postject で blob 注入、7) 再署名。
 const triple = hostTargetTriple();
 const outDir = resolve(pkgDir, "..", "desktop", "src-tauri", "binaries");
-const outBin = join(outDir, `comment-sidecar-${triple}`);
+// Windows の Tauri externalBin は `<name>-<triple>.exe` を要求するため .exe を付す（mac/Linux は拡張子なし）。
+const outBin = join(outDir, `comment-sidecar-${triple}${process.platform === "win32" ? ".exe" : ""}`);
 step(`postject inject → ${outBin}`, () => {
   mkdirSync(outDir, { recursive: true });
   const nodeBin = process.execPath;
@@ -206,7 +210,8 @@ step(`postject inject → ${outBin}`, () => {
     run("codesign", ["--sign", "-", outBin]);
     run("codesign", ["--verify", "--verbose", outBin]);
   } else {
-    execFileSync("chmod", ["+x", outBin]);
+    // Linux のみ実行権限を付与する。Windows の .exe は不要で、そもそも `chmod` コマンドが無い。
+    if (process.platform !== "win32") execFileSync("chmod", ["+x", outBin]);
   }
 });
 
