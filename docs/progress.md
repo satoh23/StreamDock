@@ -4063,3 +4063,66 @@ sidecar 非連動・no-orphan kill 契機は不変（通信/権限/プロセス�
 - 不変（確認済み）: `useFollowScroll.ts`／`CommentList.tsx`（034a を再利用のみ）・`CommentViewerApp.module.css`・
   sidecar・WS・`mergeComments`（上限 200）・`open_comment_overlay_window`／no-orphan kill 契機・`capabilities/*`・
   `tauri.conf.json`・`Cargo.toml`・`csp: null`・依存（新規ゼロ）
+
+## 2026-07-20 (034c VOICEVOX 話者サンプルボイス試聴（選択で即再生・再生中は中断切替）)
+
+親 [034](tasks/034-comment-viewer-obs-ux-round2.md) 第2弾・要望2。設定ビューで話者/スタイルを選ぶと **その声のサンプルが
+即再生** され、**再生中に別の声を選ぶと前を中断して切り替わる**。実コメント読み上げ本線（`ttsQueue.ts`）には
+**一切干渉しない独立経路**（別 AudioContext・キューに積まない）として足す。宛先はループバック 50021 の例外（032c-c）内・
+既存の許可メソッド（POST `/audio_query`・`/synthesis`）の再利用のみで、新規メソッド/宛先・依存・command・capability を
+一切増やさない。
+
+### 実装内容
+
+- **試聴プレイヤー新設**（`apps/desktop/src/features/comment-viewer/voicevoxPreview.ts`・新規）: `createVoicevoxPreview()`
+  が「現在の合成 `AbortController`」と「再生中の `AudioBufferSourceNode`」をクロージャに保持し、`play(styleId)` の先頭で
+  `stopCurrent()`（前の合成を `abort()` ＋ 保持 source の `onended` を外して `stop()`）してから新しい声を鳴らす。これで
+  **合成中の切替（abort）** も **再生中の切替（source.stop）** も両方その場で切り替わる。各 `await` 後に
+  `disposed || controller.signal.aborted` をガードして、切替/破棄で捨てられた再生が鳴らないようにする。catch は
+  中断切替（`aborted`）を正常系として黙って return、ENGINE 未起動・合成失敗は `console.debug` で握って落とさない
+  （既存 loopback fetch の作法）。
+- **`playWav` は改修せず、試聴用の再生を preview 内に自前で持つ**: 中断には source 参照の保持が必須だが、既存
+  `playWav`（`voicevox.ts`）は source を外に出さず `onended` まで解決する形で、**唯一の呼び出し元 ttsQueue の直列
+  `await` 契約**を持つ。戻り値型を変えると本線を壊すリスクがあるため `playWav` は**一切触らず**、試聴側は
+  decode→createBufferSource→start の 3 行を `voicevoxPreview.ts` 内に持ち、source を保持する。合成 HTTP は
+  `synthesize()` を**そのまま再利用**（宛先・メソッド共有）。→ **ttsQueue 非影響を `voicevox.ts`/`ttsQueue.ts`
+  無改変で担保**。
+- **AudioContext は本線と別・遅延生成**: 初回 `play`（＝設定ビューの `onChange`＝ユーザー操作内で同期的に `new`）まで
+  作らない。ユーザー操作契機のため WKWebView autoplay を通り、`state !== "running"` なら `resume()` を試みてから合成する。
+- **SettingsView への配線**（`SettingsView.tsx`）: state は従来どおり `CommentViewerApp` に残し、新 prop
+  `onPreview(styleId)` を渡す（実体は `(id) => previewRef.current?.play(id)`）。SettingsView は preview モジュールを直接
+  import しない（表示専用の作法を維持）。話者 select（切替時は先頭スタイルの id）・スタイル select の 2 箇所の `onChange`
+  から `onSpeakerIdChange` に続けて `onPreview` を呼ぶ。加えて「試聴 ▶」小ボタン（既存 `.btnGhost` 流用）で選択を変えずに
+  聴き直せる（同じ `onPreview` を呼ぶだけ・別導線を増やさない）。
+- **preview の生成/破棄**（`CommentViewerApp.tsx`）: `previewRef` を `ttsRef` と同型の `useEffect([])` でマウント時
+  `createVoicevoxPreview()`・アンマウント時 `dispose()`。
+- **固定サンプル文**: `PREVIEW_TEXT = "こんにちは。VOICEVOXの音声サンプルです。"` を `voicevoxPreview.ts` に定数化。
+  **送るのはこの定型のみ**（コメント本文・著者名・認証情報は送らない）。
+- **ENGINE 未起動時**: 既存挙動で `speakers.length === 0` のとき select 自体が非描画（案内文を表示）＝`onChange` が
+  発火せず試聴も走らない。既存の起動案内にそのまま委ねる（試聴用の追加ガードは不要）。一覧取得後に ENGINE が落ちた
+  稀ケースで select 変更した場合は `synthesize` の fetch が失敗 → preview の catch が握る（クラッシュしない）。
+
+### 検証
+
+- `pnpm --filter ./apps/desktop typecheck`＝**0 error**、`pnpm --filter ./apps/desktop lint`＝**0 error / 0 warning**。
+- `git diff --stat`＝`CommentViewerApp.tsx`（+20）/`SettingsView.tsx`（+22/-2）の 2 ファイル（新規 `voicevoxPreview.ts`
+  は untracked・本記録 `docs/progress.md` を含めると計 4 ファイル）。
+- 自己確認: ①宛先は `synthesize()` 経由で `127.0.0.1:50021` ループバック不変・POST は `/audio_query`・`/synthesis` のみ
+  （変更 frontend の追加行に新規 `fetch`/URL/エンドポイント/`invoke` が無いことを grep で確認・許可メソッド列挙は不変）
+  ②TTS 本線非干渉（別 AudioContext・キューに積まない・`voicevox.ts`/`ttsQueue.ts` 無改変）③Rust 依存/command/capability
+  を足さない・viewer webview の fetch＋Web Audio のみ・`csp: null` 不変・`docs/security.md` 無改変。よって security-review
+  は原則不要の範囲（既存許可メソッドの再利用・ループバック不変）。
+- **残課題（実機・本人環境／要ローカル VOICEVOX ENGINE）**: `tauri dev` で 設定→話者/スタイル選択で即サンプル再生／
+  再生中に別話者選択で中断切替／「試聴 ▶」で聴き直し／実コメント読み上げ本線に影響なし／ENGINE 未起動時は試聴せず
+  起動案内、を目視。DevTools Network で 50021 への POST が `/audio_query`・`/synthesis` のみ（新規メソッドが無い）ことを確認。
+
+### 変更ファイル（034c）
+
+- frontend（新規）: `apps/desktop/src/features/comment-viewer/voicevoxPreview.ts`（中断切替つき試聴プレイヤー・別
+  AudioContext・`synthesize` 再利用・自前 decode/source/start）
+- frontend（変更）: `apps/desktop/src/screens/comment-viewer/CommentViewerApp.tsx`（`previewRef` 生成/破棄・
+  `onPreview` prop を SettingsView へ）、`apps/desktop/src/screens/comment-viewer/SettingsView.tsx`（`onPreview` prop・
+  2 つの `onChange` から試聴・「試聴 ▶」ボタン）
+- docs: `docs/progress.md`（本記録）
+- 不変（確認済み）: `voicevox.ts`（`playWav`/`synthesize` 無改変）・`ttsQueue.ts`（本線無改変）・`docs/security.md`
+  （許可メソッド列挙不変）・sidecar・WS・`capabilities/*`・`tauri.conf.json`・`Cargo.toml`・`csp: null`・依存（新規ゼロ）

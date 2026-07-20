@@ -11,6 +11,10 @@ import {
 } from "../../features/comment-viewer/voicevox";
 import { launchVoicevoxEngine } from "../../features/comment-viewer/voicevoxApi";
 import {
+  createVoicevoxPreview,
+  type VoicevoxPreview,
+} from "../../features/comment-viewer/voicevoxPreview";
+import {
   connectCommentStream,
   type CommentStreamHandle,
   type DeviceCodePrompt,
@@ -90,6 +94,10 @@ export function CommentViewerApp() {
   const [view, setView] = useState<"comment" | "settings">("comment");
   // TTS キュー（AudioContext を 1 つ所有）。マウントで生成し、アンマウントで dispose する。
   const ttsRef = useRef<TtsQueue | null>(null);
+  // 034c: 話者サンプル試聴プレイヤー（中断切替つき・本線 TTS とは別の AudioContext）。設定ビューで話者/スタイルを
+  // 選ぶと選択 style id の声を即再生し、再生中に別の声を選ぶと前を中断して切り替える。マウントで生成・アンマウントで
+  // dispose する（ttsRef と同型）。読み上げ本線には積まない（干渉しない）。
+  const previewRef = useRef<VoicevoxPreview | null>(null);
   // ENGINE 稼働状態（null=未確認 / true=稼働 / false=未起動）と起動誘導の状態。
   const [engineRunning, setEngineRunning] = useState<boolean | null>(null);
   const [launchNotice, setLaunchNotice] = useState<string | null>(null);
@@ -185,6 +193,17 @@ export function CommentViewerApp() {
     return () => {
       queue.dispose();
       ttsRef.current = null;
+    };
+  }, []);
+
+  // 034c: 話者サンプル試聴プレイヤーを生成/破棄する（ttsQueue と別の AudioContext・別経路）。設定ビューの話者/
+  // スタイル選択（onPreview）から呼ばれ、選択の style id で固定サンプル文を再生する。読み上げ本線には積まない。
+  useEffect(() => {
+    const preview = createVoicevoxPreview();
+    previewRef.current = preview;
+    return () => {
+      preview.dispose();
+      previewRef.current = null;
     };
   }, []);
 
@@ -457,6 +476,7 @@ export function CommentViewerApp() {
           speakers={speakers}
           selectedSpeakerId={selectedSpeakerId}
           onSpeakerIdChange={setSelectedSpeakerId}
+          onPreview={(id) => previewRef.current?.play(id)}
         />
       ) : (
         <>
