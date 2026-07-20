@@ -37,7 +37,9 @@ import { mergeComments } from "../../features/comment-viewer/mergeComments";
 import {
   openCommentOverlayWindow,
   closeCommentOverlayWindow,
+  isCommentOverlayOpen,
 } from "../../features/comment-viewer/windowApi";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { CommentList } from "./CommentList";
 import { SettingsView } from "./SettingsView";
 import { StatusIndicator } from "./StatusIndicator";
@@ -154,9 +156,24 @@ export function CommentViewerApp() {
   // 032c-b: チャンネル名は localStorage から復元し、変更のたびに保存する（窓を閉じても空欄化しない）。
   const [channel, setChannel] = useState(() => loadChannel());
 
+  // 034d: OBS オーバーレイ窓の開閉状態（設定ビューのトグル表示に使う。開＝ON / 閉＝OFF）。窓の実状態と同期させ、
+  // ①初期化時に isCommentOverlayOpen() で同期 ②トグル操作後に更新 ③外部（窓の×）で閉じられたら close 購読で戻す。
+  const [overlayOpen, setOverlayOpen] = useState(false);
+  // 034d: comment-overlay 窓の close 購読の解除関数。開くたびに張り直し、閉じる/解除時にクリアして購読リークを防ぐ。
+  const overlayUnlistenRef = useRef<(() => void) | null>(null);
+
   useEffect(() => {
     saveChannel(channel);
   }, [channel]);
+
+  // 034d: マウント時に実際の窓状態へ同期し、アンマウント時に close 購読を解除する（購読リーク防止）。
+  useEffect(() => {
+    void isCommentOverlayOpen().then(setOverlayOpen);
+    return () => {
+      overlayUnlistenRef.current?.();
+      overlayUnlistenRef.current = null;
+    };
+  }, []);
 
   // 033c: トグル状態を localStorage に永続化する（channel と同型）。再オープン・再起動で復元される。
   useEffect(() => {
@@ -429,17 +446,47 @@ export function CommentViewerApp() {
     if (enabled) void ttsRef.current?.resume();
   };
 
-  // 033f: OBS 用の背景透過オーバーレイ窓をワンクリックで開く。Rust が透過・フレームレス・最背面（always_on_bottom）・
-  // 非フォーカスで生成する（open_comment_overlay_window。追修正①で最前面→最背面に変更）。オーバーレイは表示専用で
-  // loopback WS の読み取り専用接続のみ・sidecar には関与しない（起動/停止契機はコメビュ窓に集約のまま＝no-orphan kill 不変）。
-  const handleOpenOverlay = () => {
-    void openCommentOverlayWindow();
-  };
-
-  // 033f 追修正: OBS 用オーバーレイ窓を閉じる。最背面・非フォーカスで開き Cmd+W で掴みにくいため本体から明示的に
-  // 閉じられるようにする。窓が無ければ Rust 側 no-op（冪等）。sidecar には関与しない（no-orphan kill 不変）。
-  const handleCloseOverlay = () => {
-    void closeCommentOverlayWindow();
+  // 034d: 設定ビューのオーバーレイ開閉トグル（ON=開く / OFF=閉じる）。033f のオープン/クローズ挙動は不変で、
+  // Rust が透過・フレームレス・最背面・非フォーカスで生成し（open_comment_overlay_window）、閉じても sidecar は
+  // 落とさない（表示専用・no-orphan kill 契機はコメビュ窓に集約のまま）。開いた直後に comment-overlay 窓の close を
+  // 購読し、外部（窓の×）で閉じられた場合も overlayOpen を戻す（購読は frontend のみ・capability 不変）。
+  const handleOverlayToggle = (next: boolean) => {
+    if (next) {
+      // 034d（レビュー: アンマウント×非同期 open のレース / 修正不要）: open→getByLabel→onCloseRequested の間に
+      // 本コンポーネントがアンマウントすると購読リーク・unmount 後 setState の細いレースが理論上ある。CommentViewerApp
+      // はコメビュ窓ごと閉じる時しかアンマウントせず「トグル ON 直後に窓を閉じる」極小の窓のみで実害がほぼ無いため現状維持。
+      // 再修正トリガー＝本コンポーネントが頻繁にマウント/アンマウントされる使い方になったら、完了時に未マウントなら
+      // unlisten して return する mounted ref ガードを入れる。
+      void (async () => {
+        await openCommentOverlayWindow();
+        setOverlayOpen(true);
+        // getByLabel が null（開いた直後に消えた等）なら下の ?? null で購読を張らない。setOverlayOpen(true) は先に
+        // 走るが、窓が無ければ次回マウントの初期同期（isCommentOverlayOpen）で false に復帰するため破綻しない。
+        const overlay = await WebviewWindow.getByLabel("comment-overlay");
+        overlayUnlistenRef.current?.();
+        // 034d（レビュー: 外部 close の cross-window 購読 / 修正不要・E2E で確認）: comment-viewer webview から別窓
+        // comment-overlay の close を購読する。listen は core:default 内の core:event で賄い新規 capability 不要。
+        // preventDefault は呼ばず観測のみ（現状どこも preventDefault しないので close-requested で正確に閉じる）。
+        // 再修正トリガー＝①実機 E2E で窓の×閉じ後にトグルが OFF に戻らない（cross-window 配信が届かない）なら、Rust の
+        // overlay 窓生成箇所で Destroyed 時に emit → frontend で listen する方式へ（capability は不要のまま）。②将来
+        // オーバーレイ close で preventDefault する処理が入るなら close-requested→destroyed ベースへ切り替える。
+        overlayUnlistenRef.current =
+          (await overlay?.onCloseRequested(() => {
+            setOverlayOpen(false);
+            overlayUnlistenRef.current?.();
+            overlayUnlistenRef.current = null;
+          })) ?? null;
+      })();
+    } else {
+      // 034d（レビュー: OFF の二重発火 / 修正不要）: 自前 close（Rust .close()）でも解除前の onCloseRequested CB が 1 回
+      // 走るが、CB も本 then も setOverlayOpen(false)（同値・冪等）＋ null ガード付き unlisten のみで、競合・二重解除
+      // ともに無害。再修正トリガー＝CB に false 以外の副作用を持たせる場合は解除順序の競合を考慮する。
+      void closeCommentOverlayWindow().then(() => {
+        setOverlayOpen(false);
+        overlayUnlistenRef.current?.();
+        overlayUnlistenRef.current = null;
+      });
+    }
   };
 
   // 033d: クレジット表記に使う選択話者名。一覧から選択 style id を含む話者名を引く。ENGINE 未起動で一覧が
@@ -477,36 +524,19 @@ export function CommentViewerApp() {
           selectedSpeakerId={selectedSpeakerId}
           onSpeakerIdChange={setSelectedSpeakerId}
           onPreview={(id) => previewRef.current?.play(id)}
+          overlayOpen={overlayOpen}
+          onOverlayToggle={handleOverlayToggle}
         />
       ) : (
         <>
-          {/* 033b/033f: 本体上部の小さなツールバー。左に接続状態インジケータ（接続ボタンの代わり）、
-              右に OBS オーバーレイを開くボタン＋設定への歯車。 */}
+          {/* 033b/034d: 本体上部の小さなツールバー。左に接続状態インジケータ（接続ボタンの代わり）、右に設定への歯車。
+              OBS オーバーレイの開閉は 034d で設定ビューの「OBS オーバーレイ」節（1 トグル）へ移設した。 */}
           <div className={styles.toolbar}>
             <StatusIndicator
               twitchSessionState={sessionState}
               youtubeSessionState={youtubeSessionState}
             />
             <div className={styles.toolbarActions}>
-              <button
-                type="button"
-                className={styles.btnGhost}
-                onClick={handleOpenOverlay}
-                title="OBS 用の背景透過オーバーレイ窓を最背面で開きます"
-              >
-                OBS オーバーレイ
-              </button>
-              {/* 修正不要（据え置き）: ラベルは「閉じる」の短縮のまま。意図＝ツールバー幅が狭く、直前の「OBS オーバーレイ」
-                  ボタンと隣接する文脈＋title 属性（下記）でオーバーレイ窓が対象と読めるため。再修正トリガー＝「コメビュ本体を
-                  閉じる」と誤解する報告が出たら「オーバーレイを閉じる」等に改名する。 */}
-              <button
-                type="button"
-                className={styles.btnGhost}
-                onClick={handleCloseOverlay}
-                title="OBS 用オーバーレイ窓を閉じます"
-              >
-                閉じる
-              </button>
               <button
                 type="button"
                 className={styles.iconBtn}
@@ -518,11 +548,6 @@ export function CommentViewerApp() {
               </button>
             </div>
           </div>
-          {/* 033f: OBS 取り込みの案内（ボタン近傍の小さな注記）。表示のみで外部通信なし。オーバーレイは最背面で開くため
-              配信者の画面には前面表示されず、OBS のウィンドウキャプチャにだけ映る（033f 追修正）。 */}
-          <p className={styles.overlayHint}>
-            OBS の「ウィンドウキャプチャ」で「StreamDock コメントオーバーレイ」を選ぶとコメントを重ねられます（背景は透過）。オーバーレイは常に最背面で開くので、配信者の画面には前面表示されません。閉じるときは「閉じる」を押してください。
-          </p>
 
           {/* 033c: 読み上げ ON/OFF は配信中に頻繁に切り替えるため本体コメントビュー上部に置く（設定ビューではなく
               ここに置くほうが UX が良い）。ON のときだけコメントを読み上げ、ON のときだけクレジット表記をトグル

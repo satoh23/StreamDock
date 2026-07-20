@@ -47,3 +47,12 @@ export function openCommentOverlayWindow(): Promise<void> {
 export function closeCommentOverlayWindow(): Promise<void> {
   return invoke<void>("close_comment_overlay_window");
 }
+
+/**
+ * 034d: OBS オーバーレイ窓（label `comment-overlay`）が開いているかを返す（読み取り専用）。
+ * 設定ビューの開閉トグルが、初期同期・外部close後の再同期に使う（開＝ON / 閉＝OFF）。
+ * アプリ定義 command のため capability 列挙不要（本ファイル冒頭の注記どおり）。
+ */
+export function isCommentOverlayOpen(): Promise<boolean> {
+  return invoke<boolean>("is_comment_overlay_open");
+}

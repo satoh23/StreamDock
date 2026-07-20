@@ -38,14 +38,6 @@
   gap: 8px;
 }
 
-/* 033f: OBS 取り込みの初回セットアップ／閉じ方の小さな注記（ツールバー直下）。役割トークンで両テーマ追従。 */
-.overlayHint {
-  padding: 4px 16px 8px;
-  font-size: 11px;
-  color: var(--text-faint);
-  border-bottom: 1px solid var(--border-soft);
-}
-
 /* 033b: 歯車（設定へ）・戻る（コメントへ）の文字グリフボタン。Sidebar の .toolActionBtn と同方式の role トークン。 */
 .iconBtn {
   width: 28px;
@@ -383,6 +375,15 @@
 
 /* 033c: 設定ビューの VOICEVOX 自動連携パネル。他パネルと同レイアウト・両テーマ追従。 */
 .voicevoxPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+/* 034d: OBS オーバーレイの開閉節（設定ビュー）。他パネルと同レイアウト。034e がサイト名トグル等を隣に足す土台。 */
+.overlayPanel {
   display: flex;
   flex-direction: column;
   gap: 8px;

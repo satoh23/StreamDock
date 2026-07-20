@@ -160,6 +160,13 @@ fn is_comment_viewer_open(app: AppHandle) -> bool {
     app.get_webview_window("comment-viewer").is_some()
 }
 
+/// 034d: OBS オーバーレイ窓が開いているかを返す読み取り専用コマンド（`is_comment_viewer_open` を手本）。
+/// 設定ビューの開閉トグルが初期同期・外部close後の再同期に使う。窓の存在だけを見る（副作用なし）。
+#[tauri::command]
+fn is_comment_overlay_open(app: AppHandle) -> bool {
+    app.get_webview_window("comment-overlay").is_some()
+}
+
 /// 032c-b: viewer が接続する Twitch コメント WS の実ポートを返す読み取り専用コマンド（§3・単一目的）。
 /// sidecar が bind した実ポート（既定 17331・使用中なら空きポート）を返す。未確定なら `None`。
 /// frontend からは raw なパス/ポート/コマンドを受け取らない（ポートは Rust が sidecar の stdout から受領）。
@@ -286,6 +293,7 @@ pub fn run() {
             close_comment_overlay_window,
             close_comment_viewer_window,
             is_comment_viewer_open,
+            is_comment_overlay_open,
             get_comment_stream_port,
             launch_voicevox_engine,
             tools::commands::create_tool,

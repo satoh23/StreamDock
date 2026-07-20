@@ -4126,3 +4126,70 @@ sidecar 非連動・no-orphan kill 契機は不変（通信/権限/プロセス�
 - docs: `docs/progress.md`（本記録）
 - 不変（確認済み）: `voicevox.ts`（`playWav`/`synthesize` 無改変）・`ttsQueue.ts`（本線無改変）・`docs/security.md`
   （許可メソッド列挙不変）・sidecar・WS・`capabilities/*`・`tauri.conf.json`・`Cargo.toml`・`csp: null`・依存（新規ゼロ）
+
+## 2026-07-20 (034d OBSオーバーレイ表示 ON/OFF を設定ビューへ移設＋開閉状態インジケータ)
+
+### 背景 / 目的
+
+OBS オーバーレイ窓の開閉は本体ツールバーの 2 ボタン（`OBS オーバーレイ`/`閉じる`）で行っていたが、両方 `btnGhost` 一色で
+**開閉状態を保持する state が無く**「今開いているのか閉じているのか分からない」（親 034 要望1）。また操作が本体に露出し設定へ
+集約されていない（要望4）。本タスクで (1) 開閉状態を返す**読み取り専用 Rust command を 1 つ追加**し、(2) 開閉操作を
+**設定ビューの新設「OBS オーバーレイ」節**の**1 トグル**（現在の開閉を配色＋ARIA で明示）へ移設した。この節は 034e が
+サイト名トグル等のデザイン設定を隣に足す土台になる。
+
+### やったこと
+
+- **(1) 読み取り専用 command 追加**（`lib.rs`）: `is_comment_overlay_open`（`app.get_webview_window("comment-overlay").is_some()`
+  を返すだけ・手本は `is_comment_viewer_open`）を追加し `generate_handler!` に登録。`windowApi.ts` に `isCommentOverlayOpen()`
+  ラッパ（`invoke<boolean>("is_comment_overlay_open")`）追加。**新規 ts-rs 型なし**（bool 返却＝生成 bindings 無影響＝drift なし）。
+- **(2) 設定ビューへ移設＋状態トグル**: 本体ツールバーの開閉 2 ボタンと直下の `.overlayHint` <p> を撤去し、`SettingsView` に
+  「OBS オーバーレイ」節を新設。既存 `ToggleSwitch`（`role="switch"`＋`aria-checked`＋`switchOn` の active 配色）を流用した
+  **1 トグル**（ON=開く/OFF=閉じる）に統合。OBS 取り込み案内文はこの節の `note` へ移設。`CommentViewerApp` に `overlayOpen`
+  state を持たせ、①マウント時 `isCommentOverlayOpen()` で同期 ②トグル操作後に更新 ③開いた直後に `comment-overlay` 窓へ
+  `onCloseRequested` を張り、外部（窓の×）で閉じられたら state を戻す。`handleOpenOverlay`/`handleCloseOverlay` は 1 つの
+  `handleOverlayToggle` に統合、`overlayOpen`/`onOverlayToggle` を props で SettingsView へ渡す。CSS に `.overlayPanel`
+  （`.voicevoxPanel` に倣う）追加、不要になった `.overlayHint` 定義を削除。
+
+### 外部 close 検知 = 窓イベント購読（ユーザー承認済み・設計判断）
+
+- 候補①窓イベント購読 ②Rust から emit ③ポーリング のうち**①窓イベント購読**を採用。`WebviewWindow.getByLabel("comment-overlay")`
+  ＋ `onCloseRequested`（`preventDefault()` は呼ばず観測のみ）。**frontend 完結で Rust 無変更**＝ no-orphan kill 契機不変、
+  `listen` は既存 `core:default` 内の `core:event` で賄い**新規 capability 不要**。開くたびに張り直し、`overlayUnlistenRef` で
+  解除管理＋unmount クリーンアップし購読リークを防ぐ。トグル部品は 034e との一貫性から既存 `ToggleSwitch` 流用（仕様の
+  `aria-pressed` に対し switch では `aria-checked` が正しい等価表現）。
+
+### no-orphan kill 契機不変の確認
+
+- オーバーレイ窓へ `on_window_event` を追加せず、`close_comment_overlay_window` も無変更。sidecar kill は従来どおり
+  `comment-viewer` 窓の `CloseRequested|Destroyed`（lib.rs 64-71）と `RunEvent::Exit`（同 327-330）の 2 契機のみで、
+  オーバーレイ開閉は sidecar に一切触れない（033f 集約を維持）。
+
+### security-review 結果
+
+- **問題なし**（修正必須なし・コード変更なし）。①`is_comment_overlay_open` は読み取り専用（bool のみ・引数は `AppHandle`
+  のみ・OS/プロセス/ファイル/通信を伴わない）②`main`/`comment-viewer`/`comment-overlay` の capability 不変・`csp: null` 不変・
+  新規依存ゼロ（`capabilities/*`・`tauri.conf.json`・`Cargo.toml`・`package.json` は git diff 空）③no-orphan kill 契機不変
+  ④オーバーレイ表示専用性を維持（開閉ラッパ無変更・通信面を広げない）。軽微メモ: OFF トグルの自前 close でも購読 CB が
+  1 回発火するが `setOverlayOpen(false)` は冪等で無害。
+
+### 検証
+
+- `pnpm --filter ./apps/desktop typecheck`＝**0 error**、`pnpm --filter ./apps/desktop lint`＝**0 error / 0 warning**、
+  `cd apps/desktop/src-tauri && cargo check`＝**通過**。
+- `git diff --stat`＝5 ファイル（`lib.rs` +8 / `windowApi.ts` +9 / `CommentViewerApp.module.css` 削除含む / `CommentViewerApp.tsx`
+  ±／`SettingsView.tsx` +20。本記録 `docs/progress.md` を含めると 6 ファイル）。
+- **残課題（実機・本人環境）**: `pnpm --filter ./apps/desktop tauri dev` で 本体ツールバーから開閉ボタンが消え設定に 1 トグル／
+  トグルで開閉でき配色＋`aria-checked` で状態が分かる／窓の×で外部から閉じても close 購読で state が戻る／オーバーレイ close で
+  sidecar（Twitch/YouTube コメント取得プロセス）が落ちない、を目視。
+
+### 変更ファイル（034d）
+
+- Rust（変更）: `apps/desktop/src-tauri/src/lib.rs`（`is_comment_overlay_open` 追加＋登録）
+- frontend（変更）: `apps/desktop/src/features/comment-viewer/windowApi.ts`（`isCommentOverlayOpen()` ラッパ）、
+  `apps/desktop/src/screens/comment-viewer/CommentViewerApp.tsx`（`overlayOpen` state・初期同期/購読解除 effect・
+  `handleOverlayToggle`・ツールバー 2 ボタン＋ヒント撤去・props 追加）、
+  `apps/desktop/src/screens/comment-viewer/SettingsView.tsx`（props 2 つ＋「OBS オーバーレイ」節）、
+  `apps/desktop/src/screens/comment-viewer/CommentViewerApp.module.css`（`.overlayPanel` 追加・`.overlayHint` 削除）
+- docs: `docs/progress.md`（本記録）
+- 不変（確認済み）: `capabilities/*`（`comment-overlay`/`comment-viewer`/`default` すべて `core:default` のまま）・
+  `tauri.conf.json`（`csp: null`）・`Cargo.toml`・`package.json`・sidecar・WS・オーバーレイ開閉ラッパ挙動・依存（新規ゼロ）

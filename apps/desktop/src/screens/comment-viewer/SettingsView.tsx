@@ -50,6 +50,9 @@ interface SettingsViewProps {
   onSpeakerIdChange: (id: number) => void;
   // 034c: 話者/スタイル選択時にその声のサンプルを試聴する（中断切替は CommentViewerApp が持つ preview プレイヤーが担う）。
   onPreview: (styleId: number) => void;
+  // 034d: OBS オーバーレイ窓の開閉（開＝ON / 閉＝OFF）。state は CommentViewerApp が保持し、外部 close も購読で同期。
+  overlayOpen: boolean;
+  onOverlayToggle: (next: boolean) => void;
 }
 
 export function SettingsView({
@@ -76,6 +79,8 @@ export function SettingsView({
   selectedSpeakerId,
   onSpeakerIdChange,
   onPreview,
+  overlayOpen,
+  onOverlayToggle,
 }: SettingsViewProps) {
   // 033d: 選択中 style id を含む話者を導出（話者 select の現在値）。一覧が空/未一致なら先頭話者にフォールバック。
   const selectedSpeaker =
@@ -276,6 +281,24 @@ export function SettingsView({
             </button>
           </div>
         )}
+      </div>
+
+      {/* 034d: OBS オーバーレイの開閉（本体ツールバーから移設）。1 つのトグルで開閉し、現在の状態を配色＋
+          aria-checked（ToggleSwitch は role="switch"）で明示する。ON=開く / OFF=閉じる。オーバーレイは
+          表示専用で、閉じても sidecar は落とさない（no-orphan kill 契機はコメビュ窓に集約のまま）。
+          034e はこの節の隣にサイト名トグル等のデザイン設定を足す。
+          レビュー（ARIA 逸脱 / 修正不要）: 仕様は aria-pressed だが、switch ロールでは aria-checked が正しい等価
+          表現のため既存 ToggleSwitch を流用した（034e が隣に足すトグル群とも揃う）。再修正トリガー＝トグルを
+          switch でなく通常の押しボタン（toggle button）に置き換えるなら aria-pressed へ戻す。 */}
+      <div className={styles.overlayPanel}>
+        <ToggleSwitch
+          label="OBS オーバーレイを表示"
+          checked={overlayOpen}
+          onChange={onOverlayToggle}
+        />
+        <span className={styles.note}>
+          OBS の「ウィンドウキャプチャ」で「StreamDock コメントオーバーレイ」を選ぶとコメントを重ねられます（背景は透過）。オーバーレイは常に最背面で開くので、配信者の画面には前面表示されません。
+        </span>
       </div>
     </div>
   );
