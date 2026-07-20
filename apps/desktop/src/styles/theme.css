@@ -97,6 +97,12 @@
   --overlay-scrollbar: color-mix(in srgb, var(--color-text-muted) 22%, transparent);
   --spinner-track: color-mix(in srgb, var(--color-text) 25%, transparent);
 
+  /* 034a: コメビュ本体「最新コメント N件 ↓」ジャンプボタン。既存スクリム系（--tutorial-*）と同じ #05070d 基色で
+     両テーマとも暗いまま＝白文字が乗る半透過 pill。*.module.css には生 rgba を残さず本トークン経由で参照する。 */
+  --comment-jump-bg: color-mix(in srgb, #05070d 62%, transparent);
+  --comment-jump-bg-hover: color-mix(in srgb, #05070d 72%, transparent);
+  --comment-jump-fg: #fff;
+
   /* 027 First-Run Tutorial のオーバーレイ。役割トークン参照は late-bound で
      テーマ追従し、ディムのみ意図的に暗い定数（スクリムは両テーマで暗くする）。 */
   --tutorial-dim: color-mix(in srgb, #05070d 74%, transparent);

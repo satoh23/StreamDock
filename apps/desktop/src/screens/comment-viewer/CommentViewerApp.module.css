@@ -183,6 +183,37 @@
   gap: 6px;
 }
 
+/* 034a: 追従（release）時にジャンプボタンを一覧へ重ねるための relative ラッパ。`.list` の flex:1 を維持する
+   ため自身も flex 縦積みにする（.list はこの中で従来どおり伸長・スクロールする）。 */
+.listWrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 034a: 追従解除中だけ出す「最新コメント N件 ↓」の半透過黒の長丸ボタン（下部中央）。配色は theme.css の
+   専用トークン経由で参照する（生 hex/rgba を持たない）。両テーマとも暗い pill＋白文字で可読性を保つ。 */
+.jumpButton {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  color: var(--comment-jump-fg);
+  background: var(--comment-jump-bg);
+  cursor: pointer;
+}
+
+.jumpButton:hover {
+  background: var(--comment-jump-bg-hover);
+}
+
 .empty {
   padding: 24px 8px;
   text-align: center;

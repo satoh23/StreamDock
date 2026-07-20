@@ -3959,3 +3959,53 @@ sidecar 非連動・no-orphan kill 契機は不変（通信/権限/プロセス�
 - docs: `docs/progress.md`（本記録）
 - 不変（確認済み）: sidecar（Node・無罪確定）・`capabilities/*`・`tauri.conf.json`・`Cargo.toml`・`csp: null`・
   comment-viewer / main 窓の Builder・依存（新規ゼロ）・ts-rs 型（新規ゼロ）
+
+## 2026-07-20 (034a コメビュ本体 最新コメント自動追従＋「最新コメント N件 ↓」ジャンプボタン)
+
+親 [034](tasks/034-comment-viewer-obs-ux-round2.md) 第2弾の先頭。要望5（コメビュ側）を潰す。純粋な frontend の
+スクロール/DOM 制御と CSS/トークン追加のみで、通信・sidecar・WS・Rust command・依存には一切触れない。
+
+### 実装内容
+
+- **追従判定を再利用フックに切り出し**（新規 `apps/desktop/src/features/comment-viewer/useFollowScroll.ts`）:
+  `useFollowScroll(scrollRef, items, { mode })` を追加。`mode: "release" | "always" | "off"`。
+  - `following` は**ユーザーのスクロール（onScroll）でのみ**切り替える（append では変えない）ので、閾値と行高が結合して
+    append 直後に一瞬「解除」判定になりチラつくのを避ける。閾値は **`FOLLOW_THRESHOLD_PX = 64`**（`scrollHeight - scrollTop - clientHeight <= 64` を「下端＝追従中」とみなす）。
+  - 新着反映は **`useLayoutEffect([items])`**（描画前に走らせチラつき回避）。`always` または追従中は最下部へ
+    （`el.scrollTop = el.scrollHeight`）＋watermark 更新＋`unseenCount=0`。解除中（release かつ非追従）は watermark
+    （最後に数え込んだ最新 id）以降の新規件数を id で数えて `unseenCount` に積み増す。200 件クランプで watermark が
+    落ちた稀ケース（解除中に >200 件到来）は全件を未読扱いにフォールバック（実害小・コメント明記）。
+  - `jumpToLatest` … 最下部へスクロール＋追従再開＋`unseenCount=0`。
+- **034b 再利用 API**: この追従判定は `CommentList` の **`followMode` prop** で出し分ける。034b はオーバーレイに
+  **`followMode="always"`** を渡すだけで「常時追従・解除/ボタン無し」を再利用できる（親 034 の依存）。034a の
+  オーバーレイは `followMode` 無指定（=`"off"`）のまま＝素の `<ol>`（ref/onScroll は off で no-op）で DOM/CSS 非退行。
+- **ジャンプボタンの配置**（`CommentList.tsx`）: `followMode==="release"` のときだけ `<ol>` を `position:relative` の
+  `.listWrap` で包み、`!following && unseenCount>0` で半透過黒の長丸ボタン「最新コメント {N}件 ↓」を下部中央へ重ねる。
+  `off`/`always` は素の `<ol>`（map JSX を変数化してラッパ有無で共有し重複回避）。`CommentList` は表示専用
+  （接続/WS/TTS の業務 state 非保有）のまま。
+- **配色トークン**（`theme.css`）: `.module.css` に生 rgba を残さないため専用トークンを新設。
+  `--comment-jump-bg: color-mix(in srgb, #05070d 62%, transparent)`（≈ rgba(0,0,0,.6) 相当）／`--comment-jump-bg-hover`（72%）／
+  `--comment-jump-fg: #fff`。既存スクリム系 `--tutorial-*` と同じ `#05070d` 基色で両テーマとも暗いまま＝白文字が乗る。
+  `CommentViewerApp.module.css` の `.listWrap` / `.jumpButton` は `var(--comment-jump-*)` 経由のみ。
+- **配線**（`CommentViewerApp.tsx`）: 本体末尾を `<CommentList comments={comments} followMode="release" />` に（1 行）。
+
+### 検証
+
+- `pnpm --filter ./apps/desktop typecheck`＝**0 error**、`pnpm --filter ./apps/desktop lint`＝**0 error / 0 warning**。
+- 自己確認: ①`*.module.css` に生 hex/rgba なし（`CommentViewerApp.module.css` grep で 0 件・すべて `var(--...)`）
+  ②`mergeComments`／上限 200／sidecar／WS／Rust 無改変 ③新規 command/capability/依存なし・`csp: null` 不変
+  ④`CommentList` 表示専用のまま・034b は `followMode="always"` で追従ロジックを再利用可。
+- **残課題（実機・本人環境）**: `tauri dev` で 下端追従／閾値超えスクロールアップで解除＋自動スクロール停止／解除中は
+  「最新コメント N件 ↓」ボタンが下部中央に出て N が更新／クリックで最下部＋追従再開＋カウント 0／既存の取得・読み上げ・
+  レイアウト・オーバーレイ表示に退行なし、を目視。
+
+### 変更ファイル（034a）
+
+- frontend（新規）: `apps/desktop/src/features/comment-viewer/useFollowScroll.ts`
+- frontend（変更）: `apps/desktop/src/screens/comment-viewer/CommentList.tsx`（`followMode` prop＋ref/onScroll＋release 時のラッパ/ボタン）、
+  `apps/desktop/src/screens/comment-viewer/CommentViewerApp.tsx`（`followMode="release"` を渡す）、
+  `apps/desktop/src/screens/comment-viewer/CommentViewerApp.module.css`（`.listWrap` / `.jumpButton`）、
+  `apps/desktop/src/styles/theme.css`（`--comment-jump-bg` / `-bg-hover` / `-fg`）
+- docs: `docs/progress.md`（本記録）
+- 不変（確認済み）: sidecar（Node）・`mergeComments`（上限 200）・`OverlayApp.tsx`／`OverlayApp.module.css`・`capabilities/*`・
+  `tauri.conf.json`・`Cargo.toml`・`csp: null`・依存（新規ゼロ）・ts-rs 型（新規ゼロ）

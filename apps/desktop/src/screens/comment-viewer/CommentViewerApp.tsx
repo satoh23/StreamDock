@@ -549,7 +549,9 @@ export function CommentViewerApp() {
             </div>
           )}
 
-          <CommentList comments={comments} />
+          {/* 034a: 本体は最新コメントへ自動追従（下端で追従・スクロールアップで解除＋「最新コメント N件 ↓」ボタン）。
+              追従判定は useFollowScroll（CommentList 内）に集約し、034b はオーバーレイに followMode="always" を渡して再利用する。 */}
+          <CommentList comments={comments} followMode="release" />
         </>
       )}
     </div>
