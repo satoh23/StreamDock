@@ -45,6 +45,12 @@ jobs:
 
     runs-on: ${{ matrix.platform }}
 
+    # Windows 署名は SSL.com の Secrets（ES_USERNAME）が設定されている時だけ実行する。
+    # 未設定なら署名ステップをスキップし未署名でビルド＝CI は緑のまま。証明書取得前でも
+    # comment-viewer 入り MVP を配布でき、Secrets を入れた瞬間からコード変更なしで自動署名に切り替わる。
+    env:
+      HAS_WINDOWS_SIGNING: ${{ secrets.ES_USERNAME != '' }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -71,12 +77,110 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # Release は作らず、インストーラをビルドするだけ（tagName を渡さない）。
+      # 099a-(I): comment-sidecar（Node SEA）を tauri ビルド前に生成する。
+      # tauri.conf.json の externalBin が binaries/comment-sidecar-<triple>[.exe] を要求し、
+      # beforeBuildCommand の check:sidecar（鮮度ガード）が未生成だと fail するため、ここで先に作る。
+      # 焼き込み env（Client ID/Secret）は Secrets 由来。GitHub が値を自動マスクし、build-sea は値を echo しない。
+
+      # Windows(x64): host triple 1 本だけでよい（comment-sidecar-x86_64-pc-windows-msvc.exe）。
+      - name: Build comment-sidecar (Windows x64)
+        if: matrix.platform == 'windows-latest'
+        run: pnpm --filter @stream-dock/comment-sidecar build:sea
+        env:
+          TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+
+      # macOS: --target universal-apple-darwin のため externalBin は aarch64 と x86_64 の 2 本が要る。
+      # build-sea は host arch 1 本のみ生成（triple は rustc host＝arm64 ランナーでは常に aarch64）。
+      # build-sea 無改変で両 arch を用意するため、x64 node(Rosetta) で作って rename → native arm64 で作る。
+      # 注: build-sea 内の esbuild は arch 一致のネイティブバイナリを要求するため、node arch 切替ごとに
+      #     pnpm install が要る（本方式唯一の煩雑点）。
+      - name: Ensure Rosetta 2 (for x64 sidecar)
+        if: matrix.platform == 'macos-latest'
+        run: softwareupdate --install-rosetta --agree-to-license || true
+
+      - name: Setup Node (x64, for x86_64 sidecar)
+        if: matrix.platform == 'macos-latest'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          architecture: x64
+
+      - name: Build comment-sidecar x86_64 (Rosetta node)
+        if: matrix.platform == 'macos-latest'
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter @stream-dock/comment-sidecar build:sea
+          mv apps/desktop/src-tauri/binaries/comment-sidecar-aarch64-apple-darwin \
+             apps/desktop/src-tauri/binaries/comment-sidecar-x86_64-apple-darwin
+        env:
+          TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+
+      - name: Setup Node (arm64, restore native)
+        if: matrix.platform == 'macos-latest'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          architecture: arm64
+
+      - name: Build comment-sidecar aarch64 (native)
+        if: matrix.platform == 'macos-latest'
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter @stream-dock/comment-sidecar build:sea
+        env:
+          TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+
+      # Release は作らず、インストーラをビルドするだけ（tagName を渡さない）。未署名で生成する。
       - name: Build installers
         uses: tauri-apps/tauri-action@v0
         with:
           projectPath: apps/desktop
           args: ${{ matrix.args }}
+
+      # 099a-(II): Windows インストーラを SSL.com eSigner（クラウド署名）で署名する。
+      # 日本の個人は Azure Trusted Signing 対象外のため、個人検証(IV)証明書＋eSigner を採用。
+      # tauri ビルド後に NSIS(.exe)/WiX(.msi) を署名し override でその場置換する（macOS レグは署名しない）。
+      # 認証情報は Secrets のみ（ES_USERNAME / ES_PASSWORD / CREDENTIAL_ID / ES_TOTP_SECRET）。ログに出さない。
+      # セキュリティ: sslcom/esigner-codesign は署名資格情報を受け取るため、@develop ではなく
+      #   レビュー済みのコミット SHA / リリースタグへ固定することを推奨（供給網対策）。
+      - name: Locate Windows installers
+        if: matrix.platform == 'windows-latest' && env.HAS_WINDOWS_SIGNING == 'true'
+        id: installers
+        shell: bash
+        run: |
+          ws="${GITHUB_WORKSPACE//\\//}"
+          echo "exe=$(ls "$ws"/apps/desktop/src-tauri/target/release/bundle/nsis/*.exe | head -n1)" >> "$GITHUB_OUTPUT"
+          echo "msi=$(ls "$ws"/apps/desktop/src-tauri/target/release/bundle/msi/*.msi | head -n1)" >> "$GITHUB_OUTPUT"
+
+      - name: Sign NSIS installer (.exe)
+        if: matrix.platform == 'windows-latest' && env.HAS_WINDOWS_SIGNING == 'true'
+        uses: sslcom/esigner-codesign@develop
+        with:
+          command: sign
+          username: ${{ secrets.ES_USERNAME }}
+          password: ${{ secrets.ES_PASSWORD }}
+          credential_id: ${{ secrets.CREDENTIAL_ID }}
+          totp_secret: ${{ secrets.ES_TOTP_SECRET }}
+          file_path: ${{ steps.installers.outputs.exe }}
+          override: true
+
+      - name: Sign WiX installer (.msi)
+        if: matrix.platform == 'windows-latest' && env.HAS_WINDOWS_SIGNING == 'true'
+        uses: sslcom/esigner-codesign@develop
+        with:
+          command: sign
+          username: ${{ secrets.ES_USERNAME }}
+          password: ${{ secrets.ES_PASSWORD }}
+          credential_id: ${{ secrets.CREDENTIAL_ID }}
+          totp_secret: ${{ secrets.ES_TOTP_SECRET }}
+          file_path: ${{ steps.installers.outputs.msi }}
+          override: true
 
       # 生成されたインストーラだけを workflow artifact として保存する。
       # 各 OS は自分の成果物のみ一致する（他 OS のパターンは 0 件でよい）。

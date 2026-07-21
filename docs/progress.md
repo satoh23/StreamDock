@@ -4620,3 +4620,102 @@ OBS オーバーレイは本体と同じ不透明カード（`CommentViewerApp.m
 - **036 系（036a〜c）完了**。overlay 投稿者アイコンは YouTube（036b・コメントストリームの `profile_image_url`）／Twitch（036c・Helix `users` 解決
   ＋70×70 縮小）ともに sidecar が data URI 化して表示、失敗時はグレー丸フォールバック。egress は fail-closed ホストガードの allow-list（`*.ggpht.com`/
   `*.googleusercontent.com`/`*.jtvnw.net`・HTTPS fetch 限定）に閉じ、data URI/URL/トークンは DB・ログ非保存。
+
+## 2026-07-21 (099a Windows コード署名 + sidecar 先行ビルド（既存 release.yml 再利用）)
+
+親 099 フェーズ2。**配布/署名/CI 設定のみ**でアプリ本体コード・実行時依存・`csp:null` は不変。2 部（依存関係あり）で、
+まず **(I) comment-sidecar を CI で先行ビルド**して comment-viewer 入り配布を緑化できる土台を作り、その上に
+**(II) Windows コード署名（Azure Trusted Signing）**を載せた。新規 workflow は作らず既存 `.github/workflows/release.yml` に配線。
+
+### 承認済みの決定（着手前に確定）
+- **macOS universal sidecar = 1ランナー+Rosetta**（macos-latest 1台で `build:sea` を2回。x64 は Rosetta node で作って rename → native arm64）。
+  universal 維持・`build-sea.mjs`/`check-fresh.mjs` **無改変**・変更は release.yml のみ。
+- **署名ツール = `artifact-signing-cli`**（現行 Tauri v2 公式が採用。タスク記載 `trusted-signing-cli` の後継/改名。公式ドキュメント/リポジトリで確認）。
+  account/profile を env（`AZURE_ARTIFACT_SIGNING_ACCOUNT`/`_CERTIFICATE_PROFILE`）で渡せるためラッパー不要。
+- **endpoint は tauri.conf.json に直書き（非機密リージョン URL・`<REGION>` プレースホルダ）／ account・profile・auth は env（Secrets 由来）**。
+
+### (I) sidecar 先行ビルド（release.yml）
+- `Install dependencies` の後・`Build installers`（tauri-action）の前に、プラットフォーム別 sidecar ビルドを追加。焼き込み env は
+  `TWITCH_CLIENT_ID`/`YOUTUBE_CLIENT_ID`/`YOUTUBE_CLIENT_SECRET`（Secrets 由来・GitHub 自動マスク・build-sea は値を echo しない）。
+- **Windows(x64)**: `build:sea` 1 本＝`comment-sidecar-x86_64-pc-windows-msvc.exe`。
+- **macOS(両 arch)**: ①`softwareupdate --install-rosetta`（冪等な保険）②setup-node `architecture: x64`→`pnpm install`（`@esbuild/darwin-x64`
+  materialize）→`build:sea`→出力（名は aarch64 だが中身 x64）を **`comment-sidecar-x86_64-apple-darwin` に `mv`** ③setup-node `arm64`→
+  `pnpm install`→`build:sea`＝`comment-sidecar-aarch64-apple-darwin`。2 本揃い、`check:sidecar`（host=aarch64）通過、tauri が lipo で universal 化。
+  **注**: esbuild が arch 一致ネイティブバイナリを要求するため、node arch 切替ごとに `pnpm install` が要る（本方式唯一の煩雑点。CI で不安定なら
+  Option B＝macos-13 Intel でネイティブ x64 sidecar→artifact がフォールバック）。
+
+### (II) Windows コード署名（Azure Trusted Signing / artifact-signing-cli）
+- **tauri.conf.json に `bundle.windows` を新設**（既存 `app.windows`＝窓設定とは別）: `signCommand`
+  `artifact-signing-cli -e https://<REGION>.codesigning.azure.net -d StreamDock %1` ＋ `timestampUrl: http://timestamp.acs.microsoft.com`
+  ＋ `digestAlgorithm: "sha256"`。`targets:"all"` のため **NSIS `.exe` と WiX `.msi` の両方**が署名対象。account/profile/auth は env 由来なので
+  signCommand に `-a`/`-c`/認証を書かない。timestampUrl/digestAlgorithm は certificateThumbprint 無し＝Tauri 内蔵署名は不発で実質 inert
+  （CLI が SHA256＋Azure TS タイムスタンプを付与）だが、完了条件が 3 キーの存在を要求するため記載。
+- **release.yml の windows-latest レグにのみ配線**: `cargo install artifact-signing-cli --locked`（CI 限定・**アプリ実行時依存に入れない**・Rust は既存 setup 済み）
+  ＋ `Build installers` step の env に Azure 認証/識別子を**三項式で windows 限定**注入（`AZURE_TENANT_ID`/`AZURE_CLIENT_ID`/`AZURE_CLIENT_SECRET`/
+  `AZURE_ARTIFACT_SIGNING_ACCOUNT`←`AZURE_TS_ACCOUNT`/`AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE`←`AZURE_TS_PROFILE`）。**macOS 署名は不変**（Azure env を渡さない）。
+
+### 追加 GitHub Secrets（2 系統・すべて Secrets のみ・リポジトリに置かない）
+- sidecar 焼き込み: `TWITCH_CLIENT_ID` / `YOUTUBE_CLIENT_ID` / `YOUTUBE_CLIENT_SECRET`
+- Azure 署名: `AZURE_TENANT_ID` / `AZURE_CLIENT_ID` / `AZURE_CLIENT_SECRET` / `AZURE_TS_ACCOUNT` / `AZURE_TS_PROFILE`
+  （endpoint は非機密のため Secret 化せず tauri.conf.json の `<REGION>` を置換）。既存 `RELEASE_REPO_TOKEN` 踏襲。README にどの Secret に何を入れるか明記。
+
+### README 更新
+- 「署名について（現状）」→「署名について」に更新: **Windows = Azure Trusted Signing 署名済み（フェーズ2 完了）**、macOS = 未署名（右クリック→開くで回避）。
+  追加 Secrets 2 系統の設定手順と endpoint 置換手順を追記（値は載せない）。
+
+### security-review 結果＝問題なし（修正必須なし）
+- 観点確認: 配布/署名/CI のみでアプリ挙動・Tauri command・capability・`csp:null` 不変／外部通信・telemetry をアプリに追加せず（signCommand/timestampUrl は
+  CI ビルド時のみ実行）／新規ツールは CI 上の `cargo install` に閉じ `Cargo.toml`/`package.json` の実行時依存に入れない（§10）／秘匿値は全ファイルで
+  ハードコードなし・`secrets.*` 由来 env のみで GitHub 自動マスク・build-sea は値を echo しない（§9）／Azure 認証情報は三項式で windows 限定・macOS へ渡さない／
+  endpoint は非機密プレースホルダ／OAuth 焼き込みは既存設計（方針⑥⑧・PKCE）どおりで生成物には入るがソース/ログには出さない。
+- 後回し改善: `artifact-signing-cli` の**トップ版 pin**（`--locked` は依存ツリー固定でトップ版は非固定。CI 緑化後に `--version <x.y.z>` 推奨）／
+  signtool 未検出時は Windows SDK bin を PATH 追加（release.yml にコメント済み）。
+
+### 検証結果（実装後・こちらで実施）
+- `apps/desktop/src-tauri/tauri.conf.json`＝valid JSON ✓／`.github/workflows/release.yml`＝valid YAML ✓。
+- `pnpm --filter ./apps/desktop typecheck`＝0 error／`cd apps/desktop/src-tauri && cargo check`＝Finished（アプリ無変更の退行なし）。
+- `git diff --stat`＝**3 ファイル**（`.github/workflows/release.yml` / `apps/desktop/src-tauri/tauri.conf.json` / `README.md`）＋本節。
+  **不変**: build-sea.mjs / check-fresh.mjs / アプリ本体コード / Cargo.toml / package.json 実行時依存 / `csp:null`。**新規ファイルなし**。
+
+### 未確認（ユーザー環境・Secrets 設定後）
+- CI: テストタグ push（例 `git tag v0.0.2-sign-test && git push --tags`）or workflow_dispatch → Actions 緑 → ①両 OS で `build:sea` 成功し
+  comment-viewer 入りインストーラ生成（Windows は sidecar `.exe` 同梱・macOS は両 arch lipo）②tauri-action ログで `signCommand` 実行し
+  Windows `.exe`/`.msi` 両署名 ③ログに鍵/トークン非出力。
+- Windows 実機: `signtool verify /pa /v StreamDock_x64-setup.exe`（`.msi` も）通過・デジタル署名に発行者表示・SmartScreen「不明な発行元」解消・
+  コメビュ（Twitch/YouTube 連携）動作＝焼き込み ID 非空。
+- **既知リスク（要ウォッチ）**: externalBin sidecar の署名（tauri #11778）／tauri-action×署名 CLI 版差でサイン未実行の回帰（#13991）→ CI ログで signCommand 実行を確認。
+- コミット分割推奨: (I) を先に緑化 →(II)。commit/push は本人の明示指示があるまで未実行。
+
+### 【方針変更 2026-07-21】(II) の署名方式を Azure Trusted Signing → SSL.com IV + eSigner に変更
+
+- **理由**: Azure Trusted Signing（現 Artifact Signing）の公開信頼証明書は **日本在住の個人開発者は対象外**
+  （公式ドキュメント 2026-05 更新: 公開信頼＝米国・カナダの個人／米国・カナダ・EU・英国の組織のみ。本人確認の
+  国選択に日本が出ない。Private Trust は SmartScreen を解決しないため不可）。加えて Artifact Signing は
+  無料/試用サブスクリプション非対応。ユーザー（日本の個人）では取得不可のため断念。
+- **代替の選定**: 日本の個人で取得でき、GitHub Actions で自動署名でき、確実・turnkey な **SSL.com の個人検証(IV)
+  コード署名証明書 + eSigner クラウド署名**を採用（30 日無料トライアルで CI を先に検証可能）。比較検討: Certum 個人
+  （最安級だがクローズドソース個人可否とヘッドレス CI が要確認）、Sectigo/Comodo IV + Cloud KMS + jsign（維持費最安だが
+  DIY 度大）。SmartScreen は IV/OV のため**評判蓄積型**（配布直後は警告残・実績蓄積で発行者名表示。即時は EV のみ・法人要）。
+- **実装の作り直し**:
+  - `apps/desktop/src-tauri/tauri.conf.json`: Azure 用 `bundle.windows`（signCommand/timestampUrl/digestAlgorithm）を**撤去し元に戻した**。
+    署名は tauri ではなく CI の後段で行う（Tauri signCommand は不使用）。
+  - `.github/workflows/release.yml`: `artifact-signing-cli` 導入と Azure env を撤去し、**tauri ビルド後に `sslcom/esigner-codesign`
+    で NSIS `.exe` / WiX `.msi` を署名**（`command: sign` + `override: true` でその場置換）。windows-latest レグのみ・macOS 不変。
+    署名対象は最終インストーラ2本（sidecar/アプリ本体 exe は未署名のまま＝SmartScreen はインストーラ署名で解消）。
+  - 追加 Secrets（Azure 系を廃し SSL.com 系へ）: `ES_USERNAME` / `ES_PASSWORD` / `CREDENTIAL_ID` / `ES_TOTP_SECRET`。
+    sidecar 焼き込み Secrets（`TWITCH_CLIENT_ID`/`YOUTUBE_CLIENT_ID`/`YOUTUBE_CLIENT_SECRET`）は不変。
+  - README「署名について」を SSL.com IV + eSigner に更新（Azure 非対象の経緯も明記）。
+- **セキュリティ注意（後回し改善）**: `sslcom/esigner-codesign@develop` は署名資格情報（ES_PASSWORD/ES_TOTP_SECRET/CREDENTIAL_ID）を
+  受け取るサードパーティ Action。供給網対策として **@develop ではなくレビュー済みコミット SHA / リリースタグに固定**することを推奨。
+- **未確認（ユーザー実施）**: SSL.com IV 購入→本人確認(3〜5日)→`CREDENTIAL_ID`/`ES_TOTP_SECRET` 取得→Secrets 登録→
+  30 日トライアル中にテストタグ push で CI 署名を検証→Windows 実機 `signtool verify /pa /v` で発行者表示・SmartScreen 確認。
+  署名対象ファイルパス解決（bundle/nsis・msi）は初回 CI で要目視（必要なら微調整）。
+
+### 【追加 2026-07-21】署名を Secrets 有無で条件実行（未署名 MVP を先行配布可能に）
+
+- ユーザー要望「証明書取得前でも MVP を配布したい」に対応。`build` ジョブに `env: HAS_WINDOWS_SIGNING: ${{ secrets.ES_USERNAME != '' }}`
+  を追加し、Windows 署名 3 ステップ（Locate / Sign .exe / Sign .msi）の `if` に `&& env.HAS_WINDOWS_SIGNING == 'true'` を付与。
+- 効果: **SSL.com Secrets 未設定なら署名ステップを自動スキップ**し未署名でビルド＝CI 緑・comment-viewer 入り MVP を即配布可能。
+  証明書発行後に Secrets を登録した瞬間から**コード変更なしで自動署名に切替**。README「署名について」も条件実行に合わせて更新。
+- 注意（不変）: comment-viewer を含めるビルド自体には焼き込み Secrets（`TWITCH_CLIENT_ID`/`YOUTUBE_CLIENT_ID`/`YOUTUBE_CLIENT_SECRET`）が
+  必須（build-sea が fail-fast）。未署名配布でもこの 3 件は要設定。SSL.com 本人確認(Verified ID)はユーザー都合の時に完了させればよい（MVP 配布を阻害しない）。
