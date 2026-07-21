@@ -31,6 +31,13 @@ const OVERLAY_SOURCE_CLASS: Record<CommentViewDto["source"], string> = {
   youtube: overlayStyles.sourceYoutube,
 };
 
+/** 036a: overlay アイコンの画像なしフォールバック（名前の頭文字）。features/tools の toIconLetter は
+ *  ツール用の別系統なので import せず、comment-viewer 内に equivalent を持つ。
+ *  配信コメントの表示名は絵文字始まりが多いため、charAt(0)（UTF-16 コードユニット＝サロゲートペアを分割し
+ *  孤立サロゲート「�」になる）ではなくコードポイント単位（`[...s]`）で先頭 1 文字を取り、絵文字先頭でも壊さない。
+ *  ※ツール用 toIconLetter は入力特性（アプリ名・iconLabel 前提）が異なるため据え置きで問題なく、こちらのみ配慮する。 */
+const authorInitial = (name: string): string => [...name.trim()][0] ?? "?";
+
 interface CommentListProps {
   comments: CommentViewDto[];
   /**
@@ -91,27 +98,50 @@ export function CommentList({
   // 034e: OBS オーバーレイ用チャット意匠（LINE 風）。上段＝名前＋サイト名ピルバッジ（別の行）／下段＝アイコン｜吹き出し
   // （同じ行の 2 列）。吹き出し左辺のしっぽがアイコン方向へ向く。showSource=true のときだけサイト名ピルを名前の横に
   // 添える（受信済み source の表示のみ・新規取得はしない）。
-  const renderOverlayItem = (c: CommentViewDto) => (
-    <li key={c.id} className={overlayStyles.item}>
-      <div className={overlayStyles.header}>
-        <span className={overlayStyles.name}>{c.author.name}</span>
-        {showSource && (
-          <span
-            className={`${overlayStyles.source} ${OVERLAY_SOURCE_CLASS[c.source]}`}
-          >
-            {SOURCE_LABEL[c.source]}
-          </span>
-        )}
-      </div>
-      <div className={overlayStyles.row}>
-        {/* 034f: 実アイコン取得後はこの枠に画像を差すだけ（サイズ/位置は確保済み）。今はデフォルトのグレー丸。 */}
-        <div className={overlayStyles.icon} aria-hidden="true" />
-        <div className={overlayStyles.bubble}>
-          <p className={overlayStyles.text}>{c.text}</p>
+  const renderOverlayItem = (c: CommentViewDto) => {
+    // 036a: 描画シンクで「webview が踏むのは data URI のみ」（親 036・§CSP の不変条件）を強制する。avatar を
+    // background-image に差すのは値が data: 始まりのときだけとし、それ以外（036b にバグで raw URL が漏れた等）は
+    // 画像化せずイニシャルにフォールバックさせて外部 URL を踏ませない。036a では送り側未実装で avatar は常に空＝
+    // この分岐は発火しない（挙動は従来のグレー丸＋イニシャルのまま）。data: 始まりでも整形済み base64 data URI か
+    // 否かの検証は egress 集約点＝converter（036b）の責務で、ここは最終防波堤の型ガードに徹する。
+    const avatarDataUri = c.author.avatar?.startsWith("data:")
+      ? c.author.avatar
+      : undefined;
+    return (
+      <li key={c.id} className={overlayStyles.item}>
+        <div className={overlayStyles.header}>
+          <span className={overlayStyles.name}>{c.author.name}</span>
+          {showSource && (
+            <span
+              className={`${overlayStyles.source} ${OVERLAY_SOURCE_CLASS[c.source]}`}
+            >
+              {SOURCE_LABEL[c.source]}
+            </span>
+          )}
         </div>
-      </div>
-    </li>
-  );
+        <div className={overlayStyles.row}>
+          <div
+            className={overlayStyles.icon}
+            style={
+              avatarDataUri
+                ? { backgroundImage: `url("${avatarDataUri}")` }
+                : undefined
+            }
+            aria-hidden="true"
+          >
+            {!avatarDataUri && (
+              <span className={overlayStyles.iconFallback}>
+                {authorInitial(c.author.name)}
+              </span>
+            )}
+          </div>
+          <div className={overlayStyles.bubble}>
+            <p className={overlayStyles.text}>{c.text}</p>
+          </div>
+        </div>
+      </li>
+    );
+  };
 
   // 追従有無で共有する一覧本体（map は不変）。ref/onScroll は "off" のとき no-op なので付けても素の挙動のまま。
   const list = (

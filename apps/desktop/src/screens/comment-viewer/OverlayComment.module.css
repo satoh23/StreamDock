@@ -89,6 +89,20 @@
   background: var(--overlay-icon-bg);
   background-size: cover;
   background-position: center;
+  /* 036a: avatar 無し時のフォールバック頭文字を枠内で中央寄せ（background-image の効きは不変）。 */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 036a: avatar（data URI）が無いときのフォールバック頭文字。グレー丸の上に名前の先頭 1 文字を出す。
+   色は既存トークン（名前と同じ暗色）を再利用し、生 hex は残さない。 */
+.iconFallback {
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--overlay-name-fg);
+  user-select: none;
 }
 
 /* 吹き出し：ほぼ純白の不透明カード＋太めの枠＋ソフト影。position:relative は下のしっぽ（::before/::after）の基準。 */

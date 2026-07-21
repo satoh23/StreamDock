@@ -3,4 +3,8 @@
 /**
  * コメント投稿者。
  */
-export type CommentAuthor = { id: string, name: string, };
+export type CommentAuthor = { id: string, name: string, 
+/**
+ * 投稿者アイコン（data URI・未取得時は None）。036b/036c が送信側を実装するまでは常に None。
+ */
+avatar?: string, };

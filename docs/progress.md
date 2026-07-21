@@ -4472,3 +4472,38 @@ OBS オーバーレイは本体と同じ不透明カード（`CommentViewerApp.m
   トグル状態が保持される。
 - **035 系（035a〜c）完了**: 035a（sidecar 同時取得の解禁）→035b（viewer/overlay 同時表示 検証・微調整・動作確認モック）→
   035c（TTS source 別読み上げフィルタ）で、親 035「YouTube/Twitch 同時取得・マージ表示・読み上げ制御」が一通り揃った。
+
+## 2026-07-21 (036a アバター ワイヤ契約拡張＋オーバーレイ描画（受け側）)
+
+- 親 036「OBS オーバーレイへ実ユーザーアイコン（data URI）表示」の**受け側だけを先行導入**。投稿者アイコン（data URI）を
+  **受け取って描画する配管と表示**を通した。**送り側（036b/036c）が未実装なので `avatar` は常に空**で、見た目は現状（グレー丸）から
+  実質変わらない＝無害に先行できる。**実際の画像取得・URL 解決・URL→data URI 変換は本タスクでは書かない**（036b/036c の領分）。
+- **ワイヤ契約に任意 `avatar` を全層追加（層別の意味づけを混同しない）**。ts-rs のワイヤ契約が正:
+  - ドメイン `User`（comment-fetcher `user.ts`）`avatar?: string`＝**取得元の画像 URL**（純ドメイン値・036b/c が埋める）。
+  - 配信 DTO `UserSummaryDto`（shared）／Rust ワイヤ契約 `CommentAuthor`（`model.rs`・`#[ts(optional)] Option<String>`＝既存
+    `monetary_amount` と同型）`avatar?`＝**data URI**（webview が `<img>`/`background-image` にそのまま使える形）。
+  - converter（`comment-to-view.converter.ts`）は `avatar: comment.author.avatar` を**素通し**（036a では `User.avatar` を誰も
+    埋めないため常に `undefined`）。**URL→data URI 変換は書かず**、「036b がこの行を変換に差し替える egress 集約の境界」である旨を
+    コメントで明示。
+- **bindings 再生成**: `pnpm --filter ./apps/desktop gen:bindings`（＝`cargo test export_bindings`）で `CommentAuthor.ts` を再生成
+  （`{ id, name, avatar?: string }`・手編集なし）。drift ゼロ（再実行で追加差分なし）。
+- **オーバーレイ描画分岐＋フォールバック（ユーザー確定＝名前イニシャル）**: `CommentList.tsx` の `renderOverlayItem` を、
+  `c.author.avatar` があれば既存 `.icon` 枠に `background-image: url("<data URI>")` で差し（`background-size:cover` は準備済み・
+  新規 `<img>` 要素も新規 CSS も不要）、無ければ**グレー丸＋名前の頭文字**にフォールバック（`authorInitial` を comment-viewer 内に
+  equivalent で持つ＝`features/tools` の `toIconLetter` は別系統なので import しない）。CSS は `.icon` に中央寄せ（flex）を足し、
+  新規 `.iconFallback`（`--overlay-name-fg` トークン再利用・生 hex 追加なし）を追加。`aria-hidden` は名前が上段テキストで既出のため
+  据え置き（二重読み上げ回避）。
+- **security-review 結果（軽）＝問題なし（修正必須なし）**。frontend の表示追加＋ワイヤ契約フィールド追加のみで、**外部通信宛先・
+  API・capability・依存を追加せず**・`csp: null` 不変。`<img>`/`background-image` が踏むのは **data URI のみ**（036a では常に空＝
+  外部 URL を一切踏まない）。**コメント本文/画像を Rust の DB/ログに出す経路は追加なし**（`CommentAuthor` はスキーマ専用 DTO で
+  Rust に構築経路なし）。申し送り（036b・security-review 必須）＝converter の URL→data URI 変換出力が well-formed data URI である
+  こと・変換を converter 1 箇所に集約し webview に raw URL を渡さないこと。
+- **検証結果**: `pnpm --filter ./apps/desktop typecheck`＝0 error／`lint`＝0 error。`cargo check`＝OK（bindings 再生成後の整合）。
+  `gen:bindings` 再実行で `CommentAuthor.ts` の追加差分ゼロ（drift なし）。sidecar は `typecheck`＝OK／`build:bundle`（`--bundle-only`）＝
+  OK で TS 3 層追加が型・バンドル通過（`build:sea` フルバイナリ焼き込みは配布用 secrets（`TWITCH_CLIENT_ID` 等）が要る既存の環境要件で、
+  本 TS 変更とは無関係にその手前で停止）。`git diff --stat`＝7 ファイル（Rust 1・bindings 1・sidecar 3・frontend 2）で capabilities/
+  `tauri.conf.json`/依存は不変。
+- **未確認（ユーザー環境・実機）**: `pnpm --filter ./apps/desktop tauri dev` で overlay を開き、avatar 空で従来どおり（グレー丸＋
+  名前イニシャル）壊れない／ダミー data URI を注入すると枠に画像が出る、を目視。
+- **036 系の次**: 036b（sidecar 共通取得基盤＝fetch→縮小→data URI→上限付きキャッシュ＋YouTube アイコン取り込み＋画像 CDN を
+  allow-list 追加・**security-review 必須**）→036c（Twitch を Helix `users` で URL 解決・036b 基盤再利用・**security-review 必須**）。

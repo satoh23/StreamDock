@@ -38,6 +38,9 @@ pub enum CommentEventType {
 pub struct CommentAuthor {
     pub id: String,
     pub name: String,
+    /// 投稿者アイコン（data URI・未取得時は None）。036b/036c が送信側を実装するまでは常に None。
+    #[ts(optional)]
+    pub avatar: Option<String>,
 }
 
 /// 表示側で扱う正規化済みコメント 1 件。
