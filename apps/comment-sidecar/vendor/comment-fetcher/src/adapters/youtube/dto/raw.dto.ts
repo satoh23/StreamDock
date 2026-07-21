@@ -79,6 +79,11 @@ export type YouTubeLiveChatAuthorDetailsDto = {
   channel_id: string;
   /** 表示名 */
   display_name: string;
+  /**
+   * 036b: プロフィール画像 URL（アバター取得元）。リクエストの profile_image_size で小サイズを要求する。
+   * 本文なしイベント等では欠落し得るため任意。gRPC chunk を直キャストで受けるため proto の keepCase 名と一致させる。
+   */
+  profile_image_url?: string;
 };
 
 /** スーパーチャット詳細 */

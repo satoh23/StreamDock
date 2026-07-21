@@ -70,6 +70,13 @@ message LiveChatMessageSnippet {
 message LiveChatMessageAuthorDetails {
   optional string channel_id = 10101;
   optional string display_name = 103;
+  // 036b: 投稿者プロフィール画像 URL（アバター取得元）。リクエストの profile_image_size=48 で CDN が
+  // 小サイズ URL を返す。converter が data URI 化する（sidecar 内完結・§CSP 不変）。
+  // ⚠ フィールド番号 104 は **未確定（要実レスポンス検証）**: osareview の正 proto にも本フィールドは無く
+  //   逐語コピー元が存在しないため、display_name=103 に隣接する reverse-engineered 値 104 を暫定採用している。
+  //   フィールド番号が実スキーマと異なる場合は profile_image_url が空のまま（=avatar undefined→グレー丸）で
+  //   クラッシュはしない。実配信で author_details の生メッセージを一度確認し、正しい番号へ確定すること。
+  optional string profile_image_url = 104;
 }
 
 message SuperChatDetails {

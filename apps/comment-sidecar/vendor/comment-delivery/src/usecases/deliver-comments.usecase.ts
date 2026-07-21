@@ -15,8 +15,9 @@ export class DeliverCommentsUseCase {
   ) {}
 
   async deliverComments(comments: readonly Comment[]): Promise<void> {
-    const viewComments = comments.map((comment) =>
-      convertCommentToViewDto(comment),
+    // 036b: convertCommentToViewDto は avatar 解決（画像 fetch）で async 化したため await Promise.all で解決する。
+    const viewComments = await Promise.all(
+      comments.map((comment) => convertCommentToViewDto(comment)),
     );
     const decoratedComments =
       await this.decorationPipeline.decorateComments(viewComments);

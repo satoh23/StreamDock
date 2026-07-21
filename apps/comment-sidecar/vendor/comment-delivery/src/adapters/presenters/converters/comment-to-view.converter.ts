@@ -1,22 +1,21 @@
 import type { Comment } from "@comment-dock/comment-fetcher";
 import type { CommentViewDto } from "@comment-dock/shared";
+import { resolveAvatarDataUri } from "./resolve-avatar-data-uri.js";
 
-export const convertCommentToViewDto = (comment: Comment): CommentViewDto => {
+// 036b: 配信境界（egress 集約点）。ドメイン `User.avatar`（取得元 URL）を UserSummaryDto.avatar（data URI）へ
+// 変換する唯一の場所。画像 fetch（I/O）を伴うため async 化した（036a の申し送りどおり）。
+// resolveAvatarDataUri は never throws（失敗/タイムアウト/超過/非許可ホストは undefined）で、出力は emit 前に
+// 整形済み base64 data URI であることを検証済み＝overlay の background-image で外部 URL を踏ませない（§CSP）。
+export const convertCommentToViewDto = async (
+  comment: Comment,
+): Promise<CommentViewDto> => {
   return {
     id: comment.id,
     source: comment.source,
     author: {
       id: comment.author.id,
       name: comment.author.name,
-      // 036a: 素通し（036a では User.avatar を誰も埋めないため常に undefined）。型上はドメイン User.avatar（URL 意味）を
-      // UserSummaryDto.avatar（data URI 意味）へコピーする＝036a は器の予約のみで意味は未整合だが、値が流れないため無害。
-      // 036b がこの行を URL→data URI 変換に差し替える境界（egress を converter 1 箇所に集約し webview に raw URL を渡さない）。
-      // 036b 申し送り（security-review 必須）:
-      //   ・画像 fetch（I/O）を伴うため、convertCommentToViewDto の async 化か、上流で解決済みの data URI キャッシュ参照へ再構成する。
-      //   ・出力は `data:image/<mime>;base64,<base64>`（base64 文字集合のみ）であることを emit 前に検証する。
-      //     受け側 overlay の background-image は raw URL / カンマ多重背景でブレイクアウトし外部 URL を踏み得るため（§CSP）、
-      //     ここで well-formed 保証を作るのが唯一の egress 集約点になる。
-      avatar: comment.author.avatar,
+      avatar: await resolveAvatarDataUri(comment.author.id, comment.author.avatar),
     },
     text: comment.text,
     publishedAt: comment.publishedAt.toISOString(),

@@ -149,6 +149,10 @@ export class YouTubeApiClient {
       page_token: input.pageToken,
       part: ["id", "snippet", "authorDetails"],
       max_results: 2000,
+      // 036b: authorDetails.profile_image_url を CDN の小サイズ URL（~48px）で受け取り、アバターの
+      // クライアント側リサイズを不要にする（converter が data URI 化）。overlay の --icon-size=44px 相当で選定。
+      // 再修正条件: HiDPI(2x) 表示でにじみが気になれば 88/96 へ上げる（実サイズは小さく 128KB 上限に余裕あり）。
+      profile_image_size: 48,
     };
 
     const streamClient = client as grpc.Client & {

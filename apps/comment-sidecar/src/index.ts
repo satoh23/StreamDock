@@ -228,8 +228,18 @@ async function main(): Promise<void> {
   // 取得パイプラインの出力: Comment → 正規化 → comments.append で viewer へ送る（端末外に出さない）。
   const outputPort: CommentOutputPort = {
     outputComments: async (comments: Comment[]): Promise<void> => {
-      for (const comment of comments) {
-        const view = convertCommentToViewDto(comment);
+      // 036b: convertCommentToViewDto は avatar 解決（画像 fetch）で async 化。順序を保って解決してから
+      // 到着順に broadcast する（同一投稿者は resolveAvatarDataUri のキャッシュ/in-flight で重複 fetch しない）。
+      // 036b レビュー申し送り（apply-review・いずれも現状は許容の設計判断）:
+      //  - レイテンシ: Promise.all は最も遅い avatar fetch（≤FETCH_TIMEOUT_MS=3s）までバッチ全体の broadcast を待たせる。
+      //    通常 CDN 応答は速く初回のみ・キャッシュ後は即時のため許容。再修正条件: 実配信でバッチ表示遅延が問題化したら
+      //    コメントを即 broadcast → avatar は後追い更新メッセージで送るデカップリングへ切り替える（大きめの設計変更）。
+      //  - ファンアウト: 1 バッチ内の未キャッシュ別投稿者数だけ fetch が並列化し得る（各 3s/128KB で有界）。再修正条件:
+      //    初回バッチのピーク socket/メモリが問題化したら簡易セマフォ（同時 6〜8 本・依存追加なし）で平滑化する。
+      //  - 全滅回避: resolveAvatarDataUri は never throws（唯一の async 要因）ため Promise.all は reject しない。再修正条件:
+      //    将来 convertCommentToViewDto に avatar 以外の throw 要因が増えたら Promise.allSettled / per-item try-catch へ。
+      const views = await Promise.all(comments.map(convertCommentToViewDto));
+      for (const view of views) {
         output.broadcastMessage({
           type: COMMENT_DELIVERY_MESSAGE_TYPES.COMMENTS_APPEND,
           payload: { comment: toCanonicalComment(view) },

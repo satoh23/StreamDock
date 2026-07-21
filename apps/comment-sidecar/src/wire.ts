@@ -17,6 +17,10 @@ export type CanonicalCommentEventType =
 export interface CanonicalCommentAuthor {
   id: string;
   name: string;
+  // 036b: 投稿者アイコンの data URI（webview が `<img>`/background-image にそのまま使える形）。未取得時は undefined。
+  // Rust ワイヤ契約 CommentAuthor.avatar（ts-rs・036a）と同形。036a は UserSummaryDto/converter まで通したが
+  // この wire 型（active 配信経路の実ペイロード）に無く avatar を落としていたため 036b でここに通す。
+  avatar?: string;
 }
 
 /** Rust `CommentViewDto`（ts-rs）と同形の正規化コメント。 */
@@ -46,7 +50,12 @@ export function toCanonicalComment(
   const canonical: CanonicalComment = {
     id: dto.id,
     source: dto.source,
-    author: { id: dto.author.id, name: dto.author.name },
+    author: {
+      id: dto.author.id,
+      name: dto.author.name,
+      // 036b: converter が data URI 化済み（未取得は undefined）。整形済み base64 data URI 保証は converter の責務。
+      avatar: dto.author.avatar,
+    },
     text: dto.text,
     publishedAt: dto.publishedAt,
     eventType: EVENT_TYPE_MAP[dto.eventType] ?? "chat",

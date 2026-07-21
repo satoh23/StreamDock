@@ -55,6 +55,8 @@ export function mapYouTubeLiveChatMessagesToComments(
         author: {
           id: message.author_details.channel_id,
           name: message.author_details.display_name,
+          // 036b: 取得元 URL（ドメイン値）。data URI 化は配信境界の converter が担う（親 036 の層別意味づけ）。
+          avatar: message.author_details.profile_image_url,
         },
         text: message.snippet.display_message,
         publishedAt,

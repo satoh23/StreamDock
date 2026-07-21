@@ -4507,3 +4507,60 @@ OBS オーバーレイは本体と同じ不透明カード（`CommentViewerApp.m
   名前イニシャル）壊れない／ダミー data URI を注入すると枠に画像が出る、を目視。
 - **036 系の次**: 036b（sidecar 共通取得基盤＝fetch→縮小→data URI→上限付きキャッシュ＋YouTube アイコン取り込み＋画像 CDN を
   allow-list 追加・**security-review 必須**）→036c（Twitch を Helix `users` で URL 解決・036b 基盤再利用・**security-review 必須**）。
+
+## 2026-07-21 (036b sidecar アバター取得基盤＋YouTube 対応（送り側）)
+
+- 親 036 の**送り側**を YouTube で end-to-end 通した。sidecar に**アバター画像の共通取得基盤**（URL→取得→data URI→上限付き
+  キャッシュ）を新設し、YouTube の `authorDetails.profile_image_url`（コメントストリームに載る＝追加 API 呼び出し不要）を取り込んで
+  overlay に実アイコンを表示する。取得は**すべて sidecar 内で完結**し data URI で渡すため、**webview 外部通信ゼロ・`csp: null`・
+  capabilities・Rust no-internet 不変**。036c（Twitch）は本基盤（`resolveAvatarDataUri`）を再利用する。
+- **共通取得基盤 `resolveAvatarDataUri(authorId, url)`（新規 `comment-delivery/.../converters/resolve-avatar-data-uri.ts`）**:
+  - **全域関数（never throws）**＝失敗/タイムアウト/超過/非許可ホスト/MIME 不許可/空 URL はすべて `undefined`（→ overlay グレー丸へ
+    フォールバック）。active 配信経路は per-comment try/catch を持たないため「throw しない」ことで 1 件失敗のバッチ巻き添えを防ぐ。
+  - 取得は起動時に置換済みの **global `fetch`（fail-closed ホストガード経由）**。**リダイレクト追従は `redirect:"error"` で fail-closed 禁止**
+    （ガードを迂回した非 allow-list 宛先への egress を防ぐ）。
+  - **確定値**: 取得タイムアウト **3s**（`AbortSignal.timeout`）／画像バイト上限 **128KB**（Content-Length 事前チェック＋**ストリーム実測で
+    超過時 `reader.cancel()`**）／MIME 許可 **png/jpeg/webp/gif**／正キャッシュ **LRU 500 authors**／負キャッシュ **TTL 5分・cap 500**／
+    **in-flight 重複排除**（同一投稿者の同時 fetch を 1 本に集約）。キャッシュは**投稿者 ID 単位・メモリ内・非永続**。
+  - **出力整形＋検証（egress 集約点の責務）**: `data:${mime};base64,${b64}` を `Buffer.toString("base64")` で組み、emit 前に
+    `^data:image/(png|jpeg|webp|gif);base64,…$` の正規表現ゲートを通す（overlay の `background-image: url("…")` で外部 URL ブレイクアウト
+    させない）。
+- **縮小方式＝依存ゼロ（§10）**: gRPC リクエストに既存の `profile_image_size`（現状未設定）を **48** で設定し、YouTube CDN から
+  小サイズ URL を受け取る＝**クライアント側デコード/リサイズ不要**。`fetch` + 標準 `Buffer` base64 のみで **新規依存なし**
+  （sharp/canvas=native は §10 の pure-JS 方針に反し不採用、jimp=pure-JS も CDN 縮小で不要）。想定外サイズはバイト上限で sidecar 内遮断。
+- **converter へ変換集約＋async 化**（036a の申し送りを実処理化）: `comment-to-view.converter.ts` を async 化し
+  `avatar: await resolveAvatarDataUri(author.id, author.avatar)` に。呼び出し口 2 か所（active＝`src/index.ts` の `Promise.all`＋順序保持
+  broadcast／vendor usecase＝`await Promise.all`）を最小差分で更新。
+- **【036a の穴埋め】wire 配管**: active 配信経路の実ペイロード型 `CanonicalCommentAuthor`（`src/wire.ts`）が `{id,name}` のみで
+  `avatar` を落としていた（036a は `UserSummaryDto`/converter まで通したが wire 型は未対応）。`CanonicalCommentAuthor.avatar?` を追加し
+  `toCanonicalComment` で受け渡し。これで data URI が webview に届く（受け側 `CommentList.tsx:107` は 036a で対応済み）。
+- **YouTube URL 取り込み（proto/DTO/mapper）**: proto レスポンス `LiveChatMessageAuthorDetails` に `profile_image_url` 追加／
+  request に `profile_image_size: 48`／生 DTO `YouTubeLiveChatAuthorDetailsDto.profile_image_url?`／mapper で `author.avatar = profile_image_url`。
+  - **⚠ proto フィールド番号は未確定（要実レスポンス検証）**: 参照元の osareview 正 proto にも本フィールドが無く（osareview はアバター
+    未取得・`profile_image_size` も未設定）逐語コピー元が存在しないため、`display_name=103` に隣接する reverse-engineered 値 **104** を暫定採用。
+    **番号が実スキーマと異なる場合は avatar が空のまま＝グレー丸でクラッシュせず**。実配信で author_details を一度確認し確定する。
+- **追加 egress を allow-list 明示追加（host-guard.ts）**: **HTTPS 専用ワイルドカード** `ALLOWED_HTTPS_WILDCARD_SUFFIXES=[".ggpht.com",
+  ".googleusercontent.com"]` を新設（`isAllowedHttpsHost`）。**WS/gRPC には広げない**（`isAllowedWssHost` は `*.wss.twitch.tv` のみ・gRPC は
+  `www.googleapis.com:443` のみのまま＝最狭を維持）。先頭ドット suffix で真のサブドメインのみ許可し `ggpht.com.evil.com`/`evil-ggpht.com` は
+  throw。env ピン留め・gRPC チャネルガードは不変。**⚠ CDN ホストは実レスポンスで最終確定**（両ホストとも Google 所有で暫定両登録）。
+  - `scripts/test-host-guard.mjs` に許可（`yt3.ggpht.com`/`lh3.googleusercontent.com`）＋拒否（偽装/非https/WS/gRPC）ケースを追加。
+    **全 33 ケース PASS**（`node scripts/test-host-guard.mjs`＝`HOST-GUARD PASS`）。
+- **docs/security.md 更新（host-guard.ts と一致）**: 「コメントビューア方針」に **⑩（036b・アバター画像取得）** を追記（追加宛先＝
+  `*.ggpht.com`/`*.googleusercontent.com`・HTTPS のみ・WS/gRPC 不変／sidecar 内完結・data URI・webview/CSP/capabilities/no-internet 不変／
+  キャッシュ上限・非永続・DB/ログ非出力・§9／タイムアウト/バイト上限/MIME/`profile_image_size`／新規依存なし）。§1 に 036b 追補、§10 に
+  「036b＝新規依存なし」を併記。host-guard.ts ヘッダの許可宛先一覧も同期。
+- **security-review 結果＝問題なし（修正必須なし）**。観点確認: 追加宛先が allow-list に明示追加され外は throw（test で固定・
+  `redirect:"error"` でリダイレクト迂回も遮断）／画像取得が sidecar 内で完結し webview/CSP/capabilities/Rust no-internet 不変／
+  キャッシュ上限・タイムアウト・バイト上限・失敗時 undefined／data URI・URL を DB/ログに出さない・キャッシュ非永続／
+  env ピン留め・gRPC チャネルガードのロジック不変／新規依存なし／host-guard.ts と security.md の allow-list 一致。後回し改善＝将来 CDN
+  正規リダイレクト時は `redirect:"manual"`＋Location host 再検証、バッチ内並行 fetch の同時実行数リミッタ（現状 timeout/byte-cap/in-flight で緩和）。
+- **検証結果**: `pnpm --filter ./apps/comment-sidecar typecheck`＝0 error／`build:tsc`＝OK。`node apps/comment-sidecar/scripts/test-host-guard.mjs`
+  ＝HOST-GUARD PASS（33/33）。`pnpm --filter ./apps/desktop typecheck`＝0／`lint`＝0。`git diff --stat`＝11 ファイル（sidecar TS 10＋docs 1）＋
+  新規 util 1 で、**package.json（依存）・capabilities・tauri.conf.json・Rust は不変**。dist は gitignored（成果物リークなし）。
+  ※`pnpm --filter ./apps/comment-sidecar lint` は sidecar に lint script が無く実行不可（036a と同様・sidecar の品質ゲートは typecheck＋host-guard test）。
+  ※`build:sea` フルバイナリは配布用 secrets が要る既存の環境要件のため未実行（本 TS/proto 変更とは無関係）。
+- **未確認（ユーザー環境・実機）**: `pnpm --filter ./apps/desktop tauri dev` で YouTube 実配信（実 OAuth）につなぎ、overlay に実アイコン表示／
+  取得失敗時グレー丸フォールバック／同一投稿者の重複 fetch 抑制（sidecar ログ）を目視。あわせて **proto フィールド番号 104 と CDN ホストを
+  実レスポンスで最終確定**（誤っていてもグレー丸で無害）。
+- **036 系の次**: 036c（Twitch アイコンを Helix `users` で URL 解決＝chat イベントに無い・036b の `resolveAvatarDataUri` を再利用・Twitch
+  アバター CDN `*.jtvnw.net` を host-guard/security.md に追記・**security-review 必須**）。

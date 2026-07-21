@@ -45,6 +45,18 @@ ok("http https://oauth2.googleapis.com.evil.com (spoof)", () => assertAllowedHtt
 // 032c-d コミット2: YouTube Data API v3（REST 検出 search/videos/channels）は www.googleapis.com を許可。
 ok("http https://www.googleapis.com/youtube/v3/channels (REST detection)", () => assertAllowedHttpUrl("https://www.googleapis.com/youtube/v3/channels?mine=true"), false);
 
+// 036b: YouTube アバター画像 CDN（HTTPS のみ許可・ワイルドカード）。sidecar が取得して data URI 化する新規 egress。
+ok("http https://yt3.ggpht.com/ytc/AIdro_x=s48-c-k-c0x00ffffff-no-rj (avatar CDN)", () => assertAllowedHttpUrl("https://yt3.ggpht.com/ytc/AIdro_x=s48-c-k-c0x00ffffff-no-rj"), false);
+ok("http https://lh3.googleusercontent.com/a/xxx=s48 (avatar CDN)", () => assertAllowedHttpUrl("https://lh3.googleusercontent.com/a/xxx=s48"), false);
+// サブドメイン偽装は拒否（先頭ドット suffix なので真のサブドメインのみ許可）。
+ok("http https://ggpht.com.evil.com/x (spoof)", () => assertAllowedHttpUrl("https://ggpht.com.evil.com/x"), true);
+ok("http https://evil-ggpht.com/x (not a real *.ggpht.com subdomain)", () => assertAllowedHttpUrl("https://evil-ggpht.com/x"), true);
+// 非 https は拒否。
+ok("http http://yt3.ggpht.com/x (not https)", () => assertAllowedHttpUrl("http://yt3.ggpht.com/x"), true);
+// 画像 CDN は WS/gRPC では許可しない（HTTPS 限定ワイルドカード＝egress を最小化）。
+ok("ws wss://yt3.ggpht.com/x (avatar CDN not allowed on WSS)", () => assertAllowedWsUrl("wss://yt3.ggpht.com/x"), true);
+ok("grpc yt3.ggpht.com:443 (avatar CDN not a gRPC host)", () => assertAllowedGrpcTarget("yt3.ggpht.com:443"), true);
+
 // 032c-d コミット2: gRPC チャネルガード（streamList の target = "host:port"）。www.googleapis.com:443 のみ許可。
 ok("grpc www.googleapis.com:443 (streamList)", () => assertAllowedGrpcTarget("www.googleapis.com:443"), false);
 ok("grpc www.googleapis.com:80 (wrong port)", () => assertAllowedGrpcTarget("www.googleapis.com:80"), true);

@@ -98,6 +98,18 @@ loopback 例外を、合成＋ローカル再生に限定して（再）定義�
 - **明示同意（ユーザーの接続操作）＋ security-review を必須**とする。`csp: null` は当面維持（TODO：将来 viewer CSP を効かせる際は
   下記方針⑦の `connect-src` に `https://accounts.google.com https://oauth2.googleapis.com https://www.googleapis.com` を追加する）。
 
+### 追補（036b・オーバーレイ投稿者アバター画像の取得＝新規 egress）
+
+上記「外部通信をしない」原則に対し、**オーバーレイの投稿者アイコン表示に限り**、sidecar が投稿者プロフィール画像を
+取得して **data URI 化**することを例外的に許容する（YouTube 分。詳細は下記「## コメントビューア（配信サービス連携）方針」⑩を正とする）。
+
+- **追加宛先は fetch ホストガードの HTTPS ワイルドカードに明示追加**＝YouTube アバター画像 CDN `*.ggpht.com` / `*.googleusercontent.com`
+  （**HTTPS の fetch のみ**・WS/gRPC には広げない・gRPC は `www.googleapis.com:443` のみのまま）。それ以外は throw（fail-closed）。
+  env ピン留め・gRPC チャネルガードは不変。
+- **取得は sidecar 内で完結**し webview には **data URI のみ**を渡す（webview/CSP/capabilities/main・Rust の no-internet 不変）。
+  タイムアウト・バイト上限・MIME 許可・投稿者 ID 単位の上限付きメモリキャッシュ（非永続）を課し、data URI/URL は DB/ログに出さない（§9）。
+  **新規依存なし**（`profile_image_size` で CDN 小サイズ要求＋`Buffer` base64・§10）。**方針変更のため security-review 必須**。
+
 ### 2. frontendから自由なOS操作をさせない
 
 React / TypeScript側から、自由なshell実行・自由なファイル操作・自由なプロセス操作を行わない。
@@ -313,6 +325,12 @@ Rust に寄せる）。トークンは **sidecar↔Rust の親子プロセス pr
   足さない・child ハンドル管理＋URL open のみ）。Client ID/Secret は Twitch Client ID と同様に **esbuild define でビルド時に焼き込む**
   （ランタイム env/dotenv 不使用）。
 
+**追加した依存（036b・オーバーレイ投稿者アバター画像の取得）**:
+- **新規依存なし**。アバターの縮小は gRPC リクエストの `profile_image_size`（=48）で **CDN 側に小サイズ URL を要求**するため
+  クライアント側デコード/リサイズが不要で、取得は既存のグローバル `fetch`（fail-closed ホストガード経由）＋標準 `Buffer.toString("base64")`
+  のみで data URI 化できる。**明示的に足さないもの**＝画像処理系（`sharp`/`canvas`＝native で §10 の pure-JS 方針に反する・`jimp`＝pure-JS だが
+  CDN 縮小で不要）・HTTP クライアント（グローバル `fetch`）。想定外の画像サイズはバイト上限（128KB・ストリーム実測）で sidecar 内遮断する。
+
 ## Tauri Permissions / Capabilities 方針
 
 Tauriのpermissions/capabilitiesは最小限にする。
@@ -463,6 +481,23 @@ distill（vendor）したもので、keyring・`open`・hono/zod・dotenv・goog
   低消費のため実運用の枯渇はまず起きず、枯渇時は⑧の graceful stop で viewer へ通知＝032c-d 既実装）。ユーザーが**明示接続
   した provider のみ**取得を開始する点は不変。UI 上の読み上げ制御（source 別 ON/OFF）は 035c で扱う（クォータ保護 UI は
   不要と判断し 035c から除外＝2026-07-20）。
+- **⑩（036b）オーバーレイの投稿者アバター画像取得（新規 egress・YouTube 分）**。overlay の投稿者アイコンへ実画像を
+  出すため、**sidecar が投稿者のプロフィール画像を取得して data URI 化**する（親 [036]・036b）。**取得は sidecar 内で完結**し、
+  webview へは **data URI のみ**を loopback WS で渡す＝webview は外部 URL を踏まない・**`csp: null` 不変・capabilities 不変・
+  main/Rust の no-internet 不変**（`<img>`/`background-image` が踏むのは data URI のみ）。
+  - **追加宛先（fetch ホストガードの HTTPS ワイルドカードに明示追加）**＝YouTube アバター画像 CDN
+    `*.ggpht.com`（例 `yt3.ggpht.com`）／`*.googleusercontent.com`（例 `lh3.googleusercontent.com`）。**HTTPS の fetch でのみ許可**し、
+    **WS・gRPC には広げない**（gRPC は `www.googleapis.com:443` のみのまま＝最狭を維持）。先頭ドット suffix で真のサブドメインのみ
+    一致し、`ggpht.com.evil.com` 等の偽装は throw（`host-guard.ts` の `ALLOWED_HTTPS_WILDCARD_SUFFIXES`・`test-host-guard.mjs` で固定）。
+    env ピン留め・gRPC チャネルガード等の既存ロジックは不変。**allow-list 外ホストは従来どおり throw（fail-closed）**。
+    ※CDN ホストは実 streamList レスポンスの `profile_image_url` で最終確定し、`host-guard.ts` と本記述を一致させる。
+  - **縮小はクライアント側で行わない**＝gRPC リクエストの `profile_image_size`（=48）で CDN から小サイズ URL を要求するため
+    デコード/リサイズ不要。取得は `fetch` + `Buffer.toString("base64")` のみで **新規依存なし**（§10）。**取得タイムアウト
+    (3s)・画像バイト上限(128KB・ストリーム実測で中断)・MIME 許可(png/jpeg/webp/gif)** を課し、失敗/超過/タイムアウト/非許可は
+    **undefined**（overlay はグレー丸へフォールバック）。リダイレクト追従は fail-closed に禁止（`redirect:"error"`）。
+  - **キャッシュ**は投稿者 ID 単位・**メモリ内・上限付き（正 LRU 500件／負 TTL 5分）・非永続**。**data URI・アバター URL を
+    Rust の DB／ログに出さない**（§9）。取得した第三者アイコンは**一時表示のみ**。
+  - **036c（Twitch）**は本基盤（`resolveAvatarDataUri`）を再利用し、Twitch アバター CDN（`*.jtvnw.net`）を同様に追記する（別タスク）。
 
 ## レビュー必須条件
 
