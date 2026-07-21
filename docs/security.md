@@ -110,6 +110,22 @@ loopback 例外を、合成＋ローカル再生に限定して（再）定義�
   タイムアウト・バイト上限・MIME 許可・投稿者 ID 単位の上限付きメモリキャッシュ（非永続）を課し、data URI/URL は DB/ログに出さない（§9）。
   **新規依存なし**（`profile_image_size` で CDN 小サイズ要求＋`Buffer` base64・§10）。**方針変更のため security-review 必須**。
 
+### 追補（036c・オーバーレイ投稿者アバター画像の取得＝新規 egress・Twitch 分）
+
+上記「外部通信をしない」原則に対し、**オーバーレイの投稿者アイコン表示（Twitch 分）に限り**、sidecar が投稿者プロフィール画像を
+取得して **data URI 化**することを 036b と同様に許容する（詳細は下記「## コメントビューア（配信サービス連携）方針」⑩を正とする）。
+Twitch の chat イベントにはアバター URL が載らないため、**投稿者 ID を Helix `GET /users` で照会して `profile_image_url` を解決**する
+（Helix `api.twitch.tv` は 032c-b で既に allow-list 済み＝**既存宛先内の照会追加**・宛先は増えない）。
+
+- **追加宛先は fetch ホストガードの HTTPS ワイルドカードに明示追加**＝Twitch アバター画像 CDN `*.jtvnw.net`（例 `static-cdn.jtvnw.net`）
+  （**HTTPS の fetch のみ**・WS/gRPC には広げない・gRPC は `www.googleapis.com:443` のみのまま）。それ以外は throw（fail-closed）。
+  env ピン留め・gRPC チャネルガードは不変。
+- **036b の共通取得基盤（`resolveAvatarDataUri`）を再利用**（Twitch 用に新実装しない）＝取得・data URI 化・タイムアウト・バイト上限・
+  MIME 許可・上限付きメモリキャッシュ・失敗時 `undefined`（overlay グレー丸フォールバック）は同一。Helix 解決結果（投稿者 ID→URL）は
+  sidecar 内の**上限付きメモリキャッシュ（非永続）**に載せ**同一投稿者を再照会しない**（過剰呼び出し防止）。**取得は sidecar 内で完結**し
+  webview へは **data URI のみ**を渡す（webview/CSP/capabilities/main・Rust の no-internet 不変）。data URI・アバター URL・Helix 応答・
+  OAuth トークンは DB/ログに出さない（§9）。**新規依存なし**（§10）。**方針変更のため security-review 必須**。
+
 ### 2. frontendから自由なOS操作をさせない
 
 React / TypeScript側から、自由なshell実行・自由なファイル操作・自由なプロセス操作を行わない。
@@ -331,6 +347,12 @@ Rust に寄せる）。トークンは **sidecar↔Rust の親子プロセス pr
   のみで data URI 化できる。**明示的に足さないもの**＝画像処理系（`sharp`/`canvas`＝native で §10 の pure-JS 方針に反する・`jimp`＝pure-JS だが
   CDN 縮小で不要）・HTTP クライアント（グローバル `fetch`）。想定外の画像サイズはバイト上限（128KB・ストリーム実測）で sidecar 内遮断する。
 
+**追加した依存（036c・オーバーレイ投稿者アバター画像の取得＝Twitch 分）**:
+- **新規依存なし**。036b の共通取得基盤（`resolveAvatarDataUri`）と既存の Helix クライアント（`TwitchHelixClient`・グローバル `fetch`）を
+  再利用するのみ。Twitch は `profile_image_size` 相当のサイズ指定が無いため Helix `users` の `profile_image_url`（実寸）をそのまま使い、
+  想定外サイズは 036b 基盤のバイト上限（128KB・ストリーム実測）で sidecar 内遮断する。投稿者 ID→URL の Helix 解決キャッシュも標準
+  `Map` のみ（新規ライブラリ無し）。
+
 ## Tauri Permissions / Capabilities 方針
 
 Tauriのpermissions/capabilitiesは最小限にする。
@@ -497,7 +519,11 @@ distill（vendor）したもので、keyring・`open`・hono/zod・dotenv・goog
     **undefined**（overlay はグレー丸へフォールバック）。リダイレクト追従は fail-closed に禁止（`redirect:"error"`）。
   - **キャッシュ**は投稿者 ID 単位・**メモリ内・上限付き（正 LRU 500件／負 TTL 5分）・非永続**。**data URI・アバター URL を
     Rust の DB／ログに出さない**（§9）。取得した第三者アイコンは**一時表示のみ**。
-  - **036c（Twitch）**は本基盤（`resolveAvatarDataUri`）を再利用し、Twitch アバター CDN（`*.jtvnw.net`）を同様に追記する（別タスク）。
+  - **036c（Twitch・実施済み）**は本基盤（`resolveAvatarDataUri`）を再利用する。Twitch の chat イベントにはアバター URL が載らないため、
+    **投稿者 ID を Helix `GET /users` で照会して `profile_image_url` を解決**（Helix `api.twitch.tv` は既存 allow-list 内・宛先は増えない・
+    投稿者 ID→URL の上限付きメモリキャッシュで再照会しない）し、Twitch アバター CDN **`*.jtvnw.net`**（例 `static-cdn.jtvnw.net`）を
+    `ALLOWED_HTTPS_WILDCARD_SUFFIXES`（`host-guard.ts`）・`test-host-guard.mjs` に追加した（HTTPS fetch のみ・WS/gRPC には広げない・
+    `jtvnw.net.evil.com` / `evil-jtvnw.net` は throw）。取得は sidecar 内完結・data URI のみを webview へ渡す（CSP/capabilities/no-internet 不変）。
 
 ## レビュー必須条件
 

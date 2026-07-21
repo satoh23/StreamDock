@@ -27,12 +27,18 @@ const ALLOWED_EXACT_HOSTS = new Set<string>([
 /** WSS 専用ワイルドカード許可（reconnect_url は `*.wss.twitch.tv`。Twitch 由来のサブドメイン）。 */
 const ALLOWED_WS_WILDCARD_SUFFIX = ".wss.twitch.tv";
 
-// 036b: HTTPS 専用ワイルドカード許可＝YouTube アバター画像 CDN。sidecar が投稿者アイコンを取得して data URI 化する
+// 036b/036c: HTTPS 専用ワイルドカード許可＝投稿者アバター画像 CDN。sidecar が投稿者アイコンを取得して data URI 化する
 // ための新規 egress（docs/security.md「コメントビューア方針」⑩）。**HTTPS の fetch でのみ許可**し、WS/gRPC には
 // 広げない（gRPC は www.googleapis.com:443 のみのまま＝最狭を維持）。先頭ドット suffix なので真のサブドメインのみ
-// 一致し、`ggpht.com.evil.com` / `evil-ggpht.com` は throw する。取得は data URI で webview へ渡し、外部 URL を踏ませない。
-// ⚠ 実 streamList レスポンスの profile_image_url ホストで最終確定すること（`yt3.ggpht.com` / `*.googleusercontent.com` を想定）。
-const ALLOWED_HTTPS_WILDCARD_SUFFIXES = [".ggpht.com", ".googleusercontent.com"];
+// 一致し、`ggpht.com.evil.com` / `evil-ggpht.com` / `jtvnw.net.evil.com` / `evil-jtvnw.net` は throw する。
+// 取得は data URI で webview へ渡し、外部 URL を踏ませない。
+// - 036b（YouTube）: `*.ggpht.com`（例 `yt3.ggpht.com`）／`*.googleusercontent.com`（例 `lh3.googleusercontent.com`）。
+// - 036c（Twitch）: `*.jtvnw.net`（Helix `users` の `profile_image_url`＝例 `static-cdn.jtvnw.net`）。
+const ALLOWED_HTTPS_WILDCARD_SUFFIXES = [
+  ".ggpht.com",
+  ".googleusercontent.com",
+  ".jtvnw.net",
+];
 
 // 032c-d コミット2: gRPC チャネルガード用の allow-list。gRPC は fetch/ws を通らないため独立に持つ。
 // **www.googleapis.com:443 のみ**を許可する（fetch の allow-list より狭い＝Twitch/oauth を gRPC target に

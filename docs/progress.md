@@ -4564,3 +4564,59 @@ OBS オーバーレイは本体と同じ不透明カード（`CommentViewerApp.m
   実レスポンスで最終確定**（誤っていてもグレー丸で無害）。
 - **036 系の次**: 036c（Twitch アイコンを Helix `users` で URL 解決＝chat イベントに無い・036b の `resolveAvatarDataUri` を再利用・Twitch
   アバター CDN `*.jtvnw.net` を host-guard/security.md に追記・**security-review 必須**）。
+
+## 2026-07-21 (036c sidecar アバター取得 Twitch 対応（Helix users）)
+
+- 親 036 の**送り側を Twitch でも通した**。Twitch の EventSub chat イベントには**アバター URL が載らない**ため、投稿者 ID を
+  **Helix `GET /users` で照会して `profile_image_url` を解決**し、036b の共通取得基盤（`resolveAvatarDataUri`）を再利用して data URI 化。
+  取得・解決は**すべて sidecar 内**に閉じ、webview には data URI のみを渡す（**webview/CSP/capabilities/main・Rust の no-internet 不変**）。
+  これで **036 系（036a〜c）が完了**。
+- **Helix `users` バッチ照会（重複排除・≤100件/回）**: `TwitchUserDto` に `profile_image_url` を追加（`raw.dto.ts`）。`helix.client.ts` に
+  `getUserProfileImagesByIds(ids): Promise<Map<id,url>>` を新設＝`new Set` で重複排除＋`HELIX_USERS_BATCH_LIMIT=100` 件チャンク＋
+  `URLSearchParams` に `id` を反復 append（`/users?id=A&id=B...`）。既存の `request`/`requestWithAccessToken`（token 取得・401 リトライ）を
+  そのまま利用し、宛先 `api.twitch.tv` は 032c-b で allow-list 済み＝**既存宛先内の照会追加・宛先は増えない**。`resolveUserIdByLogin`/
+  `getSelfUserId` は不変。
+- **解決戦略＝「キャッシュ+await」（ユーザー承認）**: `comment.repository.ts` の `streamComments` で、chat イベントごとに
+  `chatter_user_id` を **Helix で解決してから mapper へ渡す**。解決結果は **id→URL キャッシュ（Layer A・`Map<string,string|null>`・
+  件数上限500・挿入順で最古 eviction・メモリ内・非永続）** に載せ、**キャッシュ済み投稿者は Helix を叩かない**（各投稿者最大1回＝過剰呼び出し
+  防止）。Helix が throw した一過性失敗は**キャッシュせず次コメントで再試行**（毒キャッシュ回避）＝配信は止めない。mapper（`comment.mapper.ts`）は
+  任意第2引数 `resolveAvatar?: (chatterUserId) => string | undefined` を追加し両ブランチ（message/notification）で `author.avatar` を設定
+  （YouTube mapper と同じ意味＝URL をドメイン `User.avatar` へ）。
+- **036b 基盤の再利用（Twitch 用に新実装しない）**: URL→data URI 変換・縮小相当・上限付きキャッシュ・タイムアウト・バイト上限・MIME 許可・
+  失敗時 `undefined`（overlay グレー丸フォールバック）は `resolveAvatarDataUri` をそのまま利用。配信境界 converter（`comment-to-view.converter.ts`）は
+  **source 非依存で無変更**（`User.avatar` を埋めるだけで Twitch も自動で data URI 化される）。Twitch は `profile_image_size` 相当の指定が無く
+  Helix の実寸 URL を使うため、想定外サイズは 036b 基盤のバイト上限（128KB）で sidecar 内遮断。
+- **追加 egress を allow-list 明示追加（host-guard.ts）**: `ALLOWED_HTTPS_WILDCARD_SUFFIXES` に **`.jtvnw.net`** を追加（Twitch アバター CDN・
+  例 `static-cdn.jtvnw.net`）。**HTTPS の fetch でのみ許可**し **WS/gRPC には広げない**（gRPC は `www.googleapis.com:443` のみのまま）。先頭ドット
+  suffix で真のサブドメインのみ一致し `jtvnw.net.evil.com`/`evil-jtvnw.net` は throw。global `fetch` はパッチ済みのため Helix `/users` も画像 fetch も
+  自動でガードを通る（新規 fetch ラッパ不要）。env ピン留め・gRPC チャネルガードは不変。
+  - `scripts/test-host-guard.mjs` に `.jtvnw.net` 用ケース（許可＝`static-cdn.jtvnw.net`／拒否＝偽装2種・非https・WS・gRPC）を追加。
+    **全 38 ケース PASS**（`node apps/comment-sidecar/scripts/test-host-guard.mjs`＝`HOST-GUARD PASS`）。
+- **docs/security.md 更新（host-guard.ts・test と一致）**: §1 に **「追補（036c・Twitch 分）」** を追加（`*.jtvnw.net` を HTTPS fetch allow へ明示追加・
+  Helix `users` 照会は既存宛先内・sidecar 内完結・data URI/URL/Helix 応答/トークン非保存）。「コメントビューア方針」⑩末尾の 036c プレースホルダを
+  **実施済み記述**へ更新。§10 に「036c＝新規依存なし（036b 基盤＋既存 Helix client＋標準 `Map` の再利用のみ）」を併記。
+- **security-review 結果＝問題なし（修正必須なし）**。観点確認: `*.jtvnw.net` が allow-list に明示追加され外・非https・WS/gRPC は throw（test 固定・
+  `redirect:"error"` でリダイレクト迂回も遮断）／Helix `users` は既存宛先内・id→URL キャッシュで各投稿者最大1回＝過剰呼び出しなし／036b 基盤を
+  再利用（Twitch 用に新実装なし）／画像取得・Helix 照会が sidecar 内に閉じ webview/CSP/capabilities/Rust no-internet 不変／id→URL キャッシュは
+  メモリ内・上限500・非永続で data URI/URL/Helix 応答/トークンを DB・ログに出さない（§9）／host-guard.ts・test・security.md の一致／新規依存なし。
+  `id` は `URLSearchParams` でエンコード（投稿者 ID は Twitch 由来・自由入力でない）。後回し改善＝レイド時の解決直列化（将来ウィンドウ・バッチ化の余地・
+  キャッシュで総呼び出しは抑制済み・非対象）。
+- **検証結果**: `pnpm --filter ./apps/comment-sidecar typecheck`＝0 error／`build:tsc`＝OK。`node apps/comment-sidecar/scripts/test-host-guard.mjs`
+  ＝HOST-GUARD PASS（38/38）。`pnpm --filter ./apps/desktop typecheck`＝0／`lint`＝0。`git diff --stat`＝**7 ファイル**（sidecar TS 4＋host-guard/test 2＋
+  docs 1）で、**package.json（依存）・capabilities・tauri.conf.json・Rust は不変**。
+  ※`pnpm --filter ./apps/comment-sidecar lint` は sidecar に lint script が無く実行不可（036a/036b と同様・品質ゲートは typecheck＋host-guard test）。
+- **未確認（ユーザー環境・実機）**: `pnpm --filter ./apps/desktop tauri dev` で Twitch 実配信（実 OAuth）につなぎ、overlay に実アイコン表示／
+  取得失敗時グレー丸フォールバック／Helix `users` のバッチ照会・同一投稿者の重複抑制（sidecar ログ）を目視。あわせて `lsof -i` で外部
+  ESTABLISHED ソケットが sidecar PID 下のみに出ること（本体 PID に出ない）を確認。
+- **【036c 追修正】Twitch アイコンがグレー丸になる不具合の解消（画像サイズ）**: 実機確認で、アイコン設定済みチャンネルでもグレー丸に
+  フォールバックする事象を確認。原因＝**Twitch の Helix `profile_image_url` は既定で 300×300 を返す**（サイズ指定パラメータ無し）一方、036b 基盤の
+  バイト上限は **YouTube の 48px（数 KB）前提の 128KB**。実測で写真系アバターの 300×300 は shroud=101KB・pokimane=121KB と**上限に肉薄/超過**し、
+  `resolveAvatarDataUri` が `undefined`→グレー丸（かつ負キャッシュ5分で継続）。MIME/リダイレクト/ホストガードは無罪（実測で `image/png`・
+  リダイレクト0・200 直応答）。**対策＝YouTube の `profile_image_size=48` と同様に CDN 側で縮小**: `helix.client.ts` に `toSmallTwitchAvatarUrl` を
+  追加し、URL 内の `-profile_image-<W>x<H>` を **`-profile_image-70x70`** に差し替えて返す（`getUserProfileImagesByIds` の結果格納時に適用・
+  パターン不一致 URL はそのまま＝安全側）。70×70 は 1〜11KB で上限を余裕でクリア＋WS ペイロードも軽量化。**宛先は同じ `static-cdn.jtvnw.net`
+  （`.jtvnw.net` allow-list 内）・HTTPS fetch のままで新規 egress なし＝host-guard/security.md は変更不要**。`typecheck`=0・sidecar 再ビルド
+  （SEA 署名 OK・freshness OK）。実機での実アイコン表示は再確認予定。
+- **036 系（036a〜c）完了**。overlay 投稿者アイコンは YouTube（036b・コメントストリームの `profile_image_url`）／Twitch（036c・Helix `users` 解決
+  ＋70×70 縮小）ともに sidecar が data URI 化して表示、失敗時はグレー丸フォールバック。egress は fail-closed ホストガードの allow-list（`*.ggpht.com`/
+  `*.googleusercontent.com`/`*.jtvnw.net`・HTTPS fetch 限定）に閉じ、data URI/URL/トークンは DB・ログ非保存。

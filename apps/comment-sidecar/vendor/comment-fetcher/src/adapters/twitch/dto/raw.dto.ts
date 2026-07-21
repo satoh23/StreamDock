@@ -220,6 +220,8 @@ export type TwitchUserDto = {
   id: string;
   login: string;
   display_name: string;
+  // 036c: プロフィール画像 URL（`*.jtvnw.net`）。オーバーレイのアバター解決に使う。
+  profile_image_url: string;
 };
 
 /** Helix streams API レスポンス。 */

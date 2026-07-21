@@ -57,6 +57,17 @@ ok("http http://yt3.ggpht.com/x (not https)", () => assertAllowedHttpUrl("http:/
 ok("ws wss://yt3.ggpht.com/x (avatar CDN not allowed on WSS)", () => assertAllowedWsUrl("wss://yt3.ggpht.com/x"), true);
 ok("grpc yt3.ggpht.com:443 (avatar CDN not a gRPC host)", () => assertAllowedGrpcTarget("yt3.ggpht.com:443"), true);
 
+// 036c: Twitch アバター画像 CDN（HTTPS のみ許可・ワイルドカード）。Helix users の profile_image_url を data URI 化する新規 egress。
+ok("http https://static-cdn.jtvnw.net/jtv_user_pictures/xxx-profile_image-70x70.png (avatar CDN)", () => assertAllowedHttpUrl("https://static-cdn.jtvnw.net/jtv_user_pictures/xxx-profile_image-70x70.png"), false);
+// サブドメイン偽装は拒否（先頭ドット suffix なので真のサブドメインのみ許可）。
+ok("http https://jtvnw.net.evil.com/x (spoof)", () => assertAllowedHttpUrl("https://jtvnw.net.evil.com/x"), true);
+ok("http https://evil-jtvnw.net/x (not a real *.jtvnw.net subdomain)", () => assertAllowedHttpUrl("https://evil-jtvnw.net/x"), true);
+// 非 https は拒否。
+ok("http http://static-cdn.jtvnw.net/x (not https)", () => assertAllowedHttpUrl("http://static-cdn.jtvnw.net/x"), true);
+// 画像 CDN は WS/gRPC では許可しない（HTTPS 限定ワイルドカード＝egress を最小化）。
+ok("ws wss://static-cdn.jtvnw.net/x (avatar CDN not allowed on WSS)", () => assertAllowedWsUrl("wss://static-cdn.jtvnw.net/x"), true);
+ok("grpc static-cdn.jtvnw.net:443 (avatar CDN not a gRPC host)", () => assertAllowedGrpcTarget("static-cdn.jtvnw.net:443"), true);
+
 // 032c-d コミット2: gRPC チャネルガード（streamList の target = "host:port"）。www.googleapis.com:443 のみ許可。
 ok("grpc www.googleapis.com:443 (streamList)", () => assertAllowedGrpcTarget("www.googleapis.com:443"), false);
 ok("grpc www.googleapis.com:80 (wrong port)", () => assertAllowedGrpcTarget("www.googleapis.com:80"), true);
