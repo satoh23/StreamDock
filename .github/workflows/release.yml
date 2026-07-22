@@ -91,8 +91,8 @@ jobs:
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
 
-      # macOS: --target universal-apple-darwin のため externalBin は aarch64 と x86_64 の 2 本が要る。
-      # build-sea は host arch 1 本のみ生成（triple は rustc host＝arm64 ランナーでは常に aarch64）。
+      # macOS: --target universal-apple-darwin では最終的に universal（fat）sidecar 1 本が要る（後段の lipo で作る）。
+      # まず両 arch を用意する。build-sea は host arch 1 本のみ生成（triple は rustc host＝arm64 ランナーでは常に aarch64）。
       # build-sea 無改変で両 arch を用意するため、x64 node(Rosetta) で作って rename → native arm64 で作る。
       # 注: build-sea 内の esbuild は arch 一致のネイティブバイナリを要求するため、node arch 切替ごとに
       #     pnpm install が要る（本方式唯一の煩雑点）。
@@ -135,6 +135,22 @@ jobs:
           TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+
+      # macOS universal ビルドでは、tauri は externalBin として per-arch 2 本ではなく
+      # 単一の universal（fat）バイナリ `comment-sidecar-universal-apple-darwin` を要求する
+      # （無いと bundle 時に "resource path binaries/comment-sidecar-universal-apple-darwin doesn't exist" で失敗）。
+      # そこで x86_64 と aarch64 を lipo で 1 本に結合し ad-hoc 署名し直す。
+      # aarch64 単体も残す（beforeBuildCommand の check:sidecar が host=aarch64 を検査するため）。
+      - name: Create universal sidecar (lipo)
+        if: matrix.platform == 'macos-latest'
+        run: |
+          cd apps/desktop/src-tauri/binaries
+          lipo -create \
+            comment-sidecar-x86_64-apple-darwin \
+            comment-sidecar-aarch64-apple-darwin \
+            -output comment-sidecar-universal-apple-darwin
+          codesign --force --sign - comment-sidecar-universal-apple-darwin
+          lipo -info comment-sidecar-universal-apple-darwin
 
       # Release は作らず、インストーラをビルドするだけ（tagName を渡さない）。未署名で生成する。
       - name: Build installers

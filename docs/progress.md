@@ -4719,3 +4719,14 @@ OBS オーバーレイは本体と同じ不透明カード（`CommentViewerApp.m
   証明書発行後に Secrets を登録した瞬間から**コード変更なしで自動署名に切替**。README「署名について」も条件実行に合わせて更新。
 - 注意（不変）: comment-viewer を含めるビルド自体には焼き込み Secrets（`TWITCH_CLIENT_ID`/`YOUTUBE_CLIENT_ID`/`YOUTUBE_CLIENT_SECRET`）が
   必須（build-sea が fail-fast）。未署名配布でもこの 3 件は要設定。SSL.com 本人確認(Verified ID)はユーザー都合の時に完了させればよい（MVP 配布を阻害しない）。
+
+### 【CI 修正 2026-07-22】macOS universal ビルド失敗（sidecar universal 化）を修正
+
+- 初回 CI（未署名 MVP）で macos-latest が失敗。エラー＝`failed to bundle project: Failed to copy external binaries: resource path
+  binaries/comment-sidecar-universal-apple-darwin doesn't exist`。**原因**: tauri は `--target universal-apple-darwin` では
+  externalBin を **per-arch 2 本ではなく単一の universal（fat）バイナリ `comment-sidecar-universal-apple-darwin`** として要求する
+  （当初「2 本を別々に置けばよい」と誤解していた）。Rust ビルドは通り、bundle 段階で universal 版が無く失敗していた。
+- **修正**: aarch64 ビルド後に **lipo で x86_64＋aarch64 を結合し `comment-sidecar-universal-apple-darwin` を生成**、`codesign --force --sign -`
+  で ad-hoc 署名し直すステップを追加。aarch64 単体は **check:sidecar（host=aarch64 を検査）用に残す**。upload-artifact の dmg グロブは
+  `target/**/release/bundle/...` で universal 出力（`target/universal-apple-darwin/...`）を拾えるため変更不要。release.yml YAML 検証 ✓。
+- 学び: universal の externalBin は「両 arch を作って lipo で 1 本」が正解。per-arch を並べる方式は不可。
