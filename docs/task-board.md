@@ -53,30 +53,36 @@
   - 033d VOICEVOX 話者選択＋「ずんだもん読み上げ」→「VOICEVOX読み上げ」改名（loopback に `/speakers` 追加）
   - 033e ツール管理でコメビュを再生/停止・起動済み表示（他ツールと統一・窓/プロセス ライフサイクル）
   - 033f OBS 用透過オーバーレイ窓（ワンクリック・新規窓/透過/新規 capability）
+- 034 コメントビューア/OBSオーバーレイ UX 改善（第2弾・親設計 [docs/tasks/034-comment-viewer-obs-ux-round2.md](tasks/034-comment-viewer-obs-ux-round2.md)／最新コメント追従・VOICEVOX 試聴・オーバーレイ状態表示/設定移設/意匠刷新）
+  - 034a〜034e 実装済み（最新コメント自動追従＋ジャンプボタン／オーバーレイ常時追従／VOICEVOX 試聴／表示 ON/OFF 設定移設／意匠刷新＝透過・本文＋名前・サイト名トグル）
+- 035 YouTube+Twitch コメント同時取得・マージ表示（親設計 [docs/tasks/035-simultaneous-youtube-twitch-comments.md](tasks/035-simultaneous-youtube-twitch-comments.md)／sidecar の単一セッション排他を provider 別化・「同時取得しない」方針を反転）
+  - 035a〜035c 実装済み（provider 別 `Map<Provider, AbortController>`／viewer・overlay の mixed 表示／TTS ソース別読み上げフィルタ）
+- 036 OBSオーバーレイ 実ユーザーアイコン表示（親設計 [docs/tasks/036-overlay-user-avatar.md](tasks/036-overlay-user-avatar.md)／sidecar が YouTube/Twitch のアイコンを取得→data URI 化して WS で送る・webview はオフライン維持/CSP 不変）
+  - 036a〜036c 実装済み（2026-07-21）: 036a ワイヤ契約拡張＋overlay 描画／036b sidecar 取得基盤＋YouTube／036c Twitch（Helix `users` で URL 解決・128KB 上限対策で 70x70 縮小）
 
 ## Next
 
-- 034 コメントビューア/OBSオーバーレイ UX 改善（第2弾・親設計 [docs/tasks/034-comment-viewer-obs-ux-round2.md](tasks/034-comment-viewer-obs-ux-round2.md)／最新コメント追従・VOICEVOX 試聴・オーバーレイ状態表示/設定移設/意匠刷新）
-  - 実装順: 034a → 034b、並行で 034c、034d → 034e
-  - 034a コメビュ本体 最新コメント自動追従＋「最新コメント N件 ↓」ジャンプボタン（security-review 不要）
-  - 034b OBSオーバーレイ 常時追従＋サイドバー(スクロールバー)抑止（security-review 不要）
-  - 034c VOICEVOX 話者サンプルボイス試聴（選択で即再生・再生中は中断切替／既存 loopback 合成の再利用・security-review 不要）
-  - 034d OBSオーバーレイ表示 ON/OFF を設定ビューへ移設＋開閉状態インジケータ（読み取りコマンド追加・**軽レビュー**）
-  - 034e OBSオーバーレイ デザイン刷新（透過・本文＋アカウント名のみ・文字拡大・サイト名表示トグル／表示専用・**軽レビュー**）
-- 035 YouTube+Twitch コメント同時取得・マージ表示（親設計 [docs/tasks/035-simultaneous-youtube-twitch-comments.md](tasks/035-simultaneous-youtube-twitch-comments.md)／sidecar の単一セッション排他を provider 別化・security.md「同時取得しない」方針を反転）
-  - 実装順: 035a → 035b → 035c
-  - 035a sidecar の取得セッション排他を provider 別化（`Map<Provider, AbortController>`）＋security.md 方針更新（**security-review 必須**・方針反転／新規宛先は増やさない）
-  - 035b viewer/overlay の同時（mixed）表示 検証＋UI 微調整（両接続インジケータ・source バッジ常時表示・片方 stop の UX・表示のみ）
-  - 035c TTS ソース別読み上げフィルタ（source 別 読み上げ ON/OFF・両稼働時の読み上げ暴発対策・軽レビュー）
-- 036 OBSオーバーレイ 実ユーザーアイコン表示（親設計 [docs/tasks/036-overlay-user-avatar.md](tasks/036-overlay-user-avatar.md)／sidecar が YouTube/Twitch のアイコンを取得→data URI 化して WS で送る・webview はオフライン維持/CSP 不変）
-  - 実装順: 036a → 036b → 036c
-  - 036a アバター ワイヤ契約拡張（`CommentAuthor.avatar?`・model.rs→bindings/`User`/`UserSummaryDto`/converter）＋overlay 描画（data URI があれば `<img>`・無ければグレー丸/イニシャル・**軽レビュー**・送り側未実装でも無害で先行可）
-  - 036b sidecar アバター取得基盤（fetch→縮小→data URI→上限付きキャッシュ）＋YouTube 対応（proto/DTO に profileImageUrl 追加）＋画像 CDN 宛先を allow-list 追加（**security-review 必須**・新規 egress）
-  - 036c Twitch 対応（chat イベントにアイコン無し→Helix `users` で URL 解決＋036b 基盤を再利用）＋`*.jtvnw.net` を allow-list 追加（**security-review 必須**・新規 egress）
+- 037 OBSオーバーレイ 意匠の拡張（親設計 [docs/tasks/037-overlay-design-expansion.md](tasks/037-overlay-design-expansion.md)／意匠選択機構を新設し複数意匠から選べるように＋新デザイン2種・表示専用/外部通信なし・下記 Todo「複数デザイン＋選択 UI」の実体化）
+  - 実装順: 037a → 037b
+  - 037a 意匠選択機構＋シンプル意匠（ユーザー名＋コメントのみ・背景透過・白い細字・**軽レビュー**）
+  - 037b 投げ銭メッセージ（スパチャ/サブスク/ビッツ）強調意匠（`event_type` 分岐・全意匠に相乗り・**軽レビュー**）
+- 038 視聴者メモリ（親設計 [docs/tasks/038-viewer-memory.md](tasks/038-viewer-memory.md)／一度コメントした視聴者を端末内 SQLite に記憶・初見/久しぶり判定の土台・§9「保存しない」を限定解禁）
+  - 実装順: 038a → 038b → 038c
+  - 038a Rust データ基盤（`viewer_memory` モジュール＋テーブル＋`record_comment` 集計＋一覧/詳細/メモ/削除コマンド＋security.md 更新・**security-review 必須**・§9 保存ポリシー変更）
+  - 038b 視聴者一覧・詳細 UI＋配信者メモ編集（総数/サイト/bits/スパチャ回数・額/サブスク期間/過去コメント・**軽レビュー**）
+  - 038c 初見/久しぶりバッジ＋枠色（初見＝初コメント／久しぶり＝最終コメントから1ヶ月以上経過後の初コメント・**軽レビュー**）
+- 039 フォントインポート（親設計 [docs/tasks/039-font-import.md](tasks/039-font-import.md)／ユーザーのフォントファイルを app data dir にコピー保存＋data URI で `@font-face` 供給・外部フォント非追加/CSP 不変）
+  - 実装順: 039a → 039b
+  - 039a Rust 取込基盤（管理ディレクトリへコピー＋検証＋`fonts` レジストリ＋import/list/delete/get_font_data コマンド＋security.md 更新・**security-review 必須**・新規ファイル書き込み経路/dialog capability 追加）
+  - 039b `@font-face` 動的注入（data URI）＋フォント選択 UI 拡張（OS 標準＋インポート済み合流）＋プレビュー/適用（**軽レビュー**）
+- 040 ROM勢一覧（親設計 [docs/tasks/040-lurker-list.md](tasks/040-lurker-list.md)／**Twitch 限定・近似・自/モデレータ channel 限定**・YouTube は視聴者一覧 API 無しで対象外・親でスパイク先行）
+  - 実装順: 040(スパイク) → 040a → 040b
+  - 040a sidecar chatters 取得（`moderator:read:chatters` スコープ追加＋Helix `Get Chatters` ポーリング＋loopback 配信・**security-review 必須**・新規スコープ）
+  - 040b ROM勢一覧 UI（chatters −〔セッション＋038 視聴者メモリのコメント済み〕突合＋表示・近似/前提の注記・**軽レビュー**）
 
 ## Todo
 
-- （将来）OBSオーバーレイ 複数デザイン＋プレビュー選択 UI（画像/GIF で意匠を選べる／034e の単一デザイン刷新の次段）
+- OBSオーバーレイ 複数デザイン＋選択 UI は **037 で着手**（意匠選択機構＋シンプル意匠＋投げ銭強調）。**画像/GIF プレビューで意匠を選ぶ**版はさらに次段（未タスク化）。
 
 ## MVP リリース前最後
 
