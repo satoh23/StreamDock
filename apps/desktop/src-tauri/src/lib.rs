@@ -61,6 +61,14 @@ fn open_comment_viewer_window(app: AppHandle) -> AppResult<()> {
             .build()
             .map_err(|_| AppError::launch_failed("コメントビューアを開けませんでした"))?;
 
+    // [一時ログ 099a診断] 白画面の原因（JS エラー/アセット読込失敗/WS 接続状況）を直接見るため、
+    // debug ビルドでは comment-viewer 窓の devtools を自動で開く。release には含めない。
+    #[cfg(debug_assertions)]
+    {
+        eprintln!("[rust][comment-viewer] window built; opening devtools (debug)");
+        window.open_devtools();
+    }
+
     // 032c-b: no-orphan 3 段 kill の①。viewer 窓が閉じたら sidecar を停止する（idempotent）。
     let app_for_event = app.clone();
     window.on_window_event(move |event| match event {
@@ -172,7 +180,11 @@ fn is_comment_overlay_open(app: AppHandle) -> bool {
 /// frontend からは raw なパス/ポート/コマンドを受け取らない（ポートは Rust が sidecar の stdout から受領）。
 #[tauri::command]
 fn get_comment_stream_port(app: AppHandle) -> Option<u16> {
-    comment_sidecar::port(&app)
+    let port = comment_sidecar::port(&app);
+    // [一時ログ 099a診断] viewer が接続前に 1 秒毎に叩く。None が続く=Rust 未受領、Some=受領済みで
+    // 問題は webview 側（WS/描画）、全く出ない=webview が未マウント（白画面）。ポート番号は非機密。
+    eprintln!("[rust][comment-viewer] get_comment_stream_port -> {port:?}");
+    port
 }
 
 /// 032c-c: コメントビューアの VOICEVOX 読み上げ用に、**ツール管理に登録済みの VOICEVOX** を

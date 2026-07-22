@@ -115,16 +115,30 @@ pub fn ensure_started(app: &AppHandle) -> AppResult<()> {
                         let line: String = buf.drain(..=nl).collect();
                         let trimmed = line.trim();
                         if let Some(rest) = trimmed.strip_prefix(PORT_PREFIX) {
-                            if let Ok(port) = rest.trim().parse::<u16>() {
-                                let state = app_handle.state::<CommentSidecarState>();
-                                let mut guard =
-                                    state.lock().expect("comment sidecar mutex poisoned");
-                                // 自分の世代の sidecar が現役のときだけポートを書き込む
-                                // （差し替え後の新 sidecar に旧ポートを混ぜない）。
-                                if let Some(sidecar) = guard.as_mut() {
-                                    if sidecar.generation == generation {
-                                        sidecar.port = Some(port);
+                            match rest.trim().parse::<u16>() {
+                                Ok(port) => {
+                                    // [一時ログ 099a診断] Rust がポート行を受領できたことを可視化（ポート番号は非機密）。
+                                    // これが出ない=stdout のポート行が届いていない/形式不一致、出る=Rust 側はOK。
+                                    eprintln!(
+                                        "[rust][comment-sidecar] port received: {port} (gen {generation})"
+                                    );
+                                    let state = app_handle.state::<CommentSidecarState>();
+                                    let mut guard =
+                                        state.lock().expect("comment sidecar mutex poisoned");
+                                    // 自分の世代の sidecar が現役のときだけポートを書き込む
+                                    // （差し替え後の新 sidecar に旧ポートを混ぜない）。
+                                    if let Some(sidecar) = guard.as_mut() {
+                                        if sidecar.generation == generation {
+                                            sidecar.port = Some(port);
+                                        }
                                     }
+                                }
+                                Err(e) => {
+                                    // [一時ログ 099a診断] PORT 行は来たがパース失敗（例: Windows で CRLF 混入等）。
+                                    eprintln!(
+                                        "[rust][comment-sidecar] failed to parse port from {:?}: {e}",
+                                        rest.trim()
+                                    );
                                 }
                             }
                         } else if let Some(rest) = trimmed.strip_prefix(TOKEN_PREFIX) {
