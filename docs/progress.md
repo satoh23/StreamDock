@@ -3260,7 +3260,8 @@ sidecar・VOICEVOX API・Web Audio・OAuth は 032c-b/-c/-d）、コメントは
 - **security-review**: docs（§1 例外・stale pointer）＋コード差分に security-review スキルを適用し、**判定＝問題なし**
   （修正必須なし）。loopback 50021 例外が合成＋WAV ローカル再生に限定され、インターネット・sidecar・OAuth に波及しないこと・
   管理付き spawn（絶対パス直起動でない）・capability/CSP 不変・新依存ゼロ・binding drift ゼロを確認。詳細は
-  `docs/security.md` の「032c-c … security-review 実施済み」記録を参照。
+  本ファイル末尾「2026-07-23 セキュリティレビュー実施記録（docs/security.md から移設）」内の
+  「032c-c … security-review 実施済み」記録を参照（2026-07-23 に security.md から移設）。
 - **4 コミット構成**: ①単発合成＋Web Audio 再生（speaker 定数化・暫定テストボタン）②TTS キュー＋モック連動（mergeComments
   `{next,added}`）③ENGINE 検出＋起動誘導＋新 command＋クレジット（bindings 再生成同梱）④docs/security.md 例外（再）定義＋
   security-review＋progress.md。
@@ -4730,3 +4731,293 @@ OBS オーバーレイは本体と同じ不透明カード（`CommentViewerApp.m
   で ad-hoc 署名し直すステップを追加。aarch64 単体は **check:sidecar（host=aarch64 を検査）用に残す**。upload-artifact の dmg グロブは
   `target/**/release/bundle/...` で universal 出力（`target/universal-apple-darwin/...`）を拾えるため変更不要。release.yml YAML 検証 ✓。
 - 学び: universal の externalBin は「両 arch を作って lipo で 1 本」が正解。per-arch を並べる方式は不可。
+
+## 2026-07-23 セキュリティレビュー実施記録（docs/security.md から移設）
+
+docs/security.md は「セキュリティレビューの観点・方針・レビュー必須条件」のみを記載するファイルとし、
+個別変更のレビュー実施記録は本ファイル（progress.md）に記録する方針に変更した（2026-07-23・security.md
+冒頭「このファイルの役割」参照）。以下は security.md に蓄積されていた実施記録節の移設で、内容は移設時点の
+まま無編集。文中の「上記/下記/§n/方針⑧」等は移設元 docs/security.md 内の節・条項を指す。今後のレビュー
+実施記録もここに追記する。
+
+### 098 Windows Build（Windows 前面化 / focus_process / windows クレート / 028 unsafe FFI の実検証・security-review 実施済み）
+
+- Windows 11 ARM64（UTM/QEMU）実機で、これまで未コンパイル・未検証だった Windows 限定コードを **初コンパイル・初 E2E** した:
+  前面化（`process/service.rs::mod windows`：`focus_by_pid`/`EnumWindows`/`SetForegroundWindow`/`AttachThreadInput`/
+  `CreateToolhelp32Snapshot`）、`focus_process` コマンド、028 アイコン抽出（`tools/icon.rs::mod windows` の unsafe FFI）。
+  `cargo check`/`clippy` は **コード修正ゼロで通過**（GDI/COM の型も windows 0.58 で問題なし）。
+- **前面化 / focus_process / windows クレート・028 unsafe FFI の security-review を実施し、判定＝問題なし**（修正必須なし）。
+  これにより、これまで「未実施」だった前面化まわりの security-review（011/021 の Windows 経路注記・progress.md 既知 TODO）を**解消**する。
+  確認事項:
+  - `focus_process` は frontend から **launchId のみ**受け取り raw PID / HWND を受けない。前面化対象は **registry 保持の
+    自分が起動した PID とその子孫プロセス**に限定し、**プロセス名では他人のウィンドウを探さない**（§6/§2）。
+  - registry に無い launchId は前面化せず **新規インスタンスを起動しない**（二重起動を根絶）。
+  - ウィンドウ選定は `GetWindowTextLengthW` の**長さ判定のみ**で**タイトル文字列を読まない**。エラーは固定文言・
+    フルパス/OS エラー非露出・追加ログなし（§9）。shell 非経由・外部通信/ファイル書込削除なし（§1/§4/§5）。
+  - ハンドル/COM 解放: 前面化は `CloseHandle(snapshot)` 実施。028 は RAII ガード（`CoUninitialize`/`DestroyIcon`/
+    `DeleteObject`/`ReleaseDC`）が全 early-return・`?` 経路で解放し、COM インターフェース Release → `CoUninitialize` の
+    drop 順も正しい。実機の繰り返し登録で不安定化なし＝リーク兆候なしと整合。
+  - 追加依存は `windows` クレートの **feature のみ**（新規 crate なし・§10）。`csp:null` 不変・外部リソース非増加（§CSP）。
+- **既知の限界（記録のみ・修正不要）**: `collect_process_tree` は PID 再利用時に無関係な PID を子孫集合に含めうる
+  （深さ 8 / 件数 1024 で保護）。ただし操作は**前面化のみ（kill しない）**で実害は「無関係なウィンドウが前面に出る」程度・
+  低頻度。停止経路（§6）のような exe/start_time 照合の追加は前面化の低リスクに対し過剰なため据え置く。
+- **アプリアイコン（icon.ico）**: 098 で Windows 用 `icon.ico` を再生成した（読み取り専用の静的アセット変更のみ・
+  OS 操作/通信/権限に影響なし）。macOS の `icon.icns` は不変。`tauri.conf.json` / capabilities は変更なし。
+
+### 032c-c コメントビューア VOICEVOX ローカル合成読み上げ（loopback 50021 例外の（再）定義・security-review 実施済み）
+
+- 032c 方針転換の中核（内蔵コメントビューア × VOICEVOX 直接読み上げ）を実装した。viewer webview から**ローカルの
+  VOICEVOX ENGINE**（`http://127.0.0.1:50021`・ループバック）へ `fetch` で GET `/version`（稼働検出）／POST
+  `/audio_query`／POST `/synthesis`（合成）を投げ、返る WAV を **Web Audio** でローカル再生する（FIFO 直列 TTS キュー）。
+  032c-a で全撤去した loopback 例外を、合成＋ローカル再生に限定して**§1 に（再）定義**した（上記「例外（032c-c…）」）。
+- **security-review を実施し、判定＝問題なし**（修正必須なし）。確認事項:
+  - **通信はループバック 50021 のみ**: 宛先は `127.0.0.1:50021` に限定（GET /version・POST /audio_query・POST
+    /synthesis）。**インターネット通信・Node sidecar・OAuth には一切波及しない**（Twitch/YouTube 取得は 032c-b/-d）。
+    合成対象はコメント本文のみ・URL/絵文字を除去してから送る・**著者名は送らない**。text は `encodeURIComponent`／
+    `JSON.stringify` で安全に送出。返る WAV は外部送信せずローカル再生のみ。クレジット文中の URL は静的表示で fetch しない。
+  - **新規依存ゼロ**: 合成 HTTP と再生は viewer の `fetch`＋Web Audio（Web 標準 API）で行い、Rust に HTTP クライアント・
+    音声再生ライブラリ（`reqwest`/`rodio` 等）を追加しない（`Cargo.toml`/`package.json` 不変）。
+  - **プロセス起動は管理付き spawn のみ**: ENGINE 起動は薄い新 command `launch_voicevox_engine`（frontend 引数ゼロ）が
+    `resolve_tool_for_component`（**登録済みツールを exe 名一致で解決**・Executable 限定・OS 別 `VOICEVOX.app`/
+    `VOICEVOX.exe`）→ `process::service::spawn`（`validate_executable`・shell 非経由）＋PID registry 登録
+    （`launch_tool` と同経路）で行う。frontend は raw パス/ポートを渡さず**絶対パス直起動しない**・未登録なら誘導のみ
+    （`registry()` は空のまま）。§6「停止は自 spawn 起動 PID に限定」と整合。
+  - **capability / CSP 不変**: アプリ定義 command は本構成の capability permission に列挙不要のため
+    `capabilities/comment-viewer.json`（`core:default`）に per-command 許可を追加していない（viewer からの invoke 可否は
+    E2E で確認）。`capabilities/default.json`（main）・`tauri.conf.json`（`csp: null`）に差分なし。CSP 硬化はしない。
+  - **binding drift ゼロ**: 新 command は既存 `LaunchResult` を再利用し新規 ts-rs 型ゼロ（`gen:bindings` で 032c-c 由来の
+    差分ゼロ）。
+- **docs 整理**: §1 に 032c-c の loopback 50021 例外を（再）定義し、らくらく方針節（032c-a 撤去注記）の stale pointer
+  「VOICEVOX 直接読み上げの通信方針は 032c-b で定義」を「032c-c で（再）定義した」に修正。新例外は 50021 のみを列挙する
+  （棒読み 50001 は撤去済みとして含めない）。
+
+### 032c-b コメントビューア Twitch コメント取得＋Node sidecar 初解禁（StreamDock 初の能動的インターネット通信・security-review 実施済み）
+
+- StreamDock で初めての能動的インターネット通信を、**Twitch allow-list 宛先・ユーザー明示接続時のみ・Node sidecar 封じ込め**
+  で初解禁した。osareview の Twitch 経路を distill（vendor）した単一実行ファイル sidecar（`bundle.externalBin`）を **Rust の
+  `app.shell().sidecar()` から**起動/停止し、viewer は localhost WS で受信描画する（Device Code ログイン＋EventSub/Helix・TTS 無し）。
+- **security-review を実施し、判定＝問題なし**（修正必須なし）。確認事項:
+  - **allow-list 二層強制（fail-closed）**: ①env ピン留め（全 base URL を sidecar 内定数に固定・env override 分岐削除・
+    Rust から宛先 env を渡さない）②ホストガード（global `fetch` と ws クライアント生成を包み、`{id.twitch.tv, api.twitch.tv,
+    eventsub.wss.twitch.tv, *.wss.twitch.tv}` 以外・非 HTTPS/WSS を throw）。ユニットテストで `evil.com`・スキーム不一致・
+    サブドメイン偽装（`api.twitch.tv.evil.com`）を全拒否、reconnect `*.wss.twitch.tv` のみ許可を確認。全 fetch/ws 経路
+    （Device Code / Helix / EventSub の初回＋reconnect）がガードを通ることを grep で確認。
+  - **封じ込め**: インターネットは sidecar プロセスのみ・**main とその Rust command は no-internet 維持**。**Rust は完全同期**
+    （tokio/reqwest/websocket crate を足さない・sidecar stdout は別スレッドで `blocking_recv`）。`tauri-plugin-shell` は追加したが
+    **capability に `shell:*` ゼロ付与**（IPC 非経由・frontend に shell 面/raw パス/ポートを出さない）。`get_comment_stream_port` は
+    読み取り専用・引数なし。no-orphan の 3 段 kill（窓 Destroyed/CloseRequested・RunEvent::Exit 新設・sidecar ppid 監視 self-exit）。
+  - **資格情報（§9）**: OAuth アクセス/リフレッシュトークン・device code・code verifier は **in-memory・非ログ・非外部送信**
+    （keyring 永続化しない）。診断は stderr（stdout はポート受け渡し専用）。`user_code`/`verification_uri`（非機密）はテキスト提示、
+    `open` 廃止。**取得コメントは画面表示のみ**で端末外へ出さず DB/ログにも保存しない。
+  - **依存**: `@grpc/grpc-js`/`@grpc/proto-loader`（YouTube 除外）・`@napi-rs/keyring`（in-memory 化）・`open`・`hono`/
+    `@hono/node-server`/`zod`・`dotenv` を落とし、bundle・binary の exact 検査で不在を確認。telemetry/analytics 系なし。
+  - **capability / CSP 不変**: `capabilities/default.json`（main）・`comment-viewer.json`（`core:default`）・`tauri.conf.json` の
+    `csp: null` に差分なし（`bundle.externalBin` 追加のみ）。**binding drift ゼロ**（`check:bindings` に `comment-viewer/bindings` を追加）。
+  - **Twitch アプリ Client ID** は Device Code（public client・secret 無し）の**公開**識別子で、sidecar のビルド時に焼き込む
+    （ランタイム env/dotenv 不使用・エンドユーザーに露出しない）。ユーザーのログイン/連携はビューア画面からのランタイム操作。
+- **後回し（記録のみ）**: loopback WS は未認証で、同一 PC の任意プロセスが制御フレーム送信・`comments.append`/`user_code` 受信し得る
+  （token/device_code は WS に流さない・宛先 allow-list 限定のため実害は公開コメント＋非機密 `user_code` の露出に留まる。032c-c の
+  ループバックと同レベル）。将来 nonce ハンドシェイクを検討。**実機の封じ込め確認（`lsof` で外部ソケットが sidecar PID 下のみ・
+  main no-internet）と実 Twitch E2E は mac GUI（`tauri dev`）で実施**（`TWITCH_CLIENT_ID` 設定後）。
+- **docs 整理**: §1 に「例外（032c-b…）」を追加＋032c-c 例外の forward-ref（「Twitch/YouTube は 032c-b/-d で定義」）を
+  「Twitch は 032c-b で定義済み・YouTube は 032c-d」に更新。§4（sidecar 例外）・§9（トークン取扱）・§10/Capabilities（tauri-plugin-shell
+  権限ゼロ＋externalBin・落とした依存）・レビュー必須条件（本連携）を追記。新章「## コメントビューア（配信サービス連携）方針」を追加。
+  `docs/product.md`「MVP でやらないこと」に外部通信の例外を追記。
+- **追補（032c-b′・ログイン永続化＝§9 ポリシー変更・⚠ 再 security-review 必要）**: 上記レビュー後、実利用の UX 改善として
+  Twitch ログインを **OS キーチェーンに永続化**する変更を追加した（窓の再オープン／アプリ再起動でも再ログイン不要）。これは §9 の
+  「in-memory のみ・keyring 永続化しない」を改める**ポリシー変更**なので、**マージ前に security-review を再実施すること**。設計前提:
+  - **keychain 所有は Rust 側**（`keyring` crate v3・同期）。sidecar は pure-JS/単一 SEA のまま（native keyring を持ち込まない＝
+    封じ込めライフサイクルと SEA 構成・spike-2 禁止依存アサートは不変）。トークンは **sidecar↔Rust の親子 private pipe のみ**を通る
+    ＝復元＝Rust→sidecar stdin `COMMENT_SIDECAR_RESTORE=<json>`、更新の再保存＝sidecar→Rust stdout `COMMENT_SIDECAR_TOKEN=<json>`／
+    破棄＝`COMMENT_SIDECAR_TOKEN_CLEAR`。Rust はその内容を**ログに出さず keychain のみへ反映**。**loopback WS にはトークンを載せない**
+    （従来どおり・device code(秘密) も非送出）。
+  - 封じ込め・§1（ユーザー明示接続時のみ通信）・§4（shell 権限ゼロ）・CSP・capability・sidecar 窓ライフサイクルは**不変**
+    （token 復元はネットワークを張らず、取得は従来どおり「コメント取得開始」で明示開始）。改訂は §9/§10 のみ（keychain 保存＋private
+    pipe を許容・Rust `keyring` 追加）。viewer は `link.state` フレームで「接続済み/未接続」を表示（getLinkStatus・非機密の bool のみ）。
+  - **マージ前 GUI 検証（追加）**: 再ログイン不要（窓再オープン／アプリ再起動）・logout/失効で keychain クリア・`lsof`/`app_logs`/
+    stdout/stderr に token が出ない（token は private pipe のみ）・macOS Keychain に `stream-dock`/`twitch-comment-viewer` エントリ 1 件。
+
+### 032c-d コメントビューア YouTube コメント取得有効化（OAuth PKCE＋Client Secret 同梱＋gRPC streamList＋クォータ管理・security-review 実施済み）
+
+- 032c-b の Node sidecar 封じ込め基盤の上に **YouTube 宛先を追加解禁**した（新しい通信基盤は作らない）。OAuth 認可コード＋PKCE(S256)＋
+  loopback＋Client Secret 同梱でログイン→gRPC `liveChatMessages.streamList` で取得→既存 CommentViewDto パスへ流す。Twitch と併存・各サービス
+  個別選択（**当時。035a で同時取得・マージ表示を解禁**＝上記「## コメントビューア（配信サービス連携）方針」を参照）。設計は `docs/tasks/032c-d-youtube-comments.md`。
+- **security-review を実施し、判定＝問題なし**（修正必須なし）。確認事項:
+  - **allow-list 三面 fail-closed**: (a) env ピン留め＝OAuth endpoint／Data API base URL を sidecar 内定数に固定（`Pinned*ConfigProvider`・
+    env override 排除）、(b) fetch ホストガード＝global `fetch` に `oauth2.googleapis.com`（token 交換）／`www.googleapis.com`（REST 検出）を
+    追加（`accounts.google.com` はブラウザ側で fetch には入れない）、(c) **gRPC チャネルガード新設**＝gRPC は `fetch`/`ws` を通らないため、
+    channel 生成時に target を `www.googleapis.com:443` のみに照合して throw（fetch より狭い allow-list）。ユニットテスト
+    （`scripts/test-host-guard.mjs`）で Google 宛先許可・非許可 host/port・サブドメイン偽装（`www.googleapis.com.evil.com`）・Twitch/oauth を
+    gRPC target に不可、を全 PASS。
+  - **封じ込め**: インターネットは sidecar プロセスのみ・**main は no-internet 維持**（gRPC egress も sidecar のみ）。**Rust は完全同期**
+    （async/WS/HTTP crate を足さない・`Cargo.toml` 不変）。同意 URL は sidecar→Rust stdout `COMMENT_SIDECAR_OPEN_URL=` で渡し、
+    **Rust が host=accounts.google.com を fail-closed 検証**（http/port/userinfo/サブドメイン偽装を拒否・Rust ユニットテスト2件 PASS）してから
+    既存 `tauri-plugin-opener`（IPC 非経由・新規 capability なし）で開く。`open` パッケージは sidecar に足さない。frontend は URL に触れない。
+  - **資格情報（§9）**: YouTube の OAuth トークン・PKCE `code_verifier`・**Client Secret** は **in-memory のみ（keyring 永続化しない
+    ＝Twitch と対比）**・非ログ・非外部送信（**注: この判定はレビュー時点の設計。032c-d′ で OAuth トークンは Twitch と同様の keychain
+    永続化に変更したため、下記「追補（032c-d′…）」を参照し再レビュー対象とする**）。stdout の OPEN_URL 行に載るのは URL の `code_challenge`（S256・非機密）で `code_verifier`・secret は
+    載らない。Rust は URL 全体をログに出さず host のみ。取得コメントは画面表示のみで端末外に出さない。ソース grep で token/secret/verifier の
+    console 出力ゼロを確認。
+  - **Client Secret 同梱の根拠**: Google「Desktop app」OAuth の secret は機密扱いされず抽出前提だが、抽出されても **PKCE＋インストール型
+    モデル**で被害限定（上記方針⑧）。Twitch Client ID と同様に esbuild define でビルド時に焼き込む（ランタイム env/dotenv 不使用・
+    エンドユーザー非露出）。テスト焼き込みの SEA バイナリは `.gitignore`（未追跡）。
+  - **クォータ graceful stop**: REST 403 `quotaExceeded` / gRPC `RESOURCE_EXHAUSTED` を分類し、**再接続せず停止**して viewer に FAILED＋理由を
+    通知する（osareview の 1 秒 hot-loop 欠陥を持ち込まない・クラッシュしない）。無料枠 10,000 units/日は `product.md` に記録。
+  - **依存**: `@grpc/grpc-js`＋`@grpc/proto-loader`（純 JS・ネイティブアドオン無し）を再導入し SEA 禁止依存アサートから外した
+    （`@napi-rs/keyring`/`@hono/node-server`/`dotenv` は引き続き bundle に不在を exact 検査で確認）。`open`/`googleapis`/`node-fetch` は足さない。
+  - **proto-under-SEA（スパイク1）＋SEA 再署名（スパイク5）＝PASS**: `stream_list.proto` を文字列同梱→起動時に一時ファイル展開→`loadSync`。
+    実 SEA バイナリ起動で `stream_list.proto loadable (spike1 OK)`・`codesign --verify` 通過を確認。proto は非機密スキーマで OS 一時領域への
+    scratch 書込のみ（ユーザーデータ・秘密ではない）。
+  - **capability / CSP 不変**: `capabilities/{default,comment-viewer}.json`・`tauri.conf.json`（`csp: null`）に差分なし。lib.rs に新規 command なし
+    （opener は sidecar stdout リーダースレッドから呼び IPC 非経由）。**binding drift ゼロ**（ts-rs `CommentViewDto` は `source: youtube`・
+    eventType 4 種が既存で不変・`check:bindings` PASS）。
+- **後回し（記録のみ）**: ①ログイン中の **loopback OAuth コールバックサーバ**（`127.0.0.1:ephemeral`・～180 秒の一時 listener）は未認証だが、
+  **ランダム state（CSRF）＋PKCE**で保護（偽 code は matching `code_verifier` 無しに Google 側で交換不可）＝viewer WS と同レベルの localhost
+  信頼モデル。②event-type は osareview 準拠で **メンバーシップ（NEW_SPONSOR/MEMBER_MILESTONE）→ subscription に畳む**（Rust の `Membership`
+  variant は当面未使用）。③**実機の `lsof` 封じ込め（Google/YouTube＋gRPC egress が sidecar PID 下のみ・main no-internet）と実 YouTube ライブ
+  E2E・クォータ unit 会計は、Google「Desktop app」OAuth クライアント焼き込み＋実配信で mac GUI（`tauri dev`）実施**（Twitch 032c-b と同様）。
+- **docs 整理**: §1 に「例外（032c-d…）」追加＋032c-c/032c-b の forward-ref を「定義済み」に更新、§4（Rust opener で host 検証）・§9（YouTube
+  トークン in-memory）・§10/コメントビューア方針①④拡張＋新規⑧（Client Secret 根拠・consent 運用・クォータ）を追記。`product.md` にクォータ記録、
+  `task-board.md`/`progress.md` 更新。
+- **追補（032c-d′・YouTube ログイン永続化＝§9 ポリシー変更・⚠ 再 security-review 必要）**: 上記レビュー後、UX を Twitch と完全に揃える
+  ため、**YouTube ログインも OS キーチェーンに永続化**する変更を追加した（コメントビューア窓の再オープン／アプリ再起動でも再ログイン不要）。
+  これは §9 の「YouTube は in-memory のみ・keyring 非永続」を改める**ポリシー変更**なので、**マージ前に security-review を再実施すること**。
+  設計前提（032c-b′ の Twitch 永続化と同型に一般化・新しい通信/依存は増やさない）:
+  - 既存の Twitch 永続化パイプ（sidecar↔Rust の親子 private pipe）を **provider 対応に一般化**した。`PersistingTokenStore` が
+    twitch/youtube 双方の save/clear を **provider 付き**で通知し、stdout 専用行 `COMMENT_SIDECAR_TOKEN=<provider> <json>` /
+    `..._TOKEN_CLEAR=<provider>`、復元は stdin `COMMENT_SIDECAR_RESTORE=<provider> <json>`。sidecar は不正/未知 provider を復元しない。
+  - **keychain 所有は Rust 側**（`keyring` crate・同期・`Cargo.toml`/`Cargo.lock` 差分ゼロ＝新規 crate なし）。account は provider 別
+    （`twitch-comment-viewer` / `youtube-comment-viewer`）。未知 provider は `account_for` が `None`＝保存/読取しない（fail-closed）。
+  - **永続対象は OAuth トークン一式（TokenSetPlain＝access/refresh/expiry/scope）のみ**。`code_verifier`（一時値）・`Client Secret`（焼き込み）
+    は **引き続き非永続**（TokenSetPlain に含まれない）。token は viewer WS に載せず private pipe のみ・非ログ（§9 不変）。封じ込め・§1・§4・
+    capability・CSP（`csp:null`）・binding は不変。
+  - **留意**: consent 画面が「テスト」モードだと YouTube refresh_token は 7 日失効するため、保存していても 7 日後は復元失敗→再ログイン
+    （graceful）。恒久保持には consent 画面の本番公開が要る（運用前提）。macOS の keychain アクセスは **署名済み配布（Developer ID＋
+    notarization）で無音**（未署名 dev ビルドはリビルドのたびに確認ダイアログが出る＝署名で解消）。
+  - **マージ前 GUI 検証**: YouTube 再ログイン不要（窓再オープン／アプリ再起動）・logout/失効で keychain クリア・`lsof`/`app_logs`/stdout/stderr に
+    token 非露出（token は private pipe のみ）・macOS Keychain に `stream-dock`/`youtube-comment-viewer` エントリ 1 件。
+- **追補（032c-d″・YouTube 取得の継続性修正＋観測性・宛先/依存/capability 不変）**: 実ライブ検証で「取得開始→数秒で待機・コメント取得できず」を
+  修正した。原因は (1) 配信終了監視 `monitorLiveStreamEnd` が YouTube を `search.list`（100 units・eventual consistency）で 5 秒ごとに再検出し、
+  生存中でも null が返って誤って「配信終了」→ IDLE、かつクォータを急速消費（~1,200 units/分）、(2) `retryOnStreamEnd` を開始時再検出フラグに束ねて
+  false 固定していたため gRPC streamList が最初に閉じた時点で自然完了 IDLE に落ちていた。修正内容:
+  - **監視を `videos.list`（by-id・1 unit・整合的）＋連続 miss 閾値(3) に置換**（YouTube のみ・Twitch は Helix `/streams` のまま不変）。宛先は
+    `www.googleapis.com`（**既存 allow-list 内・新規宛先ゼロ**）。クォータ消費を ~1,200 units/分 → ~12 units/分に低減（product.md の「枯渇時 graceful stop」と整合）。
+  - **YouTube は `retryOnStreamEnd=true`（開始時再検出とは独立）** で nextPageToken 再接続し継続取得。配信終了は監視が有限回（≤3×5s）で確定し停止。
+  - **観測性（§9・ログ出力処理）**: 従来 Rust reader が握りつぶしていた **sidecar stderr を Rust の stderr（`tauri dev` 端末）へ透過**する（取得失敗の
+    原因が見えるように）。**token/secret は §9 で stderr に載せない設計のため露出せず**、外部送信・DB 保存はせず**ローカル端末出力のみ**。配信終了 IDLE に
+    固定文言の理由（「配信の終了を検知しました。」）を付与。**新規依存・capability・CSP（`csp:null`）・Cargo は不変**。
+- **追補（032c-d‴・クォータ大幅削減：検出の liveBroadcasts 化＋監視の silence-gated 化・宛先/スコープ/capability 不変）**: 「消費しすぎ」への対応。
+  - **検出を `search.list`（100 units・検索インデックス遅延）→ `liveBroadcasts.list`（`broadcastStatus=active`・1 unit・配信管理APIで即時整合）に置換**。
+    id/liveChatId/title が 1 コールで揃うため従来の `videos.list` 追い打ちも不要。宛先 `www.googleapis.com`（**既存 allow-list 内・新規宛先ゼロ**）、
+    スコープは `youtube.readonly` のまま（`liveBroadcasts.list` 読取は同スコープで許可＝**再同意不要**）。
+  - **配信終了監視を silence-gated（無言監視）に再設計**: コメントが流れている間（直近受信から 90s 未満）は `videos.list` を**一切叩かない**
+    （＝活発な配信ではクォータ消費ゼロ）。コメントが途切れた時だけ 45s ごとに `videos.list`（1 unit・`activeLiveChatId` は権威情報）で生存確認し、
+    連続 2 miss で終了確定。壁時計で回るため gRPC がハートビートで開いたままでも終了を必ず検知できる（"切断時だけ確認" 方式は「接続中のまま
+    止まらない」危険があるため採らない）。一時エラーは inconclusive（miss に数えず継続＝誤終了防止）。**取得ループ(usecase)・`retryOnStreamEnd`・
+    型・Twitch 経路・capability・CSP・Cargo は不変**。
+  - **消費**: 活発な配信の監視分を ~360 units/3h → **実質 ~0** に低減（検出は 100→1）。コメント本体 gRPC streamList は未実測（実配信で Cloud Console 実測予定）。
+
+### 032c-a らくらくツール設定 032b（棒読み×VOICEVOX）撤去（ループバック通信 / 外部設定書換 / `ureq` / SAPI レジストリ読取の削除・security-review 実施済み）
+
+- 032c 方針転換（内蔵コメントビューア × VOICEVOX 直接読み上げ）に伴い、032b で追加した棒読みちゃん×VOICEVOX
+  連携の**棒読み/SAPI 依存部分**を撤去した。削除対象: `rakuraku/integrations/bouyomi_voicevox.rs` 全体
+  （`#[cfg(windows)] mod imp`）／`Integration` trait の `configure`/`verify` メソッド／`rakuraku_configure_integration`・
+  `rakuraku_verify_integration` コマンドと `lib.rs` 登録／`ConfigureResult`/`VerifyResult` 系 model・TS binding／
+  `Cargo.toml` の `ureq` 依存・`windows` feature `Win32_System_Registry`。frontend 側は `integrationRegistry` の唯一の
+  エントリ・`rakurakuApi` の configure/verify ラッパ・ExecutionView の設定書換/疎通経路を撤去。
+- **security-review を実施し、判定＝問題なし**（修正必須なし・攻撃面は縮小方向）。確認事項:
+  - **外部通信の限定解禁を全撤去**: `ureq`（`127.0.0.1:50021`）・`std::net::TcpStream`（`127.0.0.1:50001`）の利用箇所は
+    `bouyomi_voicevox.rs` のみで、同ファイル削除後は残らない（grep で他用途ゼロを確認）。§1（外部通信をしない）の
+    一般原則へ復帰。**本タスクでは外部通信の新規解禁は追記しない**（VOICEVOX 直接読み上げの通信方針は 032c-b）。
+  - **外部設定書換の限定解禁を撤去**: 棒読みちゃん設定ファイルの書換（バックアップ先取り）経路を削除。§5（外部設定を
+    上書きしない）の一般原則へ復帰。app 管理領域外への書込は行わない。
+  - **レジストリ読取を撤去**: SAPI トークン列挙（`Win32_System_Registry`・`RegOpenKeyExW`/`RegEnumKeyExW`）の利用は
+    `bouyomi_voicevox.rs` のみで、削除後に未使用（grep 確認）。`Cargo.toml` から feature を外した。
+  - **capability / CSP 不変**: `capabilities/default.json` / `tauri.conf.json`（`csp: null`）に差分なし。新規 command は
+    追加せず、`rakuraku_*` は 2 本削減（scan / launch / open_official_page の 3 本は温存）。
+  - **温存した共有部**: らくらく画面シェル（一覧/詳細/同意/実行の器）・`rakuraku_launch_component`（登録済み exe を
+    管理付き `spawn`＋PID registry で起動）・`rakuraku_open_official_page`・`resolve_tool_for_component`。これらの
+    セキュリティ方針は上記「らくらくツール設定（外部アプリ連携）方針」に集約済み（撤去で挙動は変わらない）。撤去後
+    `registry()` は空で、`find` は常に `NotFound` を返す（空でもらくらく画面はクラッシュしない）。
+  - **binding drift ゼロ**: 削除した Rust 型の残骸 TS（`ConfigureResult.ts`/`ConfigureStatus.ts`/`VerifyResult.ts`/
+    `VerifyStatus.ts`）を手動削除し、`gen:bindings` 再実行で差分ゼロを確認。
+- **docs 整理**: 本 security.md の §1/§5 の 032b 例外・らくらく方針節・032b 系レビュー記録、`docs/product.md` の
+  棒読み/SAPI 例外を、撤去に合わせて整理（撤去/整理のみで外部通信の新規解禁追記は含まない）。
+
+### 032 追加対応 らくらくツール設定 詳細画面（YouTube デモ動画 iframe 埋め込み / 非対応 OS ガード・security-review 実施済み）
+
+- 詳細画面のデモ動画を **YouTube（youtube-nocookie）iframe でインライン埋め込み**（アプリ同梱による容量増を避けるため）。
+  非対応 OS では「確認画面に進む」を無効化＋小さめ赤文字「(このOSでは利用できません)」を表示。**frontend のみ**
+  （registry＋screen＋css）・Rust/Cargo/capabilities/`tauri.conf.json`（`csp: null`）不変。詳細は上記 CSP方針の「例外」を参照。
+- **security-review を実施し、判定＝問題なし**（修正必須なし）。確認済み: youtube-nocookie＋`rel=0`（Cookie/関連動画抑制・
+  telemetry 追加なし）／動画 ID は frontend 定数を `^[A-Za-z0-9_-]{11}$` でガードしてから src を組み立て（URL/属性の
+  ブレイクアウト不可・未設定/不正は「準備中」フォールバック）／iframe 属性は最小・安全側（`allow` は
+  encrypted-media/fullscreen/picture-in-picture のみ・`referrerpolicy=strict-origin-when-cross-origin`・`loading=lazy`・`title`）／
+  クロスオリジン外部フレームで Tauri IPC 非接触・新規依存/command/capability なし・`csp:null` 不変／OS ガードは UI のみで多重防御。
+- **留意点（動画 ID 設定後に `tauri dev` で確認）**: 現状 `demoVideoId` 未設定のため外部通信は未発生。実 ID 設定後、
+  ① インライン再生 ② フレーム内操作でアプリウィンドウが外部 URL へ遷移/想定外ポップアップしないこと を確認する。
+  top-navigation/popups が起きる場合は `sandbox="allow-scripts allow-same-origin allow-presentation"`（top-nav/popups 非付与）を
+  追加し再生維持を確認する。将来 CSP を効かせる際は `frame-src https://www.youtube-nocookie.com`（＋派生ドメイン）が必要。
+
+### 033f コメントビューア OBS 透過オーバーレイ窓（新規 per-window capability＋`macos-private-api` feature・security-review 実施済み）
+
+- コメント一覧を OBS の「ウィンドウキャプチャ」へ載せるため、背景透過のオーバーレイ窓（label `comment-overlay`）を
+  ワンクリックで開く機能を追加した（親 033・問題 9）。obs-websocket は不採用（新規 localhost 接続面を作らない）。
+  データ源は**既存の loopback sidecar WS（`ws://127.0.0.1:<port>`）の読み取り専用接続のみ**で、**新規外部通信ゼロ・新規依存ゼロ**。
+- **security-review を実施し、判定＝問題なし**（修正必須なし）。確認事項:
+  - **新規外部通信ゼロ・読み取り専用**: `OverlayApp` は `connectCommentStream({ onComments })` のみで制御フレーム
+    （start-login / start-session / stop-session）を一切送らない＝送信フレームゼロ。外部 http(s)/WS 宛先の新規追加なし。
+    **main とその Rust command は no-internet 維持**（§1／方針②）。新通信面を作らないため security.md 本体への §1 例外追記は不要。
+  - **capability 最小・main/comment-viewer 不変**: 新設 `capabilities/comment-overlay.json` は `core:default` のみ＋
+    `windows:["comment-overlay"]` に scope 限定。`default.json`（`windows:["main"]`）・`comment-viewer.json` は差分ゼロで、
+    overlay 窓は main の `core:window`（close/minimize 等）/dialog/autostart 権限を継承しない。アプリ定義 command
+    （`open/close_comment_overlay_window`・引数は `AppHandle` のみ・固定ラベル/固定オプション）は本構成では ACL 列挙不要。
+  - **プロセス/no-orphan kill 不変（§6）**: overlay は表示専用で sidecar を起動/停止しない（`ensure_started` 無し・
+    窓イベント登録無し・close で `shutdown` 連動無し）。PID kill・プロセス名 kill なし。sidecar 起動/停止契機は
+    コメビュ窓（`open_comment_viewer_window` の窓イベント／`RunEvent::Exit`）に集約のまま。
+  - **依存（§10）・CSP 不変**: 新規 crate/npm/plugin ゼロ。透過描画のため既存 `tauri` crate に **`macos-private-api`
+    feature を追加**（新規 crate ではなく feature 追加＝028 の `windows` feature と同型）＋`tauri.conf.json` に
+    `app.macOSPrivateApi: true`。`csp: null` 不変・外部 script/style/image 非増加。透過 CSS は overlay 窓の document
+    （`data-overlay="1"`）にだけ効き main/comment-viewer に波及しない。
+  - **MAS 配布不可の受容**: macOS 私的 API 使用のため Mac App Store 配布不可になるが、本アプリは .app/.dmg 直配布で
+    MAS 経路が無いため受容（IPC/権限/ネットワークの攻撃面は増えず、透過描画に閉じる）。`background_throttling(Disabled)`
+    は webview の描画/タイマー スケジューリング設定のみで通信/権限/プロセスに触れない（macOS14+ のみ有効・Windows/Linux は no-op）。
+  - **binding drift ゼロ**: 追加 command は引数 `AppHandle`・戻り `AppResult<()>` で新規 ts-rs 型なし（`check:bindings` 32 passed）。
+- **後回し（記録のみ）**: overlay を開くと sidecar への loopback WS 接続が 1 本増える（コメビュ本体に加えて）が、
+  sidecar は全クライアントへ同報するだけで overlay は読み取り専用購読＝本体セッションに影響せず、close/unmount で
+  `disconnect()` される（032c-b の loopback WS と同レベルの localhost 信頼モデル）。**実機（macOS 14.6.1）で `lsof -i` の
+  外部 ESTABLISHED が sidecar PID 下のみ・overlay/main に出ないこと、OBS ウィンドウキャプチャの透過ライブ合成を目視**（`tauri dev`）。
+
+### Windows 窓生成デッドロック修正（窓生成到達コマンド 4 本の `(async)` 化＋WINDOW_OPEN_LOCK・security-review 実施済み）
+
+- Windows（x64/ARM）で内蔵コメントビューアの起動時に白画面のままアプリ全体が応答なしになる不具合を修正した
+  （実機で発覚したアドホック修正・タスク doc なし）。原因は Tauri v2 の非 async コマンドがメインスレッドで実行され、
+  同期コマンド内の `WebviewWindowBuilder::build()` が WebView2 生成完了（メインスレッドのメッセージループ経由で
+  通知）をループを止めたまま待つ相互待ち＝デッドロック（wry#583・`WebviewWindowBuilder` doc の Known issues）。
+  窓生成に到達し得る 4 コマンド（`open_comment_viewer_window` / `open_comment_overlay_window` / `launch_tool` /
+  `launch_preset`）を `#[tauri::command(async)]` 化（関数は同期のまま・実行だけ tauri async runtime の tokio worker へ
+  移す）し、失われるメインスレッド直列実行の代替に `WINDOW_OPEN_LOCK`（`Mutex<()>`・viewer/overlay 共有）で
+  窓生成を直列化した。macOS は WKWebView の生成が同期完了するため顕在化しなかった。
+- **security-review を実施し、判定＝問題なし**（修正必須なし）。「process 起動処理」のレビュー必須条件に該当
+  （`launch_tool` / `launch_preset` の実行スレッド変更）。確認事項:
+  - **面・権限の完全不変（§3）**: 新コマンド・引数・戻り値・呼び出し側・frontend・capabilities 3 ファイル・
+    `tauri.conf.json`（`csp: null`）に差分ゼロ。`(async)` は frontend から透過（invoke は元々 Promise）。
+    実行スレッドは本書の管理対象面（コマンドの面・引数・権限・起動経路）に含まれないため、本文の方針・例外定義は
+    一切変更しない（本節は実施記録のみ）。
+  - **spawn/停止経路の非退行（§6）**: `validate_executable` → 管理付き spawn → registry 登録 → launchId 限定停止に
+    変更なし。並行化（従来のメインスレッド直列 → 並行実行）による新たな多重 spawn は無い（直列はキューイングで
+    あって重複排除ではなく spawn 回数の意味論は不変・DB/registry は Mutex 保護・stop は registry 登録済み launchId
+    のみ・`boot_launch_presets` が既に別スレッド並行の前例）。
+  - **ロック順序**: `WINDOW_OPEN_LOCK` → `CommentSidecarState` の一方向のみで逆順取得ゼロ。メインスレッドが
+    `WINDOW_OPEN_LOCK` を取る経路は無く、「worker がロック保持のまま `build()` でメインループの処理完了を待つ」
+    構造は相互待ちにならない。close 系（`.close()`＝非ブロッキング送信）・is 系は同期のままで正しい
+    （tauri の Known issues 対象は生成系と cookies 系 getter のみ）。
+  - **通信・依存・ログ不変**: 新規 `Command::new` / fs 書込 / 通信 / crate 追加ゼロ。「Rust は完全同期のまま」
+    （032c-b）は「async/WS/HTTP crate を足さない・コマンド本体は sync fn」の意味で今も真だが、本修正で上記
+    4 コマンドは tauri 同梱 async runtime（tokio worker）上で実行される（`spawn_blocking` ではなく
+    `async_runtime::spawn` 直実行・worker を窓生成完了まで同期ブロック＝窓生成は稀・短時間のため許容）。
+- **マージ前 Windows 実機検証（x64/ARM・未実施）**: 機序は tauri 公式 doc の推奨回避策どおりで理論上解消するが、
+  開発機が macOS のため実機確認をマージ条件とする: ①ビューア起動で白画面にならず応答維持 ②viewer/overlay
+  連打で二重生成エラーが出ない ③internal 込みプリセット一括起動と個別起動の同時実行 ④窓の開閉高速サイクル
+  （close → sidecar shutdown 連動）⑤`--autostart` 一括起動に internal を含む場合 ⑥タスクマネージャで sidecar
+  孤児なし。

@@ -38,7 +38,11 @@ fn log(db: &State<'_, DbState>, entry: NewLog) {
 /// shell を経由せず保存済み executablePath を直接起動する。
 /// 009: 起動した Child を runtime process registry に登録し、停止操作用の launchId を返す。
 /// 011: 成功・失敗を app_logs に記録する。
-#[tauri::command]
+///
+/// `(async)`: internal 種別の dispatch で `crate::open_comment_viewer_window`（窓生成）を同一スレッドで
+/// 呼ぶため。同期コマンド（メインスレッド実行）のままだと Windows で窓生成がデッドロックし白画面・
+/// 応答なしになる（詳細は lib.rs の `open_comment_viewer_window` の注記）。
+#[tauri::command(async)]
 pub fn launch_tool(
     app: AppHandle,
     db: State<'_, DbState>,
@@ -277,7 +281,11 @@ pub fn focus_process(
 /// best-effort 起動のため、1つの失敗で全体を中断せず成功・失敗を集約して返す。
 /// 009: 起動に成功したプロセスは registry に登録し、各結果に launchId を含める。
 /// 011: 開始・完了（全成功 / 一部失敗 / 全失敗）を app_logs に記録する。
-#[tauri::command]
+///
+/// `(async)`: internal 種別を含むプリセットで `launch_one` → `crate::open_comment_viewer_window`
+/// （窓生成）を同一スレッドで呼ぶ経路があるため。同期コマンド（メインスレッド実行）のままだと
+/// Windows で窓生成がデッドロックする（詳細は lib.rs の `open_comment_viewer_window` の注記）。
+#[tauri::command(async)]
 pub fn launch_preset(
     app: AppHandle,
     db: State<'_, DbState>,

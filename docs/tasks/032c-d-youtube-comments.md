@@ -215,7 +215,8 @@ no-internet を維持**し、YouTube のインターネット通信も **Node si
 - ~~**OAuth トークンの keyring 永続化**（対象外・§9 準拠で in-memory で扱う）。~~
   → **032c-d′ で方針変更**: 使い心地を Twitch と統一するため、OAuth アクセス/リフレッシュトークンのみ Twitch と
   同型に OS キーチェーンへ永続化する（code_verifier/Client Secret は引き続き非永続）。§9 のポリシー変更のため
-  **security-review を再実施済み**。詳細は docs/security.md「### 032c-d …」節の**追補（032c-d′）**。
+  **security-review を再実施済み**。詳細は docs/progress.md「2026-07-23 セキュリティレビュー実施記録」内の
+  「### 032c-d …」節の**追補（032c-d′）**（レビュー実施記録は 2026-07-23 に security.md から progress.md へ移設）。
 - ~~**YouTube + Twitch の同時 / マージ表示**（対象外・各サービス個別選択）。~~
   → **035a で解禁**: sidecar のセッション排他を provider 別（`Map<Provider, AbortController>`）へ分離し同時取得・マージ表示を有効化。
   方針反転のため **security-review を再実施**。詳細は `docs/tasks/035-simultaneous-youtube-twitch-comments.md` と docs/security.md「## コメントビューア（配信サービス連携）方針」。

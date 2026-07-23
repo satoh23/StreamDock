@@ -23,6 +23,18 @@ use process::registry::{ManagedProcess, ProcessRegistry};
 use rakuraku::model::LaunchResult;
 use tools::commands::DbState;
 
+/// 窓生成コマンド（viewer/overlay）の直列化ガード。窓生成コマンドの `(async)` 化（Windows の
+/// 白画面デッドロック回避・`open_comment_viewer_window` の注記参照）でメインスレッドによる
+/// 直列実行が失われるため、連打・並行呼び出しでの「同一 label 窓の二重生成試行 → 2 回目が
+/// エラー表示」を防ぐ。label は別でも窓生成は稀な操作のため viewer/overlay で 1 本を共有する。
+///
+/// poison は `expect` せず `PoisonError::into_inner` で回復する（既存慣習「poison=expect panic」の
+/// 意図的な例外）: `Mutex<()>` は保護すべきデータを持たず poison 継承に守る不変条件が無い一方、
+/// `(async)` コマンド内の panic は tokio タスク内で握られ invoke Promise が永久未解決になるため、
+/// poison を伝播すると以後の窓オープンが全て無応答化する。データ持ちの Mutex（db/registry/sidecar）は
+/// 従来どおり poison=`expect` を維持する。
+static WINDOW_OPEN_LOCK: Mutex<()> = Mutex::new(());
+
 /// 021: カスタムタイトルバーの出し分け（macOS=信号機回避の左余白 / Windows=自作制御ボタン）に使う
 /// ホスト OS 名。ユーザー入力を取らず固定文字列（"macos"/"windows"/"linux" 等）を返すのみ。
 #[tauri::command]
@@ -35,8 +47,28 @@ fn host_os() -> &'static str {
 /// 無ければ生成する。内蔵ツール（`ToolKind::Internal`）の launch dispatch（両経路）からも呼ぶ。
 /// shell/spawn/ファイル操作を伴わず、アプリ内ウィンドウを開くのみ（§2/§3）。capability は
 /// `capabilities/comment-viewer.json`（最小権限・`main` 不変）に閉じる。
-#[tauri::command]
+///
+/// `(async)`: 同期コマンドはメインスレッドで実行されるが、Windows では窓生成（WebView2 の生成）の
+/// 完了通知がメインスレッドのメッセージループ経由で届くため、ループを止めたまま完了を待つ相互待ち＝
+/// デッドロックになる（白画面・応答なし。wry#583・`WebviewWindowBuilder` doc の Known issues）。
+/// `(async)` で tauri async runtime（`async_runtime::spawn`・tokio worker）上の実行に逃がし、
+/// メインスレッドのループを止めない。専用ブロッキングプール（`spawn_blocking`）ではなく core worker を
+/// 窓生成完了まで同期ブロックするが、窓生成は稀・短時間のため許容する（worker 数は既定で CPU コア数）。
+#[tauri::command(async)]
 fn open_comment_viewer_window(app: AppHandle) -> AppResult<()> {
+    // (async) 化でメインスレッド直列実行による自然な直列化が失われるため、連打・並行呼び出しでの
+    // 同一 label 窓の二重生成試行（2 回目がエラー表示になる）をガードで防ぐ（overlay と共有）。
+    // poison 回復の理由は WINDOW_OPEN_LOCK の注記を参照。
+    //
+    // ガード保持は ensure_started（keychain 読取を含む・未署名 dev ビルドの macOS は確認ダイアログ待ちが
+    // あり得る）と build()（メインスレッドへの dispatch 完了待ち）を跨ぐが、従来は同じ待ちがメイン
+    // スレッド上で起き UI 全体が固まっていたため退行ではない（main は応答維持・後続の窓オープンが
+    // ロック待ちになるだけ）。再修正トリガー: 署名済み配布でもロック待ちの長時間化が問題になったら
+    // keychain 読取（token_vault::load）をガード外へ出すことを検討する。
+    let _guard = WINDOW_OPEN_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
     // 032c-b: コメントビューアを開くとき、Twitch コメント取得 sidecar を起動する（多重起動しない）。
     // インターネットは sidecar 内に封じ込め、main ウィンドウは no-internet を維持する。
     comment_sidecar::ensure_started(&app)?;
@@ -88,8 +120,17 @@ fn open_comment_viewer_window(app: AppHandle) -> AppResult<()> {
 /// なりコメント 0 件表示になるだけで副作用は無い。capability は `capabilities/comment-overlay.json`
 /// （最小権限・`main`/`comment-viewer` 不変）に閉じる。macOS の透過描画には tauri.conf の `macOSPrivateApi` と
 /// Cargo の `tauri/macos-private-api` feature が要る（`.transparent()` は macOS でこの feature でのみコンパイルされる）。
-#[tauri::command]
+///
+/// `(async)`: 窓生成を伴うため viewer と同じ理由で必須（Windows の白画面デッドロック回避。
+/// 詳細は `open_comment_viewer_window` の注記）。
+#[tauri::command(async)]
 fn open_comment_overlay_window(app: AppHandle) -> AppResult<()> {
+    // 二重生成試行ガード（viewer と共有）。poison 回復の理由は WINDOW_OPEN_LOCK の注記、
+    // 保持範囲の考え方は `open_comment_viewer_window` の注記を参照。
+    let _guard = WINDOW_OPEN_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
     // 既に開いていれば多重生成せず再利用する。最背面窓を前面へ引き上げてちらつかせないよう、
     // set_focus はせず show のみ（既に可視なら実質 no-op）。
     if let Some(window) = app.get_webview_window("comment-overlay") {
