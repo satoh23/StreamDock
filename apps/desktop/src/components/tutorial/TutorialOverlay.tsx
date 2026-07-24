@@ -227,7 +227,9 @@ export function TutorialOverlay() {
   const renderCentered = () =>
     createPortal(
       <div className={styles.overlay}>
-        <div className={styles.dialogDim}>
+        {/* ディム部分はウィンドウのドラッグ面にする（ヘッダー同様）。カード内のボタンは
+            Tauri 側で clickable 要素として drag より優先されるため個別対応は不要。 */}
+        <div className={styles.dialogDim} data-tauri-drag-region>
           <div className={styles.card}>
             {cardInner}
             {/* 進行が止まらないよう、next を持たないステップでも「次へ」を出す。 */}
@@ -275,21 +277,33 @@ export function TutorialOverlay() {
 
   return createPortal(
     <div className={styles.overlay}>
-      {/* 穴の外側 4 枚（ディム＋外側クリック遮断）。 */}
-      <div className={styles.panel} style={{ top: 0, left: 0, width: innerW, height: top }} />
+      {/* 穴の外側 4 枚（ディム＋外側クリック遮断）。ディムはウィンドウのドラッグ面にする
+          （ヘッダーを覆う上パネル含む）。穴内の実対象は BUTTON 等として drag より優先される。
+          ダブルクリックで最大化トグル（internal_toggle_maximize）が発火するのは意図どおり
+          ＝タイトルバー相当。自ウィンドウの最大化状態のみを変え、drag.js が stopImmediatePropagation
+          するため配下 UI のクリック遮断意図には波及しない。この最大化挙動が UX 上問題化したら、
+          各ディムに onDoubleClick で preventDefault/stopPropagation を噛ませて抑止する。 */}
+      <div className={styles.panel} style={{ top: 0, left: 0, width: innerW, height: top }} data-tauri-drag-region />
       <div
         className={styles.panel}
         style={{ top: bottom, left: 0, width: innerW, height: Math.max(0, innerH - bottom) }}
+        data-tauri-drag-region
       />
-      <div className={styles.panel} style={{ top, left: 0, width: left, height: holeH }} />
+      <div className={styles.panel} style={{ top, left: 0, width: left, height: holeH }} data-tauri-drag-region />
       <div
         className={styles.panel}
         style={{ top, left: right, width: Math.max(0, innerW - right), height: holeH }}
+        data-tauri-drag-region
       />
 
-      {/* spotlight-info は穴に透明ブロッカーを重ねてクリック不可にする。 */}
+      {/* spotlight-info は穴に透明ブロッカーを重ねてクリック不可にする。ここもドラッグ可にして
+          「クリックもドラッグも効かない死に領域」を作らない。 */}
       {isInfo && (
-        <div className={styles.blocker} style={{ top, left, width: holeW, height: holeH }} />
+        <div
+          className={styles.blocker}
+          style={{ top, left, width: holeW, height: holeH }}
+          data-tauri-drag-region
+        />
       )}
 
       {/* 穴の縁を強調するリング（クリック透過）。 */}
