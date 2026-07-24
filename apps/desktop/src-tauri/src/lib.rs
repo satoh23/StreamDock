@@ -35,6 +35,40 @@ use tools::commands::DbState;
 /// 従来どおり poison=`expect` を維持する。
 static WINDOW_OPEN_LOCK: Mutex<()> = Mutex::new(());
 
+/// 033f 追修正③（回帰修正）: **全 WebView2 窓で共有する** additional_browser_args。
+///
+/// Windows の WebView2 は「1 つの user data folder（UDF）＝1 つのブラウザプロセス」で、その起動引数は
+/// **最初に生成された窓**（本アプリでは tauri.conf.json 由来の `main`）が確定する。UDF を共有する後続窓が
+/// **異なる** 引数で生成しようとすると WebView2 環境生成が `ERROR_INVALID_STATE`(`HRESULT 0x8007139F`) で失敗し、
+/// `.build()` が Err → その窓が開けなくなる（tauri-utils config.rs の `data_directory` 注記
+/// 「WebViews with different values for settings like `additionalBrowserArgs` … must have different data
+/// directories」／ tauri#11144）。当初の追修正③は overlay 窓にだけ独自引数を付けたため、既定引数で先に起動した
+/// `main` と不一致になり **Windows で overlay が一切開かない回帰** を生んでいた。
+///
+/// 対策として、UDF を分けず（＝設定同期の localStorage を共有したまま。overlaySettings.ts）**3 窓すべてで
+/// この同一文字列に揃える**。`main`（最初に生成）にこの引数を効かせることで、共有ブラウザプロセスで
+/// `CalculateNativeWinOcclusion`（完全に隠れた窓の描画停止最適化）が無効になり、最背面(`always_on_bottom`)の
+/// overlay も描画継続 → OBS ウィンドウキャプチャが黒くならない（追修正③ 本来の目的）。
+///
+/// 内訳: wry 0.55.1 の Windows 既定を**完全に**保持したうえで occlusion 無効化だけを足す。
+/// - `--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection`（ミニメニュー/PDF UI/SmartScreen 無効化。
+///   SmartScreen 無効化は tauri#1345 由来のプライバシー配慮で §1 の no-external-comms とも整合）。
+/// - `--autoplay-policy=no-user-gesture-required`（wry は `autoplay=true`〈= Tauri/wry の既定。tauri-runtime-wry は
+///   autoplay を上書きしない〉のとき既定でこれも付与する。`webview2/mod.rs` の既定生成クロージャは
+///   `additional_browser_args` を指定すると走らず**この 1 個も一緒に落ちる**ため明示保持する。落とすと Windows で
+///   comment-viewer の VOICEVOX 読み上げ〈Web Audio の AudioContext〉がユーザー操作前に鳴らなくなり得る＝
+///   従来〈wry 既定〉挙動の非退行のために残す）。
+/// - ここへ `CalculateNativeWinOcclusion`（完全に隠れた窓の描画停止最適化。占有解除＝黒回避に必須）だけを
+///   `--disable-features` に追加する。`main` の実 UI のハイコントラスト自動追従を損なわないよう
+///   `msWebView2AutoDetectHighContrast` は入れない。
+/// WebView2 専用引数のため macOS/Linux では無視（非退行）。occlusion 無効化は `main` 含む全窓に効くが、隠れた
+/// main の描画スキップ最適化が効かなくなる微小な GPU/CPU コスト増のみで実害はなく許容する。
+///
+/// **同期注意**: JSON はコメント不可のため、[`tauri.conf.json`] の `app.windows[0].additionalBrowserArgs` と
+/// この文字列は**バイト単位で一致**させること（片方だけ変更すると再び窓生成失敗を招く）。
+/// 実機で黒が残る場合の次手は `--disable-backgrounding-occluded-windows` の併用。
+const SHARED_BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,CalculateNativeWinOcclusion --autoplay-policy=no-user-gesture-required";
+
 /// 021: カスタムタイトルバーの出し分け（macOS=信号機回避の左余白 / Windows=自作制御ボタン）に使う
 /// ホスト OS 名。ユーザー入力を取らず固定文字列（"macos"/"windows"/"linux" 等）を返すのみ。
 #[tauri::command]
@@ -88,6 +122,9 @@ fn open_comment_viewer_window(app: AppHandle) -> AppResult<()> {
     let window =
         WebviewWindowBuilder::new(&app, "comment-viewer", WebviewUrl::App("index.html".into()))
             .title("コメントビューア")
+            // 033f 追修正③（回帰修正）: Windows では UDF 共有窓の additional_browser_args を全窓一致させないと
+            // WebView2 生成が失敗する。main / overlay と同一の SHARED_BROWSER_ARGS に揃える（定数の注記参照）。
+            .additional_browser_args(SHARED_BROWSER_ARGS)
             .inner_size(960.0, 720.0)
             .min_inner_size(560.0, 520.0)
             .build()
@@ -122,10 +159,11 @@ fn open_comment_viewer_window(app: AppHandle) -> AppResult<()> {
 /// Cargo の `tauri/macos-private-api` feature が要る（`.transparent()` は macOS でこの feature でのみコンパイルされる）。
 ///
 /// **Windows 追修正③**: 最背面(=常時 occluded)だと WebView2(Chromium) が occlusion 最適化で描画を止め、
-/// OBS ウィンドウキャプチャが真っ黒になる。`additional_browser_args` で `CalculateNativeWinOcclusion` を無効化し、
+/// OBS ウィンドウキャプチャが真っ黒になる。共有ブラウザプロセスで `CalculateNativeWinOcclusion` を無効化して
 /// 隠れていても描画を続けさせる（macOS の `background_throttling(Disabled)` に相当する Windows 版対策）。
-/// `additional_browser_args` は wry の既定引数を置換するため、wry 0.55.1 の既定
-/// （`msWebOOUI,msPdfOOUI,msSmartScreenProtection` の無効化）も明示保持して落とさない（詳細は builder 直前の注記）。
+/// Windows は UDF 共有窓の `additional_browser_args` を**全窓一致**させないと WebView2 生成が失敗するため、
+/// main / comment-viewer / overlay で同一の `SHARED_BROWSER_ARGS` を渡す（不一致だった当初実装は Windows で
+/// overlay が開けない回帰を招いた。経緯・根拠は `SHARED_BROWSER_ARGS` の注記）。
 /// なお Windows の OBS は「ウィンドウキャプチャ＝Windows 10(WGC)・透過を許可」でないと GPU/透過窓を取り込めない
 /// （BitBlt では黒くなる）ため、設定側の案内を SettingsView の OBS カードに Windows 限定で出す。
 ///
@@ -161,22 +199,14 @@ fn open_comment_overlay_window(app: AppHandle) -> AppResult<()> {
             .focused(false)
             .shadow(false)
             .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
-            // 033f Windows 追修正③: 最背面(=常時 occluded)だと WebView2(Chromium) が occlusion 最適化で
+            // 033f 追修正③（回帰修正）: 最背面(=常時 occluded)だと WebView2(Chromium) が occlusion 最適化で
             // 描画を止め、OBS ウィンドウキャプチャが真っ黒になる（上の background_throttling(Disabled) は
-            // macOS の WKWebView 専用で Windows/WebView2 には効かないため別途必要）。
+            // macOS の WKWebView 専用で Windows/WebView2 には効かないため別途必要）。共有ブラウザプロセスで
             // `CalculateNativeWinOcclusion` を無効化して隠れていても描画を続けさせる。
-            // 注意: `additional_browser_args` は wry の既定引数を「追加」ではなく「丸ごと置換」する
-            // （指定すると wry 側の既定生成クロージャが走らない）。そのため wry 0.55.1 の既定
-            // `--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection`（ミニメニュー/PDF UI/SmartScreen
-            // 無効化。SmartScreen 無効化は tauri#1345 由来のプライバシー配慮で §1 の no-external-comms とも整合）を
-            // 明示的に保持し、透過窓向けに高コントラスト自動検出無効化(`msWebView2AutoDetectHighContrast`)も足した
-            // うえで occlusion 無効化を追記する（＝既定をサイレントに落とさない）。
-            // WebView2 専用引数のため macOS/Linux では無視される（非退行）。
-            // 実機で黒が残る場合の次手: `--disable-backgrounding-occluded-windows`（occluded 窓のレンダラ
-            // backgrounding 抑止）を併用する。CalculateNativeWinOcclusion 単独で不足したときのみ追加する。
-            .additional_browser_args(
-                "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,msWebView2AutoDetectHighContrast,CalculateNativeWinOcclusion",
-            )
+            // 当初は overlay 窓だけに独自引数を付けたが、Windows では UDF 共有窓の additional_browser_args を
+            // 全窓一致させないと WebView2 生成が `ERROR_INVALID_STATE` で失敗し、この overlay が開けなくなる回帰を
+            // 招いた。main / comment-viewer と同一の SHARED_BROWSER_ARGS に揃える（詳細は定数の注記参照）。
+            .additional_browser_args(SHARED_BROWSER_ARGS)
             .position(24.0, 48.0)
             .inner_size(400.0, 720.0)
             .min_inner_size(240.0, 320.0)
@@ -338,6 +368,26 @@ pub fn run() {
                 {
                     let _ = window.set_decorations(false);
                 }
+
+                // 034f（回帰修正）: 「main＝本体」を閉じたらアプリごと終了させる。Tauri v2 の既定は
+                // 「全ウィンドウが閉じたときのみ終了」で、main を閉じても子窓（comment-viewer /
+                // comment-overlay）が残るとアプリが生存し続け、RunEvent::Exit（下の .run() で sidecar を停止）
+                // にも到達しなかった（＝子窓と sidecar が孤児化）。main の CloseRequested で app.exit(0) を呼び、
+                // 全窓破棄＋RunEvent::Exit 経由の comment_sidecar::shutdown まで連動させる（macOS の「窓を閉じても
+                // 常駐」慣習より、本体停止で全部落とすユーザー要望を優先）。main の close ボタンは
+                // getCurrentWindow().close()（Header.tsx）で CloseRequested を出し、main は JS の
+                // onCloseRequested 購読を持たないため prevent_close されずここに届く。
+                // 034f（レビュー: app.exit(0) 強制終了のデータ安全性 / 修正不要）: exit は既存 RunEvent::Exit を
+                // 同期経由してから終了し、comment_sidecar::shutdown は guard.take() で idempotent（二重呼び出し無害）。
+                // 別スレッドで DB command が実行中でも SQLite のロールバックジャーナルで破損は起きず、失われ得るのは
+                // 未コミットの write のみ（あらゆるアプリ終了に内在。ユーザー主導の本体終了として受容）。
+                // 再修正トリガー＝終了前の永続化保証が要るなら、exit 前に in-flight write の完了待ち（flush）を挟む。
+                let exit_handle = app.handle().clone();
+                window.on_window_event(move |event| {
+                    if let WindowEvent::CloseRequested { .. } = event {
+                        exit_handle.exit(0);
+                    }
+                });
             }
 
             // `--autostart` のときのみ、フラグ付きプリセットのツールを別スレッドで自動一括起動する。

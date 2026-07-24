@@ -50,7 +50,6 @@ import {
   closeCommentOverlayWindow,
   isCommentOverlayOpen,
 } from "../../features/comment-viewer/windowApi";
-import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { CommentList } from "./CommentList";
 import { SettingsView } from "./SettingsView";
 import { StatusIndicator } from "./StatusIndicator";
@@ -179,10 +178,13 @@ export function CommentViewerApp() {
   const [channel, setChannel] = useState(() => loadChannel());
 
   // 034d: OBS オーバーレイ窓の開閉状態（設定ビューのトグル表示に使う。開＝ON / 閉＝OFF）。窓の実状態と同期させ、
-  // ①初期化時に isCommentOverlayOpen() で同期 ②トグル操作後に更新 ③外部（窓の×）で閉じられたら close 購読で戻す。
+  // ①初期化・再マウント時に isCommentOverlayOpen() で同期 ②トグル操作後に更新する。
+  // 034f（回帰修正）: 旧実装は comment-overlay 窓へ cross-window の onCloseRequested を張っていたが、これがあると
+  // Tauri が close-requested を JS へ委譲し（core が prevent_close）、JS ラッパの destroy() が capability
+  // （core:default に allow-destroy 無し）で拒否され、トグル OFF でも窓が閉じなかった。購読を撤去し、OFF は Rust
+  // close()（capability 非依存の直接 API）で確実に閉じる。外部閉じの即時同期は失うが、overlay は枠なし・非フォーカス・
+  // 最背面で手動 close 手段が実質無く、再オープン時は下の mount 同期で復元されるため実害なし。
   const [overlayOpen, setOverlayOpen] = useState(false);
-  // 034d: comment-overlay 窓の close 購読の解除関数。開くたびに張り直し、閉じる/解除時にクリアして購読リークを防ぐ。
-  const overlayUnlistenRef = useRef<(() => void) | null>(null);
 
   // 034e: OBS オーバーレイの表示設定（フォント / サイト名表示・localStorage 永続）。この窓は設定 UI と永続化のみ担い、
   // 実際の描画反映はオーバーレイ窓（OverlayApp）が同一 localStorage を storage 購読で受けて行う（両窓は別 webview）。
@@ -195,13 +197,9 @@ export function CommentViewerApp() {
     saveChannel(channel);
   }, [channel]);
 
-  // 034d: マウント時に実際の窓状態へ同期し、アンマウント時に close 購読を解除する（購読リーク防止）。
+  // 034d: マウント時に実際の窓状態へトグルを同期する（外部で開閉されていても実状態に合わせる）。
   useEffect(() => {
     void isCommentOverlayOpen().then(setOverlayOpen);
-    return () => {
-      overlayUnlistenRef.current?.();
-      overlayUnlistenRef.current = null;
-    };
   }, []);
 
   // 033c: トグル状態を localStorage に永続化する（channel と同型）。再オープン・再起動で復元される。
@@ -515,44 +513,22 @@ export function CommentViewerApp() {
 
   // 034d: 設定ビューのオーバーレイ開閉トグル（ON=開く / OFF=閉じる）。033f のオープン/クローズ挙動は不変で、
   // Rust が透過・フレームレス・最背面・非フォーカスで生成し（open_comment_overlay_window）、閉じても sidecar は
-  // 落とさない（表示専用・no-orphan kill 契機はコメビュ窓に集約のまま）。開いた直後に comment-overlay 窓の close を
-  // 購読し、外部（窓の×）で閉じられた場合も overlayOpen を戻す（購読は frontend のみ・capability 不変）。
+  // 落とさない（表示専用・no-orphan kill 契機はコメビュ窓に集約のまま）。
+  // 034f（回帰修正）: 旧実装の cross-window onCloseRequested 購読を撤去（購読があると OFF で Tauri が JS の destroy()
+  // へ委譲し capability 不足で拒否＝窓が閉じなかった）。ON は open→state 更新のみ、OFF は Rust close() で確実に閉じる
+  // （Rust の window.close() は capability 非依存の直接 API）。トグル state は楽観更新し、実状態は再マウント時の
+  // isCommentOverlayOpen 同期に委ねる。
+  // 034f（レビュー: .catch 欠如／連打時ズレ / 修正不要）: open()/close() は .then のみで .catch を付けていない。
+  // reject 時も実窓と概ね整合し（open 失敗→OFF のまま／close 失敗→ON のまま）、かつ再オープン時の mount 同期
+  // （上の isCommentOverlayOpen）で回復するため実害が小さく、旧実装（同じく無 catch）から悪化しない。ON→OFF を
+  // resolve 前に連打した際の一時的な state と実窓のズレも同 mount 同期で回復する。
+  // 再修正トリガー＝①command reject が実運用で頻発し unhandled rejection が問題化する ②連打ズレが実害になる、なら
+  // 両分岐へ .catch(() => void isCommentOverlayOpen().then(setOverlayOpen)) を足し失敗時も実状態へ再同期する。
   const handleOverlayToggle = (next: boolean) => {
     if (next) {
-      // 034d（レビュー: アンマウント×非同期 open のレース / 修正不要）: open→getByLabel→onCloseRequested の間に
-      // 本コンポーネントがアンマウントすると購読リーク・unmount 後 setState の細いレースが理論上ある。CommentViewerApp
-      // はコメビュ窓ごと閉じる時しかアンマウントせず「トグル ON 直後に窓を閉じる」極小の窓のみで実害がほぼ無いため現状維持。
-      // 再修正トリガー＝本コンポーネントが頻繁にマウント/アンマウントされる使い方になったら、完了時に未マウントなら
-      // unlisten して return する mounted ref ガードを入れる。
-      void (async () => {
-        await openCommentOverlayWindow();
-        setOverlayOpen(true);
-        // getByLabel が null（開いた直後に消えた等）なら下の ?? null で購読を張らない。setOverlayOpen(true) は先に
-        // 走るが、窓が無ければ次回マウントの初期同期（isCommentOverlayOpen）で false に復帰するため破綻しない。
-        const overlay = await WebviewWindow.getByLabel("comment-overlay");
-        overlayUnlistenRef.current?.();
-        // 034d（レビュー: 外部 close の cross-window 購読 / 修正不要・E2E で確認）: comment-viewer webview から別窓
-        // comment-overlay の close を購読する。listen は core:default 内の core:event で賄い新規 capability 不要。
-        // preventDefault は呼ばず観測のみ（現状どこも preventDefault しないので close-requested で正確に閉じる）。
-        // 再修正トリガー＝①実機 E2E で窓の×閉じ後にトグルが OFF に戻らない（cross-window 配信が届かない）なら、Rust の
-        // overlay 窓生成箇所で Destroyed 時に emit → frontend で listen する方式へ（capability は不要のまま）。②将来
-        // オーバーレイ close で preventDefault する処理が入るなら close-requested→destroyed ベースへ切り替える。
-        overlayUnlistenRef.current =
-          (await overlay?.onCloseRequested(() => {
-            setOverlayOpen(false);
-            overlayUnlistenRef.current?.();
-            overlayUnlistenRef.current = null;
-          })) ?? null;
-      })();
+      void openCommentOverlayWindow().then(() => setOverlayOpen(true));
     } else {
-      // 034d（レビュー: OFF の二重発火 / 修正不要）: 自前 close（Rust .close()）でも解除前の onCloseRequested CB が 1 回
-      // 走るが、CB も本 then も setOverlayOpen(false)（同値・冪等）＋ null ガード付き unlisten のみで、競合・二重解除
-      // ともに無害。再修正トリガー＝CB に false 以外の副作用を持たせる場合は解除順序の競合を考慮する。
-      void closeCommentOverlayWindow().then(() => {
-        setOverlayOpen(false);
-        overlayUnlistenRef.current?.();
-        overlayUnlistenRef.current = null;
-      });
+      void closeCommentOverlayWindow().then(() => setOverlayOpen(false));
     }
   };
 
