@@ -5021,3 +5021,43 @@ docs/security.md は「セキュリティレビューの観点・方針・レビ
   連打で二重生成エラーが出ない ③internal 込みプリセット一括起動と個別起動の同時実行 ④窓の開閉高速サイクル
   （close → sidecar shutdown 連動）⑤`--autostart` 一括起動に internal を含む場合 ⑥タスクマネージャで sidecar
   孤児なし。
+
+### 033f 追修正③: Windows で OBS ウィンドウキャプチャが真っ黒になる不具合の解消（WebView2 occlusion 無効化＋OBS 設定案内）
+
+- **症状**: Windows 実機で、オーバーレイ窓（label `comment-overlay`）を OBS の「ウィンドウキャプチャ」に取り込むと
+  **窓全体が真っ黒**になる（macOS では同手順で最背面のオーバーレイをそのまま透過取り込みできる）。体感は
+  「Windows では最小化されているっぽい」で、最背面（`always_on_bottom`）で完全に隠れた窓が描画停止した状態と符合。
+- **原因（Windows 固有・2 系統。実機未検証のため両方に手当て）**:
+  1. **WebView2(Chromium) の native window occlusion による描画停止**: オーバーレイは追修正①で `always_on_bottom(true)`
+     ＝常に他窓の背後（完全 occluded）。Chromium は完全に隠れた窓の描画を止める最適化（feature
+     `CalculateNativeWinOcclusion`）を持ち WebView2 も継承するため、DWM の窓表面が更新されず OBS が真っ黒を取り込む。
+     追修正②の `background_throttling(Disabled)` は **macOS の WKWebView `inactiveSchedulingPolicy` 専用**で
+     Windows/WebView2 には効かず、Windows 版の等価対策が欠けていた。
+  2. **OBS のキャプチャ方式（設定側）**: Windows の旧「BitBlt」方式は GPU 描画/透過の WebView2 窓を取り込めず黒くなる。
+     「Windows 10（WGC / Windows Graphics Capture）＋透過を許可」が必要。macOS のキャプチャ backend はこの区別が無い。
+- **修正（コード）**: `open_comment_overlay_window`（`apps/desktop/src-tauri/src/lib.rs`）の `WebviewWindowBuilder` に
+  **`.additional_browser_args("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,msWebView2AutoDetectHighContrast,CalculateNativeWinOcclusion")`** を追加。
+  `CalculateNativeWinOcclusion` を無効化して隠れていても描画を続けさせる（macOS の `background_throttling(Disabled)` の
+  Windows 版に相当）。**`additional_browser_args` は wry の既定引数を「追加」ではなく「丸ごと置換」する**（指定時は wry 側の
+  既定生成が走らない）ため、wry 0.55.1 の既定 `msWebOOUI,msPdfOOUI,msSmartScreenProtection`（ミニメニュー/PDF UI/SmartScreen
+  無効化。SmartScreen 無効化は tauri#1345 由来のプライバシー配慮で §1 とも整合）を**明示保持**し、透過窓向けに高コントラスト
+  自動検出無効化(`msWebView2AutoDetectHighContrast`)も足す（既定をサイレントに落とさない）。WebView2 専用引数のため macOS/Linux は
+  no-op（非退行）。※当初は `msWebView2AutoDetectHighContrast` を「wry 既定」と誤認し実既定 3 種を落としていたのを
+  security/品質レビュー指摘で修正（2026-07-24）。実機で黒が残る場合の次手は `--disable-backgrounding-occluded-windows` 併用。
+- **修正（案内）**: 設定ビューの「OBSオーバーレイ」カード（`SettingsView.tsx`）に、**Windows 実行時のみ**
+  「キャプチャ方式＝Windows 10（1903 以降）を選び透過を許可 ON に」する一文を追加。OS 判定は既存フック
+  `useHostOs`（Rust `host_os`・タイトルバー出し分けと同経路）を読み取り専用で再利用（新規 state/API/依存なし）。
+- **security 自己確認（指摘なし）**: OS/プロセス/ファイル操作の変更なし。宛先・API・capability・依存・CSP を増やさない
+  （`comment-overlay.json` は最小権限のまま・`csp: null` 不変）。`additional_browser_args` は当該窓 WebView2 の描画最適化を
+  切るのみで攻撃面を増やさない。アプリ内ヒントは非機密 UI 文言 1 行の追加。
+- **やらないこと**: `always_on_bottom`（最背面で隠す UX・追修正①）の変更／obs-websocket 等での OBS ソース自動追加
+  （033f 方針どおり不採用）／意匠・データ取得・sidecar 連動の変更／新規ライブラリ追加。
+- **Windows 実機検証（未実施・マージ条件）**: 開発機が macOS のため実機確認をマージ条件とする。①オーバーレイ表示 ON →
+  OBS のウィンドウキャプチャ（WGC＋透過許可）でコメントが**色付きで映り真っ黒でない** ②透過部分が抜け、最背面のまま
+  配信者画面の前面に出ない ③切り分け＝occlusion 無効化を外すと黒に戻るか／OBS を BitBlt に戻すと黒くなるか ④macOS 回帰＝
+  従来どおり透過取り込みできる（`additional_browser_args` は macOS で無視され挙動不変）。
+
+### 変更ファイル（033f 追修正③）
+
+- Rust（変更）: `apps/desktop/src-tauri/src/lib.rs`（overlay Builder に `additional_browser_args` で occlusion 無効化＋doc）
+- frontend（変更）: `apps/desktop/src/screens/comment-viewer/SettingsView.tsx`（Windows 限定の OBS 設定ヒント・`useHostOs` 再利用）

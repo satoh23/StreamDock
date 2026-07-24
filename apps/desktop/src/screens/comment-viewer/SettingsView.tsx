@@ -7,6 +7,7 @@ import {
 } from "../../features/comment-viewer/overlaySettings";
 import { ToggleSwitch } from "./ToggleSwitch";
 import { Select } from "./Select";
+import { useHostOs } from "../../features/platform/useHostOs";
 import styles from "./CommentViewerApp.module.css";
 
 /**
@@ -114,6 +115,12 @@ export function SettingsView({
   overlayShowSource,
   onOverlayShowSourceChange,
 }: SettingsViewProps) {
+  // 033f Windows 追修正③: OBS のウィンドウキャプチャ方式は OS で事情が異なる。Windows は
+  // 「Windows 10(WGC)＋透過を許可」でないと GPU/透過の WebView2 窓を取り込めず黒くなるため、
+  // Windows のときだけ設定手順の一文を出す。OS 判定は既存の host_os（タイトルバー出し分けと
+  // 同経路）を読み取り専用で使う（この設定ビューの「表示専用」＝WS/制御フレームを持たない性質は不変）。
+  const hostOs = useHostOs();
+
   // 033d: 選択中 style id を含む話者を導出（話者 select の現在値）。一覧が空/未一致なら先頭話者にフォールバック。
   const selectedSpeaker =
     speakers.find((sp) => sp.styles.some((st) => st.id === selectedSpeakerId)) ??
@@ -365,6 +372,13 @@ export function SettingsView({
           <span className={styles.note}>
             OBS の「ウィンドウキャプチャ」で「StreamDock コメントオーバーレイ」を選ぶとコメントを重ねられます（背景は透過）。オーバーレイは常に最背面で開くので、配信者の画面には前面表示されません。
           </span>
+          {/* 033f Windows 追修正③: Windows は OBS 側の設定が macOS と異なる。旧「BitBlt」方式では GPU/透過の
+              WebView2 窓を取り込めず真っ黒になるため、WGC＋透過許可を Windows のときだけ案内する。 */}
+          {hostOs === "windows" && (
+            <span className={styles.note}>
+              Windows では OBS のウィンドウキャプチャで「キャプチャ方式＝Windows 10（1903 以降）」を選び、「透過を許可」を ON にしてください。旧方式（BitBlt）のままだと真っ黒になります。
+            </span>
+          )}
 
           {/* 034e: オーバーレイの意匠設定（フォント選択・サイト名表示）。値は同一 localStorage を介してオーバーレイ窓へ
               即反映する（OverlayApp が storage 購読）。フォントはすべて OS 標準で外部フォントは使わない（CSP 方針）。

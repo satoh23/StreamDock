@@ -121,6 +121,14 @@ fn open_comment_viewer_window(app: AppHandle) -> AppResult<()> {
 /// （最小権限・`main`/`comment-viewer` 不変）に閉じる。macOS の透過描画には tauri.conf の `macOSPrivateApi` と
 /// Cargo の `tauri/macos-private-api` feature が要る（`.transparent()` は macOS でこの feature でのみコンパイルされる）。
 ///
+/// **Windows 追修正③**: 最背面(=常時 occluded)だと WebView2(Chromium) が occlusion 最適化で描画を止め、
+/// OBS ウィンドウキャプチャが真っ黒になる。`additional_browser_args` で `CalculateNativeWinOcclusion` を無効化し、
+/// 隠れていても描画を続けさせる（macOS の `background_throttling(Disabled)` に相当する Windows 版対策）。
+/// `additional_browser_args` は wry の既定引数を置換するため、wry 0.55.1 の既定
+/// （`msWebOOUI,msPdfOOUI,msSmartScreenProtection` の無効化）も明示保持して落とさない（詳細は builder 直前の注記）。
+/// なお Windows の OBS は「ウィンドウキャプチャ＝Windows 10(WGC)・透過を許可」でないと GPU/透過窓を取り込めない
+/// （BitBlt では黒くなる）ため、設定側の案内を SettingsView の OBS カードに Windows 限定で出す。
+///
 /// `(async)`: 窓生成を伴うため viewer と同じ理由で必須（Windows の白画面デッドロック回避。
 /// 詳細は `open_comment_viewer_window` の注記）。
 #[tauri::command(async)]
@@ -153,6 +161,22 @@ fn open_comment_overlay_window(app: AppHandle) -> AppResult<()> {
             .focused(false)
             .shadow(false)
             .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
+            // 033f Windows 追修正③: 最背面(=常時 occluded)だと WebView2(Chromium) が occlusion 最適化で
+            // 描画を止め、OBS ウィンドウキャプチャが真っ黒になる（上の background_throttling(Disabled) は
+            // macOS の WKWebView 専用で Windows/WebView2 には効かないため別途必要）。
+            // `CalculateNativeWinOcclusion` を無効化して隠れていても描画を続けさせる。
+            // 注意: `additional_browser_args` は wry の既定引数を「追加」ではなく「丸ごと置換」する
+            // （指定すると wry 側の既定生成クロージャが走らない）。そのため wry 0.55.1 の既定
+            // `--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection`（ミニメニュー/PDF UI/SmartScreen
+            // 無効化。SmartScreen 無効化は tauri#1345 由来のプライバシー配慮で §1 の no-external-comms とも整合）を
+            // 明示的に保持し、透過窓向けに高コントラスト自動検出無効化(`msWebView2AutoDetectHighContrast`)も足した
+            // うえで occlusion 無効化を追記する（＝既定をサイレントに落とさない）。
+            // WebView2 専用引数のため macOS/Linux では無視される（非退行）。
+            // 実機で黒が残る場合の次手: `--disable-backgrounding-occluded-windows`（occluded 窓のレンダラ
+            // backgrounding 抑止）を併用する。CalculateNativeWinOcclusion 単独で不足したときのみ追加する。
+            .additional_browser_args(
+                "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,msWebView2AutoDetectHighContrast,CalculateNativeWinOcclusion",
+            )
             .position(24.0, 48.0)
             .inner_size(400.0, 720.0)
             .min_inner_size(240.0, 320.0)
