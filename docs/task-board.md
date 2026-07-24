@@ -79,6 +79,10 @@
   - 実装順: 040(スパイク) → 040a → 040b
   - 040a sidecar chatters 取得（`moderator:read:chatters` スコープ追加＋Helix `Get Chatters` ポーリング＋loopback 配信・**security-review 必須**・新規スコープ）
   - 040b ROM勢一覧 UI（chatters −〔セッション＋038 視聴者メモリのコメント済み〕突合＋表示・近似/前提の注記・**軽レビュー**）
+- 041 コメビュ読み上げ 読み替え辞書（親設計 [docs/tasks/041-comment-viewer-reading-dictionary.md](tasks/041-comment-viewer-reading-dictionary.md)／VOICEVOX へ渡す前に自前テキスト置換で読み替え・**localStorage 保存/自前テキスト置換**・優先順位 ユーザー辞書>内蔵一般辞書>VOICEVOX 既定・VOICEVOX 解析/再実装や user_dict API は使わず将来オプション・外部通信なし）
+  - 実装順: 041a → 041b
+  - 041a 読み替えエンジン（`readingDictionary.ts`）＋内蔵一般辞書（自前データ・ww/ChatGPT 等）＋`ttsQueue` へ getter 注入で組み込み（**軽レビュー**）
+  - 041b ユーザー辞書 CRUD（localStorage）＋内蔵とのマージ（最優先上書き）＋設定 UI 行エディタ（**軽レビュー**）
 
 ## Todo
 
