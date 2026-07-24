@@ -5115,3 +5115,86 @@ VOICEVOX へ渡す**前**の frontend テキスト置換で実装。ユーザー
 - frontend（新規）: `apps/desktop/src/features/comment-viewer/readingDictionary.ts`
 - frontend（変更）: `apps/desktop/src/features/comment-viewer/ttsQueue.ts`（getReadingDictionary 追加・enqueue で sanitize 後段適用）
 - frontend（変更）: `apps/desktop/src/screens/comment-viewer/CommentViewerApp.tsx`（BUILTIN_READING_DICTIONARY を getter で配線）
+
+### 033f 追修正③ 回帰修正: Windows で OBS オーバーレイ窓が一切開かない不具合の解消（全窓 additionalBrowserArgs 一致）
+
+- **症状（回帰）**: 追修正③（`3e95a09`）以降、**Windows でオーバーレイ窓（label `comment-overlay`）が一切開かない**
+  （起動しても表示されない・接続やコメント取得の有無に関係ない）。macOS では再現しない。
+- **原因**: 追修正③で **overlay 窓にだけ** `additional_browser_args` を付けたこと。Windows の WebView2 は
+  「1 つの user data folder(UDF)＝1 つのブラウザプロセス」で、その起動引数は**最初に生成された窓**（本アプリでは
+  tauri.conf.json 由来の `main`）が確定する。UDF を共有する後続窓が**異なる**引数で生成しようとすると WebView2 環境生成が
+  `ERROR_INVALID_STATE`(`HRESULT 0x8007139F`) で失敗し `.build()` が Err → 窓が開けない。`main`/`comment-viewer` は
+  wry 既定引数のまま、`comment-overlay` だけ独自引数だったため不一致で失敗していた。
+  根拠: tauri-utils 2.9.3 `config.rs` の `data_directory` 注記「**Windows**: WebViews with different values for settings
+  like `additionalBrowserArgs` … must have different data directories」／ tauri#11144 ／ Microsoft WebView2 の UDF 制約。
+  ※ macOS(WKWebView) は窓ごと独立＋additional_browser_args は WebView2 専用で無視されるため、開発機(macOS)で顕在化せず。
+- **修正**: UDF は分けず（＝設定同期の localStorage 共有を維持）、**3 窓すべてで同一の `additional_browser_args` に揃える**。
+  Rust に共有定数 `SHARED_BROWSER_ARGS`（`--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,CalculateNativeWinOcclusion`）を新設し、
+  `open_comment_viewer_window` / `open_comment_overlay_window` の Builder に付与、`main` は `tauri.conf.json` の
+  `app.windows[0].additionalBrowserArgs` に同一文字列を設定。最初に生成される `main` にこの引数を効かせることで、共有
+  ブラウザプロセスで `CalculateNativeWinOcclusion`（完全に隠れた窓の描画停止最適化）が無効になり、最背面
+  (`always_on_bottom`)の overlay も描画継続 → OBS ウィンドウキャプチャが黒くならない（追修正③ 本来の目的が初めて成立）。
+- **引数の内訳変更**: 当初 overlay に入れていた `msWebView2AutoDetectHighContrast` は共有集合から外した（`main` の実 UI の
+  ハイコントラスト自動追従を損なわないため）。**wry の Windows 既定を完全保持**＝`--disable-features=msWebOOUI,msPdfOOUI,`
+  `msSmartScreenProtection`（既定 3 種）＋ `--autoplay-policy=no-user-gesture-required`（wry は `autoplay=true` のとき既定で付与。
+  `additional_browser_args` を指定すると wry の既定生成クロージャが走らず**これも一緒に落ちる**ため明示保持）に、占有解除に必須の
+  `CalculateNativeWinOcclusion` のみを追加する。**レビュー反映（2026-07-24）**: 当初版は autoplay-policy を落としており、Windows で
+  comment-viewer の VOICEVOX 読み上げ（Web Audio の AudioContext）がユーザー操作前に鳴らなくなり得たため、明示保持に修正した
+  （macOS は additionalBrowserArgs が no-op で影響なし。ttsQueue は gesture 契機 resume で防御済みだが、従来 wry 既定挙動の非退行を優先）。
+  **同期注意**: JSON はコメント不可のため、`SHARED_BROWSER_ARGS` と `tauri.conf.json` の文字列はバイト単位で一致させること
+  （片方だけ変更すると再び窓生成失敗を招く）。定数 doc にクロスリファレンスを記載。
+- **security 自己確認（指摘なし）**: OS/プロセス/ファイル操作の変更なし。宛先・API・capability・依存・CSP を増やさない
+  （UDF を分けないため新規 data_directory も作らない）。additionalBrowserArgs は当該窓 WebView2 の描画最適化を切るのみで
+  攻撃面を増やさない。SmartScreen 無効化は wry 既定を保持しただけ（tauri#1345 由来・§1 の no-external-comms と整合）。
+- **やらないこと**: overlay 専用 data_directory 化（localStorage 同期が壊れ Tauri イベント移行が必要になるため不採用）／
+  `always_on_bottom` 等 UX の変更／意匠・データ取得・sidecar 連動の変更／新規ライブラリ追加。
+- **Windows 実機検証（未実施・マージ条件）**: 開発機が macOS のため実機確認をマージ条件とする。①overlay 窓が開く
+  ②`main`/`comment-viewer` も開く（回帰なし）③OBS のウィンドウキャプチャ（WGC＋透過許可）でコメントが色付きで映り
+  **真っ黒でない** ④切り分け＝`CalculateNativeWinOcclusion` を外すと黒に戻るか。残黒時の次手は
+  `--disable-backgrounding-occluded-windows` の併用。⑤macOS 回帰＝従来どおり全窓開き透過取り込みできる（no-op）。
+  ⑥comment-viewer の VOICEVOX 読み上げが Windows でも鳴る（autoplay-policy 保持の確認。少なくとも接続操作＝ユーザー gesture 後）。
+
+### 変更ファイル（033f 追修正③ 回帰修正）
+
+- Rust（変更）: `apps/desktop/src-tauri/src/lib.rs`（`SHARED_BROWSER_ARGS` 新設・viewer/overlay Builder に付与・doc 更新）
+- 設定（変更）: `apps/desktop/src-tauri/tauri.conf.json`（`main` 窓に同一 `additionalBrowserArgs` を追加）
+
+### 034f 不具合修正: オーバーレイ表示トグルが消えない／本体×で子窓・sidecar が残る
+
+動作確認中に見つかった2件の窓ライフサイクル不具合を修正。
+
+#### 問題1: 「OBSオーバーレイを表示」トグルが2回目で非表示にならない
+
+- **原因**: ON 時に comment-viewer webview から comment-overlay 窓へ **cross-window の `onCloseRequested` 購読**を張っていた
+  （CommentViewerApp.tsx）。OFF 時に Rust `close_comment_overlay_window`→`window.close()`→`CloseRequested` が出ると、
+  Tauri core は **JS 購読があると `api.prevent_close()`**（tauri 2.11.5 `manager/window.rs`）でネイティブ close を抑止し
+  JS へ委譲する。JS ラッパは preventDefault されないと `destroy()`（`plugin:window|destroy`）を呼ぶが、これは
+  `core:window:allow-destroy` 権限が必要で comment-viewer の capability は `core:default` のみ→**ACL 拒否**→窓が破棄されず、
+  state は OFF なのに窓は表示されたまま、になっていた。
+- **修正（frontend のみ・アプローチ 1b）**: `CommentViewerApp.tsx` の cross-window `onCloseRequested` 購読・`overlayUnlistenRef`・
+  `WebviewWindow` import を撤去。`handleOverlayToggle` は ON=open→state、OFF=Rust `close()`→state のみに単純化。JS の
+  close-requested 購読が無くなれば Tauri は prevent_close せず、Rust `window.close()`（capability 非依存の直接 API）が
+  overlay をそのまま破棄する。外部閉じの即時同期は失うが、overlay は枠なし・非フォーカス・最背面で手動 close 手段が
+  実質無く、再オープン時はマウント同期（`isCommentOverlayOpen`）で復元されるため実害なし。**capability/CSP/依存の変更なし**。
+
+#### 問題2: 本体（main）を×で閉じてもアプリ・子窓・sidecar が終了しない
+
+- **原因**: Tauri v2 の既定は「全ウィンドウが閉じたときのみアプリ終了」。`main` 窓に close ハンドラが無く、`main` を閉じても
+  子窓（comment-viewer / comment-overlay）が残るとアプリが「全窓クローズ」に到達せず、`RunEvent::Exit`（sidecar 停止）も
+  発火しなかった。sidecar 停止の全契機（①comment-viewer 窓 close ②`RunEvent::Exit` ③sidecar 側 ppid 監視）が
+  どれも「main を閉じただけ」では発火しない。**元からの未実装**（overlay 追加で子窓が2枚になり顕在化。回帰ではない）。
+- **修正（Rust）**: `lib.rs` の setup() の main 窓ブロックに `window.on_window_event`（`CloseRequested`→`app.exit(0)`）を追加。
+  `app.exit(0)` で全窓破棄＋既存 `RunEvent::Exit` 到達→`comment_sidecar::shutdown` まで連動。main の close ボタンは
+  `getCurrentWindow().close()`（Header.tsx）で CloseRequested を出し、main は JS 購読を持たず prevent_close されないため届く。
+  「main＝本体を閉じたら全部落とす」UX（macOS の常駐慣習よりユーザー要望を優先）。子窓だけ閉じた場合は従来どおりアプリは残る。
+
+#### 変更ファイル（034f）
+
+- frontend（変更）: `apps/desktop/src/screens/comment-viewer/CommentViewerApp.tsx`（overlay トグルの cross-window 購読撤去・単純化）
+- Rust（変更）: `apps/desktop/src-tauri/src/lib.rs`（main 窓に CloseRequested→app.exit(0) ハンドラ追加）
+
+#### 検証（Mac / Windows 両方・実機）
+
+- 問題1: トグル ON→表示→再押下(OFF)で **overlay が消える**／ON/OFF 反復で毎回切替／viewer 再オープンで実状態に再同期。
+- 問題2: main を×で閉じる→**comment-viewer・OBSオーバーレイが両方消えアプリ終了**／タスクマネージャ・アクティビティモニタで
+  **comment-sidecar が残らない**／子窓だけ閉じた場合は従来どおりアプリ生存。Windows は自作×、macOS はネイティブ赤ボタンで確認。
