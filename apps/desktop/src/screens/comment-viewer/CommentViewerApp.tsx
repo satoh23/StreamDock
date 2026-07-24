@@ -4,6 +4,7 @@ import {
   createTtsQueue,
   type TtsQueue,
 } from "../../features/comment-viewer/ttsQueue";
+import { BUILTIN_READING_DICTIONARY } from "../../features/comment-viewer/readingDictionary";
 import {
   checkEngineRunning,
   fetchSpeakers,
@@ -253,8 +254,11 @@ export function CommentViewerApp() {
 
   useEffect(() => {
     // 033d: 合成直前に選択話者（style id）を ref から読む getter を渡す。話者変更でキューを作り直さない。
+    // 041a: 合成前の読み替え辞書も getter で渡す。現状は内蔵辞書のみ（静的）だが、041b でユーザー辞書を内蔵へ
+    // 重ねる（ライブマージ）際もキューを作り直さずに済むよう getter 注入の形にしておく。
     const queue = createTtsQueue({
       getSpeakerId: () => selectedSpeakerIdRef.current,
+      getReadingDictionary: () => BUILTIN_READING_DICTIONARY,
     });
     ttsRef.current = queue;
     return () => {

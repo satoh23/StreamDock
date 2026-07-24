@@ -12,6 +12,7 @@
  */
 
 import type { CommentViewDto } from "./types";
+import { applyReadingDictionary, type ReadingRule } from "./readingDictionary";
 import { playWav, synthesize, ZUNDAMON_NORMAL_SPEAKER_ID } from "./voicevox";
 
 /** バックログ上限。超過分は古い未読から破棄する（最新優先）。 */
@@ -51,6 +52,12 @@ export interface TtsQueueOptions {
    * キューを作り直さずに済む（グローバル直参照も避ける）。省略・戻り値なしのときは既定 3（ずんだもんノーマル）。
    */
   getSpeakerId?: () => number;
+  /**
+   * 041a: 合成へ渡す前に適用する読み替えルールを返す getter。`enqueue` のたびに呼び**その時点の辞書**を読む
+   * （`getSpeakerId` と同じ getter 注入で、辞書更新のたびにキューを作り直さずに済む＝041b のライブマージを見据える）。
+   * 省略・戻り値なしのときは空辞書＝素通し（現行動作）。
+   */
+  getReadingDictionary?: () => ReadingRule[];
 }
 
 /**
@@ -59,6 +66,7 @@ export interface TtsQueueOptions {
  */
 export function createTtsQueue(options: TtsQueueOptions = {}): TtsQueue {
   const getSpeakerId = options.getSpeakerId;
+  const getReadingDictionary = options.getReadingDictionary;
   const queue: string[] = [];
   const seenIds = new Set<string>();
   let playing = false;
@@ -110,8 +118,16 @@ export function createTtsQueue(options: TtsQueueOptions = {}): TtsQueue {
       if (disposed) return;
       if (seenIds.has(comment.id)) return; // 単一注入点の冪等化（二重 enqueue を無害化）。
       seenIds.add(comment.id);
-      const text = sanitizeForSpeech(comment.text);
-      if (!text) return; // 整形後に空（URL/絵文字のみ 等）なら読み上げない。
+      const sanitized = sanitizeForSpeech(comment.text);
+      // 041a: 読み替え辞書を sanitize の後段で適用する（URL/絵文字除去 → 空白畳み込み → 読み替え → trim の順）。
+      // 辞書未注入・空辞書のときは applyReadingDictionary が素通しするため、従来と完全に同じ挙動になる。
+      // 末尾 .trim() は防御的（sanitize が既に trim 済み・内蔵 reading も前後空白なしのため実質 no-op だが、
+      // 将来 reading に前後空白を持つルールが混ざっても空判定を正しくするため残す）。
+      const text = applyReadingDictionary(
+        sanitized,
+        getReadingDictionary?.() ?? [],
+      ).trim();
+      if (!text) return; // 整形・読み替え適用後に空（URL/絵文字のみ 等）なら読み上げない。
       queue.push(text);
       if (queue.length > MAX_BACKLOG) {
         const dropped = queue.length - MAX_BACKLOG;

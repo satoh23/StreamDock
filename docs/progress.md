@@ -5061,3 +5061,57 @@ docs/security.md は「セキュリティレビューの観点・方針・レビ
 
 - Rust（変更）: `apps/desktop/src-tauri/src/lib.rs`（overlay Builder に `additional_browser_args` で occlusion 無効化＋doc）
 - frontend（変更）: `apps/desktop/src/screens/comment-viewer/SettingsView.tsx`（Windows 限定の OBS 設定ヒント・`useHostOs` 再利用）
+
+## 2026-07-24 041a コメビュ読み上げ 読み替えエンジン＋内蔵一般辞書（frontend 純テキスト置換・security-review 実施済み）
+
+親 [041](tasks/041-comment-viewer-reading-dictionary.md) の要求1（ネットスラング/英語略語の誤読解消）を、
+VOICEVOX へ渡す**前**の frontend テキスト置換で実装。ユーザー編集辞書の重ね合わせ・UI・localStorage 永続は 041b（本タスクは内蔵のみ）。
+
+### やったこと
+
+- **読み替えエンジン新設**（`apps/desktop/src/features/comment-viewer/readingDictionary.ts`）:
+  - 型 `ReadingRule = { surface; reading; kind:"text"|"regex" }`。
+  - `applyReadingDictionary(text, rules)` は**単一パスのトークナイザ・最長一致＋定義順**。左から 1 走査し各位置で
+    「その位置に開始する一致」の最長を採用（同一長は先に定義したルールが勝つ）。これで「短い語が長い語を先食い」と
+    「置換後の読みを後続ルールが再マッチ」を構造的に防ぐ。`kind:"text"` は `startsWith` 一致、`kind:"regex"` は
+    sticky（`iuy`）で位置一致。辞書空/未注入は入力を素通し（現行動作）。trim はせず呼び出し側で行う。regex コンパイルは
+    try/catch で不正ソースを no-op に縮退。
+  - **内蔵辞書 `BUILTIN_READING_DICTIONARY`（自前データ・全18件）**: 笑い w（直前が英字なら非変換で law/how は壊さず。
+    `(?<![A-Za-z])w{2,}`→わらわら／`(?<![A-Za-z])w`→わら の 2 本で、w が 1 つなら「わら」・2 つ以上（末尾含む）なら「わらわら」。
+    最長一致が w{2,} を先取りするため連続 w はまとめて 1 回「わらわら」＝回数に比例させない）／保護 5件（煙草→たばこ・草原→そうげん・草食→そうしょく・雑草→ざっそう・
+    乙女→おとめ。単漢字スラングより長いので最長一致で先取り）／スラング単漢字 草→くさ・乙→おつ／略語 kwsk・wktk／
+    英語・tech 略語 6件（ChatGPT/API/OBS/URL/PC/OS を `\b`＋`i` で語境界一致）／記号 →→やじるし。網羅は狙わず高頻度のみで、
+    七草/早乙女/草案 等の希少衝突は残る（041b のユーザー辞書で補う前提）。第三者辞書（MeCab/NEologd/IPAdic/棒読みちゃん/
+    VOICEVOX 同梱）のデータ・コードは転載/機械変換していない。
+- **TTS パイプライン組み込み**（`ttsQueue.ts`）: `TtsQueueOptions` に `getReadingDictionary?: () => ReadingRule[]` を
+  `getSpeakerId` と同じ getter 注入で追加。`enqueue` で `sanitizeForSpeech` の**後段**に `applyReadingDictionary(sanitized,
+  getReadingDictionary?.() ?? []).trim()` を適用し、**空判定は適用後**で行う（既存スキップ挙動を維持）。省略/空辞書は素通し。
+- **配線**（`CommentViewerApp.tsx`）: 既存の `createTtsQueue({ getSpeakerId })` に `getReadingDictionary: () =>
+  BUILTIN_READING_DICTIONARY` を追加（041a は内蔵のみ。041b のユーザー辞書ライブマージを見据え getter 注入の形にした）。
+
+### security-review 結果＝問題なし（修正必須なし）
+
+- **外部通信/依存/CSP 不変**（§1/§10・`csp: null`）: fetch/invoke/network の追加ゼロ。readingDictionary は純関数（RegExp/String のみ）。
+  ttsQueue は既存 `synthesize`/`playWav`（loopback 50021・voicevox.ts 経由）のまま。telemetry/CDN/remote config なし。
+- **Rust/capability/ファイル/プロセス操作の変更なし**（`tauri.conf.json`・capability ファイル・package.json いずれも無変更）。
+- **内蔵辞書は自前データ**（第三者辞書の転載でない）。**regex は内蔵定数のみを `new RegExp` に渡す**（041a にユーザー入力 regex なし）。
+- **ReDoS を招かない**: 内蔵 regex は `(?<![A-Za-z])w{2,}` / `(?<![A-Za-z])w` / `\b<略語>\b` のみ＝線形時間・入れ子/連鎖量指定子なし。
+- **ログ不変**（§9）: 新規ログなし・コメント本文を DB/ログに出さない・regex コンパイル失敗は無言で no-op。
+- 申し送り（041b）: 「regex は内蔵定義のみ・ユーザー入力は `kind:"text"` 固定」の不変条件を維持すること（任意正規表現を書かせない）。
+
+### 検証結果
+
+- `pnpm --filter ./apps/desktop typecheck` / `lint` = **pass**。`git diff --stat` = 変更は ttsQueue.ts / CommentViewerApp.tsx ＋
+  新規 readingDictionary.ts のみ（Rust/config/deps 変更なし）。`cargo check` は Rust 変更なしのため省略。
+- エンジン＋内蔵パターンの Node 単体サニティ（V8＝WebView2/Chromium と同じ lookbehind）: w→わら・ww/www/wwww→わらわら・
+  楽しいw→楽しいわら・楽しいww/楽しいwwww→楽しいわらわら（1つ=わら／2つ以上=わらわら）／law・how・few→非変換／
+  ChatGPT・chatgpt→チャットジーピーティー（大小無視）／煙草→たばこ・草原で草ww→そうげんでくさわらわら／乙女→おとめ・乙→おつ／
+  配信API→配信エーピーアイ／curl・capital→非変換（`\b` ガード）／17時→18時→やじるし／空辞書素通し、の 19 ケース＋passthrough すべて pass。
+- **未実施（ユーザー環境で確認予定）**: 実機 `pnpm --filter ./apps/desktop tauri dev` でコメビュに "wwww" / "ChatGPT すごい" を
+  流し「わら」「チャットジーピーティー」等で読まれること・辞書空/適用後空でも従来どおり読み上げが動くこと。
+
+### 変更ファイル（041a）
+
+- frontend（新規）: `apps/desktop/src/features/comment-viewer/readingDictionary.ts`
+- frontend（変更）: `apps/desktop/src/features/comment-viewer/ttsQueue.ts`（getReadingDictionary 追加・enqueue で sanitize 後段適用）
+- frontend（変更）: `apps/desktop/src/screens/comment-viewer/CommentViewerApp.tsx`（BUILTIN_READING_DICTIONARY を getter で配線）
