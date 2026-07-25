@@ -5521,3 +5521,81 @@ E2E フィードバック 6 件のうち、軽微な UI 修正 5 件を先行実
 - 検証: `pnpm --filter ./apps/desktop typecheck` OK ／ `lint` OK。実機表示はユーザー環境で確認予定
   （見出し「コメント取得」・Twitch/YouTube のリンクボタンが「連携／連携済み」・取得開始/停止・状態表示は従来どおり）。
 - 次段: 042b（本体 `StatusIndicator` を Twitch/YouTube 別カード化＋設定ビューの接続 UI を本体へ移設・撤去。軽 security-review）。
+
+## 2026-07-26 (042b 接続 UI をコメビュ本体へ・プラットフォーム別 展開カード化)
+
+配信接続の状態と操作を、コメビュ**本体**の**プラットフォーム別カード**（Twitch / YouTube を別々の枠付きカード）へ集約した。
+折りたたみ時は接続状態（円色＋テキスト）、クリックで展開して**連携・取得開始・停止**を行える。033b の「接続 UI を設定ビューへ
+集約」を**部分反転**して本体カードへ戻したもの。**安全設計（窓内 WS 1 本・main 窓 no-internet・新規 command/capability/依存なし・
+`csp:null`）は不変で踏襲**。042a（文言「連携」）済みを前提に、文言はそのままカードへ移設した。
+
+- **本体カードの構成**（`CommentViewerApp.tsx`・`view === "comment"`）: ツールバーから `StatusIndicator` を撤去し、直下に
+  Twitch / YouTube の `ConnectionCard` を 2 枚配置。**折りたたみ頭**＝円ドット（`STATUS_DOT_CLASS`）＋サービス名＋状態ラベル
+  （`deriveConnectionStatus`/`STATUS_LABEL`）を `<button aria-expanded>` で提示（クリック／Enter・Space／フォーカスは button 標準）。
+  **展開本体**＝連携（`startLogin`）／取得開始（`startSession`）／停止（`stopSession`）。Twitch はチャンネル入力・device code 提示も
+  同カード内。詳細状態テキスト（`SESSION_STATE_LABEL`＋`!streamConnected` 時「コメント取得プロセスに接続中…」・YouTube の
+  「ブラウザで同意してください…」）は既存の出し分けをそのまま移植。展開状態は本体ローカル state `expanded: {twitch, youtube}`
+  （既定 折りたたみ）。**既存ハンドラ（`handleTwitchConnect`/`handleStartSession`/`handleStopSession`/YouTube 系）と制御フレームを
+  そのまま呼び、新規追加なし**。
+- **status ロジックの再利用方式**: `StatusIndicator.tsx` の file-local だった `ConnectionStatus`/`deriveConnectionStatus`/`STATUS_LABEL`
+  を、docstring の指示どおり非 React ロジック用 `features/comment-viewer/connectionStatus.ts` へ**移設・export（単一化）**。
+  非コンポーネントファイルなので `react-refresh/only-export-components` を壊さない。**ロジックは複製していない**。
+  `STATUS_DOT_CLASS`（status → CSS Module クラスの対応表）は CSS 結合のため `ConnectionCard` が単独所有。
+- **`ConnectionCard` の有無**: 新規に切り出した（presentational・`screens/comment-viewer/ConnectionCard.tsx`）。汎用の折りたたみ
+  展開カード（頭＝状態表示／body＝`children`）で、**サービス固有の操作フォームは既存 state/ハンドラのある `CommentViewerApp` 側に
+  置き `children` で渡す**。ConnectionCard は WS・通信面を一切持たない（表示専用）。
+- **SettingsView の撤去範囲**: 「コメント取得」カード（旧 146-256）を撤去し、接続系 props（`streamConnected`/`linked`/`sessionState`/
+  `sessionReason`/`deviceCode`/`channel`/`onChannelChange`/`onTwitchConnect`/`onStartSession`/`onStopSession`/YouTube 系）と
+  `SESSION_STATE_LABEL`（→CommentViewerApp へ移設）・`DeviceCodePrompt` import を除去。**読み上げ（VOICEVOX）／OBS オーバーレイの
+  カード・戻る/歯車導線・`ttsEnabled` は残置**（VOICEVOX/overlay は不変）。
+- **削除**: `StatusIndicator.tsx`（置換で未使用化・テスト参照なし・ロジックは connectionStatus.ts へ移設済み）。
+- **WS 1 本/main no-internet 確認**: `connectCommentStream` を呼ぶのはコメビュ窓内で `CommentViewerApp` の useEffect **1 箇所のまま**
+  （ConnectionCard/connectionStatus は WS を持たない＝カード化で二重化せず）。接続 UI・sidecar 通信は comment-viewer webview に
+  閉じたまま（本体へ移しても main 窓へ出さない）。宛先 `ws://127.0.0.1:<port>` 不変。
+- **security-review（軽・通過）**: ①複数 WS を張っていない ②main へ通信を漏らしていない ③新規 command/capability/依存を足していない、
+  を確認して通過。diff は frontend のみ（`Cargo.*`/`capabilities/*`/`tauri.conf*`/`package.json`/`pnpm-lock.yaml` 差分ゼロ）＝
+  `csp:null` 不変・新規宛先/API なし。取得コメント本文のログ/DB 出力は増やしていない。後回し可: 未参照化 dead CSS は計 5 クラス
+  ＝旧グリッド `.connGrid`/`.connSpan`/`.connService`＋StatusIndicator.tsx 削除で新たに `.statusRow`/`.statusIndicator`（残置・害なし）。
+- **変更/作成ファイル**（`git diff --stat`＝4 変更＋2 新規）: 変更＝`CommentViewerApp.tsx`／`CommentViewerApp.module.css`
+  （`.connCardHead`/`.connChevron`/`.connActions` 追加・`.toolbar` を `flex-end` へ）／`SettingsView.tsx`、削除＝`StatusIndicator.tsx`、
+  新規＝`features/comment-viewer/connectionStatus.ts`／`screens/comment-viewer/ConnectionCard.tsx`。
+  （注記: 本行は base 実装時点の記録。直後の「042b デザイン改修＝ヘッダー内 接続ピル＋ポップオーバー」節で `.connCardHead`/`.connChevron` は
+  撤去・`.toolbar` は `space-between` へ再変更したため、HEAD を diff した最終形とは一致しない＝時系列ログとして下記 改節が正。）
+- 検証: `pnpm --filter ./apps/desktop typecheck` OK ／ `lint` OK。実機表示・`lsof -i` の no-internet 確認はユーザー環境で予定
+  （本体で Twitch/YouTube カードの折りたたみ状態表示→クリック展開→連携/取得開始/停止 が完結／設定ビューに接続カードが無い
+  （VOICEVOX/OBS/歯車は残る）／既存の連携・取得・停止・device code・状態表示が退行なし）。
+- 次段: 043 系（投げ銭強調＋取得精緻化）または 044 系（OBS 自動ソース追加スパイク）を、ユーザー指示後に 1 機能ずつ着手。
+
+## 2026-07-26 (042b デザイン改修＝ヘッダー内 接続ピル＋ポップオーバー)
+
+042b の接続カードの見た目・操作導線をユーザー指摘で作り替えた（**frontend の UI 再構成のみ**・接続フロー/sidecar/制御フレームは不変）。
+本体下の「縦積み・インライン展開カード」を、**ヘッダー（ツールバー）内の横長・角丸ピル 2 枚（Twitch / YouTube を横並び）**にし、
+ピルをクリックすると**ピル直下に非モーダルのポップオーバー（別カード）を重ねて出す**方式へ変更。**他要素の位置は動かさない**
+（`position:absolute`）／**1 つずつ開く（ラジオ排他）**／**外側クリック・Esc で閉じる**。
+
+- **配置**（`CommentViewerApp.tsx`・`view === "comment"`）: `.toolbar` を `flex-end`→`space-between` に戻し、**左＝`.connCluster`（接続ピル群）／
+  右＝`.toolbarActions`（読み上げトグル＋視聴者＋設定）**。本体下にあった旧カード 2 枚は撤去（クレジット等の順序・位置は不変）。
+- **状態モデル**: 独立 bool の `expanded:{twitch,youtube}` を廃し、**単一 `openCard: "twitch" | "youtube" | null`** へ。一方を開くと他方は
+  自動で閉じる（ラジオ）が state 構造で保証される。**外側クリック/Esc** は `openCard!==null` の間だけ document に `pointerdown`/`keydown`
+  リスナを張る UI 専用 `useEffect`＋`connClusterRef` で実装（cluster 内＝他方ピル押下はトグル切替／ポップオーバー内クリックでは閉じない）。
+  **WS の `useEffect` は非変更**（窓内 WS 1 本のまま）。
+- **`ConnectionCard` の作り替え**（presentational）: 折りたたみカード→**ピル（`<button aria-haspopup="dialog" aria-expanded>`）＋
+  `open` 時のみ描画する `role="dialog"` ポップオーバー**へ。props は `{service, sessionState, open, onToggle, children}`。状態導出
+  （`deriveConnectionStatus`/`STATUS_LABEL`）・色覚非依存ラベルは不変。操作フォーム（連携/取得開始/停止・device code・状態テキスト・
+  disabled 条件・出し分け・文言）は**そのまま `children` として移植**（退行なし）。シェブロン `▸/▾` は廃止。
+- **CSS**（`CommentViewerApp.module.css`）: `.connCluster`／`.connPillWrap`(relative)／`.connPill`(横長丸角・hover・`[aria-expanded="true"]`
+  で縁強調・`:focus-visible` リング)／`.connPopover`(absolute・`top:calc(100%+6px)`・`z-index:40`・surface・border・`box-shadow` は
+  `var(--popover-shadow)`・`min-width:280px`/`max-width:calc(100vw-32px)`) を追加。旧 `.connCardHead`/`.connChevron` は未参照化のため撤去。
+  `.connActions`/`.connActions .input` はポップオーバー内で継続利用。`.toolbar` を space-between へ。全て role トークン（生 hex/rgba なし）。
+- **theme.css**: ポップオーバーの落ち影用に `--popover-shadow`（`color-mix` 派生・:root 基底のみ＝両テーマ共通）を 1 つ追加。生 hex は本トークンに閉じ込め。
+- **security（軽・据え置き）**: ①窓内 WS 1 本（`connectCommentStream` の useEffect 非変更・外側クリック effect は DOM リスナのみで WS を張らない）
+  ②main 窓へ通信を漏らさない（変更は comment-viewer webview 内のみ・宛先 `ws://127.0.0.1:<port>` 不変）③新規 command/capability/依存なし
+  （`src-tauri/**`・`capabilities/*`・`tauri.conf.json`〔`csp:null`〕・`Cargo.*`・`package.json`・`pnpm-lock.yaml` 差分ゼロ）。`docs/security.md` 非改訂。
+- **テスト**: `ConnectionCard.test.tsx` を新契約（ピル＋ポップオーバー・`aria-haspopup`/`aria-expanded`・open で dialog+children 描画・
+  クリックで onToggle）へ更新。`connectionStatus.test.ts` は純ロジック不変で流用。ラジオ排他・外側クリックは `CommentViewerApp`（WS/TTS 依存で
+  単体化しない方針）側のため**手動 E2E**で確認。
+- **変更ファイル**: `CommentViewerApp.tsx`／`CommentViewerApp.module.css`／`ConnectionCard.tsx`／`ConnectionCard.test.tsx`／`styles/theme.css`／
+  `docs/progress.md`（Rust・capability・tauri.conf・Cargo・package.json・pnpm-lock・security.md は差分ゼロ）。
+- 検証: `pnpm --filter ./apps/desktop typecheck` OK ／ `lint` OK ／ `test` OK（8 files / 53 tests）。**実機表示・`lsof -i` の no-internet は
+  ユーザー環境で予定**（ヘッダーに横並びピル→クリックで下にポップオーバー→他方を開くと閉じる→外側クリック/Esc で閉じる→他要素が動かない／
+  連携・取得開始・停止・device code・状態表示が退行なし）。

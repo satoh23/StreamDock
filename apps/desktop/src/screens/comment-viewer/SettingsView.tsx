@@ -1,4 +1,3 @@
-import type { DeviceCodePrompt } from "../../features/comment-viewer/commentStream";
 import type { VoicevoxSpeaker } from "../../features/comment-viewer/voicevox";
 import {
   OVERLAY_FONTS,
@@ -19,38 +18,16 @@ import styles from "./CommentViewerApp.module.css";
  * `handleYouTubeConnect` / `handleYouTubeStartSession` / `handleYouTubeStopSession`）を props でそのまま受け取って
  * 呼ぶだけ。よって WS 接続は窓内 1 本のまま・宛先も不変で、メイン窓 no-internet 境界に影響しない。
  *
- * 034(UI刷新): 帯の縦積みを 3 カード（接続 / 読み上げ(VOICEVOX) / OBSオーバーレイ）へ再編し、選択 UI は自作 Select に
+ * 034(UI刷新): 帯の縦積みを複数カード（読み上げ(VOICEVOX) / OBSオーバーレイ）へ再編し、選択 UI は自作 Select に
  * 統一する。表示・レイアウトのみの変更で、上記ハンドラ・disabled 条件・localStorage 連携などの挙動は不変。
+ *
+ * 042b: 接続（Twitch/YouTube の連携・取得開始/停止・Device Code 提示）カードは本体のプラットフォーム別カードへ移設
+ * したため、この設定ビューからは撤去した（033b の部分反転）。設定ビューは読み上げ／OBS オーバーレイの設定のみを担い、
+ * 接続系の state・ハンドラは受け取らない（表示専用で WS を持たない性質は不変・窓内 1 本のまま）。
  */
-
-/** 取得セッション状態の日本語ラベル（sidecar の session.state に対応）。 */
-const SESSION_STATE_LABEL: Record<string, string> = {
-  idle: "待機",
-  connecting: "接続中",
-  connected: "取得中",
-  failed: "失敗",
-};
 
 interface SettingsViewProps {
   onBack: () => void;
-  streamConnected: boolean;
-  // Twitch
-  linked: boolean;
-  sessionState: string;
-  sessionReason: string | null;
-  deviceCode: DeviceCodePrompt | null;
-  channel: string;
-  onChannelChange: (value: string) => void;
-  onTwitchConnect: () => void;
-  onStartSession: () => void;
-  onStopSession: () => void;
-  // YouTube
-  youtubeLinked: boolean;
-  youtubeSessionState: string;
-  youtubeSessionReason: string | null;
-  onYouTubeConnect: () => void;
-  onYouTubeStartSession: () => void;
-  onYouTubeStopSession: () => void;
   // 033c: VOICEVOX 自動連携 ON/OFF（読み上げトグルは本体コメントビューへ・state は CommentViewerApp が保持）。
   voicevoxAutolink: boolean;
   onVoicevoxAutolinkChange: (value: boolean) => void;
@@ -81,22 +58,6 @@ interface SettingsViewProps {
 
 export function SettingsView({
   onBack,
-  streamConnected,
-  linked,
-  sessionState,
-  sessionReason,
-  deviceCode,
-  channel,
-  onChannelChange,
-  onTwitchConnect,
-  onStartSession,
-  onStopSession,
-  youtubeLinked,
-  youtubeSessionState,
-  youtubeSessionReason,
-  onYouTubeConnect,
-  onYouTubeStartSession,
-  onYouTubeStopSession,
   voicevoxAutolink,
   onVoicevoxAutolinkChange,
   ttsEnabled,
@@ -139,120 +100,6 @@ export function SettingsView({
           ←
         </button>
         <h1 className={styles.settingsTitle}>設定</h1>
-      </div>
-
-      {/* 034(UI刷新): 接続カード（Twitch + YouTube を 1 枚に整列）。ボタンの意味・disabled 条件・ハンドラは不変で、
-          先頭にサービス名の見出し列を足して 2 行を揃えた。ユーザー明示操作でのみ発火する（§1）。 */}
-      <div className={styles.card}>
-        <div className={styles.cardHead}>コメント取得</div>
-        {/* 034(UI刷新): Twitch/YouTube を共有グリッドに載せ、列（サービス名・接続・チャンネル・取得開始・停止・状態）を
-            揃える。YouTube はチャンネル入力が無いので同列に空セルを置いて、取得開始/停止の x 位置を Twitch と一致させる。 */}
-        <div className={`${styles.cardBody} ${styles.connGrid}`}>
-          {/* 032c-b: Twitch 連携（Device Code ログイン → チャンネル指定で取得開始）。 */}
-          <span className={styles.connService}>Twitch</span>
-          <button
-            type="button"
-            className={styles.btn}
-            onClick={onTwitchConnect}
-            disabled={!streamConnected || linked}
-          >
-            {linked ? "連携済み" : "連携"}
-          </button>
-          <input
-            type="text"
-            className={styles.input}
-            placeholder="チャンネル名（例: shroud）"
-            value={channel}
-            onChange={(e) => onChannelChange(e.target.value)}
-          />
-          <button
-            type="button"
-            className={styles.btn}
-            onClick={onStartSession}
-            disabled={!streamConnected || !linked || channel.trim() === ""}
-          >
-            コメント取得開始
-          </button>
-          <button
-            type="button"
-            className={styles.btnGhost}
-            onClick={onStopSession}
-            disabled={!streamConnected}
-          >
-            停止
-          </button>
-          {/* 032c-b: sidecar 未接続（streamConnected=false）のときは session.state（既定 idle=「待機」）を
-              出すと「準備完了なのに無反応」に見えてしまう（今回の無反応バグの温床）。接続確立までは
-              接続状態を優先表示し、上のボタン群の disabled 表示（:disabled のグレーアウト）と合わせて
-              「まだ操作できない」ことを可視化する。接続確立後は従来どおり取得セッション状態を表示する。 */}
-          <span className={styles.status}>
-            状態:{" "}
-            {!streamConnected
-              ? "コメント取得プロセスに接続中…"
-              : `${SESSION_STATE_LABEL[sessionState] ?? sessionState}${
-                  sessionReason ? `（${sessionReason}）` : ""
-                }`}
-          </span>
-          {deviceCode && (
-            <div
-              className={`${styles.deviceCode} ${styles.connSpan}`}
-              role="status"
-            >
-              <span className={styles.deviceCodeLabel}>
-                下記 URL をブラウザで開き、次のコードを入力して連携を許可してください:
-              </span>
-              <span className={styles.codeValue}>{deviceCode.userCode}</span>
-              <span className={styles.verifyUri}>
-                {deviceCode.verificationUri}
-              </span>
-            </div>
-          )}
-
-          {/* 032c-d: YouTube 連携（Authorization Code ログイン → ブラウザ同意 → 取得開始）。Twitch と併存・各サービス
-              個別選択（同時取得はしない）。チャンネル名入力は不要（mine=true の自アカウントのアクティブ配信）。
-              認可画面は Rust がシステムブラウザで accounts.google.com を開く（sidecar は URL に触らず・
-              code_verifier は載らない）。ユーザー明示操作でのみ発火する（§1）。 */}
-          <span className={styles.connService}>YouTube</span>
-          <button
-            type="button"
-            className={styles.btn}
-            onClick={onYouTubeConnect}
-            disabled={!streamConnected || youtubeLinked}
-          >
-            {youtubeLinked ? "連携済み" : "連携"}
-          </button>
-          {/* チャンネル列の空セル（Twitch のチャンネル入力と桁を合わせて取得開始/停止を揃える）。 */}
-          <span aria-hidden="true" />
-          <button
-            type="button"
-            className={styles.btn}
-            onClick={onYouTubeStartSession}
-            disabled={!streamConnected || !youtubeLinked}
-          >
-            コメント取得開始
-          </button>
-          <button
-            type="button"
-            className={styles.btnGhost}
-            onClick={onYouTubeStopSession}
-            disabled={!streamConnected}
-          >
-            停止
-          </button>
-          <span className={styles.status}>
-            状態:{" "}
-            {!streamConnected
-              ? "コメント取得プロセスに接続中…"
-              : !youtubeLinked && youtubeSessionState === "connecting"
-                ? "ブラウザで同意してください…"
-                : `${SESSION_STATE_LABEL[youtubeSessionState] ?? youtubeSessionState}${
-                    youtubeSessionReason ? `（${youtubeSessionReason}）` : ""
-                  }`}
-          </span>
-          <span className={`${styles.note} ${styles.connSpan}`}>
-            YouTube はチャンネル名入力不要（自分のアクティブ配信を取得）。無料クォータ（10,000 units/日）を使い切ると取得は自動停止します。
-          </span>
-        </div>
       </div>
 
       {/* 033c/034(UI刷新): 読み上げ（VOICEVOX）カード。自動連携は設定向けの一度きり設定（読み上げ ON/OFF は配信中に

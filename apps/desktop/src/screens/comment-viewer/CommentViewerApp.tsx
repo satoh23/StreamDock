@@ -57,7 +57,7 @@ import { SettingsView } from "./SettingsView";
 import { ViewersView } from "./ViewersView";
 import { ViewerDetailPanel } from "./ViewerDetailPanel";
 import { viewerIdOf } from "./viewerFormat";
-import { StatusIndicator } from "./StatusIndicator";
+import { ConnectionCard } from "./ConnectionCard";
 import { ToggleSwitch } from "./ToggleSwitch";
 import styles from "./CommentViewerApp.module.css";
 
@@ -73,6 +73,18 @@ import styles from "./CommentViewerApp.module.css";
 
 /** ENGINE 稼働の再確認間隔（ミリ秒）。ループバック GET /version の軽いポーリング。 */
 const ENGINE_POLL_INTERVAL_MS = 5000;
+
+/**
+ * 042b: 展開カード本体に出す取得セッションの詳細状態ラベル（sidecar の session.state に対応）。もとは
+ * `SettingsView` の file-local だったが、接続 UI を本体カードへ移設したのでここへ移す。カード頭の
+ * `STATUS_LABEL`（待機中/接続中/接続済み/失敗）とは別語彙（取得中 等）で、展開時の詳細行にだけ使う。
+ */
+const SESSION_STATE_LABEL: Record<string, string> = {
+  idle: "待機",
+  connecting: "接続中",
+  connected: "取得中",
+  failed: "失敗",
+};
 
 /**
  * 起動要求後にボタンを disabled 維持する猶予（ミリ秒）。多重 spawn 防止のため起動成功後もこの間は
@@ -154,6 +166,39 @@ export function CommentViewerApp() {
   const [view, setView] = useState<"comment" | "settings" | "viewers">(
     "comment",
   );
+  // 042b（デザイン改修）: ヘッダー内 接続ピル（Twitch / YouTube）のポップオーバー開閉。1 つずつ開く（ラジオ排他）ので
+  // 独立 bool ではなく単一の openCard で持つ（一方を開くと他方は自動的に閉じる）。表示状態のみでコメント受信・WS には触れない。
+  const [openCard, setOpenCard] = useState<"twitch" | "youtube" | null>(null);
+  // ポップオーバーの「外側クリック」/ Esc 判定用に、ピル 2 枚＋各ポップオーバーを内包する cluster を参照する。
+  const connClusterRef = useRef<HTMLDivElement | null>(null);
+  // 042b（デザイン改修）: ポップオーバーは外側クリックまたは Esc で閉じる。開いている間だけ document リスナを張る
+  // UI 専用の effect で、WS/sidecar には一切触れない（窓内 WS 1 本のまま）。cluster 内クリック（＝他方のピル）は
+  // トグルで切替＝ラジオ排他が成立し、ポップオーバー内（フォーム）クリックでは閉じない。
+  useEffect(() => {
+    if (openCard === null) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (!connClusterRef.current?.contains(e.target as Node)) {
+        setOpenCard(null);
+      }
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      // レビュー対応（a11y）: Esc で閉じる前に、開いているピル（`aria-expanded="true"`＝ラジオで常に 1 枚）へ
+      // フォーカスを戻す。フォーカスがポップオーバー内（入力/ボタン）にあるまま unmount すると focus が body へ落ち、
+      // キーボードユーザーが操作位置を失うため。state 更新前なので DOM にまだ開いているピルが在り querySelector で拾える。
+      // 外側クリック（pointer）では戻さない（ユーザーは既に別要素へ操作を移しており、戻すと逆に邪魔になるため＝disclosure の定石）。
+      connClusterRef.current
+        ?.querySelector<HTMLElement>('[aria-expanded="true"]')
+        ?.focus();
+      setOpenCard(null);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [openCard]);
   // 038b フォローアップ: 流れているコメントをクリックすると、コメント本体の右にその視聴者の詳細をスプリット表示する
   // （× で閉じる）。WS/comments/recordComments/sessionIdRef には触れない＝コメント受信は止まらず、選択 id を持つだけ。
   const [selectedViewerId, setSelectedViewerId] = useState<string | null>(null);
@@ -642,26 +687,11 @@ export function CommentViewerApp() {
         // 038b: 視聴者一覧・詳細＋配信者メモ。表示専用（invoke のみ）で WS/TTS/sidecar を持たない（窓内 WS 1 本のまま）。
         <ViewersView onBack={() => setView("comment")} />
       ) : view === "settings" ? (
-        // 033b: 接続 UI（Twitch/YouTube の接続・取得開始/停止・Device Code 提示）は設定ビューへ集約。
-        // 既存 state・ハンドラを props で渡すだけで、SettingsView は WS を持たない（窓内 1 本のまま）。
+        // 042b: 接続 UI（Twitch/YouTube の連携・取得開始/停止・Device Code 提示）は本体のプラットフォーム別カードへ
+        // 移設した（033b の部分反転）。設定ビューは読み上げ（VOICEVOX）／OBS オーバーレイの設定のみを担い、接続系の
+        // state・ハンドラは受け取らない。表示専用で WS を持たない性質は不変（窓内 1 本のまま）。
         <SettingsView
           onBack={() => setView("comment")}
-          streamConnected={streamConnected}
-          linked={linked}
-          sessionState={sessionState}
-          sessionReason={sessionReason}
-          deviceCode={deviceCode}
-          channel={channel}
-          onChannelChange={setChannel}
-          onTwitchConnect={handleTwitchConnect}
-          onStartSession={handleStartSession}
-          onStopSession={handleStopSession}
-          youtubeLinked={youtubeLinked}
-          youtubeSessionState={youtubeSessionState}
-          youtubeSessionReason={youtubeSessionReason}
-          onYouTubeConnect={handleYouTubeConnect}
-          onYouTubeStartSession={handleYouTubeStartSession}
-          onYouTubeStopSession={handleYouTubeStopSession}
           voicevoxAutolink={voicevoxAutolink}
           onVoicevoxAutolinkChange={setVoicevoxAutolink}
           ttsEnabled={ttsEnabled}
@@ -682,14 +712,149 @@ export function CommentViewerApp() {
         />
       ) : (
         <>
-          {/* 033b/034d/034(UI刷新): 本体上部の小さなツールバーを 1 行に集約。左に接続状態インジケータ（横並び 1 行）、
-              右クラスタに VOICEVOX 読み上げトグル（配信中に頻繁に切り替えるためここが UX 上ベスト）と『⚙ 設定』ボタン。
-              OBS オーバーレイの開閉は 034d で設定ビューの「OBS オーバーレイ」節（1 トグル）へ移設済み。 */}
+          {/* 033b/034d/034(UI刷新)/042b/042b改: 本体上部ヘッダー。左＝プラットフォーム別 接続ピル（Twitch / YouTube を
+              横並び）、右クラスタ＝VOICEVOX 読み上げトグル（配信中に頻繁に切替＝UX 上ベスト）＋視聴者ボタン＋『⚙ 設定』ボタン。
+              接続ピルはクリックでピル直下に非モーダルのポップオーバー（連携/取得開始/停止）を重ねて出す（他要素の位置は動かさない・
+              1 つずつ＝ラジオ・外側クリック/Esc で閉じる）。既存ハンドラ・制御フレームをそのまま呼び、WS は窓内 1 本のまま
+              （ConnectionCard は表示専用で通信面を持たない・main 窓 no-internet 不変）。 */}
           <div className={styles.toolbar}>
-            <StatusIndicator
-              twitchSessionState={sessionState}
-              youtubeSessionState={youtubeSessionState}
-            />
+            {/* 042b改: 接続ピル群（Twitch / YouTube）。cluster ref で外側クリック判定（内包する他方ピル押下はラジオ切替＝閉じない）。 */}
+            <div className={styles.connCluster} ref={connClusterRef}>
+              <ConnectionCard
+                service="Twitch"
+                sessionState={sessionState}
+                open={openCard === "twitch"}
+                onToggle={() =>
+                  setOpenCard((prev) => (prev === "twitch" ? null : "twitch"))
+                }
+              >
+                {/* 032c-b/042b改2: Twitch 連携（Device Code ログイン → ユーザー名指定で取得開始）。ユーザー明示操作でのみ発火する（§1）。
+                    レイアウトは YouTube と揃え、最上段に「何を入れるか」を明示したユーザー名入力（ラベル付き）を置き、その下に
+                    連携／取得開始／停止のボタン行、さらに下に状態を並べる。 */}
+                {/* 最上段: ユーザー名入力（<label> で包み、ラベルクリックで入力にフォーカス＝入力対象を明確化）。Twitch の
+                    チャンネル名＝配信者のユーザー名なので表示は「ユーザー名」とする（内部の state 名 channel は据え置き）。 */}
+                <label className={styles.connField}>
+                  <span className={styles.connFieldLabel}>ユーザー名</span>
+                  <input
+                    type="text"
+                    className={styles.input}
+                    placeholder="例: shroud"
+                    value={channel}
+                    onChange={(e) => setChannel(e.target.value)}
+                  />
+                </label>
+                <div className={styles.connActions}>
+                  <button
+                    type="button"
+                    className={styles.btn}
+                    onClick={handleTwitchConnect}
+                    disabled={!streamConnected || linked}
+                  >
+                    {linked ? "連携済み" : "連携"}
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.btn}
+                    onClick={handleStartSession}
+                    disabled={
+                      !streamConnected || !linked || channel.trim() === ""
+                    }
+                  >
+                    コメント取得開始
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.btnGhost}
+                    onClick={handleStopSession}
+                    disabled={!streamConnected}
+                  >
+                    停止
+                  </button>
+                </div>
+                {/* 032c-b: sidecar 未接続（streamConnected=false）のときは session.state（既定 idle=「待機」）を出すと
+                    「準備完了なのに無反応」に見えるため、接続確立までは接続状態を優先表示し、ボタン群の disabled と合わせて
+                    「まだ操作できない」ことを可視化する。接続確立後は従来どおり取得セッション状態を表示する。 */}
+                <span className={styles.status}>
+                  状態:{" "}
+                  {!streamConnected
+                    ? "コメント取得プロセスに接続中…"
+                    : `${SESSION_STATE_LABEL[sessionState] ?? sessionState}${
+                        sessionReason ? `（${sessionReason}）` : ""
+                      }`}
+                </span>
+                {/* 042b改（ポップオーバー×device code の可視性）: device code は「ピルを開いて連携ボタンを押す」導線でのみ
+                    到着するため、到着時ポップオーバーは必ず開いている＝閉じていて見えない退行はない。開閉状態 `openCard` は
+                    常時マウントの CommentViewerApp が保持し、view 切替（設定/視聴者）で戻っても保たれる。再修正トリガー＝
+                    閉じている間にも device code を受け取りうる導線（自動連携・再ログイン等）を足したら、到着時に該当ピルを
+                    自動で開く（`setOpenCard("twitch")`）。 */}
+                {deviceCode && (
+                  <div className={styles.deviceCode} role="status">
+                    <span className={styles.deviceCodeLabel}>
+                      下記 URL をブラウザで開き、次のコードを入力して連携を許可してください:
+                    </span>
+                    <span className={styles.codeValue}>
+                      {deviceCode.userCode}
+                    </span>
+                    <span className={styles.verifyUri}>
+                      {deviceCode.verificationUri}
+                    </span>
+                  </div>
+                )}
+              </ConnectionCard>
+
+              <ConnectionCard
+                service="YouTube"
+                sessionState={youtubeSessionState}
+                open={openCard === "youtube"}
+                onToggle={() =>
+                  setOpenCard((prev) => (prev === "youtube" ? null : "youtube"))
+                }
+              >
+                {/* 032c-d: YouTube 連携（Authorization Code ログイン → ブラウザ同意 → 取得開始）。Twitch と併存・各サービス
+                    個別選択（同時取得はしない）。チャンネル名入力は不要（mine=true の自アカウントのアクティブ配信）。
+                    認可画面は Rust がシステムブラウザで accounts.google.com を開く（sidecar は URL に触らず・code_verifier は
+                    載らない）。ユーザー明示操作でのみ発火する（§1）。 */}
+                <div className={styles.connActions}>
+                  <button
+                    type="button"
+                    className={styles.btn}
+                    onClick={handleYouTubeConnect}
+                    disabled={!streamConnected || youtubeLinked}
+                  >
+                    {youtubeLinked ? "連携済み" : "連携"}
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.btn}
+                    onClick={handleYouTubeStartSession}
+                    disabled={!streamConnected || !youtubeLinked}
+                  >
+                    コメント取得開始
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.btnGhost}
+                    onClick={handleYouTubeStopSession}
+                    disabled={!streamConnected}
+                  >
+                    停止
+                  </button>
+                </div>
+                <span className={styles.status}>
+                  状態:{" "}
+                  {!streamConnected
+                    ? "コメント取得プロセスに接続中…"
+                    : !youtubeLinked && youtubeSessionState === "connecting"
+                      ? "ブラウザで同意してください…"
+                      : `${SESSION_STATE_LABEL[youtubeSessionState] ?? youtubeSessionState}${
+                          youtubeSessionReason ? `（${youtubeSessionReason}）` : ""
+                        }`}
+                </span>
+                <span className={styles.note}>
+                  YouTube はチャンネル名入力不要（自分のアクティブ配信を取得）。無料クォータ（10,000 units/日）を使い切ると取得は自動停止します。
+                </span>
+              </ConnectionCard>
+            </div>
             <div className={styles.toolbarActions}>
               <ToggleSwitch
                 label="VOICEVOX読み上げ"

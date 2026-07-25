@@ -127,6 +127,10 @@
   --overlay-source-twitch-bg: #9146ff; /* サイト名ピル：Twitch 紫 */
   --overlay-source-youtube-bg: #ff0000; /* サイト名ピル：YouTube 赤 */
 
+  /* 042b改: ヘッダー内 接続ピルのポップオーバー（下に重ねて出す非モーダル）用の落ち影。tutorial 影と同様、影は両テーマとも
+     暗色でよいので :root 基底のみに置き per-theme 上書きはしない。生 hex は本トークンに閉じ込め、*.module.css からは var で参照する。 */
+  --popover-shadow: color-mix(in srgb, #05070d 45%, transparent);
+
   --radius: 18px;
 
   color: var(--text);

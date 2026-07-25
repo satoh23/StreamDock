@@ -21,8 +21,8 @@
   color: var(--muted);
 }
 
-/* 033b/034(UI刷新): comment ビュー上部の小さなツールバー。左=接続状態インジケータ／
-   右クラスタ=読み上げトグル＋『⚙ 設定』ボタン（3 ゾーンを 1 行に集約）。狭い窓では折り返す。 */
+/* 033b/034(UI刷新)/042b/042b改: comment ビュー上部のヘッダー。左＝接続ピル群（Twitch / YouTube）、右＝右クラスタ
+   （読み上げトグル＋視聴者/設定ボタン）を space-between で振り分ける。狭い窓では折り返す。 */
 .toolbar {
   display: flex;
   align-items: center;
@@ -84,7 +84,11 @@
 }
 
 /* 033b/034(UI刷新): 接続状態インジケータ。接続ボタンの代わりに本体へ置く。サービス別 2 行 → 横並び 1 行へ
-   （情報密度を下げつつ一目確認）。狭い窓では折り返す。 */
+   （情報密度を下げつつ一目確認）。狭い窓では折り返す。
+   042b（残置理由）: 唯一の利用元だった StatusIndicator.tsx を削除したため .statusIndicator / .statusRow は未参照化
+   （dead CSS）。円ドット系（.statusDot / .dot* / .statusService / .statusLabel）は ConnectionCard が引き続き使用＝生存。
+   .connGrid / .connSpan / .connService と同じく「当面残置（CSS Module は未使用でもエラーにならず害なし）」扱い。
+   再修正トリガー＝CSS を tidy する回で、これら 5 クラス（本 2 つ＋グリッド 3 つ）をまとめて削除する。 */
 .statusIndicator {
   display: flex;
   flex-direction: row;
@@ -376,6 +380,95 @@
   flex-direction: column;
   gap: 10px;
   padding: 14px;
+}
+
+/* 042b改: ヘッダー内の接続ピル群（Twitch / YouTube を横並び）。各ピルは position:relative のラッパで、真下に
+   ポップオーバーを絶対配置で重ねる（他要素の位置を動かさない）。狭い窓では折り返す。 */
+.connCluster {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.connPillWrap {
+  position: relative;
+}
+
+/* 042b改: 横長・角丸の接続ピル（クリックで真下にポップオーバーを開くトリガー）。中身＝状態ドット＋サービス名＋状態ラベル。 */
+.connPill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border-soft);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.connPill:hover {
+  background: var(--surface);
+}
+
+/* 開いている間はピルの縁を強調して「このピルのポップオーバーが出ている」ことを示す。 */
+.connPill[aria-expanded="true"] {
+  border-color: var(--primary-soft-border);
+}
+
+/* アイコン/テキストだけのピルでもキーボードフォーカスが分かるよう、他のゴーストボタンと同じ role トークンでリングを明示する。 */
+.connPill:focus-visible {
+  outline: 2px solid var(--primary-soft-border);
+  outline-offset: 1px;
+}
+
+/* 042b改: ピル直下に重ねる非モーダルのポップオーバー（連携/取得開始/停止フォーム）。position:absolute で本文を押し下げず、
+   z-index で上に重ねる（本文 2/5 より上・チュートリアル 9000 より下）。落ち影は theme.css の役割トークン参照（生 hex/rgba なし）。
+   max-width:calc(100vw-32px) はポップオーバーの「幅」を viewport 内にクランプするだけで、left:0（ピル左端に左寄せ）の
+   アンカーは動かさない。よってピルが右寄り（特に第 2 の YouTube ピル）に来る幅では右端がはみ出しうる。実運用では
+   .toolbar の space-between で .connCluster は左に寄り、狭窓では折り返して左に来るため実害は出にくい前提。
+   レビュー対応（後回し可・要実機確認）: 再修正トリガー＝tauri dev の狭窓で YouTube ポップオーバーが右端に溢れる/横スクロールが
+   出るのを実機確認したら、右寄りピルは right:0 へ反転するか、JS で viewport 内に位置補正する。 */
+.connPopover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 280px;
+  max-width: calc(100vw - 32px);
+  padding: 14px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  box-shadow: 0 8px 24px var(--popover-shadow);
+}
+
+/* 042b改/042b改2: ポップオーバー内の操作ボタン行（連携／取得開始／停止）。入力は最上段の .connField へ分離した。
+   狭い窓では折り返す。 */
+.connActions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* 042b改2: Twitch ポップオーバー最上段のユーザー名入力フィールド（ラベル＋入力を縦に積む）。<label> で「何を入れるか」を
+   明示し、入力は全幅（.input の width:100%）で伸ばす。YouTube はユーザー名不要のため、このフィールドは Twitch のみに置く。 */
+.connField {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.connFieldLabel {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
 }
 
 /* 034(UI刷新): 接続カードは Twitch/YouTube を 1 つの共有グリッドに載せて列を揃える。列＝
@@ -945,7 +1038,7 @@
 
 /* 右：視聴者詳細ペイン。中身は ViewerDetailPanel（.settingsView が自前で縦スクロール）。 */
 .detailPane {
-  width: clamp(280px, 42%, 460px);
+  width: clamp(280px, 35%, 460px);
   min-width: 0;
   min-height: 0;
   display: flex;
