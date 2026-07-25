@@ -8,6 +8,7 @@ import type { AuthorizedTokenAccessorProvider } from "../../../infrastructure/sh
 import { isUnauthorizedRequestError } from "../../shared/auth/error.js";
 import {
   TWITCH_EVENTSUB_MESSAGE_TYPES,
+  type TwitchBitsUseEventDto,
   type TwitchChatMessageEventDto,
   type TwitchChatNotificationEventDto,
   type TwitchEventSubEnvelopeDto,
@@ -38,7 +39,8 @@ type ConnectedEventSubSession = {
 
 type TwitchChatEvent =
   | TwitchChatMessageEventDto
-  | TwitchChatNotificationEventDto;
+  | TwitchChatNotificationEventDto
+  | TwitchBitsUseEventDto;
 
 @injectable()
 export class TwitchEventSubWebSocketClient {
@@ -102,7 +104,17 @@ export class TwitchEventSubWebSocketClient {
 
         // 直前で notification 以外を除外しているため、ここでは NotificationEnvelope として扱える。
         const notification = envelope as TwitchEventSubNotificationEnvelopeDto;
-        queue.push(notification.payload.event);
+        const event = notification.payload.event;
+        // 043a(拡張): channel.bits.use はイベント本体に一意 id を持たないため、envelope の
+        // metadata.message_id を message_id として補填する（viewer_memory の dedup キー）。
+        if (
+          notification.metadata.subscription_type === "channel.bits.use" &&
+          !(event as { message_id?: string }).message_id
+        ) {
+          (event as { message_id?: string }).message_id =
+            notification.metadata.message_id;
+        }
+        queue.push(event);
         notify();
       } catch (error) {
         streamError = error instanceof Error ? error : new Error(String(error));
@@ -297,9 +309,11 @@ export class TwitchEventSubWebSocketClient {
   }
 
   /**
-   * EventSub WebSocket セッションへ、チャット受信用の2購読を作成する。
-   * - channel.chat.message
-   * - channel.chat.notification
+   * EventSub WebSocket セッションへ、チャット受信用の購読を作成する。
+   * - channel.chat.message（必須）
+   * - channel.chat.notification（必須）
+   * - channel.bits.use（043a 拡張・任意＝非致命）: Bits Power-ups。旧トークンは bits:read scope 欠如で
+   *   403 になり得るため**失敗しても本線の 2 購読・配信を止めない**（ユーザーが再ログインすると次回接続で有効化）。
    */
   private async subscribeChatEvents(
     input: {
@@ -334,6 +348,23 @@ export class TwitchEventSubWebSocketClient {
         },
         accessToken,
       ),
+      // 043a(拡張): Bits Power-ups。scope/version/condition のいずれかが不一致でも本線を止めないよう非致命化。
+      // 失敗時は Power-ups が届かないだけ（グレースフル劣化）。§9 配慮でエラー内容（token 等）はログに残さない。
+      this.helixClient
+        .createEventSubSubscriptionWithToken(
+          {
+            type: "channel.bits.use",
+            version: "1",
+            condition: {
+              broadcaster_user_id: input.broadcasterUserId,
+            },
+            sessionId: input.sessionId,
+          },
+          accessToken,
+        )
+        .catch(() => {
+          // best-effort。bits:read 未付与（再ログイン前）・beta 仕様差異等はここで握りつぶす。
+        }),
     ]);
   }
 

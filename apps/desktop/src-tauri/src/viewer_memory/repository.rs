@@ -192,9 +192,13 @@ pub fn record_comment(conn: &Connection, c: &NewViewerComment) -> rusqlite::Resu
     //    【設計意図】増分加算ではなく挿入行から毎回全再計算（recompute-on-write）＝二重記録・順序前後でも
     //      集計がドリフトしない冪等性を優先。走査は当該 viewer 限定で idx_viewer_comments_viewer が効く。
     //      【再修正トリガ】常連の 1 セッション数千コメントで挿入が重くなったら増分更新/しきい値化を検討（Q3）。
-    //    【近似】membership は wire が subscription に畳むため CommentEventType::Membership は未到達。
-    //      subscription_count/is_member は event_type='subscription' のみで数える（累計月数は非取得＝vendor 非改修）。
-    //      【再修正トリガ】累計月数や membership を厳密に扱う要件が出たら vendor 拡張とスキーマ追加を検討（Q7）。
+    //    【043a】メンシプ（YouTube NEW_SPONSOR/MEMBER_MILESTONE→'membership'）・ギフト（Twitch
+    //      sub_gift/community_sub_gift→'gift'）を種別分離して受け取るようになった。分離前は全て 'subscription'
+    //      に畳まれていたため、subscription_count/is_member/last_subscription_at は
+    //      event_type IN ('subscription','membership','gift') で数えて**分離前と同じ集合**を保つ
+    //      （＝取りこぼしゼロ・退行ゼロ・列追加なし）。累計月数/ギフト件数（wire の monthCount/giftCount）は
+    //      表示用途で通すのみで**端末保存しない**近似（is_member＋回数のみ）。
+    //      【再修正トリガ】membership/gift を別カウントで持ちたい要件が出たら列追加＋038 表示波及を検討（Q7）。
     //    【前提】first/last は published_at の辞書順比較（全 provider が UTC・同形 ISO8601 を送る前提）。
     //      【再修正トリガ】provider 間で TZ/フォーマットがぶれて first/last がずれるなら正規化して比較する（Q5・038c 波及）。
     tx.execute(
@@ -205,9 +209,9 @@ pub fn record_comment(conn: &Connection, c: &NewViewerComment) -> rusqlite::Resu
             superchat_count = (SELECT COUNT(*) FROM viewer_comments WHERE viewer_id = ?1 AND event_type = 'superchat' AND currency IS NOT NULL AND currency <> 'BITS'),
             superchat_amount = (SELECT COALESCE(SUM(amount), 0) FROM viewer_comments WHERE viewer_id = ?1 AND event_type = 'superchat' AND currency IS NOT NULL AND currency <> 'BITS'),
             superchat_currency = (SELECT currency FROM viewer_comments WHERE viewer_id = ?1 AND event_type = 'superchat' AND currency IS NOT NULL AND currency <> 'BITS' ORDER BY published_at DESC, created_at DESC LIMIT 1),
-            subscription_count = (SELECT COUNT(*) FROM viewer_comments WHERE viewer_id = ?1 AND event_type = 'subscription'),
-            is_member = (SELECT CASE WHEN EXISTS(SELECT 1 FROM viewer_comments WHERE viewer_id = ?1 AND event_type = 'subscription') THEN 1 ELSE 0 END),
-            last_subscription_at = (SELECT MAX(published_at) FROM viewer_comments WHERE viewer_id = ?1 AND event_type = 'subscription'),
+            subscription_count = (SELECT COUNT(*) FROM viewer_comments WHERE viewer_id = ?1 AND event_type IN ('subscription', 'membership', 'gift')),
+            is_member = (SELECT CASE WHEN EXISTS(SELECT 1 FROM viewer_comments WHERE viewer_id = ?1 AND event_type IN ('subscription', 'membership', 'gift')) THEN 1 ELSE 0 END),
+            last_subscription_at = (SELECT MAX(published_at) FROM viewer_comments WHERE viewer_id = ?1 AND event_type IN ('subscription', 'membership', 'gift')),
             first_seen_at = (SELECT MIN(published_at) FROM viewer_comments WHERE viewer_id = ?1),
             last_comment_at = (SELECT MAX(published_at) FROM viewer_comments WHERE viewer_id = ?1),
             updated_at = ?2
@@ -431,6 +435,58 @@ mod tests {
         assert_eq!(v.subscription_count, 1);
         assert!(v.is_member);
         assert_eq!(v.last_subscription_at.as_deref(), Some("2026-01-02T00:00:00Z"));
+    }
+
+    // 043a: membership（YouTube）/ gift（Twitch）も subscription 系集計に取りこぼさず数える。
+    //       分離前は sub_gift/community_sub_gift/NEW_SPONSOR/MILESTONE が全て 'subscription' に畳まれ
+    //       ここに入っていたため、統合カウントで挙動を維持する（＝退行ゼロ・取りこぼしゼロ）。
+    //       superchat/bits/chat は subscription 系に混ざらない（退行検出）。
+    #[test]
+    fn membership_and_gift_count_into_subscription_family() {
+        let conn = test_conn();
+        record_comment(&conn, &nc("c1", "twitch:u1", "membership", None, None, "2026-01-01T00:00:00Z")).unwrap();
+        record_comment(&conn, &nc("c2", "twitch:u1", "gift", None, None, "2026-01-03T00:00:00Z")).unwrap();
+        record_comment(&conn, &nc("c3", "twitch:u1", "subscription", None, None, "2026-01-02T00:00:00Z")).unwrap();
+        record_comment(&conn, &nc("c4", "twitch:u1", "chat", None, None, "2026-01-04T00:00:00Z")).unwrap();
+        record_comment(&conn, &nc("c5", "twitch:u1", "superchat", Some(500.0), Some("JPY"), "2026-01-05T00:00:00Z")).unwrap();
+        let v = viewer(&conn, "twitch:u1");
+        assert_eq!(v.subscription_count, 3); // membership + gift + subscription
+        assert!(v.is_member);
+        assert_eq!(v.last_subscription_at.as_deref(), Some("2026-01-03T00:00:00Z")); // gift が最新
+        assert_eq!(v.superchat_count, 1); // superchat は不変（混ざらない）
+        assert_eq!(v.total_comments, 5);
+    }
+
+    // 043a(拡張): donation（Twitch charity_donation）は subscription 系にも superchat/bits 系にも入れない
+    //       新種別（列追加なし・rollup しない）。金額は行に保存されるが集計 rollup 列は作らない（§9/⑪）。
+    //       total_comments には数える（＝取りこぼしゼロ）。superchat/subscription 集計に混ざらないことを検出する。
+    #[test]
+    fn donation_is_not_counted_in_subscription_or_superchat() {
+        let conn = test_conn();
+        // charity_donation は実金銭（currency 付き）だが event_type='donation' なので superchat 集計に入らない。
+        record_comment(&conn, &nc("c1", "twitch:u1", "donation", Some(500.0), Some("JPY"), "2026-01-01T00:00:00Z")).unwrap();
+        record_comment(&conn, &nc("c2", "twitch:u1", "subscription", None, None, "2026-01-02T00:00:00Z")).unwrap();
+        record_comment(&conn, &nc("c3", "twitch:u1", "superchat", Some(300.0), Some("JPY"), "2026-01-03T00:00:00Z")).unwrap();
+        let v = viewer(&conn, "twitch:u1");
+        assert_eq!(v.subscription_count, 1); // subscription のみ（donation は入らない）
+        assert_eq!(v.superchat_count, 1); // superchat のみ（donation は入らない）
+        assert_eq!(v.superchat_amount, 300.0); // donation の 500 は superchat 合計に混ざらない
+        assert_eq!(v.total_comments, 3); // donation も総数には数える（取りこぼしゼロ）
+    }
+
+    // 043a(拡張): jewels（YouTube Jewels・取得は 043d／現状 dev-mock のみ）も新種別として既存集計に混ざらない。
+    //       通貨 'JEWELS' は bits('BITS')/superchat(実通貨) いずれの集計条件にも一致しない。total には数える。
+    #[test]
+    fn jewels_is_not_counted_in_existing_aggregations() {
+        let conn = test_conn();
+        record_comment(&conn, &nc("c1", "youtube:u1", "jewels", Some(50.0), Some("JEWELS"), "2026-01-01T00:00:00Z")).unwrap();
+        record_comment(&conn, &nc("c2", "youtube:u1", "superchat", Some(300.0), Some("JPY"), "2026-01-02T00:00:00Z")).unwrap();
+        record_comment(&conn, &nc("c3", "youtube:u1", "superchat", Some(100.0), Some("BITS"), "2026-01-03T00:00:00Z")).unwrap();
+        let v = viewer(&conn, "youtube:u1");
+        assert_eq!(v.bits_count, 1); // BITS superchat のみ（JEWELS は bits に入らない）
+        assert_eq!(v.superchat_count, 1); // JPY superchat のみ（jewels は入らない）
+        assert_eq!(v.subscription_count, 0); // jewels は subscription 系にも入らない
+        assert_eq!(v.total_comments, 3); // jewels も総数には数える
     }
 
     // P3e: first/last は published_at の MIN/MAX（順不同で挿入しても正しい）。

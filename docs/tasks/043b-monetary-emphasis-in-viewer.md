@@ -37,7 +37,7 @@
 
 - sidecar / wire / Rust の変更（**043a**）。オーバーレイの強調（**043c**）。
 - 通貨換算・投げ銭の集計/履歴 UI（038 視聴者メモリの領分）。音/アニメ演出の作り込み。
-- 「ジュエル」等 YouTube/Twitch 外の種別。
+- YouTube のギフトメンシプ／Jewels（`giftEvent`）は API には存在するが現状未受信＝取得は [043d](043d-youtube-jewels-gift-membership.md)。第三者投げ銭連携は対象外。
 
 ## セキュリティ制約（docs/security.md 準拠）
 

@@ -12,7 +12,10 @@ export type CanonicalCommentEventType =
   | "chat"
   | "superchat"
   | "membership"
-  | "subscription";
+  | "subscription"
+  | "gift"
+  | "donation"
+  | "jewels";
 
 export interface CanonicalCommentAuthor {
   id: string;
@@ -35,6 +38,11 @@ export interface CanonicalComment {
   // 038a: 投げ銭の数値内訳（Rust CommentViewDto.monetary と同形）。回数/合計額の正確な集計に使う。
   // 表示用 monetaryAmount 文字列は温存しつつ、数値 {amount, currency} を落とさず通す（視聴者メモリ用）。
   monetary?: { amount: number; currency: string };
+  // 043a: メンシプ／サブスク／ギフトの付随数値（Rust CommentViewDto の monthCount/giftCount/tier と同形）。
+  // 表示（043b/043c）用途で通すのみ・端末保存しない・受贈者名は持たない（§9）。
+  monthCount?: number;
+  giftCount?: number;
+  tier?: number;
 }
 
 const EVENT_TYPE_MAP: Record<
@@ -44,6 +52,13 @@ const EVENT_TYPE_MAP: Record<
   normal: "chat",
   super_chat: "superchat",
   subscription: "subscription",
+  // 043a: メンシプ／ギフトを種別として通す（従来は経路が無く subscription に畳まれていた）。
+  membership: "membership",
+  gift: "gift",
+  // 043a(拡張): チャリティ・ドネーション（Twitch charity_donation）を種別として通す。
+  donation: "donation",
+  // 043a(拡張): YouTube Jewels。取得は 043d（現状 dev-mock のみ発行）。語彙は通しておく。
+  jewels: "jewels",
 };
 
 /** osareview CommentViewDto を viewer 表示用の正規化コメントへ変換する。 */
@@ -62,6 +77,10 @@ export function toCanonicalComment(
     text: dto.text,
     publishedAt: dto.publishedAt,
     eventType: EVENT_TYPE_MAP[dto.eventType] ?? "chat",
+    // 043a: 付随数値をそのまま通す（undefined は JSON 直列化時に落ちる＝Rust 側 None）。
+    monthCount: dto.monthCount,
+    giftCount: dto.giftCount,
+    tier: dto.tier,
   };
   if (dto.monetaryAmount) {
     const { currency, amount } = dto.monetaryAmount;

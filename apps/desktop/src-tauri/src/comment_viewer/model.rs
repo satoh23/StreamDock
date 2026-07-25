@@ -43,6 +43,12 @@ pub enum CommentEventType {
     Superchat,
     Membership,
     Subscription,
+    /// 043a: ギフト（Twitch sub_gift/community_sub_gift）。サブスクと区別して受け取る。
+    Gift,
+    /// 043a(拡張): チャリティ・ドネーション（Twitch charity_donation）。実金銭・サブスク/ギフトと区別する。
+    Donation,
+    /// 043a(拡張): YouTube Jewels ギフト。取得（ingestion）は 043d（proto 拡張要）で、現状は dev-mock のみ発行。
+    Jewels,
 }
 
 impl CommentEventType {
@@ -53,6 +59,9 @@ impl CommentEventType {
             CommentEventType::Superchat => "superchat",
             CommentEventType::Membership => "membership",
             CommentEventType::Subscription => "subscription",
+            CommentEventType::Gift => "gift",
+            CommentEventType::Donation => "donation",
+            CommentEventType::Jewels => "jewels",
         }
     }
 }
@@ -95,6 +104,15 @@ pub struct CommentViewDto {
     /// 既に数値 `{currency, amount}` を持つため、文字列化して捨てず本フィールドで通す。
     #[ts(optional)]
     pub monetary: Option<CommentMonetaryDto>,
+    /// 043a: メンバー／サブスク継続月数（membership/subscription 時のみ）。表示用途で通すのみ・端末保存しない。
+    #[ts(optional)]
+    pub month_count: Option<u32>,
+    /// 043a: ギフト件数（gift 時のみ・community_sub_gift の total／単発 sub_gift は 1）。非保存。
+    #[ts(optional)]
+    pub gift_count: Option<u32>,
+    /// 043a: サブスク階級（1/2/3・該当時のみ）。非保存。受贈者名は §9 配慮で持たない。
+    #[ts(optional)]
+    pub tier: Option<u32>,
 }
 
 /// 038a: 投げ銭の数値内訳（回数/合計額の正確な集計用）。

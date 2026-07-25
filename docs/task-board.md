@@ -74,9 +74,12 @@
   - 042b 接続状態インジケータ→プラットフォーム別 展開カード（連携/配信接続/切断・設定ビューの接続カードを本体へ移設し撤去・**軽 security-review**）
 - 043 お金がかかるコメントの強調＋取得精緻化（親設計 [docs/tasks/043-monetary-emphasis.md](tasks/043-monetary-emphasis.md)／投げ銭（スパチャ/ビッツ/サブスク/メンシプ/ギフト）を配信者に見逃させない・**037/037b を supersede**）
   - 実装順（提案）: 043b → 043a → 043c（網羅重視なら 043a 先行も可）
-  - 043a 取得精緻化（sidecar/wire/Rust＝membership を実発行・ギフトを subscription と区別・受贈者/件数/月数は可能な範囲・**security-review 必須**）
+  - 043a 取得精緻化（sidecar/wire/Rust＝membership を実発行・ギフトを subscription と区別・**2026-07-26 拡張で網羅化**＝チャリティ `donation` 新種別・
+    有料化(`*_paid_upgrade`)・共有チャット(`shared_chat_*`)・Twitch Bits Power-ups(`channel.bits.use`＝`bits:read` 追加・再ログイン要)・**security-review 済**）
   - 043b コメビュ本体の投げ銭強調＋種別ラベル（chat 以外の全イベントを枠色＋ラベル＋金額・**軽レビュー**）
   - 043c オーバーレイ投げ銭強調（現行意匠単独・037a 非依存・**037b を supersede**・**軽レビュー**）
+  - 043d YouTube ギフトメンシプ／Jewels の取得（[docs/tasks/043d-youtube-jewels-gift-membership.md](tasks/043d-youtube-jewels-gift-membership.md)／
+    **API に存在するが gRPC proto のフィールド番号が非公開で保留**＝osareview proto or 実配信キャプチャで番号確定後に着手・受信面拡張＝**security-review 必須**）
 
 ## 保留
 

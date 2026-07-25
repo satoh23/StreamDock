@@ -156,6 +156,9 @@ mod tests {
             event_type: CommentEventType::Chat,
             monetary_amount: None,
             monetary: None,
+            month_count: None,
+            gift_count: None,
+            tier: None,
         }
     }
 

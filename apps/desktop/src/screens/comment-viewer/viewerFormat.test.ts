@@ -7,6 +7,9 @@ import {
   commentAmount,
   fmtDateTime,
   viewerIdOf,
+  isMonetaryEvent,
+  displayEventType,
+  composeEventMessage,
 } from "./viewerFormat";
 
 /**
@@ -84,6 +87,78 @@ describe("fmtDateTime", () => {
     const out = fmtDateTime("2026-07-25T10:00:00Z");
     expect(out).not.toBe("2026-07-25T10:00:00Z");
     expect(out).toContain("2026");
+  });
+});
+
+describe("isMonetaryEvent", () => {
+  it("chat 以外の課金系は true（赤枠強調の対象）", () => {
+    for (const t of [
+      "superchat",
+      "subscription",
+      "membership",
+      "gift",
+      "donation",
+      "jewels",
+    ]) {
+      expect(isMonetaryEvent(t)).toBe(true);
+    }
+  });
+  it("chat/normal/未知は false（無装飾）", () => {
+    expect(isMonetaryEvent("chat")).toBe(false);
+    expect(isMonetaryEvent("normal")).toBe(false);
+    expect(isMonetaryEvent("")).toBe(false);
+  });
+});
+
+describe("displayEventType", () => {
+  it("BITS 通貨の superchat はラベル用に bits へ振り分ける", () => {
+    expect(
+      displayEventType({ eventType: "superchat", monetary: { currency: "BITS" } }),
+    ).toBe("bits");
+  });
+  it("実通貨の superchat は superchat のまま", () => {
+    expect(
+      displayEventType({ eventType: "superchat", monetary: { currency: "JPY" } }),
+    ).toBe("superchat");
+    expect(displayEventType({ eventType: "superchat" })).toBe("superchat");
+  });
+  it("superchat 以外はそのまま返す", () => {
+    expect(displayEventType({ eventType: "subscription" })).toBe("subscription");
+    expect(displayEventType({ eventType: "chat" })).toBe("chat");
+  });
+});
+
+describe("composeEventMessage", () => {
+  const alice = { name: "Alice" };
+  it("サブスク: 継続は月数（＋Tier）、新規は加入", () => {
+    expect(
+      composeEventMessage({ eventType: "subscription", author: alice, monthCount: 3, tier: 2 }),
+    ).toBe("Aliceさんがサブスクを3ヶ月継続しました（Tier2）");
+    expect(
+      composeEventMessage({ eventType: "subscription", author: alice, tier: 1 }),
+    ).toBe("Aliceさんがサブスクに加入しました（Tier1）");
+  });
+  it("メンバーシップ: 継続は月数、新規は加入（Tier は付けない）", () => {
+    expect(
+      composeEventMessage({ eventType: "membership", author: alice, monthCount: 6 }),
+    ).toBe("Aliceさんがメンバーシップを6ヶ月継続しました");
+    expect(composeEventMessage({ eventType: "membership", author: alice })).toBe(
+      "Aliceさんがメンバーシップに加入しました",
+    );
+  });
+  it("ギフト: 件数（＋Tier）", () => {
+    expect(
+      composeEventMessage({ eventType: "gift", author: alice, giftCount: 5, tier: 1 }),
+    ).toBe("Aliceさんがサブギフトを5件贈りました（Tier1）");
+    expect(composeEventMessage({ eventType: "gift", author: alice })).toBe(
+      "Aliceさんがサブギフトを贈りました",
+    );
+  });
+  it("金額を持つ種別（スパチャ/ドネーション/ジュエル）と chat は null（ラベル＋金額＋本文で表示）", () => {
+    expect(composeEventMessage({ eventType: "superchat", author: alice })).toBeNull();
+    expect(composeEventMessage({ eventType: "donation", author: alice })).toBeNull();
+    expect(composeEventMessage({ eventType: "jewels", author: alice })).toBeNull();
+    expect(composeEventMessage({ eventType: "chat", author: alice })).toBeNull();
   });
 });
 

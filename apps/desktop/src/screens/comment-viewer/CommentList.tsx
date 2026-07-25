@@ -7,6 +7,12 @@ import {
 } from "../../features/comment-viewer/useFollowScroll";
 import styles from "./CommentViewerApp.module.css";
 import overlayStyles from "./OverlayComment.module.css";
+import {
+  composeEventMessage,
+  displayEventType,
+  eventLabel,
+  isMonetaryEvent,
+} from "./viewerFormat";
 
 /**
  * 033b: 受信コメントの一覧描画（listHeader の総数＋`<ol>` 本体）。`CommentViewerApp` の肥大化対策で切り出した
@@ -99,10 +105,18 @@ export function CommentList({
   const renderDefaultItem = (c: CommentViewDto) => {
     // 038c: firstTime と longAbsence は Rust 側で排他（初見が優先）。念のため frontend でも初見を優先して 1 つだけ出す。
     const badge = badges?.get(c.id);
+    // 043b: お金がかかるイベントは赤枠で強調（要望④⑤・見逃し防止）。金額を持たない種別（サブスク/メンシプ/ギフト）は
+    //   「〇〇さんが…しました」の文言を組み立て、金額を持つ種別（スパチャ/ビッツ/ドネーション/ジュエル）は種別ラベル＋
+    //   金額バッジ＋本文で見せる。chat は従来どおり無装飾。
+    const isMoney = isMonetaryEvent(c.eventType);
+    const typeLabel = eventLabel(displayEventType(c));
+    const eventMessage = composeEventMessage(c);
     const itemClasses = [styles.item];
     if (onSelect) itemClasses.push(styles.itemClickable);
     if (badge?.firstTime) itemClasses.push(styles.itemFirstTime);
     else if (badge?.longAbsence) itemClasses.push(styles.itemLongAbsence);
+    // 赤枠は初見/久しぶりより優先（CSS ソース順で .itemMonetary が勝つ）。お金の見逃しを最優先で防ぐ。
+    if (isMoney) itemClasses.push(styles.itemMonetary);
     return (
       <li
         key={c.id}
@@ -137,12 +151,22 @@ export function CommentList({
               </span>
             )
           )}
+          {/* 043b: 課金イベントの種別ラベル（サブスク/メンシプ/ギフト/ドネーション/スパチャ/ビッツ/ジュエル）。chat は空で非表示。 */}
+          {typeLabel && (
+            <span className={`${styles.badge} ${styles.badgeEvent}`}>
+              {typeLabel}
+            </span>
+          )}
           <span className={styles.author}>{c.author.name}</span>
           {c.monetaryAmount && (
             <span className={styles.amount}>{c.monetaryAmount}</span>
           )}
         </div>
-        <p className={styles.text}>{c.text}</p>
+        {/* 043b: 金額を持たない課金イベントは組み立て文言を主表示。視聴者が自由コメントを添えていれば下段に本文を続ける。 */}
+        {/* 【レビュー対応・修正不要】上の種別ラベルバッジ（.badgeEvent）と本文言が併存し軽い重複に見えるが、バッジ＝色付き分類・
+            文言＝月数/件数など内訳付きの説明で役割が異なるため意図的に両方出す。再修正トリガー: 冗長との UX 指摘が出たら一本化する。 */}
+        {eventMessage && <p className={styles.eventMessage}>{eventMessage}</p>}
+        {c.text && <p className={styles.text}>{c.text}</p>}
       </li>
     );
   };

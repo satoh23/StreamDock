@@ -18,4 +18,11 @@ export type CommentViewDto = {
   publishedAt: string;
   eventType: CommentEventType;
   monetaryAmount?: CommentMonetaryAmountDto;
+  // 043a: メンシプ／サブスク／ギフトの付随数値（表示用・受贈者名は持たない＝§9）。
+  /** メンバー／サブスク継続月数。 */
+  monthCount?: number;
+  /** ギフト件数（community_sub_gift の total・単発 sub_gift は 1）。 */
+  giftCount?: number;
+  /** サブスク階級（1/2/3）。 */
+  tier?: number;
 };

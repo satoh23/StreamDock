@@ -49,7 +49,10 @@
 ## このタスク（親）でやらないこと
 
 - 実装（各子タスク）。通貨換算・履歴集計 UI（038 視聴者メモリの領分）。
-- 「ジュエル」等 **YouTube/Twitch に存在しない**マネタイズ種別（新規サービス連携＝別スコープ・対象外）。
+- YouTube のギフトメンシプ（`membershipGiftingEvent`/`giftMembershipReceivedEvent`）・**Jewels（`giftEvent`）は API には存在するが**、
+  gRPC proto の内部フィールド番号が非公開で現状の proto/DTO では受信していない＝受信には**新規受信面（proto 拡張）**が要り §9 に波及するため
+  **[043d](043d-youtube-jewels-gift-membership.md) で別途対応**（本親スコープ外）。※以前「YouTube/Twitch に存在しない」と記載していたのは
+  誤りで、2026-07-26 の網羅調査で訂正（存在するが未受信＝別受信面が必要）。通貨換算・新規サービス連携（第三者投げ銭 StreamElements 等）は対象外。
 - 037a（意匠選択機構）の復帰。
 
 ## セキュリティ制約（docs/security.md 準拠）

@@ -5599,3 +5599,109 @@ E2E フィードバック 6 件のうち、軽微な UI 修正 5 件を先行実
 - 検証: `pnpm --filter ./apps/desktop typecheck` OK ／ `lint` OK ／ `test` OK（8 files / 53 tests）。**実機表示・`lsof -i` の no-internet は
   ユーザー環境で予定**（ヘッダーに横並びピル→クリックで下にポップオーバー→他方を開くと閉じる→外側クリック/Esc で閉じる→他要素が動かない／
   連携・取得開始・停止・device code・状態表示が退行なし）。
+
+## 2026-07-26 (043a 投げ銭イベントの取得精緻化＝メンシプ／ギフトの種別分離)
+
+親 043 の要望⑤（お金がかかるコメントを種別ごとに把握・網羅重視）の取得層。現状すべて `subscription` に潰れていた**メンシプ／ギフトを
+種別として分離**し、可能な範囲で継続月数・ギフト件数・階級を数値で拾って、表示（043b/043c）が種別・金額を出せる語彙を全レイヤー一貫で整えた。
+**受信済みフィールドの分類/取り回しのみ**で、新規の外部通信・宛先・OAuth スコープ・依存は増やさない（**security-review 済＝指摘なし**）。
+
+- **設計判断（ユーザー承認）**: ①ギフト表現＝**(A) `gift` を新 `event_type` に追加**（membership も既存 Rust `Membership` を実発行）。②付随フィールド＝
+  **Tier2**（数値のみ・`monthCount`/`giftCount`/`tier` を wire＋Rust DTO に載せる・**受贈者名は載せない/保存しない＝§9**）。③集計＝**既存集計に統合
+  （追加列なし）**。④ビッツ＝**据え置き**（`superchat`＋`currency="BITS"`）。
+- **membership 分離と拾ったフィールド**: YouTube `NEW_SPONSOR_EVENT`/`MEMBER_MILESTONE_CHAT_EVENT` を `subscription`→**`membership`** に。
+  `member_milestone_chat_details.member_month`（既受信）を `monthCount` として拾う（新規メンバーは月数なし＝undefined）。YouTube ギフトメンシプは
+  proto/DTO に無い＝**対象外**。Twitch は `sub_gift`/`community_sub_gift`→**`gift`**（`giftCount`＝community の `total`／単発は 1・`tier`＝`sub_tier`→1/2/3）、
+  `sub`/`resub`/`pay_it_forward`→`subscription`（`monthCount`＝resub の `cumulative_months`・`tier`）。**Twitch raw DTO（`TwitchChatNotificationEventDto`）に
+  EventSub が既送の `sub`/`resub`/`sub_gift`/`community_sub_gift` 付随オブジェクトを追加**（受贈者フィールドは §9 配慮で意図的に非モデル化）。
+- **全レイヤー語彙対応（一貫）**: shared `comment-types.ts`（`CommentEventType` に `membership`/`gift`・`COMMENT_EVENT_TYPES` 追加）→ domain
+  `comment.ts`（`monthCount`/`giftCount`/`tier` 追加）→ YouTube/Twitch マッパ → converter `comment-to-view.converter.ts`（3 値パススルー）→
+  shared `comment-view.dto.ts` → wire `wire.ts`（`CanonicalCommentEventType` に `gift`・`EVENT_TYPE_MAP` に membership/gift〔**total `Record` が漏れをコンパイル検出**〕・
+  `CanonicalComment`＋`toCanonicalComment` に 3 値）→ Rust `comment_viewer/model.rs`（`CommentEventType::Gift`＋`as_str`・`CommentViewDto` に
+  `month_count`/`gift_count`/`tier: Option<u32>` `#[ts(optional)]`）→ **binding 再生成**（`CommentEventType.ts`＝5値化・`CommentViewDto.ts`＝3 フィールド追加・
+  他 binding は drift なし）。`viewer_memory/service.rs` は `event_type.as_str()` 経由で `"gift"` を自動保存（新設数値は**読まず非永続**）。
+- **集計波及の修正（方針⑪＝集計項目の変更）**: `viewer_memory/repository.rs` の `subscription_count`/`is_member`/`last_subscription_at` を
+  `event_type IN ('subscription','membership','gift')` に変更（定数リテラルのみ）。分離前は全て `'subscription'` に畳まれ集計に入っていたため
+  **同一集合＝退行/取りこぼしゼロ・列追加なし**。累計月数/ギフト件数は wire 表示用のみで**端末保存しない**近似（`is_member`＋回数のみ）を維持。旧「membership 未到達」コメントを実態へ更新。
+  非退行テスト `membership_and_gift_count_into_subscription_family` を追加（membership+gift+subscription=3・superchat 不変を検証）。
+- **表示ラベル consistency**: `screens/comment-viewer/viewerFormat.ts` の `EVENT_LABEL` に `gift: "ギフト"` を追加（視聴者詳細パネルで gift が空ラベルにならない・043b/043c 意匠ではない）。
+- **dev-mock**: `dev-mock.ts` に membership（YouTube・monthCount）/gift（Twitch・giftCount/tier）/subscription（Twitch・monthCount/tier）サンプルを周期発行（ユーザーの目視確認用）。
+- **security.md 更新**: 「コメントビューア方針」⑪ に 043a の集計項目変更（membership/gift の種別分離と既存集計への統合・列追加なし・`monthCount`/`giftCount`/`tier` は wire のみ非永続・受贈者名は非取得）を追記。
+- **security（必須・実施済＝指摘なし）**: ①新規宛先/OAuth スコープ/依存ゼロ（`host-guard.ts`/`twitch-config.ts`/`youtube-config.ts`/proto/`Cargo.*`/`package.json`/`pnpm-lock.yaml`/capability/`tauri.conf.json`〔`csp:null`〕は**差分ゼロ**・`build:bundle` 禁止依存アサート通過）②env ピン留め・二層 fail-closed 不変
+  ③投げ銭金額/受贈者名を非ログ・非外部送信（**受贈者名は wire にも Rust DTO にも載せない**）④集計変更は視聴者メモリの端末内範囲（方針⑪）に収まる。
+  後回し awareness＝新設 wire 数値を将来 `viewer_comments` に保存するなら §9/⑪ で再レビュー。
+- **変更ファイル（15）**: sidecar＝`vendor/shared/src/comment/comment-types.ts`・`comment-view.dto.ts`／`vendor/comment-fetcher/src/entities/comment/comment.ts`／
+  `.../youtube/mapper/comment.mapper.ts`／`.../twitch/dto/raw.dto.ts`・`.../twitch/mapper/comment.mapper.ts`／`vendor/comment-delivery/.../comment-to-view.converter.ts`／
+  `src/wire.ts`・`src/dev-mock.ts`。desktop＝`src-tauri/src/comment_viewer/model.rs`／`src-tauri/src/viewer_memory/repository.rs`（＋テスト）・`service.rs`（テスト literal）／
+  `src/features/comment-viewer/bindings/CommentEventType.ts`・`CommentViewDto.ts`（再生成）／`src/screens/comment-viewer/viewerFormat.ts`。docs＝`security.md`・`progress.md`。
+- 検証: `cargo check` OK ／ `cargo test viewer_memory` OK（34 tests・新テスト含む）／ `pnpm --filter ./apps/desktop typecheck` OK ／ `lint` OK ／
+  `gen:bindings` 後の drift は意図どおり（`CommentEventType.ts`／`CommentViewDto.ts` のみ）／ sidecar `typecheck` OK ／ `build:bundle` OK（禁止依存なし）。
+  **実機表示（`tauri dev` の dev-mock/実配信）・`lsof -i` の no-internet はユーザー環境で予定**（membership/gift が subscription と区別されて wire→Rust→binding に届く／
+  既存 superchat/bits/subscription の取得・集計・表示が退行しない／視聴者メモリの is_member/subscription 集計が membership/gift を取りこぼさない／外部 ESTABLISHED は sidecar PID 下・既存 allow-list のみ）。
+
+## 2026-07-26 (043a 拡張: 収益種別の網羅化＝charity/paid_upgrade/shared_chat/Bits Power-ups＋YouTube 分は 043d 起票)
+
+上記 043a（membership/gift 分離）の後、ユーザー要望で **「お金がかかる系コメント／ギフトの全網羅」** を同タスクで達成するため取得層を拡張した。
+YouTube/Twitch 公式仕様のネット調査（`liveChatMessages` の `snippet.type` 全 enum・EventSub `channel.chat.notification` の notice_type 全集合）と
+実 wire 検証（twitch-rs 実ペイロード・twitchdev/issues#1039）で取りこぼしを洗い出し、**同一 allow-list ホスト上で拾える収益イベントを追加**した。
+YouTube のギフトメンシプ／Jewels は **API に存在するが gRPC proto のフィールド番号が非公開で受信できない**ため、推測実装せず **[043d](tasks/043d-youtube-jewels-gift-membership.md) を起票**して保留にした。
+
+- **Twitch 収益取りこぼしの取り込み（既存 `channel.chat.notification` 上・新規宛先/依存ゼロ）**:
+  - **チャリティ・ドネーション**（`charity_donation`）＝新種別 **`donation`**（実金銭・サブスク/ギフトと分離）。`amount{value,decimal_places,currency}` を
+    `value/10^decimal_places` で通常単位へ換算し monetaryAmount として通す。`viewer_comments` に行保存されるが **集計 rollup 列は作らない**（§9/⑪「列追加なし」維持）。
+  - **有料化**（`gift_paid_upgrade`/`prime_paid_upgrade`）＝`subscription` に分類（従来 notice_type 未収載で drop していた取りこぼし・`prime_paid_upgrade.sub_tier` を tier に）。
+  - **共有チャット収益**（`shared_chat_*`）＝mapper で接頭辞を剥がして同一分類（取りこぼし防止・数値内訳は shared 経路で undefined に劣化）。
+- **Twitch Bits Power-ups（`channel.bits.use`・OAuth スコープ拡大）**:
+  - `TWITCH_SCOPES` に **`bits:read` を追加**、EventSub に **`channel.bits.use` 購読を追加**（`condition` は `broadcaster_user_id` のみ＝Helix の condition 型で user_id を任意化）。
+  - **購読作成は非致命**（`Promise.all` 内で `.catch()`＝旧トークンは bits:read 欠如で 403 でも本線 2 購読・配信を止めない。ユーザー再ログインで有効化）。
+  - **cheer 二重計上回避**＝cheer は `channel.chat.message` で取得済のため mapper で bits.use の `type==="cheer"` を捨て、**power_up のみ superchat＋`currency="BITS"`** に集約。
+  - `channel.bits.use` はイベント本体に一意 id が無いため、EventSub envelope の `metadata.message_id` を websocket client で補填（dedup キー）。repository のアバター解決は
+    `chatter_user_id ?? user_id` を吸収し、どちらも無い場合はスキップ（Helix を undefined で叩かない）。
+- **語彙・全レイヤー整合**: shared `comment-types.ts`／wire `wire.ts`（`EVENT_TYPE_MAP` total Record が漏れをコンパイル検出）／Rust `model.rs`（`CommentEventType::Donation`＋`as_str`）／
+  binding 再生成（`CommentEventType.ts` に `donation`・`CommentViewDto.ts` は不変）／`viewerFormat.ts`（`donation:"ドネーション"`）。受贈者/贈与者/団体の個人名は wire/Rust DTO に載せない（§9）。
+- **集計**: `donation` は subscription 系にも superchat/bits 系にも入れない（新種別・rollup 列なし）。非退行テスト `donation_is_not_counted_in_subscription_or_superchat` を追加。
+- **dev-mock**: donation（Twitch・1000 JPY）/power-up（Twitch・300 bits→superchat+BITS）サンプルを周期追加（seq%20=3/11・%5≠0 で衝突なし）。
+- **docs**: security.md 方針①/⑦（`bits:read`＋`channel.bits.use`＝宛先増えず・スコープ拡大＝再同意）・⑪(043a 節)を更新／親 043・043a/b/c の「ジュエル＝存在しない」**誤根拠を訂正**（存在するが未受信＝043d）／
+  043d 起票（フィールド番号非公開の技術ブロッカーと解除条件を明記）／task-board に 043d 追加・043a 行更新。
+- **security（拡張分・実施済）**: ①新規宛先ゼロ・依存ゼロ（`Cargo.*`/`package.json`/`pnpm-lock.yaml`/capability/`tauri.conf.json`〔`csp:null`〕差分ゼロ・`build:bundle` 禁止依存アサート通過）
+  ②env ピン留め・二層 fail-closed 不変 ③**OAuth スコープ `bits:read` 追加のみが権限拡大**（宛先は不変・購読非致命・再同意で有効化）④受贈者/贈与者/団体名を非モデル化・非保存・非ログ（§9）⑤集計は端末内範囲（⑪）・rollup 列なし。
+- **検証**: `cargo test viewer_memory` OK（35 tests・donation 非退行含む）／ desktop `typecheck`・`lint` OK ／ sidecar `typecheck` OK（EVENT_TYPE_MAP 網羅）・`build:bundle` OK（禁止依存なし）／
+  `gen:bindings` drift は `CommentEventType.ts`（donation）／`CommentViewDto.ts`（043a 既存）のみ。**実機（`tauri dev` dev-mock/実配信）・`lsof -i` の no-internet はユーザー環境で予定**
+  （donation/power-up が種別区別されて届く／既存取得・集計が退行しない／Power-ups は再ログイン後に届く／外部 ESTABLISHED は sidecar PID 下・既存 allow-list のみ）。
+
+## 2026-07-26 (043a 追補: dev-mock の課金チャット網羅＋jewels 表示語彙の先行追加)
+
+実機確認でモックを使うため、dev-mock に**各課金チャット種別を網羅**させ、ユーザー指示で **Jewels も先行追加**した。Jewels の**取得（ingestion）は
+引き続き 043d**（gRPC proto フィールド番号が非公開）で、ここでは**表示語彙＋dev-mock 合成発行のみ**を先行させた（実データは 043d 後）。
+
+- **dev-mock 網羅**（`COMMENT_SIDECAR_MOCK=1` 時のみ・外部通信なし）: membership(YouTube)/subscription(Twitch)/gift(Twitch)/donation(Twitch)/
+  power-up(Twitch→superchat+BITS)/superchat(YouTube 実通貨)/bits(Twitch)/**jewels(YouTube・新規)** を周期発行（seq%20=3/7/9/11/13/17・%5≠0 で superchat と衝突しない）。
+- **jewels 表示語彙を全レイヤー追加**（donation と同手順）: shared `comment-types.ts`／wire `wire.ts`（`EVENT_TYPE_MAP` に `jewels`）／Rust `model.rs`
+  （`CommentEventType::Jewels`＋`as_str`）／binding 再生成（`CommentEventType.ts` に `jewels`）／`viewerFormat.ts`（`jewels:"ジュエル"`）。
+  jewels は仮想通貨のため bits と同様に数値＋通貨（`JEWELS`）で表す。集計は既存（subscription/superchat/bits）に混ざらない（新種別・rollup 列なし）＝
+  非退行テスト `jewels_is_not_counted_in_existing_aggregations` を追加。
+- **043d 更新**: Jewels の表示語彙側は先行済み＝043d に残るのは実データ取得（proto 拡張）＋mapper 配線、と明記。
+- **security**: 表示語彙＋合成モックのみ＝**新規宛先/OAuth スコープ/依存ゼロ**（jewels は実取得しないため受信面は増えない・§1/§9/§10 影響なし）。
+- **検証**: `cargo test viewer_memory` OK（36 tests・donation/jewels 非退行含む）／ desktop `typecheck`・`lint` OK ／ sidecar `typecheck` OK・`build:bundle` OK（禁止依存なし）／
+  `gen:bindings` drift は `CommentEventType.ts`（+jewels）／`CommentViewDto.ts`（043a 既存）のみ。
+
+## 2026-07-26 (043b コメビュ本体の投げ銭強調＝赤枠＋種別ラベル＋種別文言)
+
+実機確認で「サブスクが英語の system_message（resubscribe…）でしか出ない」「お金がかかる通知を目立たせたい」との要望を受け、
+043b（コメビュ本体の表示強調）を実装した。043a で配線済みの数値（event_type/monthCount/tier/giftCount/monetary）を使い、
+**表示分岐のみ**（新規通信/依存/capability ゼロ・軽レビュー相当）。対象は**コメビュ本体のみ**（OBS オーバーレイ＝043c は別途）。
+
+- **赤枠強調**（要望④⑤）: chat 以外の課金系（superchat/subscription/membership/gift/donation/jewels）を `.itemMonetary`（border=danger＋inset shadow）で赤枠に。
+  CSS ソース順で初見/久しぶり枠より後に定義＝**お金を最優先で赤枠**（同時該当時は赤が勝つ）。レイアウトはずらさない（inset shadow で 1px 厚見せ）。
+- **種別ラベル**: `.badgeEvent`（warn 系ピル）で「サブスク/メンバーシップ/ギフト/ドネーション/スーパーチャット/ビッツ/ジュエル」を表示。ビッツは
+  `displayEventType`（superchat＋currency=BITS→"bits"）でラベルのみ振り分け。
+- **種別文言の組み立て**: 金額を持たないサブスク/メンシプ/ギフトは `composeEventMessage` で「〇〇さんがサブスクを3ヶ月継続しました（Tier2）」等を主表示。
+  金額を持つ種別（スパチャ/ビッツ/ドネーション/ジュエル）は種別ラベル＋金額バッジ＋本文で表示（文言重複を避け null）。視聴者の自由コメントがあれば要約の下に本文を続ける。
+- **043a 微調整**: Twitch notification の本文を `event.message.text || system_message` → `event.message.text` に（system_message は英語自動文＝ノイズ＋受贈者名を含み得る§9 のため保存/表示に載せない）。無メッセージ時は空文字＝表示側が要約のみ出す。
+  dev-mock の subscription/membership/gift の text を調整（sub＝視聴者コメント例／memb・gift＝空＝要約のみ）。
+- **対象ファイル**: `screens/comment-viewer/viewerFormat.ts`（`isMonetaryEvent`/`MONETARY_EVENT_TYPES`/`displayEventType`/`composeEventMessage`＋テスト）／
+  `CommentList.tsx`（`renderDefaultItem` に赤枠クラス・種別ラベル・要約文言）／`CommentViewerApp.module.css`（`.itemMonetary`/`.badgeEvent`/`.eventMessage`）／
+  sidecar `twitch/mapper/comment.mapper.ts`（本文フォールバック除去）・`dev-mock.ts`（文言調整）。
+- **検証**: desktop `typecheck`・`lint` OK ／ `vitest viewerFormat.test.ts` 23 passed（新ヘルパ含む）／ sidecar `typecheck` OK・`build:bundle` OK（禁止依存なし）。
+  **実機表示はユーザー環境で確認予定**（サブスク/メンシプ/ギフトが日本語要約＋赤枠／スパチャ/ビッツ/ドネーション/ジュエルが種別ラベル＋金額＋赤枠／chat は無装飾）。
+- 未対応: OBS オーバーレイの投げ銭強調（**043c**・現行意匠に赤枠相当を相乗り）は別タスクのまま。

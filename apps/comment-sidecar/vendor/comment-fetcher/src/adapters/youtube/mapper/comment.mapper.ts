@@ -14,10 +14,9 @@ const YOUTUBE_MESSAGE_TYPE_TO_COMMENT_EVENT_TYPE = {
   SUPER_CHAT_EVENT: COMMENT_EVENT_TYPES.SUPER_CHAT,
   // TODO: 将来的に Super Sticker 専用イベント型が必要になれば分離を検討する。
   SUPER_STICKER_EVENT: COMMENT_EVENT_TYPES.SUPER_CHAT,
-  // TODO: 将来的に新規メンバー加入専用イベント型が必要になれば分離を検討する。
-  NEW_SPONSOR_EVENT: COMMENT_EVENT_TYPES.SUBSCRIPTION,
-  // TODO: 将来的に継続マイルストーン専用イベント型が必要になれば分離を検討する。
-  MEMBER_MILESTONE_CHAT_EVENT: COMMENT_EVENT_TYPES.SUBSCRIPTION,
+  // 043a: 新規メンバー加入／継続マイルストーンはメンシプ（membership）として分離する（旧: subscription 畳み込み）。
+  NEW_SPONSOR_EVENT: COMMENT_EVENT_TYPES.MEMBERSHIP,
+  MEMBER_MILESTONE_CHAT_EVENT: COMMENT_EVENT_TYPES.MEMBERSHIP,
 } as const;
 
 /** 配信コメントの取得結果を、共通コメント配列へ変換する。 */
@@ -65,6 +64,9 @@ export function mapYouTubeLiveChatMessagesToComments(
           message.snippet.super_chat_details ??
             message.snippet.super_sticker_details,
         ),
+        // 043a: 継続マイルストーンの月数を拾う（既受信フィールド・新規メンバーは月数なし＝undefined）。
+        monthCount:
+          message.snippet.member_milestone_chat_details?.member_month,
       };
 
       return comment;

@@ -42,11 +42,17 @@ export class TwitchCommentRepository implements CommentRepository {
     })) {
       // 036c: chat イベントにアバターが載らないため Helix で URL を解決してから mapper へ渡す。
       // キャッシュ済み投稿者は Helix を叩かない（過剰呼び出し防止）。
+      // 043a(拡張): channel.bits.use は chatter_user_id ではなく user_id を使うため投稿者 ID を吸収する
+      //   （どちらも無い異常イベントは解決をスキップ＝Helix を undefined で叩かない）。
       // 【レビュー対応・修正不要】現状は 1 id ずつ解決（getUserProfileImagesByIds のバッチ形は将来の
       // ウィンドウ化への備えで、今は単一 id 呼び出し）。per-event await のためレイド時に未キャッシュ新規
       // 投稿者の解決が直列化するが、キャッシュで各投稿者最大 1 回に抑制済み＋Helix にタイムアウト有り。
       // 再修正トリガー: レイド時の配信遅延が実測で問題化したら、複数 id をまとめる window/バッチ化を導入する。
-      await this.ensureAvatarResolved(event.chatter_user_id);
+      const authorId =
+        "chatter_user_id" in event ? event.chatter_user_id : event.user_id;
+      if (authorId) {
+        await this.ensureAvatarResolved(authorId);
+      }
 
       yield {
         comments: mapTwitchChatEventsToComments(

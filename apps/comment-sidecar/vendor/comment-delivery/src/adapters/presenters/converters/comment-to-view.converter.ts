@@ -21,5 +21,9 @@ export const convertCommentToViewDto = async (
     publishedAt: comment.publishedAt.toISOString(),
     eventType: comment.eventType,
     monetaryAmount: comment.monetaryAmount,
+    // 043a: メンシプ／サブスク／ギフトの付随数値をそのまま通す（受贈者名は持たない＝§9）。
+    monthCount: comment.monthCount,
+    giftCount: comment.giftCount,
+    tier: comment.tier,
   };
 };

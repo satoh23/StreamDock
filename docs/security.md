@@ -483,6 +483,12 @@ distill（vendor）したもので、keyring・`open`・hono/zod・dotenv・goog
   streamList）を追加。gRPC は `fetch`/`ws` を通らないため **(c) gRPC チャネルガードを新設**し、streamList の channel 生成時に
   target を **`www.googleapis.com:443` のみ**に照合して throw する（fetch の allow-list より狭い）。ユーザーが「YouTube に接続」を
   押した時のみログインを開始する。
+  **（043a 拡張・Twitch Bits Power-ups）** Bits Power-ups 取得のため **Twitch OAuth スコープに `bits:read` を追加**し、
+  EventSub 購読に **`channel.bits.use` を追加**する。**宛先（allow-list ホスト）は増えない**（既存 `api.twitch.tv`／
+  `eventsub.wss.twitch.tv` 上の購読追加のみ・env ピン留め・二層 fail-closed は不変）が、**OAuth スコープの拡大**にあたるため
+  既存ユーザーは**再ログインするまで Power-ups 購読は 403 になり得る**。この購読作成は sidecar 側で**非致命化**し（失敗しても
+  chat.message/chat.notification の本線配信は継続）、cheer は chat.message 側で取得済のため mapper で二重計上を避ける
+  （bits.use の `type==="cheer"` を捨て、power_up のみ superchat＋`currency="BITS"` に集約）。
 - **②通信面の封じ込め（最重要の安全論拠）**。インターネットに出るのは sidecar プロセスのみ。main は出ない。
   検証は `lsof -i` で外部 ESTABLISHED ソケットが **sidecar PID 下のみ**に出て StreamDock 本体 PID に出ないことで確認する。
 - **③§4（shell）例外**。sidecar 起動/停止は Rust の `app.shell().sidecar()` からのみ。`tauri-plugin-shell` を追加するが
@@ -506,6 +512,8 @@ distill（vendor）したもので、keyring・`open`・hono/zod・dotenv・goog
 - **⑦明示同意（接続操作）＋ security-review を必須**とする。`csp: null` は当面維持（TODO：将来 viewer CSP を効かせる際は
   `connect-src https://id.twitch.tv https://api.twitch.tv wss://eventsub.wss.twitch.tv wss://*.wss.twitch.tv ws://127.0.0.1:*`
   ＋YouTube 分 `https://accounts.google.com https://oauth2.googleapis.com https://www.googleapis.com` を許可）。
+  **（043a 拡張）** Twitch スコープに `bits:read` を追加したため、既存接続ユーザーは **再ログイン（再同意）で新スコープを付与**する
+  まで Power-ups が届かない（本線チャットは従来スコープで継続）。宛先は増えないが**スコープ拡大は明示同意の対象**として扱う。
 - **⑧（032c-d）YouTube「Desktop app」OAuth の Client Secret 同梱の根拠 ＋ consent screen 運用前提 ＋ クォータ**。
   - **Client Secret 同梱**: Google の **「Desktop app」種別**の OAuth クライアントでは、secret は **機密として扱われない**
     （インストール型アプリはバイナリからの抽出前提）。secret が抽出されても **PKCE(S256)＋インストール型モデル**で被害は限定される
@@ -553,7 +561,28 @@ distill（vendor）したもので、keyring・`open`・hono/zod・dotenv・goog
     （§1/§3。sidecar・main ウィンドウの no-internet 境界は不変・`comment-viewer.json` は `core:default` のまま・
     アプリ定義コマンドは ACL 列挙不要）。集計（回数・合計額）の正確化のため sidecar の wire（`wire.ts`）に既にある
     投げ銭の数値 `{amount, currency}` を捨てず Rust `CommentViewDto.monetary` へ通すが、**通信面は拡大しない**
-    （sidecar の宛先・二層 fail-closed は不変）。サブスク/メンシプの**累計月数は取得せず近似**（`is_member`＋イベント回数のみ）。
+    （sidecar の宛先・二層 fail-closed は不変）。
+    - **（043a・集計項目の変更＝方針⑪該当・security-review 済）** メンシプ（YouTube `NEW_SPONSOR`/`MEMBER_MILESTONE`→`membership`）・
+      ギフト（Twitch `sub_gift`/`community_sub_gift`→`gift`）を **`subscription` から種別分離**して受け取るようにした
+      （**受信済みフィールドの分類変更のみ**・新規宛先/OAuth スコープ/依存・二層 fail-closed は不変）。分離前はいずれも
+      `subscription` に畳まれ集計に入っていたため、`subscription_count`/`is_member`/`last_subscription_at` を
+      `event_type IN ('subscription','membership','gift')` で数えて**分離前と同じ集合**を保つ（列追加なし・退行/取りこぼしゼロ）。
+      継続月数/ギフト件数/階級（wire の `monthCount`/`giftCount`/`tier`）は表示用途で wire→Rust `CommentViewDto` を通すのみで
+      **端末保存しない**（`viewer_comments` スキーマ不変）ため、累計月数は依然 **`is_member`＋イベント回数のみの近似**。
+      **投げ銭金額・受贈者名は非ログ・非外部送信**（§9）＝**受贈者名は wire にも Rust DTO にも載せない**（数値属性のみ）。
+    - **（043a 拡張・収益種別の網羅／集計項目の変更＝方針⑪該当・security-review 済）** 上記に加えて次を**受信済みイベントの分類**
+      として拾う（新規宛先/依存・二層 fail-closed は不変。※Twitch Power-ups のみ **OAuth スコープ `bits:read` を追加**＝上記①/⑦）:
+      - **チャリティ・ドネーション**（Twitch `charity_donation`）＝新種別 **`donation`**（実金銭・サブスク/ギフトと分離）。金額は
+        既存 monetary 経路（`amount/currency`）で通し、`viewer_comments` に**行単位では保存されるが集計 rollup 列は作らない**
+        （§9/⑪ の「列追加なし」を維持・累計は 038 の領分）。**団体名（charity_name）は集計/保存キーに使わず**個人名は持たない（§9）。
+      - **有料化**（Twitch `gift_paid_upgrade`/`prime_paid_upgrade`）＝`subscription` に分類（従来 notice_type 未収載で drop していた取りこぼし）。
+      - **共有チャット収益**（Twitch `shared_chat_*`）＝接頭辞を剥がして同一分類（取りこぼし防止・数値内訳は shared 経路で undefined 劣化）。
+      - **Bits Power-ups**（Twitch `channel.bits.use`）＝既存の bits 表現（`superchat`＋`currency="BITS"`）へ集約。cheer は chat.message で
+        取得済のため mapper で二重計上を回避。購読作成は**非致命**（旧トークンは再ログインまで届かない・本線は継続）。
+      - **受贈者/贈与者/団体の個人名は wire にも Rust DTO にも載せない・保存しない**（数値属性・金額のみ／§9）。
+      - **（対象外・別タスク 043d）** YouTube のギフトメンシプ（`membershipGiftingEvent`/`giftMembershipReceivedEvent`）・Jewels（`giftEvent`）は
+        API には存在するが **gRPC proto の内部フィールド番号が非公開**で現状の proto/DTO では受信していない。受信には**新規受信面（proto 拡張）**が
+        要り §9（贈与者/受贈者データの取り回し）に波及するため **043d で別途 security-review** とする（本タスクでは発行しない）。
   - **プライバシー**: 第三者の氏名・発言・投げ銭履歴を端末に保存するため、**削除手段**を必須とする＝`delete_viewer`
     （個別・FK CASCADE で当該コメントも削除）／`clear_viewers`（全消去）。**アバター（data URI）は保存しない**
     （アイコンは overlay 意匠のみ・§9）。入力（コメント本文・視聴者名・メモ・session_id）は Rust 側で **trim/制御文字拒否**

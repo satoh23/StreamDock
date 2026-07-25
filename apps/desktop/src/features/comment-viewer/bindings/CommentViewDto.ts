@@ -40,4 +40,16 @@ monetaryAmount?: string,
  * 038a: 投げ銭の数値表現（該当時のみ）。回数/合計額の正確な集計に使う。sidecar は wire.ts で
  * 既に数値 `{currency, amount}` を持つため、文字列化して捨てず本フィールドで通す。
  */
-monetary?: CommentMonetaryDto, };
+monetary?: CommentMonetaryDto, 
+/**
+ * 043a: メンバー／サブスク継続月数（membership/subscription 時のみ）。表示用途で通すのみ・端末保存しない。
+ */
+monthCount?: number, 
+/**
+ * 043a: ギフト件数（gift 時のみ・community_sub_gift の total／単発 sub_gift は 1）。非保存。
+ */
+giftCount?: number, 
+/**
+ * 043a: サブスク階級（1/2/3・該当時のみ）。非保存。受贈者名は §9 配慮で持たない。
+ */
+tier?: number, };

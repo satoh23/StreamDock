@@ -288,6 +288,14 @@
   border-color: var(--info);
 }
 
+/* 043b: お金がかかるイベント（chat 以外＝スパチャ/ビッツ/サブスク/メンシプ/ギフト/ドネーション/ジュエル）の赤枠強調。
+   初見/久しぶりより後に定義＝同一詳細度でソース順が勝つため、投げ銭を最優先で赤枠にする（お金の見逃し防止・要望④⑤）。
+   border-color を danger（赤）にし、inset shadow で 1px 分厚く見せてレイアウトをずらさず気付きやすくする。役割トークンのみ。 */
+.itemMonetary {
+  border-color: var(--danger);
+  box-shadow: inset 0 0 0 1px var(--danger);
+}
+
 .meta {
   display: flex;
   align-items: center;
@@ -329,6 +337,14 @@
   border-color: var(--info-border);
 }
 
+/* 043b: 課金イベントの種別ラベル（「サブスク」「メンバーシップ」「ギフト」「ドネーション」「スーパーチャット」「ビッツ」「ジュエル」）。
+   金額バッジ（.amount）と同じ warn（琥珀）系で「注目値」であることを示し、source バッジ（accent/danger）と色で分ける。 */
+.badgeEvent {
+  color: var(--warn-text);
+  background: var(--warn-soft);
+  border-color: var(--warn-border);
+}
+
 .author {
   font-size: 12px;
   font-weight: 700;
@@ -349,6 +365,16 @@
 .text {
   font-size: 13px;
   line-height: 1.5;
+  word-break: break-word;
+}
+
+/* 043b: 金額を持たない課金イベント（サブスク/メンシプ/ギフト）の組み立て文言（「〇〇さんがサブスクを継続しました」）。
+   本文（.text）より強めに出して何が起きたかを一目で分かるようにする。視聴者の自由コメントがある場合は下段に .text で続ける。 */
+.eventMessage {
+  font-size: 13px;
+  line-height: 1.5;
+  font-weight: 700;
+  color: var(--text);
   word-break: break-word;
 }
 

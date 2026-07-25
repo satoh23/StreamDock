@@ -37,8 +37,12 @@
 
 ## このタスクでやらないこと
 
-- **新規の外部通信・宛先・OAuth スコープ・依存の追加**（受信済みフィールドの分類/取り回しのみ・sidecar の allow-list／二層 fail-closed は不変）。
-- 「ジュエル」等 YouTube/Twitch に無い種別（新規サービス連携＝対象外）。通貨換算。
+- **新規の宛先・依存の追加**（sidecar の allow-list ホスト／二層 fail-closed は不変）。※**2026-07-26 拡張**で Twitch Bits Power-ups の
+  ため **OAuth スコープ `bits:read` と EventSub 購読 `channel.bits.use` を追加**（宛先は増えない・購読は非致命・再ログインで有効化＝
+  security.md ①/⑦・security-review 済）。それ以外（YouTube スコープ・宛先）は不変。
+- **YouTube のギフトメンシプ／Jewels（`giftEvent`）**：API には存在するが gRPC proto のフィールド番号が非公開で現状受信していない
+  ＝受信には proto 拡張（新規受信面）が要るため **[043d](043d-youtube-jewels-gift-membership.md) へ**（本タスクでは発行しない）。
+  ※以前「YouTube/Twitch に無い種別」と記載していたのは誤りで 2026-07-26 に訂正（存在するが未受信）。通貨換算・第三者投げ銭連携は対象外。
 - 表示側（コメビュ本体＝**043b** / オーバーレイ＝**043c**）の意匠。
 
 ## セキュリティ制約（docs/security.md 準拠）

@@ -26,7 +26,10 @@ export const TWITCH_EVENTSUB_WS_URL = "wss://eventsub.wss.twitch.tv/ws";
 export const TWITCH_DEVICE_AUTHORIZATION_ENDPOINT =
   "https://id.twitch.tv/oauth2/device";
 export const TWITCH_TOKEN_ENDPOINT = "https://id.twitch.tv/oauth2/token";
-export const TWITCH_SCOPES: readonly string[] = ["user:read:chat"];
+// 043a(拡張): Bits Power-ups（channel.bits.use）取得のため bits:read を追加。既存宛先内の購読追加で
+// 新規 egress 先は増えないが、OAuth スコープ拡大＝既存ユーザーは再ログインするまで Power-ups は届かない
+// （bits.use 購読は sidecar 側で非致命化し、本線配信は継続）。docs/security.md 方針①/⑦ 参照。
+export const TWITCH_SCOPES: readonly string[] = ["user:read:chat", "bits:read"];
 
 /** Helix/EventSub の base URL を定数で返す（env 参照なし）。 */
 export class PinnedTwitchConfigProvider implements TwitchConfigProvider {

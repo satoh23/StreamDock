@@ -145,9 +145,10 @@ export class TwitchHelixClient {
   async createEventSubSubscription(input: {
     type: TwitchEventSubSubscriptionType;
     version: "1";
+    // 043a(拡張): channel.bits.use は condition が broadcaster_user_id のみ（user_id 不要）のため任意化。
     condition: {
       broadcaster_user_id: string;
-      user_id: string;
+      user_id?: string;
     };
     sessionId: string;
   }): Promise<void> {
@@ -162,9 +163,10 @@ export class TwitchHelixClient {
     input: {
       type: TwitchEventSubSubscriptionType;
       version: "1";
+      // 043a(拡張): channel.bits.use は condition が broadcaster_user_id のみ（user_id 不要）のため任意化。
       condition: {
         broadcaster_user_id: string;
-        user_id: string;
+        user_id?: string;
       };
       sessionId: string;
     },

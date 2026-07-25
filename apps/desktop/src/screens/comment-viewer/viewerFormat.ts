@@ -19,6 +19,12 @@ export const EVENT_LABEL: Record<string, string> = {
   bits: "ビッツ",
   subscription: "サブスク",
   membership: "メンバーシップ",
+  // 043a: ギフト（Twitch sub_gift/community_sub_gift）を種別分離したため、視聴者詳細パネルの空ラベルを回避。
+  gift: "ギフト",
+  // 043a(拡張): チャリティ・ドネーション（Twitch charity_donation）を種別分離したため空ラベルを回避。
+  donation: "ドネーション",
+  // 043a(拡張): YouTube Jewels（取得は 043d・現状 dev-mock のみ）。空ラベルを回避。
+  jewels: "ジュエル",
 };
 
 /** 既知の provider は日本語表示名、未知はそのまま（fallback）。 */
@@ -27,6 +33,71 @@ export const providerLabel = (p: string): string => PROVIDER_LABEL[p] ?? p;
 /** 既知のイベント種別だけラベル化、未知は空文字（ラベル無しで劣化）。 */
 export const eventLabel = (eventType: string): string =>
   EVENT_LABEL[eventType] ?? "";
+
+/**
+ * 043b: お金がかかる（強調＝赤枠の対象）イベント種別。chat/normal 以外はすべて課金系として扱う。
+ * ビッツは event_type=superchat（currency=BITS）で届くため superchat に含まれる。
+ */
+export const MONETARY_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "superchat",
+  "subscription",
+  "membership",
+  "gift",
+  "donation",
+  "jewels",
+]);
+
+/** 043b: お金がかかる種別か（chat/未知は false）。true のとき本体で赤枠強調する。 */
+export const isMonetaryEvent = (eventType: string): boolean =>
+  MONETARY_EVENT_TYPES.has(eventType);
+
+/**
+ * 043b: 表示ラベル用の実効種別。ビッツは event_type=superchat＋currency=BITS で届くため、
+ * ラベルだけ "bits"（＝「ビッツ」）へ振り分ける。それ以外は eventType のまま。
+ */
+export interface DisplayEventTypeInput {
+  eventType: string;
+  monetary?: { currency: string };
+}
+
+export const displayEventType = (c: DisplayEventTypeInput): string =>
+  c.eventType === "superchat" && c.monetary?.currency === "BITS"
+    ? "bits"
+    : c.eventType;
+
+/**
+ * 043b: 金額を持たない課金イベント（サブスク/メンシプ/ギフト）を「〇〇さんが…しました」の日本語文へ組み立てる。
+ * 金額を持つ種別（superchat/bits/donation/jewels）や chat/未知は null を返し、呼び出し側は種別ラベル＋金額バッジ＋
+ * 本文で表示する（重複した金額文言を避けるため文は作らない）。純関数（DOM/CSS 非依存・端末外へ出さない）。
+ */
+export interface EventMessageInput {
+  eventType: string;
+  author: { name: string };
+  monthCount?: number;
+  giftCount?: number;
+  tier?: number;
+}
+
+export const composeEventMessage = (c: EventMessageInput): string | null => {
+  const name = c.author.name;
+  const tierSuffix = c.tier != null ? `（Tier${c.tier}）` : "";
+  switch (c.eventType) {
+    case "subscription":
+      return c.monthCount != null
+        ? `${name}さんがサブスクを${c.monthCount}ヶ月継続しました${tierSuffix}`
+        : `${name}さんがサブスクに加入しました${tierSuffix}`;
+    case "membership":
+      return c.monthCount != null
+        ? `${name}さんがメンバーシップを${c.monthCount}ヶ月継続しました`
+        : `${name}さんがメンバーシップに加入しました`;
+    case "gift":
+      return c.giftCount != null
+        ? `${name}さんがサブギフトを${c.giftCount}件贈りました${tierSuffix}`
+        : `${name}さんがサブギフトを贈りました${tierSuffix}`;
+    default:
+      return null;
+  }
+};
 
 /** RFC3339 文字列をローカル表記へ。パースできなければ原文のまま返す（端末外へは出さないローカル表示）。 */
 export const fmtDateTime = (iso: string): string => {

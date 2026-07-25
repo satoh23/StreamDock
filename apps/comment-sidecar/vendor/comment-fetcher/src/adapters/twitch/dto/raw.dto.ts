@@ -106,14 +106,19 @@ export type TwitchEventSubNotificationEnvelopeDto = {
         session_id: string;
       };
     };
-    event: TwitchChatMessageEventDto | TwitchChatNotificationEventDto;
+    event:
+      | TwitchChatMessageEventDto
+      | TwitchChatNotificationEventDto
+      | TwitchBitsUseEventDto;
   };
 };
 
 /** 今回扱う EventSub サブスク種別。 */
 export type TwitchEventSubSubscriptionType =
   | "channel.chat.message"
-  | "channel.chat.notification";
+  | "channel.chat.notification"
+  // 043a(拡張): Bits Power-ups（cheer は channel.chat.message 側で取得済のため mapper で二重計上回避）。
+  | "channel.bits.use";
 
 /** channel.chat.message の event ペイロード。 */
 export type TwitchChatMessageEventDto = {
@@ -170,16 +175,121 @@ export type TwitchChatNotificationEventDto = {
     fragments: TwitchChatMessageFragmentDto[];
   };
   notice_type: TwitchChatNoticeType;
+  // 043a: EventSub の channel.chat.notification が notice_type に応じて既に送っている付随オブジェクト
+  // （新規受信ではなく未モデル化だったフィールドの取り回し）。mapper が階級/継続月数/ギフト件数を数値で拾う。
+  // 受贈者（recipient_user_*）・贈与者（gifter_user_*）はペイロードに存在するが §9（非ログ・非外部送信）
+  // 配慮で意図的にモデル化・消費しない（数値属性のみ持つ）。
+  sub?: TwitchSubDetailsDto;
+  resub?: TwitchResubDetailsDto;
+  sub_gift?: TwitchSubGiftDetailsDto;
+  community_sub_gift?: TwitchCommunitySubGiftDetailsDto;
+  // 043a(拡張): prime→有料化（prime_paid_upgrade）は sub_tier のみ数値で拾う。gift_paid_upgrade は
+  // 贈与者名しか持たない（§9 非モデル化）ため notice_type のみで subscription 分類する（付随オブジェクトなし）。
+  prime_paid_upgrade?: TwitchPrimePaidUpgradeDetailsDto;
+  // 043a(拡張): チャリティ実金銭ドネーション。amount を金額として拾う（charity_name は団体名＝PII でない）。
+  charity_donation?: TwitchCharityDonationDetailsDto;
 };
 
-/** chat notification の既知種別。 */
+/**
+ * channel.bits.use の event ペイロード（043a 拡張・Bits Power-ups）。
+ * cheer もこの購読で届くが channel.chat.message 側で既に取得済のため mapper で type==="cheer" を捨てる
+ * （二重計上回避）。power_up / custom_power_up（bits 消費）のみ取り込む。
+ * ⚠ message_id はイベント本体に無いため、EventSub envelope の metadata.message_id を websocket client 側で
+ *   補填する（dedup 用の一意キー）。受贈者名等の個人名は持たない（§9・投稿者=bits 使用者のみ）。
+ */
+export type TwitchBitsUseEventDto = {
+  broadcaster_user_id: string;
+  broadcaster_user_login: string;
+  broadcaster_user_name: string;
+  user_id: string;
+  user_login: string;
+  user_name: string;
+  bits: number;
+  type: "cheer" | "power_up" | (string & {});
+  power_up?: {
+    type?: string;
+  };
+  message?: {
+    text: string;
+    fragments: TwitchChatMessageFragmentDto[];
+  };
+  // websocket client が envelope の metadata.message_id を補填する（イベント本体には無い）。
+  message_id: string;
+};
+
+/**
+ * chat notification の既知種別。
+ * 043a: sub/resub/sub_gift/community_sub_gift/pay_it_forward（従来）。
+ * 043a(拡張): charity_donation（実金銭ドネーション）・gift_paid_upgrade / prime_paid_upgrade（有料化）を追加。
+ *   共有チャット中は同じ収益イベントが `shared_chat_*` の別 notice_type で届くため、mapper が接頭辞を剥がして
+ *   同一に分類する（取りこぼし防止）。非収益（raid/announcement 等）は mapper 側で null に落とす。
+ */
 export type TwitchChatNoticeType =
   | "sub"
   | "resub"
   | "sub_gift"
   | "community_sub_gift"
   | "pay_it_forward"
+  | "gift_paid_upgrade"
+  | "prime_paid_upgrade"
+  | "charity_donation"
+  | `shared_chat_${string}`
   | (string & {});
+
+/** サブスク階級（"1000"=Tier1 / "2000"=Tier2 / "3000"=Tier3）。未知値も受ける。 */
+export type TwitchSubTier = "1000" | "2000" | "3000" | (string & {});
+
+/** notice_type=sub の付随情報。 */
+export type TwitchSubDetailsDto = {
+  sub_tier: TwitchSubTier;
+  // 【レビュー対応・修正不要】is_prime は受信・モデル化するが現状マッパでは未活用。Prime サブ（視聴者に金銭負担なし）も
+  //   通常サブと同じく subscription＋赤枠（お金扱い）で強調され「お金がかかる」観点ではやや過大だが、現状は全 sub を等しく
+  //   見逃し防止対象とする product 判断。再修正トリガー: Prime を強調除外/淡色化したくなったら is_prime を wire/表示へ通す。
+  is_prime: boolean;
+  duration_months: number;
+};
+
+/** notice_type=resub の付随情報。 */
+export type TwitchResubDetailsDto = {
+  sub_tier: TwitchSubTier;
+  cumulative_months: number;
+  duration_months: number;
+};
+
+/** notice_type=sub_gift の付随情報（受贈者フィールドは §9 配慮で持たない）。 */
+export type TwitchSubGiftDetailsDto = {
+  sub_tier: TwitchSubTier;
+  duration_months: number;
+};
+
+/** notice_type=community_sub_gift の付随情報（受贈者は不特定・total＝件数）。 */
+export type TwitchCommunitySubGiftDetailsDto = {
+  sub_tier: TwitchSubTier;
+  total: number;
+};
+
+/** notice_type=prime_paid_upgrade の付随情報（Prime→有料サブへ転換・階級のみ）。 */
+export type TwitchPrimePaidUpgradeDetailsDto = {
+  sub_tier: TwitchSubTier;
+};
+
+/**
+ * notice_type=charity_donation の付随情報（Twitch チャリティへの実金銭ドネーション）。
+ * amount は最小単位整数 value と decimal_places で表現される（例 value=550, decimal_places=2 → 5.50）。
+ * charity_name は寄付先団体名（個人名ではない）。受贈者/贈与者の個人名は持たない（§9）。
+ */
+export type TwitchCharityDonationDetailsDto = {
+  // 【レビュー対応・修正不要】charity_name は寄付先「団体名」（個人名ではない）。mapper（mapCharityAmount）は
+  //   意図的に amount(value/decimal_places/currency) のみを消費し、本フィールドは消費しない＝wire/Rust/DB/ログへ
+  //   一切流さない（§9 衛生）。宣言はペイロード形の記録用に留める。
+  //   再修正トリガー: 将来 charity_name を表示等で消費するなら、§9（団体名の取り回し）影響を再評価してから解禁する。
+  charity_name?: string;
+  amount: {
+    value: number;
+    decimal_places: number;
+    currency: string;
+  };
+};
 
 /** message.fragments の1要素。 */
 export type TwitchChatMessageFragmentDto = {

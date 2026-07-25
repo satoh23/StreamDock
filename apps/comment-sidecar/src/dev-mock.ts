@@ -90,17 +90,54 @@ function makeComment(source: Provider, seq: number): CanonicalComment {
   const texts = MOCK_TEXTS[source];
   const name = authors[seq % authors.length];
   const text = texts[seq % texts.length];
-  // 5 件に 1 件だけ superchat/bits（額つき）を混ぜて、バッジ/額表示も目視できるようにする。
-  const monetary = seq % 5 === 0;
   const comment: CanonicalComment = {
     id: `mock-${source}-${Date.now()}-${seq}`,
     source,
     author: { id: `mock-${source}-${name}`, name },
     text,
     publishedAt: new Date().toISOString(),
-    eventType: monetary ? "superchat" : "chat",
+    eventType: "chat",
   };
-  if (monetary) {
+
+  // 043a: 種別分離の目視用に投げ銭系イベントを周期で混ぜる（provider 実態に沿う・3/7/9/11/13/17 は %5≠0 で superchat と衝突しない）。
+  //   membership・jewels … YouTube のみ／gift・subscription・donation・power-up … Twitch のみ。
+  //   superchat/bits（額つき）… seq % 5 === 0。付随数値（monthCount/giftCount/tier）・金額は受贈者名/団体名を含まない（§9）。
+  //   ※jewels の取得（ingestion）は 043d（gRPC proto 拡張要）で、ここでは表示/実機確認用に合成のみ発行する。
+  if (seq % 20 === 7 && source === "youtube") {
+    comment.eventType = "membership";
+    // 043b: 種別要約は表示側が monthCount 等から組み立てるため、本文は視聴者の自由コメントのみ（無しは空）。
+    comment.text = "";
+    comment.monthCount = 6;
+  } else if (seq % 20 === 9 && source === "youtube") {
+    // 043a(拡張): YouTube Jewels（合成のみ・取得は 043d）。jewels は仮想通貨のため bits と同様に数値＋通貨で表す。
+    comment.eventType = "jewels";
+    comment.text = "投げ銭ジュエル 🎁";
+    comment.monetaryAmount = "50 jewels";
+    comment.monetary = { amount: 50, currency: "JEWELS" };
+  } else if (seq % 20 === 13 && source === "twitch") {
+    comment.eventType = "gift";
+    comment.text = ""; // 表示側が「〇〇さんがサブギフトを5件贈りました（Tier1）」を組み立てる。
+    comment.giftCount = 5;
+    comment.tier = 1;
+  } else if (seq % 20 === 17 && source === "twitch") {
+    comment.eventType = "subscription";
+    comment.text = "いつも応援してます！"; // 視聴者が添えた自由コメント（要約の下に表示される）。
+    comment.monthCount = 3;
+    comment.tier = 2;
+  } else if (seq % 20 === 3 && source === "twitch") {
+    // 043a(拡張): チャリティ・ドネーション（実金銭・団体名は持たない）。
+    comment.eventType = "donation";
+    comment.text = "チャリティに寄付しました";
+    comment.monetaryAmount = "1000 JPY";
+    comment.monetary = { amount: 1000, currency: "JPY" };
+  } else if (seq % 20 === 11 && source === "twitch") {
+    // 043a(拡張): Bits Power-up（bits 消費＝既存の superchat+BITS 表現に集約）。
+    comment.eventType = "superchat";
+    comment.text = "Power-up 🎉";
+    comment.monetaryAmount = "300 bits";
+    comment.monetary = { amount: 300, currency: "BITS" };
+  } else if (seq % 5 === 0) {
+    comment.eventType = "superchat";
     comment.monetaryAmount = source === "twitch" ? "100 bits" : "500 JPY";
     // 038a: 数値内訳も付与（Rust CommentViewDto.monetary と同形）。twitch=bits / youtube=JPY。
     comment.monetary =
