@@ -1,6 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { CommentViewDto } from "../comment-viewer/types";
-import type { ListViewersInput, ViewerDetail, ViewerRecord } from "./types";
+import type {
+  ListViewersInput,
+  RecordResult,
+  ViewerDetail,
+  ViewerRecord,
+} from "./types";
 
 /**
  * 038a: 視聴者メモリ（Rust 側 SQLite・端末内限定）の Tauri command 薄いラッパ。
@@ -10,12 +15,16 @@ import type { ListViewersInput, ViewerDetail, ViewerRecord } from "./types";
  * `recordComment` 以外（一覧/詳細/メモ/削除）は 038b の UI から使う。
  */
 
-/** 受信済みコメント 1 件を Rust の視聴者メモリへ記録する（視聴者 upsert＋集計・同一 id は冪等）。 */
+/**
+ * 受信済みコメント 1 件を Rust の視聴者メモリへ記録する（視聴者 upsert＋集計・同一 id は冪等）。
+ *
+ * 038c: 戻り値は判定（初見／久しぶり）。実際に挿入された初回のみ肯定値が返り、重複記録は両方 false。
+ */
 export function recordComment(
   comment: CommentViewDto,
   sessionId: string,
-): Promise<void> {
-  return invoke<void>("record_comment", { comment, sessionId });
+): Promise<RecordResult> {
+  return invoke<RecordResult>("record_comment", { comment, sessionId });
 }
 
 /**
@@ -23,15 +32,21 @@ export function recordComment(
  *
  * 記録失敗は握り潰す（best-effort）。ログにも本文は出さない（§9）。`comments` は呼び出し側で
  * comment.id 重複排除済み（mergeComments の `added`）で、Rust 側も `INSERT OR IGNORE` で冪等。
+ *
+ * 038c: `onResult` を渡すと、各コメントの判定（初見／久しぶり）を解決時に `comment.id` 付きで通知する
+ * （バッジ表示用）。fire-and-forget は不変で、判定はコメント表示・読み上げより **わずかに遅れて**解決してよい。
  */
 export function recordComments(
   comments: CommentViewDto[],
   sessionId: string,
+  onResult?: (commentId: string, result: RecordResult) => void,
 ): void {
   for (const comment of comments) {
-    void recordComment(comment, sessionId).catch(() => {
-      /* 視聴者メモリ記録の失敗はコメント表示・読み上げを妨げない（best-effort）。 */
-    });
+    void recordComment(comment, sessionId)
+      .then((result) => onResult?.(comment.id, result))
+      .catch(() => {
+        /* 視聴者メモリ記録の失敗はコメント表示・読み上げを妨げない（best-effort）。 */
+      });
   }
 }
 

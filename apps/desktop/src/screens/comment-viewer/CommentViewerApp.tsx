@@ -46,6 +46,7 @@ import {
 } from "../../features/comment-viewer/overlaySettings";
 import { mergeComments } from "../../features/comment-viewer/mergeComments";
 import { recordComments } from "../../features/viewer-memory/viewerMemoryApi";
+import type { RecordResult } from "../../features/viewer-memory/types";
 import {
   openCommentOverlayWindow,
   closeCommentOverlayWindow,
@@ -156,6 +157,17 @@ export function CommentViewerApp() {
   // 038b フォローアップ: 流れているコメントをクリックすると、コメント本体の右にその視聴者の詳細をスプリット表示する
   // （× で閉じる）。WS/comments/recordComments/sessionIdRef には触れない＝コメント受信は止まらず、選択 id を持つだけ。
   const [selectedViewerId, setSelectedViewerId] = useState<string | null>(null);
+  // 038c: コメント id → 初見/久しぶり判定。record_comment の戻り値（実挿入の初回のみ肯定）を受けて、
+  // CommentList の該当行に「初見」「久しぶり」バッジ＋枠色を出す。**肯定判定のみ格納**するため、
+  // Map サイズは新規/復帰視聴者の distinct 数でバウンドし小さい（通常コメントは載せない）。判定は
+  // 端末外へ出さない真偽 2 値のみ（§9）。
+  // apply-review(品質Q2・後回し可): この Map は配信セッション中プルーニングしない（表示窓 200 件外へ流れた
+  // 肯定判定も保持する）。1 エントリは極小（id 文字列＋真偽 2 値）で端末外送信も無く実害が小さいため据え置く。
+  // 再修正トリガー: 長時間配信で distinct な新規/復帰視聴者数が実測でメモリ問題化したら、comments の 200 件
+  // クランプに整合させて prune する。
+  const [viewerBadges, setViewerBadges] = useState<Map<string, RecordResult>>(
+    () => new Map(),
+  );
   // TTS キュー（AudioContext を 1 つ所有）。マウントで生成し、アンマウントで dispose する。
   const ttsRef = useRef<TtsQueue | null>(null);
   // 034c: 話者サンプル試聴プレイヤー（中断切替つき・本線 TTS とは別の AudioContext）。設定ビューで話者/スタイルを
@@ -370,6 +382,23 @@ export function CommentViewerApp() {
     });
   }, []);
 
+  // 038c: record_comment の判定を受けてバッジ Map を更新する安定コールバック（useCallback []）。
+  // **肯定判定（初見 or 久しぶり）だけを格納**し、否定（通常コメント・重複記録の false/false）は無視する。
+  // Rust 側は実挿入の初回のみ肯定を返すため、StrictMode の updater 二重実行・fire-and-forget の重複解決でも
+  // 肯定は 1 度きり＝バッジがブレない（否定で上書きしない）。setState は Promise 解決時（render 外）に走る。
+  const handleRecordResult = useCallback(
+    (commentId: string, result: RecordResult) => {
+      if (!result.firstTime && !result.longAbsence) return;
+      setViewerBadges((prev) => {
+        if (prev.has(commentId)) return prev; // 既存の肯定判定は保持（無駄な再レンダも避ける）。
+        const next = new Map(prev);
+        next.set(commentId, result);
+        return next;
+      });
+    },
+    [],
+  );
+
   // 032c-b: Twitch コメント取得 sidecar の単一双方向 WS に接続する。受信コメントは表示へ流し
   // （単一注入点 mergeComments）、新規追加分（added）を TTS キューへ enqueue して読み上げる。
   // enqueue は comment.id 冪等（ttsQueue の seenIds）なので、StrictMode で updater が二重実行されても
@@ -386,7 +415,8 @@ export function CommentViewerApp() {
           // 038a: 受信済みコメント（新規分）を Rust の視聴者メモリへ記録する（端末内 SQLite のみ・
           // 端末外へ出さない）。added は comment.id で dedup 済み、Rust 側も INSERT OR IGNORE で冪等なので
           // StrictMode の updater 二重実行でも集計は重複しない（enqueueForSpeech と同じ論拠）。fire-and-forget。
-          recordComments(added, sessionIdRef.current);
+          // 038c: 判定（初見/久しぶり）を handleRecordResult で受け取りバッジ Map を更新する（実挿入の初回のみ肯定）。
+          recordComments(added, sessionIdRef.current, handleRecordResult);
           return next;
         }),
       onDeviceCode: (prompt) => setDeviceCode(prompt),
@@ -418,7 +448,9 @@ export function CommentViewerApp() {
       handle.disconnect();
       streamRef.current = null;
     };
-  }, [enqueueForSpeech]);
+    // enqueueForSpeech / handleRecordResult はいずれも useCallback([]) で安定＝この effect は実質マウント専用のまま
+    // （窓内 WS 1 本の原則を守る。deps に載せても再接続しない）。
+  }, [enqueueForSpeech, handleRecordResult]);
 
   // ユーザー明示操作でのみ発火する（§1 の「ユーザーが明示接続した時のみ」）。
   const handleTwitchConnect = () => {
@@ -739,6 +771,7 @@ export function CommentViewerApp() {
                 comments={comments}
                 followMode="release"
                 onSelect={(c) => setSelectedViewerId(viewerIdOf(c))}
+                badges={viewerBadges}
               />
             </div>
             {selectedViewerId !== null && (

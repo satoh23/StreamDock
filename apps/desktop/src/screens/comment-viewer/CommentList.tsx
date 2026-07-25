@@ -1,5 +1,6 @@
 import { useRef } from "react";
 import type { CommentViewDto } from "../../features/comment-viewer/types";
+import type { RecordResult } from "../../features/viewer-memory/types";
 import {
   useFollowScroll,
   type FollowMode,
@@ -69,6 +70,12 @@ interface CommentListProps {
    * 未指定なら従来どおり表示専用（回帰なし）。overlay バリアントには効かない（OBS 表示は非インタラクティブのまま）。
    */
   onSelect?: (comment: CommentViewDto) => void;
+  /**
+   * 038c: コメント id → 初見/久しぶり判定（`record_comment` 戻り値）。該当 id の `variant="default"` 行にだけ
+   * 「初見」「久しぶり」バッジ＋枠色を重ねる。未指定/非該当は従来どおり無装飾（既存 default 意匠を壊さない）。
+   * overlay バリアントには効かない（コメビュ本体のみ・OBS 表示は対象外）。
+   */
+  badges?: ReadonlyMap<string, RecordResult>;
 }
 
 export function CommentList({
@@ -78,6 +85,7 @@ export function CommentList({
   variant = "default",
   showSource = false,
   onSelect,
+  badges,
 }: CommentListProps) {
   const olRef = useRef<HTMLOListElement>(null);
   const follow = useFollowScroll(olRef, comments, { mode: followMode });
@@ -86,38 +94,58 @@ export function CommentList({
   // この一覧（最大 200 件クランプ）の規模では無視できるコストで、分岐マークアップを素直に読める形を優先した意図的な書き方。
   // 再修正トリガー＝将来コメント上限を大幅に増やす等で map 再生成のコストが実測で問題化したら、useCallback 化や
   // 分岐選択のメモ化を検討する。
-  // 既定（コメビュ本体）のコメント項目。現行マークアップから一切変えない（本体の見た目を不変に保つ）。
-  const renderDefaultItem = (c: CommentViewDto) => (
-    <li
-      key={c.id}
-      className={onSelect ? `${styles.item} ${styles.itemClickable}` : styles.item}
-      // onSelect 指定時のみ行をボタン化（クリック/Enter/Space で視聴者詳細へ）。未指定なら表示専用のまま。
-      role={onSelect ? "button" : undefined}
-      tabIndex={onSelect ? 0 : undefined}
-      onClick={onSelect ? () => onSelect(c) : undefined}
-      onKeyDown={
-        onSelect
-          ? (e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                onSelect(c);
+  // 既定（コメビュ本体）のコメント項目。現行マークアップは不変で、038c 該当時のみ枠色クラス＋バッジを重ねる
+  //（非該当・未指定は従来どおり無装飾＝本体の見た目を不変に保つ）。
+  const renderDefaultItem = (c: CommentViewDto) => {
+    // 038c: firstTime と longAbsence は Rust 側で排他（初見が優先）。念のため frontend でも初見を優先して 1 つだけ出す。
+    const badge = badges?.get(c.id);
+    const itemClasses = [styles.item];
+    if (onSelect) itemClasses.push(styles.itemClickable);
+    if (badge?.firstTime) itemClasses.push(styles.itemFirstTime);
+    else if (badge?.longAbsence) itemClasses.push(styles.itemLongAbsence);
+    return (
+      <li
+        key={c.id}
+        className={itemClasses.join(" ")}
+        // onSelect 指定時のみ行をボタン化（クリック/Enter/Space で視聴者詳細へ）。未指定なら表示専用のまま。
+        role={onSelect ? "button" : undefined}
+        tabIndex={onSelect ? 0 : undefined}
+        onClick={onSelect ? () => onSelect(c) : undefined}
+        onKeyDown={
+          onSelect
+            ? (e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  onSelect(c);
+                }
               }
-            }
-          : undefined
-      }
-    >
-      <div className={styles.meta}>
-        <span className={`${styles.badge} ${SOURCE_CLASS[c.source]}`}>
-          {SOURCE_LABEL[c.source]}
-        </span>
-        <span className={styles.author}>{c.author.name}</span>
-        {c.monetaryAmount && (
-          <span className={styles.amount}>{c.monetaryAmount}</span>
-        )}
-      </div>
-      <p className={styles.text}>{c.text}</p>
-    </li>
-  );
+            : undefined
+        }
+      >
+        <div className={styles.meta}>
+          <span className={`${styles.badge} ${SOURCE_CLASS[c.source]}`}>
+            {SOURCE_LABEL[c.source]}
+          </span>
+          {badge?.firstTime ? (
+            <span className={`${styles.badge} ${styles.badgeFirstTime}`}>
+              初見
+            </span>
+          ) : (
+            badge?.longAbsence && (
+              <span className={`${styles.badge} ${styles.badgeLongAbsence}`}>
+                久しぶり
+              </span>
+            )
+          )}
+          <span className={styles.author}>{c.author.name}</span>
+          {c.monetaryAmount && (
+            <span className={styles.amount}>{c.monetaryAmount}</span>
+          )}
+        </div>
+        <p className={styles.text}>{c.text}</p>
+      </li>
+    );
+  };
 
   // 034e: OBS オーバーレイ用チャット意匠（LINE 風）。上段＝名前＋サイト名ピルバッジ（別の行）／下段＝アイコン｜吹き出し
   // （同じ行の 2 列）。吹き出し左辺のしっぽがアイコン方向へ向く。showSource=true のときだけサイト名ピルを名前の横に

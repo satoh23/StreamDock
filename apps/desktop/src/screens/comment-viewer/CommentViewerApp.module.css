@@ -272,6 +272,18 @@
   border: 1px solid var(--border-soft);
 }
 
+/* 038c: 初見/久しぶりのコメント行の枠色。該当時のみ .item の後に border-color を差し替える（同一詳細度→ソース順で
+   .item を上書き）。border-color のみ変更＝サイズ/背景/角丸は不変で既存 default 意匠を壊さない。役割トークンのみ
+   （初見=ok緑 / 久しぶり=info青・サイトバッジの accent紫/danger赤、金額の warn と被らない）。overlay 変種には
+   付かない（renderDefaultItem のみ）。 */
+.itemFirstTime {
+  border-color: var(--ok);
+}
+
+.itemLongAbsence {
+  border-color: var(--info);
+}
+
 .meta {
   display: flex;
   align-items: center;
@@ -297,6 +309,20 @@
   color: var(--danger-text);
   background: var(--danger-soft);
   border-color: var(--danger-border);
+}
+
+/* 038c: 初見/久しぶりのバッジ（.badge を基底に色だけ差し替え）。.badge が border:1px solid transparent を持つので
+   border-color の上書きが効く。役割トークンのみ（生 hex/rgba なし）。初見=ok緑 / 久しぶり=info青。 */
+.badgeFirstTime {
+  color: var(--ok);
+  background: var(--ok-soft);
+  border-color: var(--ok-border);
+}
+
+.badgeLongAbsence {
+  color: var(--info-text);
+  background: var(--info-soft);
+  border-color: var(--info-border);
 }
 
 .author {

@@ -3,9 +3,10 @@
 //! 保存は端末内 SQLite のみ。識別子（テーブル名・ORDER BY 句）は**コンパイル時定数のみ**を使い、
 //! 値は必ずパラメータバインドする（docs/security.md §8）。集計は挿入行から再計算するため冪等。
 
+use chrono::{DateTime, Months};
 use rusqlite::{Connection, OptionalExtension};
 
-use super::model::{NewViewerComment, ViewerCommentRecord, ViewerRecord, ViewerSort};
+use super::model::{NewViewerComment, RecordResult, ViewerCommentRecord, ViewerRecord, ViewerSort};
 
 /// SELECT で取得する viewers テーブルの全カラム（複数クエリで共有）。
 const VIEWER_COLUMNS: &str = "id, provider, provider_user_id, name, first_seen_at, last_comment_at, \
@@ -102,20 +103,47 @@ fn row_to_comment(row: &rusqlite::Row<'_>) -> rusqlite::Result<ViewerCommentReco
     })
 }
 
-/// コメントを 1 件記録し、視聴者を upsert して集計を再計算する。
+/// コメントを 1 件記録し、視聴者を upsert して集計を再計算する。戻り値は 038c の判定（初見／久しぶり）。
 ///
 /// 冪等: `viewer_comments.id`（＝コメント id）が既存なら `INSERT OR IGNORE` が 0 行となり、集計を再計算せず
-/// `false` を返す（同一コメントの二重記録で集計が重複しない）。集計は `viewer_comments` から毎回再計算する
-/// ため増分ドリフトが起きない。upsert＋挿入＋再計算は 1 トランザクション。
+/// `RecordResult{false,false}` を返す（同一コメントの二重記録で集計も判定も重複しない）。集計は
+/// `viewer_comments` から毎回再計算するため増分ドリフトが起きない。upsert＋挿入＋再計算は 1 トランザクション。
 ///
 /// 挿入順は **親（viewers）→ 子（viewer_comments）** の順。`viewer_comments.viewer_id` は `viewers(id)` への
 /// FK（`foreign_keys = ON`・非 DEFERRABLE）で、親行が無い状態で子を挿入すると即 FK 制約違反になり、新規視聴者の
 /// 初回コメントが必ず失敗して機能が成立しない。子先行だった実装バグを親先行へ修正済み（DDL/移行不要な純コード修正）。
-pub fn record_comment(conn: &Connection, c: &NewViewerComment) -> rusqlite::Result<bool> {
+///
+/// 038c 判定（初見／久しぶり）は **upsert 前の viewer 状態から算出し、実挿入（inserted==1）のときだけ返す**:
+///   - 記録前に viewer 行が無い（`prior_last` が None）＝**初見**（`first_time`）。
+///   - 記録があり `今回 published_at >= 直前 last_comment_at + 1 ヶ月`＝**久しぶり**（`long_absence`）。初見が優先。
+/// **冪等性**: 全 command は単一 `Mutex<Connection>` で直列化されるため、同一 id の複数呼び出しは 1 つだけが実挿入
+/// となり判定を返す。重複（inserted==0）は `{false,false}` に落として二重にバッジを立てない（判定を挿入時の状態で確定）。
+pub fn record_comment(conn: &Connection, c: &NewViewerComment) -> rusqlite::Result<RecordResult> {
     let now = crate::util::now_rfc3339();
     // DbState の Mutex を保持した状態で `&Connection` から張れる unchecked_transaction を使う
     //（本モジュールの全 command は単一 Mutex<Connection> で直列化されるため安全）。
     let tx = conn.unchecked_transaction()?;
+
+    // 0) 038c 判定は upsert（step1）より前の状態で確定する。step1 で viewer 行が作られ step3 で last_comment_at が
+    //    今回 published_at に更新されるため、必ずこの時点で直前 last_comment_at を読む。
+    let prior_last: Option<String> = tx
+        .query_row(
+            "SELECT last_comment_at FROM viewers WHERE id = ?1",
+            rusqlite::params![c.viewer_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let first_time = prior_last.is_none();
+    // apply-review(品質Q3・修正不要): 判定基準は wall-clock `now` ではなく今回コメントの `published_at`。集計の
+    // first/last=MIN/MAX(published_at) と基準が揃い（＝2 コメント時刻の差で「久しぶり」を測る本来の定義）、Rust
+    // テストが決定的になり、ライブでは published_at≈now のため実害が無い。留意点として判定は記録（到着）順に依存する
+    // （prior_last は直前に記録済みの last_comment_at）が、本機能はライブ WS 受信を fire-and-forget 記録するため
+    // 到着順≈published 順。再修正トリガー: 履歴一括受信等で published_at が逆順に届き誤判定が実問題化したら、記録前に
+    // published_at 順の整列や max(prior_last, published_at) 基準を検討する。
+    let long_absence = match &prior_last {
+        Some(last) => is_long_absence(last, &c.published_at),
+        None => false, // 初見（記録なし）は久しぶりを付けない（初見が優先）。
+    };
 
     // 1) 親: 視聴者行を先に存在させ名前を最新化する（FK 制約のため子より前）。集計は step3 で確定するので
     //    first/last は仮値。first_seen_at / note / created_at は既存行では上書きしない。
@@ -156,7 +184,8 @@ pub fn record_comment(conn: &Connection, c: &NewViewerComment) -> rusqlite::Resu
     )?;
     if inserted == 0 {
         tx.commit()?;
-        return Ok(false);
+        // 重複記録: 集計を触らず、判定も肯定を返さない（二重にバッジを立てない・冪等）。
+        return Ok(RecordResult { first_time: false, long_absence: false });
     }
 
     // 3) 集計を viewer_comments から再計算（bits は currency='BITS'・スパチャは実通貨のみ）。
@@ -187,7 +216,26 @@ pub fn record_comment(conn: &Connection, c: &NewViewerComment) -> rusqlite::Resu
     )?;
 
     tx.commit()?;
-    Ok(true)
+    // ここに来るのは実挿入（inserted==1）＝この id の初回記録のみ。upsert 前の状態で確定した判定を返す。
+    Ok(RecordResult { first_time, long_absence })
+}
+
+/// 直前の最終コメント `prev` から今回コメント `cur` までが 1 ヶ月以上空いたか（＝久しぶり）。
+///
+/// 既存依存の `chrono` で RFC3339 をパースし、`prev + 1 ヶ月 <= cur` を判定する（新規依存なし）。月末は
+/// `checked_add_months` がクランプ（例: 1/31 + 1 ヶ月 → 2/28）。いずれかがパース不能なら **false**（久しぶりを
+/// 付けない安全側）。両端とも同形 ISO8601（UTC 前提）で来る想定は集計の first/last と同じ（repository の前提）。
+fn is_long_absence(prev: &str, cur: &str) -> bool {
+    let (Ok(prev_dt), Ok(cur_dt)) = (
+        DateTime::parse_from_rfc3339(prev),
+        DateTime::parse_from_rfc3339(cur),
+    ) else {
+        return false;
+    };
+    match prev_dt.checked_add_months(Months::new(1)) {
+        Some(threshold) => cur_dt >= threshold,
+        None => false,
+    }
 }
 
 /// ViewerSort → ORDER BY 句（定数のみ・ユーザー入力は含めない）。
@@ -329,22 +377,26 @@ mod tests {
     }
 
     // P1: 新規視聴者の初回コメントが記録される（親先行→子挿入。子先行だと FK 違反で失敗＝回帰検出）。
+    //     初回挿入は 038c 判定で初見（first_time）を返す。
     #[test]
     fn records_new_viewer_first_comment() {
         let conn = test_conn();
-        let inserted = record_comment(&conn, &nc("c1", "twitch:u1", "chat", None, None, "2026-01-01T00:00:00Z")).unwrap();
-        assert!(inserted, "first insert should report true");
+        let r = record_comment(&conn, &nc("c1", "twitch:u1", "chat", None, None, "2026-01-01T00:00:00Z")).unwrap();
+        assert!(r.first_time, "first insert should be flagged 初見");
+        assert!(!r.long_absence);
         let v = viewer(&conn, "twitch:u1");
         assert_eq!(v.total_comments, 1);
         assert_eq!(count_comments(&conn, "twitch:u1"), 1);
     }
 
-    // P2: 同一 comment.id の二重記録は 0 行（false）で集計も重複しない。
+    // P2: 同一 comment.id の二重記録は 0 行で集計も重複せず、判定も肯定を返さない（バッジがブレない）。
     #[test]
     fn duplicate_comment_id_is_idempotent() {
         let conn = test_conn();
-        assert!(record_comment(&conn, &nc("c1", "twitch:u1", "chat", None, None, "2026-01-01T00:00:00Z")).unwrap());
-        assert!(!record_comment(&conn, &nc("c1", "twitch:u1", "chat", None, None, "2026-01-01T00:00:00Z")).unwrap());
+        assert!(record_comment(&conn, &nc("c1", "twitch:u1", "chat", None, None, "2026-01-01T00:00:00Z")).unwrap().first_time);
+        let dup = record_comment(&conn, &nc("c1", "twitch:u1", "chat", None, None, "2026-01-01T00:00:00Z")).unwrap();
+        assert!(!dup.first_time, "duplicate must not re-flag 初見");
+        assert!(!dup.long_absence);
         assert_eq!(viewer(&conn, "twitch:u1").total_comments, 1);
         assert_eq!(count_comments(&conn, "twitch:u1"), 1);
     }
@@ -473,5 +525,87 @@ mod tests {
     fn get_absent_returns_none() {
         let conn = test_conn();
         assert!(get(&conn, "nope").unwrap().is_none());
+    }
+
+    // ---- 038c: 初見／久しぶり判定（保存直前の last_comment_at 基準・初回のみ・冪等）----
+
+    // 038c-P2: 最終コメントから 1 ヶ月以上後の最初のコメントは久しぶり（初見ではない）。
+    #[test]
+    fn judges_long_absence_after_month_gap() {
+        let conn = test_conn();
+        record_comment(&conn, &nc("c1", "twitch:u1", "chat", None, None, "2026-01-01T00:00:00Z")).unwrap();
+        let r = record_comment(&conn, &nc("c2", "twitch:u1", "chat", None, None, "2026-03-05T00:00:00Z")).unwrap();
+        assert!(!r.first_time);
+        assert!(r.long_absence);
+    }
+
+    // 038c-P3: 1 ヶ月未満の再コメントはバッジ無し（常連）。
+    #[test]
+    fn judges_regular_within_month() {
+        let conn = test_conn();
+        record_comment(&conn, &nc("c1", "twitch:u1", "chat", None, None, "2026-01-01T00:00:00Z")).unwrap();
+        let r = record_comment(&conn, &nc("c2", "twitch:u1", "chat", None, None, "2026-01-15T00:00:00Z")).unwrap();
+        assert!(!r.first_time);
+        assert!(!r.long_absence);
+    }
+
+    // 038c-P4a: 境界＝丁度 1 ヶ月後は久しぶり（`cur >= prev + 1 ヶ月`）。
+    #[test]
+    fn long_absence_boundary_exactly_one_month() {
+        let conn = test_conn();
+        record_comment(&conn, &nc("c1", "twitch:u1", "chat", None, None, "2026-01-01T00:00:00Z")).unwrap();
+        let r = record_comment(&conn, &nc("c2", "twitch:u1", "chat", None, None, "2026-02-01T00:00:00Z")).unwrap();
+        assert!(r.long_absence, "exactly one month must count as 久しぶり");
+    }
+
+    // 038c-P4b: 境界直前（1 ヶ月に 1 秒足りない）は常連。
+    #[test]
+    fn long_absence_just_under_one_month_is_regular() {
+        let conn = test_conn();
+        record_comment(&conn, &nc("c1", "twitch:u1", "chat", None, None, "2026-01-01T00:00:00Z")).unwrap();
+        let r = record_comment(&conn, &nc("c2", "twitch:u1", "chat", None, None, "2026-01-31T23:59:59Z")).unwrap();
+        assert!(!r.long_absence);
+    }
+
+    // 038c-P5: 久しぶり判定後の同一 id 二重記録は肯定を返さない（バッジがブレない・冪等）。
+    #[test]
+    fn duplicate_does_not_reflag_after_long_absence() {
+        let conn = test_conn();
+        record_comment(&conn, &nc("c1", "twitch:u1", "chat", None, None, "2026-01-01T00:00:00Z")).unwrap();
+        let first = record_comment(&conn, &nc("c2", "twitch:u1", "chat", None, None, "2026-03-05T00:00:00Z")).unwrap();
+        assert!(first.long_absence);
+        let dup = record_comment(&conn, &nc("c2", "twitch:u1", "chat", None, None, "2026-03-05T00:00:00Z")).unwrap();
+        assert!(!dup.first_time);
+        assert!(!dup.long_absence);
+        assert_eq!(viewer(&conn, "twitch:u1").total_comments, 2);
+    }
+
+    // 038c-P6: 月末クランプ。1/31 の 1 ヶ月後は chrono `checked_add_months` で 2/28 にクランプされる
+    //          （SQLite `datetime(x,'+1 month')` なら 3/3 に溢れる＝不採用）。クランプ後閾値 2/28 ちょうどは
+    //          久しぶり、その手前（2/27）は常連。2/28 が久しぶりになること自体が「3/3 溢れではない」ことを担保する。
+    #[test]
+    fn long_absence_clamps_month_end() {
+        // 2/28 ちょうど（クランプ後閾値）は久しぶり。
+        let conn = test_conn();
+        record_comment(&conn, &nc("a1", "twitch:ua", "chat", None, None, "2026-01-31T00:00:00Z")).unwrap();
+        let at_clamp =
+            record_comment(&conn, &nc("a2", "twitch:ua", "chat", None, None, "2026-02-28T00:00:00Z")).unwrap();
+        assert!(at_clamp.long_absence, "1/31+1ヶ月はクランプで2/28＝久しぶり（3/3 に溢れない）");
+
+        // 2/28 の手前（2/27）はまだ常連。
+        let conn2 = test_conn();
+        record_comment(&conn2, &nc("b1", "twitch:ub", "chat", None, None, "2026-01-31T00:00:00Z")).unwrap();
+        let before_clamp =
+            record_comment(&conn2, &nc("b2", "twitch:ub", "chat", None, None, "2026-02-27T23:59:59Z")).unwrap();
+        assert!(!before_clamp.long_absence, "クランプ後閾値 2/28 手前は常連");
+    }
+
+    // 038c-P7: パース不能な時刻では久しぶりを付けない（§8 安全側・誤バッジ回避）。is_long_absence を直接検証する。
+    #[test]
+    fn is_long_absence_is_false_on_unparsable_timestamp() {
+        assert!(!is_long_absence("not-a-timestamp", "2026-03-01T00:00:00Z"), "prev 不正 → false");
+        assert!(!is_long_absence("2026-01-01T00:00:00Z", "garbage"), "cur 不正 → false");
+        // 参考: 両端妥当で 1 ヶ月超なら通常判定は true（安全側フォールバックが誤って常に false にしていない）。
+        assert!(is_long_absence("2026-01-01T00:00:00Z", "2026-03-01T00:00:00Z"));
     }
 }

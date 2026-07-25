@@ -9,18 +9,21 @@ use crate::comment_viewer::model::CommentViewDto;
 use crate::error::{AppError, AppResult};
 use crate::util::{now_rfc3339, reject_control_chars, require_non_empty};
 
-use super::model::{ListViewersInput, NewViewerComment, ViewerDetail, ViewerRecord, ViewerSort};
+use super::model::{
+    ListViewersInput, NewViewerComment, RecordResult, ViewerDetail, ViewerRecord, ViewerSort,
+};
 use super::repository;
 
-/// 受信済みコメントを 1 件記録する（視聴者 upsert＋集計＋過去コメント追加）。
+/// 受信済みコメントを 1 件記録する（視聴者 upsert＋集計＋過去コメント追加）。戻り値は 038c 判定（初見／久しぶり）。
 ///
 /// `comment` は loopback WS で frontend が受信済みの値を Tauri コマンド経由で渡すだけ（新規の外部通信は
-/// 発生しない）。同一コメント id の二重記録は repository 側の `INSERT OR IGNORE` で冪等に無視される。
+/// 発生しない）。同一コメント id の二重記録は repository 側の `INSERT OR IGNORE` で冪等に無視され、判定も
+/// 肯定を返さない（`RecordResult{false,false}`）。
 pub fn record_comment(
     conn: &Connection,
     comment: CommentViewDto,
     session_id: String,
-) -> AppResult<()> {
+) -> AppResult<RecordResult> {
     // session_id: 必須・制御文字拒否。
     let session_id = session_id.trim().to_string();
     require_non_empty(&session_id, "セッションIDは必須です")?;
@@ -70,8 +73,7 @@ pub fn record_comment(
         published_at: comment.published_at,
     };
 
-    repository::record_comment(conn, &new)?;
-    Ok(())
+    Ok(repository::record_comment(conn, &new)?)
 }
 
 /// 視聴者一覧を返す（検索・並び替えは任意）。

@@ -112,6 +112,21 @@ pub struct ListViewersInput {
     pub sort: Option<ViewerSort>,
 }
 
+/// 038c: `record_comment` の判定結果（初見／久しぶり）。JSON は camelCase。
+///
+/// `record_comment` が **実際に挿入した初回のみ** 肯定値を返す（重複記録は両方 false）。frontend は
+/// この 2 値の真偽だけを消費してバッジ/枠色を出す。**端末外へ出さない・ログにも出さない**（真偽 2 値のみ）。
+/// `first_time` と `long_absence` は排他（初コメントは初見が優先で久しぶりは付けない）。
+#[derive(Debug, Clone, Copy, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/features/viewer-memory/bindings/")]
+pub struct RecordResult {
+    /// その視聴者の初コメント（記録前に viewer 行が無い）＝**初見**。
+    pub first_time: bool,
+    /// 直前の最終コメントから 1 ヶ月以上経過後の最初のコメント＝**久しぶり**。
+    pub long_absence: bool,
+}
+
 /// `record_comment` の検証済み値を repository へ渡す内部入力（ts-rs 非出力）。
 ///
 /// frontend からはこの型で記録しない（記録は `CommentViewDto` を受けて service が組み立てる）。

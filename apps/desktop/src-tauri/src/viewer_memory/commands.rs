@@ -13,19 +13,20 @@ use crate::comment_viewer::model::CommentViewDto;
 use crate::error::AppResult;
 use crate::tools::commands::DbState;
 
-use super::model::{ListViewersInput, ViewerDetail, ViewerRecord};
+use super::model::{ListViewersInput, RecordResult, ViewerDetail, ViewerRecord};
 use super::service;
 
-/// 受信済みコメントを 1 件記録する（視聴者 upsert＋集計＋過去コメント追加）。
+/// 受信済みコメントを 1 件記録する（視聴者 upsert＋集計＋過去コメント追加）。戻り値は 038c 判定（初見／久しぶり）。
 ///
 /// `comment` は frontend が loopback WS で受信済みの値。ここで新規の外部通信・宛先・capability は増えない
-/// （受信済みの値を Tauri コマンドで渡すだけ・sidecar / main の no-internet 境界は不変）。
+/// （受信済みの値を Tauri コマンドで渡すだけ・sidecar / main の no-internet 境界は不変）。戻り値は真偽 2 値
+/// （`firstTime`/`longAbsence`）のみで視聴者本文・時刻は含めない（端末外/ログ非露出・§9）。
 #[tauri::command]
 pub fn record_comment(
     db: State<'_, DbState>,
     comment: CommentViewDto,
     session_id: String,
-) -> AppResult<()> {
+) -> AppResult<RecordResult> {
     let conn = db.lock().expect("db mutex poisoned");
     let result = service::record_comment(&conn, comment, session_id);
     // 【注意】失敗時のみ記録（本文非露出・固定安全文言）。正常時は無ログ。DB が壊れていると毎コメント

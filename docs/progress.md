@@ -5432,3 +5432,44 @@ E2E フィードバック 6 件のうち、軽微な UI 修正 5 件を先行実
   id 導出→`getViewer`（既存 invoke）のみ＝端末内・表示専用。console 出力なし・失敗時は固定安全文言のみ（§9）。
 - 実機 E2E 確認予定: コメント受信中に 1 件クリック→右に詳細／裏でコメントが流れ続ける／× で閉じる／未記録直後は
   「記録が見つかりませんでした」／狭い窓では全幅オーバーレイ／👥 フルビューも従来どおり。
+
+## 2026-07-26 (038c 初見／久しぶり バッジ＋枠色)
+
+コメントビューア本体（`variant="default"`）で、**初見**（初コメント）と**久しぶり**（最終コメントから 1 ヶ月以上
+経過後の最初のコメント）の視聴者が一目で分かるよう、該当コメント行に**枠色**＋「初見」「久しぶり」**バッジ**を出す。
+判定は 038a の Rust 側（保存直前の `last_comment_at` を持つ）で行い `record_comment` の戻り値で frontend へ返す。
+これで 038 系（038a データ基盤・038b 一覧/詳細・**038c バッジ**）が完了。**外部通信・依存・capability・`csp:null`・
+保存範囲は無変更**（判定は行に永続化せず都度算出＝新規保存項目ゼロ）。
+
+- **判定ロジック（Rust・保存直前・初回のみ）**（`viewer_memory/repository.rs`）: `record_comment` のトランザクション内で
+  **upsert（step1）より前に**直前 `last_comment_at` を SELECT。記録なし→**初見**（`first_time`）／記録あり かつ
+  `今回 published_at >= 直前 last_comment_at + 1 ヶ月`→**久しぶり**（`long_absence`）。初見が優先で排他。1 ヶ月境界は
+  **既存依存 `chrono`** の `DateTime::parse_from_rfc3339` + `checked_add_months(Months::new(1))`（新規依存なし・月末は
+  クランプ・パース不能は false に落として誤バッジ回避）。判定時刻は `published_at`（集計の first/last と整合・テスト決定的）。
+- **冪等方式（二重記録でバッジがブレない）**: 全 command は単一 `Mutex<Connection>` で直列化＝同一 id は 1 つだけ実挿入
+  （`INSERT OR IGNORE` inserted==1）。**判定は upsert 前の状態で確定し `inserted==1` のときだけ肯定を返す**。重複
+  （inserted==0）は必ず `{false,false}`。frontend も**肯定判定のみ Map に格納・否定で上書きしない**ため、StrictMode の
+  updater 二重実行・fire-and-forget の重複解決でも肯定は 1 度きり。
+- **戻り値 DTO 拡張**（`model.rs`）: `RecordResult { firstTime, longAbsence }`（真偽 2 値のみ・ts-rs export）。
+  `record_comment` の戻り値を repository `Result<RecordResult>` / service `AppResult<RecordResult>` /
+  command `AppResult<RecordResult>` に変更（現行 `()`/`bool` を置換）。bindings 再生成で `RecordResult.ts`（新規）＝
+  既存 bindings drift ゼロ。`log_command_err` は T ジェネリックのため無変更。
+- **結果伝達（fire-and-forget 維持）**（`viewerMemoryApi.ts` / `CommentViewerApp.tsx`）: `recordComment→Promise<RecordResult>`。
+  `recordComments(comments, sessionId, onResult?)` に任意コールバックを追加（各 Promise 解決時に `comment.id` 付きで判定を通知・
+  失敗は従来どおり握り潰し・表示/読み上げを止めない）。`CommentViewerApp` に `viewerBadges: Map<id, RecordResult>` state と
+  安定 `handleRecordResult`（`useCallback []`・肯定のみ格納）を追加し、`setComments` updater 内の `recordComments` に渡す。
+  WS/comments/enqueueForSpeech/sessionIdRef は不変（`handleRecordResult` は安定なので WS effect の deps に足しても再接続なし）。
+- **表示（default 限定・既存意匠不変）**（`CommentList.tsx` / `CommentViewerApp.module.css`）: `badges?: ReadonlyMap<id, RecordResult>`
+  prop を追加し、**`renderDefaultItem` のみ**で該当 id に枠色クラス＋「初見/久しぶり」バッジを重ねる（非該当・未指定・overlay 変種は
+  無装飾）。色は**役割トークンのみ**（生 hex/rgba なし）＝初見=`--ok`（緑）／久しぶり=`--info`（青）で、サイトバッジ（accent紫/danger赤）・
+  金額（warn）と被らない。枠色は `.item` の後に `.itemFirstTime`/`.itemLongAbsence` の `border-color` 差し替えのみ（サイズ/背景不変）。
+- **テスト**（`repository.rs`・仕様ベース）: 既存 2 件（初回/重複）を `RecordResult` 参照へ更新＋038c 判定 5 件追加
+  （久しぶり／常連（1 ヶ月未満）／境界（丁度 1 ヶ月=久しぶり・1 秒手前=否）／久しぶり後の二重記録は false/false・総数不変）。
+  **viewer_memory 31 tests PASS**。frontend は既存 **33 tests PASS**（`renderDefaultItem` 改修の回帰なし）。
+- **security-review（軽・通過）**: frontend 表示＋038a 判定消費＋`record_comment` 戻り値拡張のみ。**新規宛先/API/capability/依存なし・
+  `csp:null` 不変・保存範囲不変**（`Cargo.toml`/`Cargo.lock`/`capabilities/*`/`tauri.conf.json` 差分ゼロ）。`RecordResult` は真偽 2 値のみで
+  視聴者本文/氏名/時刻を含まず**端末外/ログ非露出**（§9）。判定は端末内データ（永続 `last_comment_at`＋今回 `published_at`）のみ。
+  後回し可: `viewerBadges` Map は肯定のみ格納で distinct 新規/復帰視聴者数にバウンド（メモリのみ・非送信＝非セキュリティ）。
+- 検証: `cargo check` OK／`cargo test viewer_memory`（31）OK／`gen:bindings` drift ゼロ／`typecheck`・`lint` OK／`test`（33）OK。
+- 実機表示はユーザー環境で確認予定: 新規視聴者→「初見」／`last_comment_at` を 1 ヶ月以上前に細工した視聴者の新規コメント→
+  「久しぶり」＋枠色／既存常連はバッジ無し／通常コメント表示が壊れない。再起動をまたいでも永続 `last_comment_at` 基準で正しい。
