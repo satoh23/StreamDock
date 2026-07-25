@@ -144,7 +144,7 @@ export function SettingsView({
       {/* 034(UI刷新): 接続カード（Twitch + YouTube を 1 枚に整列）。ボタンの意味・disabled 条件・ハンドラは不変で、
           先頭にサービス名の見出し列を足して 2 行を揃えた。ユーザー明示操作でのみ発火する（§1）。 */}
       <div className={styles.card}>
-        <div className={styles.cardHead}>接続</div>
+        <div className={styles.cardHead}>コメント取得</div>
         {/* 034(UI刷新): Twitch/YouTube を共有グリッドに載せ、列（サービス名・接続・チャンネル・取得開始・停止・状態）を
             揃える。YouTube はチャンネル入力が無いので同列に空セルを置いて、取得開始/停止の x 位置を Twitch と一致させる。 */}
         <div className={`${styles.cardBody} ${styles.connGrid}`}>
@@ -156,7 +156,7 @@ export function SettingsView({
             onClick={onTwitchConnect}
             disabled={!streamConnected || linked}
           >
-            {linked ? "接続済み" : "接続"}
+            {linked ? "連携済み" : "連携"}
           </button>
           <input
             type="text"
@@ -219,7 +219,7 @@ export function SettingsView({
             onClick={onYouTubeConnect}
             disabled={!streamConnected || youtubeLinked}
           >
-            {youtubeLinked ? "接続済み" : "接続"}
+            {youtubeLinked ? "連携済み" : "連携"}
           </button>
           {/* チャンネル列の空セル（Twitch のチャンネル入力と桁を合わせて取得開始/停止を揃える）。 */}
           <span aria-hidden="true" />
