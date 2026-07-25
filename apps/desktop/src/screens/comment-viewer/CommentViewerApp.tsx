@@ -53,6 +53,9 @@ import {
 } from "../../features/comment-viewer/windowApi";
 import { CommentList } from "./CommentList";
 import { SettingsView } from "./SettingsView";
+import { ViewersView } from "./ViewersView";
+import { ViewerDetailPanel } from "./ViewerDetailPanel";
+import { viewerIdOf } from "./viewerFormat";
 import { StatusIndicator } from "./StatusIndicator";
 import { ToggleSwitch } from "./ToggleSwitch";
 import styles from "./CommentViewerApp.module.css";
@@ -99,12 +102,60 @@ function creditNotice(speakerName: string | null): string {
   );
 }
 
+// 038b フォローアップ: ツールバーのアイコンはアプリ規約に合わせインライン SVG（currentColor・viewBox 0 0 24 24）で統一する
+// （絵文字だと OS 依存の多色になり設定/視聴者でトーンが揃わないため）。.settingsBtn の color（muted→hover text）を
+// currentColor で継承し、外部リソースを読み込まない（自己完結・テーマ追従）。ToolRow/Header と同じローカル icon 慣習。
+function GearIcon() {
+  return (
+    <svg
+      width="22"
+      height="22"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-1.41 3.41 2 2 0 0 1-1.42-.59l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    </svg>
+  );
+}
+
+function ViewersIcon() {
+  return (
+    <svg
+      width="22"
+      height="22"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+      <circle cx="9" cy="7" r="4" />
+      <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+      <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+    </svg>
+  );
+}
+
 export function CommentViewerApp() {
   const [comments, setComments] = useState<CommentViewDto[]>([]);
-  // 033b: 表示モード（本体コメント / 設定）。歯車ボタンで settings へ、戻るボタンで comment へ切替。
-  // 切替は描画のみで、接続 state・WS・TTS は本コンポーネントに残るため、設定表示中もコメント受信・蓄積は継続し
-  // （WS は窓内 1 本のまま）、本体へ戻ると全件が並ぶ。
-  const [view, setView] = useState<"comment" | "settings">("comment");
+  // 033b/038b: 表示モード（本体コメント / 設定 / 視聴者）。歯車ボタンで settings、人型ボタンで viewers へ、
+  // 各ビューの戻るボタンで comment へ切替。切替は描画のみで、接続 state・WS・TTS は本コンポーネントに残るため、
+  // 設定/視聴者を表示中もコメント受信・蓄積は継続し（WS は窓内 1 本のまま）、本体へ戻ると全件が並ぶ。
+  const [view, setView] = useState<"comment" | "settings" | "viewers">(
+    "comment",
+  );
+  // 038b フォローアップ: 流れているコメントをクリックすると、コメント本体の右にその視聴者の詳細をスプリット表示する
+  // （× で閉じる）。WS/comments/recordComments/sessionIdRef には触れない＝コメント受信は止まらず、選択 id を持つだけ。
+  const [selectedViewerId, setSelectedViewerId] = useState<string | null>(null);
   // TTS キュー（AudioContext を 1 つ所有）。マウントで生成し、アンマウントで dispose する。
   const ttsRef = useRef<TtsQueue | null>(null);
   // 034c: 話者サンプル試聴プレイヤー（中断切替つき・本線 TTS とは別の AudioContext）。設定ビューで話者/スタイルを
@@ -555,7 +606,10 @@ export function CommentViewerApp() {
 
   return (
     <div className={styles.root}>
-      {view === "settings" ? (
+      {view === "viewers" ? (
+        // 038b: 視聴者一覧・詳細＋配信者メモ。表示専用（invoke のみ）で WS/TTS/sidecar を持たない（窓内 WS 1 本のまま）。
+        <ViewersView onBack={() => setView("comment")} />
+      ) : view === "settings" ? (
         // 033b: 接続 UI（Twitch/YouTube の接続・取得開始/停止・Device Code 提示）は設定ビューへ集約。
         // 既存 state・ハンドラを props で渡すだけで、SettingsView は WS を持たない（窓内 1 本のまま）。
         <SettingsView
@@ -611,6 +665,16 @@ export function CommentViewerApp() {
                 onChange={handleTtsEnabledChange}
                 inline
               />
+              {/* 038b: 視聴者ビューへの導線。設定ギアと同じゴーストボタン流儀（テキスト無し・title/aria-label で用途を担保）。 */}
+              <button
+                type="button"
+                className={styles.settingsBtn}
+                onClick={() => setView("viewers")}
+                title="視聴者一覧"
+                aria-label="視聴者一覧"
+              >
+                <ViewersIcon />
+              </button>
               <button
                 type="button"
                 className={styles.settingsBtn}
@@ -618,7 +682,7 @@ export function CommentViewerApp() {
                 title="設定"
                 aria-label="設定"
               >
-                ⚙
+                <GearIcon />
               </button>
             </div>
           </div>
@@ -662,7 +726,32 @@ export function CommentViewerApp() {
 
           {/* 034a: 本体は最新コメントへ自動追従（下端で追従・スクロールアップで解除＋「最新コメント N件 ↓」ボタン）。
               追従判定は useFollowScroll（CommentList 内）に集約し、034b はオーバーレイに followMode="always" を渡して再利用する。 */}
-          <CommentList comments={comments} followMode="release" />
+          {/* 038b フォローアップ: コメント一覧（左・流れ続ける）＋クリックで開く視聴者詳細（右）のスプリット。
+              onSelect で選択視聴者 id をセットするだけで WS/受信・蓄積には触れない。狭い窓では詳細が全幅オーバーレイ。 */}
+          <div className={styles.commentSplit}>
+            <div className={styles.commentPane}>
+              {/* 【レビュー：統合テスト】この配線（onSelect→viewerIdOf→ViewerDetailPanel 表示）は、CommentList の
+                  onSelect 発火（CommentList.test）と viewerIdOf の連結/trim（viewerFormat.test）で個別にカバー済み。
+                  【なぜ統合テスト無しで可か】CommentViewerApp 全体は WS/TTS/AudioContext/sidecar 依存が重く単体化コストが
+                  高い一方、ここは 1 行の合成でロジックを持たない。【再修正トリガー】この配線に条件分岐が増える／
+                  CommentViewerApp が現実的に単体化できるようになったら「コメントクリック→get_viewer(期待id)」の smoke を足す。 */}
+              <CommentList
+                comments={comments}
+                followMode="release"
+                onSelect={(c) => setSelectedViewerId(viewerIdOf(c))}
+              />
+            </div>
+            {selectedViewerId !== null && (
+              <div className={styles.detailPane}>
+                <ViewerDetailPanel
+                  id={selectedViewerId}
+                  onDismiss={() => setSelectedViewerId(null)}
+                  dismissKind="close"
+                  onDeleted={() => setSelectedViewerId(null)}
+                />
+              </div>
+            )}
+          </div>
         </>
       )}
     </div>

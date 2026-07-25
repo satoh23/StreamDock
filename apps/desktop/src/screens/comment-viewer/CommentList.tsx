@@ -63,6 +63,12 @@ interface CommentListProps {
    * 「サイト名を表示する」トグル値をオーバーレイ窓が渡す（受信済み source の表示のみ・新規取得はしない）。
    */
   showSource?: boolean;
+  /**
+   * 038b フォローアップ: 既定バリアントのコメント行をクリック可能にし、押されたコメントを渡す（コメビュ本体が
+   * 視聴者詳細サイドパネルを開くのに使う）。指定時のみ行が interactive（cursor/role=button/Enter・Space）になる。
+   * 未指定なら従来どおり表示専用（回帰なし）。overlay バリアントには効かない（OBS 表示は非インタラクティブのまま）。
+   */
+  onSelect?: (comment: CommentViewDto) => void;
 }
 
 export function CommentList({
@@ -71,6 +77,7 @@ export function CommentList({
   followMode = "off",
   variant = "default",
   showSource = false,
+  onSelect,
 }: CommentListProps) {
   const olRef = useRef<HTMLOListElement>(null);
   const follow = useFollowScroll(olRef, comments, { mode: followMode });
@@ -81,7 +88,24 @@ export function CommentList({
   // 分岐選択のメモ化を検討する。
   // 既定（コメビュ本体）のコメント項目。現行マークアップから一切変えない（本体の見た目を不変に保つ）。
   const renderDefaultItem = (c: CommentViewDto) => (
-    <li key={c.id} className={styles.item}>
+    <li
+      key={c.id}
+      className={onSelect ? `${styles.item} ${styles.itemClickable}` : styles.item}
+      // onSelect 指定時のみ行をボタン化（クリック/Enter/Space で視聴者詳細へ）。未指定なら表示専用のまま。
+      role={onSelect ? "button" : undefined}
+      tabIndex={onSelect ? 0 : undefined}
+      onClick={onSelect ? () => onSelect(c) : undefined}
+      onKeyDown={
+        onSelect
+          ? (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onSelect(c);
+              }
+            }
+          : undefined
+      }
+    >
       <div className={styles.meta}>
         <span className={`${styles.badge} ${SOURCE_CLASS[c.source]}`}>
           {SOURCE_LABEL[c.source]}

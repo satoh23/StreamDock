@@ -5281,3 +5281,154 @@ VOICEVOX へ渡す**前**の frontend テキスト置換で実装。ユーザー
 - frontend（変更）: `src/screens/comment-viewer/CommentViewerApp.tsx`（sessionIdRef＋record 配線）／
   `src/features/comment-viewer/bindings/{CommentViewDto.ts,CommentMonetaryDto.ts}`（再生成）／`package.json`（check:bindings）
 - docs（変更）: `docs/security.md`
+
+## 2026-07-25 (038b 視聴者一覧・詳細 UI ＋配信者メモ)
+
+### やったこと
+
+- 038a で端末内保存・集計した視聴者データを、コメントビューア（配信者だけが見る窓）で**閲覧・メモ編集できる UI** を追加。
+  **表示専用**（invoke のみ・WS/TTS/sidecar 制御を持たない・SettingsView と同じ流儀）。Rust 変更・新規コマンドはゼロで、
+  038a の既存ラッパ（`features/viewer-memory/viewerMemoryApi.ts`）を叩くだけ。
+
+### ビュー構成（`view` に `"viewers"` 追加）
+
+- `CommentViewerApp` の `view` union を `"comment" | "settings" | "viewers"` に拡張。ツールバー右クラスタに設定ギアと同パターンの
+  「👥 視聴者」ゴーストボタン（`styles.settingsBtn` 再利用）を追加し `setView("viewers")`。レンダ分岐を三分岐化。
+  **WS/TTS/sidecar/overlay state・単一 WS effect・`recordComments` 書込経路には触れず**（窓内 WS 1 本原則を維持）。
+- 新規 `ViewersView.tsx`（自己完結の表示専用）: 内部 state `selectedId` で **一覧⇄詳細**を切替（トップレベル view は増やさない）。
+  props は `onBack` のみ。ヘッダは `settingsHeader`/`iconBtn`(←)/`settingsTitle` を再利用。
+
+### 一覧の項目
+
+- 検索ボックス（250ms debounce）＋並び替え `Select`（`ViewerSort`＝最終コメント順/総コメント数順/名前順）＋更新ボタン。
+  検索/並びは**サーバ側** `list_viewers({ search, sort })` に渡す（client 側フィルタはしない）。
+- 7 列 grid テーブル（`<table>` 用スタイルは既存に無いため grid で構成）: チェックボックス／名前／サイト名バッジ
+  （`srcTwitch`/`srcYoutube` 再利用）／総コメント数／bits 額／スパチャ額（＋通貨）／最終コメント日時。ヘッダに全選択チェック。
+  行クリック（チェックボックス以外）で詳細へ。
+
+### 詳細の項目・メモ編集
+
+- `get_viewer(id)` で `ViewerDetail`（本人＋過去コメント・新しい順）を取得。集計カード＝サイト・総数・bits（回数/額）・
+  スパチャ（回数/額＋通貨）・**サブスク/メンシプ**（メンバー状態＋回数＋最終日時。※038a は累計月数を未取得＝近似・security.md ⑪）・
+  初回/最終コメント日時。過去コメントは `.item`/`.meta`/`.badge`/`.amount`/`.text` を流用した自前マークアップで描画
+  （`CommentList` は `CommentViewDto[]` 前提で型が合わないため）。
+- 配信者メモ: `textarea` ＋「保存」ボタン → `update_viewer_note(id, note)` → 返る `ViewerRecord` で表示更新（未変更時は保存ボタン無効）。
+  入力検証は 038a（Rust）に委譲。
+
+### 破壊的操作の確認 UX（ユーザー確認済み）
+
+- **個別削除のみ** UI に出す。詳細の「この視聴者を削除」＋一覧の**チェックボックス複数選択→「選択した N 件を削除」**バー。
+  **全消去（`clear_viewers`）の UI は作らない**（`clearViewers` ラッパは未使用のまま温存）。削除機能を残す根拠
+  （本人からの削除依頼対応・荒らし記録の除去・誤記録リセット、かつ security.md ⑪/038 が削除手段を必須プライバシー手段と明記＝
+  §9 保存解禁の条件）はユーザーと合意。
+- 削除前は**必ず確認ダイアログ**を経由。新規 `ConfirmDialog.tsx`＝ネイティブ HTML `<dialog>`＋`showModal()`（focus trap/Esc/
+  backdrop が標準・**新規依存なし**）。一括削除は 038a に一括コマンドが無いため `deleteViewer` を選択分 `Promise.allSettled` ループ呼び→
+  一覧再取得＋選択解除、失敗は件数のみ表示（本文・詳細は非露出）。
+
+### invoke ラッパ（新設せず既存を消費）
+
+- タスク文が想定した `features/comment-viewer/viewerMemoryApi.ts` の新設は**不要**だった。038a が
+  `features/viewer-memory/viewerMemoryApi.ts` を作成済みのため、そこから `listViewers`/`getViewer`/`updateViewerNote`/`deleteViewer` を
+  import して使用（重複作成しない）。型は barrel `features/viewer-memory/types.ts` から取得。
+
+### security-review 結果（軽）
+
+- **問題なし（修正必須なし）**。frontend 表示＋メモ更新の invoke のみで、外部通信宛先・API・capability・依存・`csp: null` は不変
+  （`*.json`/`src-tauri`/`package.json`/`pnpm-lock.yaml` 無変更）。CSS は theme.css 役割トークンのみ（生 hex/rgba・data-URI 無し。
+  ダイアログ scrim は既存 `--tutorial-dim` を流用）。視聴者本文/名前/メモ/投げ銭履歴は画面表示のみ・端末外へ出さず、
+  新規ファイルに `console.*` ゼロ・失敗時は固定安全文言と件数のみ。破壊的操作は確認ダイアログ経由・全消去 UI は無し。XSS は React
+  テキスト描画（`dangerouslySetInnerHTML` 不使用）。後回し可: 一括削除の invoke 件数（表示中の視聴者数で上限・実害小）。
+
+### 検証結果
+
+- `pnpm --filter ./apps/desktop typecheck`（OK）／`pnpm --filter ./apps/desktop lint`（OK）。
+- `git diff --stat`: 変更 2（`CommentViewerApp.tsx` +26 / `CommentViewerApp.module.css` +252）＋新規 2（`ViewersView.tsx`/`ConfirmDialog.tsx`）。
+- **実機（Mac・未実施＝ユーザー環境で確認）**: コメント取得→「👥 視聴者」で一覧→詳細を開き、集計値（総数/サイト/bits/スパチャ回数・額/
+  サブスク回数・メンバー状態）・過去コメント・メモ保存が動く。個別削除（確認ダイアログ）＋チェック複数選択→まとめて削除（確認ダイアログ）が動く。
+
+### 変更ファイル（038b）
+
+- frontend（新規）: `src/screens/comment-viewer/ViewersView.tsx`／`src/screens/comment-viewer/ConfirmDialog.tsx`
+- frontend（変更）: `src/screens/comment-viewer/CommentViewerApp.tsx`（view union＋視聴者導線＋レンダ分岐）／
+  `src/screens/comment-viewer/CommentViewerApp.module.css`（視聴者 UI 用クラス追加）
+- Rust・capability・依存・`tauri.conf.json`（`csp: null`）: **無変更**
+
+## 2026-07-25 (038b フォローアップ: レビュー対応＋自動テスト基盤)
+
+### レビュー対応（apply-review）
+
+- 品質 #1（Blocker）: `ConfirmDialog` の `useEffect` 依存を `[]`→`[open]` に修正。open=false→true で `showModal` が
+  再実行されず削除確認が表示されなかった不具合（`return null` はアンマウントではなくインスタンス生存のため `[]` だと
+  初回 open=false 時に一度きり）。`if (open && !dialog.open)` ガードで二重 `showModal`（InvalidStateError）も防止。
+- #2 行 `role="button"` に checkbox ネスト（a11y）／#3 一括削除 per-id ループ／#4 ConfirmDialog 二重定義 は
+  「意図・許容理由・再修正トリガー」をコメントで残して現状維持（修正不要）。
+
+### 自動テスト基盤（vitest + Testing Library + jsdom）を desktop に導入
+
+- 依存追加（**devDependencies のみ**・実行時依存/外部通信/OS 操作は増やさない・§10）: `vitest`／`@testing-library/react`／
+  `@testing-library/dom`／`@testing-library/jest-dom`／`jsdom`。理由＝React コンポーネント/DOM 挙動（#1 の showModal 回帰・
+  ViewersView の状態機械）はフレームワーク無しでは自動化不可のため。**ユーザー承認済み**。
+- 設定: `vitest.config.ts`（jsdom）／`src/test/setup.ts`（jest-dom 登録・jsdom 未実装の `<dialog>` showModal/close ポリフィル・
+  RTL cleanup）。スクリプト: `test`（=vitest run）／`test:watch`。
+- 純ロジックは `viewerFormat.ts` へ切り出して単体化（振る舞い不変の抽出）。当初検討した zero-dep `.mjs`+tsc 方式は
+  vitest 導入に伴い撤去し **desktop は vitest に一本化**（sidecar は従来の `.mjs` イディオムのまま）。
+- テスト: `viewerFormat.test.ts`（整形/ラベル/金額/日時の仕様）／`ConfirmDialog.test.tsx`（**#1 回帰ガード**・確認/キャンセル/
+  busy/Esc）／`ViewersView.test.tsx`（一覧・検索 debounce のサーバ委譲・詳細/メモ保存・**削除は確認ダイアログ確定後にのみ
+  command を呼ぶ**・一括削除は選択分だけ）。invoke ラッパは全て `vi.mock`（端末外通信ゼロ）。**24 tests 全 PASS**・typecheck/lint OK。
+- テスト作成方針を skill 化: `.claude/skills/write-tests`（**「仕様としてこうあるべき」を最優先／テストを通すためのケースは作らない**）。
+- jsdom で再現しきれない `<dialog>` の focus trap/backdrop/Esc・webview 固有挙動は **E2E（手動）** で確認する。
+- `docs/security.md` は無変更（保存ポリシー・宛先・capability・`csp: null` 不変。テスト devDeps はセキュリティ境界を越えない）。
+
+## 2026-07-26 (038b E2E 修正 Phase A: 軽微 UI 5 件)
+
+E2E フィードバック 6 件のうち、軽微な UI 修正 5 件を先行実装（大きい④コメント→詳細連携は Phase B で別作業）。
+ユーザー確認済み方針: ④はスプリット表示／⑤はネイティブ title 修正／2 段階実装。
+
+- **① サイト列の横幅**: `.viewerHead, .viewerRow` の 3 列目 `auto`→固定 `76px`。head と各 row は別グリッドで `auto` だと
+  内容依存に幅が変わりヘッダ↔行がズレていた。固定列にして全列を整列（`CommentViewerApp.module.css`）。
+- **② 削除文言をやわらげる**: 詳細ボタン「この視聴者を削除」→「この視聴者の情報を削除する」。カード見出し「削除」→
+  「情報の削除」、注記・確認ダイアログ（title/message）も「情報を削除」の言い回しに統一（`ViewersView.tsx`）。※Phase B で
+  詳細を `ViewerDetailPanel` へ移設する際この文言を引き継ぐ。テスト（削除ボタン名）も新ラベルへ更新。
+- **③ アイコンを SVG に統一**: ツールバーの ⚙/👥 絵文字を、アプリ規約のインライン SVG（`currentColor`・`viewBox 0 0 24 24`・
+  外部リソースなし）へ置換。`GearIcon`/`ViewersIcon` をローカル関数コンポーネントで新設（`ToolRow`/`Header` と同慣習）。
+  `.settingsBtn` の色（muted→hover text）を currentColor で継承＝設定・視聴者が同一トーンに揃う（`CommentViewerApp.tsx`）。
+- **⑤ ツールチップ文言**: 👥 の `title`/`aria-label`「視聴者」→「視聴者一覧」。⚙ は「設定」のまま（ネイティブ title・既存流儀）。
+- **⑥ 詳細ユーザー名を大きく**: `.settingsTitle`(14px) は一覧・設定と共用のため、詳細名専用クラス `.viewerDetailName`
+  (21px/800・ellipsis) を新設し詳細の h1 にだけ重ねる（`CommentViewerApp.module.css`／`ViewersView.tsx`。h1 のまま）。
+- 検証: `typecheck`/`lint`/`test`（24 全 PASS）OK。Rust・capability・依存・`csp: null`・`docs/security.md` は**無変更**。
+- 手動 E2E 確認予定: 列整列／SVG アイコンのトーン統一／ホバー文言／詳細名の大きさ／削除文言。
+
+### Phase A 微調整（ユーザー依頼）
+
+- **一覧の中央寄せ**: サイト・総数・bits・スパチャの 4 列を、ヘッダ・値とも中央寄せに（`.vNum` を右寄せ→中央、
+  サイト用に `.vSite`(center) を新設しヘッダ/行の span に付与）。名前・最終コメント・チェックは変更なし。
+- **詳細ヘッダの固定**: `.settingsView`（`overflow-y:auto` のスクロールコンテナ）先頭の詳細ヘッダに `.stickyHeader`
+  (`position:sticky; top:0; z-index:2; background:var(--bg)`) を付与し、スクロールしても ← 戻る＋名前が上部に残る。
+  共用クラス `.settingsHeader` は据え置き、詳細ヘッダにだけ modifier を重ねた（一覧・設定ヘッダは不変）。
+- 併せて一覧側の確認ダイアログ title も「視聴者の削除」→「視聴者の情報を削除」に統一（②の取りこぼし修正）。
+- 検証: `typecheck`/`lint`/`test`（24 PASS）OK。
+
+## 2026-07-26 (038b E2E 修正 Phase B: ④ コメント→視聴者詳細スプリット)
+
+流れるコメントをクリック→その視聴者の詳細をコメント本体の右にスプリット表示（コメントは裏で流れ続ける）。
+ユーザー確認済み方針: 右スプリット表示（狭い窓では詳細を全幅オーバーレイ）。**Rust・依存・capability・`csp:null` は無変更**。
+
+- **B-1 `viewerIdOf`**（`viewerFormat.ts`・純関数）: コメントから安定キー `` `${source}:${author.id.trim()}` `` を導出。
+  Rust `viewer_memory/service.rs` の key 生成と一致（trim 必須）。→ コメントクリックで `getViewer(id)` を引ける。
+- **B-2 CommentList に `onSelect`**: 既定バリアントの行を、`onSelect` 指定時のみクリック可能化（cursor/role=button/
+  Enter・Space）。未指定なら従来どおり表示専用（overlay 変種は非対象＝OBS 表示は不変）。`.itemClickable` を新設。
+- **B-3 `ViewerDetailPanel` 抽出**: 詳細（集計・メモ・過去コメント・個別削除＋ConfirmDialog・loading/error）を
+  再利用コンポーネントへ切り出し、ViewersView とコメビュ本体サイドパネルの両方から使う。`onDismiss`＋`dismissKind`
+  ("back" ←／"close" ×)＋`onDeleted`。**NotFound を含む取得失敗は固定安全文言のみ**（コメント受信直後は best-effort
+  記録が未反映のことがある旨を案内・§9）。ViewersView は一覧＋まとめて削除だけを持つ形にスリム化（個別削除は panel へ移設）。
+- **B-4 スプリットレイアウト**（`CommentViewerApp`）: comment 分岐に state `selectedViewerId` と 2 カラム（`.commentSplit`
+  ＝左 `.commentPane`（CommentList）／右 `.detailPane`（ViewerDetailPanel））を追加。`onSelect` で id をセットするだけで
+  **WS/comments/recordComments/sessionIdRef には触れない**（受信は不変）。`@media (max-width:600px)` で詳細を全幅
+  オーバーレイに切替。既存の 👥 フルビューは併存。
+- **B-5 テスト**（仕様ベース・invoke は全て `vi.mock`）: `viewerIdOf`（連結/trim）／`CommentList`（onSelect 発火・未指定時
+  非インタラクティブ）／`ViewerDetailPanel`（詳細表示・**NotFound 安全文言**・メモ保存・削除は確認後のみ＋onDeleted・× 閉じる）。
+  既存 `ViewersView.test.tsx` は panel 経由でそのまま通る（integration）。**全 33 tests PASS**・typecheck/lint OK。
+- セキュリティ: 新規の外部通信・宛先・依存・capability・`csp:null`・Rust・`docs/security.md` は**無変更**。CommentList クリック→
+  id 導出→`getViewer`（既存 invoke）のみ＝端末内・表示専用。console 出力なし・失敗時は固定安全文言のみ（§9）。
+- 実機 E2E 確認予定: コメント受信中に 1 件クリック→右に詳細／裏でコメントが流れ続ける／× で閉じる／未記録直後は
+  「記録が見つかりませんでした」／狭い窓では全幅オーバーレイ／👥 フルビューも従来どおり。

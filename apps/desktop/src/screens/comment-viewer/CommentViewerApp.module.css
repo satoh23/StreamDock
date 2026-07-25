@@ -154,10 +154,31 @@
   flex-shrink: 0;
 }
 
+/* 038b フォローアップ: 視聴者詳細のヘッダを固定（スクロールしても上部に残り、すぐ一覧へ戻れる）。
+   .settingsView が overflow-y:auto のスクロールコンテナなので、その先頭に sticky で貼り付く。
+   スクロールしたカードが透けないよう不透明背景（ページと同じ --bg）を敷く。詳細ヘッダにだけ付与。 */
+.stickyHeader {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg);
+}
+
 .settingsTitle {
   font-size: 14px;
   font-weight: 800;
   color: var(--text);
+}
+
+/* 038b フォローアップ: 視聴者詳細の一番上のユーザー名だけ大きく見せる（h1 相当）。
+   .settingsTitle は一覧・設定ヘッダと共用のため直接いじらず、詳細名にだけこのクラスを重ねる。 */
+.viewerDetailName {
+  font-size: 21px;
+  font-weight: 800;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .btn {
@@ -612,4 +633,322 @@
   line-height: 1.6;
   color: var(--text);
   word-break: break-word;
+}
+
+/* 038b: 視聴者ビュー。設定ビュー（.settingsView/.settingsHeader/.card）と同じ役割トークン運用で、
+   一覧（検索・並び・チェックボックス付きテーブル）／詳細（集計・メモ・過去コメント・削除）を描く。
+   生 hex/rgba は持ち込まず theme.css のトークンのみを参照する（両テーマ追従・CSP 安全）。 */
+
+/* 一覧上部のツールバー（検索ボックス＋並び替え select＋更新ボタン）。狭い窓では折り返す。 */
+.viewersToolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 10px 16px 4px;
+}
+
+.searchInput {
+  flex: 1;
+  min-width: 120px;
+  max-width: 240px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+}
+
+/* 選択中に出る一括削除バー（danger-soft の帯＝破壊的操作であることを配色で示す）。 */
+.bulkBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin: 4px 16px 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--danger-soft);
+  border: 1px solid var(--danger-border);
+}
+
+/* command 失敗などの安全文言（本文・詳細は出さない・§9）。 */
+.errorText {
+  margin: 8px 16px 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--danger-text);
+}
+
+/* 危険色ボタン（個別削除・一括削除の実行）。.btn:disabled と同じく非活性アフォーダンスを持たせる。 */
+.dangerBtn {
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--danger-text);
+  background: var(--danger-soft);
+  border: 1px solid var(--danger-border);
+  cursor: pointer;
+}
+
+.dangerBtn:hover {
+  border-color: var(--danger-border-strong);
+}
+
+.dangerBtn:disabled {
+  background: var(--control-bg);
+  color: var(--text-faint);
+  cursor: not-allowed;
+}
+
+/* 視聴者テーブル。ヘッダ行と各行を同じ 7 列グリッドで揃える（<table> 用スタイルは既存に無いため grid で構成）。
+   数値列は minmax(0, ...) で縮められるようにし、名前/最終列は ellipsis で溢れを防ぐ（横スクロールを出さない）。 */
+.viewerTable {
+  margin: 8px 16px 16px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.viewerHead,
+.viewerRow {
+  display: grid;
+  /* 3 列目（サイト）は固定幅にする。head と各 row は別グリッドのため auto だと内容依存で幅が変わり、
+     ヘッダ↔行がズレる（他列は fr で同一コンテナ幅ぶん比例配分されるため、固定列を揃えれば全列が揃う）。 */
+  grid-template-columns:
+    22px minmax(0, 1.8fr) 76px minmax(0, 0.7fr) minmax(0, 1fr)
+    minmax(0, 1.2fr) minmax(0, 1.5fr);
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+}
+
+.viewerHead {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  background: var(--surface-subtle);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.viewerHead .vNum {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.viewerRow {
+  cursor: pointer;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.viewerRow:last-child {
+  border-bottom: none;
+}
+
+.viewerRow:hover {
+  background: var(--surface-hover);
+}
+
+.viewerRow:focus-visible {
+  outline: 2px solid var(--primary-soft-border);
+  outline-offset: -2px;
+}
+
+.vName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.vNum {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* 微調整: 数値列（総数/bits/スパチャ）はヘッダ・値とも中央寄せ。 */
+  text-align: center;
+  font-size: 12px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 微調整: サイト列（バッジ）もヘッダ・値とも中央寄せ。 */
+.vSite {
+  min-width: 0;
+  text-align: center;
+}
+
+.vMuted {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* 詳細の集計（ラベル｜値の 2 列）。 */
+.statGrid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px 14px;
+  align-items: baseline;
+}
+
+.statLabel {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.statValue {
+  min-width: 0;
+  font-size: 13px;
+  color: var(--text);
+  word-break: break-word;
+}
+
+/* 配信者メモ入力（端末内のみ保存）。 */
+.memoArea {
+  width: 100%;
+  min-height: 68px;
+  resize: vertical;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+}
+
+.memoActions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* 過去コメント一覧（.item/.meta/.badge/.amount/.text を流用しつつ、独立スクロール領域にする）。 */
+.pastList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.pastTime {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* 038b: 削除確認ダイアログ（ConfirmDialog）。ネイティブ <dialog> をトークンでスタイル。backdrop は
+   theme.css の scrim トークン（--tutorial-dim）を流用し、生 rgba を持ち込まない。 */
+.confirmDialog {
+  padding: 0;
+  max-width: 360px;
+  width: calc(100% - 48px);
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+}
+
+.confirmDialog::backdrop {
+  background: var(--tutorial-dim);
+}
+
+.confirmBody {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+}
+
+.confirmTitle {
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--text);
+}
+
+.confirmMessage {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text);
+  word-break: break-word;
+}
+
+.confirmActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+/* 038b フォローアップ: 流れるコメントをクリック→視聴者詳細をスプリット表示。 */
+
+/* コメント一覧（左）＋視聴者詳細（右）の 2 カラム。.root（縦 flex）の残り高さを埋める。 */
+.commentSplit {
+  display: flex;
+  flex-direction: row;
+  flex: 1;
+  min-height: 0;
+  /* 狭い窓での detailPane 全幅オーバーレイの位置基準。 */
+  position: relative;
+}
+
+/* 左：コメント一覧ペイン（CommentList の listHeader/listWrap を縦に積み、内部の list が自前でスクロール）。 */
+.commentPane {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 右：視聴者詳細ペイン。中身は ViewerDetailPanel（.settingsView が自前で縦スクロール）。 */
+.detailPane {
+  width: clamp(280px, 42%, 460px);
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border-soft);
+}
+
+/* 狭い窓では横並びだと窮屈なので、詳細をコメント一覧の上に全幅オーバーレイする（コメントは裏で流れ続ける）。 */
+@media (max-width: 600px) {
+  .detailPane {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    border-left: none;
+    background: var(--bg);
+    z-index: 5;
+  }
+}
+
+/* クリック可能なコメント行（onSelect 指定時のみ付与）。表示専用時は付かない＝従来の見た目・非インタラクティブ。 */
+.itemClickable {
+  cursor: pointer;
+}
+
+.itemClickable:hover {
+  background: var(--surface-hover);
+}
+
+.itemClickable:focus-visible {
+  outline: 2px solid var(--primary-soft-border);
+  outline-offset: -2px;
 }
