@@ -32,6 +32,9 @@ export interface CanonicalComment {
   publishedAt: string;
   eventType: CanonicalCommentEventType;
   monetaryAmount?: string;
+  // 038a: 投げ銭の数値内訳（Rust CommentViewDto.monetary と同形）。回数/合計額の正確な集計に使う。
+  // 表示用 monetaryAmount 文字列は温存しつつ、数値 {amount, currency} を落とさず通す（視聴者メモリ用）。
+  monetary?: { amount: number; currency: string };
 }
 
 const EVENT_TYPE_MAP: Record<
@@ -64,6 +67,8 @@ export function toCanonicalComment(
     const { currency, amount } = dto.monetaryAmount;
     canonical.monetaryAmount =
       currency === "BITS" ? `${amount} bits` : `${amount} ${currency}`;
+    // 038a: 数値 {amount, currency} も落とさず通す（視聴者メモリの回数/合計額の正確集計用）。
+    canonical.monetary = { amount, currency };
   }
   return canonical;
 }

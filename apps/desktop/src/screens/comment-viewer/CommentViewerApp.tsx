@@ -45,6 +45,7 @@ import {
   saveOverlayShowSource,
 } from "../../features/comment-viewer/overlaySettings";
 import { mergeComments } from "../../features/comment-viewer/mergeComments";
+import { recordComments } from "../../features/viewer-memory/viewerMemoryApi";
 import {
   openCommentOverlayWindow,
   closeCommentOverlayWindow,
@@ -156,6 +157,16 @@ export function CommentViewerApp() {
   // 起動中フラグ（state ではなく ref）。launchEngine 先頭で最初の await より前に立て、同一 tick/並行の
   // 複数契機が来ても spawn を 1 回に抑える同期ガード（launchRequested は起動成功後の窓を守る別レイヤ）。
   const launchInFlightRef = useRef(false);
+
+  // 038a: 視聴者メモリの「その配信」の束を識別するローカル session_id。窓マウント毎に 1 つ採番し、
+  // この窓の全 record_comment に付与する（専用 session テーブルは持たない・端末外へ出さないローカル ID）。
+  // 【意図/修正不要理由】採番は crypto.randomUUID。Tauri webview は secure context 前提で対象 OS
+  //   （WKWebView/WebView2/WebKitGTK）いずれも利用可能なため fallback は置かない。
+  // 【再修正トリガ】非 secure context/古い webview で randomUUID 未定義エラーが出たら try/catch + 簡易 fallback を足す（Q4）。
+  const sessionIdRef = useRef<string>("");
+  if (!sessionIdRef.current) {
+    sessionIdRef.current = crypto.randomUUID();
+  }
 
   // 032c-b: Twitch 連携（Device Code ログイン・取得セッション）の状態。
   const streamRef = useRef<CommentStreamHandle | null>(null);
@@ -321,6 +332,10 @@ export function CommentViewerApp() {
         setComments((prev) => {
           const { next, added } = mergeComments(prev, incoming);
           enqueueForSpeech(added);
+          // 038a: 受信済みコメント（新規分）を Rust の視聴者メモリへ記録する（端末内 SQLite のみ・
+          // 端末外へ出さない）。added は comment.id で dedup 済み、Rust 側も INSERT OR IGNORE で冪等なので
+          // StrictMode の updater 二重実行でも集計は重複しない（enqueueForSpeech と同じ論拠）。fire-and-forget。
+          recordComments(added, sessionIdRef.current);
           return next;
         }),
       onDeviceCode: (prompt) => setDeviceCode(prompt),

@@ -313,6 +313,17 @@ Rust に寄せる）。トークンは **sidecar↔Rust の親子プロセス pr
 `COMMENT_SIDECAR_OPEN_URL=`）には token/secret/code_verifier を一切載せない（URL に載るのは `code_challenge`＝S256・非機密で、
 `code_verifier` は sidecar メモリのみ）。Rust は URL 全体をログに出さず host のみ扱う。取得コメント本文もログ/DB に保存しない（Twitch と同様）。
 
+**追補（038a・視聴者メモリの端末内保存＝§9「取得コメントを DB に保存しない」の限定解禁）**: 「一度コメントした
+視聴者を記憶する」視聴者メモリ機能に**限り**、受信済みコメント（本文・著者名・event_type・投げ銭数値/通貨・
+`published_at`）と集計（総数・bits/スパチャ回数と額・first/last・サブスク関連）・配信者メモを **端末内 SQLite
+（`viewers`/`viewer_comments`）のみ**に保存する（ユーザーのセキュリティ方針＝限定・同意・レビュー付きで保存解禁は可、に沿う）。
+**端末外へ送信しない・クラウド同期しない・新規の外部通信/宛先/capability を増やさない**（`record_comment` は
+loopback WS で受信済みの値を Tauri コマンドで渡すだけ＝sidecar・main の no-internet 境界は不変）。**削除手段**
+（`delete_viewer` 個別／`clear_viewers` 全消去）を備え、**アバター（data URI）は保存しない**。**ログには視聴者本文・
+メモ・投げ銭履歴を出さない**（変更系コマンドの error ログは `ErrorCode` 由来の固定安全文言のみ・§9 の精神は維持）。
+入力（コメント本文・視聴者名・メモ・session_id）は Rust 側で trim/制御文字拒否を通す（§8）。詳細は下記
+「## コメントビューア（配信サービス連携）方針」⑪。**保存ポリシー変更のため security-review 必須**。
+
 ### 10. 依存関係を増やしすぎない
 
 新しいnpm package、Rust crate、Tauri pluginを追加する場合は、理由を説明する。
@@ -481,7 +492,8 @@ distill（vendor）したもので、keyring・`open`・hono/zod・dotenv・goog
   sidecar↔Rust の **親子 private pipe のみ**で受け渡す（復元＝stdin `COMMENT_SIDECAR_RESTORE=`、再保存＝stdout の専用行
   `COMMENT_SIDECAR_TOKEN=`／破棄＝`COMMENT_SIDECAR_TOKEN_CLEAR`）。**loopback WS にはトークンを載せない**。device code /
   code verifier は in-memory のみ・非永続。`user_code` / `verification_uri`（非機密）は viewer に**テキスト提示**し、ブラウザ
-  shell-out（`open`）はしない。**取得したコメントは画面表示のみ**で、端末外へ出さず Rust の DB / ログにも保存しない。
+  shell-out（`open`）はしない。**取得したコメントは画面表示のみ**で、端末外へ出さず Rust の DB / ログにも保存しない
+  （**例外（038a）: 視聴者メモリ機能に限り、受信済みコメントを端末内 SQLite へ保存する＝下記⑪。端末外へは出さない**）。
   **（032c-d・YouTube 追加／032c-d′ 更新）** YouTube の OAuth アクセス/リフレッシュトークンは **Twitch と同様に OS キーチェーンへ
   永続化する**（032c-d′・使い心地統一・provider 別 account `youtube-comment-viewer`）。`code_verifier`（一時値）・`Client Secret`（焼き込み）は
   **in-memory/baked＝非永続**。いずれも非ログ・非外部送信。同意 URL は Twitch のテキスト提示と異なり
@@ -532,6 +544,23 @@ distill（vendor）したもので、keyring・`open`・hono/zod・dotenv・goog
     投稿者 ID→URL の上限付きメモリキャッシュで再照会しない）し、Twitch アバター CDN **`*.jtvnw.net`**（例 `static-cdn.jtvnw.net`）を
     `ALLOWED_HTTPS_WILDCARD_SUFFIXES`（`host-guard.ts`）・`test-host-guard.mjs` に追加した（HTTPS fetch のみ・WS/gRPC には広げない・
     `jtvnw.net.evil.com` / `evil-jtvnw.net` は throw）。取得は sidecar 内完結・data URI のみを webview へ渡す（CSP/capabilities/no-internet 不変）。
+- **⑪（038a）視聴者メモリの端末内保存（§9「取得コメントを DB に保存しない」の限定解禁・security-review 必須）**。
+  「一度コメントした視聴者を記憶する」ため、受信済みコメント（本文・著者名・event_type・投げ銭数値/通貨・`published_at`）と
+  集計（総数・bits/スパチャ回数と額・first/last・サブスク/メンシプ関連）・**配信者が残すメモ**を、**端末内 SQLite
+  （`viewers` / `viewer_comments`）のみ**に保存する（安定キー `provider:providerUserId`・`viewer_comments` は FK CASCADE）。
+  - **端末外へ出さない・クラウド同期しない・複数端末共有しない**。frontend が loopback WS で受信済みの値を Tauri コマンド
+    `record_comment(comment, session_id)` で Rust へ渡すだけで、**新規の外部通信・宛先・capability を増やさない**
+    （§1/§3。sidecar・main ウィンドウの no-internet 境界は不変・`comment-viewer.json` は `core:default` のまま・
+    アプリ定義コマンドは ACL 列挙不要）。集計（回数・合計額）の正確化のため sidecar の wire（`wire.ts`）に既にある
+    投げ銭の数値 `{amount, currency}` を捨てず Rust `CommentViewDto.monetary` へ通すが、**通信面は拡大しない**
+    （sidecar の宛先・二層 fail-closed は不変）。サブスク/メンシプの**累計月数は取得せず近似**（`is_member`＋イベント回数のみ）。
+  - **プライバシー**: 第三者の氏名・発言・投げ銭履歴を端末に保存するため、**削除手段**を必須とする＝`delete_viewer`
+    （個別・FK CASCADE で当該コメントも削除）／`clear_viewers`（全消去）。**アバター（data URI）は保存しない**
+    （アイコンは overlay 意匠のみ・§9）。入力（コメント本文・視聴者名・メモ・session_id）は Rust 側で **trim/制御文字拒否**
+    （§8）を通し、SQL は既存流儀の**パラメータバインド**（識別子・ORDER BY 句は定数のみ）。
+  - **ログ非露出**: 視聴者本文・メモ・投げ銭履歴を**ログに出さない**（変更系コマンドの error ログは `ErrorCode` 由来の
+    固定安全文言のみ・§9）。エラーは既存 `AppError` 経由で DB パス等を露出しない。`session_id` は取得セッション開始時に
+    frontend（コメビュ窓）が採番するローカル ID で、端末外へは出さない。
 
 ## レビュー必須条件
 
@@ -553,6 +582,7 @@ distill（vendor）したもので、keyring・`open`・hono/zod・dotenv・goog
 - らくらくツール設定の外部アプリ連携（**既導入アプリの自動起動**・公式ページ誘導）
 - 外部コンテンツの埋め込み（iframe・外部 script/style/image/media・外部ドメインの読込）
 - 内蔵コメントビューアの配信サービス連携（**インターネット通信**・**Node sidecar（externalBin）同梱**・OAuth トークン取扱）
+- 取得コメント・視聴者情報の端末保存（**視聴者メモリ＝§9 保存ポリシーの限定解禁分**・保存範囲/集計項目/削除手段の変更・「コメントビューア方針」⑪）
 
 ### 011 ログイン項目（autostart, 019 時点）
 

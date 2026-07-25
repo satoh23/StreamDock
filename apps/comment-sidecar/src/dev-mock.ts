@@ -102,6 +102,11 @@ function makeComment(source: Provider, seq: number): CanonicalComment {
   };
   if (monetary) {
     comment.monetaryAmount = source === "twitch" ? "100 bits" : "500 JPY";
+    // 038a: 数値内訳も付与（Rust CommentViewDto.monetary と同形）。twitch=bits / youtube=JPY。
+    comment.monetary =
+      source === "twitch"
+        ? { amount: 100, currency: "BITS" }
+        : { amount: 500, currency: "JPY" };
   }
   return comment;
 }

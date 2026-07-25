@@ -8,6 +8,7 @@ mod process;
 mod rakuraku;
 mod tools;
 mod util;
+mod viewer_memory;
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -337,6 +338,8 @@ pub fn run() {
             presets::repository::init(&conn)?;
             preset_items::repository::init(&conn)?;
             app_logs::repository::init(&conn)?;
+            // 038a: 視聴者メモリ（viewers / viewer_comments）。保存は端末内 SQLite のみ。
+            viewer_memory::repository::init(&conn)?;
             app.manage(Mutex::new(conn));
             // stream-dock がこのセッション中に起動したプロセスを保持する runtime process registry。
             // 009 の停止は raw PID ではなくここに保持した Child ハンドル経由で行う。
@@ -441,6 +444,12 @@ pub fn run() {
             rakuraku::commands::rakuraku_scan_integration,
             rakuraku::commands::rakuraku_launch_component,
             rakuraku::commands::rakuraku_open_official_page,
+            viewer_memory::commands::record_comment,
+            viewer_memory::commands::list_viewers,
+            viewer_memory::commands::get_viewer,
+            viewer_memory::commands::update_viewer_note,
+            viewer_memory::commands::delete_viewer,
+            viewer_memory::commands::clear_viewers,
         ])
         // 032c-b: RunEvent::Exit フックを追加するため .run() を .build()+.run(closure) に分割した
         //（従来は lib.rs に exit フックが無かった）。no-orphan 3 段 kill の②。

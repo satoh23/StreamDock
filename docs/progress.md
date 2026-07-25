@@ -5198,3 +5198,86 @@ VOICEVOX へ渡す**前**の frontend テキスト置換で実装。ユーザー
 - 問題1: トグル ON→表示→再押下(OFF)で **overlay が消える**／ON/OFF 反復で毎回切替／viewer 再オープンで実状態に再同期。
 - 問題2: main を×で閉じる→**comment-viewer・OBSオーバーレイが両方消えアプリ終了**／タスクマネージャ・アクティビティモニタで
   **comment-sidecar が残らない**／子窓だけ閉じた場合は従来どおりアプリ生存。Windows は自作×、macOS はネイティブ赤ボタンで確認。
+
+## 2026-07-25 (038a 視聴者メモリ Rust データ基盤: 保存・集計・コマンド)
+
+コメントビューアに「一度コメントした視聴者を記憶する」機能（親 038）の土台として、受信済みコメントを Rust に渡して
+視聴者ごとに upsert・集計し、一覧/詳細/メモ/削除の Tauri コマンドを提供する **端末内 SQLite の保存基盤**を実装した。
+**§9「取得コメントを DB に保存しない」を視聴者メモリに限って解禁**（限定・同意・レビュー付き）。038b（UI）・038c（バッジ）・
+040（ROM 突合）のデータ源になる。
+
+### 確定スキーマ（`viewer_memory/repository.rs::init`・`CREATE TABLE IF NOT EXISTS`）
+
+- **`viewers`**: `id`（PK・安定キー `provider:providerUserId`）／`provider`／`provider_user_id`／`name`／`first_seen_at`／
+  `last_comment_at`／`total_comments`／`bits_count`／`bits_amount`／`superchat_count`／`superchat_amount`／
+  `superchat_currency`／`subscription_count`／`is_member`／`last_subscription_at`／`note`／`created_at`／`updated_at`。
+  アバターは非保存（アイコンは overlay 意匠のみ・§9）。
+- **`viewer_comments`**: `id`（PK＝コメント id＝冪等化キー）／`viewer_id`（FK `REFERENCES viewers(id) ON DELETE CASCADE`）／
+  `session_id`／`source`／`text`／`event_type`／`amount`(REAL,null可)／`currency`(TEXT,null可)／`monetary_amount`(TEXT,表示用)／
+  `published_at`／`created_at`。索引 `idx_viewer_comments_viewer` / `idx_viewer_comments_session`。
+- FK CASCADE は既存 setup の接続別 `PRAGMA foreign_keys = ON`（lib.rs）で有効。
+
+### record_comment と冪等化・集計
+
+- コマンド `record_comment(comment: CommentViewDto, session_id) -> AppResult<()>`。frontend（`CommentViewerApp` の
+  `onComments`／`mergeComments` の `added`＝`enqueueForSpeech(added)` の直後）で呼ぶ。**overlay 窓は `added` を使わない
+  読み取り専用 WS のため、記録は CommentViewerApp のみ**（二重記録回避）。
+- 冪等化: repository が `unchecked_transaction` 内で ① `INSERT OR IGNORE INTO viewer_comments`（コメント id 一意）→ 0 行
+  なら視聴者/集計を触らず終了 ② 新規時のみ視聴者を upsert（名前最新化）③ 集計を **viewer_comments から再計算**（増分ドリフト
+  無し）。単一 `Mutex<Connection>` で全 DB コマンドが直列化されるため二重記録で集計が重複しない。
+- 集計規則: bits=`currency='BITS'` の COUNT/SUM、スパチャ=`event_type='superchat' AND currency<>'BITS'` の COUNT/SUM、
+  first/last=MIN/MAX(`published_at`)、サブスク=`event_type='subscription'` の COUNT＋`is_member`。
+
+### session_id 方針
+
+- **窓マウント毎に 1 つ**（`CommentViewerApp` で `crypto.randomUUID()` を `sessionIdRef` に遅延採番、窓の全 record に付与）。
+  **専用 session テーブルは作らない**（`viewer_comments.session_id` 列で束を識別）。端末外へ出さないローカル ID。
+
+### ワイヤ拡張（数値・glue のみ／vendor 非改修）
+
+- 回数/合計額の正確化のため `comment_viewer/model.rs` の `CommentViewDto` に数値 `monetary: Option<CommentMonetaryDto{amount:f64, currency:String}>`
+  を **追加**（表示用 `monetary_amount: Option<String>` は温存＝加算的・後方互換）＋ command 引数化のため DTO 群に `Deserialize` を追加・
+  ヘッダ注記を「record_comment 受け口・§9 限定解禁」に更新。
+- sidecar は `apps/comment-sidecar/src/wire.ts`（`CanonicalComment.monetary` 追加・`toCanonicalComment` で既にある数値
+  `{amount,currency}` を捨てず通す）と `dev-mock.ts`（モック数値化）**のみ**改修。**vendor（osareview 派生）は非改修**＝
+  サブスク/メンシプの累計月数は取得せず近似（`is_member`＋イベント回数）。**通信面（宛先・fail-closed）は不変**。
+
+### 追加コマンド・bindings
+
+- `record_comment`／`list_viewers(input?)`（検索＋並び替え）／`get_viewer`（本人＋過去コメント）／`update_viewer_note`／
+  `delete_viewer`／`clear_viewers` を `generate_handler!` に登録。ts-rs DTO（`ViewerRecord`/`ViewerCommentRecord`/`ViewerDetail`/
+  `ListViewersInput`/`ViewerSort`）を `src/features/viewer-memory/bindings/` に出力。`CommentViewDto` に `monetary`／新 `CommentMonetaryDto` 追加。
+  frontend ラッパ `features/viewer-memory/viewerMemoryApi.ts`（6 コマンド。038a で呼ぶのは `recordComment` のみ・他は 038b 用）。
+  `package.json` の `check:bindings` に viewer-memory を追加。**capability 追加なし**（comment-viewer は `core:default` のまま）。
+
+### security.md 保存範囲明文化
+
+- §9 に「追補（038a・視聴者メモリの端末内保存＝限定解禁）」、「## コメントビューア方針」に **⑪**（保存範囲・端末内 SQLite のみ・
+  端末外非送信・削除手段 `delete_viewer`/`clear_viewers`・no-internet 境界不変・入力検証・ログ非露出・アバター非保存）、④ に例外注記、
+  「レビュー必須条件」に視聴者情報の端末保存を追加。
+
+### security-review 結果
+
+- **問題なし（修正必須なし）**。外部通信ゼロ／capability 不変／最小権限コマンド／Rust 側入力検証＋パラメータバインド／
+  ログ非露出／削除・全消去あり／依存追加なし。後回し可の軽微指摘のみ（amount/currency の制御文字検証は sidecar 生成値で
+  実害無し・record_comment の error ログ頻度・スパチャ混在通貨の近似は per-row 保持で後計算可）。
+
+### 検証結果
+
+- `cargo check`（Rust・OK）／`pnpm gen:bindings`（意図した drift のみ・再実行で追加 drift 無し）／`pnpm typecheck`（OK）／
+  `pnpm lint`（OK）／sidecar `typecheck`（wire.ts/dev-mock.ts・OK）。
+- **`build:sidecar`（SEA）は未完**: 焼き込み必須値 `TWITCH_CLIENT_ID`/`YOUTUBE_CLIENT_ID`/`YOUTUBE_CLIENT_SECRET` が未設定だと
+  ビルド script が fail-closed で停止する既存ガードのため。実配布ビルドは値を渡して実行する
+  （`TWITCH_CLIENT_ID=… YOUTUBE_CLIENT_ID=… YOUTUBE_CLIENT_SECRET=… pnpm --filter ./apps/desktop build:sidecar`）。TS 型は typecheck 済み。
+- **実機（Mac・未実施＝ユーザー環境で確認）**: コメント取得→視聴者行 upsert・総数/最終日時/投げ銭集計更新／`list_viewers`・
+  `get_viewer` が値を返す／メモ更新・削除・全消去／同一コメント二重記録で集計非重複／`lsof -i` で外部ソケットが sidecar のみ。
+
+### 変更ファイル（038a）
+
+- Rust（新規）: `src-tauri/src/viewer_memory/{mod,model,repository,service,commands}.rs`
+- Rust（変更）: `src-tauri/src/lib.rs`（mod・init・generate_handler!）／`src-tauri/src/comment_viewer/model.rs`（Deserialize・monetary・ヘッダ）
+- sidecar（変更）: `apps/comment-sidecar/src/{wire.ts,dev-mock.ts}`
+- frontend（新規）: `src/features/viewer-memory/{viewerMemoryApi.ts,types.ts,bindings/*}`
+- frontend（変更）: `src/screens/comment-viewer/CommentViewerApp.tsx`（sessionIdRef＋record 配線）／
+  `src/features/comment-viewer/bindings/{CommentViewDto.ts,CommentMonetaryDto.ts}`（再生成）／`package.json`（check:bindings）
+- docs（変更）: `docs/security.md`
