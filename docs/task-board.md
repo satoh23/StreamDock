@@ -68,6 +68,15 @@
   - 038a Rust データ基盤（`viewer_memory` モジュール＋テーブル＋`record_comment` 集計＋一覧/詳細/メモ/削除コマンド＋security.md 更新・**security-review 必須**・§9 保存ポリシー変更）
   - 038b 視聴者一覧・詳細 UI＋配信者メモ編集（総数/サイト/bits/スパチャ回数・額/サブスク期間/過去コメント・**軽レビュー**）
   - 038c 初見/久しぶりバッジ＋枠色（初見＝初コメント／久しぶり＝最終コメントから1ヶ月以上経過後の初コメント・**軽レビュー**）
+- 042 配信連携 UX 刷新（親設計 [docs/tasks/042-stream-link-ux.md](tasks/042-stream-link-ux.md)／接続操作をコメビュ本体のプラットフォーム別カードへ移設＋文言「接続」→「連携」・033b の接続 UI 集約を部分反転・main no-internet／窓内 WS 1 本は不変）
+  - 実装順: 042a → 042b
+  - 042a 「接続」→「連携」文言統一（OAuth リンク操作のみ・取得セッション状態表示「接続中/接続済み」は別概念で不変・**軽レビュー**）
+  - 042b 接続状態インジケータ→プラットフォーム別 展開カード（連携/配信接続/切断・設定ビューの接続カードを本体へ移設し撤去・**軽 security-review**）
+- 043 お金がかかるコメントの強調＋取得精緻化（親設計 [docs/tasks/043-monetary-emphasis.md](tasks/043-monetary-emphasis.md)／投げ銭（スパチャ/ビッツ/サブスク/メンシプ/ギフト）を配信者に見逃させない・**037/037b を supersede**）
+  - 実装順（提案）: 043b → 043a → 043c（網羅重視なら 043a 先行も可）
+  - 043a 取得精緻化（sidecar/wire/Rust＝membership を実発行・ギフトを subscription と区別・受贈者/件数/月数は可能な範囲・**security-review 必須**）
+  - 043b コメビュ本体の投げ銭強調＋種別ラベル（chat 以外の全イベントを枠色＋ラベル＋金額・**軽レビュー**）
+  - 043c オーバーレイ投げ銭強調（現行意匠単独・037a 非依存・**037b を supersede**・**軽レビュー**）
 
 ## 保留
 
@@ -76,7 +85,7 @@
 - 037 OBSオーバーレイ 意匠の拡張（親設計 [docs/tasks/037-overlay-design-expansion.md](tasks/037-overlay-design-expansion.md)／意匠選択機構を新設し複数意匠から選べるように＋新デザイン2種・表示専用/外部通信なし・下記 Todo「複数デザイン＋選択 UI」の実体化）
   - 実装順: 037a → 037b
   - 037a 意匠選択機構＋シンプル意匠（ユーザー名＋コメントのみ・背景透過・白い細字・**軽レビュー**）
-  - 037b 投げ銭メッセージ（スパチャ/サブスク/ビッツ）強調意匠（`event_type` 分岐・全意匠に相乗り・**軽レビュー**）
+  - 037b 投げ銭メッセージ（スパチャ/サブスク/ビッツ）強調意匠（`event_type` 分岐・全意匠に相乗り・**軽レビュー**）→ **[043c](tasks/043c-overlay-monetary-highlight.md) に supersede**（現行意匠単独で実体化・037a 非依存。オーバーレイ投げ銭強調は 043c を正とする）
 - 039 フォントインポート（親設計 [docs/tasks/039-font-import.md](tasks/039-font-import.md)／ユーザーのフォントファイルを app data dir にコピー保存＋data URI で `@font-face` 供給・外部フォント非追加/CSP 不変）
   - 実装順: 039a → 039b
   - 039a Rust 取込基盤（管理ディレクトリへコピー＋検証＋`fonts` レジストリ＋import/list/delete/get_font_data コマンド＋security.md 更新・**security-review 必須**・新規ファイル書き込み経路/dialog capability 追加）
@@ -87,6 +96,10 @@
   - 040b ROM勢一覧 UI（chatters −〔セッション＋038 視聴者メモリのコメント済み〕突合＋表示・近似/前提の注記・**軽レビュー**）
 - 041 コメビュ読み上げ 読み替え辞書（親設計 [docs/tasks/041-comment-viewer-reading-dictionary.md](tasks/041-comment-viewer-reading-dictionary.md)／VOICEVOX へ渡す前に自前テキスト置換で読み替え・**localStorage 保存/自前テキスト置換**・優先順位 ユーザー辞書>内蔵一般辞書>VOICEVOX 既定・VOICEVOX 解析/再実装や user_dict API は使わず将来オプション・外部通信なし／**041a は完了済み＝Done・残りは 041b のみ**）
   - 041b ユーザー辞書 CRUD（localStorage）＋内蔵とのマージ（最優先上書き）＋設定 UI 行エディタ（**軽レビュー**）
+- 044 OBSオーバーレイ 自動ソース追加（obs-websocket・親設計 [docs/tasks/044-obs-auto-source.md](tasks/044-obs-auto-source.md)／オーバーレイ ON で OBS にソースを自動追加＝ワンクリック表示・**033/033f の「obs-websocket 不使用」決定を反転**・新規 loopback 通信(4455)/依存/方針反転のため**スパイク先行**・スパイク後に Next へ昇格）
+  - 実装順: 044s（スパイク・方式決定）→ 044a（実装）
+  - 044s obs-websocket 技術検証（疎通/認証/graceful 失敗/ソース自動作成・方式 A ウィンドウキャプチャ vs B ブラウザソース+ローカル HTTP を実測決定・**検証のみ／本実装しない**）
+  - 044a 自動ソース追加 実装（決定方式・obs-websocket は sidecar 側・loopback 4455 限定・明示同意時のみ・fail 時は手動手順フォールバック・**security-review 必須**）
 
 ## Todo
 
