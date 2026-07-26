@@ -5800,3 +5800,19 @@ YouTube のギフトメンシプ／Jewels は **API に存在するが gRPC prot
   COMMENT_SIDECAR_CAPTURE_VIDEO_ID=<動画ID>` で起動→ギフトメンシプ/Jewels を実送信→`frames.b64` を
   `decode-capture.mjs` で読み、未知の type 整数／details field 番号を確定。番号確定後に 043d 本体（proto/DTO/mapper＋
   二重計上方針）を変更計画→実装（**その時点で security-review 必須**）。本足場は番号確定後に撤去。
+
+## 2026-07-26 (044s obs-websocket スパイク：方式A（ウィンドウキャプチャ自動追加）に決定)
+
+要望①（OBS へオーバーレイソースを自動追加）の方式を実測で決めるスパイク（本実装 044a はしない）。**方針反転**（033/033f の「obs-websocket 不使用」を UX 優先で覆す）前提の実現性/脆さ/工数を macOS 実機で検証し、**方式 A（ウィンドウキャプチャ）に決定**した。検証は使い捨てブランチ `044s-obs-websocket-spike`＋**リポジトリ外の単体スクリプト**（`obs-websocket-js` は検証用に別環境導入）で行い、**本体コード・依存・host-guard は未改変**（検証コードは破棄・本体マージ無し）。OBS の GUI 操作・目視は本人担当。
+
+- **実測環境**: OBS 32.1.2（macOS）/ obs-websocket 5.7.3 / RPC v1 / `ws://127.0.0.1:4455`。ターゲットは透過窓「StreamDock コメントオーバーレイ」。
+- **疎通・認証・graceful（全確認）**: 認証なし接続 ✅／認証あり接続 ✅（**パスワードはファイル経由・出力/ログ非露出**）／誤パスワード＝`4009 Authentication failed` を graceful catch ✅（hot-loop 無し）／未起動・WS 無効・ポート相違＝`ECONNREFUSED` を graceful catch ✅（単発試行＋4s timeout・実装は指数バックオフ推奨）。
+- **方式 A（採用）**: macOS の kind に `window_capture`／`screen_capture` の**両方**が存在（当初推論を更新）。`window_capture` で `CreateInput`→`GetInputPropertiesListPropertyItems("window")` の候補26件から**オーバーレイ窓を窓名で発見**（`[stream-dock] StreamDock コメントオーバーレイ`）。macOS の設定は **`{owner_name, window_name, window(数値ID)}`** の3フィールドで、数値 ID は起動毎に変わるため**安定キー `owner_name`＋`window_name` を併設**→**本人目視で透過合成表示を確認**。`GetInputList` による**既存検出→重複追加防止（べき等）**、作成先は現在シーンを確認。
+- **方式 B（不採用）**: `CreateInput`(`browser_source`) の URL 設定は成功するが、**OBS が loopback URL を取得しない**（自動作成/refresh/手動いずれも HTTP 取得 0 件・同 URL への `curl` は 200＝サーバ正常／「対話」で真っ黒・操作不能＝CEF 未描画）。一般には動く手法のため環境固有不具合の可能性が高いが、**ユーザー実機で現に動かず**＋**ローカル HTTP 配信の新設工数**があり不採用。
+- **通信面**: `lsof -i` で OBS 接続・方式 B HTTP とも **loopback のみ・外部 ESTABLISHED ゼロ**（`[::1]:1420` は Vite dev＝IPv6 loopback）。
+- **成果物（対象ファイル・ドキュメントのみ）**: [docs/tasks/044s-obs-websocket-spike.md](tasks/044s-obs-websocket-spike.md)（末尾に**スパイク結果＋方式決定メモ**）／[docs/tasks/044a-obs-auto-source-impl.md](tasks/044a-obs-auto-source-impl.md)（**方式 A 確定・実装スコープ・security 方針差分ドラフト**）／本エントリ。**security.md 本体は未編集**（正式追記は 044a で security-review を通して実施）。
+- **security ドラフト要点（044a で正式化）**: §1 loopback 4455 限定解禁（外部 allow-list と分離・明示同意時のみ）／**fail-closed 論点＝現 WS ガードは DI スコープ＆`wss:` 必須で obs-websocket-js を素通りするため global WebSocket ガード新設（既存 WSS＋`ws://127.0.0.1:4455` のみ許可）を推奨**／§9 パスワード非ログ非外部送信・loopback WS に平文で載せない／§10 新規依存 `obs-websocket-js`（Rust に async/WS/HTTP crate は足さない・方式 A なので HTTP サーバ新設なし）。
+- **044a 実装スコープ**: sidecar に OBS クライアント新規 module（ユーザー有効化時のみ接続・べき等作成・graceful フォールバック）／制御フレーム配線（[index.ts](../apps/comment-sidecar/src/index.ts)）／UI トグル＋パスワード＋手動フォールバック案内（[SettingsView.tsx](../apps/desktop/src/screens/comment-viewer/SettingsView.tsx) 364-425）。capability/`csp: null` 不変。
+- **未了（Windows 未検証）**: Windows の `window_capture` は `window` 指定が `title:class:exe` 文字列・WGC/透過・DPI が macOS と異なる（本スパイクは macOS 実測のみ）。044a では OS 分岐で窓指定を組み立て、**Windows は 098（VM）で実挙動確認**。方式 B は「描画不具合の解消＋HTTP 配信整備」が揃えば再検討可（覆すには再実測）。
+- **やらないこと（線引き）**: 本実装（044a）・外部通信の追加（検証も loopback のみ）・`obs-websocket-js` の本採用（044a で §10 記録＋security-review 後）・security.md 本体の編集。
+- **変更**: 上記ドキュメント3ファイルのみ。**本体コード差分ゼロ・依存追加ゼロ・host-guard 未改変**（検証コード/依存は scratchpad に隔離し破棄・使い捨てブランチ削除済み・`git status` は成果物ドキュメントのみ）。
