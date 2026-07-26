@@ -101,6 +101,36 @@ function assertAllowedWsUrl(raw: string): void {
 }
 
 /**
+ * 044a（OBS 連携）: OBS WebSocket 接続先を **loopback 限定**で許可する fail-closed アサート。
+ * 許可は `ws://127.0.0.1:<port>`（port は 1〜65535 の数値）**のみ**で、他ホスト・非 ws・userinfo 付き・
+ * ポート欠落は throw する。obs-websocket-js は isomorphic-ws→`ws` パッケージを使い global `WebSocket` を
+ * 通らないため、global ガードでは傍受できない。よって **OBS クライアントが接続直前に本アサートを呼ぶ**
+ * （①`127.0.0.1` のコード定数化＝ホストピン留め、②本アサート、の二層で loopback 限定を担保）。
+ * 外部 HTTPS/WSS/gRPC の allow-list とは**分離**し、ここに loopback を混ぜない（外部宛先は増やさない）。
+ */
+export function assertAllowedObsUrl(raw: string): void {
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    throw new DisallowedHostError(raw);
+  }
+  const port = Number(u.port);
+  if (
+    u.protocol !== "ws:" ||
+    u.hostname !== "127.0.0.1" ||
+    u.username !== "" ||
+    u.password !== "" ||
+    u.port === "" ||
+    !Number.isInteger(port) ||
+    port < 1 ||
+    port > 65535
+  ) {
+    throw new DisallowedHostError(raw);
+  }
+}
+
+/**
  * 032c-d コミット2: gRPC streamList の接続先 `target`（"host:port"）を allow-list 照合する（fail-closed）。
  * gRPC は `fetch`/`ws` を通らないため独立のガード。**www.googleapis.com:443 のみ**を許可し、port 欠落・別 host・
  * 別 port・サブドメイン偽装（`www.googleapis.com.evil.com`）は throw する。api.client の client 生成前に呼ぶ。
@@ -159,6 +189,7 @@ export const __hostGuardInternals = {
   assertAllowedHttpUrl,
   assertAllowedWsUrl,
   assertAllowedGrpcTarget,
+  assertAllowedObsUrl,
   isAllowedHttpsHost,
   isAllowedWssHost,
 };

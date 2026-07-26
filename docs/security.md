@@ -134,6 +134,43 @@ Twitch の chat イベントにはアバター URL が載らないため、**投
   webview へは **data URI のみ**を渡す（webview/CSP/capabilities/main・Rust の no-internet 不変）。data URI・アバター URL・Helix 応答・
   OAuth トークンは DB/ログに出さない（§9）。**新規依存なし**（§10）。**方針変更のため security-review 必須**。
 
+### 例外（044a・OBS オーバーレイソース自動追加＝obs-websocket loopback 連携）
+
+上記「外部通信をしない」原則に対し、**OBS 連携（オーバーレイの「ウィンドウキャプチャ」ソース自動追加）に限り**、
+ユーザーが**明示的に有効化した時のみ**、ローカルの OBS WebSocket（`ws://127.0.0.1:4455`・ループバック）への通信を
+例外的に許容する（要望①・033/033f の「obs-websocket 不使用」決定を UX 優先で反転）。方式は **044s スパイクで方式A
+（ウィンドウキャプチャ）に決定**（方式B＝ブラウザソースは当該環境で未描画・ローカル HTTP 新設が必要で不採用）。
+詳細設計は `docs/tasks/044-obs-auto-source.md`／`044s`／`044a` を正とする。
+
+- **宛先はループバック `127.0.0.1:4455` のみ**（インターネットには出さない）。**fail-closed の二層**で担保する:
+  ①**ホストピン留め**＝OBS クライアント（sidecar）が接続 URL を `ws://127.0.0.1:${port}` と組み、`127.0.0.1` を
+  **コード定数**に固定する（viewer/ユーザーは host を指定できない。port は下記 read-only 検出由来の数値のみ）。
+  ②**接続直前アサート**＝`host-guard.ts` の `assertAllowedObsUrl()` が `ws://127.0.0.1:<port>` 以外（別ホスト・
+  非 ws・userinfo 付き・ポート欠落）を throw する（`test-host-guard.mjs` で固定）。**obs-websocket-js は `isomorphic-ws`
+  →`ws` パッケージを使い global `WebSocket` を通らない**ため global ガードでは傍受できず、この2層で loopback 限定を担保する。
+  **外部 HTTPS/WSS/gRPC の allow-list とは分離**し、ここに loopback を混ぜない（外部宛先は増やさない）。
+- **通信面は Node sidecar に封じ込め**、**Rust は完全同期のまま**（async/WS/HTTP crate を足さない・OBS 通信は sidecar・
+  main no-internet 不変）。OBS へはソースを1つ作り（`CreateInput`(`window_capture`) / 既存なら再利用）、その
+  **作成/再利用したソースの表示・非表示を切り替える**（`SetSceneItemEnabled`＝オーバーレイ表示 OFF で非表示・**削除はしない**）だけで、
+  コメント取得・配信はしない。**新規外部宛先・新規依存はゼロ**（同一 loopback WS 上の OBS 制御に限る）。
+  検証は `lsof -i` で 4455 接続が sidecar PID 下のみ・外部 ESTABLISHED が増えないことで確認する。
+- **OBS WebSocket パスワード（§9）**: OBS 側で**認証が有効なときだけ**必要（read-only 検出の `auth_required` で判定し、
+  必要な時のみ UI で入力を求める）。パスワードは **loopback WS には載せず**、UI→Rust コマンド（`set_obs_websocket_password`）
+  →**OS キーチェーン**（`token_vault` の account `obs-websocket`）→sidecar へ **stdin private pipe**（`COMMENT_SIDECAR_OBS_PW=`）
+  で渡す。**非ログ・非外部送信・localStorage 非保存**。
+- **OBS 設定の read-only 検出（§5）**: WS 有効状態・ポート・認証要否を案内するため、OBS の
+  `plugin_config/obs-websocket/config.json` を **read-only** で読む（`detect_obs_websocket_config`）。**書き込みは一切しない**
+  （§5「外部アプリ設定の勝手な上書き」禁止を厳守・自動有効化は別タスク）。**`server_password` は読まない・返さない**（§9）。
+  対象は **OS 別の既定パスのみ**（任意パス読取にしない・§7）。未検出/壊れは graceful（UI が有効化手順を案内）。
+- **依存（§10）**: 新規 npm `obs-websocket-js`（sidecar 側・obs-websocket v5 クライアント）。**Rust の新規 crate は無し**
+  （keyring/serde_json/tauri path API で足りる）。**ローカル HTTP サーバは新設しない**（方式A のため方式B の HTTP 依存は不要）。
+- **Windows（要実機検証）**: ウィンドウキャプチャの「キャプチャ方法」を **WGC（Windows 10 1903 以降）に自動設定**する
+  （既定「自動」だと透過窓が黒くなるため）。`method` の実 enum は 098 VM で確認する（macOS は該当プロパティ無し・実測済み）。
+- **capability / CSP 不変**（`comment-viewer`/`comment-overlay`/`main` の capability を広げない・`csp: null` 不変・
+  app 定義コマンドは ACL 非列挙）。telemetry/analytics/crash-report は追加しない。
+- **明示同意（ユーザーの有効化操作）＋ security-review を必須**とする（方針反転＋新規 loopback 通信面＋新規依存＋
+  外部アプリ設定の read-only 読取に該当）。
+
 ### 2. frontendから自由なOS操作をさせない
 
 React / TypeScript側から、自由なshell実行・自由なファイル操作・自由なプロセス操作を行わない。
@@ -371,6 +408,15 @@ loopback WS で受信済みの値を Tauri コマンドで渡すだけ＝sidecar
   再利用するのみ。Twitch は `profile_image_size` 相当のサイズ指定が無いため Helix `users` の `profile_image_url`（実寸）をそのまま使い、
   想定外サイズは 036b 基盤のバイト上限（128KB・ストリーム実測）で sidecar 内遮断する。投稿者 ID→URL の Helix 解決キャッシュも標準
   `Map` のみ（新規ライブラリ無し）。
+
+**追加した依存（044a・OBS オーバーレイソース自動追加）**:
+- Node（sidecar）: `obs-websocket-js`（v5・obs-websocket クライアント。OBS へ `ws://127.0.0.1:4455` で接続しウィンドウ
+  キャプチャソースを自動追加する。`isomorphic-ws`→`ws`〈既存 dep〉経由で loopback のみに接続し、`assertAllowedObsUrl` と
+  ホストピン留めで fail-closed）。SEA の禁止依存アサート（`@napi-rs/keyring`/`@hono/node-server`/`dotenv`）には該当せずそのままバンドルされる。
+- **Rust/Tauri: 新規 crate なし**（`keyring`〈既存・OBS パスワードを account `obs-websocket` で保存〉・`serde_json`〈既存・
+  config.json 解析〉・Tauri path API〈既存・OS 別既定パス解決〉で足りる。**async/WS/HTTP crate は足さない**＝Rust 完全同期を維持）。
+- **明示的に足さないもの**: ローカル HTTP サーバ（`hono` 等＝方式B 不採用のため不要）・画像処理系・network/http crate。
+  telemetry/analytics 系は入れない。
 
 ## Tauri Permissions / Capabilities 方針
 

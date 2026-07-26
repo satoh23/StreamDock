@@ -2,6 +2,7 @@ mod app_logs;
 mod comment_sidecar;
 mod comment_viewer;
 mod error;
+mod obs_config;
 mod preset_items;
 mod presets;
 mod process;
@@ -311,6 +312,26 @@ fn launch_voicevox_engine(
     })
 }
 
+/// 044a: OBS WebSocket パスワードを設定する（OBS 側で認証が有効なときのみ必要）。
+/// §8: trim/制御文字拒否で検証してから、keychain 保存＋稼働中 sidecar へ **stdin private pipe** で渡す
+/// （loopback WS には載せない・非ログ・§9）。frontend は生パスワードをこのコマンドにのみ渡し、
+/// WS/localStorage には保存しない。
+#[tauri::command]
+fn set_obs_websocket_password(app: AppHandle, password: String) -> AppResult<()> {
+    let pw = password.trim();
+    util::require_non_empty(pw, "OBS のパスワードが未設定です")?;
+    util::reject_control_chars(pw, "OBS のパスワードに制御文字は使用できません")?;
+    comment_sidecar::set_obs_password(&app, pw);
+    Ok(())
+}
+
+/// 044a: OBS WebSocket パスワードを破棄する（keychain 削除＋sidecar の in-memory 消去）。idempotent。
+#[tauri::command]
+fn clear_obs_websocket_password(app: AppHandle) -> AppResult<()> {
+    comment_sidecar::clear_obs_password(&app);
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -414,6 +435,9 @@ pub fn run() {
             is_comment_overlay_open,
             get_comment_stream_port,
             launch_voicevox_engine,
+            obs_config::detect_obs_websocket_config,
+            set_obs_websocket_password,
+            clear_obs_websocket_password,
             tools::commands::create_tool,
             tools::commands::list_tools,
             tools::commands::get_tool,

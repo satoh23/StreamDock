@@ -16,6 +16,11 @@ export const OVERLAY_FONT_KEY = "stream-dock.comment-viewer.overlay-font";
 /** オーバーレイのサイト名表示 ON/OFF の保存キー（既定 OFF）。 */
 export const OVERLAY_SHOW_SOURCE_KEY =
   "stream-dock.comment-viewer.overlay-show-source";
+/**
+ * 044a: OBS へ自動追加（連携）ON/OFF の保存キー（既定 OFF）。**非機密の UI 設定のみ**。
+ * OBS WebSocket パスワードはここに保存しない（Rust→OS キーチェーンで保持・§9）。
+ */
+export const OBS_AUTO_ADD_KEY = "stream-dock.comment-viewer.obs-auto-add";
 
 /**
  * オーバーレイのフォント候補（すべて OS 標準・日本語表示可・外部フォント無し）。`id` を localStorage に保存し、
@@ -104,5 +109,23 @@ export function saveOverlayShowSource(show: boolean): void {
     localStorage.setItem(OVERLAY_SHOW_SOURCE_KEY, String(show));
   } catch {
     // プライベートモード等で書けない場合は黙って無視する（表示は継続できる）。
+  }
+}
+
+/** 044a: OBS 自動追加 ON/OFF を読み込む。未保存・例外は false（OFF）へフォールバック。 */
+export function loadObsAutoAdd(): boolean {
+  try {
+    return localStorage.getItem(OBS_AUTO_ADD_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+/** 044a: OBS 自動追加 ON/OFF を保存する（ローカルのみ・非機密・外部送信しない）。 */
+export function saveObsAutoAdd(enabled: boolean): void {
+  try {
+    localStorage.setItem(OBS_AUTO_ADD_KEY, String(enabled));
+  } catch {
+    // プライベートモード等で書けない場合は黙って無視する。
   }
 }

@@ -36,6 +36,8 @@ export interface CommentStreamHandlers {
   onConnectionChange?: (connected: boolean) => void;
   /** 032c-b/032c-d: ログイン済みか（platform 別）。twitch=keychain 復元/成功/失効、youtube=in-memory の当該セッション。 */
   onLinkState?: (platform: CommentService, linked: boolean) => void;
+  /** 044a: OBS 連携の状態（idle/connecting/added/reused/failed）。UI のトグル状態・失敗時の手動誘導に使う。 */
+  onObsState?: (state: string, reason?: string) => void;
 }
 
 export interface CommentStreamHandle {
@@ -45,6 +47,13 @@ export interface CommentStreamHandle {
   /** 032c-d: service ごとに取得開始。twitch は channel 必須／youtube は channel 不要（mine=true）。 */
   startSession(service: CommentService, channel?: string): void;
   stopSession(service: CommentService): void;
+  /** 044a: OBS 連携を有効化し、指定ポート（read-only 検出由来・非秘密）の OBS へソースを自動追加させる。
+   *  パスワードはこの WS には載せず、Rust コマンド（set_obs_websocket_password）経由で sidecar へ渡す。 */
+  enableObs(port: number): void;
+  /** 044a: オーバーレイ表示 OFF 連動。OBS 側ソースを削除せず非表示にする（ON で enableObs が再表示）。port のみ・非秘密。 */
+  hideObs(port: number): void;
+  /** 044a: OBS 連携 OFF（状態を idle に戻す・OBS 側のソースは消さない）。 */
+  disableObs(): void;
 }
 
 /** sidecar から届く platform を正規化する（未指定・不正は既定 twitch＝後方互換）。 */
@@ -139,6 +148,19 @@ export function connectCommentStream(
         if (typeof p?.linked === "boolean") {
           handlers.onLinkState?.(parsePlatform(p.platform), p.linked);
         }
+      } else if (m.type === "obs.state") {
+        // 044a: OBS 連携の状態通知。非秘密（state/reason のみ・パスワードは載らない）。
+        // L4(修正不要): state は WS 境界を跨ぐため string で受ける（sidecar の ObsState union は共有しない）。
+        // SettingsView がリテラル比較で網羅する。再修正トリガー: 状態語が増えて取りこぼしが問題化したら共有 union 化する。
+        const p = m.payload as
+          | { state?: unknown; reason?: unknown }
+          | undefined;
+        if (typeof p?.state === "string") {
+          handlers.onObsState?.(
+            p.state,
+            typeof p.reason === "string" ? p.reason : undefined,
+          );
+        }
       }
     };
     socket.onclose = () => {
@@ -178,6 +200,15 @@ export function connectCommentStream(
     },
     stopSession(service: CommentService): void {
       send({ type: "stop-session", service });
+    },
+    enableObs(port: number): void {
+      send({ type: "obs-enable", port });
+    },
+    hideObs(port: number): void {
+      send({ type: "obs-hide", port });
+    },
+    disableObs(): void {
+      send({ type: "obs-disable" });
     },
   };
 }

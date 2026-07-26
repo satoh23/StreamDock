@@ -47,6 +47,11 @@ const RESTORE_PREFIX: &str = "COMMENT_SIDECAR_RESTORE=";
 const OPEN_URL_PREFIX: &str = "COMMENT_SIDECAR_OPEN_URL=";
 /// 032c-d: 同意画面として開いてよい唯一のホスト（Google OAuth 認可エンドポイント）。
 const CONSENT_ALLOWED_HOST: &str = "accounts.google.com";
+/// 044a: OBS WebSocket パスワードを Rust→sidecar の **stdin** へ渡す行の prefix（親子 private pipe）。
+/// keychain に保存し、起動時復元と設定コマンドの双方でこの行を書く。**内容はログに出さない**（§9）。
+const OBS_PW_PREFIX: &str = "COMMENT_SIDECAR_OBS_PW=";
+/// 044a: OBS パスワード破棄を sidecar に伝える stdin 行の prefix（in-memory を消す）。
+const OBS_PW_CLEAR_PREFIX: &str = "COMMENT_SIDECAR_OBS_PW_CLEAR=";
 
 /// sidecar 起動インスタンスごとに払い出す世代 ID のカウンタ。
 /// 旧 sidecar の stdout 読取スレッドが遅れて `Terminated` を受けても、既に差し替わった
@@ -91,6 +96,12 @@ pub fn ensure_started(app: &AppHandle) -> AppResult<()> {
             let line = format!("{RESTORE_PREFIX}{provider} {token_json}\n");
             let _ = child.write(line.as_bytes());
         }
+    }
+    // 044a: OBS WebSocket パスワードが保存済みなら stdin へ復元行を書く（認証有効な OBS 用）。
+    // loopback WS には載せず親子 private pipe のみを通る。**内容はログに出さない**（§9）。
+    if let Some(obs_password) = token_vault::load("obs") {
+        let line = format!("{OBS_PW_PREFIX}{obs_password}\n");
+        let _ = child.write(line.as_bytes());
     }
 
     let generation = SIDECAR_GENERATION.fetch_add(1, Ordering::Relaxed);
@@ -185,6 +196,29 @@ pub fn shutdown(app: &AppHandle) {
     if let Some(sidecar) = taken {
         // CommandChild::kill は子プロセスに SIGKILL を送る。sidecar 側 ppid 監視と併せ孤児を残さない。
         let _ = sidecar.child.kill();
+    }
+}
+
+/// 044a: OBS WebSocket パスワードを OS キーチェーンへ保存し、**稼働中 sidecar があれば** stdin private pipe で
+/// 渡す（loopback WS には載せない）。未起動時は keychain 保存のみで、次回 spawn 時に `ensure_started` が復元する。
+/// **パスワード内容はログに出さない**（§9・token_vault も露出しない）。
+pub fn set_obs_password(app: &AppHandle, password: &str) {
+    token_vault::save("obs", password);
+    write_line_to_sidecar(app, &format!("{OBS_PW_PREFIX}{password}\n"));
+}
+
+/// 044a: OBS WebSocket パスワードを破棄する（keychain 削除＋稼働中 sidecar の in-memory も消す）。idempotent。
+pub fn clear_obs_password(app: &AppHandle) {
+    token_vault::clear("obs");
+    write_line_to_sidecar(app, &format!("{OBS_PW_CLEAR_PREFIX}\n"));
+}
+
+/// 稼働中 sidecar の stdin へ 1 行書く（未起動なら no-op）。**内容はログに出さない**（パスワードを含み得る）。
+fn write_line_to_sidecar(app: &AppHandle, line: &str) {
+    let state = app.state::<CommentSidecarState>();
+    let mut guard = state.lock().expect("comment sidecar mutex poisoned");
+    if let Some(sidecar) = guard.as_mut() {
+        let _ = sidecar.child.write(line.as_bytes());
     }
 }
 

@@ -44,6 +44,8 @@ import { toCanonicalComment } from "./wire.js";
 // OFF（既定）では isMockEnabled() が false を返し mockSource=null＝現行の実取得経路が完全に無改変。副作用のない
 // 純関数のみを import する（top-level 副作用ゼロ）。撤去はこの import と下の 1 ゲートを外し dev-mock.ts を消すだけ。
 import { isMockEnabled, createMockCommentSource } from "./dev-mock.js";
+// 044a: OBS 連携（方式A＝ウィンドウキャプチャ自動追加）。obs-websocket は loopback 4455 のみ・OBS 連携有効時のみ接続。
+import { createObsClient } from "./obs/obs-client.js";
 
 const WS_HOST = "127.0.0.1";
 const PREFERRED_PORT = 17331;
@@ -51,6 +53,8 @@ const PORT_STDOUT_PREFIX = "COMMENT_SIDECAR_PORT=";
 const PPID_WATCH_INTERVAL_MS = 1000;
 const DEVICE_CODE_FRAME = "device_code";
 const LINK_STATE_FRAME = "link.state";
+// 044a: OBS 連携の状態を viewer へ通知する outbound フレーム（device_code/link.state と同じ bare literal 前例）。
+const OBS_STATE_FRAME = "obs.state";
 // 032c-b/032c-d′: ログイン永続化。token(JSON) は viewer WS には流さず、**stdout の専用行**（親子 private pipe）
 // でのみ Rust へ渡し、Rust が OS キーチェーンへ保存する。復元は Rust→**stdin** の専用行で受ける（§9）。
 // 032c-d′: twitch/youtube を統一するため各行に **provider を付与**する:
@@ -59,6 +63,9 @@ const LINK_STATE_FRAME = "link.state";
 const TOKEN_STDOUT_PREFIX = "COMMENT_SIDECAR_TOKEN=";
 const TOKEN_CLEAR_STDOUT_PREFIX = "COMMENT_SIDECAR_TOKEN_CLEAR=";
 const RESTORE_STDIN_PREFIX = "COMMENT_SIDECAR_RESTORE=";
+// 044a: OBS WebSocket パスワードを Rust→stdin private pipe で受領する（loopback WS には載せない・非ログ・§9）。
+const OBS_PW_STDIN_PREFIX = "COMMENT_SIDECAR_OBS_PW=";
+const OBS_PW_CLEAR_STDIN_PREFIX = "COMMENT_SIDECAR_OBS_PW_CLEAR=";
 // 032c-d: YouTube 同意画面の認可 URL を Rust へ渡す stdout 専用行（親子 private pipe）。Rust が
 // host=accounts.google.com を検証して opener で開く。**URL 全体はログに出さない**（載るのは code_challenge・
 // 非機密で code_verifier は載らない）。token/secret は一切載せない（§9）。
@@ -76,7 +83,12 @@ type ControlFrame =
   // twitch=Device Code＋channel 必須 / youtube=Authorization Code＋mine=true（channel 不要）。
   | { type: "start-login"; service: Provider }
   | { type: "start-session"; service: Provider; channel?: string }
-  | { type: "stop-session"; service: Provider };
+  | { type: "stop-session"; service: Provider }
+  // 044a: OBS 連携。port は Rust の read-only 検出由来（非秘密）。パスワードは WS には載せず stdin で受領する。
+  | { type: "obs-enable"; port: number }
+  // 044a: オーバーレイ表示 OFF 連動＝OBS 側ソースを削除せず非表示にする（port は再表示と同じ検出値）。
+  | { type: "obs-hide"; port: number }
+  | { type: "obs-disable" };
 
 /** service フィールドを Provider に正規化する（未指定・不正は既定 twitch＝後方互換）。 */
 function parseService(v: unknown): Provider {
@@ -97,6 +109,38 @@ function parseControlFrame(raw: string): ControlFrame | null {
   }
   if (m.type === "stop-session") {
     return { type: "stop-session", service: parseService(m.service) };
+  }
+  if (m.type === "obs-enable") {
+    // port は数値 [1,65535] のみ受理（host は sidecar 側で 127.0.0.1 に固定＝viewer は host を指定できない）。
+    // S1(修正不要): host が loopback 固定のため任意 port でも egress は発生せず loopback 内に留まる。よって port は
+    // 検出値に固定していない。再修正トリガー: 検出ポート以外への接続を禁じたくなったら sidecar 側で直近 detect の
+    // port を保持して照合する。
+    const port = (msg as { port?: unknown }).port;
+    if (
+      typeof port === "number" &&
+      Number.isInteger(port) &&
+      port >= 1 &&
+      port <= 65535
+    ) {
+      return { type: "obs-enable", port };
+    }
+    return null;
+  }
+  if (m.type === "obs-hide") {
+    // obs-enable と同じ port 検証（数値 [1,65535]・host は sidecar 側で 127.0.0.1 に固定）。
+    const port = (msg as { port?: unknown }).port;
+    if (
+      typeof port === "number" &&
+      Number.isInteger(port) &&
+      port >= 1 &&
+      port <= 65535
+    ) {
+      return { type: "obs-hide", port };
+    }
+    return null;
+  }
+  if (m.type === "obs-disable") {
+    return { type: "obs-disable" };
   }
   if (m.type === "start-session") {
     const service = parseService(m.service);
@@ -164,6 +208,15 @@ async function main(): Promise<void> {
   registerYouTubeDependencies({ authClient });
 
   const output = container.resolve(WebSocketCommentOutputPort);
+
+  // 044a: OBS 連携クライアント。状態は obs.state で viewer へ通知（UI のトグル状態・失敗時の手動誘導に使う）。
+  // パスワードは下の stdin 受領（COMMENT_SIDECAR_OBS_PW=）で in-memory に設定する（loopback WS には載せない）。
+  const obsClient = createObsClient((state, reason) => {
+    output.broadcastMessage({
+      type: OBS_STATE_FRAME,
+      payload: { state, ...(reason ? { reason } : {}) },
+    });
+  });
 
   // スパイク1(強・オフライン): Twitch の @inject 多引数コンストラクタ群を解決し、decorator metadata が
   // tsc→esbuild→SEA を生存していることを確認する（DI 解決のみ・ネットワークは張らない）。
@@ -372,6 +425,20 @@ async function main(): Promise<void> {
   output.setControlMessageHandler((raw) => {
     const frame = parseControlFrame(raw);
     if (!frame) return;
+    // 044a: OBS 連携はモック/実取得のどちらとも独立。mock 分岐より前で処理して早期 return する
+    //（mockSource は OBS フレームを解さないため渡さない）。接続はオンデマンド・失敗は obs.state で通知。
+    if (frame.type === "obs-enable") {
+      void obsClient.enable(frame.port);
+      return;
+    }
+    if (frame.type === "obs-hide") {
+      void obsClient.hide(frame.port);
+      return;
+    }
+    if (frame.type === "obs-disable") {
+      obsClient.disable();
+      return;
+    }
     // 035b（モック・一時）: ON のときは実ハンドラの手前で合成応答へ振り分けて早期 return する（実取得は起動しない）。
     // OFF（mockSource=null）ではこの 1 行を素通りし、以降の実ハンドラ本体は無改変。
     if (mockSource) {
@@ -469,6 +536,12 @@ async function main(): Promise<void> {
               : null;
           if (provider) void restoreToken(provider, rest.slice(sep + 1));
         }
+      } else if (line.startsWith(OBS_PW_CLEAR_STDIN_PREFIX)) {
+        // 044a: OBS パスワード破棄（keychain 削除に連動）。in-memory を消す。
+        obsClient.setPassword(null);
+      } else if (line.startsWith(OBS_PW_STDIN_PREFIX)) {
+        // 044a: OBS パスワードを in-memory に設定（loopback WS には出さない・ログにも出さない）。
+        obsClient.setPassword(line.slice(OBS_PW_STDIN_PREFIX.length));
       }
     }
   });

@@ -827,6 +827,22 @@
   color: var(--danger-text);
 }
 
+/* 044a: OBS 有効化ガイドの手順リスト（赤字見出し .errorText 直下）。項目は 700 を解除して読みやすくする。 */
+.obsGuideSteps {
+  margin: 4px 0 0;
+  padding-left: 1.2em;
+  font-weight: 400;
+}
+
+/* 044a: OBS サーバーパスワード取得方法（フォーム下の折りたたみ・native details）。淡色・summary はクリック可。 */
+.obsPasswordHelp {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.obsPasswordHelp summary {
+  cursor: pointer;
+}
+
 /* 危険色ボタン（個別削除・一括削除の実行）。.btn:disabled と同じく非活性アフォーダンスを持たせる。 */
 .dangerBtn {
   padding: 6px 12px;

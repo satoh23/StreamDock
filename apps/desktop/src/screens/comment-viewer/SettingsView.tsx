@@ -1,9 +1,11 @@
+import { useState } from "react";
 import type { VoicevoxSpeaker } from "../../features/comment-viewer/voicevox";
 import {
   OVERLAY_FONTS,
   resolveOverlayFontStack,
   type OverlayFontId,
 } from "../../features/comment-viewer/overlaySettings";
+import type { ObsWsConfig } from "../../features/comment-viewer/obsApi";
 import { ToggleSwitch } from "./ToggleSwitch";
 import { Select } from "./Select";
 import { useHostOs } from "../../features/platform/useHostOs";
@@ -54,6 +56,14 @@ interface SettingsViewProps {
   onOverlayFontChange: (id: OverlayFontId) => void;
   overlayShowSource: boolean;
   onOverlayShowSourceChange: (value: boolean) => void;
+  // 044a: OBS 連携（方式A＝ウィンドウキャプチャ自動追加）。state/ハンドラは CommentViewerApp が保持し、
+  // ここは表示とユーザー操作の受け渡しのみ（WS/秘密は持たない・パスワードは onSetObsPassword 経由で Rust へ）。
+  obsConfig: ObsWsConfig | null; // OBS WebSocket の read-only 検出結果（null=未検出）
+  obsAutoAdd: boolean; // 「OBS へ自動追加」トグルの状態
+  onObsAutoAddToggle: (next: boolean) => void;
+  obsState: string; // sidecar からの状態通知（idle/connecting/added/reused/failed）
+  onSetObsPassword: (password: string) => void;
+  onClearObsPassword: () => void;
 }
 
 export function SettingsView({
@@ -75,7 +85,16 @@ export function SettingsView({
   onOverlayFontChange,
   overlayShowSource,
   onOverlayShowSourceChange,
+  obsConfig,
+  obsAutoAdd,
+  onObsAutoAddToggle,
+  obsState,
+  onSetObsPassword,
+  onClearObsPassword,
 }: SettingsViewProps) {
+  // 044a: OBS パスワード入力のローカル state（**この値は保存しない・保存は Rust→keychain**）。認証が必要な OBS の
+  // ときだけ入力欄を出す。保存ボタンで onSetObsPassword に渡し、入力欄は即クリアして DOM/メモリに残さない（§9）。
+  const [obsPasswordInput, setObsPasswordInput] = useState("");
   // 033f Windows 追修正③: OBS のウィンドウキャプチャ方式は OS で事情が異なる。Windows は
   // 「Windows 10(WGC)＋透過を許可」でないと GPU/透過の WebView2 窓を取り込めず黒くなるため、
   // Windows のときだけ設定手順の一文を出す。OS 判定は既存の host_os（タイトルバー出し分けと
@@ -84,8 +103,9 @@ export function SettingsView({
 
   // 033d: 選択中 style id を含む話者を導出（話者 select の現在値）。一覧が空/未一致なら先頭話者にフォールバック。
   const selectedSpeaker =
-    speakers.find((sp) => sp.styles.some((st) => st.id === selectedSpeakerId)) ??
-    speakers[0];
+    speakers.find((sp) =>
+      sp.styles.some((st) => st.id === selectedSpeakerId),
+    ) ?? speakers[0];
 
   return (
     <div className={styles.settingsView}>
@@ -113,7 +133,8 @@ export function SettingsView({
             onChange={onVoicevoxAutolinkChange}
           />
           <span className={styles.note}>
-            自動連携が ON だと、コメントビューアを開いたときに VOICEVOX を自動起動します（要: ツール管理に VOICEVOX を登録）。
+            自動連携が ON だと、コメントビューアを開いたときに VOICEVOX
+            を自動起動します（要: ツール管理に VOICEVOX を登録）。
           </span>
 
           {/* 035c: 配信元（Twitch/YouTube）別の読み上げ ON/OFF。両プラットフォーム同時取得時の読み上げ暴発を抑えるための
@@ -132,14 +153,17 @@ export function SettingsView({
             disabled={!ttsEnabled}
           />
           <span className={styles.note}>
-            配信元ごとに読み上げの ON/OFF を切り替えられます（OFF の配信元は読み上げませんが、コメント表示は残ります）。VOICEVOX 読み上げが ON のときだけ設定できます。
+            配信元ごとに読み上げの ON/OFF を切り替えられます（OFF
+            の配信元は読み上げませんが、コメント表示は残ります）。VOICEVOX
+            読み上げが ON のときだけ設定できます。
           </span>
 
           {/* 033d: 読み上げ話者・スタイルの選択（話者→スタイルの 2 段）。ENGINE 稼働後に一覧（GET /speakers）が
               埋まると選べるようになる。未取得（空）のときは現在の選択（style id）を保持したまま案内文を出す。 */}
           {speakers.length === 0 ? (
             <span className={styles.note}>
-              読み上げ話者は VOICEVOX ENGINE を起動すると選べます（現在の選択: id=
+              読み上げ話者は VOICEVOX ENGINE を起動すると選べます（現在の選択:
+              id=
               {selectedSpeakerId}）。
             </span>
           ) : (
@@ -217,14 +241,102 @@ export function SettingsView({
             onChange={onOverlayToggle}
           />
           <span className={styles.note}>
-            OBS の「ウィンドウキャプチャ」で「StreamDock コメントオーバーレイ」を選ぶとコメントを重ねられます（背景は透過）。オーバーレイは常に最背面で開くので、配信者の画面には前面表示されません。
+            OBSの「ウィンドウキャプチャ」で「StreamDock
+            コメントオーバーレイ」を選ぶとコメントを重ねられます。
           </span>
           {/* 033f Windows 追修正③: Windows は OBS 側の設定が macOS と異なる。旧「BitBlt」方式では GPU/透過の
               WebView2 窓を取り込めず真っ黒になるため、WGC＋透過許可を Windows のときだけ案内する。 */}
           {hostOs === "windows" && (
             <span className={styles.note}>
-              Windows では OBS のウィンドウキャプチャで「キャプチャ方式＝Windows 10（1903 以降）」を選び、「透過を許可」を ON にしてください。旧方式（BitBlt）のままだと真っ黒になります。
+              Windows では OBS のウィンドウキャプチャで「キャプチャ方式＝Windows
+              10（1903 以降）」を選び、「透過を許可」を ON
+              にしてください。旧方式（BitBlt）のままだと真っ黒になります。
             </span>
+          )}
+
+          {/* 044a: OBS へ自動追加（連携）。ON で OBS に接続し、オーバーレイを「ウィンドウキャプチャ」ソースとして
+              自動追加（既存なら再利用）する。手動でのウィンドウキャプチャ追加が不要になる。接続は loopback
+              （127.0.0.1:4455）のみ・ユーザーが ON にした時のみ。失敗時は上の手動手順にフォールバックする。 */}
+          <ToggleSwitch
+            label="OBS へ自動追加（連携）"
+            checked={obsAutoAdd}
+            onChange={onObsAutoAddToggle}
+          />
+          <span className={styles.note}>
+            ONにすると、コメントオーバーレイを表示する際、OBSに自動的にオーバーレイが反映されます。
+          </span>
+
+          {/* 状態表示（idle 以外）。added/reused は「表示できた」ことだけ伝える（区別しない）。failed は赤字（エラー）。 */}
+          {obsState === "connecting" && (
+            <span className={styles.note}>OBS に接続しています…</span>
+          )}
+          {(obsState === "added" || obsState === "reused") && (
+            <span className={styles.note}>
+              OBSにオーバーレイを表示しました。
+            </span>
+          )}
+          {obsState === "failed" && (
+            <span className={styles.errorText}>
+              OBSに接続できませんでした。OBSが起動しているか確認してください。
+            </span>
+          )}
+
+          {/* WS 未検出/未有効なら有効化ガイド（read-only 検出結果に基づく・書き込みはしない）。エラーとして赤字で案内する。 */}
+          {(obsConfig === null || !obsConfig.enabled) && (
+            <div className={styles.errorText}>
+              OBSの設定が不足しています。OBSのメニュー → ツール →
+              WebSocketサーバー設定 を開き、以下を確認してください。
+              <ul className={styles.obsGuideSteps}>
+                <li>WebSocketサーバーを有効にするにチェックを入れる</li>
+                <li>サーバーポートが4455になっていることを確認</li>
+                <li>適用ボタンをクリック。</li>
+              </ul>
+            </div>
+          )}
+
+          {/* OBS 側で認証が必要なときだけパスワード入力を出す（不要な人には出さない）。
+              入力値は保存せず、保存ボタンで Rust（keychain）へ渡した直後にクリアする（§9）。 */}
+          {obsConfig?.authRequired && (
+            <div className={styles.speakerField}>
+              {/* 入力を短幅（searchInput）にし、保存/削除ボタンを横に並べる。保存＝主要色(btn)・削除＝ghost。 */}
+              <div className={styles.fontRow}>
+                <input
+                  className={styles.searchInput}
+                  type="password"
+                  autoComplete="off"
+                  value={obsPasswordInput}
+                  onChange={(e) => setObsPasswordInput(e.target.value)}
+                  placeholder="OBS のサーバーパスワード"
+                />
+                <button
+                  type="button"
+                  className={styles.btn}
+                  disabled={obsPasswordInput.trim().length === 0}
+                  onClick={() => {
+                    onSetObsPassword(obsPasswordInput);
+                    setObsPasswordInput(""); // DOM/メモリに残さない（§9）
+                  }}
+                >
+                  保存
+                </button>
+                <button
+                  type="button"
+                  className={styles.btnGhost}
+                  onClick={() => {
+                    onClearObsPassword();
+                    setObsPasswordInput("");
+                  }}
+                >
+                  削除
+                </button>
+              </div>
+              {/* 取得方法はフォーム下に折りたたみで置く（既定は閉じ・クリックで展開・native details）。 */}
+              <details className={styles.obsPasswordHelp}>
+                <summary>OBSのサーバーパスワード取得方法</summary>
+                OBSのメニュー → ツール → WebSocketサーバー設定 → 接続情報を表示
+                → サーバーパスワードの横にあるコピーをクリック
+              </details>
+            </div>
           )}
 
           {/* 034e: オーバーレイの意匠設定（フォント選択・サイト名表示）。値は同一 localStorage を介してオーバーレイ窓へ
@@ -266,7 +378,8 @@ export function SettingsView({
             onChange={onOverlayShowSourceChange}
           />
           <span className={styles.note}>
-            ON にすると、オーバーレイの各コメントに配信サービス名（Twitch / YouTube）を小さく表示します。
+            ON にすると、オーバーレイの各コメントに配信サービス名（Twitch /
+            YouTube）を小さく表示します。
           </span>
         </div>
       </div>

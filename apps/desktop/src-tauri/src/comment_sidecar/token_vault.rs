@@ -23,6 +23,10 @@ fn account_for(provider: &str) -> Option<&'static str> {
     match provider {
         "twitch" => Some("twitch-comment-viewer"),
         "youtube" => Some("youtube-comment-viewer"),
+        // 044a: OBS WebSocket パスワードも同じ仕組み（SERVICE × 別 account）で永続化する。
+        // 保存されるのは OAuth トークンではなく OBS のパスワード文字列だが、非ログ・非外部送信・
+        // 親子 private pipe のみを通る扱いは同一（§9）。
+        "obs" => Some("obs-websocket"),
         _ => None,
     }
 }

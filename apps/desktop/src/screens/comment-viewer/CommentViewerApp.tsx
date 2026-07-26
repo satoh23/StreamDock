@@ -43,7 +43,16 @@ import {
   saveOverlayFont,
   loadOverlayShowSource,
   saveOverlayShowSource,
+  loadObsAutoAdd,
+  saveObsAutoAdd,
 } from "../../features/comment-viewer/overlaySettings";
+// 044a: OBS 連携（方式A）。config 検出・パスワード設定は Rust command 経由、連携 ON/OFF は WS 制御フレーム。
+import {
+  detectObsWebsocketConfig,
+  setObsWebsocketPassword,
+  clearObsWebsocketPassword,
+  type ObsWsConfig,
+} from "../../features/comment-viewer/obsApi";
 import { mergeComments } from "../../features/comment-viewer/mergeComments";
 import { recordComments } from "../../features/viewer-memory/viewerMemoryApi";
 import type { RecordResult } from "../../features/viewer-memory/types";
@@ -312,6 +321,15 @@ export function CommentViewerApp() {
     loadOverlayShowSource(),
   );
 
+  // 044a: OBS 連携（方式A＝ウィンドウキャプチャ自動追加）。
+  // - obsConfig: OBS の WebSocket 設定の read-only 検出結果（有効/ポート/認証要否）。null=未検出（未導入/未設定）。
+  // - obsAutoAdd: 「OBS へ自動追加（連携）」トグルの永続状態（非機密・localStorage）。パスワードは保存しない。
+  // - obsState: sidecar からの obs.state 通知（connecting/added/reused/failed/idle）。UI の状態表示に使う。
+  //   ※失敗時の技術的 reason（ECONNREFUSED 等）はユーザーに無意味なため UI では表示しない（reason は受けても捨てる）。
+  const [obsConfig, setObsConfig] = useState<ObsWsConfig | null>(null);
+  const [obsAutoAdd, setObsAutoAdd] = useState(() => loadObsAutoAdd());
+  const [obsState, setObsState] = useState<string>("idle");
+
   useEffect(() => {
     saveChannel(channel);
   }, [channel]);
@@ -319,6 +337,13 @@ export function CommentViewerApp() {
   // 034d: マウント時に実際の窓状態へトグルを同期する（外部で開閉されていても実状態に合わせる）。
   useEffect(() => {
     void isCommentOverlayOpen().then(setOverlayOpen);
+  }, []);
+
+  // 044a: マウント時に OBS の WebSocket 設定を read-only 検出する（有効/ポート/認証要否）。
+  // これで設定 UI が「WS 無効です／認証が必要です」を正確に案内し、認証時のみパスワード入力を出せる。
+  // 検出できない（未導入/未設定/読取不可）ときは null＝有効化ガイドを出す。書き込みは一切しない（§5）。
+  useEffect(() => {
+    void detectObsWebsocketConfig().then(setObsConfig);
   }, []);
 
   // 033c: トグル状態を localStorage に永続化する（channel と同型）。再オープン・再起動で復元される。
@@ -347,6 +372,10 @@ export function CommentViewerApp() {
   useEffect(() => {
     saveOverlayShowSource(overlayShowSource);
   }, [overlayShowSource]);
+  // 044a: OBS 自動追加 ON/OFF を永続化（非機密・パスワードは含めない）。
+  useEffect(() => {
+    saveObsAutoAdd(obsAutoAdd);
+  }, [obsAutoAdd]);
 
   // 033c: 安定コールバック（enqueueForSpeech / launchEngine）から最新値を読むための ref 同期。
   useEffect(() => {
@@ -486,6 +515,10 @@ export function CommentViewerApp() {
         setLinked(isLinked);
         // ログイン済み（復元含む）なら Device Code 提示は不要なので消す。
         if (isLinked) setDeviceCode(null);
+      },
+      // 044a: OBS 連携の状態通知（非秘密）。UI の状態表示に反映する（技術的 reason は UI に出さないため捨てる）。
+      onObsState: (state) => {
+        setObsState(state);
       },
     });
     streamRef.current = handle;
@@ -667,12 +700,81 @@ export function CommentViewerApp() {
   // resolve 前に連打した際の一時的な state と実窓のズレも同 mount 同期で回復する。
   // 再修正トリガー＝①command reject が実運用で頻発し unhandled rejection が問題化する ②連打ズレが実害になる、なら
   // 両分岐へ .catch(() => void isCommentOverlayOpen().then(setOverlayOpen)) を足し失敗時も実状態へ再同期する。
+  // 044a: オーバーレイ窓が OBS の「ウィンドウ一覧」に載るまでの初期猶予（開いた直後は候補に出ないことがある）。
+  // M1: 載るまでの本待ちは sidecar 側の有界リトライ（findOverlayWindowItem）へ移したため、これは最初の一撃を
+  // 早めるためのベストエフォート猶予（唯一の待ち機構ではない）。E2E で不要と分かれば撤去してよい。
+  const OBS_ENABLE_DELAY_MS = 1200;
+
+  // 044a: OBS へ自動追加を要求する。まず config を read-only で再検出（起動後に OBS 側で有効化された場合に追従）
+  // してから、検出ポート（無ければ既定 4455）で sidecar に enableObs を送る。host は sidecar 側で 127.0.0.1 に固定。
+  // パスワードはこの経路（WS）には載せず、別途 set_obs_websocket_password（Rust→keychain→stdin）で渡す。
+  const requestObsAutoAdd = () => {
+    setObsState("connecting");
+    void detectObsWebsocketConfig().then((cfg) => {
+      setObsConfig(cfg);
+      const stream = streamRef.current;
+      if (!stream) {
+        // L2: コメントストリーム WS 未接続なら enableObs が no-op になり connecting が固着するため failed に落とす。
+        setObsState("failed");
+        return;
+      }
+      stream.enableObs(cfg?.port ?? 4455);
+    });
+  };
+
+  // 044a: オーバーレイ表示 OFF 連動。OBS 側ソースを**削除せず非表示**にする（ON で requestObsAutoAdd が再表示）。
+  // port は既知の検出値（無ければ既定 4455）を使う。sidecar 側は best-effort（該当なし/未起動は idle）。
+  const requestObsHide = () => {
+    streamRef.current?.hideObs(obsConfig?.port ?? 4455);
+  };
+
   const handleOverlayToggle = (next: boolean) => {
     if (next) {
-      void openCommentOverlayWindow().then(() => setOverlayOpen(true));
+      void openCommentOverlayWindow().then(() => {
+        setOverlayOpen(true);
+        // 044a: OBS 自動追加が ON なら、窓が OBS のウィンドウ一覧に載る猶予をおいてソース追加を要求する。
+        if (obsAutoAdd) {
+          window.setTimeout(() => requestObsAutoAdd(), OBS_ENABLE_DELAY_MS);
+        }
+      });
     } else {
       void closeCommentOverlayWindow().then(() => setOverlayOpen(false));
+      // 044a: 連携 ON のときは、表示 OFF で OBS 側のソースも非表示にする（削除はしない）。
+      if (obsAutoAdd) requestObsHide();
     }
+  };
+
+  // 044a: 「OBS へ自動追加（連携）」トグル。ON でオーバーレイ窓を（未開なら開いて）キャプチャ対象にし、OBS へ
+  // ウィンドウキャプチャソースを自動追加（既存なら再利用）する。OFF は連携を止める（OBS 側のソースは消さない）。
+  const handleObsAutoAddToggle = (next: boolean) => {
+    setObsAutoAdd(next);
+    if (!next) {
+      streamRef.current?.disableObs();
+      setObsState("idle");
+      return;
+    }
+    if (overlayOpen) {
+      requestObsAutoAdd();
+    } else {
+      // 未開ならオーバーレイを開いてから猶予をおいて追加（ワンクリックでソース追加まで到達させる）。
+      void openCommentOverlayWindow().then(() => {
+        setOverlayOpen(true);
+        window.setTimeout(() => requestObsAutoAdd(), OBS_ENABLE_DELAY_MS);
+      });
+    }
+  };
+
+  // 044a: OBS WebSocket パスワードを保存する（認証有効な OBS 用）。Rust が §8 検証→keychain→sidecar へ私信。
+  // 保存後、連携 ON かつオーバーレイ open なら再試行して認証成功後の自動追加に繋げる。
+  const handleSetObsPassword = (password: string) => {
+    void setObsWebsocketPassword(password).then(() => {
+      if (obsAutoAdd && overlayOpen) requestObsAutoAdd();
+    });
+  };
+
+  // 044a: OBS パスワードを破棄する（keychain 削除＋sidecar の in-memory 消去）。
+  const handleClearObsPassword = () => {
+    void clearObsWebsocketPassword();
   };
 
   // 033d: クレジット表記に使う選択話者名。一覧から選択 style id を含む話者名を引く。ENGINE 未起動で一覧が
@@ -709,6 +811,12 @@ export function CommentViewerApp() {
           onOverlayFontChange={setOverlayFont}
           overlayShowSource={overlayShowSource}
           onOverlayShowSourceChange={setOverlayShowSource}
+          obsConfig={obsConfig}
+          obsAutoAdd={obsAutoAdd}
+          onObsAutoAddToggle={handleObsAutoAddToggle}
+          obsState={obsState}
+          onSetObsPassword={handleSetObsPassword}
+          onClearObsPassword={handleClearObsPassword}
         />
       ) : (
         <>

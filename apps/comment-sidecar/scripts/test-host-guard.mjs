@@ -5,8 +5,12 @@ import {
   installHttpHostGuard,
 } from "../dist/src/host-guard.js";
 
-const { assertAllowedHttpUrl, assertAllowedWsUrl, assertAllowedGrpcTarget } =
-  __hostGuardInternals;
+const {
+  assertAllowedHttpUrl,
+  assertAllowedWsUrl,
+  assertAllowedGrpcTarget,
+  assertAllowedObsUrl,
+} = __hostGuardInternals;
 
 let failures = 0;
 const ok = (label, fn, shouldThrow) => {
@@ -88,6 +92,27 @@ ok("ws ws://eventsub.wss.twitch.tv (not wss)", () => assertAllowedWsUrl("ws://ev
 ok("ws wss://eventsub.wss.twitch.tv@evil.com (credential-embedded → host is evil.com)", () => assertAllowedWsUrl("wss://eventsub.wss.twitch.tv@evil.com/ws"), true);
 // 偽ワイルドカード: `.wss.twitch.tv` を含むが suffix ではない（`-wss.twitch.tv`）ため拒否されること。
 ok("ws wss://evil-wss.twitch.tv/ws (not a real *.wss.twitch.tv subdomain)", () => assertAllowedWsUrl("wss://evil-wss.twitch.tv/ws"), true);
+
+// 044a: OBS 連携ガード（loopback 限定）。許可 = ws://127.0.0.1:<port> のみ。obs-websocket-js は ws パッケージ経由で
+// global WebSocket を通らないため、OBS クライアントが接続直前にこれを呼ぶ（ホストピン留めの二層目）。
+ok("obs ws://127.0.0.1:4455 (default loopback)", () => assertAllowedObsUrl("ws://127.0.0.1:4455"), false);
+ok("obs ws://127.0.0.1:4455/ (trailing slash)", () => assertAllowedObsUrl("ws://127.0.0.1:4455/"), false);
+ok("obs ws://127.0.0.1:59650 (user-changed port, still loopback)", () => assertAllowedObsUrl("ws://127.0.0.1:59650"), false);
+// 外部/別ホストは拒否（loopback 以外は egress になる）。
+ok("obs ws://obs.evil.com:4455 (non-loopback host)", () => assertAllowedObsUrl("ws://obs.evil.com:4455"), true);
+ok("obs ws://192.168.0.5:4455 (LAN host, not loopback)", () => assertAllowedObsUrl("ws://192.168.0.5:4455"), true);
+ok("obs ws://localhost:4455 (hostname not pinned 127.0.0.1)", () => assertAllowedObsUrl("ws://localhost:4455"), true);
+ok("obs ws://[::1]:4455 (IPv6 loopback not pinned)", () => assertAllowedObsUrl("ws://[::1]:4455"), true);
+// 認証情報埋め込みバイパス（`@` の前は userinfo・実宛先は evil.com）。必ず拒否。
+ok("obs ws://127.0.0.1:4455@evil.com (credential-embedded → host is evil.com)", () => assertAllowedObsUrl("ws://127.0.0.1:4455@evil.com"), true);
+// スキーム違い・ポート欠落は拒否。
+ok("obs wss://127.0.0.1:4455 (wss not ws)", () => assertAllowedObsUrl("wss://127.0.0.1:4455"), true);
+ok("obs http://127.0.0.1:4455 (http not ws)", () => assertAllowedObsUrl("http://127.0.0.1:4455"), true);
+ok("obs ws://127.0.0.1 (no port)", () => assertAllowedObsUrl("ws://127.0.0.1"), true);
+ok("obs not-a-url", () => assertAllowedObsUrl("not-a-url"), true);
+// OBS loopback は既存の外部 WSS allow-list とは分離（混ぜない）: OBS assert は外部 WSS を拒否・WSS assert は ws:// を拒否。
+ok("obs wss://eventsub.wss.twitch.tv/ws (external WSS not an OBS target)", () => assertAllowedObsUrl("wss://eventsub.wss.twitch.tv/ws"), true);
+ok("ws ws://127.0.0.1:4455 (loopback not allowed on external WSS guard)", () => assertAllowedWsUrl("ws://127.0.0.1:4455"), true);
 
 // global fetch のガード置換: allow-list 外は throw（ネットワークを張る前に弾く）
 installHttpHostGuard();
