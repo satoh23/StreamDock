@@ -83,6 +83,16 @@
     **API に存在するが gRPC proto のフィールド番号が非公開で保留**＝osareview proto or 実配信キャプチャで番号確定後に着手・受信面拡張＝**security-review 必須**）
     - **2026-07-26 再判定**: 解除条件 (a) 上流 osareview proto／(b) 実配信キャプチャ **いずれも未充足**（repo に .proto 実ファイル/キャプチャ無し）→ proto 未記入で**保留継続**。解除には osareview 最新 proto の該当メッセージ確認 or 実発火配信での生 gRPC キャプチャが必要（詳細 progress.md 2026-07-26 043d 節）。
     - **2026-07-26 保留**: 解除条件(b)用の**生 gRPC キャプチャ足場は実装済み（dev 専用・env ゲート・厳密テスト 45 件 PASS・新規宛先/スコープ/依存ゼロ）だが未マージで git stash に退避**（`git stash list` の「043d gRPC capture scaffold」・ブランチ `043d-grpc-capture-spike` 上で作成・`git stash apply` で復元）。ただし**キャプチャ対象に予定した協力配信者が Jewels を終了**したため実配信キャプチャ本番が実施できず**フィールド番号 未確定**＝proto/DTO/mapper 未着手のまま**保留**。再開＝Jewels/メンバーシップ有効な協力配信者の確保 or 自チャンネル収益化 or 上流 proto 入手（詳細は tasks/043d の「保留の経緯」「実装済み足場」節）。
+- 045 OBSオーバーレイ 分かりやすさ改善（命名見直し＋表示トグル移設・親設計 [docs/tasks/045-obs-overlay-clarity.md](tasks/045-obs-overlay-clarity.md)／「OBSオーバーレイ」→「コメントをOBSに表示」＋表示トグルを本体へ・自動反映(044a)は設定に残置・**034d を部分反転**・frontend のみ）
+  - 実装順: 045a → 045b
+  - 045a 「OBSオーバーレイ」等の可視文言を「コメントをOBSに表示」系へ統一（OBS 実窓名リテラルは据え置き＝044a の窓名一致を壊さない・**軽レビュー**）
+  - 045b 表示/非表示トグルを本体ツールバーへ移設（`handleOverlayToggle`/`handleObsAutoAddToggle` の連動維持・自動反映は設定に残す・**軽レビュー**）
+- 046 固定コメント（ピン留め）＋専用オーバーレイ（親設計 [docs/tasks/046-pinned-comment-overlay.md](tasks/046-pinned-comment-overlay.md)／右クリックでコメントを上部固定＋**既存 comment-overlay とは独立した専用オーバーレイ窓**で OBS 固定表示・窓間伝達は localStorage＋storage イベントで完結＝新規 WS/emit/外部通信なし）
+  - 実装順: 046a → 046b
+  - 046a 本体のコメント固定（右クリック→上部固定＋ピンストア localStorage・046b が読む書式・**軽レビュー**）
+  - 046b 固定専用オーバーレイ窓（新 label `pinned-overlay`・Rust 窓コマンド3つ＋新 capability＋App.tsx label 分岐＋PinnedOverlayApp＋開閉トグル・表示専用/WS なし・**security-review 必須**）
+- 047 課金チャット 横スクロールティッカー＋クリック展開（単体 [docs/tasks/047-superchat-ticker.md](tasks/047-superchat-ticker.md)／課金チャットを YouTube 風に上部へ横スクロール小表示＋クリックで重ねダイアログ・本体 UI のみ・`isMonetaryEvent`/`superchatTier` 等を流用・043b/043c と共存・**軽レビュー**）
+- 048 ずんだもん読み上げ 文字数上限（単体 [docs/tasks/048-tts-reading-length-cap.md](tasks/048-tts-reading-length-cap.md)／長文コメントは「以下略」で打ち切り・省略は常時有効・文字数は設定で可変（既定60）・`ttsQueue` の合成前チョークポイントで読み上げテキストのみ切詰・表示は全文のまま・**軽レビュー**）
 
 ## 保留
 
