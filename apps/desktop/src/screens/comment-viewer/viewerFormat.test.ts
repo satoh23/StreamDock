@@ -10,6 +10,7 @@ import {
   isMonetaryEvent,
   displayEventType,
   composeEventMessage,
+  superchatTier,
 } from "./viewerFormat";
 
 /**
@@ -125,6 +126,45 @@ describe("displayEventType", () => {
   it("superchat 以外はそのまま返す", () => {
     expect(displayEventType({ eventType: "subscription" })).toBe("subscription");
     expect(displayEventType({ eventType: "chat" })).toBe("chat");
+  });
+});
+
+describe("superchatTier", () => {
+  it("JPY（大単位通貨）は ¥100 系の閾値でティア分けする", () => {
+    expect(superchatTier(50, "JPY")).toBe(0); // 境界未満でもティア0にクランプ
+    expect(superchatTier(100, "JPY")).toBe(0);
+    expect(superchatTier(150, "JPY")).toBe(0);
+    expect(superchatTier(200, "JPY")).toBe(1);
+    expect(superchatTier(500, "JPY")).toBe(2);
+    expect(superchatTier(1000, "JPY")).toBe(3);
+    expect(superchatTier(2000, "JPY")).toBe(4);
+    expect(superchatTier(5000, "JPY")).toBe(5);
+    expect(superchatTier(10000, "JPY")).toBe(6);
+    expect(superchatTier(50000, "JPY")).toBe(6); // 上限超えも最上ティア
+  });
+  it("USD（小単位通貨）は $1 系の閾値でティア分けする", () => {
+    expect(superchatTier(1, "USD")).toBe(0);
+    expect(superchatTier(4.99, "USD")).toBe(1);
+    expect(superchatTier(5, "USD")).toBe(2);
+    expect(superchatTier(20, "USD")).toBe(4);
+    expect(superchatTier(100, "USD")).toBe(6);
+  });
+  it("未知通貨は小単位表にフォールバックする（近似）", () => {
+    expect(superchatTier(5, "XYZ")).toBe(2);
+    expect(superchatTier(100, "XYZ")).toBe(6);
+  });
+  it("通貨コードは大小文字を無視する", () => {
+    expect(superchatTier(500, "jpy")).toBe(2);
+  });
+  it("境界直下は 1 つ下のティアに留まる（>= 判定の確認）", () => {
+    expect(superchatTier(199, "JPY")).toBe(0); // 200 未満
+    expect(superchatTier(999, "JPY")).toBe(2); // 1000 未満
+    expect(superchatTier(99, "USD")).toBe(5); // 100 未満
+  });
+  it("0/負値/NaN は無害にティア0へ劣化する（異常系）", () => {
+    expect(superchatTier(0, "JPY")).toBe(0);
+    expect(superchatTier(-100, "USD")).toBe(0);
+    expect(superchatTier(Number.NaN, "JPY")).toBe(0);
   });
 });
 

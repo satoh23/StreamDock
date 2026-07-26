@@ -3,7 +3,9 @@
    当てる（本体コメビュの CommentViewerApp.module.css には触れず・波及もしない）。窓自体は透過のまま（OverlayApp.module.css
    の :global ルール）で、吹き出しだけがほぼ純白＝OBS ウィンドウキャプチャで背景が抜ける（033f/034b の合成挙動を壊さない）。
    色はすべて theme.css の --overlay-* トークン経由（このファイルに生 hex/rgba を残さない）。名前の縁取りは多重
-   text-shadow（白）で作る。フォントサイズ等の px は OBS 取り込み時の可読性優先で、tauri dev で目視調整する前提の初期値。 */
+   text-shadow（白）で作る。フォントサイズ等の px は OBS 取り込み時の可読性優先で、tauri dev で目視調整する前提の初期値。
+   043c: chat 以外（投げ銭）は末尾の YouTube スパチャ風カード（.card 一式）で描く。カードも不透明色（--overlay-tip-*）
+   なので窓透過は不変。カード用の色トークンも生 hex/rgba を残さず --overlay-tip-* 経由で参照する。 */
 
 /* 1 コメント＝名前行（上）とアイコン｜吹き出し行（下）の縦積み。
    レイアウト用ローカル変数（色トークンではなく寸法）: --icon-size=アイコン径 / --icon-gap=アイコン⇔吹き出しの間隔。
@@ -15,6 +17,13 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
+  /* 043c 追修正(本人フィードバック): 共有 .list は overflow-y:auto かつ flex 縦積みのため、子 .item が既定の
+     flex-shrink:1 だとオーバーフロー前に縦圧縮され、overflow:hidden の投げ銭カードが潰れて破綻する。子を縮ませず
+     自然高を保たせ、超過分は .list のスクロール（always 追従で最新へ）に回す。共有 .list には触らない（本体波及回避）。
+     【レビュー対応・修正不要】.item は overlay の chat 吹き出しにも当たるため、この flex-shrink:0 は chat の溢れ挙動も
+     「縦圧縮」→「.list スクロール」に変える（意図どおり＝改善方向・非退行。非 overlay 本体は別 CSS モジュールで無影響）。
+     再修正トリガー: chat だけ従来の圧縮挙動に戻したくなったら flex-shrink:0 を .card 側だけへ移す。 */
+  flex-shrink: 0;
   /* 035b(本人フィードバック): コメントが詰まって見えたので縦余白を広げる（共有の .list gap は default 本体にも
      波及するため触らず、overlay 専用の .item 縦 padding を 2px→6px に増やして 1 コメントの上下に余白を足す）。 */
   padding: 6px 4px;
@@ -160,4 +169,156 @@
   line-height: 1.5;
   color: var(--overlay-body-fg);
   word-break: break-word;
+}
+
+/* 043c: 投げ銭カード（YouTube スパチャ風・色付きヘッダ帯＋淡色ボディ）。chat 以外の課金コメントに .item と併せて当てる
+   （chat は上の吹き出しのまま・非変更）。カードは不透明（ヘッダ/ボディとも不透明色）なので窓透過を壊さない（.bubble と
+   同原理・OBS ウィンドウキャプチャで背景は抜けカードのみ合成）。色はすべて theme.css の --overlay-tip-* トークン経由。
+   ティア/種別クラス（.tier0..tier6 / .tipBits ほか）が役割 var（--tip-header-bg / --tip-header-fg / --tip-body-bg）を
+   差し替え、.cardHeader/.cardBody がそれを参照する。px は tauri dev で微調整前提の初期値。 */
+.card {
+  overflow: hidden; /* ヘッダ/ボディの角をカード角丸でクリップ */
+  border-radius: 12px; /* 043c 追修正(本人フィードバック): 課金カードの角を少し丸く。18px は丸すぎたため 12px に減らす（chat 吹き出し 14px よりわずかに控えめ） */
+  filter: drop-shadow(0 1px 3px var(--overlay-bubble-shadow)); /* 映像上で輪郭を出す（吹き出しと同じ影トークン） */
+  /* 043c 追修正(本人フィードバック): .item の gap:2px/padding:6px 4px を打ち消し、色付きヘッダ/ボディをカード縁まで広げて
+     border-radius(overflow:hidden) を実際に効かせる。gap:0 はヘッダ⇔ボディ間の透明スリット（黒い線に見える）も同時に消す。
+     【レビュー対応・修正不要】.card と .item は同一詳細度（単一クラス）なので、この打ち消しは .card が .item より後に
+     定義されているソース順に依存して勝っている。現状このファイル内で .card は .item より下にあり正しく効く。
+     再修正トリガー: 将来ルールを並べ替えて .card が .item より前に来る／別ファイルへ分離するなら、順序非依存にするため
+     `.item.card { padding:0; gap:0 }` の複合セレクタへ変える。 */
+  gap: 0;
+  padding: 0;
+}
+
+/* ヘッダ帯：アバター（既存 .icon 再利用）＋名前＋（サイト名ピル）＋金額バッジ。色付き不透明・文字はティアに応じ白/暗。 */
+.cardHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--tip-header-bg);
+  color: var(--tip-header-fg);
+}
+
+/* ヘッダ内ユーザー名：色付きヘッダ上なので白縁取りは付けず、ヘッダ文字色を継承。flex:1 で source/金額を右端へ押す。 */
+.cardName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.3;
+  color: inherit;
+}
+
+/* 金額バッジ：ヘッダ右端の pill。半透過の暗チップ＋白文字（不透明ヘッダ上に乗るため窓透過に影響なし）。 */
+.amountBadge {
+  flex-shrink: 0;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.4;
+  white-space: nowrap;
+  color: var(--overlay-tip-amount-fg);
+  background: var(--overlay-tip-amount-bg);
+}
+
+/* ボディ：ヘッダと同系色の淡色・暗文字。種別文言（.eventMessage）と本文（.cardText）を縦に積む。 */
+.cardBody {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 12px;
+  background: var(--tip-body-bg);
+  color: var(--overlay-body-fg);
+}
+
+/* 金額を持たない課金種別（サブスク/メンシプ/ギフト）の組み立て文言。本文より少し強めに出して何が起きたか一目で分かるように。 */
+.eventMessage {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 800;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+/* カード本文：視聴者の自由コメント。淡色ボディ上なので白縁取りなし。 */
+.cardText {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+/* スパチャ金額ティア（役割 var を差し替えるだけ・青→水→緑→黄→橙→桃→赤）。黄（tier3）だけ暗文字。 */
+.tier0 {
+  --tip-header-bg: var(--overlay-tip-t0-bg);
+  --tip-header-fg: var(--overlay-tip-fg-on-dark);
+  --tip-body-bg: var(--overlay-tip-t0-body);
+}
+.tier1 {
+  --tip-header-bg: var(--overlay-tip-t1-bg);
+  --tip-header-fg: var(--overlay-tip-fg-on-dark);
+  --tip-body-bg: var(--overlay-tip-t1-body);
+}
+.tier2 {
+  --tip-header-bg: var(--overlay-tip-t2-bg);
+  --tip-header-fg: var(--overlay-tip-fg-on-dark);
+  --tip-body-bg: var(--overlay-tip-t2-body);
+}
+.tier3 {
+  --tip-header-bg: var(--overlay-tip-t3-bg);
+  --tip-header-fg: var(--overlay-tip-fg-on-light);
+  --tip-body-bg: var(--overlay-tip-t3-body);
+}
+.tier4 {
+  --tip-header-bg: var(--overlay-tip-t4-bg);
+  --tip-header-fg: var(--overlay-tip-fg-on-dark);
+  --tip-body-bg: var(--overlay-tip-t4-body);
+}
+.tier5 {
+  --tip-header-bg: var(--overlay-tip-t5-bg);
+  --tip-header-fg: var(--overlay-tip-fg-on-dark);
+  --tip-body-bg: var(--overlay-tip-t5-body);
+}
+.tier6 {
+  --tip-header-bg: var(--overlay-tip-t6-bg);
+  --tip-header-fg: var(--overlay-tip-fg-on-dark);
+  --tip-body-bg: var(--overlay-tip-t6-body);
+}
+
+/* ティア非対象の課金種別（種別ごとの単色・すべて白文字）。 */
+.tipBits {
+  --tip-header-bg: var(--overlay-tip-bits-bg);
+  --tip-header-fg: var(--overlay-tip-fg-on-dark);
+  --tip-body-bg: var(--overlay-tip-bits-body);
+}
+.tipSubscription {
+  --tip-header-bg: var(--overlay-tip-subscription-bg);
+  --tip-header-fg: var(--overlay-tip-fg-on-dark);
+  --tip-body-bg: var(--overlay-tip-subscription-body);
+}
+.tipMembership {
+  --tip-header-bg: var(--overlay-tip-membership-bg);
+  --tip-header-fg: var(--overlay-tip-fg-on-dark);
+  --tip-body-bg: var(--overlay-tip-membership-body);
+}
+.tipGift {
+  --tip-header-bg: var(--overlay-tip-gift-bg);
+  --tip-header-fg: var(--overlay-tip-fg-on-dark);
+  --tip-body-bg: var(--overlay-tip-gift-body);
+}
+.tipDonation {
+  --tip-header-bg: var(--overlay-tip-donation-bg);
+  --tip-header-fg: var(--overlay-tip-fg-on-dark);
+  --tip-body-bg: var(--overlay-tip-donation-body);
+}
+.tipJewels {
+  --tip-header-bg: var(--overlay-tip-jewels-bg);
+  --tip-header-fg: var(--overlay-tip-fg-on-dark);
+  --tip-body-bg: var(--overlay-tip-jewels-body);
 }

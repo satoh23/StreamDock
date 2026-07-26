@@ -84,6 +84,47 @@ const MOCK_TEXTS: Record<Provider, string[]> = {
   ],
 };
 
+// 043c 動作確認用: 課金額バリエーション表（tauri dev で配色/金額バッジを目視確認するため額を固定せず seq で回す）。
+//   スパチャは superchatTier が通貨コードで閾値表を引く（JPY=大単位[100,200,500,1000,2000,5000,10000] /
+//   USD=小単位[1,2,5,10,20,50,100]）。※ bits/jewels/donation はティア非対象（種別単色）＝額は金額バッジのみに反映。
+const SUPERCHAT_VARIANTS = [
+  { amount: 100, currency: "JPY", label: "100 JPY" }, // tier0 青
+  { amount: 300, currency: "JPY", label: "300 JPY" }, // tier1 水
+  { amount: 800, currency: "JPY", label: "800 JPY" }, // tier2 緑
+  { amount: 1500, currency: "JPY", label: "1,500 JPY" }, // tier3 黄
+  { amount: 3000, currency: "JPY", label: "3,000 JPY" }, // tier4 橙
+  { amount: 7000, currency: "JPY", label: "7,000 JPY" }, // tier5 桃
+  { amount: 15000, currency: "JPY", label: "15,000 JPY" }, // tier6 赤
+  { amount: 8, currency: "USD", label: "8 USD" }, // USD 小単位表: tier2（未収載通貨経路の確認）
+  { amount: 30, currency: "USD", label: "30 USD" }, // tier4
+  { amount: 150, currency: "USD", label: "150 USD" }, // tier6（上限超え飽和）
+];
+const BITS_VARIANTS = [
+  { amount: 100, label: "100 bits" },
+  { amount: 500, label: "500 bits" },
+  { amount: 1500, label: "1,500 bits" },
+  { amount: 5000, label: "5,000 bits" },
+  { amount: 25000, label: "25,000 bits" },
+];
+const DONATION_VARIANTS = [
+  { amount: 500, currency: "JPY", label: "500 JPY" },
+  { amount: 3000, currency: "JPY", label: "3,000 JPY" },
+  { amount: 10, currency: "USD", label: "10 USD" },
+  { amount: 50, currency: "USD", label: "50 USD" },
+];
+const JEWELS_VARIANTS = [
+  { amount: 30, label: "30 jewels" },
+  { amount: 100, label: "100 jewels" },
+  { amount: 500, label: "500 jewels" },
+];
+
+// 043c エッジケース確認用: 長文コメント（本文の折返し・カード/吹き出しの伸長・スクロールが崩れないか目視するため）。
+//   文字数は YouTube の赤スパ（最高額帯）本文上限 ≈290 字を目安にした長文。スパチャ用と通常チャット用の 2 種。
+const LONG_SUPERCHAT_TEXT =
+  "いつも本当に素敵な配信をありがとうございます！毎日お仕事から帰ってきてこの配信を見るのが唯一の楽しみで、今日も一日なんとか頑張ることができました。先週おすすめしてくれたゲームをさっそく買ってプレイしてみたら、想像していた以上に面白くて、気づいたら外が明るくなっていました（笑）。これからもどうか無理だけはせず、体調を第一にして末永く配信を続けてくださいね。ささやかですが精一杯応援しています。次回のコラボ配信も本当に楽しみにしているので、ぜひぜひ実現させてください。配信者さんのおかげで毎日が少しずつ明るくなりました。これからもずっと応援しています、いつも本当に元気をありがとう！"; // 290 字
+const LONG_CHAT_TEXT =
+  "今日の配信も本当に面白かったです！さっきの場面、緊張感がすごくて画面の前で思わず声を出してしまいました。個人的には中盤の立ち回りが神がかっていて、まさかあのタイミングでその選択をするとは思わず本当に驚きました。次の展開もすごく気になるので、時間が許す限りじっくり最後まで見ていきたいと思います。毎回コメントを丁寧に拾ってくれるところも大好きで、初見の人にも優しいこの空気感がすごく居心地良いです。仕事で疲れて帰ってきても、ここに来ると元気がもらえます。皆さんのコメントを読むのも毎回の楽しみです。長文になってしまってすみません、これからもずっと楽しみにしています、応援しています！"; // 290 字
+
 /** 合成コメント 1 件を組み立てる（wire の CanonicalComment と同形＝viewer 消費型と一致）。 */
 function makeComment(source: Provider, seq: number): CanonicalComment {
   const authors = MOCK_AUTHORS[source];
@@ -110,10 +151,11 @@ function makeComment(source: Provider, seq: number): CanonicalComment {
     comment.monthCount = 6;
   } else if (seq % 20 === 9 && source === "youtube") {
     // 043a(拡張): YouTube Jewels（合成のみ・取得は 043d）。jewels は仮想通貨のため bits と同様に数値＋通貨で表す。
+    const v = JEWELS_VARIANTS[Math.floor(seq / 20) % JEWELS_VARIANTS.length];
     comment.eventType = "jewels";
     comment.text = "投げ銭ジュエル 🎁";
-    comment.monetaryAmount = "50 jewels";
-    comment.monetary = { amount: 50, currency: "JEWELS" };
+    comment.monetaryAmount = v.label;
+    comment.monetary = { amount: v.amount, currency: "JEWELS" };
   } else if (seq % 20 === 13 && source === "twitch") {
     comment.eventType = "gift";
     comment.text = ""; // 表示側が「〇〇さんがサブギフトを5件贈りました（Tier1）」を組み立てる。
@@ -126,24 +168,41 @@ function makeComment(source: Provider, seq: number): CanonicalComment {
     comment.tier = 2;
   } else if (seq % 20 === 3 && source === "twitch") {
     // 043a(拡張): チャリティ・ドネーション（実金銭・団体名は持たない）。
+    const v = DONATION_VARIANTS[Math.floor(seq / 20) % DONATION_VARIANTS.length];
     comment.eventType = "donation";
     comment.text = "チャリティに寄付しました";
-    comment.monetaryAmount = "1000 JPY";
-    comment.monetary = { amount: 1000, currency: "JPY" };
+    comment.monetaryAmount = v.label;
+    comment.monetary = { amount: v.amount, currency: v.currency };
   } else if (seq % 20 === 11 && source === "twitch") {
     // 043a(拡張): Bits Power-up（bits 消費＝既存の superchat+BITS 表現に集約）。
+    const v = BITS_VARIANTS[Math.floor(seq / 20) % BITS_VARIANTS.length];
     comment.eventType = "superchat";
     comment.text = "Power-up 🎉";
-    comment.monetaryAmount = "300 bits";
-    comment.monetary = { amount: 300, currency: "BITS" };
-  } else if (seq % 5 === 0) {
+    comment.monetaryAmount = v.label;
+    comment.monetary = { amount: v.amount, currency: "BITS" };
+  } else if (seq % 20 === 1 && source === "youtube") {
+    // 043c エッジケース: 赤スパ（最高額帯＝tier6 赤）＋赤スパ本文上限（290字）の長文。カードのボディ折返し/伸長/スクロールの目視用。
     comment.eventType = "superchat";
-    comment.monetaryAmount = source === "twitch" ? "100 bits" : "500 JPY";
-    // 038a: 数値内訳も付与（Rust CommentViewDto.monetary と同形）。twitch=bits / youtube=JPY。
-    comment.monetary =
-      source === "twitch"
-        ? { amount: 100, currency: "BITS" }
-        : { amount: 500, currency: "JPY" };
+    comment.text = LONG_SUPERCHAT_TEXT;
+    comment.monetaryAmount = "20,000 JPY";
+    comment.monetary = { amount: 20000, currency: "JPY" };
+  } else if (seq % 20 === 19) {
+    // 043c エッジケース: 通常チャットの長文（赤スパ本文上限 290字を参考）。吹き出しの折返し/伸長/スクロールの目視用。
+    comment.eventType = "chat";
+    comment.text = LONG_CHAT_TEXT;
+  } else if (seq % 5 === 0) {
+    // 043c 動作確認: スパチャ額を全ティア（青→赤）へ渡って回す。twitch=bits（種別単色・額のみ変化）/ youtube=スパチャ（金額ティア配色）。
+    comment.eventType = "superchat";
+    // 038a: 数値内訳も付与（Rust CommentViewDto.monetary と同形）。twitch=bits / youtube=JPY/USD。
+    if (source === "twitch") {
+      const v = BITS_VARIANTS[Math.floor(seq / 5) % BITS_VARIANTS.length];
+      comment.monetaryAmount = v.label;
+      comment.monetary = { amount: v.amount, currency: "BITS" };
+    } else {
+      const v = SUPERCHAT_VARIANTS[Math.floor(seq / 5) % SUPERCHAT_VARIANTS.length];
+      comment.monetaryAmount = v.label;
+      comment.monetary = { amount: v.amount, currency: v.currency };
+    }
   }
   return comment;
 }

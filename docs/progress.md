@@ -5705,3 +5705,41 @@ YouTube のギフトメンシプ／Jewels は **API に存在するが gRPC prot
 - **検証**: desktop `typecheck`・`lint` OK ／ `vitest viewerFormat.test.ts` 23 passed（新ヘルパ含む）／ sidecar `typecheck` OK・`build:bundle` OK（禁止依存なし）。
   **実機表示はユーザー環境で確認予定**（サブスク/メンシプ/ギフトが日本語要約＋赤枠／スパチャ/ビッツ/ドネーション/ジュエルが種別ラベル＋金額＋赤枠／chat は無装飾）。
 - 未対応: OBS オーバーレイの投げ銭強調（**043c**・現行意匠に赤枠相当を相乗り）は別タスクのまま。
+
+## 2026-07-26 (043c オーバーレイ 投げ銭コメントの強調＝YouTube スパチャ風カード)
+
+本人指示で 043c のデザインを具体化し実装した（元 043c の「現行意匠に縁取り/グロー相乗り」→ **投げ銭コメントを YouTube コメント欄の
+スーパーチャット風カード（色付きヘッダ帯＋淡色ボディ）に差し替え**る方向へ具体化）。オーバーレイ（`variant="overlay"`）は従来
+全コメントを同じ LINE 風吹き出しで描き `event_type` 分岐も `monetaryAmount` 表示も無かった＝投げ銭が埋もれていた（要望④）。
+**表示専用の frontend 分岐追加のみ**（新規通信/依存/capability/CSP ゼロ・Rust 非変更・軽 security-review 通過）。037a 非依存で
+保留中の **037b を supersede**。通常 chat は現行の吹き出しのまま非変更。
+
+- **配色方式＝金額ティア段階配色（YT 忠実・本人選択）**: スパチャ（実通貨）は金額でティア 0..6（青→水→緑→黄→橙→桃→赤）に色分け。
+  ティア体系は YT ではスパチャにしか無いため、**bits/subscription/membership/gift/donation/jewels はハイブリッドで種別ごとの単色**
+  （bits=紫 / subscription=緑 / membership=ティール / gift=ピンク / donation=インディゴ / jewels=シアン）。
+- **通貨換算はしない（038 の領分・スコープ外厳守）**: `superchatTier(amount, currency)`（`viewerFormat.ts`・純関数＋テスト）が
+  通貨コードで 2 系統の閾値表を引くだけ＝大単位通貨（JPY 等 `[100,200,500,1000,2000,5000,10000]`）／小単位通貨（USD/EUR 等 `[1,2,5,10,20,50,100]`）。
+  未知通貨は小単位表にフォールバック・境界未満はティア0にクランプ（「近似で可」に沿う）。
+- **カード形状＝YT 忠実な色付きカード（本人選択・しっぽ無し）**: ヘッダ帯＝アバター（036a data URI ガード維持）＋名前＋（サイト名ピル）＋
+  **金額バッジ**（`monetaryAmount` があればヘッダ右に pill）。ボディ＝金額なし種別は `composeEventMessage` の日本語要約を主表示、視聴者コメントがあれば本文を続ける。
+- **窓透過維持**: カードは不透明色（`--overlay-tip-*`）でヘッダ/ボディとも塗る＝窓の `:global(html[data-overlay="1"])` 透過は不変
+  （OBS ウィンドウキャプチャで背景は抜けカードのみ合成・既存 `.bubble` と同原理）。金額チップの半透過は不透明ヘッダ上に乗るため窓に影響しない。
+- **追加した overlay トークン（`theme.css`）**: `--overlay-tip-fg-on-dark/-on-light`・`--overlay-tip-amount-bg/-fg`・ティア `--overlay-tip-t0..t6-bg/-body`・
+  種別 `--overlay-tip-{bits,subscription,membership,gift,donation,jewels}-bg/-body`。ボディ淡色は各ヘッダ色から `color-mix(..., #fff)` で theme.css 内導出。
+  **module.css には生 hex/rgba を残さず全て `--overlay-tip-*` 経由**（各ティア/種別クラスは役割 var `--tip-header-bg/-fg`・`--tip-body-bg` を差し替えるだけ）。
+- **043a 未了時の挙動**: `event_type` は現行から subscription 等が到達済み＝未了でも subscription は強調カード化され見逃し解消は成立。新種別が来ればそのまま色分け（前方互換）。
+- **追修正（本人フィードバック・実機目視）＝コア 043c 後の後付けデルタ**: (A) `.item flex-shrink:0`＝共有 `.list`（overflow-y:auto＋flex 縦積み）で
+  子カードが圧縮され破綻するのを解消し、超過分を `.list` スクロールへ回す（overlay chat 吹き出しの溢れ挙動も「縦圧縮」→「スクロール」に統一＝改善方向・非退行）。
+  (B) `.card padding:0/gap:0`＋`border-radius:12px`（18px→12px）＝色付き面をカード縁まで広げ `overflow:hidden` の角丸を実効化し、ヘッダ⇔ボディ間の
+  透明スリット（黒線）を除去。角丸・レイアウトは jsdom で測れないため実機（OBS 合成）目視で最終確認。
+- **dev-mock 拡充（`comment-sidecar/src/dev-mock.ts`・合成データ値のみ）＝同・後付けデルタ**: 全ティア段階配色/長文の目視用に金額バリエーション表
+  （スパチャ JPY ¥100〜¥15,000＋USD／bits/donation/jewels）を `seq` 巡回化し、長文サンプル 290 字（YouTube 赤スパ本文上限参考）を 2 枠追加。
+  **宛先・依存・env ゲート（`COMMENT_SIDECAR_MOCK=1`）・host-guard/fail-closed 経路は不変**（035b の「env ゲートのまま維持」を踏襲・egress ゼロ）。
+- **対象ファイル**: `screens/comment-viewer/viewerFormat.ts`（`superchatTier`＋2 閾値表＋大単位通貨 Set・純関数）／`viewerFormat.test.ts`（superchatTier 仕様テスト 6 件）／
+  `CommentList.tsx`（`renderOverlayItem` に chat/カード分岐・`OVERLAY_TIER_CLASS`/`OVERLAY_TYPE_CLASS`・data URI ガードを共有 icon 要素に factor）／`CommentList.test.tsx`（043c overlay カードテスト 12 件）／
+  `OverlayComment.module.css`（`.card`/`.cardHeader`/`.cardName`/`.amountBadge`/`.cardBody`/`.eventMessage`/`.cardText`/`.tier0..tier6`/`.tip{Bits,…}`＋追修正A/B）／`theme.css`（上記トークン）／`comment-sidecar/src/dev-mock.ts`（上記 dev-mock 拡充）。
+- **security-review（軽・通過）**: frontend 表示分岐のみ＝外部通信宛先/API/capability/依存/CSP 不変・`csp: null` 不変（`tauri.conf.json` 非変更）・`<img>`/bg-image は
+  data URI のみ（036a ガード維持）・本文/金額を DB/ログに出さない（Rust 非変更）。グレップで module.css の生 hex/rgba 0 件・TS/dev-mock の fetch/invoke/新規 import 0 件を確認。判定=問題なし。
+- **検証**: desktop `typecheck` OK ／ `lint`（eslint）OK ／ `vitest` 80 passed（superchatTier 6 件＋043c overlay カードテスト 12 件含む）／ sidecar `typecheck` OK・
+  `build:bundle` OK（禁止依存アサート通過）／ `gen:bindings` drift ゼロ（Rust 非変更＝再生成なし）。`git diff --stat`＝9 files・+696/-36（うち docs 2 件・dev-mock 1 件・テスト 2 件）。
+  **実機表示はユーザー環境で確認予定**（各投げ銭種別が YT スパチャ風カード＋金額バッジ／スパチャは金額でティア色変化／chat は従来の吹き出し／窓透過が保たれ OBS 合成できる）。

@@ -77,7 +77,8 @@
   - 043a 取得精緻化（sidecar/wire/Rust＝membership を実発行・ギフトを subscription と区別・**2026-07-26 拡張で網羅化**＝チャリティ `donation` 新種別・
     有料化(`*_paid_upgrade`)・共有チャット(`shared_chat_*`)・Twitch Bits Power-ups(`channel.bits.use`＝`bits:read` 追加・再ログイン要)・**security-review 済**）
   - 043b コメビュ本体の投げ銭強調＋種別ラベル（chat 以外の全イベントを枠色＋ラベル＋金額・**軽レビュー**）
-  - 043c オーバーレイ投げ銭強調（現行意匠単独・037a 非依存・**037b を supersede**・**軽レビュー**）
+  - 043c オーバーレイ投げ銭強調（現行意匠単独・037a 非依存・**037b を supersede**・**軽レビュー**）→ **2026-07-26 実装済み**
+    （本人指示で **YouTube スパチャ風カード**に具体化＝色付きヘッダ帯＋淡色ボディ／スパチャは金額ティア段階配色・他課金種別は種別単色／金額バッジ／窓透過維持・036a data URI ガード維持／**軽 security-review 通過**）
   - 043d YouTube ギフトメンシプ／Jewels の取得（[docs/tasks/043d-youtube-jewels-gift-membership.md](tasks/043d-youtube-jewels-gift-membership.md)／
     **API に存在するが gRPC proto のフィールド番号が非公開で保留**＝osareview proto or 実配信キャプチャで番号確定後に着手・受信面拡張＝**security-review 必須**）
 
@@ -88,7 +89,7 @@
 - 037 OBSオーバーレイ 意匠の拡張（親設計 [docs/tasks/037-overlay-design-expansion.md](tasks/037-overlay-design-expansion.md)／意匠選択機構を新設し複数意匠から選べるように＋新デザイン2種・表示専用/外部通信なし・下記 Todo「複数デザイン＋選択 UI」の実体化）
   - 実装順: 037a → 037b
   - 037a 意匠選択機構＋シンプル意匠（ユーザー名＋コメントのみ・背景透過・白い細字・**軽レビュー**）
-  - 037b 投げ銭メッセージ（スパチャ/サブスク/ビッツ）強調意匠（`event_type` 分岐・全意匠に相乗り・**軽レビュー**）→ **[043c](tasks/043c-overlay-monetary-highlight.md) に supersede**（現行意匠単独で実体化・037a 非依存。オーバーレイ投げ銭強調は 043c を正とする）
+  - 037b 投げ銭メッセージ（スパチャ/サブスク/ビッツ）強調意匠（`event_type` 分岐・全意匠に相乗り・**軽レビュー**）→ **[043c](tasks/043c-overlay-monetary-highlight.md) に supersede**（現行意匠単独で実体化・037a 非依存。オーバーレイ投げ銭強調は 043c を正とする）＝**043c は 2026-07-26 実装済み（YT スパチャ風カード）**
 - 039 フォントインポート（親設計 [docs/tasks/039-font-import.md](tasks/039-font-import.md)／ユーザーのフォントファイルを app data dir にコピー保存＋data URI で `@font-face` 供給・外部フォント非追加/CSP 不変）
   - 実装順: 039a → 039b
   - 039a Rust 取込基盤（管理ディレクトリへコピー＋検証＋`fonts` レジストリ＋import/list/delete/get_font_data コマンド＋security.md 更新・**security-review 必須**・新規ファイル書き込み経路/dialog capability 追加）

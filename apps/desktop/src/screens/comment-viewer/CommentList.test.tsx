@@ -112,3 +112,224 @@ describe("CommentList 038c バッジ（初見／久しぶり）", () => {
     expect(screen.queryByText("初見")).toBeNull();
   });
 });
+
+/**
+ * 043c: オーバーレイの投げ銭カード（YouTube スパチャ風）の描画仕様テスト。
+ * 仕様の正 = docs/tasks/043c-overlay-monetary-highlight.md 完了条件・docs/security.md（036a data URI ガード）。
+ * あるべき挙動:
+ * - chat（variant=overlay）は従来の吹き出しのまま＝本文が出て、金額バッジ・要約文言は出ない（非退行）。
+ * - 金額を持つ投げ銭（superchat/bits/donation/jewels）は金額バッジ（monetaryAmount）を出す。
+ * - 金額を持たない投げ銭（subscription/membership/gift）は composeEventMessage の要約文を主表示にする（金額バッジ無し）。
+ * - 金額も本文も無い投げ銭でも壊れず、名前は出る（(eventMessage || text) が空ならボディ節を作らない条件分岐）。
+ * - 036a のガード: avatar を背景画像に差すのは data URI のときだけ。外部 URL は踏まず頭文字にフォールバック（chat/カード両分岐で温存）。
+ * ※ ティア段階配色（tier0..6）と種別単色は CSS クラス駆動で「見える文言」に差が出ないため、色分けは superchatTier の
+ *   純関数テスト（viewerFormat.test.ts）＋実機 E2E で担保し、ここでは CSS クラス名に依存したアサーションはしない。
+ */
+const iconEl = (container: HTMLElement) =>
+  container.querySelector<HTMLElement>('[aria-hidden="true"]');
+
+describe("CommentList 043c オーバーレイ投げ銭カード", () => {
+  it("chat は従来の吹き出しのまま（本文が出て、金額バッジ・要約文言は出ない＝非退行）", () => {
+    render(
+      <CommentList
+        variant="overlay"
+        comments={[makeComment({ eventType: "chat", text: "こんにちは" })]}
+      />,
+    );
+    expect(screen.getByText("こんにちは")).toBeTruthy();
+    expect(screen.queryByText(/JPY|bits/)).toBeNull();
+    expect(screen.queryByText(/さんが/)).toBeNull();
+  });
+
+  it("スパチャ（実通貨）は金額バッジ（monetaryAmount）と本文を出す", () => {
+    render(
+      <CommentList
+        variant="overlay"
+        comments={[
+          makeComment({
+            eventType: "superchat",
+            text: "応援してます",
+            monetary: { amount: 1000, currency: "JPY" },
+            monetaryAmount: "1,000 JPY",
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText("1,000 JPY")).toBeTruthy();
+    expect(screen.getByText("応援してます")).toBeTruthy();
+  });
+
+  it("ビッツ（superchat＋currency=BITS）は枚数バッジを出す", () => {
+    render(
+      <CommentList
+        variant="overlay"
+        comments={[
+          makeComment({
+            eventType: "superchat",
+            text: "cheer",
+            monetary: { amount: 100, currency: "BITS" },
+            monetaryAmount: "100 bits",
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText("100 bits")).toBeTruthy();
+  });
+
+  it("サブスク（金額なし種別）は要約文言を主表示にする（金額バッジは出ない）", () => {
+    render(
+      <CommentList
+        variant="overlay"
+        comments={[
+          makeComment({
+            eventType: "subscription",
+            text: "",
+            monthCount: 3,
+            tier: 1,
+          }),
+        ]}
+      />,
+    );
+    expect(
+      screen.getByText("Aliceさんがサブスクを3ヶ月継続しました（Tier1）"),
+    ).toBeTruthy();
+    expect(screen.queryByText(/JPY|bits/)).toBeNull();
+  });
+
+  it("ギフト（金額なし種別）はサブギフトの要約文言を出す", () => {
+    render(
+      <CommentList
+        variant="overlay"
+        comments={[makeComment({ eventType: "gift", text: "", giftCount: 5 })]}
+      />,
+    );
+    expect(screen.getByText(/サブギフトを5件贈りました/)).toBeTruthy();
+  });
+
+  it("ドネーション（実金銭）は金額バッジを出す", () => {
+    render(
+      <CommentList
+        variant="overlay"
+        comments={[
+          makeComment({
+            eventType: "donation",
+            text: "",
+            monetary: { amount: 20, currency: "USD" },
+            monetaryAmount: "20 USD",
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText("20 USD")).toBeTruthy();
+  });
+
+  it("金額も本文も無い投げ銭でも壊れず名前は出る（空ボディを作らない）", () => {
+    render(
+      <CommentList
+        variant="overlay"
+        comments={[makeComment({ eventType: "superchat", text: "" })]}
+      />,
+    );
+    // monetaryAmount / monetary / text がいずれも無い superchat → 名前だけ出て例外にならない。
+    expect(screen.getByText("Alice")).toBeTruthy();
+    expect(screen.queryByText(/JPY|bits/)).toBeNull();
+  });
+
+  it("036a: カード分岐で avatar が data URI のときだけ背景画像に差す", () => {
+    const { container } = render(
+      <CommentList
+        variant="overlay"
+        comments={[
+          makeComment({
+            eventType: "superchat",
+            monetaryAmount: "500 JPY",
+            author: {
+              id: "u1",
+              name: "Alice",
+              avatar: "data:image/png;base64,AAAA",
+            },
+          }),
+        ]}
+      />,
+    );
+    expect(iconEl(container)?.style.backgroundImage).toContain(
+      "data:image/png;base64,AAAA",
+    );
+  });
+
+  it("036a: カード分岐で avatar が外部 URL なら踏まず頭文字にフォールバック", () => {
+    const { container } = render(
+      <CommentList
+        variant="overlay"
+        comments={[
+          makeComment({
+            eventType: "superchat",
+            monetaryAmount: "500 JPY",
+            author: {
+              id: "u1",
+              name: "Alice",
+              avatar: "https://evil.example/x.png",
+            },
+          }),
+        ]}
+      />,
+    );
+    expect(iconEl(container)?.style.backgroundImage).toBe("");
+    expect(screen.getByText("A")).toBeTruthy(); // 頭文字フォールバック
+    expect(container.innerHTML).not.toContain("evil.example"); // 外部 URL を DOM に出さない
+  });
+
+  it("036a: chat 分岐でも外部 URL を踏まずフォールバックする（ガードは両分岐で温存）", () => {
+    const { container } = render(
+      <CommentList
+        variant="overlay"
+        comments={[
+          makeComment({
+            eventType: "chat",
+            author: {
+              id: "u1",
+              name: "Bob",
+              avatar: "https://evil.example/x.png",
+            },
+          }),
+        ]}
+      />,
+    );
+    expect(iconEl(container)?.style.backgroundImage).toBe("");
+    expect(screen.getByText("B")).toBeTruthy();
+    expect(container.innerHTML).not.toContain("evil.example");
+  });
+
+  // 043c エッジケース: 長文（YouTube 赤スパの本文上限 290 字を参考）が切り捨てられず全文描画されること。
+  //   見た目の折返し/伸長/スクロールは jsdom では測れないため実機目視（dev-mock の長文サンプル）で確認し、
+  //   ここでは「全文が DOM に出る＝truncate ロジックが無い」ことだけを保証する（回帰ガード）。
+  it("スパチャの長文本文（290字）が全文カードボディに出る（切り捨てなし）", () => {
+    const long = "あ".repeat(290);
+    render(
+      <CommentList
+        variant="overlay"
+        comments={[
+          makeComment({
+            eventType: "superchat",
+            text: long,
+            monetary: { amount: 20000, currency: "JPY" },
+            monetaryAmount: "20,000 JPY",
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText(long)).toBeTruthy();
+    expect(screen.getByText("20,000 JPY")).toBeTruthy(); // 金額バッジも併存する
+  });
+
+  it("通常チャットの長文本文（290字）が全文 overlay 吹き出しに出る（切り捨てなし・非退行）", () => {
+    const long = "あ".repeat(290);
+    render(
+      <CommentList
+        variant="overlay"
+        comments={[makeComment({ eventType: "chat", text: long })]}
+      />,
+    );
+    expect(screen.getByText(long)).toBeTruthy();
+  });
+});

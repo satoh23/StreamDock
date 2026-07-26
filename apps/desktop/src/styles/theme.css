@@ -127,6 +127,49 @@
   --overlay-source-twitch-bg: #9146ff; /* サイト名ピル：Twitch 紫 */
   --overlay-source-youtube-bg: #ff0000; /* サイト名ピル：YouTube 赤 */
 
+  /* 043c: OBS オーバーレイの投げ銭カード（YouTube スパチャ風・色付きヘッダ帯＋淡色ボディ）専用トークン。
+     オーバーレイ同様に per-theme 上書きはせず :root 基底のみ（OBS 映像上で一定）。カードは不透明（窓透過を壊さない）。
+     OverlayComment.module.css には生 hex/rgba を残さず本トークン経由。ボディ淡色は各ヘッダ色から color-mix で導出する。
+     スパチャは金額ティア（t0 青…t6 赤）で段階配色、ティア非対象の課金種別（bits/subscription/…）は種別ごとの単色。
+     金額換算はせず通貨コードで閾値表を引くだけ（superchatTier・038 のスコープ外）。実値は tauri dev で微調整前提。
+     【レビュー対応・修正不要】t1 水/t2 緑/t4 橙/subscription/membership/jewels の白文字は現状コントラスト比が WCAG AA 未満
+     （≈2.6〜3.0:1）だが、色は「YT 忠実」を狙った仮値で drop-shadow も乗るため実機確認前は据え置く。
+     再修正トリガー: OBS 映像で名前/金額が読みにくければ該当ヘッダ bg を 1〜2 段暗くする（黄 t3 は暗文字で対応済み）。 */
+  --overlay-tip-fg-on-dark: #ffffff; /* 濃色ヘッダ上の文字（既定・白） */
+  --overlay-tip-fg-on-light: #1a1a1a; /* 明色ヘッダ上の文字（黄ティア等・暗） */
+  --overlay-tip-amount-bg: color-mix(in srgb, #000000 26%, transparent); /* 金額バッジ：半透過の暗チップ（不透明ヘッダ上に乗るため窓透過に影響なし） */
+  --overlay-tip-amount-fg: #ffffff; /* 金額バッジの文字：白。【レビュー対応・修正不要】黄 t3（明色ヘッダ）でも常時白で、26% 黒チップだと白文字が沈み気味（≈3:1）。仮色のため据え置き。再修正トリガー: t3 で金額が読めなければ t3 のみ badge を暗文字にするかチップの黒比率を上げる。 */
+
+  /* スパチャ金額ティア（ヘッダ bg／ボディはヘッダ色の淡色を color-mix で導出）。青→水→緑→黄→橙→桃→赤。 */
+  --overlay-tip-t0-bg: #1565c0; /* 青 */
+  --overlay-tip-t0-body: color-mix(in srgb, var(--overlay-tip-t0-bg) 12%, #ffffff);
+  --overlay-tip-t1-bg: #0097a7; /* 水 */
+  --overlay-tip-t1-body: color-mix(in srgb, var(--overlay-tip-t1-bg) 12%, #ffffff);
+  --overlay-tip-t2-bg: #00a66b; /* 緑 */
+  --overlay-tip-t2-body: color-mix(in srgb, var(--overlay-tip-t2-bg) 12%, #ffffff);
+  --overlay-tip-t3-bg: #f9c11e; /* 黄（この帯だけ暗文字＝fg-on-light） */
+  --overlay-tip-t3-body: color-mix(in srgb, var(--overlay-tip-t3-bg) 14%, #ffffff);
+  --overlay-tip-t4-bg: #f57c00; /* 橙 */
+  --overlay-tip-t4-body: color-mix(in srgb, var(--overlay-tip-t4-bg) 12%, #ffffff);
+  --overlay-tip-t5-bg: #e91e63; /* 桃 */
+  --overlay-tip-t5-body: color-mix(in srgb, var(--overlay-tip-t5-bg) 12%, #ffffff);
+  --overlay-tip-t6-bg: #e53935; /* 赤 */
+  --overlay-tip-t6-body: color-mix(in srgb, var(--overlay-tip-t6-bg) 12%, #ffffff);
+
+  /* ティア非対象の課金種別（種別ごとの単色・ヘッダ bg／ボディは淡色を color-mix 導出）。 */
+  --overlay-tip-bits-bg: #772ce8; /* ビッツ：Twitch 紫 */
+  --overlay-tip-bits-body: color-mix(in srgb, var(--overlay-tip-bits-bg) 12%, #ffffff);
+  --overlay-tip-subscription-bg: #2e9e5b; /* サブスク：緑 */
+  --overlay-tip-subscription-body: color-mix(in srgb, var(--overlay-tip-subscription-bg) 12%, #ffffff);
+  --overlay-tip-membership-bg: #00897b; /* メンバーシップ：ティール */
+  --overlay-tip-membership-body: color-mix(in srgb, var(--overlay-tip-membership-bg) 12%, #ffffff);
+  --overlay-tip-gift-bg: #c2185b; /* ギフト：ピンク */
+  --overlay-tip-gift-body: color-mix(in srgb, var(--overlay-tip-gift-bg) 12%, #ffffff);
+  --overlay-tip-donation-bg: #3949ab; /* ドネーション：インディゴ */
+  --overlay-tip-donation-body: color-mix(in srgb, var(--overlay-tip-donation-bg) 12%, #ffffff);
+  --overlay-tip-jewels-bg: #00acc1; /* ジュエル：シアン */
+  --overlay-tip-jewels-body: color-mix(in srgb, var(--overlay-tip-jewels-bg) 12%, #ffffff);
+
   /* 042b改: ヘッダー内 接続ピルのポップオーバー（下に重ねて出す非モーダル）用の落ち影。tutorial 影と同様、影は両テーマとも
      暗色でよいので :root 基底のみに置き per-theme 上書きはしない。生 hex は本トークンに閉じ込め、*.module.css からは var で参照する。 */
   --popover-shadow: color-mix(in srgb, #05070d 45%, transparent);

@@ -66,6 +66,45 @@ export const displayEventType = (c: DisplayEventTypeInput): string =>
     : c.eventType;
 
 /**
+ * 043c: YouTube スーパーチャットの金額ティア（0=青…6=赤）を近似で求める純関数。
+ * オーバーレイの投げ銭カードの配色に使う（superchat・実通貨のときだけ・bits/他種別は種別単色で本関数を通さない）。
+ *
+ * 通貨換算はしない（038 の領分・スコープ外）。通貨コードで 2 系統の閾値表を引くだけ＝
+ * 大単位通貨（JPY 等・小数なし）と 小単位通貨（USD/EUR 等）で桁が ~100 倍違うため 2 表で近似する。
+ * 未知通貨は小単位表にフォールバック。境界未満（例 ¥50）でも最低ティア0（青）にする。
+ */
+const TIER_THRESHOLDS_LARGE = [100, 200, 500, 1000, 2000, 5000, 10000] as const; // JPY 系
+const TIER_THRESHOLDS_SMALL = [1, 2, 5, 10, 20, 50, 100] as const; // USD/EUR 系
+
+/** 小数を持たない大単位通貨（¥100 が最下ティア境界の系統）。未収載は小単位表にフォールバック。
+ *  【レビュー対応・修正不要】XAF/XOF/PYG/RWF/UGX 等の小数なし通貨は未収載＝小単位表でティアが過大に出るが、
+ *  影響はカードのヘッダ色（装飾）だけで金額バッジ（monetaryAmount を verbatim 表示）は常に正確なため近似として許容。
+ *  再修正トリガー: スパチャ配色の忠実度を上げたくなったら該当通貨を本 Set に追加する（換算は 038 の領分で不要）。 */
+const LARGE_UNIT_CURRENCIES: ReadonlySet<string> = new Set([
+  "JPY",
+  "KRW",
+  "VND",
+  "CLP",
+  "ISK",
+  "HUF",
+  "TWD",
+  "IDR",
+]);
+
+export const superchatTier = (amount: number, currency: string): number => {
+  const table = LARGE_UNIT_CURRENCIES.has(currency.toUpperCase())
+    ? TIER_THRESHOLDS_LARGE
+    : TIER_THRESHOLDS_SMALL;
+  // amount >= table[i] を満たす最大の i（0..6）。境界未満でもティア0にクランプ。
+  // 異常系（0/負値/NaN）は比較が全 false でティア0へ無害劣化し、上限超えは最上ティアに飽和する（クラッシュしない）。
+  let tier = 0;
+  for (let i = 0; i < table.length; i++) {
+    if (amount >= table[i]) tier = i;
+  }
+  return tier;
+};
+
+/**
  * 043b: 金額を持たない課金イベント（サブスク/メンシプ/ギフト）を「〇〇さんが…しました」の日本語文へ組み立てる。
  * 金額を持つ種別（superchat/bits/donation/jewels）や chat/未知は null を返し、呼び出し側は種別ラベル＋金額バッジ＋
  * 本文で表示する（重複した金額文言を避けるため文は作らない）。純関数（DOM/CSS 非依存・端末外へ出さない）。

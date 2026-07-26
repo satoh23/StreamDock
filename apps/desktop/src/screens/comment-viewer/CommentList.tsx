@@ -12,6 +12,7 @@ import {
   displayEventType,
   eventLabel,
   isMonetaryEvent,
+  superchatTier,
 } from "./viewerFormat";
 
 /**
@@ -36,6 +37,28 @@ const SOURCE_CLASS: Record<CommentViewDto["source"], string> = {
 const OVERLAY_SOURCE_CLASS: Record<CommentViewDto["source"], string> = {
   twitch: overlayStyles.sourceTwitch,
   youtube: overlayStyles.sourceYoutube,
+};
+
+/** 043c: 投げ銭カードのスパチャ金額ティア配色クラス（0=青…6=赤）。superchatTier の戻り値で引く（実通貨の superchat のみ）。 */
+const OVERLAY_TIER_CLASS = [
+  overlayStyles.tier0,
+  overlayStyles.tier1,
+  overlayStyles.tier2,
+  overlayStyles.tier3,
+  overlayStyles.tier4,
+  overlayStyles.tier5,
+  overlayStyles.tier6,
+];
+
+/** 043c: ティア非対象の課金種別（種別ごとの単色）。displayEventType の戻り値で引く。superchat は金額欠落時の保険で tier0。 */
+const OVERLAY_TYPE_CLASS: Record<string, string> = {
+  superchat: overlayStyles.tier0,
+  bits: overlayStyles.tipBits,
+  subscription: overlayStyles.tipSubscription,
+  membership: overlayStyles.tipMembership,
+  gift: overlayStyles.tipGift,
+  donation: overlayStyles.tipDonation,
+  jewels: overlayStyles.tipJewels,
 };
 
 /** 036a: overlay アイコンの画像なしフォールバック（名前の頭文字）。features/tools の toIconLetter は
@@ -183,10 +206,68 @@ export function CommentList({
     const avatarDataUri = c.author.avatar?.startsWith("data:")
       ? c.author.avatar
       : undefined;
+    // 036a のガードを両分岐（chat 吹き出し／043c 投げ銭カード）で共有する 1 枚のアイコン要素。
+    const icon = (
+      <div
+        className={overlayStyles.icon}
+        style={
+          avatarDataUri
+            ? { backgroundImage: `url("${avatarDataUri}")` }
+            : undefined
+        }
+        aria-hidden="true"
+      >
+        {!avatarDataUri && (
+          <span className={overlayStyles.iconFallback}>
+            {authorInitial(c.author.name)}
+          </span>
+        )}
+      </div>
+    );
+
+    // 043c: chat は従来の LINE 風吹き出しのまま。chat 以外（投げ銭）は下の YouTube スパチャ風カードで描く。
+    const dtype = displayEventType(c);
+    if (dtype === "chat") {
+      return (
+        <li key={c.id} className={overlayStyles.item}>
+          <div className={overlayStyles.header}>
+            <span className={overlayStyles.name}>{c.author.name}</span>
+            {showSource && (
+              <span
+                className={`${overlayStyles.source} ${OVERLAY_SOURCE_CLASS[c.source]}`}
+              >
+                {SOURCE_LABEL[c.source]}
+              </span>
+            )}
+          </div>
+          <div className={overlayStyles.row}>
+            {icon}
+            <div className={overlayStyles.bubble}>
+              <p className={overlayStyles.text}>{c.text}</p>
+            </div>
+          </div>
+        </li>
+      );
+    }
+
+    // 043c: 投げ銭カード。superchat（実通貨）は金額ティアで色分け、それ以外の課金種別は種別ごとの単色。
+    //   金額換算はせず superchatTier が通貨コードで閾値表を引くだけ（038 のスコープ外）。金額欠落の superchat は tier0 の保険。
+    //   【レビュー対応・修正不要】donation/jewels は実金銭だが意図的に種別単色（ティアは YT 同様スパチャ専用）。
+    //   金額は amountBadge に verbatim 表示されるため見逃さない。再修正トリガー: これらもティア配色したくなったら分岐条件を拡げる。
+    const cardClass =
+      dtype === "superchat" && c.monetary
+        ? OVERLAY_TIER_CLASS[superchatTier(c.monetary.amount, c.monetary.currency)]
+        : (OVERLAY_TYPE_CLASS[dtype] ?? OVERLAY_TIER_CLASS[0]);
+    // 金額を持たない種別（サブスク/メンシプ/ギフト）は「〇〇さんが…しました」の要約をボディ主表示にする（本体 043b と同じ）。
+    const eventMessage = composeEventMessage(c);
     return (
-      <li key={c.id} className={overlayStyles.item}>
-        <div className={overlayStyles.header}>
-          <span className={overlayStyles.name}>{c.author.name}</span>
+      <li
+        key={c.id}
+        className={`${overlayStyles.item} ${overlayStyles.card} ${cardClass}`}
+      >
+        <div className={overlayStyles.cardHeader}>
+          {icon}
+          <span className={overlayStyles.cardName}>{c.author.name}</span>
           {showSource && (
             <span
               className={`${overlayStyles.source} ${OVERLAY_SOURCE_CLASS[c.source]}`}
@@ -194,27 +275,19 @@ export function CommentList({
               {SOURCE_LABEL[c.source]}
             </span>
           )}
+          {/* 金額はヘッダ右端の pill。監視済み monetaryAmount をそのまま表示（例 "1,000 JPY" / "100 bits"）。 */}
+          {c.monetaryAmount && (
+            <span className={overlayStyles.amountBadge}>{c.monetaryAmount}</span>
+          )}
         </div>
-        <div className={overlayStyles.row}>
-          <div
-            className={overlayStyles.icon}
-            style={
-              avatarDataUri
-                ? { backgroundImage: `url("${avatarDataUri}")` }
-                : undefined
-            }
-            aria-hidden="true"
-          >
-            {!avatarDataUri && (
-              <span className={overlayStyles.iconFallback}>
-                {authorInitial(c.author.name)}
-              </span>
+        {(eventMessage || c.text) && (
+          <div className={overlayStyles.cardBody}>
+            {eventMessage && (
+              <p className={overlayStyles.eventMessage}>{eventMessage}</p>
             )}
+            {c.text && <p className={overlayStyles.cardText}>{c.text}</p>}
           </div>
-          <div className={overlayStyles.bubble}>
-            <p className={overlayStyles.text}>{c.text}</p>
-          </div>
-        </div>
+        )}
       </li>
     );
   };
