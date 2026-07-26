@@ -5743,3 +5743,60 @@ YouTube のギフトメンシプ／Jewels は **API に存在するが gRPC prot
 - **検証**: desktop `typecheck` OK ／ `lint`（eslint）OK ／ `vitest` 80 passed（superchatTier 6 件＋043c overlay カードテスト 12 件含む）／ sidecar `typecheck` OK・
   `build:bundle` OK（禁止依存アサート通過）／ `gen:bindings` drift ゼロ（Rust 非変更＝再生成なし）。`git diff --stat`＝9 files・+696/-36（うち docs 2 件・dev-mock 1 件・テスト 2 件）。
   **実機表示はユーザー環境で確認予定**（各投げ銭種別が YT スパチャ風カード＋金額バッジ／スパチャは金額でティア色変化／chat は従来の吹き出し／窓透過が保たれ OBS 合成できる）。
+
+## 2026-07-26 (043d 保留継続＝解除条件 再判定：番号未確定で着手せず)
+
+043d（YouTube ギフトメンシプ／Jewels の取得）の着手前判定を行い、**解除条件 (a)(b) いずれも未充足**と確認したため、
+**proto にフィールド番号を書かず実装に着手しない**（保留継続）。gRPC の内部フィールド番号は非公開で、推測記入は
+無言のデータ欠落／別フィールド衝突による破損を招くため禁止（これが保留の理由）。
+
+- **(a) 上流 osareview proto：無い**。リポジトリに `.proto` 実ファイルは無く（node_modules 内の grpc/protobuf ライブラリ proto を除く）、
+  osareview 上流も submodule/vendor されていない。現存するのは `stream-list-proto.ts` に埋め込まれた**旧 `stream_list.proto` の逐語コピー文字列**のみで、
+  `MEMBERSHIP_GIFTING_EVENT`／`GIFT_MEMBERSHIP_RECEIVED_EVENT`／`GIFT_EVENT` と各 details・enum 整数番号を**含まない**（＝逐語コピー元が存在しない）。
+  現状の `LiveChatMessageSnippet.Type` 実在値＝TEXT=1／NEW_SPONSOR=7／…／SUPER_CHAT=15／SUPER_STICKER=16／MEMBER_MILESTONE=17／POLL=20（gift/jewels/membership-gifting 不在）。details も SuperChat/SuperSticker/MemberMilestone のみ。
+- **(b) 実配信キャプチャ：未実施**。生 gRPC のキャプチャ記録・データ・fixture は repo/docs のどこにも無い。参照先 036b の `profile_image_url=104` すら
+  `display_name=103` 隣接の reverse-engineered 暫定値で、実配信確認は「未確認（ユーザー環境・実機）」のまま完了記録が無い＝継承できる「実施済みキャプチャ手順」も無い。
+- **やらないこと（線引き）**: フィールド番号の推測記入（最重要・禁止）／proto・DTO・mapper・Rust・binding のコード変更／security-review 発行（実装に至らないため対象外）／
+  新規宛先・OAuth スコープ・依存の追加。※043a で表示語彙（wire/Rust/binding）・dev-mock・集計退行防止テストは追加済みで、043d に残るのは実データ配線（proto 拡張＋mapper）のみ。
+- **解除に必要なもの（次アクション）**: (a) osareview 最新 `stream_list.proto` を入手し 3 event の enum 整数＋details のフィールド番号があるか確認→あれば逐語コピー（まず低コストに試す）／
+  (b) gift/jewels が**実発火する実配信**で生 protobuf を1度キャプチャし `protoc --decode_raw` 等で「field 番号→wire type→値」を確定（036b と同進め方・実イベント発生が最大のハードル）。
+  確定後は番号の出典を明記して proto 拡張＋DTO＋mapper＋**受領側 N 件の二重計上回避方針**＋集計波及を変更計画として提示→「実装して」後に着手（新規受信面＝security-review 必須）。
+- **変更**: 本エントリ（docs/progress.md）と task-board.md の 043d 行への再判定補記のみ。**コード差分ゼロ**（proto/DTO/mapper/Rust/binding 非変更）。
+
+## 2026-07-26 (043d 解除条件(b)用: gRPC 生バイト キャプチャ足場＝dev 専用・env ゲート)
+
+解除条件(b)（実配信の生 gRPC キャプチャで gift/jewels のフィールド番号を確定）を実行するための **dev 専用足場**を実装した
+（本人指示「実装して・テストは厳密に／お金がかかるので取りこぼし不可」）。**proto/DTO/mapper は未変更**（番号確定はまだ・
+043d 本体は保留継続）。**収益化済みの協力者の公開配信**に投げ銭して生バイトを捕捉→番号を逆算するアプローチ（自チャンネル
+未収益化のため）。使い捨てブランチ `043d-grpc-capture-spike` で作業・番号確定後に本足場は撤去する前提。
+**実装コードは git stash に退避**（`git stash list` の「043d gRPC capture scaffold」・`git stash apply` で復元）。本エントリと下記対象ファイル一覧は退避した実装の記録。
+
+- **仕組み（2 能力・env ゲート `COMMENT_SIDECAR_CAPTURE=1`）**:
+  - **生バイト捕捉**: gRPC の `responseDeserialize`（proto-loader）を **loadSync ラップで差し替え**、復号**前**の生バイトを
+    0700 一時ファイル（`streamdock-yt-capture-*/frames.b64`・base64 1 frame/line・**appendFileSync 同期**＝kill でも直前
+    フレーム残存）へ書く。protobuf デコーダは**未知フィールドを黙って捨てる**（`$unknownFields` 無し）ため、復号前の生
+    バイトが唯一の捕捉点。`createClient` の gRPC チャネルガードは wrap で**温存**（loadSync のみ差替え）。
+  - **他人の公開配信を対象化**: `COMMENT_SIDECAR_CAPTURE_VIDEO_ID=<動画ID>` 指定時、`live-stream.client.ts` が既存
+    `findLiveDetails`（`videos.list?id=`）で公開配信の `activeLiveChatId` を解決して読む。未指定は現行 `findActiveOwnBroadcast`
+    と**完全同一**。他人の**公開**チャット読取は `youtube.readonly` の範囲・宛先は `www.googleapis.com` のまま。
+- **対象ファイル**: 新規 `src/youtube-capture.ts`（env ゲート＋dump＋runtime ラップ・副作用ゼロ・dev-mock と同契約）／
+  `src/comment-fetcher/register-youtube-deps.ts`（capture ON 時のみ wrap 注入・OFF は素の guarded runtime）／
+  `src/index.ts`（稼働バナー）／`vendor/.../youtube/client/live-stream.client.ts`（env ゲートの videoId seam）。
+  dev スクリプト（**バンドル非同梱**）: `scripts/protobuf-raw.mjs`（protoc 非依存の生ワイヤデコーダ）／
+  `scripts/decode-capture.mjs`（frames.b64→field 番号ツリー・既知番号の参照ヘッダ付き）／`scripts/test-capture.mjs`（厳密テスト）／
+  `scripts/dist-alias-loader.mjs`（テストの @comment-dock alias 解決）。
+- **セキュリティ（枠を広げない）**: **新規宛先/OAuth スコープ/依存ゼロ**（`host-guard.ts`/`youtube-config.ts`/`package.json`
+  差分ゼロ・build:bundle 禁止依存アサート通過＝keyring/hono/dotenv 無し）。§9: 生バイト（本文/投稿者名含み得る）は 0700 一時
+  ファイルのみ・非永続・端末外へ出さない・通常ログ/DB 非保存（stderr 診断は dir パス/byte 数/フレーム数のみ）。既定 OFF で
+  本番挙動は byte 同一。**Rust/wire/binding/capability 非変更**。※新規受信面ではあるが proto 未拡張（番号未記入）＝本足場での
+  security-review は不要と判断（実配線＝043d 本体着手時に実施）。
+- **厳密テスト（`node scripts/test-capture.mjs`・45 件 PASS）**: 実 @grpc/proto-loader 経由で ①タップが実発火し生バイトが
+  **入力とバイト完全一致**（未知フィールド含む・空/バイナリ/UTF-8・同期書込＝直前フレーム残存・書込失敗は throw せず計数）
+  ②タップは復号出力を変えない（passthrough）③**通常復号は未知フィールドを消す**（＝生キャプチャが必須の証明）
+  ④生ワイヤデコーダが未知フィールドを暴き、かつ既知番号（100602/1007/101/2/1=15/16/27/…）を**ground truth 一致**で報告
+  ⑤チャネルガード温存（参照一致）＋タップ 0 件は throw（サイレント無取得の防止）⑥videoId seam のルーティング（指定→
+  videos.list／未指定→liveBroadcasts＝本番不変）。host-guard 回帰・typecheck・build:bundle も通過。
+- **未了（ユーザー環境）**: 実配信キャプチャ本番＝収益化済み協力者の公開配信で `COMMENT_SIDECAR_CAPTURE=1
+  COMMENT_SIDECAR_CAPTURE_VIDEO_ID=<動画ID>` で起動→ギフトメンシプ/Jewels を実送信→`frames.b64` を
+  `decode-capture.mjs` で読み、未知の type 整数／details field 番号を確定。番号確定後に 043d 本体（proto/DTO/mapper＋
+  二重計上方針）を変更計画→実装（**その時点で security-review 必須**）。本足場は番号確定後に撤去。

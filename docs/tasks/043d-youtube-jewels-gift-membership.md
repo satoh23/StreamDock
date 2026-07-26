@@ -1,6 +1,10 @@
 # 043d YouTube ギフトメンシプ／Jewels の取得（受信面拡張）
 
-> 状態: **未着手・保留（技術ブロッカーあり）**。分割・線引きは親 [043](043-monetary-emphasis.md) を正とする。
+> 状態: **保留（2026-07-26）**。解除条件(b)用の**生 gRPC キャプチャ足場は実装済み（dev 専用・env ゲート・未マージ・
+> ブランチ `043d-grpc-capture-spike`）**だが、**実配信キャプチャ本番が未実施＝フィールド番号 未確定**のため proto/DTO/mapper は
+> 未着手。**中断理由**: キャプチャ対象に予定していた協力配信者が **Jewels を終了**したため、投げ銭キャプチャで番号確定を進められなくなった
+> （下記「## 保留の経緯（2026-07-26）」「## 実装済み足場（2026-07-26・解除条件(b)用・dev 専用・未マージ）」を参照）。
+> proto 拡張＝新規受信面のため、実配線に着手する際は **security-review 必須**。分割・線引きは親 [043](043-monetary-emphasis.md) を正とする。
 > 起票理由: [043a](043a-monetary-ingestion-fidelity.md) の網羅調査（2026-07-26）で、YouTube のギフトメンシプ／Jewels が
 > **API には存在するが現状の proto/DTO では受信していない**ことが判明した。043a は「受信済みフィールドの分類のみ」のため対象外とし、
 > **受信面の拡張（proto 拡張＝新規に解釈するデータ面）を伴う本タスクへ分離**する。
@@ -77,3 +81,63 @@ pnpm --filter ./apps/desktop typecheck && pnpm --filter ./apps/desktop lint
 cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml
 # 実配信で gift/jewel が種別区別されて届くこと・lsof -i で外部 ESTABLISHED が sidecar PID 下・既存 allow-list のみ
 ```
+
+## 保留の経緯（2026-07-26）
+
+- 解除条件(a)（osareview 上流 proto に gift/jewel メッセージ＋番号）は **無い**ことを確認済み（repo に `.proto` 実ファイル無し・
+  逐語コピー元が存在しない）。よって残る道は **(b) 実配信の生 gRPC キャプチャで番号を確定**のみ。
+- (b) の進め方として「**収益化済みの協力配信者の公開配信に投げ銭し、その生バイトを取得して番号を逆算**する」方針を採った
+  （自チャンネルが未収益化で gift/jewels を発火させられないため）。この経路を実現する **dev 専用キャプチャ足場を実装済み**（下記）。
+- **中断理由**: 予定していた協力配信者が **Jewels を終了**したため、Jewels の実配信キャプチャができなくなった。gift membership も
+  同様に「メンバーシップ有効な協力配信者へのギフト購入」が要り、現時点で対象が確保できていない。**番号を確定できないため保留**。
+- **再開の解除条件（いずれか）**:
+  1. **Jewels 有効な縦型（モバイル）ライブを出せる協力配信者**を確保 → そこへ Jewels を送ってキャプチャ（giftEvent の番号確定）。
+  2. **メンバーシップ有効な協力配信者**を確保 → そこへギフトメンバーシップを購入してキャプチャ（membershipGifting/giftMembershipReceived の番号確定）。
+  3. **自チャンネルが収益化（メンバーシップ／Jewels 有効）**され、自配信で発火させてキャプチャできる状態になる。
+  4. osareview 上流 proto が更新され、該当メッセージ＋番号が入手できる（＝解除条件(a) が満たされる）。
+  - gift と Jewels は**別々に確定してよい**（片方だけ番号が取れたら、その分だけ先行して 043d 本体を進めることも可）。
+
+## 実装済み足場（2026-07-26・解除条件(b)用の生 gRPC キャプチャ・dev 専用・未マージ）
+
+> 実配線（proto/DTO/mapper）ではなく、**番号を実測するための dev 専用ツール**。番号確定後に本足場は撤去する前提。
+> **実装コードは git stash に退避**（`git stash list` の「043d gRPC capture scaffold」エントリ・ブランチ
+> `043d-grpc-capture-spike` 上で作成・**未マージ・未コミット**）。復元は `git stash apply`（下記「再開手順」）。詳細記録は
+> [`docs/progress.md`](../progress.md) の「2026-07-26 (043d 解除条件(b)用: gRPC 生バイト キャプチャ足場…)」節。
+
+**なぜ足場が要るか**: gift/jewels の gRPC 内部フィールド番号は非公開で、protobuf デコーダは**未知フィールドを黙って捨てる**
+（`$unknownFields` 無し）。よって復号**前**の生バイトを保存し、後段で `protoc --decode_raw` 相当にかけて field 番号を読むしかない。
+
+**2 つの能力（どちらも env ゲート `COMMENT_SIDECAR_CAPTURE=1`・既定 OFF＝本番は byte 同一）**:
+1. **生バイト捕捉**: gRPC の `responseDeserialize`（proto-loader）を **`loadSync` ラップで差し替え**、復号前の生バイトを
+   0700 一時ファイル `streamdock-yt-capture-*/frames.b64`（base64・1 frame/line・**`appendFileSync` 同期＝kill でも直前
+   フレーム残存**）へ書く。`createClient` の **gRPC チャネルガードは温存**（loadSync のみ差替え）。
+2. **他人の公開配信を対象化**: `COMMENT_SIDECAR_CAPTURE_VIDEO_ID=<動画ID>` 指定時、`live-stream.client.ts` が既存
+   `findLiveDetails`（`videos.list?id=`）で公開配信の `activeLiveChatId` を解決して読む。未指定は現行 `findActiveOwnBroadcast`
+   と**完全同一**。他人の**公開**チャット読取は `youtube.readonly` の範囲・宛先は `www.googleapis.com` のまま。
+
+**対象ファイル**:
+- 新規 `apps/comment-sidecar/src/youtube-capture.ts`（env ゲート＋dump＋runtime ラップ・副作用ゼロ・dev-mock と同契約）。
+- 変更 `apps/comment-sidecar/src/comment-fetcher/register-youtube-deps.ts`（capture ON 時のみ wrap 注入・OFF は素の guarded runtime）。
+- 変更 `apps/comment-sidecar/src/index.ts`（稼働バナー）。
+- 変更 `apps/comment-sidecar/vendor/comment-fetcher/src/adapters/youtube/client/live-stream.client.ts`（env ゲートの videoId seam）。
+- dev スクリプト（**バンドル非同梱**）: `scripts/protobuf-raw.mjs`（protoc 非依存の生ワイヤデコーダ）／`scripts/decode-capture.mjs`
+  （frames.b64→field 番号ツリー・既知番号の参照ヘッダ付き）／`scripts/test-capture.mjs`（厳密テスト 45 件）／`scripts/dist-alias-loader.mjs`（テスト用）。
+
+**セキュリティ（枠を広げない）**: **新規宛先/OAuth スコープ/依存ゼロ**（`host-guard.ts`/`youtube-config.ts`/`package.json`/Rust/binding/
+capability すべて差分なし・build:bundle 禁止依存アサート通過）。§9: 生バイト（本文/投稿者名含み得る）は 0700 一時ファイルのみ・
+非永続・端末外へ出さない・通常ログ/DB 非保存。※proto は未拡張（番号未記入）＝本足場での security-review は不要と判断（実配線＝
+043d 本体着手時に実施）。
+
+**テスト**: `node scripts/test-capture.mjs`（45 件 PASS）＝実 @grpc/proto-loader 経由で「タップ実発火・生バイト完全一致（未知フィールド
+込み）・同期書込・復号は未知フィールドを消す・生デコーダが未知/既知番号を ground truth 一致で報告・ガード温存・タップ0件は throw・
+videoId seam のルーティング（本番不変）」を検証。host-guard 回帰・typecheck・build:bundle も通過。
+
+**再開手順（新しいキャプチャ機会が得られたら）**:
+1. 実装を復元: `git stash list` で「043d gRPC capture scaffold」を確認 → `git stash apply <該当>`（ブランチ `043d-grpc-capture-spike` 上で退避）。
+2. sidecar を再ビルド（capture コードは SEA に焼き込む）: `TWITCH_CLIENT_ID=… YOUTUBE_CLIENT_ID=… YOUTUBE_CLIENT_SECRET=… pnpm --filter @stream-dock/comment-sidecar build:sea`。
+3. `COMMENT_SIDECAR_CAPTURE=1 COMMENT_SIDECAR_CAPTURE_VIDEO_ID=<協力者の公開動画ID> pnpm --filter ./apps/desktop tauri dev` で起動しアプリで YouTube 接続。
+4. **デリスク**: まず**通常チャット**が `frames.b64` に溜まるか確認（読めれば gift/jewels も同経路で来る見込み）。溜まらなければ投げ銭前に中止。
+5. gift membership／Jewels を実送信（各 1 件・最小額）→ `node apps/comment-sidecar/scripts/decode-capture.mjs <frames.b64>` で
+   既知番号に無い `type` 整数／`details` message 番号を確定。
+6. 確定番号を出典明記で proto に記入＋DTO＋mapper（**受領側 N 件の二重計上回避方針**を決める）を**変更計画**として提示 →「実装して」で本実装
+   （**新規受信面＝security-review 必須**）→ 本足場は撤去。

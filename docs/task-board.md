@@ -81,6 +81,8 @@
     （本人指示で **YouTube スパチャ風カード**に具体化＝色付きヘッダ帯＋淡色ボディ／スパチャは金額ティア段階配色・他課金種別は種別単色／金額バッジ／窓透過維持・036a data URI ガード維持／**軽 security-review 通過**）
   - 043d YouTube ギフトメンシプ／Jewels の取得（[docs/tasks/043d-youtube-jewels-gift-membership.md](tasks/043d-youtube-jewels-gift-membership.md)／
     **API に存在するが gRPC proto のフィールド番号が非公開で保留**＝osareview proto or 実配信キャプチャで番号確定後に着手・受信面拡張＝**security-review 必須**）
+    - **2026-07-26 再判定**: 解除条件 (a) 上流 osareview proto／(b) 実配信キャプチャ **いずれも未充足**（repo に .proto 実ファイル/キャプチャ無し）→ proto 未記入で**保留継続**。解除には osareview 最新 proto の該当メッセージ確認 or 実発火配信での生 gRPC キャプチャが必要（詳細 progress.md 2026-07-26 043d 節）。
+    - **2026-07-26 保留**: 解除条件(b)用の**生 gRPC キャプチャ足場は実装済み（dev 専用・env ゲート・厳密テスト 45 件 PASS・新規宛先/スコープ/依存ゼロ）だが未マージで git stash に退避**（`git stash list` の「043d gRPC capture scaffold」・ブランチ `043d-grpc-capture-spike` 上で作成・`git stash apply` で復元）。ただし**キャプチャ対象に予定した協力配信者が Jewels を終了**したため実配信キャプチャ本番が実施できず**フィールド番号 未確定**＝proto/DTO/mapper 未着手のまま**保留**。再開＝Jewels/メンバーシップ有効な協力配信者の確保 or 自チャンネル収益化 or 上流 proto 入手（詳細は tasks/043d の「保留の経緯」「実装済み足場」節）。
 
 ## 保留
 
