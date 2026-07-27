@@ -21,12 +21,11 @@ const YOUTUBE_MESSAGE_TYPE_TO_COMMENT_EVENT_TYPE = {
   // 043d: メンバーシップギフトの**贈与側**（購入者本人 1 件）。Twitch の sub_gift と同じ gift 種別へ写す。
   MEMBERSHIP_GIFTING_EVENT: COMMENT_EVENT_TYPES.GIFT,
   // 043d: 縦型ライブの Jewels ギフト。金額は micros ではなく個数で届く（mapJewelsAmount 参照）。
-  //   ⚠ 既知の未解決課題: GIFT_EVENT は**同一 message id が combo_count 更新で再送される**ため、
-  //     Rust 側の `INSERT OR IGNORE`（と frontend mergeComments の id 重複排除）と組み合わさると
-  //     連続ギフトの金額が最初の 1 回ぶんのままになる。詳細は stream-list-proto.ts の
-  //     LiveChatMessage.id のコメントを正とする。**043e として起票済み**
-  //     （docs/tasks/043e-youtube-jewels-combo-fidelity.md）で、本行の周辺は 043e の (1) で
-  //     comboCount を通すよう変更予定。
+  //   043e: GIFT_EVENT は**同一 message id が combo_count 更新で再送される**（公式 proto の
+  //     LiveChatMessage.id に明記）。本 mapper は再送されたメッセージも**同じ id のコメント 1 件として
+  //     そのまま写す**（重複排除やマージはしない＝ここは「届いた事実」を写す層）。同一 id をどう扱うかは
+  //     表示・記録の単一注入点である frontend の mergeComments（updated バケット）と Rust の
+  //     record_comment（event_type='jewels' 限定の UPDATE）が担う。
   GIFT_EVENT: COMMENT_EVENT_TYPES.JEWELS,
   //
   // 043d(決定1): GIFT_MEMBERSHIP_RECEIVED_EVENT は**意図的にこのマップへ載せない**。
@@ -91,6 +90,8 @@ export function mapYouTubeLiveChatMessagesToComments(
         giftCount: mapGiftCount(
           message.snippet.membership_gifting_details?.gift_memberships_count,
         ),
+        // 043e: Jewels の combo 回数（表示用の観測値・金額計算には使わない）。0 以下は undefined へ落とす。
+        comboCount: mapComboCount(message.snippet.gift_details?.combo_count),
       };
 
       return comment;
@@ -129,6 +130,15 @@ function mapMonetaryAmount(
  * ギフトは必ずジュエルを消費するので 0 は「0 円のギフト」ではなく「値が来ていない」と解釈する。
  * 金額のみ落とし eventType=jewels は維持する（種別ラベルは出て金額バッジだけ出ない、に無害化）。
  * 再修正トリガー: 0 ジュエルのギフトが実在すると公式に確認できたら、この劣化をやめて 0 を通す。
+ *
+ * 043e(フェーズ1・意図的に乗算しない): combo（連続ギフト）でも **最新の jewels_amount をそのまま採る**。
+ * `jewels_amount` が「1 回ぶんの単価」か「combo 累計」かは公式に明記が無く実データ検証もできないため、
+ * 推測で換算を入れない（043d の「推測ゼロ」原則）。累計読みならこれで完全に正しく、単価読みでも従来と
+ * 同値になるだけで**過大計上には絶対にならない**（安全側）。
+ * 【フェーズ2 の再修正トリガー】同一 id の連続到着で `jewels_amount` が**変化しない**（＝単価）と実データで
+ * 確認できたら、この return を `{ currency: "JEWELS", amount: amount * Math.max(comboCount ?? 0, 1) }` 相当へ
+ * 変える（`combo_count = 0`＝単発で 0 倍にならないよう `max(..., 1)` は必須）。金額が変わるため
+ * **再度 security-review** を通すこと（docs/tasks/043e-youtube-jewels-combo-fidelity.md のフェーズ2 節）。
  */
 function mapJewelsAmount(
   detail?: YouTubeGiftDetailsDto,
@@ -148,6 +158,24 @@ function mapJewelsAmount(
  * Twitch mapper の `?? 1`（単発 sub_gift を 1 件と見なす）とは意図的に異なる扱い。
  */
 function mapGiftCount(count?: number): number | undefined {
+  return count != null && Number.isFinite(count) && count > 0
+    ? count
+    : undefined;
+}
+
+/**
+ * 043e: Jewels の combo 回数。公式は「The combo count of the gift; **0 if not a combo**」なので、
+ * 単発ギフトは 0 で届く（`defaults: true` で未設定も 0）。`mapGiftCount` と同じく **0 以下は undefined へ落とす**
+ * ＝表示側が「×0」という無意味な文言を作らない（combo でない普通のギフトには何も付かない）。
+ *
+ * **この値は金額計算に使わない**（フェーズ1）。単価か累計かを実機で判別するための観測値として表示まで通すだけ。
+ *
+ * 【レビュー指摘 Q-10・mapGiftCount と実装が同一だが共通化しないこと】①意味論が違う（ギフト件数 vs combo 回数）
+ * うえ、0 を落とす根拠が別々の一次情報（`gift_memberships_count` の仕様 /「0 if not a combo」）で、共通ヘルパに
+ * すると各々の根拠コメントが失われる。②フェーズ2 で本関数だけが `max(combo_count, 1)` の起点になり**確実に分岐する**。
+ * 再修正トリガー: フェーズ2 を「対応不要」で閉じ、かつ 3 つ目の同型マッパが増えたら共通ヘルパ化を検討する。
+ */
+function mapComboCount(count?: number): number | undefined {
   return count != null && Number.isFinite(count) && count > 0
     ? count
     : undefined;

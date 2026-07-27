@@ -25,5 +25,7 @@ export const convertCommentToViewDto = async (
     monthCount: comment.monthCount,
     giftCount: comment.giftCount,
     tier: comment.tier,
+    // 043e: Jewels の combo 回数（表示用の観測値・金額計算には使わない）。
+    comboCount: comment.comboCount,
   };
 };

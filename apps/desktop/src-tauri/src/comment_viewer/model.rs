@@ -113,6 +113,16 @@ pub struct CommentViewDto {
     /// 043a: サブスク階級（1/2/3・該当時のみ）。非保存。受贈者名は §9 配慮で持たない。
     #[ts(optional)]
     pub tier: Option<u32>,
+    /// 043e: Jewels の combo（連続ギフト）回数（jewels 時のみ・単発は None）。**非保存**（月数/件数と同じ扱い）。
+    /// 表示（コメント行の「×N」）だけに使い、**金額計算には使わない**（フェーズ1）。整数のみで個人情報を含まない。
+    // 【レビュー指摘 S-5・既存設計どおりで修正不要】`Option<u32>` なので範囲外値/float/文字列が来ると
+    //   `record_comment` **全体**のデシリアライズが失敗し、fire-and-forget で握り潰される（month_count /
+    //   gift_count / tier と同じ設計）。不正データが端末に残らない fail-closed 方向なので安全側だが、combo 更新で
+    //   これが起きると「画面は新金額・DB は旧金額」という表示と保存の乖離になる。フェーズ1 の金額は乗算しない
+    //   安全側なので実害は小さい。※ 非 doc コメント（//）にしてあるのは ts-rs binding へ流さないため。
+    //   再修正トリガー: この乖離が実際に観測されたら、フィールド単位で None へ劣化させる（deserialize_with）を検討。
+    #[ts(optional)]
+    pub combo_count: Option<u32>,
 }
 
 /// 038a: 投げ銭の数値内訳（回数/合計額の正確な集計用）。

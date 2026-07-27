@@ -362,6 +362,16 @@
   padding: 1px 6px;
 }
 
+/* 043e: Jewels の combo 回数（「×3」）。金額バッジ（.amount）の直後に添える観測用の小さな表示で、
+   バッジではないため枠・背景は付けず muted で控えめにする。金額が無い（jewels_amount 未設定）ときは
+   .amount の margin-left:auto が効かないぶん名前の直後に並ぶが、観測用途では実害がないため許容する。 */
+.combo {
+  margin-left: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
 .text {
   font-size: 13px;
   line-height: 1.5;

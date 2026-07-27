@@ -184,6 +184,13 @@ export function CommentList({
           {c.monetaryAmount && (
             <span className={styles.amount}>{c.monetaryAmount}</span>
           )}
+          {/* 043e: Jewels の combo（連続ギフト）回数。金額バッジの隣に「×3」として出す。
+              目的は装飾ではなく**観測**で、フェーズ2（jewels_amount が単価か累計かの判別）を実機で行うために
+              combo 値と金額の変化を同時に目視できるようにする。単発は mapper が undefined へ落とすので出ない。
+              オーバーレイ（renderOverlayItem）には**出さない**＝配信画面に出す情報を増やさない。 */}
+          {c.comboCount != null && (
+            <span className={styles.combo}>×{c.comboCount}</span>
+          )}
         </div>
         {/* 043b: 金額を持たない課金イベントは組み立て文言を主表示。視聴者が自由コメントを添えていれば下段に本文を続ける。 */}
         {/* 【レビュー対応・修正不要】上の種別ラベルバッジ（.badgeEvent）と本文言が併存し軽い重複に見えるが、バッジ＝色付き分類・

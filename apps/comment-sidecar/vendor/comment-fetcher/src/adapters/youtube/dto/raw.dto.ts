@@ -156,10 +156,17 @@ export type YouTubeMembershipGiftingDetailsDto = {
 
 /**
  * 043d: Jewels ギフト詳細。
- * 受信するのはジュエル数（数値）だけ。gift_name/gift_url/alt_text/combo_count 等のギフト資産情報は
+ * 受信するのはジュエル数（数値）だけ。gift_name/gift_url/alt_text 等のギフト資産情報は
  * 採用しない（gift_url は画像取得＝CSP・§9 の新たな論点を生むため）。
+ *
+ * 043e: combo（連続ギフト）の回数 `combo_count` を追加した（整数のみ・個人情報なし）。
  */
 export type YouTubeGiftDetailsDto = {
   /** ジュエル数（仮想通貨・micros ではなく個数がそのまま届く） */
   jewels_amount?: number;
+  /**
+   * 043e: combo 回数。公式は「The combo count of the gift; 0 if not a combo」＝**単発は 0**。
+   * mapper で 0 以下は undefined へ落とす（mapGiftCount と同じ方針＝「combo 0 回」という文言を作らない）。
+   */
+  combo_count?: number;
 };

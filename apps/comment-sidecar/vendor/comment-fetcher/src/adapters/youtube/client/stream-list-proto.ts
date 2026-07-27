@@ -57,18 +57,17 @@ message LiveChatMessageListResponse {
 message LiveChatMessage {
   optional string kind = 200;
   optional string etag = 201;
-  // ⚠【既知の未解決課題・043d レビュー指摘(2026-07-27)】公式ガイドの proto は本フィールドに
+  // 【043e で対応済み(2026-07-27)】公式ガイドの proto は本フィールドに
   //   「Note: For giftEvents, the same ID may be reused to update the combo count.」と明記している。
   //   つまり **GIFT_EVENT（Jewels）だけは同一 id が combo_count 更新のために再送される**。
-  //   現状の帰結: Rust 側 viewer_memory/repository.rs の INSERT OR IGNORE INTO viewer_comments (id, ...)
-  //   により 2 件目以降が無言で捨てられ、**連続ギフトの Jewels が 1 回ぶんしか記録されない（過少計上）**。
-  //   併せて CommentList.tsx の key={c.id} が重複しうる。
-  //   今 直さない理由: 正しい合計の意味論（jewels_amount x combo_count か／最終 combo_count が合計か）は
-  //   公式に明記が無く、実データ検証もできていない。推測で換算を入れるのは 043d の「推測ゼロ」原則に反する。
-  //   また恒久対応は「id 更新型イベント」の受け口が要り、043d の要件（wire/Rust 変更ゼロ）を超える。
-  //   対応: **043e として起票済み**（docs/tasks/043e-youtube-jewels-combo-fidelity.md）。フェーズ1 で combo 更新を
-  //   Rust まで到達させ event_type='jewels' 限定で amount を差し替える（換算は最新値をそのまま採り乗算しない）。
-  //   本ファイルは 043e の (1) で combo_count = 8 を宣言する予定。着手時にこのコメントを更新すること。
+  //   043d 時点の帰結（過少計上）: 3 層すべて（frontend mergeComments の id 重複排除／ttsQueue の seenIds／
+  //   Rust の INSERT OR IGNORE INTO viewer_comments）が 2 件目以降を捨てるため、combo 更新が Rust に到達せず
+  //   **連続ギフトの Jewels が 1 回ぶんしか記録されなかった**。
+  //   043e フェーズ1 の対応: LiveChatGiftDetails.combo_count = 8 を宣言（下記）し、mergeComments の updated
+  //   バケット経由で Rust まで到達させ、event_type='jewels' 限定で既存行の amount を差し替える。
+  //   **換算は最新の jewels_amount をそのまま採り乗算しない**（意味論が公式に無いため＝推測ゼロ原則）。
+  //   残り（フェーズ2）: 実データで jewels_amount が「単価」と確定したら mapJewelsAmount に
+  //   × max(combo_count, 1) を入れる（comment.mapper.ts のコメント参照）。
   optional string id = 101;
   optional LiveChatMessageSnippet snippet = 2;
   optional LiveChatMessageAuthorDetails author_details = 3;
@@ -164,12 +163,15 @@ message LiveChatMembershipGiftingDetails {
 
 message LiveChatGiftDetails {
   // 未採用（公式）: gift_name = 1 / gift_duration = 2(google.protobuf.Duration) / gift_url = 4 /
-  //   alt_text = 5 / language = 6 / has_visual_effect = 7 / combo_count = 8
+  //   alt_text = 5 / language = 6 / has_visual_effect = 7
   //   ※ gift_url は画像取得＝CSP・§9 の新たな論点を生むため意図的に除外する。
-  //   ※ combo_count = 8 は**単なる未採用ではなく既知の過少計上要因**。詳細と再修正トリガーは
-  //     LiveChatMessage.id のコメントを参照（同一 id 再送 × INSERT OR IGNORE の組み合わせ）。
   //   ※ gift_duration を採らないので google.protobuf.Duration の import は不要（SEA 下の proto 解決経路は
   //     単一ファイルのままで不変）。
   optional int32 jewels_amount = 3;
+  // 043e: combo（連続ギフト）の回数。公式の記述は「The combo count of the gift; 0 if not a combo」＝
+  //   **単発は 0** なので、合計を出すなら max(combo_count, 1) が要る（素の乗算は不可）。フェーズ1 では
+  //   金額計算に使わず、表示（コメント行の「×N」）まで通して**単価か累計かを実機で判別する観測手段**にする。
+  //   受信するのは整数のみで個人情報を含まない（§9 の新論点なし）。
+  optional int32 combo_count = 8;
 }
 `;

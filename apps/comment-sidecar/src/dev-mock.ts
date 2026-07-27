@@ -118,6 +118,24 @@ const JEWELS_VARIANTS = [
   { amount: 500, label: "500 jewels" },
 ];
 
+/**
+ * 043e: 直近に発行した Jewels（seq % 20 === 9）の id と投稿者。combo 更新（seq % 20 === 12）で
+ * **同じ id・同じ投稿者**を再送するために覚えておく。
+ *
+ * なぜ id を計算式で作らず覚えるのか: makeComment の id は `Date.now()` を含むため計算では再現できず、
+ * 固定 id にすると**セッションをまたいで同じ id が再利用され**（起動のたびに既存行の UPDATE 経路へ落ちて
+ * 「初見バッジが出ない」等の紛らわしい挙動になる）。1 件だけ保持するので無制限には増えない。
+ * combo 更新のみに使い、実データの意味論には一切影響しない（dev-mock は env ゲート内でのみ動く）。
+ * なおこれは**モジュールスコープの可変状態**であって top-level 副作用ではない（宣言だけで何も実行しない）ので、
+ * 本ファイル冒頭の「OFF 時に import されても実行経路へ影響しない」不変条件は保たれる。
+ *
+ * 043e（レビュー指摘 S-6）: 覚えた id も**セッションを跨ぐ**ため、上の「固定 id はセッション跨ぎで再利用される
+ * から覚える」という理由だけでは足りない。`clearProvider("youtube")`（stop / 再開始）で null に戻すことで
+ * セッション単位に閉じている。
+ */
+let lastMockJewels: { id: string; author: CanonicalComment["author"] } | null =
+  null;
+
 // 043c エッジケース確認用: 長文コメント（本文の折返し・カード/吹き出しの伸長・スクロールが崩れないか目視するため）。
 //   文字数は YouTube の赤スパ（最高額帯）本文上限 ≈290 字を目安にした長文。スパチャ用と通常チャット用の 2 種。
 const LONG_SUPERCHAT_TEXT =
@@ -140,11 +158,13 @@ function makeComment(source: Provider, seq: number): CanonicalComment {
     eventType: "chat",
   };
 
-  // 043a: 種別分離の目視用に投げ銭系イベントを周期で混ぜる（provider 実態に沿う・3/7/9/11/13/14/17 は %5≠0 で superchat と衝突しない）。
+  // 043a: 種別分離の目視用に投げ銭系イベントを周期で混ぜる（provider 実態に沿う・3/7/9/11/12/13/14/17 は %5≠0 で superchat と衝突しない）。
   //   membership・jewels … YouTube のみ／subscription・donation・power-up … Twitch のみ／
   //   gift … **両方**（Twitch=サブギフト seq%20===13／YouTube=メンバーシップギフト seq%20===14・呼び名が配信元で異なる）。
   //   superchat/bits（額つき）… seq % 5 === 0。付随数値（monthCount/giftCount/tier）・金額は受贈者名/団体名を含まない（§9）。
   //   ※jewels/gift(YouTube) の取得（ingestion）は 043d で実装済み。ここは表示/実機確認用の合成発行。
+  //   ※043e: jewels の combo 更新（seq%20===12）は **9 で出した jewels と同一 id の再送**で、単独では成立しない
+  //     （lastMockJewels が無ければ通常チャットへ落ちる）。
   if (seq % 20 === 7 && source === "youtube") {
     comment.eventType = "membership";
     // 043b: 種別要約は表示側が monthCount 等から組み立てるため、本文は視聴者の自由コメントのみ（無しは空）。
@@ -157,6 +177,33 @@ function makeComment(source: Provider, seq: number): CanonicalComment {
     comment.text = "投げ銭ジュエル 🎁";
     comment.monetaryAmount = v.label;
     comment.monetary = { amount: v.amount, currency: "JEWELS" };
+    // 043e: この 1 件を「combo の 1 回目」として覚え、seq % 20 === 12 で同じ id を再送する。
+    lastMockJewels = { id: comment.id, author: comment.author };
+  } else if (seq % 20 === 12 && source === "youtube" && lastMockJewels) {
+    // 043e: Jewels の combo 更新（**同一 id の再送**）。公式仕様どおり「別メッセージが N 件届く」のではなく
+    //   「同じ 1 件が更新される」形を合成し、3 層（mergeComments の updated → recordComments → Rust の
+    //   jewels 限定 UPDATE）の貫通を実機で目視できるようにする。期待される見え方:
+    //     ・コメント行は**増えない**（1 行のまま金額バッジが 30 → 90 jewels に変わり「×3」が付く）
+    //     ・読み上げは**1 回だけ**（combo 更新は added に載らないため）
+    //     ・視聴者詳細の過去コメントも金額が置き換わる（total_comments は増えない）
+    //   周期に 12 を選んだ理由: 既存の設計原則「%5 ≠ 0 で superchat 枠と衝突しない」に従いつつ、
+    //   9（jewels 本体）の直後に置いて対応関係を読みやすくした（1800ms 間隔で約 5 秒後に更新が届く）。
+    //
+    // ⚠【レビュー指摘 Q-3・フェーズ2 の判断を誤読しないこと】ここで金額を ×3 にしているのは
+    //   **`jewels_amount` が「累計」で届く世界を模した合成値**であって、実データがどちらかの根拠ではない。
+    //   フェーズ1 は乗算しないので、この合成では常に「30 → 90 に正しく更新される」ように見えるが、
+    //   実データが「単価」で届く世界なら同一 id の再送で金額は**変化しない**（＝×N だけが増える）のが正しい。
+    //   フェーズ2 の判別は**実データの観測のみ**で行い、本モックの見え方を根拠にしないこと。
+    //   （モックの役割は 3 層貫通〔行が増えない・読み上げ 1 回・記録が更新される〕の目視に限る。）
+    const v = JEWELS_VARIANTS[Math.floor(seq / 20) % JEWELS_VARIANTS.length];
+    comment.id = lastMockJewels.id; // ← ここが本質（同一 id の再送）
+    comment.author = lastMockJewels.author; // combo は同じ視聴者からの連続ギフト
+    comment.eventType = "jewels";
+    comment.text = "投げ銭ジュエル 🎁";
+    comment.monetaryAmount = `${v.amount * 3} jewels`;
+    comment.monetary = { amount: v.amount * 3, currency: "JEWELS" };
+    // combo_count はギフト回数（公式は「0 if not a combo」＝単発は 0）。合成では 3 連 combo とする。
+    comment.comboCount = 3;
   } else if (seq % 20 === 13 && source === "twitch") {
     comment.eventType = "gift";
     comment.text = ""; // 表示側が「〇〇さんがサブギフトを5件贈りました（Tier1）」を組み立てる。
@@ -239,6 +286,11 @@ export function createMockCommentSource(deps: MockDeps): MockCommentSource {
     if (t?.connect) clearTimeout(t.connect);
     if (t?.emit) clearInterval(t.emit);
     timers.delete(provider);
+    // 043e（レビュー指摘 S-6）: YouTube セッションを止めたら combo 再送用の id を忘れる。
+    //   viewer_comments は**永続**なので、覚えたまま stop → start すると seq % 20 === 12 が
+    //   「前セッションで保存された行」に対して UPDATE を撃ち、session_id は前のままで金額だけ変わる
+    //   （手動確認中に「なぜ前回のコメントの金額が変わった？」と誤読させる）。セッション単位で捨てる。
+    if (provider === "youtube") lastMockJewels = null;
   };
 
   const emitComment = (source: Provider): void => {

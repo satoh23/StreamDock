@@ -360,6 +360,11 @@ loopback WS で受信済みの値を Tauri コマンドで渡すだけ＝sidecar
 メモ・投げ銭履歴を出さない**（変更系コマンドの error ログは `ErrorCode` 由来の固定安全文言のみ・§9 の精神は維持）。
 入力（コメント本文・視聴者名・メモ・session_id）は Rust 側で trim/制御文字拒否を通す（§8）。詳細は下記
 「## コメントビューア（配信サービス連携）方針」⑪。**保存ポリシー変更のため security-review 必須**。
+**追補の追補（043e・2026-07-27）**: 上記は当初 append-only（挿入のみ）だったが、**043e で `event_type='jewels'` の行に
+限り既存行の上書きを解禁した**（更新するのは `amount` / `currency` / `monetary_amount` / `text` の 4 列のみ・列追加なし・
+`published_at`/`viewer_id`/`session_id`/`created_at` は不変）。**`viewer_comments` はもはや厳密な append-only ではない**
+ため、不変性を前提にする機能（エクスポート・監査・差分同期等）を作る場合はこの例外を必ず考慮すること。
+詳細と限定の根拠は⑪の 043e 節。
 
 ### 10. 依存関係を増やしすぎない
 
@@ -646,19 +651,53 @@ distill（vendor）したもので、keyring・`open`・hono/zod・dotenv・goog
       - **保存範囲**（レビュー指摘・2026-07-27 で表現を精密化）: **列・保存項目は不変だが、gift/jewels の「行」は新たに増える**
         （＝既存スキーマ上に新イベント種別の行が載るだけで、保存する項目の種類は増えない）。増える値は**数値属性のみ**
         （`gift_memberships_count` / `jewels_amount`）で個人情報を含まないため、§9 追補 038a の「保存範囲の変更」には当たらない。
-      - **⚠ 既知の未解決課題（過少計上・043e として起票済み／2026-07-27）**: 公式 proto は `LiveChatMessage.id` に
+      - **（過少計上の既知課題）→ 043e で対応済み（2026-07-27）**: 公式 proto は `LiveChatMessage.id` に
         「For giftEvents, the same ID may be reused to update the combo count」と明記しており、**`GIFT_EVENT`（Jewels）だけは
-        同一 id が combo 更新で再送される**。現行は `combo_count`（= 8）を採らず、Rust の `INSERT OR IGNORE`（`viewer_comments.id`）
-        が 2 件目以降を落とすため、**連続ギフトの Jewels が 1 回ぶんしか記録されない**。正しい合計の意味論が公式に明記されておらず
-        実データ検証もできないため、**推測での換算は入れない**（043d の「推測ゼロ」原則）。個人情報・外部通信への影響は無く
-        セキュリティ境界の問題ではないが、金額の正確性に関わるため記録する。
-        **対応**: `docs/tasks/043e-youtube-jewels-combo-fidelity.md`（フェーズ1＝combo 更新を Rust まで到達させ `event_type='jewels'`
-        限定で `amount` を差し替える／換算は最新値をそのまま採り**乗算しない**＝過大計上には絶対にならない安全側。
-        フェーズ2＝実データで `jewels_amount` が単価と確定したら `× max(combo_count, 1)` を入れて**再度 security-review**）。
-        043e は**受信面に `combo_count`（整数のみ・個人情報なし）を足し、`viewer_comments` の既存行 UPDATE を jewels 限定で解禁する**ため
-        着手時に security-review を通すこと。
+        同一 id が combo 更新で再送される**。043d 時点は `combo_count`（= 8）を採らず、Rust の `INSERT OR IGNORE`（`viewer_comments.id`）
+        が 2 件目以降を落としていたため、**連続ギフトの Jewels が 1 回ぶんしか記録されなかった**。下記 043e 節が対応。
       - **再検討トリガー**: 「誰が受け取ったか」を表示したい要望が出たら、受領側を**集計対象外の新種別**として起票し直し
         **再度 security-review** を通す（`membership` 流用は `subscription_count` が N+1 に膨らむため不可）。
+    - **（043e・Jewels combo 更新の取り込み＝受信面拡張＋保存挙動の変更＝方針⑪該当・security-review 済／2026-07-27）**
+      上記 043d の既知課題（combo による過少計上）に**対応済み**。frontend `mergeComments` に `updated` バケットを新設して
+      combo 更新を Rust まで到達させ、`viewer_comments` の**既存行を UPDATE** するようにした
+      （タスク: `docs/tasks/043e-youtube-jewels-combo-fidelity.md`）。
+      - **受信面の追加は `combo_count`（= 8・int32）のみ**。proto に 1 フィールド宣言を足しただけで、**新規宛先・新規 OAuth
+        スコープ・新規依存はゼロ**（既存 `youtube.readonly`・既存 gRPC ストリーム内・二層 fail-closed／gRPC チャネルガード
+        `www.googleapis.com:443` のみ・`csp: null`・capabilities・`part`/`profile_image_size` はすべて不変＝**追加リクエスト／
+        クォータ影響なし**。バンドル内の宛先一覧が 043d と同一であることを実測で再確認）。`combo_count` は**整数のみで
+        個人情報を含まない**（§9 の新論点なし）。表示は本体コメント行の「×N」のみで、**オーバーレイ（配信画面）には出さない**。
+      - **引き続き受信しないもの**: `gift_url` / `gift_name` / `alt_text` 等のギフト資産情報（`gift_url` は画像取得＝CSP・§9 の
+        新論点を生むため）、および受領側 `gift_membership_received_details`（= 32・043d 決定1 を維持＝受贈者情報はそもそも
+        デコードされない）。いずれも「非宣言であること」を sidecar テストのアサートで固定した。
+      - **保存範囲（§9 追補 038a に該当・本変更の核心）**: **`viewer_comments` の既存行を UPDATE する経路が初めて入る**。
+        - **列は増やさない**（スキーマ不変。`viewers` に JEWELS 用ロールアップ列も追加しない）。
+        - 更新するのは **`amount` / `currency` / `monetary_amount` / `text` の 4 列のみ**。**`published_at` / `viewer_id` /
+          `session_id` / `created_at` は書き換えない**（集計 first/last と 038c 判定の基準・行の所有者・記録セッションを動かさない）。
+          ＝**保存項目の追加ではなく既存項目の上書き**であり、保存する情報の種類は増えない。
+        - **対象は `event_type = 'jewels'` に限定**（引数の種別による早期 return と SQL の `WHERE ... AND event_type = 'jewels'` の
+          **二重**で縛る）。他種別の同一 id 再送は**現行どおり 0 行・集計非更新・`RecordResult{false,false}`**（既存の冪等契約は不変）。
+        - 再計算する視聴者は **保存済み行の `viewer_id` を DB から読む**（frontend 由来の引数を信用せず、コメントの付け替えを
+          構造的に防ぐ＝§8）。値はすべてパラメータバインドで、SQL に埋める識別子はコンパイル時定数のみ。
+        - 戻り値は常に `RecordResult{false,false}`＝**更新で初見／久しぶりバッジを再点灯させない**。TTS も再読み上げしない
+          （combo 更新は `added` に載らず `updated` 経由で記録のみ）。
+        - **脅威モデル上の位置づけ**: 未認証 loopback WS へ到達できるローカルの第三者は、既存 jewels 行の `amount`/`text` を
+          上書きできるようになる。ただし同じ相手は**以前から任意コメントを INSERT できた**ため特権昇格ではなく、上書きは
+          jewels 行に限られ**行の所有者は変えられない**。`text` は既存の trim／制御文字拒否（§8）を通る。
+          **独立レビュー指摘 S-3 の補足（2026-07-27）**: 追加された能力は「追記」ではなく「**既存レコードの改変**（完全性）」で
+          質が異なる。実害が限定される根拠は ①JEWELS は `bits_amount`（`currency='BITS'`）にも `superchat_amount`
+          （`event_type='superchat'`）にも入らない ②行の所有者を変えられない ③`text` は §8 の検証を通る、の 3 点。
+          **`viewer_comments` が厳密な append-only ではなくなった**ことは §9 追補（038a の追補）にも記載した。
+        - **限定の担保（独立レビュー指摘 S-1 で追加・2026-07-27）**: 上記「二重」の各層は、**片方だけを外しても検知できる**
+          テストで固定している（`stored_non_jewels_row_is_not_updated_by_incoming_jewels` ＝ SQL の `WHERE` 単独／
+          `stored_jewels_row_is_not_updated_by_incoming_non_jewels` ＝ 引数側チェック単独）。とくに前者は
+          **「既存 chat コメントの id ＋ `eventType: "jewels"`」というなりすまし種別の再送**を止める唯一の層であり、
+          この形が未認証 loopback WS からの現実的な攻撃形になる。定数と SQL リテラルの値ドリフトは
+          `combo_updatable_event_type_matches_sql_literal` で検知する。
+      - **金額の意味論は据え置き（フェーズ1）**: `jewels_amount × combo_count` の換算は**入れない**。最新値をそのまま採るため
+        **過大計上には絶対にならない**（累計読みなら完全に正しく、単価読みでも従来と同値）。実データで単価と確定したら
+        `× max(combo_count, 1)` を入れ、**金額が変わるため再度 security-review** を通す（フェーズ2・再開トリガーはタスクファイル）。
+      - **ログ非露出は不変**（追加経路にログ出力を入れない・本文／金額をログに出さない＝§9）。削除手段（`delete_viewer` /
+        `clear_viewers`）も新テーブル・新列が無いため取り残しゼロで有効なまま。
   - **プライバシー**: 第三者の氏名・発言・投げ銭履歴を端末に保存するため、**削除手段**を必須とする＝`delete_viewer`
     （個別・FK CASCADE で当該コメントも削除）／`clear_viewers`（全消去）。**アバター（data URI）は保存しない**
     （アイコンは overlay 意匠のみ・§9）。入力（コメント本文・視聴者名・メモ・session_id）は Rust 側で **trim/制御文字拒否**

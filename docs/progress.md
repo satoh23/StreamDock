@@ -5956,3 +5956,351 @@ YouTube のギフトメンシプ／Jewels は **API に存在するが gRPC prot
   jewels / gift が出ないことがある**（YouTube 単独接続で確認すること。`EMIT_INTERVAL_MS = 1800ms` なので
   単独なら約 36 秒に 1 回）。②dev-mock の Jewels は `"30 jewels"`（小文字）、実データは `"30 JEWELS"`（大文字）。
 - **検証**: `typecheck` ／ `pnpm --filter @stream-dock/comment-sidecar test`（123 PASS）／ `build:bundle`＋宛先 grep。
+
+## 2026-07-27 (043e YouTube Jewels の combo 更新に対応＝同一 id 再送の取り込み・フェーズ1 実装)
+
+043d レビューで判明した「`GIFT_EVENT` の combo による Jewels 過少計上」を解消した
+（タスク: [`docs/tasks/043e-youtube-jewels-combo-fidelity.md`](tasks/043e-youtube-jewels-combo-fidelity.md)）。
+公式 proto の `LiveChatMessage.id` にあるとおり **Jewels だけは「別メッセージが N 件届く」のではなく
+「同じ 1 件が N 回更新される」**が、実装は 3 層すべて（frontend `mergeComments` の id 重複排除／`ttsQueue` の
+`seenIds`／Rust の `INSERT OR IGNORE`）で 2 件目以降を捨てており、**combo 更新は Rust に到達すらしていなかった**。
+
+### 3 層の変更点
+
+- **(1) sidecar 受信面**: `stream-list-proto.ts` の `LiveChatGiftDetails` に `optional int32 combo_count = 8;` を宣言
+  （番号は 043d で公式照合済み）。`raw.dto.ts` に `combo_count?: number`、`comment.mapper.ts` に `mapComboCount`
+  （**0 以下は undefined へ落とす**＝`mapGiftCount` と同方針。公式が「0 if not a combo」なので単発は 0 で届き、
+  そのまま通すと「×0」表示になる）。**`mapJewelsAmount` は 1 行も変えていない**（フェーズ2 の変更予定と再修正
+  トリガーをコメントで残しただけ）。
+- **(1b) 中継 3 ファイル（タスクファイル未記載・実装時に必要と判明）**: `comboCount` を wire まで通すには 043a の
+  `monthCount` と同じ経路＝`entities/comment/comment.ts`・`shared/comment-view.dto.ts`・`comment-to-view.converter.ts`
+  の 3 ファイルが要る。無いと**コンパイルは通るのに値だけ静かに消える**ため、計画段階で洗い出して追加した。
+- **(2) wire / Rust / binding**: `CanonicalComment.comboCount?: number` を素通し、Rust `CommentViewDto` に
+  `#[ts(optional)] pub combo_count: Option<u32>`（struct 単位の `rename_all = "camelCase"` に乗るだけ＝個別 rename 不要）、
+  ts-rs binding を再生成して `comboCount?: number` を確認。**端末保存しない**扱いは `monthCount`/`giftCount`/`tier` と同じ。
+- **(3) frontend `mergeComments`**: 戻り値を `{ next, added, updated }` へ拡張。`prev` の `Set(seen)` を
+  `Map(id → 位置)` に置き換え、同一 id は**表示行を増やさず該当要素を差し替える**。
+- **(3b) 表示**: 本体コメント行の金額バッジ隣に「×N」。**オーバーレイには出さない**（配信画面に出す情報を増やさない）。
+- **(4) Rust `record_comment`**: `inserted == 0` 分岐に `event_type = 'jewels'` 限定の UPDATE 経路を追加。
+- **(7) dev-mock**: `seq % 20 === 12`（YouTube）で **`seq % 20 === 9` と同一 id・同一投稿者**の combo 更新を合成発行。
+
+### `updated` バケットの設計（レビュー時の要点）
+
+`mergeComments` は**表示・TTS・保存の 3 系統がぶら下がる単一注入点**なので、3 バケットの役割を分離した。
+
+- `added` … **新規行だけ**。TTS enqueue の単一注入点＝ここに載る＝読み上げられる（意味は従来と不変）。
+- `updated` … **既存行の中身が変わったもの**。`recordComments` にのみ渡し、`enqueueForSpeech` には**渡さない**。
+- **`updated` は `eventType === "jewels"` 限定**（タスクファイルに種別条件の記載が無かったため計画時に合意）。
+  jewels 以外の同一 id は従来どおり完全スキップ＝表示も invoke も 0 で、**他種別の挙動は 3 層すべてで不変**。
+- **変化判定は「Rust が UPDATE する 4 列（`text`/`monetaryAmount`/`monetary.amount`/`monetary.currency`）＋
+  表示専用の `comboCount`」**。タスクファイルは「`monetary?.amount` と `comboCount` で足りる」としていたが、
+  Rust の更新対象に `text` が含まれるため**比較キー ⊇ 更新列**を不変条件とした（`text` だけ変わる combo を
+  取りこぼさない）。StrictMode の二重実行は同一 `prev` から同じ `updated` を 2 回出すので、比較キーを増やしても
+  UPDATE の回数は変わらない＝過剰比較のコストは実質ゼロ。
+- 同一バッチ内で同じ id が 2 回来た場合（sidecar は 1 件ずつ送るため実運用では起きない）は `added` の該当要素を
+  差し替えて `updated` に積まない＝**INSERT と UPDATE の順序競合を作らない**。
+- 呼び出し側は `recordComments(updated, sessionId)` を**独立行**にした（`[...added, ...updated]` に混ぜない）。
+  `added` にだけ `handleRecordResult` を渡す構造が残り、「added＝表示+TTS+記録／updated＝記録のみ」が読める。
+
+### Rust UPDATE の限定範囲
+
+- `UPDATE viewer_comments SET amount, currency, monetary_amount, text WHERE id = ?1 AND event_type = 'jewels'`。
+  **`published_at` / `viewer_id` / `session_id` / `created_at` は書き換えない**（集計 first/last と 038c 判定の基準、
+  行の所有者、記録セッションを動かさない）。**列は 1 つも増やしていない**（スキーマ不変）。
+- 限定は**二重**: 引数 `c.event_type != "jewels"` の早期 return ＋ SQL の `WHERE ... AND event_type = 'jewels'`。
+- 再計算対象の視聴者は **`SELECT viewer_id FROM viewer_comments WHERE id = ?1` で保存済み行から読む**。
+  引数の `viewer_id` を使うと「行は元の所有者のまま／集計だけ別視聴者を再計算」という付け替えが起きうるため
+  （UPDATE は `viewer_id` を書き換えない）。frontend 由来の値を信用しない（§8）。
+- 再計算 SQL は `RECOMPUTE_VIEWER_AGGREGATES_SQL` として定数化し、挿入経路（step3）と更新経路で共有した。
+  **SQL 本文は 043a から 1 文字も変えていない**（コメント本文も文言変更なしで const の doc へ移設）。
+- 戻り値は更新時も必ず `RecordResult{false,false}`＝**更新でバッジを再点灯させない**。
+
+### テストで固定した内容
+
+- **sidecar**（`test-youtube-mapper.mjs`: **51 → 65 アサート**）: `combo_count = 8` が公式番号と一致・型が int32・
+  `gift_url` は非宣言（CSP/§9）／combo で `comboCount` が通り **`monetaryAmount` は乗算されない**（フェーズ1 の仕様固定）／
+  `combo_count = 0`（明示）も未設定も `undefined` へ劣化／**同一 id の 2 通**が両方そのまま写る（mapper は間引かない）。
+- **frontend**（`mergeComments.test.ts` **新規 11 件**）: 新規は `added`・同一 id 同内容はどちらにも載らない・
+  金額/`comboCount`/`text` の変化で `updated` に載り**表示行は増えず**`added` は空（＝**TTS 非到達**）・
+  **superchat/chat の同一 id は完全スキップ**（限定の担保）・`MAX_COMMENTS` クランプは従来どおり効き
+  クランプで `next` から落ちた行の更新も `updated` には載る・同一バッチ内の同 id は `added` 1 件で `updated` 0 件。
+  `CommentList.test.tsx` に **+3 件**（`×N` が出る／`comboCount` 無しでは出ない／overlay には出さない）。
+- **Rust**（`repository.rs` **+5 件**）: 同一 id 再送で `amount`/`monetary_amount`/`text` が置き換わり
+  `total_comments` は 1 のまま・戻り値 `{false,false}`／`published_at` と `session_id` は不変／
+  **別 viewer_id で再送しても行は移らず元の視聴者の集計が再計算される**／**superchat の同一 id は一切更新されない**／
+  combo 更新後も JEWELS は bits/superchat/subscription のどの集計にも混ざらない。
+  既存の `duplicate_comment_id_is_idempotent` は**無変更で緑**（退行検知に使用）。
+- **ミューテーション検証**（テストが実際に効くことの確認）: ①再計算対象を引数 `viewer_id` に戻す →
+  `jewels_combo_update_does_not_move_comment_to_another_viewer` が FAIL、②jewels 限定を引数側・SQL 側とも外す →
+  `non_jewels_duplicate_id_does_not_update_row` が FAIL、③`updated` を `added` にも積む → `mergeComments` 2 件が FAIL。
+  いずれも復元後に全緑を再確認。
+
+### 検証結果
+
+- `pnpm --filter @stream-dock/comment-sidecar typecheck` / `test`（**135 PASS**・host-guard/obs 含む。youtube-mapper 単体は 65）
+- `pnpm --filter ./apps/desktop typecheck && lint && test`（**13 files / 131 tests PASS**）
+- `cargo check` / `cargo test viewer_memory`（**41 PASS**）
+- `build:bundle` ＋バンドル内 URL 一覧が **043d と同一**であることを実測（新規宛先ゼロ）。
+  `host-guard.ts` / `register-youtube-deps.ts` / `capabilities/` / `package.json` / `tauri.conf.json` / `Cargo.toml` /
+  `pnpm-lock.yaml` は**差分ゼロ**（新規依存・新規 permission ゼロ）。
+- **dev-mock の実測**（フェイクタイマーで seq 1..60 を駆動）: combo 更新が **12 / 32 / 52** に出て、それぞれ
+  **9 / 29 / 49 と同一 id・同一投稿者**、金額 30→90 / 100→300 / 500→1500 jewels、`comboCount = 3`。
+  `seq % 5 === 0` の superchat 枠は**奪っていない**（既存の設計原則どおり）。
+- **serde の落とし穴の実測**: `comboCount` 欠落 JSON が `None` にデシリアライズされることを確認
+  （`record_comment` は fire-and-forget なので、必須化されていたら**記録が黙って全停止**していた）。
+- **security-review 実施済み・判定「問題なし」**。新規宛先/依存/permission/command ゼロ、ログ追加ゼロ、
+  SQL は全パラメータバインド、保存範囲は「列追加なし・4 列の上書きのみ・jewels 限定・所有者は DB から読む」。
+  観察事項 2 件（①未認証 loopback WS から既存 jewels 行を上書きできるが、同じ相手は元々任意 INSERT が可能＝
+  特権昇格ではない ②dev-mock の `lastMockJewels` はセッションを跨いで残る＝dev 限定・実害なし）は対応不要と判断。
+
+### フェーズ2 の残条件（本タスクでは着手しない）
+
+- **再開トリガー**: Jewels の combo が実際に発火する配信で生メッセージを観測できたとき
+  （自チャンネル未収益化・協力配信者の Jewels 終了により**実データは今も入手できていない**）。
+- 同一 id の連続到着で `jewels_amount` が**変化するか**を見る。変化する（累計）＝**フェーズ1 の実装で既に正しい**ので
+  フェーズ2 は不要として閉じる。変化しない（単価）＝`mapJewelsAmount` に `× max(combo_count, 1)` を入れる
+  （`combo_count = 0` で 0 倍にならないよう `max(..., 1)` は必須）。**金額が変わるため再度 security-review**。
+- 観測手段は本タスクで通した **コメント行の「×N」**（combo 値と金額の変化を同時に目視できる）。
+
+## 2026-07-27 (043e 独立レビュー指摘の反映＝apply-review)
+
+043e フェーズ1 の差分に対する**独立レビュー**（セキュリティ＋品質）の指摘を反映した。判定は
+**「軽微な懸念あり」**（実装本体に脆弱性はゼロ。主指摘は「security.md が保証と書いた二重ロックの各層に、
+単独では効くテストが 1 件も無い」1 点）。**実装ロジックの変更は dev-mock の 1 行のみ**で、残りはテスト追加と
+コメント／docs の追記。
+
+### 修正した（要修正）
+
+- **S-1（最重要）: 二重ロックの各層に単独テストが無かった** — 独立レビュー側のミューテーション検証で、
+  **引数側チェックだけ／SQL の `WHERE` だけを外しても 41 テスト全緑**になることが判明した。既存の
+  `non_jewels_duplicate_id_does_not_update_row` は「保存も受信も superchat」＝**両層が同時に効くケース**しか
+  通していなかったため。2 つのチェックは**見ている対象が違う**（引数側＝受信の種別／SQL＝保存済み行の種別）。
+  とくに **「既存 chat コメントの id ＋ `eventType: "jewels"`」というなりすまし種別の再送**は引数側を通過するため、
+  止めているのは SQL の `WHERE` **だけ**＝未認証 loopback WS からの現実的な攻撃形に対する唯一の防波堤だった。
+  - `repository.rs` にテスト 2 件追加: `stored_non_jewels_row_is_not_updated_by_incoming_jewels`（SQL 層を単独で固定）／
+    `stored_jewels_row_is_not_updated_by_incoming_non_jewels`（引数側を単独で固定）。
+  - **再ミューテーション検証で各層が単独でレッドになることを確認済み**（下記「検証結果」）。
+- **Q-1: クランプで排除された行への combo 更新は `added` に載る** — `prev`（＝前回の `next`）から
+  `MAX_COMMENTS` で落ちた jewels 行に後から combo 更新が届くと `at === undefined` になり `updated` ではなく
+  `added` へ載る＝`enqueueForSpeech` まで到達する。**記録側は正しく動く**（Rust が `INSERT OR IGNORE` → 0 行 →
+  jewels の UPDATE 経路）が、再読み上げを防いでいるのは `added` の構造ではなく **`ttsQueue.seenIds`**。
+  つまり「`updated` は TTS へ行かない」の三重担保のうち①（構造的に `added` に載らない）はこのケースで成立しない。
+  挙動は仕様として正しいので**変更せず**、docstring を「`added` ＝**`prev` に無い id**」へ精密化し、
+  `CommentViewerApp` に最終防波堤が `seenIds` である旨を明記、テスト 1 件（`prev` に無い id の combo 更新は
+  `added` に載り `updated` は空）を追加して仕様として固定した。
+- **Q-4: 定数と SQL リテラルの値ドリフト検知** — `COMBO_UPDATABLE_EVENT_TYPE` と SQL の `'jewels'` は
+  **二重管理を維持**する（SQL 側を定数バインドに寄せると「SQL は引数に関係なく jewels 行しか触らない」という
+  防御特性が失われ、定数 1 箇所の書き換えで両層が同時に緩む）。代わりに値の一致だけをテストで固定
+  （`combo_updatable_event_type_matches_sql_literal`）。
+- **Q-2: 契約のドリフト検知が片方向だった** — `mergeComments.ts` → `repository.rs` の注意書きはあったが、
+  **危険なのは逆方向**（Rust が SET 句に 5 列目を足しても、frontend が変化を検知しなくなるだけでテストは落ちない）。
+  `repository.rs` の UPDATE 直前に「この SET 句を増減したら `hasComboPayloadChanged` も合わせる」を追記して双方向にした。
+- **S-6: dev-mock の `lastMockJewels` がセッションを跨ぐ** — `viewer_comments` は**永続**なので、覚えたまま
+  stop → start すると `seq % 20 === 12` が**前セッションで保存された行**へ UPDATE を撃つ（`session_id` は前のまま
+  金額だけ変わる＝手動確認で誤読を招く）。`clearProvider("youtube")` で `null` に戻し、セッション単位に閉じた。
+  併せて「固定 id はセッション跨ぎで再利用される」という既存の理由づけが**覚えた id にも当てはまる**点を補記。
+- **Q-3: dev-mock が「累計で届く」世界だけを模していた** — 合成値が金額 ×3 なので、フェーズ1（乗算しない）と
+  組み合わさると常に「30 → 90 に正しく更新される」ように見え、しかも既存コメントがその見え方を**正解として**
+  書いていた。**単価で届く世界なら同一 id の再送で金額は変化せず `×N` だけが増える**のが正しい。
+  「本モックの見え方をフェーズ2 の判別根拠にしないこと」を dev-mock と 043e タスクファイルの両方に明記した。
+- **S-2 / S-3: docs の書き漏らし** — 保存ポリシーの正典である **§9 追補 038a** 側に上書き解禁が書かれておらず、
+  043e の記述が方針⑪にしか無かった。追補に「**`viewer_comments` はもはや厳密な append-only ではない**」を
+  明記（不変性を前提にする機能＝エクスポート・監査・差分同期を作る際に必ず考慮させるため）。方針⑪ 043e 節には
+  脅威モデルの補足（追加された能力は「追記」ではなく「**既存レコードの改変**（完全性）」で質が異なる）と
+  S-1 の担保テスト名を追記した。
+- **Q-11: `×N` の残置判断が未定義** — 観測用の仮設が無言で常設化しないよう、043e フェーズ2 節に
+  「クローズ時に残置/撤去を明示的に決める」と撤去対象（表示 3 箇所のみ・**受信面と wire は撤去しない**）を追記。
+- **レビュー判定の記載更新** — task-board と 043e タスクファイルの「security-review 通過（判定「問題なし」）」は
+  **自己レビューの結果**だったため、独立レビュー判定「軽微な懸念あり」と反映済みである旨へ更新した。
+
+### コメントのみ（修正不要と判断）
+
+- **S-4（`viewers` upsert が更新経路でも先に走る）**: 別 `viewer_id` を名乗る再送でその視聴者行だけは
+  作成/改名される（コメントは移らない）。**043e 以前も step1 は commit されていた既存挙動**で悪化なし。
+  `repository.rs` の step1 に理由と再修正トリガーを記載。
+- **S-5（`combo_count` の型不正で更新が黙って落ちる）**: `Option<u32>` なので不正値は `record_comment` 全体の
+  デシリアライズを失敗させる（`month_count`/`gift_count`/`tier` と同じ既存設計・不正データが残らない fail-closed）。
+  ただし combo 更新では「画面は新金額・DB は旧金額」の乖離になる点を `model.rs` に明記
+  （**非 doc コメント `//` にして ts-rs binding へ流さない**）。
+- **Q-6（`monetaryAmount` と `monetary.amount` の二重比較）**: Rust が独立した列として SET するため
+  **冗長ではなく必要条件**。片方に減らせるのは Rust が対応列を SET しなくなったときだけ、と `mergeComments.ts` に記載。
+- **Q-7（`added[at - prev.length]` の添字依存）**: 現状は正しい（`merged.push` と `added.push` が常に対）。
+  不変条件と「崩れると別のコメントを上書きする」壊れ方をコメントで明示。別実装（`addedIndexById` 等）には
+  しない（実運用で通らない防御コードに構造を足すのは過剰）。
+- **Q-8（`Set`→`Map` の「後勝ち」非同値）**: `prev` は常に本関数自身の `next`（id 一意）で初期 state は空配列のため
+  発生しない。依存する不変条件になった旨と再修正トリガーを記載。
+- **Q-9（`inserted == 0` 分岐の 3 return）**: 全経路で `tx.commit()` を通り、`?` の早期脱出は drop でロールバック＝
+  境界は正しい。抽出は「仕様にない大規模リファクタをしない」（CLAUDE.md）に触れるため今回は行わない旨を記載。
+- **Q-10（`mapComboCount` と `mapGiftCount` の重複）**: 意味論が違い 0 を落とす根拠も別々の一次情報。加えて
+  **フェーズ2 で本関数だけが `max(combo_count, 1)` の起点になり確実に分岐する**ため別関数のまま維持。
+- **Q-12（dev-mock ヘッダの「top-level 副作用ゼロ」との整合）**: `let ... = null` は宣言であって副作用ではなく
+  不変条件は保たれる。既存コメントで説明済みのため**追記なし（対応済み）**。
+- **Q-5（`added`/`updated` の切り分けの可読性）**: 指摘なし（良好と評価）。Q-1 の docstring 精密化のみ反映。
+
+### 検証結果
+
+- `cargo check` / `cargo test viewer_memory`（**41 → 44 PASS**・S-1 の 2 件＋Q-4 の 1 件）
+- `pnpm --filter ./apps/desktop typecheck && lint && test`（**13 files / 131 → 132 tests PASS**・Q-1 の 1 件）
+- `pnpm --filter @stream-dock/comment-sidecar typecheck` / `test`（**135 PASS**・変化なし）
+- `gen:bindings` 再生成で **binding 差分は 043e 分のまま**（`model.rs` の追記を非 doc コメントにしたため流れていない）
+- **再ミューテーション検証（S-1 の目的が達成されたことの確認）**:
+  ①引数側チェックだけ無効化 → `stored_jewels_row_is_not_updated_by_incoming_non_jewels` が **FAIL**
+  ②SQL の `WHERE` だけ削除 → `stored_non_jewels_row_is_not_updated_by_incoming_jewels` が **FAIL**
+  ③定数だけ書き換え → `combo_updatable_event_type_matches_sql_literal` ほか **3 件 FAIL**
+  いずれも復元後に全緑を再確認。**これで「片方だけ外しても緑」だった穴は塞がった**。
+
+## 2026-07-27 (043e レビュー後のテスト補完＝write-tests)
+
+apply-review の反映後、**ユニットテストでカバーできる残りのギャップ**を仕様ベースで埋めた。
+**新規ライブラリ・新規依存はゼロ**（`pnpm-lock.yaml` / `Cargo.lock` / 各 `package.json` の dependencies に差分なし。
+sidecar の `package.json` は `test` スクリプトへ 2 本追加しただけ）。
+
+### 追加したテストと、それが固定している仕様
+
+- **`apps/comment-sidecar/scripts/test-comment-relay.mjs`（新規・19 アサート）** — 中継経路（`Comment` →
+  converter → wire）の担保。**ここは今まで自動テストがゼロだった**。043e の逸脱①のとおり、この経路は
+  フィールドを**明示列挙**して詰め替えるため、1 箇所でも書き漏らすと**型検査もテストも通るのに値だけ静かに消える**
+  （mapper 側のテストは `Comment` までしか見ないので、その先はここでしか守れない）。
+  - 付随数値（`comboCount` / `monthCount` / `giftCount` / `tier`）が wire まで 1 つも落ちないこと。
+    **「落ちたフィールド名の一覧が空」**という形の表明も置き、将来フィールドが増えたときの網にした。
+  - 境界: 未設定は最後まで `undefined`（0 やキー生成へ劣化しない）。0 は改変せず素通し（劣化判断は mapper の責務）。
+  - §9: 中継後に URL・受領側フィールド名・gifter/recipient 等が現れないこと。
+  - 回帰: eventType 写像／`monetaryAmount` 文字列と `monetary` 数値の**両方**を通すこと（数値側は Rust の
+    UPDATE 列に対応するので落とせない）／BITS の "N bits" 表記。
+  - アバターは未設定の DTO を使うため `resolveAvatarDataUri` は fetch せず、**テストは一切ネットに出ない**（§1）。
+- **`apps/comment-sidecar/scripts/test-dev-mock.mjs`（新規・39 アサート）** — dev-mock の周期仕様。
+  progress.md には「フェイクタイマーで実測した」とあったが**テストとして固定されていなかった**。
+  タイマーは `globalThis.setTimeout/setInterval` を偽物へ差し替えて駆動する（実時間を待たない・依存追加なし）。
+  - **combo 更新が「同一 id の再送」であること**（`seq%20===12` が `seq%20===9` と同一 id・同一投稿者）。
+    ここが崩れると別 id の新規コメント 2 件になり、3 層貫通の実機確認そのものが成立しない。
+  - 本体には `comboCount` を付けず combo 側だけ `3`／金額は本体の 3 倍／通貨は JEWELS のまま。
+  - 設計原則: **`seq%5===0` の superchat 枠を奪った周期が無い**こと（jewels の周期はすべて `%5 ≠ 0`）。
+  - 境界: combo の 1 回目が無ければ「更新」だけを出さない（通常チャットへ落ちる）。
+  - **回帰（レビュー指摘 S-6）**: stop → start で combo の記憶を捨て、**前セッションの id を再送しない**。
+  - §9/§1: 合成コメントに第三者個人情報・URL が現れない。
+- **`viewer_memory/service.rs` +4 件** — combo 更新を **service 層（trim / 制御文字拒否）経由**で通したときの仕様。
+  repository のテストは repository を直接叩くため、**§8 の検証が更新経路にも効くこと**は未担保だった。
+  - service 経由でも combo 更新が成立し金額が置き換わる／行は増えない／**`combo_count` は端末保存されない**。
+  - **§8: 更新側の本文に制御文字が入っていたら弾かれ、既存行は 1 バイトも変わらない**
+    （frontend 由来の値が検証をすり抜けて既存レコードを壊さない）。
+  - 更新側の本文も trim される（挿入経路と同じ整形が効く）。
+  - **プライバシー手段の非退行**: combo 更新を経た jewels 行も `delete_viewer` の FK CASCADE で取り残しゼロ
+    （security.md 方針⑪の主張をテストで固定）。
+- **`mergeComments.test.ts` +7 件** —
+  - **jewels 以外の全種別**（chat / superchat / membership / subscription / gift / donation）で同一 id が
+    完全スキップされること（`it.each`）。種別が増えたときに限定を緩めた変更を検知する。
+  - prev にある jewels が同一バッチで 2 回更新されても、表示は 1 行・最新値／TTS には載らない／
+    記録へ最後に届く値が表示と一致すること（`updated` の件数そのものは実装都合なので表明しない）。
+
+### 仕様の取り違えを 1 件訂正（テストを歪めずに直した）
+
+`seq%5===0` に関する最初のアサートを「superchat は `%5===0` にしか出ない」と書いたところ落ちた。
+実装を確認すると **seq 1/21/41（`seq%20===1`＝043c の赤スパ長文枠）も superchat を出す**のが正しく、
+`makeComment` 冒頭が定める設計原則は「投げ銭系の周期はすべて `%5 ≠ 0`＝**superchat 枠を奪わない**」だった。
+**実装が正・アサートが誤り**だったため、「`seq%5===0` が必ず superchat のまま」を表明する形へ書き直した。
+
+### 検証結果
+
+- `pnpm --filter @stream-dock/comment-sidecar typecheck` / `test`（**135 → 191 PASS**・relay 19＋dev-mock 39 追加）
+- `pnpm --filter ./apps/desktop typecheck && lint && test`（**132 → 139 tests PASS** / 13 files）
+- `cargo check` / `cargo test`（**全体 91 passed**・`viewer_memory` は 44 → 48）
+- `gen:bindings` 再生成で binding 差分は 043e 分のまま（drift ゼロ）
+- 新規依存ゼロ（`pnpm-lock.yaml` / `Cargo.lock` / dependencies すべて差分なし＝§10）
+
+### ユニットテストで担保できず **E2E（手動）に残した**もの
+
+- `CommentViewerApp` の結線（`updated` → `recordComments` が呼ばれ `enqueueForSpeech` には渡らない）。
+  同コンポーネントのテストが存在せず、WS 接続・TTS・invoke を丸ごとモックする新規テストが必要になるため。
+- 表示の見え方（`×N` のレイアウト・金額バッジが無いときの並び・オーバーレイの追随）。
+- StrictMode の updater 二重実行・OBS 実窓での表示。
+- 実データ（YouTube 本番の Jewels combo）でのフェーズ2 判別。
+
+## 2026-07-28 (読み上げ不具合の調査＝原因特定と 049/050 起票)
+
+「読まれるコメントと読まれないコメントがある（長文コメントの後が怪しい）／メンシプ更新も読み上げてほしい」
+という報告を受けて実コードを調査した。**原因は 2 つ確定・1 つは実機確認待ち**。コード変更はしていない。
+
+### 【確定】原因1: 長文の後のコメントが消える＝`MAX_BACKLOG` の「古い未読の無言破棄」
+
+読み上げは FIFO 直列で、1 件の再生が終わるまで `playing` が true のまま次に進まない
+（`ttsQueue.ts` の `pump` 76-114 行）。一方 `MAX_BACKLOG = 20`（19 行）超過分は
+**`queue.splice(0, dropped)` で古い方＝長文の直後に届いたコメントから捨てられる**（131-136 行）。
+通知は `console.debug` のみでユーザーには見えない。
+
+| 1 件の長さ | 読み上げ所要（≒4.5〜6 文字/秒） | dev-mock(1800ms) で届く数 | 破棄 |
+| --- | --- | --- | --- |
+| 290 文字（dev-mock の長文枠・赤スパ本文上限相当） | **48〜64 秒** | 27〜38 件 | **7〜18 件** |
+| 60 文字（048 の既定上限） | 10〜13 秒 | 5〜7 件 | **0 件** |
+
+増幅要因: ①1 件あたりの文字数上限が無い ②`synthesize` にタイムアウトが無く
+（`voicevox.ts` が `signal` を受け取れるのに `ttsQueue` が渡していない・98-102 行に「意図的」と明記）、
+ENGINE が詰まると `playing` が張り付いてその間の到着分が全部捨てられる。
+
+→ **既存の [048](tasks/048-tts-reading-length-cap.md)（文字数上限）が主対策**。重複起票は避け、
+048 の冒頭に上記の定量根拠と「最優先」「実装順 048 → 050 → 049」を追記した。
+
+### 【確定】原因2: メンシプ等が無音＝読み上げ入力が `comment.text` だけ
+
+`ttsQueue.enqueue` は `sanitizeForSpeech(comment.text)`（121 行）しか見ず、空ならスキップする（130 行）。
+一方 `membership`/`gift` の `text` は空で、画面表示は `viewerFormat.ts` の `composeEventMessage`（133-157 行）が
+「〇〇さんがメンバーシップを6ヶ月継続しました」を**別途**組み立てている。
+＝**画面に出ている文言が TTS の入力に一度も渡っていない**（043b で表示側だけ実装され読み上げ側が追従しなかった）。
+
+- 対象: `membership` / `gift` / `subscription`（自由コメントがある時だけ本文のみ読まれる）/ `jewels`。
+- ⚠ **`jewels` は dev-mock でだけ読まれる**（`dev-mock.ts` が `text = "投げ銭ジュエル 🎁"` を入れるため）。
+  実データの `GIFT_EVENT` は本文が空なので**本番のみ無音**＝dev 確認では永久に気付けない罠だった。
+
+→ **[049](tasks/049-monetary-event-speech.md) として起票**。
+
+### 【要確認】原因3: AudioContext suspended 時の一括ドロップ
+
+`pump` は `ctx.state !== "running"` のとき **その 1 件を捨てて `finally` から `pump()` を再帰**する（87-97 行）。
+アプリが背面に回る等で suspended になると、ユーザー操作が来るまで resume できずキュー全体が無音消費されうる。
+通知は `console.debug`（95 行）のみ。**実機での発生は未確認**（Console に「AudioContext が running でない」が
+出るかで切り分け可能）。この設計は 82-86 行のコメントどおり**永久ハング回避のため意図的**なので、
+ハングを再発させない形でしか変えられない。
+
+→ **[050](tasks/050-tts-dropout-protection.md) として起票**（可視化を先に入れて発生の有無を確定させてから挙動変更を判断）。
+
+### 横断的な問題
+
+`ttsQueue.ts` / `voicevox.ts` / `readingDictionary.ts` に**単体テストが 1 つも無い**（`find` で確認）。
+049・050 のどちらでも `ttsQueue.test.ts` を新設し、`synthesize`/`playWav` をモックして
+「通信も音声再生もしない」形でテストを入れる。
+
+### 起票時に確定した設計判断（本人回答・2026-07-28）
+
+1. **長文は文字数で打ち切る**（048 の既定 60 字・「以下略」）。速度アップ（`speedScale`）と `MAX_BACKLOG` 拡大は採らない
+   （後者は「今のコメント」ではなく「数分前のコメント」を読み続ける、より悪い体験になるため）。
+2. **課金イベントだけ投稿者名を読む**。`ttsQueue.ts` 冒頭の既存方針「著者名は読まない（本文のみ）」は
+   通常チャット・スパチャで維持し、課金イベントを**限定的な例外**にする（誰が支援したかを音で分かるようにするのが目的）。
+3. **jewels の文言を新設する**。ただし実コードを追った結果、**読み上げ専用**とし表示側
+   （`composeEventMessage` が jewels に null を返す 043b の意図的な設計）は**変えない**方針に倒した
+   ＝表示の回帰リスクゼロ。起票時の選択肢説明では「表示にも出る」と書いたが、より安全な側へ寄せた
+   （表示にも出したい場合は 049 完了後に別途起票・1 行で済む）。
+
+## 2026-07-28 (OBS オーバーレイの横幅: 640 を試して **400 へ差し戻し**)
+
+「オーバーレイの横幅が狭く、長文コメントがあると他のコメントが全部流されてしまう」という報告を受けて
+幅を 400 → 640 に広げたが、**実機で「広すぎる」と判断され同日中に 400 へ戻した**（コード差分ゼロ＝HEAD と同一）。
+同じ変更を繰り返さないための記録。
+
+- **現状（変更前＝現在）**: オーバーレイ窓の幅は `apps/desktop/src-tauri/src/lib.rs` の
+  `open_comment_overlay_window` で **`inner_size(400.0, 720.0)` / `min_inner_size(240.0, 320.0)`** とハードコード。
+  コメントビューア本体は 960px で、オーバーレイだけが狭い。高さは有限なので、1 件が長く折り返すほど
+  表示できる件数が減って他のコメントが押し出される。
+  `.decorations(false)` でタイトルバーが無く**手動リサイズが実質できない**うえサイズは永続化もされないため、
+  開き直すたびに 400px に戻る＝幅を変えるなら既定値を変えるしかない。
+- **試した値と結果**: **640（1920px キャンバスの約 1/3）は広すぎた**。配信画面の占有が大きすぎる、が差し戻し理由。
+  次に試すなら **400 と 640 の間（480〜520 あたり）** が候補。
+- **調査で分かったこと（次回も有効）**:
+  - **CSS 変更は不要**。`OverlayApp.module.css` / `OverlayComment.module.css` に `max-width` の制約は無く
+    （`width: 0` / `min-width: 0` は flex の縮小許可イディオム）、レイアウトは**完全可変幅**なので窓幅に追従する。
+  - **044a（OBS 自動ソース追加）への影響なし**。`obs-helpers.ts` の照合は窓名（`owner_name` / `window_name`）で
+    行っており**寸法を見ていない**ため、サイズを変えてもソースの照合は壊れない。
+    ただし**既に OBS へ追加済みのソースは取り込み解像度が変わるため、シーン上の位置/サイズの再調整が要る**
+    （ユーザー操作。この手戻りコストが「気軽に試せない」原因でもある）。
+  - 変更対象は `lib.rs` の 2 行のみで、capability・依存・外部通信・CSS はいずれもゼロ。
+- **示唆（未起票）**: 幅の好みは配信レイアウト依存で一発では決まらないため、固定値を動かすより
+  **オーバーレイ設定（`overlaySettings`）に幅の項目を出してユーザーが調整できるようにする**ほうが筋が良い。
+  要望が出たら起票する（既存の overlayFont / サイト名表示と同じ localStorage 同期の枠に乗る）。

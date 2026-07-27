@@ -25,4 +25,9 @@ export type Comment = {
   giftCount?: number;
   /** サブスク階級（Twitch sub_tier "1000"/"2000"/"3000" → 1/2/3）。 */
   tier?: number;
+  /**
+   * 043e: Jewels の combo（連続ギフト）回数（YouTube combo_count・単発/未設定は undefined）。
+   * 表示用の観測値で**金額計算には使わない**（フェーズ1）。
+   */
+  comboCount?: number;
 };

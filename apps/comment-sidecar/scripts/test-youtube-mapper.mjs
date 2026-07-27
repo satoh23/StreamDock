@@ -104,6 +104,15 @@ ok(
   1,
 );
 ok("LiveChatGiftDetails.jewels_amount = 3", fieldsOf("LiveChatGiftDetails").jewels_amount, 3);
+// 043e: combo（連続ギフト）回数。公式番号 8・int32。
+ok("LiveChatGiftDetails.combo_count = 8", fieldsOf("LiveChatGiftDetails").combo_count, 8);
+ok(
+  "LiveChatGiftDetails.combo_count は int32",
+  typeOf("LiveChatGiftDetails", "combo_count"),
+  "TYPE_INT32",
+);
+// 043e で採ったのは combo_count だけ。ギフト資産情報（画像 URL 等）は引き続き非宣言（CSP・§9）。
+ok("LiveChatGiftDetails.gift_url は非宣言（CSP/§9）", fieldsOf("LiveChatGiftDetails").gift_url, undefined);
 // バグ修正 2 件（番号・型が公式どおりであること）。
 ok(
   "LiveChatMemberMilestoneChatDetails.member_month = 2（旧 1 は member_level_name）",
@@ -439,7 +448,8 @@ const one = (label, msg) => {
 }
 
 // ③ Jewels（GIFT_EVENT = 21）→ eventType=jewels + { currency: "JEWELS", amount }（micros 換算しない）。
-//    公式のギフト資産情報（gift_name/gift_url/alt_text/combo_count 等）は宣言していないのでスキップされる。
+//    043e で combo_count を採用したので comboCount も通る。ギフト資産情報（gift_name/gift_url/alt_text 等）は
+//    引き続き宣言していないのでスキップされる。
 {
   const c = one(
     "jewels",
@@ -452,16 +462,18 @@ const one = (label, msg) => {
         alt_text: "バラのギフト",
         language: "ja",
         has_visual_effect: true,
-        // ⚠ combo_count は**あえて 0 以外**を送っているが、現状アサートは無い。GIFT_EVENT は同一 id が
-        //   combo 更新で再送される仕様で、Rust の INSERT OR IGNORE と組み合わさると過少計上になる
-        //   （既知の未解決課題／詳細は stream-list-proto.ts の LiveChatMessage.id コメント）。
-        //   ここでは「未宣言フィールドとして安全にスキップされる」ことだけを担保する。
         combo_count: 3,
       },
     }),
   );
   ok("jewels: eventType", c?.eventType, "jewels");
-  ok("jewels: monetaryAmount", c?.monetaryAmount, { currency: "JEWELS", amount: 30 });
+  // 043e フェーズ1 の仕様固定: combo でも **jewels_amount を素のまま採る（× combo_count しない）**。
+  //   意味論（単価か累計か）が公式に無いため推測で換算しない。フェーズ2 で単価と確定したらここが 90 になる。
+  ok("jewels: monetaryAmount は乗算しない（フェーズ1）", c?.monetaryAmount, {
+    currency: "JEWELS",
+    amount: 30,
+  });
+  ok("jewels: comboCount が通る", c?.comboCount, 3);
   ok("jewels: giftCount は付かない", c?.giftCount, undefined);
   // CSP/§9: gift_url（画像 URL）を受信していないこと。
   ok("jewels(§9/CSP): gift_url を受信しない", JSON.stringify(c).includes("gift.png"), false);
@@ -469,6 +481,7 @@ const one = (label, msg) => {
 
 // ③-2 jewels_amount 未設定（defaults:true で 0）は金額を付けない＝「0 JEWELS」バッジを作らない。
 //     レビュー指摘(2026-07-27)で mapGiftCount と非対称だった点を修正したことの回帰検知。
+//     043e: combo_count も同じく未設定（defaults で 0）なら undefined へ落ちる＝「×0」を作らない。
 {
   const c = one(
     "jewels-zero",
@@ -476,6 +489,48 @@ const one = (label, msg) => {
   );
   ok("jewels: eventType は jewels のまま", c?.eventType, "jewels");
   ok("jewels: amount 未設定（defaults で 0）は monetaryAmount なし", c?.monetaryAmount, undefined);
+  ok("jewels: combo_count 未設定（defaults で 0）は comboCount なし", c?.comboCount, undefined);
+}
+
+// ③-3 043e: 単発ギフト（combo_count = 0 を**明示**）でも comboCount は付かない。
+//     公式の「The combo count of the gift; 0 if not a combo」＝単発は 0 で届くため、そのまま通すと
+//     表示が「×0」になる。0 以下を undefined へ落とす方針（mapGiftCount と同じ）の回帰検知。
+{
+  const c = one(
+    "jewels-single",
+    message("m-jewels-single", "GIFT_EVENT", {
+      gift_details: { jewels_amount: 30, combo_count: 0 },
+    }),
+  );
+  ok("jewels: combo_count = 0（単発）は comboCount なし", c?.comboCount, undefined);
+  ok("jewels: 単発でも金額は通る", c?.monetaryAmount, { currency: "JEWELS", amount: 30 });
+}
+
+// ③-4 043e: combo は「別メッセージが N 件届く」のではなく「**同じ id が N 回更新される**」。
+//     同一 id・combo_count 1 → 3 の 2 通を往復させ、mapper が**両方をそのまま同じ id のコメントとして写す**
+//     （＝重複排除もマージもしない＝後段の mergeComments / record_comment が扱う）ことと、
+//     jewels_amount が変わらない限り金額も変わらない（乗算しない）ことを固定する。
+{
+  const comments = mapYouTubeLiveChatMessagesToComments(
+    roundTrip([
+      message("m-jewels-combo", "GIFT_EVENT", {
+        gift_details: { jewels_amount: 30, combo_count: 1 },
+      }),
+      message("m-jewels-combo", "GIFT_EVENT", {
+        gift_details: { jewels_amount: 30, combo_count: 3 },
+      }),
+    ]),
+  );
+  ok("combo: 2 通とも写る（mapper は間引かない）", comments.length, 2);
+  ok("combo: id は同一（更新であることの根拠）", comments[0]?.id === comments[1]?.id, true);
+  ok("combo: comboCount が 1 → 3 と通る", [comments[0]?.comboCount, comments[1]?.comboCount], [1, 3]);
+  ok("combo: 金額は乗算されない（両方とも素の jewels_amount）", [
+    comments[0]?.monetaryAmount,
+    comments[1]?.monetaryAmount,
+  ], [
+    { currency: "JEWELS", amount: 30 },
+    { currency: "JEWELS", amount: 30 },
+  ]);
 }
 
 // ④ マイルストーンの月数（proto の member_month = 2 修正の回帰検知）。

@@ -18,6 +18,51 @@ const VIEWER_COMMENT_COLUMNS: &str =
     "id, viewer_id, session_id, source, text, event_type, amount, currency, monetary_amount, \
     published_at, created_at";
 
+/// ある視聴者（?1）の集計を `viewer_comments` から**全再計算**する（?2 = updated_at）。
+///
+/// 【設計意図】増分加算ではなく挿入行から毎回全再計算（recompute-on-write）＝二重記録・順序前後でも
+///   集計がドリフトしない冪等性を優先。走査は当該 viewer 限定で idx_viewer_comments_viewer が効く。
+///   【再修正トリガ】常連の 1 セッション数千コメントで挿入が重くなったら増分更新/しきい値化を検討（Q3）。
+/// 【043a】メンシプ（YouTube NEW_SPONSOR/MEMBER_MILESTONE→'membership'）・ギフト（Twitch
+///   sub_gift/community_sub_gift→'gift'）を種別分離して受け取るようになった。分離前は全て 'subscription'
+///   に畳まれていたため、subscription_count/is_member/last_subscription_at は
+///   event_type IN ('subscription','membership','gift') で数えて**分離前と同じ集合**を保つ
+///   （＝取りこぼしゼロ・退行ゼロ・列追加なし）。累計月数/ギフト件数（wire の monthCount/giftCount）は
+///   表示用途で通すのみで**端末保存しない**近似（is_member＋回数のみ）。
+///   【再修正トリガ】membership/gift を別カウントで持ちたい要件が出たら列追加＋038 表示波及を検討（Q7）。
+/// 【前提】first/last は published_at の辞書順比較（全 provider が UTC・同形 ISO8601 を送る前提）。
+///   【再修正トリガ】provider 間で TZ/フォーマットがぶれて first/last がずれるなら正規化して比較する（Q5・038c 波及）。
+/// 【043e】新規挿入時（step3）と、jewels の combo 更新で既存行を UPDATE した後の 2 箇所から呼ぶため定数化した
+///   （SQL 本文は 043a 時点から 1 文字も変えていない）。combo 更新でも「行から全再計算」なので、
+///   total_comments = COUNT(*) は変わらず、置き換わった amount だけが集計へ反映される。
+const RECOMPUTE_VIEWER_AGGREGATES_SQL: &str = "UPDATE viewers SET
+            total_comments = (SELECT COUNT(*) FROM viewer_comments WHERE viewer_id = ?1),
+            bits_count = (SELECT COUNT(*) FROM viewer_comments WHERE viewer_id = ?1 AND currency = 'BITS'),
+            bits_amount = (SELECT CAST(COALESCE(SUM(amount), 0) AS INTEGER) FROM viewer_comments WHERE viewer_id = ?1 AND currency = 'BITS'),
+            superchat_count = (SELECT COUNT(*) FROM viewer_comments WHERE viewer_id = ?1 AND event_type = 'superchat' AND currency IS NOT NULL AND currency <> 'BITS'),
+            superchat_amount = (SELECT COALESCE(SUM(amount), 0) FROM viewer_comments WHERE viewer_id = ?1 AND event_type = 'superchat' AND currency IS NOT NULL AND currency <> 'BITS'),
+            superchat_currency = (SELECT currency FROM viewer_comments WHERE viewer_id = ?1 AND event_type = 'superchat' AND currency IS NOT NULL AND currency <> 'BITS' ORDER BY published_at DESC, created_at DESC LIMIT 1),
+            subscription_count = (SELECT COUNT(*) FROM viewer_comments WHERE viewer_id = ?1 AND event_type IN ('subscription', 'membership', 'gift')),
+            is_member = (SELECT CASE WHEN EXISTS(SELECT 1 FROM viewer_comments WHERE viewer_id = ?1 AND event_type IN ('subscription', 'membership', 'gift')) THEN 1 ELSE 0 END),
+            last_subscription_at = (SELECT MAX(published_at) FROM viewer_comments WHERE viewer_id = ?1 AND event_type IN ('subscription', 'membership', 'gift')),
+            first_seen_at = (SELECT MIN(published_at) FROM viewer_comments WHERE viewer_id = ?1),
+            last_comment_at = (SELECT MAX(published_at) FROM viewer_comments WHERE viewer_id = ?1),
+            updated_at = ?2
+         WHERE id = ?1";
+
+/// 043e: 同一 id の再送で既存行の更新を許す唯一のコメント種別。
+///
+/// YouTube の `GIFT_EVENT`（Jewels）だけは公式仕様上「同じ message id が combo count の更新として再送される」
+/// （公式 proto の `LiveChatMessage.id` に明記）。それ以外の種別で同一 id が来るのは単なる再配信なので、
+/// 既存の冪等契約（0 行・集計非更新・`RecordResult{false,false}`）を**一切変えない**。
+///
+/// 【レビュー指摘 Q-4・二重管理は意図的なので共通化しないこと】この定数と UPDATE 文の SQL リテラル
+/// `AND event_type = 'jewels'` は同じ値を 2 箇所に持つが、**見ている対象が違う**（本定数＝受信側の種別／
+/// SQL＝保存済み行側の種別）。SQL 側を本定数のバインドや `format!` 展開に置き換えると「SQL は引数に
+/// 関係なく jewels 行しか触らない」という防御特性が失われ、定数の書き換え 1 箇所で両層が同時に緩む。
+/// 値のドリフトは下の `combo_updatable_event_type_matches_sql_literal` テストで検知する。
+const COMBO_UPDATABLE_EVENT_TYPE: &str = "jewels";
+
 /// viewers / viewer_comments テーブルを作成する（存在すれば何もしない）。
 pub fn init(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -109,6 +154,11 @@ fn row_to_comment(row: &rusqlite::Row<'_>) -> rusqlite::Result<ViewerCommentReco
 /// `RecordResult{false,false}` を返す（同一コメントの二重記録で集計も判定も重複しない）。集計は
 /// `viewer_comments` から毎回再計算するため増分ドリフトが起きない。upsert＋挿入＋再計算は 1 トランザクション。
 ///
+/// 043e（唯一の例外）: `event_type = 'jewels'` だけは同一 id の再送が「同じギフトの**更新**」を意味するため
+/// （YouTube の combo。公式 proto の `LiveChatMessage.id` に明記）、既存行の `amount` / `currency` /
+/// `monetary_amount` / `text` を差し替えて集計を再計算する。**それ以外の種別は上記の冪等契約のまま**で、
+/// 戻り値は更新時も必ず `RecordResult{false,false}`（更新でバッジを再点灯させない）。
+///
 /// 挿入順は **親（viewers）→ 子（viewer_comments）** の順。`viewer_comments.viewer_id` は `viewers(id)` への
 /// FK（`foreign_keys = ON`・非 DEFERRABLE）で、親行が無い状態で子を挿入すると即 FK 制約違反になり、新規視聴者の
 /// 初回コメントが必ず失敗して機能が成立しない。子先行だった実装バグを親先行へ修正済み（DDL/移行不要な純コード修正）。
@@ -147,6 +197,13 @@ pub fn record_comment(conn: &Connection, c: &NewViewerComment) -> rusqlite::Resu
 
     // 1) 親: 視聴者行を先に存在させ名前を最新化する（FK 制約のため子より前）。集計は step3 で確定するので
     //    first/last は仮値。first_seen_at / note / created_at は既存行では上書きしない。
+    // 【レビュー指摘 S-4・043e の退行ではないので修正不要】この upsert は inserted の判定より前にあるため、
+    //   既存 id を**別の viewer_id を名乗って**再送されると、その視聴者行だけは作成/改名される
+    //   （コメント自体は移らない＝下の combo 更新経路が保存済み行の所有者で再計算する）。結果として
+    //   total_comments = 0 の視聴者行が一覧に現れうるが、これは 043e 以前（重複 id は即 return）でも
+    //   同じく step1 が commit されていた**既存挙動**であり、今回の変更で悪化していない。
+    //   再修正トリガー: 「コメント 0 件の視聴者が一覧に出る」がユーザー体験上の問題になったら、
+    //   upsert を実挿入時のみに寄せる（判定順序の見直し＝038c 判定への波及があるため単独タスク化する）。
     tx.execute(
         "INSERT INTO viewers
             (id, provider, provider_user_id, name, first_seen_at, last_comment_at, note, created_at, updated_at)
@@ -183,39 +240,63 @@ pub fn record_comment(conn: &Connection, c: &NewViewerComment) -> rusqlite::Resu
         ],
     )?;
     if inserted == 0 {
+        // 043e: jewels（YouTube の combo 更新）だけは同一 id の再送が「同じギフトの**更新**」を意味するため、
+        //   既存行を差し替える。それ以外は**現行どおり**ここで即 return（冪等契約は 1 バイトも変えない）。
+        // 【レビュー指摘 Q-9・修正不要】この分岐は return を 3 つ持つが、いずれも tx.commit() を通り、
+        //   `?` による早期脱出では tx が drop されてロールバックされる（どの経路でも境界は正しい）。
+        //   別関数への抽出は読みやすくなる一方で「仕様にない大規模リファクタをしない」（CLAUDE.md）に触れる
+        //   ため今回は行わない。再修正トリガー: フェーズ2 等でこの分岐にさらに条件が増えたら
+        //   `fn update_jewels_combo(&tx, c, now) -> rusqlite::Result<bool>` へ切り出す。
+        if c.event_type != COMBO_UPDATABLE_EVENT_TYPE {
+            tx.commit()?;
+            // 重複記録: 集計を触らず、判定も肯定を返さない（二重にバッジを立てない・冪等）。
+            return Ok(RecordResult { first_time: false, long_absence: false });
+        }
+        // 更新するのは amount / currency / monetary_amount / text の 4 列のみ。
+        //   published_at / session_id / viewer_id / created_at は**書き換えない**
+        //   （集計の first/last と 038c 判定の基準・行の所有者・記録セッションを動かさないため）。
+        //   金額は combo の最新値をそのまま採る（乗算しない＝過大計上しない安全側。043e フェーズ1）。
+        // 【レビュー指摘 Q-2】**この SET 句の列を増減したら、frontend `mergeComments.ts` の
+        //   `hasComboPayloadChanged` の比較キーも必ず合わせること**（不変条件「比較キー ⊇ 更新列」）。
+        //   列を増やすだけだと frontend が変化を検知せず、更新が Rust へ届かないまま**静かに取りこぼす**
+        //   （テストも落ちない方向のドリフトなので、この注意書きが唯一の防波堤）。
+        // WHERE の event_type は「保存済み行側」の限定。上の引数側チェック（＝受信側の限定）と合わせて
+        //   **二重に**縛る。見ている対象が違うので冗長ではない: 既存の chat/superchat 行の id を指定して
+        //   event_type だけ "jewels" を名乗る再送を止められるのは、この WHERE だけである。
+        let updated = tx.execute(
+            "UPDATE viewer_comments SET amount = ?2, currency = ?3, monetary_amount = ?4, text = ?5
+             WHERE id = ?1 AND event_type = 'jewels'",
+            rusqlite::params![
+                c.comment_id,
+                c.amount,
+                c.currency,
+                c.monetary_amount,
+                c.text,
+            ],
+        )?;
+        if updated == 0 {
+            tx.commit()?;
+            return Ok(RecordResult { first_time: false, long_absence: false });
+        }
+        // 再計算する視聴者は **保存済み行の viewer_id**（引数 c.viewer_id は信用しない）。UPDATE は viewer_id を
+        //   書き換えないため、引数で再計算すると「行は元の所有者のまま／集計だけ別視聴者を再計算」という
+        //   付け替えが起きうる。行の実所有者から引けば UPDATE 対象と再計算対象が構造的に一致する（§8）。
+        let owner: String = tx.query_row(
+            "SELECT viewer_id FROM viewer_comments WHERE id = ?1",
+            rusqlite::params![c.comment_id],
+            |row| row.get(0),
+        )?;
+        tx.execute(RECOMPUTE_VIEWER_AGGREGATES_SQL, rusqlite::params![owner, now])?;
         tx.commit()?;
-        // 重複記録: 集計を触らず、判定も肯定を返さない（二重にバッジを立てない・冪等）。
+        // 更新は「新規コメント」ではないので、初見／久しぶりバッジを再点灯させない（常に両方 false）。
         return Ok(RecordResult { first_time: false, long_absence: false });
     }
 
     // 3) 集計を viewer_comments から再計算（bits は currency='BITS'・スパチャは実通貨のみ）。
-    //    【設計意図】増分加算ではなく挿入行から毎回全再計算（recompute-on-write）＝二重記録・順序前後でも
-    //      集計がドリフトしない冪等性を優先。走査は当該 viewer 限定で idx_viewer_comments_viewer が効く。
-    //      【再修正トリガ】常連の 1 セッション数千コメントで挿入が重くなったら増分更新/しきい値化を検討（Q3）。
-    //    【043a】メンシプ（YouTube NEW_SPONSOR/MEMBER_MILESTONE→'membership'）・ギフト（Twitch
-    //      sub_gift/community_sub_gift→'gift'）を種別分離して受け取るようになった。分離前は全て 'subscription'
-    //      に畳まれていたため、subscription_count/is_member/last_subscription_at は
-    //      event_type IN ('subscription','membership','gift') で数えて**分離前と同じ集合**を保つ
-    //      （＝取りこぼしゼロ・退行ゼロ・列追加なし）。累計月数/ギフト件数（wire の monthCount/giftCount）は
-    //      表示用途で通すのみで**端末保存しない**近似（is_member＋回数のみ）。
-    //      【再修正トリガ】membership/gift を別カウントで持ちたい要件が出たら列追加＋038 表示波及を検討（Q7）。
-    //    【前提】first/last は published_at の辞書順比較（全 provider が UTC・同形 ISO8601 を送る前提）。
-    //      【再修正トリガ】provider 間で TZ/フォーマットがぶれて first/last がずれるなら正規化して比較する（Q5・038c 波及）。
+    //    SQL 本文と設計意図は RECOMPUTE_VIEWER_AGGREGATES_SQL の doc コメントを正とする
+    //    （043e で combo 更新経路と共有するため定数化した。挙動は不変）。
     tx.execute(
-        "UPDATE viewers SET
-            total_comments = (SELECT COUNT(*) FROM viewer_comments WHERE viewer_id = ?1),
-            bits_count = (SELECT COUNT(*) FROM viewer_comments WHERE viewer_id = ?1 AND currency = 'BITS'),
-            bits_amount = (SELECT CAST(COALESCE(SUM(amount), 0) AS INTEGER) FROM viewer_comments WHERE viewer_id = ?1 AND currency = 'BITS'),
-            superchat_count = (SELECT COUNT(*) FROM viewer_comments WHERE viewer_id = ?1 AND event_type = 'superchat' AND currency IS NOT NULL AND currency <> 'BITS'),
-            superchat_amount = (SELECT COALESCE(SUM(amount), 0) FROM viewer_comments WHERE viewer_id = ?1 AND event_type = 'superchat' AND currency IS NOT NULL AND currency <> 'BITS'),
-            superchat_currency = (SELECT currency FROM viewer_comments WHERE viewer_id = ?1 AND event_type = 'superchat' AND currency IS NOT NULL AND currency <> 'BITS' ORDER BY published_at DESC, created_at DESC LIMIT 1),
-            subscription_count = (SELECT COUNT(*) FROM viewer_comments WHERE viewer_id = ?1 AND event_type IN ('subscription', 'membership', 'gift')),
-            is_member = (SELECT CASE WHEN EXISTS(SELECT 1 FROM viewer_comments WHERE viewer_id = ?1 AND event_type IN ('subscription', 'membership', 'gift')) THEN 1 ELSE 0 END),
-            last_subscription_at = (SELECT MAX(published_at) FROM viewer_comments WHERE viewer_id = ?1 AND event_type IN ('subscription', 'membership', 'gift')),
-            first_seen_at = (SELECT MIN(published_at) FROM viewer_comments WHERE viewer_id = ?1),
-            last_comment_at = (SELECT MAX(published_at) FROM viewer_comments WHERE viewer_id = ?1),
-            updated_at = ?2
-         WHERE id = ?1",
+        RECOMPUTE_VIEWER_AGGREGATES_SQL,
         rusqlite::params![c.viewer_id, now],
     )?;
 
@@ -367,6 +448,16 @@ mod tests {
         }
     }
 
+    /// 043e: 保存済みコメント 1 行を id で引く（combo 更新の検証用）。
+    fn comment_row(conn: &Connection, id: &str) -> ViewerCommentRecord {
+        conn.query_row(
+            &format!("SELECT {VIEWER_COMMENT_COLUMNS} FROM viewer_comments WHERE id = ?1"),
+            rusqlite::params![id],
+            row_to_comment,
+        )
+        .expect("comment row should exist")
+    }
+
     fn count_comments(conn: &Connection, viewer_id: &str) -> i64 {
         conn.query_row(
             "SELECT COUNT(*) FROM viewer_comments WHERE viewer_id = ?1",
@@ -487,6 +578,172 @@ mod tests {
         assert_eq!(v.superchat_count, 1); // JPY superchat のみ（jewels は入らない）
         assert_eq!(v.subscription_count, 0); // jewels は subscription 系にも入らない
         assert_eq!(v.total_comments, 3); // jewels も総数には数える
+    }
+
+    // ---- 043e: jewels の combo 更新（同一 id 再送で既存行を差し替える。他種別は現行どおり）----
+
+    // 043e-P1: jewels の同一 id 再送で amount/monetary_amount/text が最新値へ置き換わる。
+    //   行は増えない（combo は論理的に 1 ギフト＝total_comments は 1 のまま）。戻り値は {false,false}
+    //   （更新で初見/久しぶりバッジを再点灯させない）。
+    #[test]
+    fn jewels_combo_update_replaces_amount_and_keeps_single_row() {
+        let conn = test_conn();
+        let mut first = nc("g1", "youtube:u1", "jewels", Some(30.0), Some("JEWELS"), "2026-01-01T00:00:00Z");
+        first.monetary_amount = Some("30 JEWELS".to_string());
+        assert!(record_comment(&conn, &first).unwrap().first_time);
+
+        let mut combo = first;
+        combo.amount = Some(90.0);
+        combo.monetary_amount = Some("90 JEWELS".to_string());
+        combo.text = "combo!".to_string();
+        let r = record_comment(&conn, &combo).unwrap();
+        assert!(!r.first_time, "combo 更新で初見を再点灯させない");
+        assert!(!r.long_absence);
+
+        let row = comment_row(&conn, "g1");
+        assert_eq!(row.amount, Some(90.0), "最新の jewels 額へ置き換わる");
+        assert_eq!(row.monetary_amount.as_deref(), Some("90 JEWELS"));
+        assert_eq!(row.text, "combo!");
+        assert_eq!(count_comments(&conn, "youtube:u1"), 1, "表示・記録とも 1 ギフト＝1 行");
+        assert_eq!(viewer(&conn, "youtube:u1").total_comments, 1);
+    }
+
+    // 043e-P2: combo 更新は published_at を書き換えない（集計 first/last と 038c 判定の基準を動かさない）。
+    #[test]
+    fn jewels_combo_update_preserves_published_at() {
+        let conn = test_conn();
+        record_comment(&conn, &nc("g1", "youtube:u1", "jewels", Some(30.0), Some("JEWELS"), "2026-01-01T00:00:00Z")).unwrap();
+        // 再送の published_at がずれて届いても、行の published_at は初回のまま。
+        let mut combo = nc("g1", "youtube:u1", "jewels", Some(90.0), Some("JEWELS"), "2026-06-30T00:00:00Z");
+        combo.session_id = "sess-2".to_string();
+        record_comment(&conn, &combo).unwrap();
+
+        let row = comment_row(&conn, "g1");
+        assert_eq!(row.published_at, "2026-01-01T00:00:00Z", "published_at は不変");
+        assert_eq!(row.session_id, "sess-1", "session_id も不変");
+        let v = viewer(&conn, "youtube:u1");
+        assert_eq!(v.first_seen_at, "2026-01-01T00:00:00Z");
+        assert_eq!(v.last_comment_at, "2026-01-01T00:00:00Z");
+    }
+
+    // 043e-P3: 同じコメント id を**別の viewer_id**で再送しても行の所有者は変わらず、集計の再計算対象も
+    //   元の視聴者のまま（引数の viewer_id を信用しない＝コメントの付け替え防止）。
+    #[test]
+    fn jewels_combo_update_does_not_move_comment_to_another_viewer() {
+        let conn = test_conn();
+        record_comment(&conn, &nc("g1", "youtube:u1", "jewels", Some(30.0), Some("JEWELS"), "2026-01-01T00:00:00Z")).unwrap();
+        let mut hijack = nc("g1", "youtube:u2", "jewels", Some(90.0), Some("JEWELS"), "2026-01-01T00:00:00Z");
+        hijack.provider_user_id = "u2".to_string();
+        record_comment(&conn, &hijack).unwrap();
+
+        let row = comment_row(&conn, "g1");
+        assert_eq!(row.viewer_id, "youtube:u1", "行の所有者は元の視聴者のまま");
+        assert_eq!(row.amount, Some(90.0), "金額は更新される（更新自体は成立する）");
+        assert_eq!(count_comments(&conn, "youtube:u1"), 1);
+        assert_eq!(count_comments(&conn, "youtube:u2"), 0, "別視聴者へ行は移らない");
+        assert_eq!(viewer(&conn, "youtube:u1").total_comments, 1, "元の視聴者の集計が再計算される");
+    }
+
+    // 043e-P4: jewels 以外は同一 id 再送で**一切更新しない**（既存の冪等契約の限定＝退行検知）。
+    //   金額・本文とも据え置きで、superchat 集計にも波及しない。
+    #[test]
+    fn non_jewels_duplicate_id_does_not_update_row() {
+        let conn = test_conn();
+        let mut first = nc("c1", "youtube:u1", "superchat", Some(500.0), Some("JPY"), "2026-01-01T00:00:00Z");
+        first.monetary_amount = Some("500 JPY".to_string());
+        record_comment(&conn, &first).unwrap();
+
+        let mut resend = first;
+        resend.amount = Some(9999.0);
+        resend.monetary_amount = Some("9999 JPY".to_string());
+        resend.text = "tampered".to_string();
+        let r = record_comment(&conn, &resend).unwrap();
+        assert!(!r.first_time);
+        assert!(!r.long_absence);
+
+        let row = comment_row(&conn, "c1");
+        assert_eq!(row.amount, Some(500.0), "jewels 以外は金額を更新しない");
+        assert_eq!(row.monetary_amount.as_deref(), Some("500 JPY"));
+        assert_eq!(row.text, "hi", "jewels 以外は本文も更新しない");
+        let v = viewer(&conn, "youtube:u1");
+        assert_eq!(v.superchat_count, 1);
+        assert_eq!(v.superchat_amount, 500.0, "集計にも波及しない");
+    }
+
+    // 043e-P4a（レビュー指摘 S-1）: **保存済み行が jewels 以外**なら、受信側が event_type="jewels" を
+    //   名乗っても既存行は書き換わらない。これを止めているのは SQL の `AND event_type = 'jewels'` **だけ**で
+    //   （引数側チェックは受信種別が jewels なので通過する）、未認証 loopback WS から
+    //   「既存 chat コメントの id ＋ eventType: jewels」を送られたときの唯一の防波堤。
+    //   ※ P4 と分けているのは、P4（保存も受信も superchat）では二重ロックの両層が同時に効くため、
+    //     SQL 側だけを外しても検知できないから。この 2 件で各層を単独に固定する。
+    #[test]
+    fn stored_non_jewels_row_is_not_updated_by_incoming_jewels() {
+        let conn = test_conn();
+        let mut first = nc("x1", "youtube:u1", "chat", None, None, "2026-01-01T00:00:00Z");
+        first.text = "ふつうのコメント".to_string();
+        record_comment(&conn, &first).unwrap();
+
+        // 同一 id を jewels と名乗って金額つきで再送する（なりすまし種別）。
+        let mut spoof = nc("x1", "youtube:u1", "jewels", Some(9999.0), Some("JEWELS"), "2026-01-01T00:00:00Z");
+        spoof.monetary_amount = Some("9999 JEWELS".to_string());
+        spoof.text = "tampered".to_string();
+        let r = record_comment(&conn, &spoof).unwrap();
+        assert!(!r.first_time);
+        assert!(!r.long_absence);
+
+        let row = comment_row(&conn, "x1");
+        assert_eq!(row.event_type, "chat", "保存済み行の種別は変わらない");
+        assert_eq!(row.text, "ふつうのコメント", "本文は書き換わらない（SQL の WHERE が守る）");
+        assert_eq!(row.amount, None, "金額も付かない");
+        assert_eq!(row.monetary_amount, None);
+    }
+
+    // 043e-P4b（レビュー指摘 S-1）: **保存済み行が jewels でも、受信側が jewels 以外**なら更新しない。
+    //   これを止めているのは引数側の早期 return **だけ**（SQL の WHERE は保存済み行が jewels なので通る）。
+    #[test]
+    fn stored_jewels_row_is_not_updated_by_incoming_non_jewels() {
+        let conn = test_conn();
+        let mut first = nc("g1", "youtube:u1", "jewels", Some(30.0), Some("JEWELS"), "2026-01-01T00:00:00Z");
+        first.monetary_amount = Some("30 JEWELS".to_string());
+        record_comment(&conn, &first).unwrap();
+
+        let mut resend = nc("g1", "youtube:u1", "chat", Some(9999.0), Some("JPY"), "2026-01-01T00:00:00Z");
+        resend.monetary_amount = Some("9999 JPY".to_string());
+        resend.text = "tampered".to_string();
+        record_comment(&conn, &resend).unwrap();
+
+        let row = comment_row(&conn, "g1");
+        assert_eq!(row.amount, Some(30.0), "受信側が jewels 以外なら金額は据え置き（引数側チェックが守る）");
+        assert_eq!(row.currency.as_deref(), Some("JEWELS"));
+        assert_eq!(row.monetary_amount.as_deref(), Some("30 JEWELS"));
+        assert_eq!(row.text, "hi");
+    }
+
+    // 043e（レビュー指摘 Q-4）: 二重管理の値ドリフト検知。COMBO_UPDATABLE_EVENT_TYPE と UPDATE 文の
+    //   SQL リテラルは**意図的に**別々に持っている（対象が受信側/保存済み行側で異なるため）ので、
+    //   共通化する代わりに値が一致していることだけをテストで固定する。
+    #[test]
+    fn combo_updatable_event_type_matches_sql_literal() {
+        assert_eq!(
+            COMBO_UPDATABLE_EVENT_TYPE, "jewels",
+            "定数を変えたら record_comment の UPDATE 文の AND event_type = 'jewels' も合わせること"
+        );
+    }
+
+    // 043e-P5: jewels の combo 更新後も既存集計の切り分け（043a）は不変。JEWELS は bits にも superchat にも
+    //   入らず、subscription 系にも入らない。total_comments だけが 1 のまま数えられる。
+    #[test]
+    fn jewels_combo_update_does_not_leak_into_other_aggregations() {
+        let conn = test_conn();
+        record_comment(&conn, &nc("g1", "youtube:u1", "jewels", Some(30.0), Some("JEWELS"), "2026-01-01T00:00:00Z")).unwrap();
+        record_comment(&conn, &nc("g1", "youtube:u1", "jewels", Some(900.0), Some("JEWELS"), "2026-01-01T00:00:00Z")).unwrap();
+        let v = viewer(&conn, "youtube:u1");
+        assert_eq!(v.bits_count, 0);
+        assert_eq!(v.bits_amount, 0);
+        assert_eq!(v.superchat_count, 0);
+        assert_eq!(v.superchat_amount, 0.0);
+        assert_eq!(v.subscription_count, 0);
+        assert_eq!(v.total_comments, 1);
     }
 
     // P3e: first/last は published_at の MIN/MAX（順不同で挿入しても正しい）。

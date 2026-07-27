@@ -159,6 +159,7 @@ mod tests {
             month_count: None,
             gift_count: None,
             tier: None,
+            combo_count: None,
         }
     }
 
@@ -254,6 +255,91 @@ mod tests {
             update_note(&conn, "twitch:u1", "a\nb".to_string()).unwrap_err().code,
             ErrorCode::ValidationError
         );
+    }
+
+    // ---- 043e: combo 更新を service 経由で通したときの仕様（§8 検証・非保存・削除手段の非退行）----
+
+    /// 043e: Jewels コメント 1 件の受信 DTO（`combo_count` 付き）。
+    fn jewels_dto(amount: f64, combo: Option<u32>) -> CommentViewDto {
+        let mut d = dto();
+        d.id = "g1".to_string();
+        d.source = CommentSource::Youtube;
+        d.event_type = CommentEventType::Jewels;
+        d.text = "".to_string();
+        d.monetary = Some(CommentMonetaryDto { amount, currency: "JEWELS".to_string() });
+        d.monetary_amount = Some(format!("{amount} JEWELS"));
+        d.combo_count = combo;
+        d
+    }
+
+    // 043e: combo 更新は service 層（trim / 制御文字拒否）を通っても成立し、金額が置き換わる。
+    //   行は増えず、combo_count は**端末に保存されない**（monthCount/giftCount/tier と同じ扱い＝§9）。
+    #[test]
+    fn jewels_combo_update_passes_through_service_and_does_not_persist_combo_count() {
+        let conn = test_conn();
+        record_comment(&conn, jewels_dto(30.0, None), "sess-1".to_string()).unwrap();
+        let r = record_comment(&conn, jewels_dto(90.0, Some(3)), "sess-1".to_string()).unwrap();
+        assert!(!r.first_time, "combo 更新で初見を再点灯させない");
+        assert!(!r.long_absence);
+
+        let detail = get(&conn, "youtube:u1").unwrap();
+        assert_eq!(detail.comments.len(), 1, "combo は論理的に 1 ギフト＝1 行");
+        assert_eq!(detail.comments[0].amount, Some(90.0), "最新の jewels 額へ置き換わる");
+        assert_eq!(detail.comments[0].monetary_amount.as_deref(), Some("90 JEWELS"));
+        assert_eq!(detail.viewer.total_comments, 1);
+        // combo_count を保存する列は存在しない（保存項目を増やさない＝§9 の保存範囲は不変）。
+        // 保存済み行の全列を文字列化しても combo の値（3）はどこにも現れない。
+        let saved = format!("{:?}", detail.comments[0]);
+        assert!(
+            !saved.contains("combo"),
+            "combo_count は端末保存しない（保存行に combo 由来の列が無いこと）"
+        );
+    }
+
+    // 043e(§8): combo 更新の本文に制御文字が入っていたら service が弾き、**既存行は 1 バイトも変わらない**。
+    //   frontend 由来の値が検証をすり抜けて既存レコードを壊さないことの担保（更新経路でも §8 が効く）。
+    #[test]
+    fn jewels_combo_update_with_control_chars_is_rejected_and_leaves_row_intact() {
+        let conn = test_conn();
+        record_comment(&conn, jewels_dto(30.0, None), "sess-1".to_string()).unwrap();
+
+        let mut bad = jewels_dto(90.0, Some(3));
+        bad.text = "combo!\nsecond line".to_string();
+        assert_eq!(
+            record_comment(&conn, bad, "sess-1".to_string()).unwrap_err().code,
+            ErrorCode::ValidationError
+        );
+
+        let detail = get(&conn, "youtube:u1").unwrap();
+        assert_eq!(detail.comments[0].amount, Some(30.0), "拒否された更新は金額も反映しない");
+        assert_eq!(detail.comments[0].text, "", "本文も元のまま");
+    }
+
+    // 043e: combo 更新の本文は trim される（挿入経路と同じ整形が更新経路にも効く）。
+    #[test]
+    fn jewels_combo_update_trims_text() {
+        let conn = test_conn();
+        record_comment(&conn, jewels_dto(30.0, None), "sess-1".to_string()).unwrap();
+        let mut d = jewels_dto(90.0, Some(3));
+        d.text = "  combo!  ".to_string();
+        record_comment(&conn, d, "sess-1".to_string()).unwrap();
+        assert_eq!(get(&conn, "youtube:u1").unwrap().comments[0].text, "combo!");
+    }
+
+    // 043e: プライバシー手段の非退行。combo 更新を経た jewels 行も delete（FK CASCADE）で取り残しなく消える
+    //   （security.md「削除手段は新テーブル・新列ゼロのため取り残しゼロで有効」の担保）。
+    #[test]
+    fn deleting_viewer_removes_combo_updated_jewels_comment() {
+        let conn = test_conn();
+        record_comment(&conn, jewels_dto(30.0, None), "sess-1".to_string()).unwrap();
+        record_comment(&conn, jewels_dto(90.0, Some(3)), "sess-1".to_string()).unwrap();
+        delete(&conn, "youtube:u1").unwrap();
+
+        assert_eq!(get(&conn, "youtube:u1").unwrap_err().code, ErrorCode::NotFound);
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM viewer_comments", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(remaining, 0, "combo 更新済みのコメントも CASCADE で消える");
     }
 
     // P8d/P9: 不在 id は get / update_note / delete いずれも not_found。

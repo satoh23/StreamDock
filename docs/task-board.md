@@ -89,9 +89,13 @@
       ⚠ **既知の未解決課題 → 043e として起票済み（2026-07-27）**: `GIFT_EVENT` は**同一 id が combo 更新で再送される**（公式 proto の `LiveChatMessage.id` に明記）ため、`combo_count` 未採用＋Rust の `INSERT OR IGNORE` と相まって**連続ギフトの Jewels の金額が最初の 1 回ぶんのまま**になる。合計の意味論が公式に無く実データ検証もできないため 043d では記録のみとした。
   - 043e YouTube Jewels の combo 更新に対応（同一 id 再送の取り込み・[docs/tasks/043e-youtube-jewels-combo-fidelity.md](tasks/043e-youtube-jewels-combo-fidelity.md)／
     **受信面拡張（`combo_count`）＋`viewer_comments` の既存行 UPDATE を jewels 限定で解禁＝security-review 必須**）
+    → **2026-07-27 フェーズ1 実装済み・独立レビュー（セキュリティ＋品質）指摘反映済み**（自己 security-review「問題なし」／独立レビュー「軽微な懸念あり」＝実装本体の脆弱性ゼロ・主指摘は二重ロック各層の単独テスト欠落。apply-review で反映済み）
     - **2 フェーズ構成**: フェーズ1（本体・実データ不要）＝ combo 更新を frontend `mergeComments` の新設 `updated` バケット経由で Rust まで到達させ、`event_type='jewels'` 限定で `amount` を差し替える。換算は**最新値をそのまま採る（乗算しない）**＝累計読みなら完全に正しく、単価読みでも**今日より悪くならない**安全側。フェーズ2（実データ入手後）＝ `jewels_amount` が単価と判明したら `× max(combo_count, 1)` を 1 行足して再レビュー。
     - **影響範囲は限定的**（過大に見積もらないこと）: JEWELS を合計するロールアップ列は**現時点で存在しない**（`bits_amount` は `currency='BITS'`・`superchat_amount` は `event_type='superchat'` 条件）。実害はコメント行の金額バッジ表示と `viewer_comments.amount` の値の 2 点で、視聴者一覧の集計は壊れていない。
     - TTS の再読み上げなし・表示行は 1 行のまま金額のみ更新・`jewels` 以外の冪等契約は不変、を完了条件に含める。
+    - **実装の要点**: `mergeComments` の戻り値を `{ next, added, updated }` へ拡張し `updated` は **jewels 限定**（他種別の同一 id は従来どおり完全スキップ＝3 層すべてで挙動不変）。変化判定は **Rust が UPDATE する 4 列＋`comboCount`**（比較キー ⊇ 更新列）。Rust は引数の `viewer_id` を信用せず**保存済み行から所有者を読んで**再計算する。`combo_count` は本体コメント行の「×N」として表示（オーバーレイには出さない）＝フェーズ2 の観測手段。
+    - **テスト**: sidecar `test-youtube-mapper.mjs` **51 → 65 アサート**／`mergeComments.test.ts` **新規 11 件**（従来テスト無し）／`CommentList.test.tsx` +3／Rust `repository.rs` +5。3 種のミューテーションでレッドになることを確認済み。dev-mock に combo 合成発行（`seq%20===12`）を追加し実測（詳細は progress.md）。
+    - ⚠ **フェーズ2 は未了・実データ待ち**: `jewels_amount` が単価か累計かは**今も未確定**（実データ入手不可のまま）。combo が発火する配信を観測できたら再開する。
 - 045 OBSオーバーレイ 分かりやすさ改善（命名見直し＋表示トグル移設・親設計 [docs/tasks/045-obs-overlay-clarity.md](tasks/045-obs-overlay-clarity.md)／「OBSオーバーレイ」→「コメントをOBSに表示」＋表示トグルを本体へ・自動反映(044a)は設定に残置・**034d を部分反転**・frontend のみ）
   - 実装順: 045a → 045b
   - 045a 「OBSオーバーレイ」等の可視文言を「コメントをOBSに表示」系へ統一（OBS 実窓名リテラルは据え置き＝044a の窓名一致を壊さない・**軽レビュー**）
@@ -102,6 +106,11 @@
   - 046b 固定専用オーバーレイ窓（新 label `pinned-overlay`・Rust 窓コマンド3つ＋新 capability＋App.tsx label 分岐＋PinnedOverlayApp＋開閉トグル・表示専用/WS なし・**security-review 必須**）
 - 047 課金チャット 横スクロールティッカー＋クリック展開（単体 [docs/tasks/047-superchat-ticker.md](tasks/047-superchat-ticker.md)／課金チャットを YouTube 風に上部へ横スクロール小表示＋クリックで重ねダイアログ・本体 UI のみ・`isMonetaryEvent`/`superchatTier` 等を流用・043b/043c と共存・**軽レビュー**）
 - 048 ずんだもん読み上げ 文字数上限（単体 [docs/tasks/048-tts-reading-length-cap.md](tasks/048-tts-reading-length-cap.md)／長文コメントは「以下略」で打ち切り・省略は常時有効・文字数は設定で可変（既定60）・`ttsQueue` の合成前チョークポイントで読み上げテキストのみ切詰・表示は全文のまま・**軽レビュー**）
+  → ⚠ **2026-07-28 の読み上げ不具合調査で最優先と確定**。「長文の後のコメントが読まれない」の直接原因は `MAX_BACKLOG=20` の**古い未読の無言破棄**で、290 字の長文 1 件（読み上げ 48〜64 秒）の間に 27〜38 件届き **7〜18 件が捨てられる**。本タスクの文字数上限だけで長文起因の取りこぼしはほぼ解消する（60 字なら破棄 0 件）。**048 → 050 → 049 の順で実装すること**（048/049/050 は同じ `enqueue` を触る）
+- 049 課金イベントの読み上げ（単体 [docs/tasks/049-monetary-event-speech.md](tasks/049-monetary-event-speech.md)／メンシプ継続・メンシプギフト/サブギフト・サブスク・ジュエルが**まったく読み上げられない**＝`ttsQueue` が `comment.text` しか見ず、表示文言は `composeEventMessage` が別途組み立てているため。読み上げ用テキストを getter 注入で差し替える・**課金イベントだけ投稿者名を読む**（通常チャット/スパチャは従来どおり名前を読まない）・jewels の文言は**読み上げ専用で新設**し表示は不変・**軽レビュー**）
+  - ⚠ jewels は **dev-mock でだけ読まれる**（`text = "投げ銭ジュエル 🎁"` が入るため）。実データの `GIFT_EVENT` は本文が空で**本番のみ無音**＝dev 確認では気付けない
+- 050 読み上げ取りこぼしの可視化と保護（単体 [docs/tasks/050-tts-dropout-protection.md](tasks/050-tts-dropout-protection.md)／**黙って諦める経路が 3 つ**〔①backlog 超過の古い未読破棄 ②`synthesize` のタイムアウト無しによる詰まり ③AudioContext suspended 時の 1 件スキップ〕あり、いずれも `console.debug` か無言でユーザーに見えない。件数と理由だけを画面に出す（本文・投稿者名は出さない＝§9）＋合成タイムアウトで詰まりを塞ぐ・**048 実装後に実測してから着手**・**軽レビュー**）
+  - 経路③（AudioContext suspended）は**実機での発生が未確認**。可視化を先に入れて発生の有無を確定させてから挙動変更を判断する（現行の「1 件スキップ」は永久ハング回避のため意図的な設計＝ハングを再発させない形でしか変えない）
 
 ## 保留
 

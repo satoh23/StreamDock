@@ -43,6 +43,10 @@ export interface CanonicalComment {
   monthCount?: number;
   giftCount?: number;
   tier?: number;
+  // 043e: Jewels の combo（連続ギフト）回数（Rust CommentViewDto.comboCount と同形）。
+  // monthCount 等と同じく**表示用途で通すのみ・端末保存しない**。整数のみで個人情報を含まない（§9）。
+  // フェーズ1 では金額計算に使わない（単価か累計かを実機で判別するための観測値）。
+  comboCount?: number;
 }
 
 const EVENT_TYPE_MAP: Record<
@@ -81,6 +85,8 @@ export function toCanonicalComment(
     monthCount: dto.monthCount,
     giftCount: dto.giftCount,
     tier: dto.tier,
+    // 043e: combo 回数もそのまま通す（undefined は JSON 直列化時に落ちる＝Rust 側 None）。
+    comboCount: dto.comboCount,
   };
   if (dto.monetaryAmount) {
     const { currency, amount } = dto.monetaryAmount;

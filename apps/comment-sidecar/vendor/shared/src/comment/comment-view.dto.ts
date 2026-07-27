@@ -25,4 +25,7 @@ export type CommentViewDto = {
   giftCount?: number;
   /** サブスク階級（1/2/3）。 */
   tier?: number;
+  // 043e: Jewels の combo（連続ギフト）回数。表示用の観測値で**金額計算には使わない**（フェーズ1）。
+  /** combo 回数（YouTube Jewels の combo_count・単発/未設定は undefined）。 */
+  comboCount?: number;
 };

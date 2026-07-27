@@ -1,6 +1,19 @@
 # 048 ずんだもん読み上げ 文字数上限（以下略で省略）
 
-> 状態: **未着手（単体タスク）**。
+> 状態: **未着手（単体タスク）**。**読み上げ不具合の調査（2026-07-28）で最優先と確定**。
+>
+> **調査で判明した定量根拠（本タスクが最優先である理由）**: 読み上げは FIFO 直列で、1 件の再生が終わるまで次に進まない
+> （`ttsQueue.ts` の `playing` フラグ・76-114 行）。一方 `MAX_BACKLOG = 20`（19 行）は超過分を**古い未読から破棄**するため、
+> **長文 1 件の読み上げ中に届いたコメントが無言で捨てられる**。「長文コメントの後のコメントが読まれない」の直接原因。
+>
+> | 1 件の長さ | 読み上げ所要（≒4.5〜6 文字/秒） | dev-mock(1800ms) でその間に届く数 | 破棄される数 |
+> | --- | --- | --- | --- |
+> | 290 文字（`dev-mock.ts` の長文枠） | **約 48〜64 秒** | 27〜38 件 | **7〜18 件** |
+> | 60 文字（本タスクの既定上限） | 約 10〜13 秒 | 5〜7 件 | **0 件** |
+>
+> ＝**本タスクだけで長文起因の取りこぼしはほぼ解消する**。残る「バースト起因の破棄」「破棄が見えない」
+> 「合成タイムアウトが無い」は [050](050-tts-dropout-protection.md) が担当（**048 実装後に実測してから着手**）。
+> 同じ `enqueue` を触る [049 課金イベントの読み上げ](049-monetary-event-speech.md) は **本タスクの後に**実装すること。
 >
 > **必読前提**: TTS キュー [`ttsQueue.ts`](../../apps/desktop/src/features/comment-viewer/ttsQueue.ts)、設定永続化 [`ttsPrefs.ts`](../../apps/desktop/src/features/comment-viewer/ttsPrefs.ts)、
 > 設定画面 [`SettingsView.tsx`](../../apps/desktop/src/screens/comment-viewer/SettingsView.tsx)、getter 注入の配線 [`CommentViewerApp.tsx`](../../apps/desktop/src/screens/comment-viewer/CommentViewerApp.tsx)、

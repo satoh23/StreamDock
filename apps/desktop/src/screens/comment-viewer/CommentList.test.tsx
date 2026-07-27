@@ -476,3 +476,41 @@ describe("CommentList 043d YouTube ギフトメンシプ／Jewels", () => {
     expect(screen.queryByText("ビッツ")).toBeNull();
   });
 });
+
+/**
+ * 043e: Jewels の combo 回数（comboCount）の表示仕様テスト。
+ *
+ * 仕様（こうあるべき）:
+ * - comboCount があるときだけ本体（default 変種）に「×N」を出す＝フェーズ2 で「jewels_amount が単価か累計か」を
+ *   実機で判別するための観測手段。単発ギフトは mapper が undefined へ落とすので何も出ない。
+ * - **オーバーレイ（配信画面）には出さない**＝視聴者に見せる情報を増やさない。
+ */
+describe("CommentList 043e combo 回数の表示", () => {
+  const combo = (over: Partial<CommentViewDto> = {}) =>
+    makeComment({
+      source: "youtube",
+      eventType: "jewels",
+      text: "",
+      monetary: { amount: 30, currency: "JEWELS" },
+      monetaryAmount: "30 JEWELS",
+      ...over,
+    });
+
+  it("comboCount があると金額バッジの隣に「×N」が出る", () => {
+    render(<CommentList comments={[combo({ comboCount: 3 })]} />);
+    expect(screen.getByText("30 JEWELS")).toBeTruthy();
+    expect(screen.getByText("×3")).toBeTruthy();
+  });
+
+  it("comboCount が無ければ何も出ない（単発ギフトに「×0」等を作らない）", () => {
+    render(<CommentList comments={[combo()]} />);
+    expect(screen.getByText("30 JEWELS")).toBeTruthy();
+    expect(screen.queryByText(/^×/)).toBeNull();
+  });
+
+  it("overlay（配信画面）には combo 回数を出さない", () => {
+    render(<CommentList variant="overlay" comments={[combo({ comboCount: 3 })]} />);
+    expect(screen.getByText("30 JEWELS")).toBeTruthy();
+    expect(screen.queryByText("×3")).toBeNull();
+  });
+});

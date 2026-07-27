@@ -484,13 +484,24 @@ export function CommentViewerApp() {
     const handle = connectCommentStream({
       onComments: (incoming) =>
         setComments((prev) => {
-          const { next, added } = mergeComments(prev, incoming);
+          const { next, added, updated } = mergeComments(prev, incoming);
+          // added（prev に無い id）だけが読み上げの対象。updated は下で記録のみ行い**ここには渡さない**。
+          // 【レビュー指摘 Q-1】MAX_COMMENTS クランプで next から落ちた jewels 行に後から combo 更新が
+          //   届いた場合は prev に無いため added 側に載る。その再読み上げを防いでいるのは added の構造では
+          //   なく enqueueForSpeech 内の ttsQueue.seenIds（同 id は no-op）＝最終防波堤。詳細は
+          //   mergeComments.ts の docstring。
           enqueueForSpeech(added);
           // 038a: 受信済みコメント（新規分）を Rust の視聴者メモリへ記録する（端末内 SQLite のみ・
           // 端末外へ出さない）。added は comment.id で dedup 済み、Rust 側も INSERT OR IGNORE で冪等なので
           // StrictMode の updater 二重実行でも集計は重複しない（enqueueForSpeech と同じ論拠）。fire-and-forget。
           // 038c: 判定（初見/久しぶり）を handleRecordResult で受け取りバッジ Map を更新する（実挿入の初回のみ肯定）。
           recordComments(added, sessionIdRef.current, handleRecordResult);
+          // 043e: combo 更新（YouTube Jewels の同一 id 再送）は「新規コメント」ではないので、
+          // **読み上げず（added に載らない）記録だけ**行う。判定コールバックを渡さないのは、Rust が更新経路で
+          // 必ず {false,false} を返す＝初見/久しぶりバッジを再点灯させない契約を呼び出し側でも明示するため。
+          // StrictMode で updater が二重実行されると同じ UPDATE が 2 回飛ぶが、同じ値の冪等な上書きであり
+          // 集計は viewer_comments からの全再計算（total_comments は COUNT(*) で不変）なのでドリフトしない。
+          recordComments(updated, sessionIdRef.current);
           return next;
         }),
       onDeviceCode: (prompt) => setDeviceCode(prompt),
