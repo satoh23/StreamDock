@@ -39,6 +39,11 @@ describe("eventLabel", () => {
     expect(eventLabel("bits")).toBe("ビッツ");
     expect(eventLabel("subscription")).toBe("サブスク");
     expect(eventLabel("membership")).toBe("メンバーシップ");
+    // 043a/043d: 種別分離した gift/donation/jewels も必ずラベルを持つ（視聴者詳細パネルの
+    // 空ラベルを避けるために追加した種別なので、ラベル欠落は仕様違反）。
+    expect(eventLabel("gift")).toBe("ギフト");
+    expect(eventLabel("donation")).toBe("ドネーション");
+    expect(eventLabel("jewels")).toBe("ジュエル");
   });
   it("未知イベント（通常チャット等）はラベル無し＝空文字で劣化", () => {
     expect(eventLabel("chat")).toBe("");
@@ -127,6 +132,14 @@ describe("displayEventType", () => {
     expect(displayEventType({ eventType: "subscription" })).toBe("subscription");
     expect(displayEventType({ eventType: "chat" })).toBe("chat");
   });
+  // 043d: Jewels は currency="JEWELS" を持つが superchat ではないので bits 振り分けの対象外。
+  // ここが superchat 側に流れるとラベルが「ビッツ」に化けるため固定する。
+  it("jewels は currency を持っていても jewels のまま（bits/superchat に化けない）", () => {
+    expect(
+      displayEventType({ eventType: "jewels", monetary: { currency: "JEWELS" } }),
+    ).toBe("jewels");
+    expect(displayEventType({ eventType: "gift" })).toBe("gift");
+  });
 });
 
 describe("superchatTier", () => {
@@ -193,6 +206,35 @@ describe("composeEventMessage", () => {
     expect(composeEventMessage({ eventType: "gift", author: alice })).toBe(
       "Aliceさんがサブギフトを贈りました",
     );
+  });
+  // 043d: YouTube の gift は MEMBERSHIP_GIFTING_EVENT（贈与側）で届くため「メンバーシップギフト」と呼ぶ。
+  it("ギフト: YouTube は「メンバーシップギフト」（YouTube 側は tier を持たない）", () => {
+    expect(
+      composeEventMessage({
+        eventType: "gift",
+        source: "youtube",
+        author: alice,
+        giftCount: 5,
+      }),
+    ).toBe("Aliceさんがメンバーシップギフトを5件贈りました");
+    expect(
+      composeEventMessage({ eventType: "gift", source: "youtube", author: alice }),
+    ).toBe("Aliceさんがメンバーシップギフトを贈りました");
+  });
+  // 043d: source 追加で Twitch 側の既存文言が変わらないこと（明示 twitch／source 未指定の両方）。
+  it("ギフト: Twitch は「サブギフト」のまま（source 未指定も同じ＝後方互換）", () => {
+    expect(
+      composeEventMessage({
+        eventType: "gift",
+        source: "twitch",
+        author: alice,
+        giftCount: 5,
+        tier: 1,
+      }),
+    ).toBe("Aliceさんがサブギフトを5件贈りました（Tier1）");
+    expect(
+      composeEventMessage({ eventType: "gift", author: alice, giftCount: 5, tier: 1 }),
+    ).toBe("Aliceさんがサブギフトを5件贈りました（Tier1）");
   });
   it("金額を持つ種別（スパチャ/ドネーション/ジュエル）と chat は null（ラベル＋金額＋本文で表示）", () => {
     expect(composeEventMessage({ eventType: "superchat", author: alice })).toBeNull();

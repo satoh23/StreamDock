@@ -43,6 +43,11 @@ const ALLOWED_HTTPS_WILDCARD_SUFFIXES = [
 // 032c-d コミット2: gRPC チャネルガード用の allow-list。gRPC は fetch/ws を通らないため独立に持つ。
 // **www.googleapis.com:443 のみ**を許可する（fetch の allow-list より狭い＝Twitch/oauth を gRPC target に
 // できない・fail-closed）。streamList の target は Data API base URL（定数）から導出される。
+// 043d(レビュー指摘・2026-07-27／現状維持): 公式ガイドのサンプルコードは `dns:///youtube.googleapis.com:443`
+//   を使っている（本実装の www.googleapis.com でも実際に取得できているため広げない＝受信面最小のまま）。
+//   もし将来 Google が streamList を youtube.googleapis.com へ集約すると、本ガードが fail-closed で遮断し
+//   「原因不明の取得停止」に見える。遮断自体は正しい挙動なので、その症状が出たら**まずここを疑い**、
+//   allow-list への追加は security-review を通してから行うこと。
 const ALLOWED_GRPC_EXACT_HOSTS = new Set<string>(["www.googleapis.com"]);
 const ALLOWED_GRPC_PORT = "443";
 

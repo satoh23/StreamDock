@@ -333,3 +333,146 @@ describe("CommentList 043c オーバーレイ投げ銭カード", () => {
     expect(screen.getByText(long)).toBeTruthy();
   });
 });
+
+/**
+ * 043d: YouTube のギフトメンシプ（贈与側 MEMBERSHIP_GIFTING_EVENT → `gift`）と Jewels（GIFT_EVENT → `jewels`）が
+ * コメビュ本体／オーバーレイの**両方**で正しく描画されることの仕様テスト。
+ *
+ * 仕様（こうあるべき）:
+ * - gift の呼び名は**配信元で異なる**。YouTube は「メンバーシップギフト」、Twitch は従来どおり「サブギフト」。
+ * - 043d は `composeEventMessage` に `source` を足しただけで**呼び出し側の引数を変えていない**。これは
+ *   「CommentList が CommentViewDto を丸ごと渡している（＝source を含む）」という前提に**依存**している。
+ *   その配線が実際に効いていることを本体（renderDefaultItem）と overlay の両分岐で固定する
+ *   （viewerFormat.test.ts は純関数のみを見ており、この配線を検証できない）。
+ * - YouTube 側は `tier` を持たないので「（TierN）」は付かない。
+ * - jewels は**金額を持つ種別**なので、要約文言ではなく「種別ラベル＋金額バッジ＋本文」で見せる。
+ *   currency="JEWELS" は superchat/bits に化けてはいけない（displayEventType の振り分け対象外）。
+ */
+describe("CommentList 043d YouTube ギフトメンシプ／Jewels", () => {
+  it("本体: YouTube の gift は「メンバーシップギフト」の要約文言になる（source が配線されている証拠）", () => {
+    render(
+      <CommentList
+        comments={[
+          makeComment({
+            source: "youtube",
+            eventType: "gift",
+            text: "",
+            giftCount: 5,
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText(/メンバーシップギフトを5件贈りました/)).toBeTruthy();
+    // Twitch 語彙へフォールバックしていないこと（source 渡し忘れの検知）。
+    expect(screen.queryByText(/サブギフト/)).toBeNull();
+    // 課金イベントの種別ラベルが出る。
+    expect(screen.getByText("ギフト")).toBeTruthy();
+  });
+
+  it("overlay: YouTube の gift も「メンバーシップギフト」（本体と同じ語彙）", () => {
+    render(
+      <CommentList
+        variant="overlay"
+        comments={[
+          makeComment({
+            source: "youtube",
+            eventType: "gift",
+            text: "",
+            giftCount: 3,
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText(/メンバーシップギフトを3件贈りました/)).toBeTruthy();
+    expect(screen.queryByText(/サブギフト/)).toBeNull();
+  });
+
+  it("本体: Twitch の gift は「サブギフト」のまま（043d による非退行）", () => {
+    render(
+      <CommentList
+        comments={[
+          makeComment({
+            source: "twitch",
+            eventType: "gift",
+            text: "",
+            giftCount: 5,
+            tier: 1,
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText(/サブギフトを5件贈りました（Tier1）/)).toBeTruthy();
+    expect(screen.queryByText(/メンバーシップギフト/)).toBeNull();
+  });
+
+  it("本体: YouTube の gift に Tier 表記は付かない（YouTube は tier を持たない）", () => {
+    render(
+      <CommentList
+        comments={[
+          makeComment({
+            source: "youtube",
+            eventType: "gift",
+            text: "",
+            giftCount: 1,
+          }),
+        ]}
+      />,
+    );
+    expect(screen.queryByText(/Tier/)).toBeNull();
+  });
+
+  it("本体: 件数が無い YouTube gift は件数なしの文へ無害に劣化する", () => {
+    render(
+      <CommentList
+        comments={[makeComment({ source: "youtube", eventType: "gift", text: "" })]}
+      />,
+    );
+    expect(screen.getByText(/メンバーシップギフトを贈りました/)).toBeTruthy();
+    // 「0件贈りました」を作らない（mapper が 0 を undefined へ落とす設計の表示側担保）。
+    expect(screen.queryByText(/0件/)).toBeNull();
+  });
+
+  it("本体: Jewels は「ジュエル」ラベル＋金額バッジで出す（要約文言は作らない）", () => {
+    render(
+      <CommentList
+        comments={[
+          makeComment({
+            source: "youtube",
+            eventType: "jewels",
+            text: "バラを贈りました",
+            monetary: { amount: 30, currency: "JEWELS" },
+            monetaryAmount: "30 JEWELS",
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText("ジュエル")).toBeTruthy();
+    expect(screen.getByText("30 JEWELS")).toBeTruthy();
+    expect(screen.getByText("バラを贈りました")).toBeTruthy();
+    // 金額を持つ種別は composeEventMessage が null＝「〇〇さんが…しました」の要約文を作らない。
+    // 本文自体が「…贈りました」で終わり得るため、要約文に必ず含まれる「<名前>さんが」で判定する。
+    expect(screen.queryByText(/Aliceさんが/)).toBeNull();
+    // currency=JEWELS が bits/スパチャのラベルへ化けないこと。
+    expect(screen.queryByText("ビッツ")).toBeNull();
+    expect(screen.queryByText("スーパーチャット")).toBeNull();
+  });
+
+  it("overlay: Jewels も金額バッジを出す（本体と同じ）", () => {
+    render(
+      <CommentList
+        variant="overlay"
+        comments={[
+          makeComment({
+            source: "youtube",
+            eventType: "jewels",
+            text: "",
+            monetary: { amount: 30, currency: "JEWELS" },
+            monetaryAmount: "30 JEWELS",
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText("30 JEWELS")).toBeTruthy();
+    expect(screen.queryByText("ビッツ")).toBeNull();
+  });
+});

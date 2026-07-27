@@ -626,9 +626,39 @@ distill（vendor）したもので、keyring・`open`・hono/zod・dotenv・goog
       - **Bits Power-ups**（Twitch `channel.bits.use`）＝既存の bits 表現（`superchat`＋`currency="BITS"`）へ集約。cheer は chat.message で
         取得済のため mapper で二重計上を回避。購読作成は**非致命**（旧トークンは再ログインまで届かない・本線は継続）。
       - **受贈者/贈与者/団体の個人名は wire にも Rust DTO にも載せない・保存しない**（数値属性・金額のみ／§9）。
-      - **（対象外・別タスク 043d）** YouTube のギフトメンシプ（`membershipGiftingEvent`/`giftMembershipReceivedEvent`）・Jewels（`giftEvent`）は
-        API には存在するが **gRPC proto の内部フィールド番号が非公開**で現状の proto/DTO では受信していない。受信には**新規受信面（proto 拡張）**が
-        要り §9（贈与者/受贈者データの取り回し）に波及するため **043d で別途 security-review** とする（本タスクでは発行しない）。
+    - **（043d・YouTube ギフトメンシプ／Jewels の取得＝新規受信面・security-review 済／2026-07-27）** YouTube の
+      **メンバーシップギフト（贈与側 `MEMBERSHIP_GIFTING_EVENT`）**と **Jewels（`GIFT_EVENT`）**を受信するよう gRPC proto を拡張した
+      （それぞれ `gift` / `jewels` 種別。**新規宛先・新規 OAuth スコープ・新規依存はゼロ**＝既存 `youtube.readonly`・既存 gRPC ストリーム内・
+      二層 fail-closed／gRPC チャネルガード `www.googleapis.com:443` のみは不変・リクエストの `part`/`profile_image_size` も不変＝
+      追加リクエスト/クォータ影響なし）。
+      - **前提の訂正**: 043a 時点で「gRPC proto の内部フィールド番号が非公開」と記録していたが**これは誤り**。`liveChatMessages.streamList` は
+        公式メソッドで、Google が `stream_list.proto` の全文（enum 整数値・フィールド番号込み）を公式ガイド
+        `https://developers.google.com/youtube/v3/live/streaming-live-chat` にインライン掲載している。**採用した番号はすべて公式出典（推測ゼロ）**。
+      - **§9 の担保（受贈者情報を「捨てる」のではなく「受信しない」）**: **受領側 `GIFT_MEMBERSHIP_RECEIVED_EVENT` は取り込まない**
+        （1 購入につき受領者数ぶん発火するため贈与側 1 件だけを扱えば二重計上ゼロ）。詳細メッセージ `gift_membership_received_details`（= 32）を
+        **proto に宣言しない**ため、`member_level_name` / `gifter_channel_id` / `associated_membership_gifting_message_id` は
+        **そもそもデコードされない**。新たに受信するのは**数値属性 2 つのみ**（`gift_memberships_count` / `jewels_amount`）で、
+        `gift_memberships_level_name` は不採用。`gift_url`（ギフト画像 URL）は**画像取得＝CSP・§9 の新たな論点を生むため意図的に除外**する
+        （採用する場合は 036b/036c の avatar 基盤と同様の allow-list 追加＋data URI 化＋再レビューが必要）。
+      - **wire/Rust/binding/集計は不変**（043a で整備済みの語彙に乗るだけ）。`viewer_comments` のスキーマ・rollup 列は増やさず、
+        `subscription_count` は既存の `event_type IN ('subscription','membership','gift')` に YouTube ギフトが自然に入る。
+        `JEWELS` は `bits_count`（`currency='BITS'`）にも `superchat_count`（`event_type='superchat'`）にも混ざらない。
+      - **保存範囲**（レビュー指摘・2026-07-27 で表現を精密化）: **列・保存項目は不変だが、gift/jewels の「行」は新たに増える**
+        （＝既存スキーマ上に新イベント種別の行が載るだけで、保存する項目の種類は増えない）。増える値は**数値属性のみ**
+        （`gift_memberships_count` / `jewels_amount`）で個人情報を含まないため、§9 追補 038a の「保存範囲の変更」には当たらない。
+      - **⚠ 既知の未解決課題（過少計上・043e として起票済み／2026-07-27）**: 公式 proto は `LiveChatMessage.id` に
+        「For giftEvents, the same ID may be reused to update the combo count」と明記しており、**`GIFT_EVENT`（Jewels）だけは
+        同一 id が combo 更新で再送される**。現行は `combo_count`（= 8）を採らず、Rust の `INSERT OR IGNORE`（`viewer_comments.id`）
+        が 2 件目以降を落とすため、**連続ギフトの Jewels が 1 回ぶんしか記録されない**。正しい合計の意味論が公式に明記されておらず
+        実データ検証もできないため、**推測での換算は入れない**（043d の「推測ゼロ」原則）。個人情報・外部通信への影響は無く
+        セキュリティ境界の問題ではないが、金額の正確性に関わるため記録する。
+        **対応**: `docs/tasks/043e-youtube-jewels-combo-fidelity.md`（フェーズ1＝combo 更新を Rust まで到達させ `event_type='jewels'`
+        限定で `amount` を差し替える／換算は最新値をそのまま採り**乗算しない**＝過大計上には絶対にならない安全側。
+        フェーズ2＝実データで `jewels_amount` が単価と確定したら `× max(combo_count, 1)` を入れて**再度 security-review**）。
+        043e は**受信面に `combo_count`（整数のみ・個人情報なし）を足し、`viewer_comments` の既存行 UPDATE を jewels 限定で解禁する**ため
+        着手時に security-review を通すこと。
+      - **再検討トリガー**: 「誰が受け取ったか」を表示したい要望が出たら、受領側を**集計対象外の新種別**として起票し直し
+        **再度 security-review** を通す（`membership` 流用は `subscription_count` が N+1 に膨らむため不可）。
   - **プライバシー**: 第三者の氏名・発言・投げ銭履歴を端末に保存するため、**削除手段**を必須とする＝`delete_viewer`
     （個別・FK CASCADE で当該コメントも削除）／`clear_viewers`（全消去）。**アバター（data URI）は保存しない**
     （アイコンは overlay 意匠のみ・§9）。入力（コメント本文・視聴者名・メモ・session_id）は Rust 側で **trim/制御文字拒否**

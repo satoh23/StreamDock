@@ -111,6 +111,19 @@ export const superchatTier = (amount: number, currency: string): number => {
  */
 export interface EventMessageInput {
   eventType: string;
+  /**
+   * 043d: 配信元（"youtube" | "twitch"）。gift の呼び名が配信元で異なるため受け取る。
+   * 未指定は Twitch 語彙（従来の挙動）へフォールバックする。呼び出し側は CommentViewDto を丸ごと
+   * 渡しており source を含むため、引数の変更は不要。
+   *
+   * 043d(レビュー指摘・2026-07-27／修正不要と判断): 任意にしたため渡し忘れると黙って Twitch 語彙に
+   * なる。それでも許容するのは、呼び出しが CommentList.tsx の 2 箇所のみでどちらも CommentViewDto
+   * （source 必須）を丸ごと渡しており、かつ「source 未指定＝サブギフト」をテストで固定してあるため
+   * （既存 CommentAmountInput と同種のレビュー済みトレードオフ）。
+   * 再修正トリガー: CommentViewDto 以外のオブジェクトを組み立てて渡す呼び出しが増えたら、必須化するか
+   * `source?: CommentSource`（union）へ狭めてタイポと渡し忘れを型で弾くこと。
+   */
+  source?: string;
   author: { name: string };
   monthCount?: number;
   giftCount?: number;
@@ -129,10 +142,15 @@ export const composeEventMessage = (c: EventMessageInput): string | null => {
       return c.monthCount != null
         ? `${name}さんがメンバーシップを${c.monthCount}ヶ月継続しました`
         : `${name}さんがメンバーシップに加入しました`;
-    case "gift":
+    case "gift": {
+      // 043d: YouTube の gift は MEMBERSHIP_GIFTING_EVENT（メンバーシップギフトの贈与側）で届くため
+      // 「サブギフト」では文言が誤る。YouTube 側は tier を持たないので tierSuffix は自然に空になる。
+      const giftWord =
+        c.source === "youtube" ? "メンバーシップギフト" : "サブギフト";
       return c.giftCount != null
-        ? `${name}さんがサブギフトを${c.giftCount}件贈りました${tierSuffix}`
-        : `${name}さんがサブギフトを贈りました${tierSuffix}`;
+        ? `${name}さんが${giftWord}を${c.giftCount}件贈りました${tierSuffix}`
+        : `${name}さんが${giftWord}を贈りました${tierSuffix}`;
+    }
     default:
       return null;
   }

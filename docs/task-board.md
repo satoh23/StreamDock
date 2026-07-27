@@ -80,9 +80,18 @@
   - 043c オーバーレイ投げ銭強調（現行意匠単独・037a 非依存・**037b を supersede**・**軽レビュー**）→ **2026-07-26 実装済み**
     （本人指示で **YouTube スパチャ風カード**に具体化＝色付きヘッダ帯＋淡色ボディ／スパチャは金額ティア段階配色・他課金種別は種別単色／金額バッジ／窓透過維持・036a data URI ガード維持／**軽 security-review 通過**）
   - 043d YouTube ギフトメンシプ／Jewels の取得（[docs/tasks/043d-youtube-jewels-gift-membership.md](tasks/043d-youtube-jewels-gift-membership.md)／
-    **API に存在するが gRPC proto のフィールド番号が非公開で保留**＝osareview proto or 実配信キャプチャで番号確定後に着手・受信面拡張＝**security-review 必須**）
-    - **2026-07-26 再判定**: 解除条件 (a) 上流 osareview proto／(b) 実配信キャプチャ **いずれも未充足**（repo に .proto 実ファイル/キャプチャ無し）→ proto 未記入で**保留継続**。解除には osareview 最新 proto の該当メッセージ確認 or 実発火配信での生 gRPC キャプチャが必要（詳細 progress.md 2026-07-26 043d 節）。
-    - **2026-07-26 保留**: 解除条件(b)用の**生 gRPC キャプチャ足場は実装済み（dev 専用・env ゲート・厳密テスト 45 件 PASS・新規宛先/スコープ/依存ゼロ）だが未マージで git stash に退避**（`git stash list` の「043d gRPC capture scaffold」・ブランチ `043d-grpc-capture-spike` 上で作成・`git stash apply` で復元）。ただし**キャプチャ対象に予定した協力配信者が Jewels を終了**したため実配信キャプチャ本番が実施できず**フィールド番号 未確定**＝proto/DTO/mapper 未着手のまま**保留**。再開＝Jewels/メンバーシップ有効な協力配信者の確保 or 自チャンネル収益化 or 上流 proto 入手（詳細は tasks/043d の「保留の経緯」「実装済み足場」節）。
+    受信面拡張＝**security-review 必須**）→ **2026-07-27 実装済み・security-review 通過**（これで 043 系のうち YouTube 網羅が完了）
+    - **2026-07-27 保留解除→実装**: 旧保留の前提「gRPC proto のフィールド番号が非公開」は**誤り**で、Google が `stream_list.proto` の全文（enum 整数値・フィールド番号込み）を公式ガイド `https://developers.google.com/youtube/v3/live/streaming-live-chat` にインライン掲載していた（旧調査は REST リファレンスのみを見ていた）。**採用した番号はすべて公式出典＝推測ゼロ**（`MEMBERSHIP_GIFTING_EVENT=18`／`GIFT_EVENT=21`／`membership_gifting_details=31`／`gift_details=34`／`gift_memberships_count=1`／`jewels_amount=3`）。実配信キャプチャ・協力配信者の確保は**不要化**。
+    - **受領側（`GIFT_MEMBERSHIP_RECEIVED_EVENT`）は取り込まない**（決定1）＝1 購入 N 件発火の二重計上ゼロ。詳細メッセージ（=32）を proto に宣言しないので受贈者情報は**そもそもデコードされない**（§9）。新規宛先/OAuth スコープ/依存ゼロ・wire/Rust/binding/集計 SQL 変更ゼロ。
+    - **あわせて既存バグ 2 件を修正**: `member_month` を公式の `2` へ（旧 1 は `member_level_name`＝string で、マイルストーンのデコードが壊れ `invalid wire type` を throw し得た）／`amount_micros` を `uint64` へ（旧 string はワイヤ型不一致）。`profile_image_url = 104`（036b の「未確定」）も公式一致と確定し注記を解消。
+    - **テスト**: `apps/comment-sidecar/scripts/test-youtube-mapper.mjs`（**51 件 PASS**・**公式 proto でシリアライズ→自 proto でデコード**の往復＋番号アサート＋§9 アサート＋未宣言フィールドのスキップ検証／ミューテーションでレッドになることを確認済み）＋ alias ローダ `scripts/dist-alias-loader.mjs`。sidecar に `test` スクリプトを追加（host-guard/obs/youtube-mapper を一括実行）。旧キャプチャ足場の stash / ブランチ `043d-grpc-capture-spike` は**不要化したが残置**。
+    - **2026-07-27 独立レビュー反映済み**: 一次情報を再取得しての全項目照合で**番号の不一致ゼロ**を確認。`mapJewelsAmount` の 0 扱いを対称化（「0 JEWELS」誤表示の解消）ほかを反映（詳細は progress.md の apply-review 節）。
+      ⚠ **既知の未解決課題 → 043e として起票済み（2026-07-27）**: `GIFT_EVENT` は**同一 id が combo 更新で再送される**（公式 proto の `LiveChatMessage.id` に明記）ため、`combo_count` 未採用＋Rust の `INSERT OR IGNORE` と相まって**連続ギフトの Jewels の金額が最初の 1 回ぶんのまま**になる。合計の意味論が公式に無く実データ検証もできないため 043d では記録のみとした。
+  - 043e YouTube Jewels の combo 更新に対応（同一 id 再送の取り込み・[docs/tasks/043e-youtube-jewels-combo-fidelity.md](tasks/043e-youtube-jewels-combo-fidelity.md)／
+    **受信面拡張（`combo_count`）＋`viewer_comments` の既存行 UPDATE を jewels 限定で解禁＝security-review 必須**）
+    - **2 フェーズ構成**: フェーズ1（本体・実データ不要）＝ combo 更新を frontend `mergeComments` の新設 `updated` バケット経由で Rust まで到達させ、`event_type='jewels'` 限定で `amount` を差し替える。換算は**最新値をそのまま採る（乗算しない）**＝累計読みなら完全に正しく、単価読みでも**今日より悪くならない**安全側。フェーズ2（実データ入手後）＝ `jewels_amount` が単価と判明したら `× max(combo_count, 1)` を 1 行足して再レビュー。
+    - **影響範囲は限定的**（過大に見積もらないこと）: JEWELS を合計するロールアップ列は**現時点で存在しない**（`bits_amount` は `currency='BITS'`・`superchat_amount` は `event_type='superchat'` 条件）。実害はコメント行の金額バッジ表示と `viewer_comments.amount` の値の 2 点で、視聴者一覧の集計は壊れていない。
+    - TTS の再読み上げなし・表示行は 1 行のまま金額のみ更新・`jewels` 以外の冪等契約は不変、を完了条件に含める。
 - 045 OBSオーバーレイ 分かりやすさ改善（命名見直し＋表示トグル移設・親設計 [docs/tasks/045-obs-overlay-clarity.md](tasks/045-obs-overlay-clarity.md)／「OBSオーバーレイ」→「コメントをOBSに表示」＋表示トグルを本体へ・自動反映(044a)は設定に残置・**034d を部分反転**・frontend のみ）
   - 実装順: 045a → 045b
   - 045a 「OBSオーバーレイ」等の可視文言を「コメントをOBSに表示」系へ統一（OBS 実窓名リテラルは据え置き＝044a の窓名一致を壊さない・**軽レビュー**）

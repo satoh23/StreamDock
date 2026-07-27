@@ -1,6 +1,34 @@
 # 043d YouTube ギフトメンシプ／Jewels の取得（受信面拡張）
 
-> 状態: **着手可（2026-07-27）**。旧状態「保留（2026-07-26）」の**保留理由は誤りだった**ため解除する。
+> 状態: **実装済み（2026-07-27）・security-review 通過**。実装記録は [`docs/progress.md`](../progress.md) の
+> 「2026-07-27 (043d YouTube ギフトメンシプ／Jewels の取得…)」節を正とする。セキュリティ方針への反映は
+> [`docs/security.md`](../security.md) 「コメントビューア方針」⑪ の 043d 項。
+> **実装差分の要点**: 下記「このタスクでやること」6 手順をそのまま実施。加えて計画時に 2 点だけ判断を足した——
+> ① DTO の `YouTubeLiveChatMessageType` union を「3 種追加」に留めず**公式 enum と完全一致**させた（proto から
+> 旧独自値 `MESSAGE_DELETED_EVENT`/`MESSAGE_RETRACTED_EVENT` を消すのに union に残すと不整合になるため。参照ゼロを確認済み）。
+> ② mapper の `giftCount` は `loadSync` の `defaults: true` で 0 が入り得るため **0 以下は `undefined` へ劣化**させる
+> （「0 件贈りました」を作らない）。テストは「代替」ではなく**推奨方針**を採用し、公式 proto でシリアライズしたバイト列を
+> 自 proto でデコードする**往復テスト**（39 件 PASS・ミューテーションでレッドになることを確認）に強化した。
+> **未了はユーザー環境のみ**＝フル SEA 再ビルド／dev-mock 目視／実配信での退行確認（とくにマイルストーン月数）／`lsof -i`。
+>
+> **独立レビュー反映済み（2026-07-27）**: 別セッションで一次情報を再取得し proto を全項目照合した結果、
+> **フィールド番号・enum 値・ワイヤ型は全項目が公式と一致（不一致ゼロ）**。指摘対応は progress.md の
+> 「2026-07-27 (043d レビュー指摘の反映＝apply-review)」節を正とする。主な反映は `mapJewelsAmount` の 0 扱いを
+> `mapGiftCount` と対称化（「0 JEWELS」誤表示の解消）・テストの前提固定と未宣言フィールドのスキップ検証追加
+> （39 → 51 アサート）・sidecar への `test` スクリプト追加。
+>
+> ⚠ **既知の未解決課題 → [043e](043e-youtube-jewels-combo-fidelity.md) として起票済み（2026-07-27）**: 公式 proto は `LiveChatMessage.id` に
+> 「For giftEvents, the same ID may be reused to update the combo count」と明記しており、**Jewels（`GIFT_EVENT`）だけは
+> 同一 id が combo 更新で再送される**。現行は `combo_count`（= 8）未採用＋Rust の `INSERT OR IGNORE` のため
+> **連続ギフトの Jewels が 1 回ぶんしか記録されない（過少計上）**。合計の意味論が公式に明記されておらず実データ検証も
+> できないため、推測での換算は入れず**記録のみ**とした。恒久対応は「id 更新型イベント」の受け口が要り
+> **wire/Rust 変更ゼロという 043d の要件を超える**ため 043e に分離した（043e は実データ無しで進むフェーズ1 と、
+> 実データ入手後のフェーズ2 の 2 段構成）。なお影響範囲は**コメント行の金額バッジ表示と `viewer_comments.amount` の値**に
+> 限られ、JEWELS を合計するロールアップ列は現時点で存在しないため視聴者一覧の集計は壊れていない。
+>
+> 以下は着手時点の計画（実装の根拠）としてそのまま残す。
+
+> 旧状態「保留（2026-07-26）」の**保留理由は誤りだった**ため解除した。
 > **誤っていた前提**: 「gift/jewels の gRPC フィールド番号は非公開（内部スキーマ）」→ **公開されている**。`liveChatMessages.streamList` は
 > YouTube Live Streaming API の**公式メソッド**で、Google は `stream_list.proto` の**全文（enum 整数値・フィールド番号込み）を
 > 公式ドキュメントにインライン掲載**している（出典: `https://developers.google.com/youtube/v3/live/streaming-live-chat`）。

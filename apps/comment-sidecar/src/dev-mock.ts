@@ -140,10 +140,11 @@ function makeComment(source: Provider, seq: number): CanonicalComment {
     eventType: "chat",
   };
 
-  // 043a: 種別分離の目視用に投げ銭系イベントを周期で混ぜる（provider 実態に沿う・3/7/9/11/13/17 は %5≠0 で superchat と衝突しない）。
-  //   membership・jewels … YouTube のみ／gift・subscription・donation・power-up … Twitch のみ。
+  // 043a: 種別分離の目視用に投げ銭系イベントを周期で混ぜる（provider 実態に沿う・3/7/9/11/13/14/17 は %5≠0 で superchat と衝突しない）。
+  //   membership・jewels … YouTube のみ／subscription・donation・power-up … Twitch のみ／
+  //   gift … **両方**（Twitch=サブギフト seq%20===13／YouTube=メンバーシップギフト seq%20===14・呼び名が配信元で異なる）。
   //   superchat/bits（額つき）… seq % 5 === 0。付随数値（monthCount/giftCount/tier）・金額は受贈者名/団体名を含まない（§9）。
-  //   ※jewels の取得（ingestion）は 043d（gRPC proto 拡張要）で、ここでは表示/実機確認用に合成のみ発行する。
+  //   ※jewels/gift(YouTube) の取得（ingestion）は 043d で実装済み。ここは表示/実機確認用の合成発行。
   if (seq % 20 === 7 && source === "youtube") {
     comment.eventType = "membership";
     // 043b: 種別要約は表示側が monthCount 等から組み立てるため、本文は視聴者の自由コメントのみ（無しは空）。
@@ -161,6 +162,15 @@ function makeComment(source: Provider, seq: number): CanonicalComment {
     comment.text = ""; // 表示側が「〇〇さんがサブギフトを5件贈りました（Tier1）」を組み立てる。
     comment.giftCount = 5;
     comment.tier = 1;
+  } else if (seq % 20 === 14 && source === "youtube") {
+    // 043d: YouTube のメンバーシップギフト（贈与側 MEMBERSHIP_GIFTING_EVENT → gift）。
+    //   Twitch の gift（上の 13）と**同じ eventType だが表示語彙が異なる**ことの目視用に別枠で発行する
+    //   （表示側は composeEventMessage が source を見て「メンバーシップギフト」へ切り替える）。
+    //   tier は**付けない**: YouTube に階級の概念が無く、実データでも未設定で届くため（＝「（TierN）」が
+    //   出ないことの確認も兼ねる）。受贈者名は持たない＝件数のみ（§9・決定1 で受領側は取り込まない）。
+    comment.eventType = "gift";
+    comment.text = ""; // 表示側が「〇〇さんがメンバーシップギフトを5件贈りました」を組み立てる。
+    comment.giftCount = 5;
   } else if (seq % 20 === 17 && source === "twitch") {
     comment.eventType = "subscription";
     comment.text = "いつも応援してます！"; // 視聴者が添えた自由コメント（要約の下に表示される）。

@@ -5843,3 +5843,116 @@ YouTube のギフトメンシプ／Jewels は **API に存在するが gRPC prot
 - **docs**: security.md §1 例外に「作成/再利用ソースの表示・非表示切替（SetSceneItemEnabled・削除しない）・新規外部宛先/依存ゼロ」を明記。
 - **対象**: sidecar `obs-client.ts`／`index.ts`。frontend `commentStream.ts`／`CommentViewerApp.tsx`／`SettingsView.tsx`／`CommentViewerApp.module.css`。docs `security.md`。テスト `SettingsView.obs.test.tsx`／`commentStream.obs.test.ts` 更新。
 - **未了**: フル `build:sidecar` 再ビルド後の macOS 実機 E2E（表示OFF→OBS で非表示／ON→再表示／短幅レイアウト目視／`lsof` で loopback 限定）。Windows(098) は従来どおり未検証。
+
+## 2026-07-27 (043d YouTube ギフトメンシプ／Jewels の取得＝公式 proto で番号確定・受信面拡張・実装)
+
+043d を**保留解除して実装**（本人「実装して」）。旧保留の前提「gift/jewels の gRPC フィールド番号は非公開」は**誤り**で、`liveChatMessages.streamList` は公式メソッドであり **Google が `stream_list.proto` の全文（enum 整数値・フィールド番号込み）を公式ガイドにインライン掲載**している（出典 `https://developers.google.com/youtube/v3/live/streaming-live-chat`）。実装セッションでも同ページを独立に再取得し、タスクの番号表と**完全一致**を確認した（**推測ゼロ**）。あわせて公式 proto との既存ズレ 2 件を修正。**新規受信面のため security-review 実施（通過）**。
+
+- **確定した公式番号（すべて出典あり）**: `MEMBERSHIP_GIFTING_EVENT = 18`／`GIFT_MEMBERSHIP_RECEIVED_EVENT = 19`（enum のみ宣言）／`GIFT_EVENT = 21`／`membership_gifting_details = 31`／`gift_details = 34`／`LiveChatMembershipGiftingDetails.gift_memberships_count = 1`／`LiveChatGiftDetails.jewels_amount = 3`。enum は公式集合へ整合（`TOMBSTONE=2`/`FAN_FUNDING_EVENT=3`/`CHAT_ENDED_EVENT=4`/`SPONSOR_ONLY_MODE_{STARTED,ENDED}_EVENT=5,6` を追加、**公式に存在しない `MESSAGE_DELETED_EVENT=8`/`MESSAGE_RETRACTED_EVENT=9`（旧 vendored 独自値）を削除**）。未採用フィールドは**番号だけコメントに記録**（`text_message_details=19`/`user_banned_details=22`/`new_sponsor_details=29`/`poll_details=33`/SuperChat の `amount_display_string=3`・`user_comment=4`・`tier=5`/SuperSticker の 3/4/5/author の `channel_url=102`・`is_verified=4`〜`is_chat_moderator=7`/response の `page_info=1004`・`active_poll_item=1008`）。
+- **判明した既存バグ 2 件を修正**:
+  - **`member_month = 1` → `2`**（公式の 1 は `member_level_name`＝string）。string を uint32 として読むため月数が誤るだけでなく**読み取り位置が壊れる**。ミューテーション検証で実測したところ protobufjs が `invalid wire type 6` を **throw** した＝マイルストーン到達時にそのメッセージ（バッチ）ごとデコードが落ちていた可能性が高い。修正で正しい月数を読む。
+  - **`amount_micros` を `string` → `uint64`**（公式型。string=length-delimited と uint64=varint でワイヤ型不一致だった）。`loadSync` の `longs: String` により uint64 は文字列で届くため、**DTO（`amount_micros: string`）と mapper（`Number(...)`）は無変更**で正しく動く（根拠を DTO にコメント化）。
+  - `author_details.profile_image_url = 104` は**公式と一致＝正しいと確定**し、036b の「⚠ 未確定（要実レスポンス検証）」注記を解消。
+- **決定1（受領側を取り込まない）を proto の宣言で担保**: `gift_membership_received_details = 32` は**そもそも宣言しない**ため、`member_level_name`/`gifter_channel_id`/`associated_membership_gifting_message_id` は**デコードされない**（§9 最整合・1 購入 N 件発火の二重計上ゼロ）。「受信してから捨てる」ではなく「受信しない」構造。
+- **公式構造のうち意図的に採らなかったもの**（ワイヤ表現は同一・理由を proto にコメント）: `oneof displayed_content`（`oneofs: true` で仮想プロパティが増えるだけ）／`TypeWrapper.Type` ネスト／`google.protobuf.Duration`（`gift_duration` 不採用のため import 不要・SEA の proto 解決経路は単一ファイルのまま不変）。`gift_url` は**画像取得＝CSP/§9 の新論点を生むため意図的に除外**。
+- **mapper 配線**: `MEMBERSHIP_GIFTING_EVENT → gift`／`GIFT_EVENT → jewels`。受領側は**マップに載せない**（未対応 type 除外で 0 件・理由と再修正条件をコメント）。`giftCount` は `defaults: true` で 0 が入るケースを `mapGiftCount` で undefined へ劣化（「0 件贈りました」を作らない・Twitch の `?? 1` とは意図的に別扱い）。Jewels は `mapJewelsAmount` で `{ currency: "JEWELS", amount }`（**micros 換算しない**＝043a dev-mock と同形）。
+- **表示語彙の最小修正**: `composeEventMessage` に `source?` を追加し、YouTube の gift は「〇〇さんが**メンバーシップギフト**を N 件贈りました」（Twitch は従来どおり「サブギフト」）。呼び出し側 `CommentList.tsx`（136/262 行）は `CommentViewDto` を丸ごと渡しており `source` を含むため**引数変更なし**。
+- **波及なし（実コードで確認・変更ゼロ）**: shared `COMMENT_EVENT_TYPES.GIFT/.JEWELS`・converter の素通し・`wire.ts` の `EVENT_TYPE_MAP`・Rust `CommentEventType::Gift/::Jewels`＋`gift_count`・ts-rs binding・集計 SQL（`subscription_count = event_type IN ('subscription','membership','gift')` に YouTube ギフトが自然に入り、`JEWELS` は `bits_count`（`currency='BITS'`）にも `superchat_count`（`event_type='superchat'`）にも混ざらない）はすべて 043a 済み。リクエストの `part`/`profile_image_size` も不変＝**追加リクエスト・クォータ影響なし**。
+- **Jewels の金額バッジ表記（既知の差・現状維持を選択）**: `wire.ts` は BITS のみ特別扱いのため、実データの Jewels は `"30 JEWELS"`、dev-mock は `"30 jewels"` と大小が食い違う。**wire 無変更を優先して現状のまま**とした（金額自体は正確・機能影響なし）。統一したくなったら `toCanonicalComment` に JEWELS 分岐を 1 行足す。
+- **テスト（sidecar にテスト基盤が無いため `scripts/test-*.mjs` 慣行に合わせて新設）**: `scripts/test-youtube-mapper.mjs`（**39 件 PASS**）＋ alias 解決ローダ `scripts/dist-alias-loader.mjs`（tsc は `@comment-dock/*` を emit 後も書き換えないため。stash の同目的実装と同内容を新規に書き起こし・stash は未変更）。中身は ① **自 proto の番号/型を公式表と突き合わせるアサート**、② **公式 proto（全フィールド）でシリアライズしたバイト列を自 proto でデコードして mapper に通す往復テスト**（＝実配信と同じ経路。番号ズレがあれば必ず落ちる。gift/jewels は実発火機会が乏しいため事実上唯一の自動検証手段）、③ §9 アサート（`gifter_channel_id`/`gift_memberships_level_name`/`gift_url` がデコード結果に現れない）。**ミューテーション検証**（`member_month` を旧 1 に戻す）で 4 件 FAIL することを確認済み＝レッドになるテストであることを担保。desktop 側は `viewerFormat.test.ts` に YouTube gift 文言＋Twitch gift 不変（`source` 明示/未指定の両方）を追加。
+- **セキュリティ（security-review 実施・判定「問題なし」）**: **新規宛先ゼロ**（`build/sidecar.cjs` の外部宛先を実測し allow-list と完全一致を確認）・**新規 OAuth スコープゼロ**（`youtube.readonly` のみ）・**新規依存ゼロ**。`host-guard.ts`／`register-youtube-deps.ts`（gRPC チャネルガード `www.googleapis.com:443` のみ）／`tauri.conf.json`／`capabilities/`／`package.json`／`Cargo.toml` は **git 上で無変更**。`csp: null` 不変。追加コードにログ出力ゼロ。proto のズレ修正は既存フィールドを正しい番号/型で読むだけで**受信データ項目を増やさない**。dev スクリプト 2 本はバンドル非同梱（実バンドルを grep して確認）で、一時ファイル運用は `youtube-grpc-runtime.ts` に明文化済みの既存慣行（mkdtemp 0700・非機密 proto）と同一。
+- **対象ファイル**: 変更 = sidecar `vendor/comment-fetcher/src/adapters/youtube/client/stream-list-proto.ts`／`.../dto/raw.dto.ts`（`membership_gifting_details?`/`gift_details?`＋新規 2 型＋union を公式 enum と一致させ旧独自値 2 件を除去）／`.../mapper/comment.mapper.ts`、desktop `src/screens/comment-viewer/viewerFormat.ts`／`viewerFormat.test.ts`、docs `security.md`（方針⑪の「043d は対象外・番号非公開」記述を実施済みへ更新）・`task-board.md`・`tasks/043d-*.md`・本エントリ。新規 = sidecar `scripts/test-youtube-mapper.mjs`／`scripts/dist-alias-loader.mjs`。**Rust / wire / binding / 集計 SQL は変更なし**。
+- **検証（全 PASS）**: `pnpm --filter @stream-dock/comment-sidecar typecheck`／`pnpm --filter ./apps/desktop typecheck`・`lint`／`cargo check`／`pnpm --filter ./apps/desktop test`（12 files・**109 tests**）／`build:bundle`（禁止依存アサート PASS）／`node scripts/test-host-guard.mjs`（HOST-GUARD PASS）／`node scripts/test-youtube-mapper.mjs`（**39 件 PASS**）。
+- **未了（ユーザー環境・要実施）**: ①**フル SEA 再ビルド**＝`TWITCH_CLIENT_ID=... YOUTUBE_CLIENT_ID=... YOUTUBE_CLIENT_SECRET=... pnpm --filter ./apps/desktop build:sidecar`（sidecar 変更の反映に必須）。②**dev-mock で表示回帰**（jewels/gift の行が種別ラベル＋「メンバーシップギフト」文言＋金額バッジで出る）。**注意: dev-mock の Jewels は `"30 jewels"`（小文字）、実データは `"30 JEWELS"`（大文字）と表記が食い違うのが既知・正常**（wire 無変更を優先した結果。不具合ではないので実機確認時に誤認しないこと）。③**実配信（通常チャットのみで可）で退行確認**＝通常/新規メンバー/マイルストーンが届くこと、**とくにマイルストーンの月数が正しい**こと（従来は破損・上記のとおり throw していた可能性あり）。④gift/jewels の実データは発火機会があれば確認（機会が無くても番号は公式確定済み＝実装完了扱い）。⑤`lsof -i` で外部 ESTABLISHED が sidecar PID 配下・既存 allow-list のみ。⑥コミットは本人指示待ち（現在 `main` ブランチ・未コミット）。⑦stash / ブランチ `043d-grpc-capture-spike` は**不要化したがそのまま残置**（破棄は本タスクでは行わない）。
+
+## 2026-07-27 (043d レビュー指摘の反映＝apply-review)
+
+043d の実装差分に対する**独立レビュー**（別セッション・一次情報を再取得して proto を全項目照合）の指摘を反映した。
+**proto のフィールド番号・enum 値・ワイヤ型は全項目が公式と一致＝不一致ゼロ**と確認されたため、番号の修正は無い。
+以下は指摘に対する対応のみ。
+
+- **【重大・記録のみ／別タスク起票待ち】`GIFT_EVENT` の combo による Jewels 過少計上**: 公式 proto は `LiveChatMessage.id` に
+  「For giftEvents, the same ID may be reused to update the combo count」と明記しており、**Jewels だけは同一 id が combo 更新で
+  再送される**。現行は `combo_count`（= 8）未採用＋Rust の `INSERT OR IGNORE`（`viewer_comments.id`）のため、**連続ギフトが
+  1 回ぶんしか記録されない**。合計の意味論が公式に明記されておらず実データ検証もできないため**推測での換算は入れず**、
+  proto（`LiveChatMessage.id`）・mapper（`GIFT_EVENT` 行）・security.md 方針⑪・本エントリに**既知課題として記録**するに留めた。
+  恒久対応は「id 更新型イベント」の受け口が要り 043d の要件（wire/Rust 変更ゼロ）を超えるため**別タスク**とする。
+- **【修正】`mapJewelsAmount` の 0 扱いを `mapGiftCount` と対称化**: `defaults: true` により「`gift_details` は在るが
+  `jewels_amount` 未設定」だと 0 が入り、金額バッジに**「0 JEWELS」と誤表示**されていた（実測確認）。`amount <= 0` を
+  `undefined` へ落とし、`eventType=jewels` は維持（種別ラベルは出て金額バッジだけ出ない）。回帰テスト ③-2 を追加。
+- **【修正】テストの前提固定**: `ok(..., c?.x, undefined)` 形式の否定アサートは c が undefined だと**素通り**していた
+  （デコード例外時に緑になり得る）。`one()` ヘルパで「ちょうど 1 件に写る」を先に固定してから個別フィールドを見る形に変更。
+  `JSON.stringify(c)` が c=undefined で TypeError になる問題も同時に解消。
+- **【修正】未宣言フィールドのスキップ経路を実際に試す**: 送信側 proto が公式より不足しており、`page_info=1004` /
+  `active_poll_item=1008` / `text_message_details=19` / `user_banned_details=22` / `new_sponsor_details=29` / `poll_details=33` /
+  `super_sticker_metadata=5` のスキップが**一度も試されていなかった**。送信側を公式の全フィールドへ揃え、テスト ⑦ で
+  「隣接番号（`poll_details=33` の直後に `gift_details=34`／`items=1007` の隣に `active_poll_item=1008`）を跨いでも
+  採用フィールドが正しく読める」ことと「BAN された第三者情報を受信しない（§9）」を表明。**39 → 51 アサート**。
+- **【修正】sidecar のテストが CI/慣行から呼ばれない孤児だった**: `package.json` に `test` スクリプトを追加
+  （`build:tsc` → `test-host-guard.mjs` → `test-obs-client.mjs` → `test-youtube-mapper.mjs`）。
+  **セキュリティ回帰ガードである `test-host-guard.mjs` すら自動実行経路が無かった**ため、これが最も効く整理。
+- **【コメントのみ・修正不要と判断】**: ①DTO の `type` union は実行時に未知 enum が **`number`** で届くが、唯一の利用箇所が
+  `in` 判定で正しく除外されるため実害ゼロ（再修正トリガーを DTO に明記）。②`amount_micros: string` と `longs: String` の
+  暗黙結合はスパチャ往復テストがレッドで気付ける形で担保済み。③`source?: string` の任意化は呼び出し 2 箇所が
+  `CommentViewDto` を丸ごと渡す前提＋テストで固定済み。④`ok()` の `JSON.stringify` 比較の限界。
+  ⑤`dist-alias-loader.mjs` と `build-sea.mjs` の alias **二重管理**（共通化しない理由と再修正トリガーを明記）。
+  ⑥gRPC allow-list は `www.googleapis.com` のまま（公式サンプルは `youtube.googleapis.com:443`。将来 Google が集約したら
+  fail-closed で遮断され「原因不明の取得停止」に見えるため、**まずここを疑う**旨を host-guard.ts に明記）。
+- **【指摘なし＝妥当と確認された点】**: `FAN_FUNDING_EVENT` を mapper に載せない判断（2017年2月に終了済み＋**公式 proto の
+  snippet oneof に `fan_funding_details` が存在しない**＝金額をデコードする手段が無い）／`part` は `id,snippet,authorDetails`
+  で gift/jewels の詳細が返る（詳細は snippet 配下）／`profile_image_url = 104` の注記削除／計画からの逸脱 2 点。
+- **レビューで判明した追加事実**: 旧 `member_month = 1` バグの影響範囲は「1 メッセージ」ではなく、実測で
+  **バッチ全体（`LiveChatMessageListResponse` 内の全 items）が失われ、さらに `api.client.ts` の `stream.on("error")`
+  経由で gRPC ストリームごと終了**していた。マイルストーン到達のたびにコメント取得が切断・再接続していた可能性が高く、
+  当初の想定（月数が誤値）より 2 段階重症。**この修正が 043d で最も価値がある**。
+- **検証**: `pnpm --filter @stream-dock/comment-sidecar test`（**51 アサート PASS**・host-guard/obs 含む）／
+  `typecheck`（sidecar・desktop）／`lint`／`pnpm --filter ./apps/desktop test`（12 files・109 tests）／`cargo check`／
+  `build:bundle`＋バンドル内 URL の allow-list 一致・dev スクリプト非同梱（0 件）を再確認。
+
+## 2026-07-27 (043e 起票: YouTube Jewels の combo 更新に対応)
+
+043d レビューで判明した「`GIFT_EVENT` の combo による Jewels 金額の据え置き」を、独立タスク
+[`docs/tasks/043e-youtube-jewels-combo-fidelity.md`](tasks/043e-youtube-jewels-combo-fidelity.md) として起票した。
+起票にあたり**実コードで経路を全て確認**し、043d レビュー初報の見立てを 2 点訂正している。
+
+- **訂正1（影響範囲は限定的）**: JEWELS を合計するロールアップ列は**現時点で存在しない**
+  （`bits_amount` は `currency='BITS'`／`superchat_amount` は `event_type='superchat'` 条件のため）。
+  実害は**コメント行の金額バッジ表示**と **`viewer_comments.amount` の値**の 2 点で、視聴者一覧の集計は壊れていない。
+  `total_comments` も combo 1 回＝1 行で正しい。
+- **訂正2（React duplicate key は発生しない）**: `mergeComments.ts:27` が id 重複を先に弾くため、
+  レビュー初報の「`key={c.id}` が重複しうる」は誤り。実際は**3 層すべて**（`mergeComments` の id 重複排除／
+  `ttsQueue` の `seenIds`／Rust の `INSERT OR IGNORE`）が捨てており、combo 更新は **Rust に到達すらしていない**。
+- **一次情報の追加確認**: REST リファレンス（`.../live/docs/liveChatMessages`）で
+  `comboCount` は「The combo count of the gift; **0 if not a combo**」、`jewelsAmount` は
+  「The amount of Jewels **redeemed for the gift**」と確認。**単価か累計かは公式に明記が無い**ため、
+  043e は「最新値をそのまま採る（乗算しない）」フェーズ1 と、実データ確定後に
+  `× max(combo_count, 1)` を入れるフェーズ2 の 2 段構成とした（`combo_count = 0` があるため素の乗算は不可）。
+- **043e の要点**: `mergeComments` に `updated` バケットを新設して表示 1 行のまま金額のみ更新し、
+  TTS は再読み上げしない。Rust は `event_type='jewels'` 限定で `amount` を差し替え、既存の冪等契約は他種別で不変。
+  受信面に `combo_count`（整数・個人情報なし）を足し `viewer_comments` の既存行 UPDATE を解禁するため
+  **着手時に security-review 必須**。
+- あわせて 043d 側の記述（proto コメント・mapper コメント・security.md 方針⑪・task-board・043d タスクファイル）の
+  「別タスク起票待ち」を **043e 参照**へ更新した。
+
+## 2026-07-27 (dev-mock: YouTube メンバーシップギフトの合成発行を追加)
+
+043d の未了②「dev-mock で表示回帰」を確認しようとしたところ、**dev-mock が YouTube の gift を一度も発行していない**
+ことが判明した（`makeComment` の gift 分岐は `seq % 20 === 13 && source === "twitch"` のみ）。jewels は 043a 時点から
+発行済みだったが、**043d で最も見た目が変わった「メンバーシップギフト」の文言が dev-mock では永久に出ない**状態だった。
+
+- **追加**: `apps/comment-sidecar/src/dev-mock.ts` の `makeComment` に
+  `seq % 20 === 14 && source === "youtube"` の gift 分岐（`giftCount = 5` / `tier` は付けない / `text` は空）。
+  表示側 `composeEventMessage` が `source` を見て「〇〇さんがメンバーシップギフトを5件贈りました」を組み立てる。
+  **`tier` を付けない**のは実データに合わせるためで、「（TierN）」が出ないことの目視確認も兼ねる。
+- **周期に 14 を選んだ理由**: 既存コードの設計原則「%5≠0 で superchat と衝突しない」に従った（15 は
+  `15 % 5 === 0` で `seq % 5 === 0` のスパチャ枠を奪うため不可）。13（Twitch gift）の隣に置き対応関係を読みやすくした。
+- **実行時検証**: フェイクタイマーで `createMockCommentSource` を駆動し seq 1..60 を確認。
+  gift が **14 / 34 / 54**（`source: "youtube"` / `giftCount: 5` / `tier: undefined`）、jewels が **9 / 29 / 49**
+  （30 → 100 → 500 jewels を巡回）、superchat は **15 を含む %5===0 で従来どおり発火**＝**枠の奪い合いなし**を実測。
+- **セキュリティ**: 既定 OFF の env ゲート（`COMMENT_SIDECAR_MOCK=1`）内のみ・**新規外部宛先ゼロ**
+  （dev-mock に通信コードは存在せず、合成フレームを既存 loopback WS に流すだけ）。バンドル内の宛先一覧が
+  allow-list と一致することを再確認済み。受贈者名は持たず件数のみ（§9・043d 決定1 と整合）。
+- **実機確認時の注意（既知・正常）**: ①`seq` は provider 共通カウンタのため **Twitch と同時接続すると
+  jewels / gift が出ないことがある**（YouTube 単独接続で確認すること。`EMIT_INTERVAL_MS = 1800ms` なので
+  単独なら約 36 秒に 1 回）。②dev-mock の Jewels は `"30 jewels"`（小文字）、実データは `"30 JEWELS"`（大文字）。
+- **検証**: `typecheck` ／ `pnpm --filter @stream-dock/comment-sidecar test`（123 PASS）／ `build:bundle`＋宛先 grep。
