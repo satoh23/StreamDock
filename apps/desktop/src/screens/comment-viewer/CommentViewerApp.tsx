@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CommentViewDto } from "../../features/comment-viewer/types";
 import {
   createTtsQueue,
@@ -46,6 +46,14 @@ import {
   loadObsAutoAdd,
   saveObsAutoAdd,
 } from "../../features/comment-viewer/overlaySettings";
+// 046a: 固定コメント（ピン留め）のピンストア。本体が唯一の書き手で、046b の固定専用オーバーレイが読み手になる。
+import {
+  loadPinned,
+  savePinned,
+  toPinned,
+  PINNED_LIMIT,
+  type PinnedComment,
+} from "../../features/comment-viewer/pinnedComments";
 // 044a: OBS 連携（方式A）。config 検出・パスワード設定は Rust command 経由、連携 ON/OFF は WS 制御フレーム。
 import {
   detectObsWebsocketConfig,
@@ -65,6 +73,7 @@ import { CommentList } from "./CommentList";
 import { SettingsView } from "./SettingsView";
 import { ViewersView } from "./ViewersView";
 import { ViewerDetailPanel } from "./ViewerDetailPanel";
+import { PinnedCommentBar } from "./PinnedCommentBar";
 import { viewerIdOf } from "./viewerFormat";
 import { ConnectionCard } from "./ConnectionCard";
 import { ToggleSwitch } from "./ToggleSwitch";
@@ -322,6 +331,18 @@ export function CommentViewerApp() {
     loadOverlayShowSource(),
   );
 
+  // 046a: 固定コメント（ピン留め）。窓を開き直しても復元するよう localStorage から初期化し、変化のたびに保存する
+  // （channel / overlayFont と同型）。書換は他窓（046b の固定専用オーバーレイ）で storage イベントを発火させる。
+  // 上限は PINNED_LIMIT（046a では 1＝単一ピン）で、超過分は最古から押し出す。
+  //
+  // 固定は**固定した時点のスナップショット**（comments の参照ではなくコピー）。狙いは ①一覧が MAX_COMMENTS で
+  // クランプされて流れ去っても固定が残る ②046b が WS 無しで描ける、の 2 点。代償として、043e の jewels combo 更新
+  // （mergeComments が既存行を上書きする唯一の経路）が後から届いても固定側の金額/combo は古いままになる。
+  // 固定は「見失わないための再掲」で、更新は流れる一覧側で見えるため許容する。
+  // 再修正トリガー＝固定した投げ銭の金額が伸びていくのを固定側でも追いたくなったら、mergeComments の updated を
+  // 拾って pinned の同 id を差し替える（そのときも保存形は変えなくてよい）。
+  const [pinned, setPinned] = useState<PinnedComment[]>(() => loadPinned());
+
   // 044a: OBS 連携（方式A＝ウィンドウキャプチャ自動追加）。
   // - obsConfig: OBS の WebSocket 設定の read-only 検出結果（有効/ポート/認証要否）。null=未検出（未導入/未設定）。
   // - obsAutoAdd: 「OBS へ自動追加（連携）」トグルの永続状態（非機密・localStorage）。パスワードは保存しない。
@@ -397,6 +418,12 @@ export function CommentViewerApp() {
   useEffect(() => {
     saveObsAutoAdd(obsAutoAdd);
   }, [obsAutoAdd]);
+  // 046a: 固定コメントを永続化（非機密の表示データのみ・アバターは載せない）。解除時は "[]" を書いて
+  // 046b 側にも「解除」が伝わるようにする（savePinned がキーを消さない理由はそちらの JSDoc 参照）。
+  // Rust の DB/ログには渡さない（recordComments 等の保存経路には流さない・§9）。
+  useEffect(() => {
+    savePinned(pinned);
+  }, [pinned]);
 
   // 033c: 安定コールバック（enqueueForSpeech / launchEngine）から最新値を読むための ref 同期。
   useEffect(() => {
@@ -492,6 +519,28 @@ export function CommentViewerApp() {
       });
     },
     [],
+  );
+
+  // 046a: コメント行の右クリックメニューから呼ばれる**固定トグル**。既に固定済みの id なら解除、そうでなければ
+  // 先頭（最新）に足して PINNED_LIMIT でクランプする（046a では 1＝直前の固定を置き換える単一ピン）。
+  // toPinned が author.avatar を落とすので、localStorage に data URI は載らない。
+  const handleTogglePin = useCallback((comment: CommentViewDto) => {
+    setPinned((prev) =>
+      prev.some((p) => p.id === comment.id)
+        ? prev.filter((p) => p.id !== comment.id)
+        : [toPinned(comment), ...prev].slice(0, PINNED_LIMIT),
+    );
+  }, []);
+
+  // 046a: 固定帯の「固定解除」導線。
+  const handleUnpin = useCallback((id: string) => {
+    setPinned((prev) => prev.filter((p) => p.id !== id));
+  }, []);
+
+  // 046a: メニュー文言（「上部に固定」/「固定解除」）の出し分け用。CommentList は表示のためだけに参照する。
+  const pinnedIds = useMemo(
+    () => new Set(pinned.map((p) => p.id)),
+    [pinned],
   );
 
   // 032c-b: Twitch コメント取得 sidecar の単一双方向 WS に接続する。受信コメントは表示へ流し
@@ -1130,6 +1179,11 @@ export function CommentViewerApp() {
             </div>
           )}
 
+          {/* 046a: 固定コメント帯。クレジット（法的必須表記）と ENGINE バナー（role="alert"）の下、コメント一覧の
+              直上に置く＝一覧に直結する情報を一覧の隣に置きつつ、上 2 つの優先度を崩さない。固定 0 件のときは
+              PinnedCommentBar が null を返し、この機能を使わないユーザーには既存レイアウトが完全に不変。 */}
+          <PinnedCommentBar pinned={pinned} onUnpin={handleUnpin} />
+
           {/* 034a: 本体は最新コメントへ自動追従（下端で追従・スクロールアップで解除＋「最新コメント N件 ↓」ボタン）。
               追従判定は useFollowScroll（CommentList 内）に集約し、034b はオーバーレイに followMode="always" を渡して再利用する。 */}
           {/* 038b フォローアップ: コメント一覧（左・流れ続ける）＋クリックで開く視聴者詳細（右）のスプリット。
@@ -1146,6 +1200,8 @@ export function CommentViewerApp() {
                 followMode="release"
                 onSelect={(c) => setSelectedViewerId(viewerIdOf(c))}
                 badges={viewerBadges}
+                onPin={handleTogglePin}
+                pinnedIds={pinnedIds}
               />
             </div>
             {selectedViewerId !== null && (

@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useCallback, useRef, useState } from "react";
 import type { CommentViewDto } from "../../features/comment-viewer/types";
 import type { RecordResult } from "../../features/viewer-memory/types";
 import {
@@ -7,6 +7,7 @@ import {
 } from "../../features/comment-viewer/useFollowScroll";
 import styles from "./CommentViewerApp.module.css";
 import overlayStyles from "./OverlayComment.module.css";
+import { CommentContextMenu } from "./CommentContextMenu";
 import {
   composeEventMessage,
   displayEventType,
@@ -17,8 +18,12 @@ import {
 
 /**
  * 033b: 受信コメントの一覧描画（listHeader の総数＋`<ol>` 本体）。`CommentViewerApp` の肥大化対策で切り出した
- * 表示専用コンポーネント（state を持たず props の `comments` を描画するだけ）。033f（OBS 透過オーバーレイ）が
- * この一覧描画を再利用する。
+ * 表示コンポーネント（接続/WS/TTS の業務 state は持たず props の `comments` を描画する）。033f（OBS 透過
+ * オーバーレイ）がこの一覧描画を再利用する。
+ *
+ * 046a: 右クリックメニューの開閉位置だけは**この一覧の描画都合の state**としてここが持つ（`menu`）。
+ * 固定コメントの実体・永続化は親（`CommentViewerApp` ＋ `pinnedComments.ts`）の責務で、ここは
+ * 「どのコメントが押されたか」を `onPin` で渡すだけに留める。
  */
 
 /** 配信元の表示ラベル。 */
@@ -105,6 +110,19 @@ interface CommentListProps {
    * overlay バリアントには効かない（コメビュ本体のみ・OBS 表示は対象外）。
    */
   badges?: ReadonlyMap<string, RecordResult>;
+  /**
+   * 046a: 既定バリアントのコメント行を**右クリック**したときに開くメニューから、押されたコメントを渡す
+   * （コメビュ本体が上部の固定帯＋ピンストアへ反映する）。**トグル**で、既に固定済みのコメントを渡したときは
+   * 親が解除する。指定時のみ行に `onContextMenu` が付き（ネイティブメニューの抑止もその行だけ）、未指定なら
+   * 従来どおり右クリックは OS 標準の挙動のまま＝回帰なし。overlay バリアントには効かない（OBS 表示は
+   * 非インタラクティブのまま）。左クリック導線（`onSelect` →視聴者詳細）とは独立で、互いに干渉しない。
+   */
+  onPin?: (comment: CommentViewDto) => void;
+  /**
+   * 046a: 現在固定中のコメント id 集合。メニュー文言を「上部に固定」/「固定解除」で出し分けるためだけに使う
+   * （`badges` と同じ「id で引く任意 prop」の作法）。未指定・非該当は「上部に固定」。
+   */
+  pinnedIds?: ReadonlySet<string>;
 }
 
 export function CommentList({
@@ -115,9 +133,22 @@ export function CommentList({
   showSource = false,
   onSelect,
   badges,
+  onPin,
+  pinnedIds,
 }: CommentListProps) {
   const olRef = useRef<HTMLOListElement>(null);
   const follow = useFollowScroll(olRef, comments, { mode: followMode });
+
+  // 046a: 右クリックメニューの開閉。null＝閉。開いている間だけ <CommentContextMenu> を描く（閉じている間は
+  // DOM に出さない＝表示専用時の「button ロールが 0」という既存仕様を壊さない）。対象コメントは実体で保持するので、
+  // 一覧が自動追従で流れて行の位置が変わっても、固定されるのは右クリックした 1 件のまま。
+  const [menu, setMenu] = useState<{
+    x: number;
+    y: number;
+    comment: CommentViewDto;
+  } | null>(null);
+  // CommentContextMenu の document 購読の依存に入るため、参照を安定させる（毎レンダーの張り直しを避ける）。
+  const closeMenu = useCallback(() => setMenu(null), []);
 
   // 034e(review L5・修正不要): renderDefaultItem/renderOverlayItem は毎レンダー再生成され、使わない分岐も生成される。
   // この一覧（最大 200 件クランプ）の規模では無視できるコストで、分岐マークアップを素直に読める形を優先した意図的な書き方。
@@ -155,6 +186,23 @@ export function CommentList({
                   e.preventDefault();
                   onSelect(c);
                 }
+              }
+            : undefined
+        }
+        // 046a: onPin 指定時のみ右クリックで固定メニューを開く。preventDefault はこの行に限定＝ツールバー・
+        // 入力欄・設定画面などアプリ全体のネイティブメニューは従来どおり出る。
+        onContextMenu={
+          onPin
+            ? (e) => {
+                e.preventDefault();
+                // キーボード（Shift+F10 / メニューキー）由来の contextmenu は clientX/Y が 0 で来るため、
+                // その場合は行の左下に出す（左端 0px の実クリックも同じ扱いになるが実害はない）。
+                const rect = e.currentTarget.getBoundingClientRect();
+                setMenu({
+                  x: e.clientX || rect.left,
+                  y: e.clientY || rect.bottom,
+                  comment: c,
+                });
               }
             : undefined
         }
@@ -340,6 +388,22 @@ export function CommentList({
         </div>
       ) : (
         list
+      )}
+
+      {/* 046a: 右クリックメニュー。開いている間だけ描く。onPin が無ければ menu は決して開かない
+          （onContextMenu 自体を付けないため）が、型の絞り込みのために条件へ含める。position:fixed なので
+          `<ol>` の外＝このフラグメント直下に置く（`<ol>` の子に `<div>` を入れない）。 */}
+      {menu && onPin && (
+        <CommentContextMenu
+          x={menu.x}
+          y={menu.y}
+          label={pinnedIds?.has(menu.comment.id) ? "固定解除" : "上部に固定"}
+          onSelect={() => {
+            onPin(menu.comment);
+            setMenu(null);
+          }}
+          onDismiss={closeMenu}
+        />
       )}
     </>
   );

@@ -514,3 +514,169 @@ describe("CommentList 043e combo 回数の表示", () => {
     expect(screen.queryByText("×3")).toBeNull();
   });
 });
+
+/**
+ * 046a: 右クリック→固定/固定解除メニューの仕様テスト。
+ *
+ * 仕様（こうあるべき・docs/tasks/046a-viewer-pin-comment.md）:
+ * - `onPin` 指定時のみ、既定バリアントの行を右クリックするとメニューが開き、押されたコメントを `onPin` に渡す。
+ * - 文言は `pinnedIds` で出し分ける（未固定＝「上部に固定」／固定済み＝「固定解除」）。
+ * - `onPin` 未指定なら右クリックしても何も起きない（ネイティブメニューを潰さない＝回帰なし）。
+ * - overlay バリアントには効かない（OBS 表示は非インタラクティブのまま）。
+ * - Esc / 外側クリックで閉じる。メニューは開いている間だけ DOM に出す。
+ * - 左クリック導線（`onSelect` →視聴者詳細）と干渉しない。
+ */
+describe("CommentList 046a 右クリック固定メニュー", () => {
+  it("onPin 指定時、行の右クリックで「上部に固定」メニューが開き、ネイティブメニューは抑止される", () => {
+    render(
+      <CommentList comments={[makeComment({ text: "hello" })]} onPin={vi.fn()} />,
+    );
+    expect(screen.queryByRole("menu")).toBeNull(); // 閉じている間は DOM に出さない
+    // fireEvent は dispatchEvent の戻り値をそのまま返す＝preventDefault されていれば false。
+    // これを見ることで「この行だけネイティブメニューを抑止する」という抑止範囲の仕様を固定する
+    //（セキュリティレビュー S-3: これが無いと preventDefault を消すミューテーションが素通りする）。
+    const notCancelled = fireEvent.contextMenu(screen.getByText("hello"), {
+      clientX: 20,
+      clientY: 30,
+    });
+    expect(notCancelled).toBe(false);
+    expect(screen.getByRole("menu")).toBeTruthy();
+    expect(screen.getByRole("menuitem").textContent).toBe("上部に固定");
+  });
+
+  it("メニュー項目を押すと、右クリックしたコメントを渡して onPin を呼びメニューが閉じる", () => {
+    const onPin = vi.fn();
+    render(
+      <CommentList
+        comments={[
+          makeComment({ id: "c1", text: "hello" }),
+          makeComment({ id: "c2", text: "world", author: { id: "u2", name: "Bob" } }),
+        ]}
+        onPin={onPin}
+      />,
+    );
+    fireEvent.contextMenu(screen.getByText("world"));
+    fireEvent.click(screen.getByRole("menuitem"));
+    expect(onPin).toHaveBeenCalledTimes(1);
+    expect(onPin.mock.calls[0][0].id).toBe("c2");
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("pinnedIds に含まれる id は「固定解除」文言になる（トグルの出し分け）", () => {
+    render(
+      <CommentList
+        comments={[makeComment({ id: "c1", text: "hello" })]}
+        onPin={vi.fn()}
+        pinnedIds={new Set(["c1"])}
+      />,
+    );
+    fireEvent.contextMenu(screen.getByText("hello"));
+    expect(screen.getByRole("menuitem").textContent).toBe("固定解除");
+  });
+
+  it("onPin 未指定なら右クリックしてもメニューが出ず、ネイティブメニューも潰さない（回帰なし）", () => {
+    render(<CommentList comments={[makeComment({ text: "hello" })]} />);
+    // 抑止していない＝dispatchEvent が true を返す（OS 標準のコピー等をユーザーから奪わない）。
+    expect(fireEvent.contextMenu(screen.getByText("hello"))).toBe(true);
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  it("overlay バリアントには効かない（onPin を渡してもメニューが出ずネイティブメニューも潰さない）", () => {
+    render(
+      <CommentList
+        variant="overlay"
+        comments={[makeComment({ text: "hello" })]}
+        onPin={vi.fn()}
+      />,
+    );
+    expect(fireEvent.contextMenu(screen.getByText("hello"))).toBe(true);
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("Esc で閉じる（onPin は呼ばない）", () => {
+    const onPin = vi.fn();
+    render(
+      <CommentList comments={[makeComment({ text: "hello" })]} onPin={onPin} />,
+    );
+    fireEvent.contextMenu(screen.getByText("hello"));
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(onPin).not.toHaveBeenCalled();
+  });
+
+  it("メニュー外の mousedown で閉じる（onPin は呼ばない）", () => {
+    const onPin = vi.fn();
+    render(
+      <CommentList comments={[makeComment({ text: "hello" })]} onPin={onPin} />,
+    );
+    fireEvent.contextMenu(screen.getByText("hello"));
+    fireEvent.mouseDown(document.body);
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(onPin).not.toHaveBeenCalled();
+  });
+
+  it("Esc で閉じたとき、フォーカスは開く直前の要素へ戻る（a11y・キーボード操作の継続性）", () => {
+    // レビュー対応（Q-2）: 項目が unmount されるとフォーカスが <body> へ落ち、Shift+F10 → Esc した
+    // キーボード利用者が一覧の先頭から Tab し直しになる。role="menu" を名乗る以上、閉じたら呼び出し元へ返す。
+    render(
+      <>
+        <input data-testid="opener" />
+        <CommentList
+          comments={[makeComment({ text: "hello" })]}
+          onPin={vi.fn()}
+        />
+      </>,
+    );
+    const opener = screen.getByTestId("opener");
+    opener.focus();
+    expect(document.activeElement).toBe(opener);
+
+    fireEvent.contextMenu(screen.getByText("hello"));
+    // 開いたら項目へフォーカスが移る。
+    expect(document.activeElement).toBe(screen.getByRole("menuitem"));
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(document.activeElement).toBe(opener);
+  });
+
+  it("外側クリックで閉じたときは、押した先からフォーカスを奪い返さない", () => {
+    render(
+      <>
+        <input data-testid="opener" />
+        <button data-testid="other">別のボタン</button>
+        <CommentList
+          comments={[makeComment({ text: "hello" })]}
+          onPin={vi.fn()}
+        />
+      </>,
+    );
+    screen.getByTestId("opener").focus();
+    fireEvent.contextMenu(screen.getByText("hello"));
+
+    const other = screen.getByTestId("other");
+    fireEvent.mouseDown(other);
+    other.focus(); // 実ブラウザの mousedown 既定動作（押した要素へフォーカス）を模す
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(document.activeElement).toBe(other);
+  });
+
+  it("右クリックは左クリック導線（onSelect＝視聴者詳細）を発火させない", () => {
+    const onSelect = vi.fn();
+    render(
+      <CommentList
+        comments={[makeComment({ text: "hello" })]}
+        onSelect={onSelect}
+        onPin={vi.fn()}
+      />,
+    );
+    fireEvent.contextMenu(screen.getByText("hello"));
+    expect(onSelect).not.toHaveBeenCalled();
+    // 逆向きも確認: 左クリックは従来どおり onSelect のみ（メニューは開かない）。
+    fireEvent.keyDown(document, { key: "Escape" });
+    fireEvent.click(screen.getByText("hello"));
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+});

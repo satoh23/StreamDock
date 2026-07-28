@@ -6691,3 +6691,286 @@ WS が落ちて通知が来ない場合にも実態へ合わせられる分だ�
 
 レビュー対応後の検証: `typecheck` / `lint` pass、`test` pass（**14 files / 152 tests**・回帰テスト 2 本追加）。`act()` 警告なし。
 `git status -- apps/desktop/src-tauri/ apps/comment-sidecar/` は差分ゼロのまま（対応も frontend に閉じている）。
+
+## 2026-07-28 (046a コメビュ本体のコメント固定: 右クリック→上部固定＋ピンストア)
+
+配信者が流れていくコメントを見失わないよう、**右クリックで選んだコメントを本体上部に固定**できるようにした
+（親 [046](tasks/046-pinned-comment-overlay.md) の要望③前半）。固定内容は **046b の固定専用オーバーレイ窓が読むための
+ピンストア（localStorage の 1 キー）**にも保存する。**046a が唯一の書き手・046b は読み手**。
+
+**frontend のみ**。Rust / sidecar / capabilities / `tauri.conf.json`（`csp: null`）/ `package.json` はいずれも**差分ゼロ**で、
+新規の外部通信宛先・WS・Rust emit・依存はゼロ。固定コメント（本文・名前・金額）は **Rust の DB / ログに出さず外部送信もしない**
+（§9・`recordComments` 等の保存経路には流していない）。追加コードに `console.log` は無い。
+
+### ピンストアの JSON スキーマ（**046b が読む契約・省略しない**）
+
+```
+key   : "stream-dock.comment-viewer.pinned-comments"
+value : JSON 配列。先頭 = 最新の固定。最大 PINNED_LIMIT 件（046a では 1）。
+        固定 0 件のときも "[]" を書く（キーは消さない）。
+
+要素 PinnedComment（= CommentViewDto から author.avatar を除いた構造部分集合）:
+{
+  id:              string,                   // 必須・非空。CommentViewDto.id（重複排除キー）
+  source:          "twitch" | "youtube",     // 必須（CommentSource）
+  author:          { id: string, name: string },  // 必須。avatar は保存しない
+  text:            string,                   // 必須（空文字は可）
+  publishedAt:     string,                   // 必須・非空（ISO8601）
+  eventType:       "chat"|"superchat"|"membership"|"subscription"|"gift"|"donation"|"jewels",
+  monetaryAmount?: string,                   // 任意（例 "1,000 JPY" / "100 bits"）
+  monetary?:       { amount: number, currency: string },  // 任意（CommentMonetaryDto 相当）
+  monthCount?:     number,                   // 任意（membership / subscription の継続月数）
+  giftCount?:      number,                   // 任意（gift の件数）
+  tier?:           number,                   // 任意（subscription の階級）
+  comboCount?:     number                    // 任意（jewels の連続ギフト回数）
+}
+```
+
+**046b が使ってよい前提**:
+
+- 読み手は `loadPinned()` をそのまま import してよい（`OverlayApp.tsx` と同じ read-on-mount ＋ `storage` 購読）。
+  自窓の書換では `storage` は発火しないが、書き手は本体窓だけなので専用オーバーレイ側では必ず発火する。
+- **固定解除は `"[]"` の書込として届く**（キー削除にはしない）。キーを消すと `storage` の newValue が null になり、
+  読み手が「未保存」と「解除」を区別できなくなるため。
+- `monthCount` / `giftCount` / `tier` / `source` を保存しているので、046b でも `composeEventMessage` の
+  「〇〇さんがサブスクを3ヶ月継続しました（Tier1）」等の**要約文言をそのまま再現できる**（本体と同じ文言になる）。
+- **`author.avatar` は入っていない**。046b は WS へ繋がない設計＝再取得もできないので、アイコンは
+  `CommentList` の 036a フォールバック（頭文字の丸）になる。外部 URL を踏むことは無い（`data:` 始まり以外は画像化しないガードが既存）。
+- **スキーマに version 欄は持たない**。046a が唯一の書き手・046b は同一バンドルで同時に配られるため、版ズレが起きるのは
+  「古い localStorage が残った新バイナリ」だけで、それは下の要素単位バリデーションで安全に劣化する。
+  ラッパ `{v:1, items:[]}` にすると親 046 が明文化した「JSON 配列」からも外れる。
+  **将来スキーマを壊す変更が必要になったらキー名を変える**（`...pinned-comments-v2`）＝旧キーは自然に無視される。この方針を契約とする。
+
+### 上限 N = 1（単一ピン）
+
+親 046 の初期案は「固定は複数可・上限 N（例 3）／YouTube の単一ピンより柔軟に」だったが、**依頼者の決定で N=1（単一ピン）**に確定
+（「YouTube や Twitch のコメント固定機能のイメージ」）。**親 046 の該当節も書き換えた**（線引きの正は親なので放置すると食い違う）。
+
+- 上限は `pinnedComments.ts` の `PINNED_LIMIT` **1 箇所**に閉じてあり、増やせばストアのクランプ・本体のトグル・固定帯が
+  そのまま追随する。**保存形は N に依らず JSON 配列**なので、複数ピンへ広げても 046b の読み手契約は変わらない。
+- 新しく固定すると直前の固定を置き換える（`[toPinned(c), ...prev].slice(0, PINNED_LIMIT)`）。並びは **publishedAt 順ではなく固定操作順**
+  （配信者の期待に沿う）。クランプは `savePinned`（書込側）と `loadPinned`（読込側・手で書き換えられた場合の防御）の**両方**に置いた。
+
+### `author.avatar` を保存しない判断
+
+036b/036c 以降 avatar は base64 data URI（1 件で数十 KB）。これを保存しない理由:
+
+1. localStorage が溢れると `savePinned` が QuotaExceededError で**黙って失敗**し、「固定が復元しない」という原因の分かりにくい壊れ方をする。
+2. `storage` イベントのペイロード（oldValue ＋ newValue）にも毎回載る。
+3. 端末に残す表示データは最小限にする（§9 の精神）。**038a で「視聴者メモリにアバター（data URI）は保存しない」と決めた前例**に揃う。
+
+代償は 046b のアイコンがイニシャル丸になること。**アイコンを出したくなってもここを膨らませず、046b 側で
+サイズ上限付き avatar 欄を足すか判断する**（その時点で quota の見積りを持てる）。落とす処理は `toPinned()` の 1 箇所だけで、
+フィールドを明示列挙しているので **DTO に機密性のあるフィールドが増えても黙って localStorage に載ることはない**。
+
+### 右クリックメニューの実装方式
+
+新規 [`CommentContextMenu.tsx`](../apps/desktop/src/screens/comment-viewer/CommentContextMenu.tsx)（項目 1 個の自作メニュー・新規依存なし）。
+`CommentList.tsx` は既に 350 行前後あり、座標・外側クリック・Esc の state/effect を混ぜると読みにくいので切り出した
+（同ディレクトリに小さな UI 部品を切り出す前例＝`ConfirmDialog.tsx`）。
+
+- **メニューの開閉 state は `CommentList` が持つ**（`{x, y, comment} | null`）。親へ足した props は `onPin` / `pinnedIds` の 2 つだけ。
+  対象コメントを**実体で**保持するので、一覧が自動追従で流れて行の位置が変わっても固定されるのは右クリックした 1 件のまま。
+- **`e.preventDefault()`（ネイティブメニュー抑止）はコメント行の `onContextMenu` だけ**で、しかも `onPin` 指定時のみハンドラを付ける。
+  ツールバー・入力欄・設定画面などアプリ全体のコンテキストメニューは従来どおり出る。
+- **overlay バリアントには一切付けない**（`renderOverlayItem` は非インタラクティブのまま＝OBS 表示は不変）。
+- 座標は `position: fixed` ＋ `clientX/clientY` を**定数でクランプ**（`MENU_WIDTH`/`MENU_HEIGHT`）。項目 1 個の固定サイズなので
+  `useLayoutEffect` での実測は過剰と判断した。キーボード（Shift+F10 / メニューキー）由来の contextmenu は clientX/Y が 0 で来るため、
+  その場合は行の `getBoundingClientRect()` の左下に出す。
+- 閉じるのは Esc / メニュー外 mousedown / 項目実行時。右クリックは **mousedown → contextmenu** の順に発火するため、
+  メニューを開いた当の mousedown は購読の前に済んでおり「開いた瞬間に自分で閉じる」ことは無い。
+- a11y は `role="menu"` / `role="menuitem"` ＋ 開いたら項目へ focus まで。閉じている間は **DOM に出さない**ので、
+  「`onSelect` 未指定なら button ロールが 0」という既存仕様（`CommentList.test.tsx`）を壊さない。
+
+### 「固定済みか」の伝え方
+
+`pinnedIds?: ReadonlySet<string>` を追加（既存 `badges?: ReadonlyMap<string, RecordResult>`〔038c〕と**同じ「id で引く任意 prop」の作法**）。
+これでメニュー文言を「上部に固定」/「固定解除」で出し分ける。`onPin` は**トグル**で、親が「固定済みなら解除・そうでなければ置き換えて固定」を実装する。
+N=1 でも Set 型にしたのは、将来 N を増やしても prop の形を変えなくて済むため。
+
+### 固定帯の配置
+
+新規 [`PinnedCommentBar.tsx`](../apps/desktop/src/screens/comment-viewer/PinnedCommentBar.tsx)。
+順序は **ツールバー → クレジット（`ttsEnabled` 時のみ・法的必須表記）→ ENGINE バナー（`role="alert"`）→ 固定帯 → コメント一覧**。
+上 2 つの優先度を崩さず、一覧に直結する情報を一覧の直上に置いた。
+
+- **固定 0 件のときは `null` を返す**＝この機能を使わないユーザーには既存レイアウトが完全に不変。
+- 長文スパチャ（290 字）を固定しても一覧が潰れないよう `max-height: 22vh; overflow-y: auto`。通常は `.item` 相当の 56〜80px しか削らない。
+- 意匠と文言整形は**流用のみ**（`.item`/`.badge`/`.badgeEvent`/`.author`/`.amount`/`.text`/`.eventMessage`／
+  `viewerFormat.ts` の `eventLabel`/`displayEventType`/`isMonetaryEvent`/`composeEventMessage`/`providerLabel`）。新規 CSS は
+  `.pinnedBar`/`.pinnedItem`/`.pinnedBody`/`.badgePinned`/`.pinnedRemove`/`.contextMenu`/`.contextMenuItem` のみで**役割トークンだけ**を使う。
+- 初見/久しぶりバッジ（038c）と combo 回数（043e）は**帯には出さない**（固定は「見失わないための再掲」で、判定バッジや観測値は流れる一覧側の役割）。
+
+### バリデーション方針（`loadPinned`）
+
+- ルート: `JSON.parse` 失敗 or 配列でない → `[]`（丸ごと捨てる）。
+- 要素: 必須（id 非空 / source が既知 / author.id・author.name / text / publishedAt 非空 / eventType が既知）を満たさない**要素だけ**捨てる。
+- 任意フィールド: 型が合わなければ**そのフィールドだけ** undefined に落として要素は生かす（NaN/Infinity も落とす）。
+- **既知の source / eventType は `Record<Union, true>` で持つ**ので、ts-rs 生成の union に値が増えると**キー不足でコンパイルエラー**になる
+  ＝検証テーブルが黙って bindings と乖離しない。参照は `=== true` 比較（`in` は prototype の "toString" 等を拾うため使わない）。
+
+### テスト（15 files / **178 tests**・152 から +26）
+
+- 新規 `features/comment-viewer/pinnedComments.test.ts`（18 ケース・`overlaySettings.obs.test.ts` の流儀）:
+  単一ピンの既定（`PINNED_LIMIT === 1`）／未保存→`[]`／往復（金額なし種別の monthCount・tier も往復＝要約文言が劣化しない）／
+  `PINNED_LIMIT` 超過のクランプ（**保存 JSON の長さも見る**）／手書き書換のクランプ／解除で `"[]"` が残る／
+  toPinned が avatar を落とす・保存 JSON に `data:image` も `avatar` も出ない・外部から書かれた avatar は読込で落ちる／
+  壊れた JSON・配列でない JSON・必須欠落要素・未知 source/eventType・任意フィールドの型違い／getItem・setItem の例外／機密キーを作らない。
+- `CommentList.test.tsx` に 8 ケース追記: 右クリックでメニューが開く（閉じている間は DOM に無い）／項目押下で該当コメントを渡し閉じる／
+  `pinnedIds` で「固定解除」に変わる／**`onPin` 未指定なら出ない**／**overlay バリアントでは出ない**／Esc で閉じる／外側 mousedown で閉じる／
+  右クリックは `onSelect` を発火させず、左クリックは従来どおり `onSelect` のみ。
+- **ミューテーション確認**: `savePinned` / `loadPinned` の `slice(0, PINNED_LIMIT)` を**それぞれ独立に**外すと、
+  対応するケースだけがレッドになることを実測（書込側のクランプが読込側のクランプに隠れて vacuous にならないよう、
+  保存 JSON の長さを見るアサートを足した）。`act()` 警告なし。
+
+### 検証結果
+
+`typecheck` / `lint` pass、`test` pass（**15 files / 178 tests**）。
+`git status --short -- apps/desktop/src-tauri/ apps/comment-sidecar/ apps/desktop/package.json` は**差分ゼロ**
+（`cargo check` は Rust 差分が無いため未実行）。実機確認（`tauri dev`）は本人環境。
+
+### 046b 着手時の申し送り
+
+- ピンストアは上のスキーマがそのまま契約。`loadPinned()` を import して read-on-mount ＋ `storage` 購読で読むだけでよい。
+- **アイコンはイニシャル丸になる**（avatar 非保存）。意匠を `OverlayComment.module.css` から流用する際はこれを前提にする。
+- 固定解除は `"[]"` の書込として届く。`e.key === PINNED_COMMENTS_KEY || e.key === null`（clear() 対策）で拾う。
+- **`storage` は「値が変わったとき」だけ飛ぶわけではない**（レビュー指摘 Q-8）。本体窓は
+  `useEffect(() => savePinned(pinned), [pinned])` がマウント時にも走るため、**本体窓を開き直すたびに同じ値で
+  1 発飛ぶ**（既存 `saveChannel` / `saveObsAutoAdd` と同じ挙動で、固定を一度も使っていなくても `"[]"` が書かれる）。
+  `loadPinned()` で読み直すだけなら冪等で無害だが、**「storage が来た＝ピンが変わった」とみなして入場アニメーションや
+  効果音を付けると誤発火する**。差分が要るなら前回値と比較すること。
+- **削除手段は固定帯の「固定解除」だけ**。`delete_viewer` / `clear_viewers`（038a・SQLite 専用）はこのキーを消さない。
+  046b でピンを表示する以上、この非対称は security.md §9 追補（046a）に明記済みなので前提にしてよい。
+
+### 軽レビュー（2026-07-28・実装直後）
+
+**判定: 問題なし（修正必須 0 件）**。タスク範囲を超えた変更なし／型・ビルドエラーなし／OS 操作・ファイル操作・shell 実行なし
+（frontend の localStorage のみ）／DB schema と型定義のズレなし（`viewer_comments` には触れていない・ピンストアは端末内 localStorage で
+Rust を経由しない）／ユーザーが手動起動したプロセスを停止する経路なし（sidecar・窓の開閉に一切触れていない）。
+
+外部通信宛先・API・capability・依存は不変（`git status --short -- apps/desktop/src-tauri/ apps/comment-sidecar/ apps/desktop/package.json`
+が**差分ゼロ**）。固定コメントは `recordComments` 等の DB 保存経路に流しておらず、`console.*` も追加していない（§9）。
+`onSelect`（視聴者詳細）と overlay バリアントの非退行はテストで固定（右クリックが `onSelect` を発火させないこと／
+`onPin` 未指定なら何も出ないこと／overlay では出ないこと）。
+
+**レビューで直した 2 点**:
+
+- `pinned` の `useState` を **044a のコメントブロックとその対象 state（`obsConfig`/`obsAutoAdd`/`obsState`）の間に挟んでしまっていた**のを、
+  ブロックの手前へ移動。コメントと宣言の対応が崩れていた（挙動には影響なし）。
+- `PinnedCommentBar` の source→バッジ色の対応が三項演算子で、**`CommentSource` に値が増えても黙って YouTube 色に寄る**状態だった
+  （`CommentList` の `SOURCE_CLASS` は `Record<CommentSource, string>` でコンパイルエラーになる）。同じ Record 形式に揃えて非対称を解消。
+
+**後回しでよい改善（コード側に再修正トリガーをコメント化済み）**: 固定は**固定時点のスナップショット**なので、
+043e の jewels combo 更新（`mergeComments` が既存行を上書きする唯一の経路）が後から届いても固定側の金額/combo は古いまま。
+一覧側では更新が見えるため許容し、追いたくなったら `updated` を拾って `pinned` の同 id を差し替える（保存形は変えなくてよい）。
+
+### security-review ＋ code-review（2026-07-28・軽レビューとは別に実施）
+
+親 046 の子タスク表では 046a を「軽」に置いていたが、依頼者の希望で **security-review と code-review（effort high）を追加実施**した。
+
+**セキュリティ判定: 軽微な懸念あり**（コード側の修正必須はゼロ）。実測で担保した項目:
+`git status --short -- apps/desktop/src-tauri/ apps/comment-sidecar/ apps/desktop/package.json pnpm-lock.yaml` が**出力ゼロ**
+（capabilities・`tauri.conf.json`〔`csp: null`〕・`lib.rs`・依存すべて不変）／追加 3 ファイルに `fetch`/`WebSocket`/`invoke`/外部 URL/`console.*` が
+**ゼロ**／`dangerouslySetInnerHTML`/`innerHTML`/`background-image`/`<img>` が**ゼロ**（固定帯はアイコンを描かないので 036a の
+「webview が踏むのは data URI のみ」ガードは無傷）／CSS に生 hex/rgba **ゼロ**／`comment-viewer` は label 単一（`get_webview_window` で再利用）
+なので「書き手は本体窓のみ」が成立／`parsePinned` は prototype 汚染耐性あり（`SOURCES["__proto__"]` は `Object.prototype !== true` で弾かれる）。
+
+**最重要の指摘＝security.md を変更しなかった判断は誤り（対応済み）**。既存の localStorage キー（テーマ/フォント/トグル/チャンネル名/話者 id）は
+**すべてユーザー自身の UI 設定値**で、`overlaySettings.ts` 自身が「非機密の UI 設定値」と定義している。今回保存するのは
+**第三者のコメント本文・表示名・投げ銭金額**＝データの class が変わっており、038a が「保存先ではなく保存するデータの種類」を
+理由に限定解禁した前例に照らせば §9 の対象。よって **`docs/security.md` §9 に「追補（046a・固定コメントの端末内 localStorage 保存）」を新設**し、
+「レビュー必須条件」の「取得コメント・視聴者情報の端末保存」に**保存先を問わない**旨を追記した。親 046 の
+「localStorage の**非機密 UI データ**」という記述（この誤ったラベリングが「軽レビューで足りる」の根拠になっていた）も訂正した。
+
+**具体的な実害として拾えた点**: 038a はプライバシー担保として削除手段（`delete_viewer` FK CASCADE / `clear_viewers`）を必須条件にしているが、
+**どちらも localStorage を触らない**。視聴者メモリから視聴者を削除しても、その人の固定コメント（氏名・本文・金額）は固定解除するまで端末に残る。
+上限 1 件かつ固定中は常時画面に出るので取り残しは起きにくいが、**端末内保存データの一括削除・エクスポートを作る際に取りこぼす**ため
+security.md・親 046・046b 申し送りの 3 箇所に明記した（連動削除の実装は別タスク。CLAUDE.md「1 回の作業で複数機能をまとめない」に従う）。
+
+**ミューテーション実測で判明したテストの穴（対応済み）**: 実装直後の自己確認は `slice(0, PINNED_LIMIT)` しか試していなかった。
+レビューで 3 つのミューテーションを実際に適用して回したところ、**いずれも 178/178 グリーンのまま素通り**した:
+
+| ミューテーション | 対応前 | 対応後 |
+|---|---|---|
+| `onContextMenu` の `e.preventDefault()` 削除 | **素通り** | **レッド**（`fireEvent.contextMenu` の戻り値＝`defaultPrevented` を assert） |
+| `toPinned` をスプレッド `{...c, author:{id,name}}` へ | **素通り** | **レッド**（保存 JSON の**キー集合**を固定。avatar だけ見るケースはスプレッドでも通ってしまう） |
+| 画面端クランプ（`Math.max/min`）削除 | 素通り | 素通り（jsdom の `innerWidth=1024` で clamp が発火しない。優先度低として据え置き） |
+
+とくに後者 2 つは「**この行だけネイティブメニューを抑止する**」「**DTO にフィールドが増えても黙って localStorage に載らない**」という
+**セキュリティ上の主張そのもの**が 1 つもテストで守られていなかったもの。`CommentViewDto` は ts-rs 自動生成でフィールドが増える型なので、
+キー集合の固定は今後効き続ける。
+
+**修正した品質指摘**:
+
+- **`PinnedCommentBar` に単体テストを新設**（7 ケース）。「`CommentViewerApp` 統合は WS/TTS 依存で重い」という整理は
+  `PinnedCommentBar` 単体（props → JSX・state も副作用も無し）には当てはまらず、軽レビューで直した回帰
+  （`SOURCE_CLASS` の Record 化）を守る層が無かった。0 件で `null` / `onUnpin` の id / 金額種別の整形 /
+  `monthCount`・`tier` を保存している効果（要約文言が劣化しない）/ 038c・043e を帯に出さない、を固定。
+  ※ただし「三項演算子だと `CommentSource` に値が増えても YouTube 色に寄る」問題は**コンパイル時のキー不足エラー**が
+  担保するもので、union に第 3 の値が無い以上ランタイムテストでは捕まえられない（ミューテーション実測で確認）。
+  テスト側にその旨を注記し、型で守る箇所と割り切った。
+- **メニューを閉じたときのフォーカス復帰**（a11y）。項目が unmount されるとフォーカスが `<body>` へ落ち、
+  Shift+F10 → Esc したキーボード利用者が一覧の先頭から Tab し直しになっていた。`role="menu"` を名乗る以上
+  呼び出し元へ返すのが WAI-ARIA menu パターンの期待挙動。`CommentContextMenu` がマウント時の `document.activeElement` を
+  控えて cleanup で戻す方式（`CommentList` 側の変更ゼロ）。**外側クリックで閉じたときだけは戻さない**
+  （押した先へフォーカスが移るのが自然なため）。副次効果として「入力中に右クリックするとカーソルを失う」問題も解消。テスト 2 件追加。
+- **`MENU_WIDTH`(=160) と CSS の不一致**。`.contextMenu` は `min-width: 140px` で定数と別々に生きており、
+  項目の文言を長くすると実幅が 160 を超えて右端クランプが効かなくなる（画面外へはみ出す）状態だった。
+  CSS を `width: 160px` に固定し、両側に「対で直すこと」と注記。
+
+**修正不要と判断しコメント化した指摘**: ①メニューを開いたまま窓をリサイズしてもクランプが再計算されない
+（一過性 UI で最悪でも画面外に出るだけ・resize 購読を増やさない／再修正トリガー＝項目が増えて滞在時間が長くなったら）
+②`savePinned` の失敗握りつぶし（既存慣習・avatar 抜きの数 KB なので quota 超過は非現実的／再修正トリガー＝046b 実装後に
+「本体には出るが OBS に出ない」の切り分けが要るなら失敗を返す口を足す）③未知 `eventType` の要素を丸ごと捨てる選択
+（`source` を捨てる必要があるので扱いを揃えた。代償は前方互換なし＝新版で固定→旧版へ戻すと消える／再修正トリガー＝
+ロールバック配布が要件になったら eventType だけ生かす）。
+
+**据え置きの再確認（コメント既存）**: 一覧スクロールにメニューが追随しない件は、`onScroll` で閉じる案が
+`useFollowScroll` の自動追従と衝突して**コメント流入中にメニューが即閉じる**ため現状が正しい。
+クランプの二重化（save/load）も守備範囲が違う（自窓の書込 vs 手書き改ざん・旧版が書いた値）ので寄せない。
+
+**docs の整合**: progress.md の JSON スキーマは実装（`toPinned`/`parsePinned`/bindings）と**厳密一致**を確認済み（046b が読む契約として使える品質）。
+一方で 046a の `CommentViewerApp.tsx` 行番号が**一律 7 行ずれ**ていた（保存 effect ブロック 7 行を足す前の値のまま。
+「実装完了後の値に更新済み」という記述自体が事実と違っていた）ため現物に合わせて再修正。親 046 の古い行番号・
+「`CommentViewDto` を**そのまま**載せる」（avatar を落とすので不正確）・状態行（046a 実装済みを反映）も併せて訂正した。
+
+**検証**: `typecheck` / `lint` pass、`test` pass（**16 files / 189 tests**・178 から +11）。`act()` 警告なし。
+`git status --short -- apps/desktop/src-tauri/ apps/comment-sidecar/ apps/desktop/package.json` は**差分ゼロのまま**
+（レビュー対応も frontend と docs に閉じている）。
+
+### 実機確認後の修正（2026-07-28・依頼者の `tauri dev` での確認を受けて）
+
+**1. 固定帯とコメント一覧の間に divider を追加**
+
+境目が分からないという指摘。`.pinnedBar` に `border-bottom: 1px solid var(--border-soft)` を足した
+（**色は `.toolbar` の `border-bottom` と同じ役割トークン**＝画面内の区切り線が揃う。生 hex/rgba は引き続きゼロ）。
+
+- 線をツールバーと**同じ幅（窓幅いっぱい）**にするため、左右のインセットを `margin: 8px 16px 0` →
+  `margin: 8px 0 0` ＋ `padding: 0 16px 8px` へ組み替えた。margin のままだと線が左右 16px ずつ内側で切れて
+  ツールバーと見え方が変わるため。項目そのものの見え方は変わらない。
+- `border-bottom` は**スクロールコンテナの border box** に付くので、`max-height: 22vh` を超えて帯の中を
+  スクロールしても線は下端に留まる（一緒に流れない）。
+- 固定 0 件のときは `PinnedCommentBar` が `null` を返すので**線も自動的に消える**（既存レイアウト不変は維持）。
+
+**2. 「固定解除」ボタンを廃止し、解除を右クリックメニューへ一本化**
+
+ボタンが不要という指摘。**固定帯の項目を右クリック → 「固定解除」**に変更した。
+
+- 一覧側の行を右クリックする導線は元々動く（`onPin` がトグルで、`pinnedIds` により文言が「固定解除」になる）が、
+  **一覧は `MAX_COMMENTS`(=200) でクランプされる**ため、固定したコメントが流れ去ると右クリックする対象そのものが
+  消えて**解除できなくなる**。ボタンを外すだけだとこの詰みが発生するので、**帯の側にも同じメニューを出す**ことにした。
+- メニュー UI は `CommentList` と同じ [`CommentContextMenu`](../apps/desktop/src/screens/comment-viewer/CommentContextMenu.tsx) を
+  再利用（**新規依存ゼロ**）。`PinnedCommentBar` が開閉 state（`{x, y, id} | null`）を持つ点も `CommentList` と同じ作法。
+- `preventDefault` は**帯の項目だけ**＝アプリ全体のネイティブメニューは従来どおり出る（一覧行と同じ扱い・テストで固定）。
+- メニューは `position: fixed` なので、`overflow-y: auto` の `.pinnedBar` の**外**（フラグメント直下）に描く
+  ＝帯の中をスクロールしても取り残されず、クリップの懸念も持ち込まない。
+- **a11y**: 解除ボタンを失うとキーボードからの解除導線が無くなるため、帯の項目に `tabIndex={0}` を付けて
+  **Shift+F10 / メニューキーで開ける**ようにし、`.pinnedItem:focus-visible` でフォーカス位置を可視化した
+  （キーボード由来の `contextmenu` は `clientX/Y` が 0 で来るので、既存の「項目の左下へ出す」フォールバックに乗る）。
+- CSS は 2 カラム構成（`display:flex` ＋ `.pinnedBody`）を解消して単一カラムへ戻し、`.pinnedRemove` の 3 ブロックを削除。
+  `CommentViewerApp.tsx` は**変更なし**（`handleUnpin` はそのまま `onUnpin` に渡り続ける）。
+
+**検証**: `typecheck` / `lint` pass、`test` pass（**16 files / 192 tests**）。`PinnedCommentBar.test.tsx` の
+「ボタン押下で `onUnpin`」を「右クリック→メニュー項目で `onUnpin`」へ差し替え、**解除ボタンが存在しないこと**・
+`preventDefault` の抑止・Esc で閉じる（`onUnpin` を呼ばない）を追加で固定した。
+Rust / sidecar / capabilities / `package.json` は引き続き**差分ゼロ**、`csp: null` 不変、新規宛先・依存ゼロ。

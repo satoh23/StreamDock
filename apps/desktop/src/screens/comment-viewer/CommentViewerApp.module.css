@@ -1148,3 +1148,84 @@
   outline: 2px solid var(--primary-soft-border);
   outline-offset: -2px;
 }
+
+/* 046a: 固定コメント帯（コメント一覧の直上）。固定 0 件のときは PinnedCommentBar が描かない＝この機能を
+   使わないユーザーには既存レイアウトが不変（下端の divider も一緒に消える）。長文スパチャを固定しても一覧が
+   潰れないよう高さの上限を切り、超えた分は帯の中でスクロールさせる（上限 22vh＝窓の高さの 2 割強まで）。
+   役割トークンのみ。
+
+   実機確認後の修正(2026-07-28): 固定帯とコメント一覧の境目に divider を引く。色は .toolbar の border-bottom と
+   同じ --border-soft で揃える。線をツールバーと同じ幅（窓幅いっぱい）にするため、左右のインセットは margin では
+   なく padding で持つ（margin のままだと線が左右 16px ずつ内側で切れてツールバーと見え方が変わる）。
+   border-bottom はスクロールコンテナの border box に付くので、帯の中をスクロールしても線は下端に留まる。 */
+.pinnedBar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0 16px 8px;
+  border-bottom: 1px solid var(--border-soft);
+  max-height: 22vh;
+  overflow-y: auto;
+}
+
+/* 帯の 1 件。基底は流れるコメント行と同じ .item（背景/枠/角丸・display は block）で、中身も一覧の行と同じ
+   .meta ＋ 要約文言 ＋ 本文の縦積み。課金コメントの赤枠（.itemMonetary）も一覧と同じく重ねられる。
+   実機確認後の修正(2026-07-28): 「固定解除」ボタンを廃止して解除を右クリックメニューへ一本化したため、
+   本文カラムとボタンの 2 カラム構成（display:flex ＋ .pinnedBody）を解消して単一カラムへ戻した。 */
+.pinnedItem {
+  /* 解除メニューはキーボードでも Shift+F10 / メニューキーで開けるよう項目に tabIndex=0 を付けてある。
+     どこにフォーカスがあるか見えるようにする（.contextMenuItem と同じ役割トークン）。 */
+  cursor: default;
+}
+
+.pinnedItem:focus-visible {
+  outline: 2px solid var(--primary-soft-border);
+  outline-offset: -2px;
+}
+
+/* 「固定」バッジ（.badge を基底に色だけ差し替え）。帯の中には初見/久しぶり（info）を出さないので info 系と
+   衝突せず、サイト名バッジ（accent/danger）・種別ラベルと金額（warn）とも色で分かれる。 */
+.badgePinned {
+  color: var(--info-text);
+  background: var(--info-soft);
+  border-color: var(--info-border);
+}
+
+/* 046a: コメント行・固定帯の右クリックメニュー（項目 1 個の軽量メニュー）。position:fixed ＋ 座標は JS 側で
+   ビューポート内へクランプ済み。z-index は狭い窓の詳細ペイン（.detailPane の z-index:5）より上に置く。
+   レビュー対応: width は CommentContextMenu.tsx の MENU_WIDTH（=160）と**必ず一致させる**。当初は
+   min-width:140px で定数と別々に生きており、項目の文言を長くすると実幅が 160 を超えて右端クランプが
+   効かなくなる（画面外へはみ出す）状態だった。文言や padding を変えるときは両方を対で直すこと。 */
+.contextMenu {
+  position: fixed;
+  z-index: 20;
+  width: 160px;
+  padding: 4px;
+  border-radius: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  box-shadow: 0 8px 24px var(--popover-shadow);
+}
+
+.contextMenuItem {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: 6px;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  background: transparent;
+  cursor: pointer;
+}
+
+.contextMenuItem:hover {
+  background: var(--surface-hover);
+}
+
+.contextMenuItem:focus-visible {
+  outline: 2px solid var(--primary-soft-border);
+  outline-offset: -2px;
+}

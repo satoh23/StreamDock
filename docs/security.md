@@ -366,6 +366,32 @@ loopback WS で受信済みの値を Tauri コマンドで渡すだけ＝sidecar
 ため、不変性を前提にする機能（エクスポート・監査・差分同期等）を作る場合はこの例外を必ず考慮すること。
 詳細と限定の根拠は⑪の 043e 節。
 
+**追補（046a・固定コメントの端末内 localStorage 保存＝端末内保存の 2 つ目の限定解禁・2026-07-28）**:
+「流れるコメントを見失わないよう右クリックで上部に固定する」機能に**限り**、**ユーザーが明示的に固定操作した
+コメント（既定で最大 1 件）**を **viewer webview の localStorage** に保存する。038a が SQLite について定めた
+限定解禁と**同じ趣旨の拡張**であり（保存先が SQLite か localStorage かではなく、**保存するデータの種類**＝
+第三者のコメント本文・表示名・投げ銭金額が §9 の対象）、本追補で明文化する。
+
+- **キー**は `stream-dock.comment-viewer.pinned-comments` の 1 つのみ（値は JSON 配列・先頭＝最新）。
+  保存項目は `id` / `source` / `author.id` / `author.name` / `text` / `published_at` / `event_type` と、
+  任意の数値・金額表示（`monetaryAmount` / `monetary` / `monthCount` / `giftCount` / `tier` / `comboCount`）。
+  スキーマ全文は `docs/progress.md` の 046a 節（046b が読む契約）を正とする。
+- **`author.avatar`（data URI）は保存しない**（038a の「視聴者メモリにアバターを保存しない」と同方針。容量と
+  `storage` イベントのペイロードも理由）。**OAuth トークン・OBS パスワード・`code_verifier` 等の機密は載せない**
+  （既存の localStorage キー同様・§9）。
+- **端末外へ送信しない・クラウド同期しない**。窓間伝達は **localStorage＋`storage` イベントのみ**で
+  **Rust を一切経由しない**ため、固定コメントは **Rust の DB（`viewer_comments`）にもログにも入らない**。
+  **新規の外部通信/宛先/capability/依存はゼロ**（`csp: null` 不変）。
+- **削除手段**は固定帯の「固定解除」。上限 1 件かつ固定中は常時画面に出るため取り残しが起きない。
+  **ただし 038a の `delete_viewer` / `clear_viewers` はこのキーを消さない**（SQLite のみを対象とするコマンドで、
+  localStorage は別ストア）。すなわち視聴者メモリから視聴者を削除しても、その人の固定コメント（氏名・本文・金額）は
+  固定解除するまで端末に残る。**端末内保存データの一括削除・エクスポートを作る場合は、SQLite だけでなく
+  本キーも対象に含めること**（043e で `viewer_comments` の append-only 前提が崩れたことを明記したのと同種の申し送り）。
+- **本追補の追加自体が security-review の対象**（保存ポリシーの変更）。046a は当初「軽レビュー」指定だったが、
+  「第三者の個人データを初めて localStorage に永続化する」点は下記「レビュー必須条件」の
+  **「取得コメント・視聴者情報の端末保存」に該当**する。frontend のみ・通信ゼロでも、保存ポリシーに触れる変更は
+  レビュー必須として扱うこと。
+
 ### 10. 依存関係を増やしすぎない
 
 新しいnpm package、Rust crate、Tauri pluginを追加する場合は、理由を説明する。
@@ -727,6 +753,9 @@ distill（vendor）したもので、keyring・`open`・hono/zod・dotenv・goog
 - 外部コンテンツの埋め込み（iframe・外部 script/style/image/media・外部ドメインの読込）
 - 内蔵コメントビューアの配信サービス連携（**インターネット通信**・**Node sidecar（externalBin）同梱**・OAuth トークン取扱）
 - 取得コメント・視聴者情報の端末保存（**視聴者メモリ＝§9 保存ポリシーの限定解禁分**・保存範囲/集計項目/削除手段の変更・「コメントビューア方針」⑪）
+  - **保存先は問わない**＝Rust の SQLite だけでなく、**webview の localStorage へ第三者のコメント本文・表示名・
+    投げ銭金額を永続化する変更も本項に該当する**（046a の固定コメント＝§9 追補 046a）。ユーザー自身の UI 設定値
+    （テーマ・フォント・トグル・チャンネル名等）を localStorage に置く変更は従来どおり本項に該当しない。
 
 ### 011 ログイン項目（autostart, 019 時点）
 
