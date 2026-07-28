@@ -21,6 +21,17 @@ export const OVERLAY_SHOW_SOURCE_KEY =
  * OBS WebSocket パスワードはここに保存しない（Rust→OS キーチェーンで保持・§9）。
  */
 export const OBS_AUTO_ADD_KEY = "stream-dock.comment-viewer.obs-auto-add";
+/**
+ * 046b: 「固定コメントをOBSに表示」ON/OFF の保存キー（既定 OFF）。**ユーザー自身の UI 設定値**（トグルの状態）で、
+ * §9 追補（046a）が対象とする第三者の個人データ（コメント本文・表示名・金額＝`pinnedComments.ts` のキー）とは
+ * データの性質が違う。既存の `OBS_AUTO_ADD_KEY` と同種の非機密トグル値として扱う。
+ *
+ * 永続化する理由: この設定は「OBS のウィンドウキャプチャに固定コメント窓を仕込む」一度きりのセットアップで、
+ * 毎回 ON にし直させると配信開始時に OBS ソースが取り込めない（窓が無い）状態から始まってしまうため。
+ * ON のときはコメビュ本体のマウント時に窓を開き直す（`CommentViewerApp` の 046b effect）。
+ */
+export const PINNED_OVERLAY_ENABLED_KEY =
+  "stream-dock.comment-viewer.pinned-overlay-enabled";
 
 /**
  * オーバーレイのフォント候補（すべて OS 標準・日本語表示可・外部フォント無し）。`id` を localStorage に保存し、
@@ -125,6 +136,24 @@ export function loadObsAutoAdd(): boolean {
 export function saveObsAutoAdd(enabled: boolean): void {
   try {
     localStorage.setItem(OBS_AUTO_ADD_KEY, String(enabled));
+  } catch {
+    // プライベートモード等で書けない場合は黙って無視する。
+  }
+}
+
+/** 046b: 「固定コメントをOBSに表示」ON/OFF を読み込む。未保存・例外は false（OFF）へフォールバック。 */
+export function loadPinnedOverlayEnabled(): boolean {
+  try {
+    return localStorage.getItem(PINNED_OVERLAY_ENABLED_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+/** 046b: 「固定コメントをOBSに表示」ON/OFF を保存する（ローカルのみ・非機密・外部送信しない）。 */
+export function savePinnedOverlayEnabled(enabled: boolean): void {
+  try {
+    localStorage.setItem(PINNED_OVERLAY_ENABLED_KEY, String(enabled));
   } catch {
     // プライベートモード等で書けない場合は黙って無視する。
   }

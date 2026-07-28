@@ -35,10 +35,35 @@ export type ObsState =
 
 export type ObsStateListener = (state: ObsState, reason?: string) => void;
 
-/** OBS 側に作る/再利用するソース名（透過オーバーレイ窓の窓名に一致させ、ユーザーにも分かりやすくする）。 */
-const OBS_SOURCE_NAME = "StreamDock コメントオーバーレイ";
-/** キャプチャ対象の透過窓名（033f・open_comment_overlay_window の窓名）。候補一致に使う。 */
-const OVERLAY_WINDOW_TITLE = "StreamDock コメントオーバーレイ";
+/**
+ * 046d: 自動追加の対象オーバーレイ種別。**viewer から任意の名前を受け取らない**ための固定 union で、
+ * 実際のソース名／窓名は下の `OBS_OVERLAYS` に閉じてある（§3/§8＝ユーザー入力が OBS 操作へ渡る経路を作らない）。
+ */
+export type ObsOverlayKind = "comments" | "pinned";
+
+/**
+ * オーバーレイ種別ごとの「OBS に作るソース名」と「キャプチャ対象の窓名」。
+ * ソース名は窓名に一致させる（ユーザーが OBS 上で対応を見て分かるようにする・044a からの慣習）。
+ *
+ * 窓名は Rust の窓タイトルと**バイト一致**させること:
+ *   comments → `open_comment_overlay_window` の `.title`（033f）
+ *   pinned   → `open_pinned_overlay_window` の `.title`（046b）
+ * 候補一致は `includes` なので、**片方が他方を部分文字列として含んではいけない**
+ * （「StreamDock 固定コメント」は「StreamDock コメントオーバーレイ」を含まない＝取り違えない）。
+ */
+const OBS_OVERLAYS: Record<
+  ObsOverlayKind,
+  { sourceName: string; windowTitle: string }
+> = {
+  comments: {
+    sourceName: "StreamDock コメントオーバーレイ",
+    windowTitle: "StreamDock コメントオーバーレイ",
+  },
+  pinned: {
+    sourceName: "StreamDock 固定コメント",
+    windowTitle: "StreamDock 固定コメント",
+  },
+};
 /** obs-websocket 接続の timeout（ミリ秒）。未起動/無効は速やかに graceful 失敗させる。 */
 const CONNECT_TIMEOUT_MS = 4000;
 /** ホストは loopback にピン留め（ユーザー/viewer からの host 指定は受けない）。ポートのみ検出値で可変。 */
@@ -55,10 +80,10 @@ const sleep = (ms: number): Promise<void> =>
 export interface ObsClient {
   /** Rust→stdin で受領した OBS WebSocket パスワードを in-memory に設定（null で破棄）。 */
   setPassword(password: string | null): void;
-  /** OBS 連携を有効化し、指定ポートの OBS へソースを自動追加（既存なら再利用）＋表示する。 */
-  enable(port: number): Promise<void>;
-  /** オーバーレイ表示 OFF 時: OBS 側ソースを**削除せず非表示**にする（best-effort・ON で enable が再表示）。 */
-  hide(port: number): Promise<void>;
+  /** OBS 連携を有効化し、指定ポートの OBS へ**種別ごとの**ソースを自動追加（既存なら再利用）＋表示する。 */
+  enable(port: number, overlay: ObsOverlayKind): Promise<void>;
+  /** オーバーレイ表示 OFF 時: 該当種別の OBS 側ソースを**削除せず非表示**にする（best-effort・ON で enable が再表示）。 */
+  hide(port: number, overlay: ObsOverlayKind): Promise<void>;
   /** 連携 OFF（状態を idle に戻す・OBS 側ソースは消さない）。 */
   disable(): void;
 }
@@ -92,15 +117,16 @@ async function connectWithTimeout(
  * OBS の "window" プロパティ候補から透過オーバーレイ窓を探す。開いた直後は一覧に載らないことがあるため、
  * 載るまで有界リトライ（WINDOW_LOOKUP_RETRIES 回）する（M1）。見つからなければ null（呼び出し側でフォールバック）。
  */
-async function findOverlayWindowItem(obs: OBSWebSocket) {
+async function findOverlayWindowItem(obs: OBSWebSocket, kind: ObsOverlayKind) {
+  const { sourceName, windowTitle } = OBS_OVERLAYS[kind];
   for (let attempt = 0; attempt < WINDOW_LOOKUP_RETRIES; attempt++) {
     const { propertyItems } = await obs.call(
       "GetInputPropertiesListPropertyItems",
-      { inputName: OBS_SOURCE_NAME, propertyName: "window" },
+      { inputName: sourceName, propertyName: "window" },
     );
     const overlay = propertyItems.find((it) => {
       const name = it.itemName;
-      return typeof name === "string" && name.includes(OVERLAY_WINDOW_TITLE);
+      return typeof name === "string" && name.includes(windowTitle);
     });
     if (overlay) return overlay;
     if (attempt < WINDOW_LOOKUP_RETRIES - 1) {
@@ -111,21 +137,26 @@ async function findOverlayWindowItem(obs: OBSWebSocket) {
 }
 
 /**
- * 現在シーンに OBS_SOURCE_NAME のウィンドウキャプチャを作成/再利用し、透過オーバーレイ窓をターゲットにする。
+ * 現在シーンに種別ごとのウィンドウキャプチャを作成/再利用し、対応する透過オーバーレイ窓をターゲットにする。
+ * 046d: `kind` ごとに**別ソース**を作る（コメント一覧と固定コメントは OBS 上でも独立したソースになる）。
  * @returns 新規作成なら "added"、既存再利用なら "reused"。
  */
-async function ensureOverlaySource(obs: OBSWebSocket): Promise<ObsState> {
+async function ensureOverlaySource(
+  obs: OBSWebSocket,
+  kind: ObsOverlayKind,
+): Promise<ObsState> {
+  const { sourceName } = OBS_OVERLAYS[kind];
   const isWindows = process.platform === "win32";
   const inputKind = "window_capture"; // 044s 実測: mac/win とも window_capture が存在
 
   const { currentProgramSceneName } = await obs.call("GetSceneList");
   const { inputs } = await obs.call("GetInputList");
-  const exists = inputs.some((i) => i.inputName === OBS_SOURCE_NAME);
+  const exists = inputs.some((i) => i.inputName === sourceName);
 
   if (!exists) {
     await obs.call("CreateInput", {
       sceneName: currentProgramSceneName,
-      inputName: OBS_SOURCE_NAME,
+      inputName: sourceName,
       inputKind,
       inputSettings: {},
       sceneItemEnabled: true,
@@ -134,7 +165,7 @@ async function ensureOverlaySource(obs: OBSWebSocket): Promise<ObsState> {
 
   // ウィンドウ候補から透過オーバーレイ窓を探して設定する（OS 依存の窓指定）。開いた直後は OBS の一覧に載らない
   // ことがあるため、findOverlayWindowItem が有界リトライで載るまで待つ（frontend 固定遅延に依存しない・M1）。
-  const overlay = await findOverlayWindowItem(obs);
+  const overlay = await findOverlayWindowItem(obs, kind);
   if (!overlay) {
     // M2: 既存ソースを再利用する場合は、過去に設定済みの窓指定を維持して "reused" を返す（一時的な未列挙で
     // 成功済みソースを failed 表示にしない）。新規作成直後の未検出は対象未設定＝手動誘導へフォールバック。
@@ -150,9 +181,9 @@ async function ensureOverlaySource(obs: OBSWebSocket): Promise<ObsState> {
     // method の実 enum は 098 VM で確認（想定 2）。候補名から 1903/WGC を含む項目の itemValue を優先採用し、
     // 見つからなければ 2 にフォールバックする（実 enum 差に堅くする）。要 098 実機検証。
     // Windows では常にキャプチャ方法を設定する（pickWgcMethodValue は必ず数値を返す・下記 JSDoc）。
-    const method = await pickWgcMethodValue(obs);
+    const method = await pickWgcMethodValue(obs, kind);
     await obs.call("SetInputSettings", {
-      inputName: OBS_SOURCE_NAME,
+      inputName: sourceName,
       inputSettings: {
         window: overlay.itemValue,
         method,
@@ -163,7 +194,7 @@ async function ensureOverlaySource(obs: OBSWebSocket): Promise<ObsState> {
     // 安定キー owner_name/window_name を itemName "[owner] title" から取り出して併設する（044s 実測）。
     const { ownerName, windowName } = parseMacWindowItemName(overlay.itemName);
     await obs.call("SetInputSettings", {
-      inputName: OBS_SOURCE_NAME,
+      inputName: sourceName,
       inputSettings: {
         window: overlay.itemValue,
         ...(ownerName ? { owner_name: ownerName } : {}),
@@ -180,11 +211,14 @@ async function ensureOverlaySource(obs: OBSWebSocket): Promise<ObsState> {
  * L1: 透過窓は既定「自動」だと黒くなるため Windows では**常に**キャプチャ方法を設定する方針。よって取得不能・
  * 非該当でも null は返さず既定 2（一般的な WGC enum）にフォールバックする。要 098 実機検証（"method" 名/enum を確定）。
  */
-async function pickWgcMethodValue(obs: OBSWebSocket): Promise<number> {
+async function pickWgcMethodValue(
+  obs: OBSWebSocket,
+  kind: ObsOverlayKind,
+): Promise<number> {
   try {
     const { propertyItems } = await obs.call(
       "GetInputPropertiesListPropertyItems",
-      { inputName: OBS_SOURCE_NAME, propertyName: "method" },
+      { inputName: OBS_OVERLAYS[kind].sourceName, propertyName: "method" },
     );
     const wgc = propertyItems.find((it) => isWgcMethodName(it.itemName));
     if (wgc && typeof wgc.itemValue === "number") return wgc.itemValue;
@@ -201,12 +235,13 @@ async function pickWgcMethodValue(obs: OBSWebSocket): Promise<number> {
  */
 async function setOverlaySceneItemEnabled(
   obs: OBSWebSocket,
+  kind: ObsOverlayKind,
   enabled: boolean,
 ): Promise<void> {
   const { currentProgramSceneName } = await obs.call("GetSceneList");
   const { sceneItemId } = await obs.call("GetSceneItemId", {
     sceneName: currentProgramSceneName,
-    sourceName: OBS_SOURCE_NAME,
+    sourceName: OBS_OVERLAYS[kind].sourceName,
   });
   await obs.call("SetSceneItemEnabled", {
     sceneName: currentProgramSceneName,
@@ -226,7 +261,7 @@ export function createObsClient(onState: ObsStateListener): ObsClient {
     // L5(修正不要): enable は index.ts から fire-and-forget で呼ばれ、連打時は多重発火し得るが、毎回独立の
     // OBSWebSocket インスタンスで完結し共有状態を壊さない（in-memory password は読み取りのみ）。よって排他は
     // 設けない。再修正トリガー: 同時接続が OBS 側でエラーや二重ソース作成を招くなら in-flight フラグで抑止する。
-    async enable(port: number): Promise<void> {
+    async enable(port: number, overlay: ObsOverlayKind): Promise<void> {
       const url = `ws://${OBS_HOST}:${port}`;
       // fail-closed: loopback 以外・非 ws・userinfo・ポート不正は throw（ホストピン留めの二層目）。
       try {
@@ -239,9 +274,9 @@ export function createObsClient(onState: ObsStateListener): ObsClient {
       const obs = new OBSWebSocket();
       try {
         await connectWithTimeout(obs, url, password);
-        const result = await ensureOverlaySource(obs);
+        const result = await ensureOverlaySource(obs, overlay);
         // reuse 時に前回の非表示を確実に戻す（新規作成は sceneItemEnabled:true と冪等）。失敗は無視（現在シーンに無い等）。
-        await setOverlaySceneItemEnabled(obs, true).catch(() => {});
+        await setOverlaySceneItemEnabled(obs, overlay, true).catch(() => {});
         onState(result);
       } catch (err) {
         // OBS 未起動 / WS 無効 / 認証失敗 / 窓未検出 等はすべて graceful に失敗通知（hot-loop しない）。
@@ -253,7 +288,7 @@ export function createObsClient(onState: ObsStateListener): ObsClient {
 
     // 044a: オーバーレイ表示 OFF 時に OBS 側ソースを**削除せず非表示**にする（ON で enable が再表示）。
     // best-effort＝成功/該当なし/失敗いずれも idle に落とし、技術的な失敗メッセージ（failed）は出さない。
-    async hide(port: number): Promise<void> {
+    async hide(port: number, overlay: ObsOverlayKind): Promise<void> {
       const url = `ws://${OBS_HOST}:${port}`;
       try {
         assertAllowedObsUrl(url);
@@ -264,7 +299,7 @@ export function createObsClient(onState: ObsStateListener): ObsClient {
       const obs = new OBSWebSocket();
       try {
         await connectWithTimeout(obs, url, password);
-        await setOverlaySceneItemEnabled(obs, false);
+        await setOverlaySceneItemEnabled(obs, overlay, false);
       } catch {
         // OBS 未起動 / ソース未作成 / 現在シーンに無い等はすべて無視（非表示は best-effort・hot-loop しない）。
       } finally {

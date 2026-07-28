@@ -3,6 +3,9 @@ import {
   OBS_AUTO_ADD_KEY,
   loadObsAutoAdd,
   saveObsAutoAdd,
+  PINNED_OVERLAY_ENABLED_KEY,
+  loadPinnedOverlayEnabled,
+  savePinnedOverlayEnabled,
 } from "./overlaySettings";
 
 /**
@@ -77,5 +80,56 @@ describe("loadObsAutoAdd / saveObsAutoAdd", () => {
     expect(keys).toContain(OBS_AUTO_ADD_KEY);
     // password/pw/secret/token を含むキーは一切作らない（機密は localStorage に置かない）。
     expect(keys.some((k) => /password|pw|secret|token/i.test(k))).toBe(false);
+  });
+});
+
+/**
+ * 046b: 「固定コメントをOBSに表示」トグルの永続化。
+ * あるべき挙動（docs/tasks/046b-pinned-overlay-window.md）:
+ * - 保存するのは**ユーザー自身の UI 設定値（boolean）だけ**。固定コメントの中身（本文・表示名・金額）は
+ *   046a の別キー（`pinnedComments.ts`）の責務で、このモジュールは一切触らない。
+ * - 044a の `obsAutoAdd` と同型（"true" 厳密一致・例外は false へ劣化）。
+ * - **キーが `obsAutoAdd` と独立している**こと（片方の保存がもう片方を書き換えない）。
+ */
+describe("loadPinnedOverlayEnabled / savePinnedOverlayEnabled", () => {
+  it("未保存のときは既定 OFF（false）", () => {
+    expect(loadPinnedOverlayEnabled()).toBe(false);
+  });
+
+  it("true/false を 'true'/'false' 文字列で永続化し、load が往復する", () => {
+    savePinnedOverlayEnabled(true);
+    expect(localStorage.getItem(PINNED_OVERLAY_ENABLED_KEY)).toBe("true");
+    expect(loadPinnedOverlayEnabled()).toBe(true);
+
+    savePinnedOverlayEnabled(false);
+    expect(localStorage.getItem(PINNED_OVERLAY_ENABLED_KEY)).toBe("false");
+    expect(loadPinnedOverlayEnabled()).toBe(false);
+  });
+
+  it("'true' 以外の値は false（厳密一致・壊れた値でも劣化）", () => {
+    localStorage.setItem(PINNED_OVERLAY_ENABLED_KEY, "1");
+    expect(loadPinnedOverlayEnabled()).toBe(false);
+  });
+
+  it("読取/書込が例外でも壊れない（false へ劣化・投げない）", () => {
+    const get = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("blocked");
+    });
+    expect(loadPinnedOverlayEnabled()).toBe(false);
+    get.mockRestore();
+
+    const set = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("blocked");
+    });
+    expect(() => savePinnedOverlayEnabled(true)).not.toThrow();
+    set.mockRestore();
+  });
+
+  it("044a の自動反映トグルとはキーが独立している（互いに書き換えない）", () => {
+    saveObsAutoAdd(true);
+    savePinnedOverlayEnabled(false);
+    expect(loadObsAutoAdd()).toBe(true);
+    expect(loadPinnedOverlayEnabled()).toBe(false);
+    expect(PINNED_OVERLAY_ENABLED_KEY).not.toBe(OBS_AUTO_ADD_KEY);
   });
 });

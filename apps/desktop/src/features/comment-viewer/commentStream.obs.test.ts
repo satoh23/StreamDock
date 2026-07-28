@@ -66,9 +66,9 @@ async function connectAndOpen() {
 describe("commentStream OBS 制御フレーム", () => {
   it("enableObs は {type:'obs-enable', port} のみを送る（パスワードを載せない・§9）", async () => {
     const { handle, socket } = await connectAndOpen();
-    handle.enableObs(4455);
+    handle.enableObs(4455, "comments");
     expect(socket.sent).toContain(
-      JSON.stringify({ type: "obs-enable", port: 4455 }),
+      JSON.stringify({ type: "obs-enable", port: 4455, overlay: "comments" }),
     );
     // 送信フレームにパスワードらしき語が一切現れない（§9）。
     expect(socket.sent.join("\n").toLowerCase()).not.toContain("password");
@@ -84,11 +84,26 @@ describe("commentStream OBS 制御フレーム", () => {
 
   it("hideObs は {type:'obs-hide', port} のみを送る（表示OFF連動・パスワードを載せない・§9）", async () => {
     const { handle, socket } = await connectAndOpen();
-    handle.hideObs(4455);
+    handle.hideObs(4455, "comments");
     expect(socket.sent).toContain(
-      JSON.stringify({ type: "obs-hide", port: 4455 }),
+      JSON.stringify({ type: "obs-hide", port: 4455, overlay: "comments" }),
     );
     expect(socket.sent.join("\n").toLowerCase()).not.toContain("password");
+    handle.disconnect();
+  });
+
+  it("046d: overlay 種別がフレームに載る（固定コメント側は 'pinned'）", async () => {
+    const { handle, socket } = await connectAndOpen();
+    handle.enableObs(4455, "pinned");
+    handle.hideObs(4455, "pinned");
+    expect(socket.sent).toContain(
+      JSON.stringify({ type: "obs-enable", port: 4455, overlay: "pinned" }),
+    );
+    expect(socket.sent).toContain(
+      JSON.stringify({ type: "obs-hide", port: 4455, overlay: "pinned" }),
+    );
+    // 送るのは識別子だけ＝OBS のソース名・窓名は sidecar 内の表に閉じており、viewer からは渡さない（§3/§8）。
+    expect(socket.sent.join("\n")).not.toContain("StreamDock");
     handle.disconnect();
   });
 

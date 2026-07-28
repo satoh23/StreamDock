@@ -45,7 +45,7 @@ import { toCanonicalComment } from "./wire.js";
 // 純関数のみを import する（top-level 副作用ゼロ）。撤去はこの import と下の 1 ゲートを外し dev-mock.ts を消すだけ。
 import { isMockEnabled, createMockCommentSource } from "./dev-mock.js";
 // 044a: OBS 連携（方式A＝ウィンドウキャプチャ自動追加）。obs-websocket は loopback 4455 のみ・OBS 連携有効時のみ接続。
-import { createObsClient } from "./obs/obs-client.js";
+import { createObsClient, type ObsOverlayKind } from "./obs/obs-client.js";
 
 const WS_HOST = "127.0.0.1";
 const PREFERRED_PORT = 17331;
@@ -85,10 +85,41 @@ type ControlFrame =
   | { type: "start-session"; service: Provider; channel?: string }
   | { type: "stop-session"; service: Provider }
   // 044a: OBS 連携。port は Rust の read-only 検出由来（非秘密）。パスワードは WS には載せず stdin で受領する。
-  | { type: "obs-enable"; port: number }
+  // 046d: overlay は対象種別（comments=コメント一覧 / pinned=固定コメント）。**固定 union のみ受理**で、
+  // 実ソース名/窓名は sidecar 内の表に閉じている（viewer から任意の名前は渡せない）。
+  | { type: "obs-enable"; port: number; overlay: ObsOverlayKind }
   // 044a: オーバーレイ表示 OFF 連動＝OBS 側ソースを削除せず非表示にする（port は再表示と同じ検出値）。
-  | { type: "obs-hide"; port: number }
+  | { type: "obs-hide"; port: number; overlay: ObsOverlayKind }
   | { type: "obs-disable" };
+
+/**
+ * 046d: overlay フィールドを `ObsOverlayKind` に正規化する。**allow-list 方式**で、既知の値以外は
+ * すべて既定 "comments" に落とす（未指定＝044a 時点の viewer からのフレーム＝後方互換）。
+ * 任意文字列がソース名/窓名として OBS へ渡る経路は作らない（§3/§8）。
+ *
+ * 046d レビュー（修正不要・依頼者の決定でテストを追加しない）: 本関数は「信頼できない JSON
+ * （loopback WS の制御フレーム）が最初に入ってくる境界」に置かれた**046d の実質的なセキュリティ制御**で、
+ * TypeScript の型はここでは何も守らない（引数は `JSON.parse` 由来の `unknown`）。にもかかわらず
+ * `scripts/test-obs-client.mjs` は本関数を検証しておらず、`(v) => v as ObsOverlayKind` に
+ * 書き換えても全テストがグリーンになる。
+ *
+ * それでもテストを追加しないのは、`index.ts` が top-level で `main()` を呼ぶ＝**import すると sidecar が
+ * 起動してしまう**ため、テストするには関数を別モジュールへ移す必要があり、移動先として自然な
+ * `obs/obs-helpers.ts` と `scripts/` は 046d で**差分ゼロが要件**（fail-closed 層に手を入れていないことの担保）
+ * だったから。要件を破ってまでの利得は無いと依頼者が判断した。
+ * 安全側の根拠＝①ここは `parseControlFrame` 内で**明示構築**したオブジェクトにしか値を載せない
+ * （`msg` をスプレッドしないので未検証フィールドが混入しない）②`obs-enable` / `obs-hide` の**両方**に適用済み
+ * ③未知値の劣化先 "comments" は 044a 時点と同一の挙動＝権限が広がらない。
+ *
+ * **再修正トリガー**＝①`ObsOverlayKind` に 3 つ目の値を足すとき（分岐が単純な三項演算子で済まなくなり、
+ * 取りこぼしが起きうる）②`overlay` 以外にも制御フレームへ列挙型フィールドを足すとき
+ * ③`obs-helpers.ts` を別の理由で改変することになったとき（差分ゼロ要件が失効するので、そのついでに移す）。
+ * そのときは本関数を `obs/obs-helpers.ts` へ移し、`test-obs-client.mjs` に
+ * `"pinned"` / `"comments"` / `undefined` / `"__proto__"` / 非文字列 の 5 ケースを足す。
+ */
+function parseOverlayKind(v: unknown): ObsOverlayKind {
+  return v === "pinned" ? "pinned" : "comments";
+}
 
 /** service フィールドを Provider に正規化する（未指定・不正は既定 twitch＝後方互換）。 */
 function parseService(v: unknown): Provider {
@@ -122,7 +153,11 @@ function parseControlFrame(raw: string): ControlFrame | null {
       port >= 1 &&
       port <= 65535
     ) {
-      return { type: "obs-enable", port };
+      return {
+        type: "obs-enable",
+        port,
+        overlay: parseOverlayKind((msg as { overlay?: unknown }).overlay),
+      };
     }
     return null;
   }
@@ -135,7 +170,11 @@ function parseControlFrame(raw: string): ControlFrame | null {
       port >= 1 &&
       port <= 65535
     ) {
-      return { type: "obs-hide", port };
+      return {
+        type: "obs-hide",
+        port,
+        overlay: parseOverlayKind((msg as { overlay?: unknown }).overlay),
+      };
     }
     return null;
   }
@@ -428,11 +467,11 @@ async function main(): Promise<void> {
     // 044a: OBS 連携はモック/実取得のどちらとも独立。mock 分岐より前で処理して早期 return する
     //（mockSource は OBS フレームを解さないため渡さない）。接続はオンデマンド・失敗は obs.state で通知。
     if (frame.type === "obs-enable") {
-      void obsClient.enable(frame.port);
+      void obsClient.enable(frame.port, frame.overlay);
       return;
     }
     if (frame.type === "obs-hide") {
-      void obsClient.hide(frame.port);
+      void obsClient.hide(frame.port, frame.overlay);
       return;
     }
     if (frame.type === "obs-disable") {

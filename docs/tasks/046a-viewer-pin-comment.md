@@ -6,6 +6,14 @@
 > **実装時に確定／本文から変更した点**（本文は当初計画のまま残してあるので、食い違う場合は下記が正）:
 > - **上限 N＝1（単一ピン）**。親 046 の初期案「例 3」から変更（YouTube / Twitch のコメント固定と同じ体験にする、という依頼者の決定）。親 046 の該当節も更新済み。
 > - **保存型は `PinnedComment`**（`CommentViewDto` から `author.avatar` を除いた部分型）で、`loadPinned(): PinnedComment[]`。
+> - **⚠ 046b レビュー（2026-07-29・S-1）で「窓の再オープンで復元する」を撤回した**（依頼者の決定）。
+>   `CommentViewerApp` の `pinned` state は `useState(()=>loadPinned())` ではなく**空配列で初期化**し、
+>   既存の保存 effect がマウント時に `"[]"` を書くことで**コメビュ窓を開くたびにピンストアを空へ倒す**。
+>   理由＝046b で ①ピン永続 ②表示トグル永続 ③ON ならマウント時に窓を自動 open が揃い、
+>   **前回配信で固定したコメント（表示名・本文・金額）が次の配信開始時に操作ゼロで本番画面へ出る**ようになったため。
+>   **`pinnedComments.ts`（ストア）は無改変**＝キー・保存項目・保存形・上限・046b の読み手契約はいずれも不変で、
+>   変わったのは「本体がいつ空へ倒すか」だけ。下の本文 (2)/完了条件/目視項目の「再オープンで復元」は本項が正。
+>   詳細は [`docs/security.md`](../security.md) §9 追補（046a）の ⚠ 節と [`docs/progress.md`](../progress.md) の 046b レビュー対応節。
 >   下記 (1) の「`loadPinned(): CommentViewDto[]`」と保存フィールドの列挙は誤り＝`CommentViewDto` は `publishedAt` が必須で、
 >   列挙どおりに削ると型を名乗れず、`monthCount`/`giftCount`/`tier` を落とすと `composeEventMessage` の要約文言が劣化する。
 > - **`author.avatar` は保存しない**（base64 data URI・容量と `storage` ペイロード・§9）。046b のアイコンは 036a のイニシャルフォールバックになる。
@@ -52,7 +60,7 @@
   - 「固定済みか」は `pinnedIds?: ReadonlySet<string>`（`badges` と同じ「id で引く任意 prop」の作法）で子へ渡し、メニュー文言を出し分ける。
   - コンテキストメニュー UI は小さな自作メニュー（「上部に固定」/「固定解除」）。既存に汎用メニュー基盤は無いため、この機能内で完結する軽量メニュー（外側クリック/Esc で閉じる）を追加する＝**新規 [`CommentContextMenu.tsx`](../../apps/desktop/src/screens/comment-viewer/CommentContextMenu.tsx)**。overlay バリアントには効かない（`variant==="overlay"` は非インタラクティブのまま）。
   - `e.preventDefault()`（ネイティブメニュー抑止）は**この行の `onContextMenu` だけ**で、しかも `onPin` 指定時のみ。アプリ全体のコンテキストメニューは潰さない。
-- [`CommentViewerApp.tsx`](../../apps/desktop/src/screens/comment-viewer/CommentViewerApp.tsx) に `pinned` state（`useState(()=>loadPinned())`）＋永続化 `useEffect(()=>savePinned(pinned),[pinned])` を追加し、固定/解除ハンドラを `CommentList` の `onPin` に渡す。
+- [`CommentViewerApp.tsx`](../../apps/desktop/src/screens/comment-viewer/CommentViewerApp.tsx) に `pinned` state（**実装は `useState<PinnedComment[]>([])`**＝冒頭 ⚠ のとおり `loadPinned()` 初期化から変更）＋永続化 `useEffect(()=>savePinned(pinned),[pinned])` を追加し、固定/解除ハンドラを `CommentList` の `onPin` に渡す。**この保存 effect のマウント時 1 発が「前回セッションのピンを消す」役目を兼ねるので、初回スキップのガードを足さないこと。**
 
 ### (3) 本体上部の固定表示
 
@@ -76,7 +84,7 @@
 
 - コメントを右クリック→「上部に固定」で本体上部に固定表示され、**固定帯の項目を右クリック→「固定解除」**で外れる（一覧側の行の右クリックでも解除できる）。上限 `PINNED_LIMIT`（=1）を超えると最古が押し出される（＝別のコメントを固定すると置き換わる）。
 - 固定帯とコメント一覧の間に divider が出る（固定 0 件のときは帯ごと消えるので線も出ない）。
-- ピンストア（localStorage）に保存され、窓の再オープンで復元する。046b が読める形式（JSON 配列）で保存されている。
+- ピンストア（localStorage）に保存され、046b が読める形式（JSON 配列）で保存されている。※「窓の再オープンで復元する」は**冒頭の ⚠ で撤回**（046b レビュー S-1・コメビュ窓を開くたびに空へ倒す）。
 - 課金種別の固定は種別ラベル＋金額が表示される（既存 util 流用）。通常 chat の表示・既存の左クリック導線（視聴者詳細）は壊れない。
 - 新規宛先/API/capability/依存の追加が無い。`csp: null` 不変。
 - `pnpm --filter ./apps/desktop typecheck` / `lint` が通る。[`docs/progress.md`](../progress.md) を更新。
@@ -92,7 +100,7 @@ pnpm --filter ./apps/desktop test        # 既存テストの非退行（新 pro
 # 通信面・Rust がゼロ拡大であることの担保（差分ゼロが期待値）
 git status --short -- apps/desktop/src-tauri/ apps/comment-sidecar/ apps/desktop/package.json
 
-pnpm --filter ./apps/desktop tauri dev   # 右クリックで固定/解除・上部に出る・別コメント固定で置き換わる・再オープンで復元・左クリック詳細が壊れない、を目視
+pnpm --filter ./apps/desktop tauri dev   # 右クリックで固定/解除・上部に出る・別コメント固定で置き換わる・再オープンで**復元しない**（046b レビュー S-1）・左クリック詳細が壊れない、を目視
 ```
 
 ## 実装後に必要なレビュー

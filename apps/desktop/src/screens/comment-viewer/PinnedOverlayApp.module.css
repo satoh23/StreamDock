@@ -1,0 +1,15 @@
+/* 046c: 固定コメント専用オーバーレイのクリップ用ラッパ。
+   046b は「新規 CSS ファイルゼロ」で作ったが、共有 CSS（OverlayApp / OverlayComment / CommentViewerApp）に
+   触れずに自動縮小を入れるには、この 1 枚を足すのが唯一の手段だったため意図的に増やしている。 */
+
+/* 縮小時、`.root` は transform で見た目だけ縮む一方、**レイアウトボックスは W/k × H/k のまま**になる
+   （transform はレイアウトに影響しない）。#root は窓サイズちょうどで overflow 指定が無いため、
+   このままだとドキュメントがスクロール可能になり、**透過窓に body のスクロールバーが出うる**。
+   OverlayApp.module.css のスクロールバー消しは `ol` 限定なのでこれを防げない。ここで断つ。
+
+   `overflow: clip` ではなく `hidden` にするのは Safari(WKWebView) の対応バージョン差を踏まえた安全側。
+   background は**書かない**（背景透過を壊さないため。透明化は html/body/#root 側の :global ルールが担う）。 */
+.fit {
+  height: 100%;
+  overflow: hidden;
+}

@@ -32,6 +32,7 @@ import { TutorialOverlay } from "./components/tutorial/TutorialOverlay";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { CommentViewerApp } from "./screens/comment-viewer/CommentViewerApp";
 import { OverlayApp } from "./screens/comment-viewer/OverlayApp";
+import { PinnedOverlayApp } from "./screens/comment-viewer/PinnedOverlayApp";
 
 function MainWindowApp() {
   const [screen, setScreen] = useState<Screen>("main");
@@ -346,11 +347,12 @@ function MainWindowApp() {
 }
 
 /**
- * 032c-a/033f: 同一 Vite バンドルをウィンドウラベルで分岐する薄いルート。
+ * 032c-a/033f/046b: 同一 Vite バンドルをウィンドウラベルで分岐する薄いルート。
  * `main`（既定）= 管理画面（MainWindowApp）／`comment-viewer` = 内蔵コメントビューア／
- * `comment-overlay` = OBS 用の背景透過オーバーレイ（表示専用）。
- * ウィンドウ生成は Rust の `open_comment_viewer_window` / `open_comment_overlay_window` に閉じ、
- * frontend からは生成しない。
+ * `comment-overlay` = OBS 用の背景透過オーバーレイ（コメント一覧・表示専用）／
+ * `pinned-overlay` = 固定コメント専用の背景透過オーバーレイ（046a のピンだけを描く・表示専用・WS なし）。
+ * ウィンドウ生成は Rust の `open_comment_viewer_window` / `open_comment_overlay_window` /
+ * `open_pinned_overlay_window` に閉じ、frontend からは生成しない。
  */
 function App() {
   const label = getCurrentWindow().label;
@@ -359,6 +361,9 @@ function App() {
   }
   if (label === "comment-overlay") {
     return <OverlayApp />;
+  }
+  if (label === "pinned-overlay") {
+    return <PinnedOverlayApp />;
   }
   return <MainWindowApp />;
 }

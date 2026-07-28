@@ -52,6 +52,9 @@ function baseProps(over: Partial<Props> = {}): Props {
     obsState: "idle",
     onSetObsPassword: vi.fn(),
     onClearObsPassword: vi.fn(),
+    // 046b: 固定コメント専用オーバーレイの表示トグル（既定 OFF）。
+    pinnedOverlayEnabled: false,
+    onPinnedOverlayToggle: vi.fn(),
     ...over,
   };
 }
@@ -217,5 +220,71 @@ describe("SettingsView OBS 連携", () => {
     // 生の技術エラーや旧「連携に失敗しました：<reason>」形式は画面に出さない。
     expect(container.textContent).not.toContain("ECONNREFUSED");
     expect(screen.queryByText(/連携に失敗しました/)).toBeNull();
+  });
+});
+
+/**
+ * 046b: 固定コメント専用オーバーレイ（label `pinned-overlay`）の設定カード。
+ * あるべき挙動（docs/tasks/046b-pinned-overlay-window.md / 親 046）:
+ * - 「固定コメントをOBSに表示」トグルを描画し、操作で `onPinnedOverlayToggle` を呼ぶ（窓の開閉は親が担う）。
+ * - 手動キャプチャ注記の窓名は **Rust の窓タイトルと同一文字列**、かつ 044a が窓を探すときの
+ *   `includes("StreamDock コメントオーバーレイ")` に**部分一致しない**こと（別窓として区別できる）。
+ * - **046d: 自動反映 ON なら自動追加される旨**と、**OFF のときの手動追加手順**を明示する
+ *   （046b 時点の「※対象外です（手動で追加してください）」は 046d で撤回済み。下の該当ケースが
+ *   旧文言へ戻る退行を `not.toContain` で防いでいる）。
+ * - 既存の OBS カード（044a）は不変＝自動反映トグルと窓名注記が従来どおり出る。
+ */
+describe("SettingsView 046b 固定コメントオーバーレイのカード", () => {
+  const PINNED_TOGGLE = "固定コメントをOBSに表示";
+
+  it("トグルを描画し、操作で onPinnedOverlayToggle を呼ぶ", () => {
+    const props = baseProps();
+    render(<SettingsView {...props} />);
+    // カード見出しと同一文字列なので role="switch" で絞る（044a のカードと同じ作法）。
+    const toggle = screen.getByRole("switch", { name: PINNED_TOGGLE });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(toggle);
+    expect(props.onPinnedOverlayToggle).toHaveBeenCalledWith(true);
+  });
+
+  it("ON のときは aria-checked=true で出る（永続値は親が保持）", () => {
+    render(<SettingsView {...baseProps({ pinnedOverlayEnabled: true })} />);
+    expect(screen.getByRole("switch", { name: PINNED_TOGGLE })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+  });
+
+  it("窓名は Rust と同一文字列で、コメント用オーバーレイ名と部分一致しない", () => {
+    const { container } = render(<SettingsView {...baseProps()} />);
+    // Rust: src-tauri/src/lib.rs の open_pinned_overlay_window の .title と同じ文字列。
+    expect(container.textContent).toContain("「StreamDock 固定コメント」");
+    // 044a（sidecar）は itemName.includes("StreamDock コメントオーバーレイ") で窓を探す。
+    // 固定用の窓名がこれを含むと、自動追加がこちらの窓を掴んでしまう。
+    // container 全体には既存 OBS カードの注記（＝コメント用の窓名）も含まれるので、
+    // **この注記ノードだけ**を取り出して実装由来の文字列で検証する（リテラル同士の比較にしない）。
+    const note = screen.getByText(/ウィンドウ「StreamDock 固定コメント」/);
+    expect(note.textContent).not.toContain("StreamDock コメントオーバーレイ");
+  });
+
+  it("046d: 044a の自動反映の対象であることを案内する（OFF 時の手動手順も残す）", () => {
+    const note = render(<SettingsView {...baseProps()} />).container;
+    // 当初は「対象外です（手動で追加してください）」と案内していたが、046d で自動反映の対象に入れた。
+    expect(note.textContent).not.toContain("「OBSに自動で反映する」の対象外");
+    expect(note.textContent).toContain(
+      "上の「OBSに自動で反映する」がONなら、OBSに「StreamDock 固定コメント」ソースが自動で追加されます",
+    );
+    // 自動反映 OFF の人向けに、手動キャプチャの手順も残っていること。
+    expect(note.textContent).toContain("手動で追加してください");
+  });
+
+  it("既存の OBS カード（044a）は不変（自動反映トグルと窓名注記が残る）", () => {
+    const { container } = render(<SettingsView {...baseProps()} />);
+    expect(
+      screen.getByRole("switch", {
+        name: "「コメントをOBSに表示」ON時、OBSに自動で反映する",
+      }),
+    ).toBeInTheDocument();
+    expect(container.textContent).toContain("「StreamDock コメントオーバーレイ」");
   });
 });

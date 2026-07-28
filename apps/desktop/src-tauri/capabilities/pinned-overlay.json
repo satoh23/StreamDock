@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "pinned-overlay",
+  "description": "Capability for the pinned-comment transparent overlay window (046b). Display-only, minimal permissions.",
+  "windows": ["pinned-overlay"],
+  "permissions": ["core:default"]
+}

@@ -19,6 +19,7 @@ import {
   connectCommentStream,
   type CommentStreamHandle,
   type DeviceCodePrompt,
+  type ObsOverlayKind,
 } from "../../features/comment-viewer/commentStream";
 import {
   loadChannel,
@@ -45,10 +46,11 @@ import {
   saveOverlayShowSource,
   loadObsAutoAdd,
   saveObsAutoAdd,
+  loadPinnedOverlayEnabled,
+  savePinnedOverlayEnabled,
 } from "../../features/comment-viewer/overlaySettings";
 // 046a: 固定コメント（ピン留め）のピンストア。本体が唯一の書き手で、046b の固定専用オーバーレイが読み手になる。
 import {
-  loadPinned,
   savePinned,
   toPinned,
   PINNED_LIMIT,
@@ -68,6 +70,9 @@ import {
   openCommentOverlayWindow,
   closeCommentOverlayWindow,
   isCommentOverlayOpen,
+  openPinnedOverlayWindow,
+  closePinnedOverlayWindow,
+  isPinnedOverlayOpen,
 } from "../../features/comment-viewer/windowApi";
 import { CommentList } from "./CommentList";
 import { SettingsView } from "./SettingsView";
@@ -331,9 +336,24 @@ export function CommentViewerApp() {
     loadOverlayShowSource(),
   );
 
-  // 046a: 固定コメント（ピン留め）。窓を開き直しても復元するよう localStorage から初期化し、変化のたびに保存する
-  // （channel / overlayFont と同型）。書換は他窓（046b の固定専用オーバーレイ）で storage イベントを発火させる。
+  // 046a: 固定コメント（ピン留め）。変化のたびに localStorage へ保存する（channel / overlayFont と同型）。
+  // 書換は他窓（046b の固定専用オーバーレイ）で storage イベントを発火させる。
   // 上限は PINNED_LIMIT（046a では 1＝単一ピン）で、超過分は最古から押し出す。
+  //
+  // **046b レビュー（S-1・依頼者の決定で挙動変更）: 前回セッションの固定は引き継がず、必ず空で始める**
+  //（当初は `loadPinned()` で初期化＝窓を開き直しても復元していた）。理由は、046b で
+  // ①ピン本体 ②「固定コメントをOBSに表示」トグル の 2 つが永続し、さらに ③ON ならマウント時に窓を自動 open
+  // するようになった結果、**前回配信で固定したコメント（表示名・本文・金額）が次の配信の開始時に操作ゼロで
+  // 本番画面へ出る**ようになったため（窓は最背面・透過で配信者自身は気付きにくい）。
+  // 永続した第三者の個人データが「配信に出る面」へ自動描画されるのは 046b が初めてで、docs/security.md の
+  // §9 追補（046a）が対象とするデータそのもの。**ピンストアの役割は本体窓↔オーバーレイ窓の受け渡し**であって
+  // セッションをまたぐ保存ではないので、この変更は 046a の設計意図と矛盾しない。
+  // なお `pinnedComments.ts`（ストア側）は無改変＝保存形・キー・上限・046b の読み手契約はいずれも不変で、
+  // 「いつ空へ倒すか」だけを本体側で決めている。**localStorage を空へ倒すのは下の専用 effect
+  // （`savePinned([])` をマウント時に 1 回）**で、state の初期値をここで `[]` にするのと 2 点セットで S-1 を担保する
+  //（当初は永続化 effect のマウント時 1 発に相乗りしていたが、レビュー指摘で独立させた）。
+  // 再修正トリガー＝「配信をまたいで固定を残したい」という要望が出たら、①起動時クリアをやめる のではなく
+  // 「前回の固定を復元しますか」を明示操作にする（無操作で配信面に出さない、を守る）。
   //
   // 固定は**固定した時点のスナップショット**（comments の参照ではなくコピー）。狙いは ①一覧が MAX_COMMENTS で
   // クランプされて流れ去っても固定が残る ②046b が WS 無しで描ける、の 2 点。代償として、043e の jewels combo 更新
@@ -341,7 +361,26 @@ export function CommentViewerApp() {
   // 固定は「見失わないための再掲」で、更新は流れる一覧側で見えるため許容する。
   // 再修正トリガー＝固定した投げ銭の金額が伸びていくのを固定側でも追いたくなったら、mergeComments の updated を
   // 拾って pinned の同 id を差し替える（そのときも保存形は変えなくてよい）。
-  const [pinned, setPinned] = useState<PinnedComment[]>(() => loadPinned());
+  const [pinned, setPinned] = useState<PinnedComment[]>([]);
+
+  // 046b: 「固定コメントをOBSに表示」トグルの状態＝固定専用オーバーレイ窓（label `pinned-overlay`）を出すか。
+  // 034d/045b のオーバーレイ表示トグル（`overlayOpen`）と違い**localStorage に永続**する。理由は
+  // ①これは配信中に切り替える操作ではなく「OBS のウィンドウキャプチャに固定コメント窓を仕込む」一度きりの
+  // セットアップ（固定/解除は右クリックメニュー側の仕事で、窓は開けっぱなしにする）②毎回 ON にし直させると
+  // 配信開始時に窓が無く、OBS 側のソースが取り込めない状態から始まる、の 2 点（依頼者の決定）。
+  // 永続値が真のときはマウント時に窓を開き直す（下の 046b effect）。
+  const [pinnedOverlayEnabled, setPinnedOverlayEnabled] = useState(() =>
+    loadPinnedOverlayEnabled(),
+  );
+  // 046b レビュー（要修正・連打レース）: 固定オーバーレイ窓の開閉要求を**直列化**するキュー。
+  // `open_pinned_overlay_window` は `#[tauri::command(async)]`（別スレッド・窓生成で数百 ms）、
+  // `close_pinned_overlay_window` は同期コマンドなので、素の `void invoke()` だと ON→OFF 連打で
+  // 「close が『窓なし＝no-op』で先に流れ、その後 open が窓を作る」順序が起こりうる。046b は
+  // 自動 close 経路を持たない設計のため、この状態は**セッション中に解消せず**「設定 OFF なのに
+  // 固定コメントが OBS に映り続ける」になる。前の要求の完了後に次を流すことで最後の意図が勝つようにする。
+  // マウント同期 effect もこのキューに載せる（永続値の復元と、その解決前のトグル操作が競合するため）。
+  // `.catch` はキューを詰まらせないための握りつぶし（reject を伝播させると以降の開閉要求が全て死ぬ）。
+  const pinnedOverlayOpRef = useRef<Promise<void>>(Promise.resolve());
 
   // 044a: OBS 連携（方式A＝ウィンドウキャプチャ自動追加）。
   // - obsConfig: OBS の WebSocket 設定の read-only 検出結果（有効/ポート/認証要否）。null=未検出（未導入/未設定）。
@@ -360,6 +399,9 @@ export function CommentViewerApp() {
   // 旧実装は id を捨てていたため、猶予中に表示 OFF / 自動反映 OFF にしても発火が止まらず、hideObs / disableObs の
   // **後に** enableObs が飛んでいた（OBS 側で閉じた窓のソースが再表示され、ツールバーにも表示 OFF のまま赤字が残る）。
   const obsEnableTimerRef = useRef<number | null>(null);
+  // 046d: 固定コメントオーバーレイ用の猶予タイマー。コメント一覧用（上）とは**別に持つ**
+  //（片方の ON がもう片方の仕掛かりを取り消してしまわないようにする）。
+  const pinnedObsEnableTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     saveChannel(channel);
@@ -368,6 +410,56 @@ export function CommentViewerApp() {
   // 034d: マウント時に実際の窓状態へトグルを同期する（外部で開閉されていても実状態に合わせる）。
   useEffect(() => {
     void isCommentOverlayOpen().then(setOverlayOpen);
+  }, []);
+
+  // 046b レビュー S-1（対応の明示化）: 前回セッションのピンを**必ず捨てる**。
+  // 狙い＝「前回配信で固定したコメント（表示名・本文・金額）が、次の配信の開始時にユーザー操作ゼロで
+  // 本番画面へ出る」経路を断つこと（docs/security.md §9 追補〈046a〉の ⚠ 節）。
+  //
+  // **この effect が S-1 の担保そのもの**。当初は下の `savePinned(pinned)` effect が「マウント時に `"[]"` を
+  // 1 発書く」副産物に依存していたが、①汎用の永続化 effect が意図を表明していない ②同型の save effect が
+  // 10 個ほど並んでいるため「初回スキップ/前回値比較」の一括最適化で静かに壊れる ③所有者の単位でテストできない、
+  // の 3 点でレビュー指摘を受けたため、独立した effect として明示した。
+  //
+  // ⚠ **下の 046b マウント同期 effect（窓を開く）より前に宣言すること**。この書込は同期で、窓を開く経路は
+  // async（invoke＝マイクロタスク境界を越える）なので、宣言順とマイクロタスク境界の二重で
+  // 「クリアが窓生成より先」が保証される。**未検証の `storage` 跨ぎ配送には依存しない**
+  //（再起動時はオーバーレイ窓がまだ存在せず、窓が開くのは必ずこの書込の後＝read-on-mount が空を読む）。
+  // `storage` に依存するのは「オーバーレイを開いたままコメビュ窓だけ開き直した」二次ケースのみ。
+  //
+  // `pinnedComments.ts`（ストア側）は無改変＝キー・保存形・上限・046b の読み手契約はいずれも不変で、
+  // 「いつ空へ倒すか」だけを本体側で決めている（`clearPinned()` を新設せず `savePinned([])` を使うのはこのため）。
+  // 再修正トリガー＝「配信をまたいで固定を残したい」要望が出たら、この effect を消すのではなく
+  // 「前回の固定を復元しますか」を明示操作にする（**無操作で配信面に出さない**、を守る）。
+  useEffect(() => {
+    savePinned([]);
+  }, []);
+
+  // 046b: マウント時、「固定コメントをOBSに表示」が ON なのに窓が無ければ開き直す（永続設定の復元）。
+  // 034d の overlayOpen と**向きが逆**なのは意図的で、こちらは永続設定が真＝ユーザーの意思なので、
+  // 実窓ではなく設定へ合わせる（配信開始時に OBS ソースが黒いままにならない）。
+  // 逆に設定 OFF で窓が開いていた場合は**何もしない**: 親 046 は「ピン 0 件で窓が自動的に閉じると OBS の
+  // ウィンドウキャプチャソースが壊れる」ことを理由に**自動 close を禁じている**ため、自動で閉じる経路は作らない
+  //（ここで開くのはユーザーが明示的に ON にした設定に基づく自動 open で、親 046 の懸念とは向きが逆＝
+  //  窓がより確実に存在する方向。逸脱の理由は docs/progress.md の 046b 節に明記した）。
+  // open は Rust 側で冪等（既存なら show して return）なので厳密には is* を挟まなくても動くが、
+  // 「開いているなら触らない」ことを明示して最背面窓の余計な show を避ける。
+  // 依存配列を空にして**マウント時 1 回だけ**にするのは、トグル操作のたびに再実行させないため
+  //（トグルの実開閉は handlePinnedOverlayToggle が行う）。
+  // 046b レビュー（修正不要・意図の明記）: state（pinnedOverlayEnabled）ではなく loadPinnedOverlayEnabled() を
+  // 直読みするのは、exhaustive-deps 回避が発端だが**解決時点の永続値を読む方が正しい**ため意図的に残す。
+  // is* の解決を待っている間にユーザーが OFF にした場合、state 参照（deps 空＝stale closure）だと古い true を
+  // 見て窓を開いてしまうが、直読みなら最新値（false）を見て開かない。
+  // 再修正トリガー＝この effect が永続値以外の state にも依存するようになったら、ref 同期に切り替える。
+  useEffect(() => {
+    pinnedOverlayOpRef.current = pinnedOverlayOpRef.current
+      .then(() => isPinnedOverlayOpen())
+      .then((open) => {
+        if (loadPinnedOverlayEnabled() && !open) {
+          return openPinnedOverlayWindow();
+        }
+      })
+      .catch(() => {});
   }, []);
 
   // 044a: マウント時に OBS の WebSocket 設定を read-only 検出する（有効/ポート/認証要否）。
@@ -383,6 +475,9 @@ export function CommentViewerApp() {
     () => () => {
       if (obsEnableTimerRef.current !== null) {
         window.clearTimeout(obsEnableTimerRef.current);
+      }
+      if (pinnedObsEnableTimerRef.current !== null) {
+        window.clearTimeout(pinnedObsEnableTimerRef.current);
       }
     },
     [],
@@ -418,9 +513,23 @@ export function CommentViewerApp() {
   useEffect(() => {
     saveObsAutoAdd(obsAutoAdd);
   }, [obsAutoAdd]);
+  // 046b: 「固定コメントをOBSに表示」ON/OFF を永続化（非機密のトグル値のみ）。
+  // 046b レビュー（修正不要）: この effect はマウント時にも走るため、コメビュ本体を開くたびに同じ値が 1 回書かれ、
+  // 他窓で `storage` イベントが 1 発飛ぶ（saveChannel / saveObsAutoAdd / savePinned と同じ既存挙動）。
+  // 無害な理由＝読み手の `PinnedOverlayApp` / `OverlayApp` は購読キーを絞っており、どちらもこのキーを見ていない。
+  // 再修正トリガー＝オーバーレイ側がこのキーを購読する（例: 窓側で ON/OFF を表示する）ようになったら、
+  // 値が変わったときだけ書くようガード（前回値との比較）を足す。
+  useEffect(() => {
+    savePinnedOverlayEnabled(pinnedOverlayEnabled);
+  }, [pinnedOverlayEnabled]);
   // 046a: 固定コメントを永続化（非機密の表示データのみ・アバターは載せない）。解除時は "[]" を書いて
   // 046b 側にも「解除」が伝わるようにする（savePinned がキーを消さない理由はそちらの JSDoc 参照）。
   // Rust の DB/ログには渡さない（recordComments 等の保存経路には流さない・§9）。
+  //
+  // S-1（前回セッションのピンを捨てる）の担保は**この effect ではなく、上の専用 effect が持つ**
+  //（当初はここのマウント時 1 発に相乗りしていたが、レビュー指摘で明示化した）。したがって
+  // ここは純粋な永続化に戻っており、他の save effect 群と同じ扱いでよい（初回スキップ等の最適化を
+  // 一括で入れる場合も、上の専用 effect を消さなければ S-1 は壊れない）。
   useEffect(() => {
     savePinned(pinned);
   }, [pinned]);
@@ -791,7 +900,19 @@ export function CommentViewerApp() {
   // 044a: OBS へ自動追加を要求する。まず config を read-only で再検出（起動後に OBS 側で有効化された場合に追従）
   // してから、検出ポート（無ければ既定 4455）で sidecar に enableObs を送る。host は sidecar 側で 127.0.0.1 に固定。
   // パスワードはこの経路（WS）には載せず、別途 set_obs_websocket_password（Rust→keychain→stdin）で渡す。
-  const requestObsAutoAdd = () => {
+  // 046d: `overlay` で対象を選ぶ（"comments"＝コメント一覧オーバーレイ / "pinned"＝固定コメントオーバーレイ）。
+  // 渡すのは識別子だけで、OBS のソース名・窓名は sidecar 内の表に閉じている（任意の名前を渡す口は作らない）。
+  //
+  // 046d レビュー（修正不要・`obsState` を 2 種別で共有している点）: 意図は「OBS 連携の状態表示は 1 つ」で、
+  // `enableObs("comments")` と `enableObs("pinned")` の結果が同じ state に流れ込む。よって
+  // ①ツールバーの失敗表示はどちらのソースで失敗したか区別できない ②両方が同時に走ると最後の書き手が勝つ
+  //（片方の失敗が他方の成功に隠れうる）。それでも分けないのは、これが**セットアップ時の一度きりの操作**で、
+  // 失敗しても OBS 側は壊れず設定カードに手動追加の手順が併記されているため、状態を 2 系統に増やす複雑さの方が
+  // コストが上回ると判断したから。なお sidecar 側は 2 種別で**別ソース名**を触るので、同時実行でも二重ソース作成・
+  // ソース間の相互破壊は起きない（`obs-client.ts` の L5 注記＝毎回独立インスタンスで完結、が種別違いでも成立）。
+  // 再修正トリガー＝「どちらのオーバーレイが OBS に出ていないか分からない」という問い合わせが実際に出たら、
+  // `obsState` を `Record<ObsOverlayKind, ObsState>` にして表示側も種別ごとに出す。
+  const requestObsAutoAdd = (overlay: ObsOverlayKind) => {
     setObsState("connecting");
     void detectObsWebsocketConfig().then((cfg) => {
       setObsConfig(cfg);
@@ -801,14 +922,14 @@ export function CommentViewerApp() {
         setObsState("failed");
         return;
       }
-      stream.enableObs(cfg?.port ?? 4455);
+      stream.enableObs(cfg?.port ?? 4455, overlay);
     });
   };
 
   // 044a: オーバーレイ表示 OFF 連動。OBS 側ソースを**削除せず非表示**にする（ON で requestObsAutoAdd が再表示）。
   // port は既知の検出値（無ければ既定 4455）を使う。sidecar 側は best-effort（該当なし/未起動は idle）。
-  const requestObsHide = () => {
-    streamRef.current?.hideObs(obsConfig?.port ?? 4455);
+  const requestObsHide = (overlay: ObsOverlayKind) => {
+    streamRef.current?.hideObs(obsConfig?.port ?? 4455, overlay);
   };
 
   // 045c レビュー（回帰）: 仕掛かり中の猶予タイマーを取り消す。表示 OFF・自動反映 OFF・アンマウントで呼ぶ。
@@ -817,6 +938,14 @@ export function CommentViewerApp() {
     if (obsEnableTimerRef.current !== null) {
       window.clearTimeout(obsEnableTimerRef.current);
       obsEnableTimerRef.current = null;
+    }
+  };
+
+  // 046d: 固定オーバーレイ用の猶予タイマーを取り消す（clearObsEnableTimer と同型・対象が別）。
+  const clearPinnedObsEnableTimer = () => {
+    if (pinnedObsEnableTimerRef.current !== null) {
+      window.clearTimeout(pinnedObsEnableTimerRef.current);
+      pinnedObsEnableTimerRef.current = null;
     }
   };
 
@@ -830,7 +959,7 @@ export function CommentViewerApp() {
           clearObsEnableTimer();
           obsEnableTimerRef.current = window.setTimeout(() => {
             obsEnableTimerRef.current = null;
-            requestObsAutoAdd();
+            requestObsAutoAdd("comments");
           }, OBS_ENABLE_DELAY_MS);
         }
       });
@@ -841,7 +970,7 @@ export function CommentViewerApp() {
       clearObsEnableTimer();
       // 044a: 連携 ON のときは、表示 OFF で OBS 側のソースも非表示にする（削除はしない）。
       if (obsAutoAdd) {
-        requestObsHide();
+        requestObsHide("comments");
         // 045c: 表示 OFF＝OBS 側も非表示なので、直前の結果（connecting/added/failed）は実態と食い違う。idle へ戻し、
         // ツールバーのエラー表示と設定カードの状態表示が消えるようにする（残留した赤字が誤解を生む）。
         // sidecar 側も hide()/disable() で onState("idle") を返す（obs-client.ts）ので、これは先取りの echo であり
@@ -849,6 +978,65 @@ export function CommentViewerApp() {
         setObsState("idle");
       }
     }
+  };
+
+  // 046b: 「固定コメントをOBSに表示」トグル。ON で固定専用オーバーレイ窓（label `pinned-overlay`）を開き、
+  // OFF で閉じる。ピン 0 件でも窓は完全透明で開くだけなので、OBS 側でウィンドウキャプチャを**先に**追加できる。
+  //
+  // **固定/固定解除ではこの窓を開閉しない**（解除時は窓の中身が透明に戻るだけ）。親 046 が
+  // 「ピン 0 件で窓が自動的に閉じると OBS ソースが壊れる」ことを理由に自動 close を禁じているため。
+  //
+  // 046d: **この窓も 044a の自動反映の対象**（当初は「対象外・手動キャプチャ前提」で作ったが、
+  // 親 046 が「将来タスク」として先送りしていただけで技術的な障害は無く、依頼者の指示で解禁した）。
+  // 「OBSに自動で反映する」が ON のときだけ、ON で `enableObs("pinned")` / OFF で `hideObs("pinned")` を出す。
+  // 045c が確定させた線引き「表示（開閉）が主・自動反映は従」に合わせ、**このトグル自体は OBS への接続契機**
+  // であって、自動反映が OFF なら OBS へは一切繋がない。
+  //
+  // 046b レビュー（修正不要・根拠の訂正）: state を invoke の**前に**同期で立てるのは意図的で、
+  // handleOverlayToggle（`.then()` の中で setOverlayOpen する＝state が実窓の帰結）とは設計が違う。
+  // こちらの state は実窓のミラーではなく**永続設定**なので、成否に依らず即座にユーザーの意思を記録する。
+  // 失敗時は「トグル ON・永続 true・窓なし」になるが、次にコメビュ本体を開いたときのマウント同期 effect が
+  // 実窓を設定へ追いつかせる（＝設定が正・窓が従、で一貫する）。
+  // 再修正トリガー＝invoke の reject が実運用で頻発し、失敗をその場でユーザーに伝える必要が出たとき。
+  // そのときは下の catch で setPinnedOverlayEnabled を巻き戻すのではなく、エラー表示を足す（設定値は保持する）。
+  const handlePinnedOverlayToggle = (next: boolean) => {
+    setPinnedOverlayEnabled(next);
+    // 連打レース対策で直列化する（理由は pinnedOverlayOpRef の注記）。
+    pinnedOverlayOpRef.current = pinnedOverlayOpRef.current
+      .then(() =>
+        next ? openPinnedOverlayWindow() : closePinnedOverlayWindow(),
+      )
+      .catch(() => {});
+
+    // 046d: 自動反映が OFF なら OBS へは一切繋がない（045c の「明示的に有効化した時のみ接続」を維持）。
+    if (!obsAutoAdd) return;
+    clearPinnedObsEnableTimer();
+    if (next) {
+      // 窓が OBS の「ウィンドウ一覧」に載るまでの猶予を置いてから追加を要求する（044a と同じ理由・同じ値）。
+      pinnedObsEnableTimerRef.current = window.setTimeout(() => {
+        pinnedObsEnableTimerRef.current = null;
+        requestObsAutoAdd("pinned");
+      }, OBS_ENABLE_DELAY_MS);
+    } else {
+      // 表示 OFF＝OBS 側も非表示（**ソースは消さない**・ON で再表示される）。直前の結果表示も実態へ揃える。
+      requestObsHide("pinned");
+      setObsState("idle");
+    }
+  };
+
+  // 046d レビュー（要修正・非対称の解消）: 固定オーバーレイの自動追加は**実窓の有無**で判定する。
+  // コメント一覧側は `overlayOpen`（実窓の状態）でゲートしているのに対し、当初の実装は
+  // `pinnedOverlayEnabled`（**永続設定値**）でゲートしていた。トグル操作としては「設定が正・窓が従」の整理で
+  // 正しいが、`requestObsAutoAdd` は「窓が OBS のウィンドウ一覧に載っている」ことを前提にする操作なので、
+  // 設定 ON ／ 窓なし（＝open の invoke が失敗した等）の状態で走ると sidecar 側 `ensureOverlaySource` が
+  // **先に `CreateInput` でソースを作ってから**窓を探して失敗し、キャプチャ対象未設定の空ソース
+  // 「StreamDock 固定コメント」が OBS に残る（ユーザーが手で消すまで消えない）。
+  // 再修正トリガー＝`requestObsAutoAdd` が窓の存在を前提にしなくなったら（sidecar 側で窓を確認してから
+  // CreateInput する順序に変えたら）、設定値ゲートに戻してよい。
+  const requestPinnedObsAutoAddIfOpen = () => {
+    void isPinnedOverlayOpen().then((open) => {
+      if (open) requestObsAutoAdd("pinned");
+    });
   };
 
   // 044a: 「OBS へ自動追加（連携）」トグル。ON の間、オーバーレイ表示 ON に連動して OBS へウィンドウキャプチャ
@@ -870,14 +1058,18 @@ export function CommentViewerApp() {
       return;
     }
     // 既に表示中なら猶予不要（窓は OBS のウィンドウ一覧に載っている）ので即反映する。未表示なら何もしない。
-    if (overlayOpen) requestObsAutoAdd();
+    // 046d: 固定オーバーレイも対象になったので、開いている方を両方とも反映する（どちらも開いていなければ何もしない）。
+    if (overlayOpen) requestObsAutoAdd("comments");
+    requestPinnedObsAutoAddIfOpen();
   };
 
   // 044a: OBS WebSocket パスワードを保存する（認証有効な OBS 用）。Rust が §8 検証→keychain→sidecar へ私信。
   // 保存後、連携 ON かつオーバーレイ open なら再試行して認証成功後の自動追加に繋げる。
   const handleSetObsPassword = (password: string) => {
     void setObsWebsocketPassword(password).then(() => {
-      if (obsAutoAdd && overlayOpen) requestObsAutoAdd();
+      if (!obsAutoAdd) return;
+      if (overlayOpen) requestObsAutoAdd("comments");
+      requestPinnedObsAutoAddIfOpen();
     });
   };
 
@@ -924,6 +1116,8 @@ export function CommentViewerApp() {
           obsState={obsState}
           onSetObsPassword={handleSetObsPassword}
           onClearObsPassword={handleClearObsPassword}
+          pinnedOverlayEnabled={pinnedOverlayEnabled}
+          onPinnedOverlayToggle={handlePinnedOverlayToggle}
         />
       ) : (
         <>

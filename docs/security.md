@@ -150,10 +150,19 @@ Twitch の chat イベントにはアバター URL が載らないため、**投
   →`ws` パッケージを使い global `WebSocket` を通らない**ため global ガードでは傍受できず、この2層で loopback 限定を担保する。
   **外部 HTTPS/WSS/gRPC の allow-list とは分離**し、ここに loopback を混ぜない（外部宛先は増やさない）。
 - **通信面は Node sidecar に封じ込め**、**Rust は完全同期のまま**（async/WS/HTTP crate を足さない・OBS 通信は sidecar・
-  main no-internet 不変）。OBS へはソースを1つ作り（`CreateInput`(`window_capture`) / 既存なら再利用）、その
+  main no-internet 不変）。OBS へは**オーバーレイ窓ごとにソースを作り**（`CreateInput`(`window_capture`) / 既存なら再利用）、その
   **作成/再利用したソースの表示・非表示を切り替える**（`SetSceneItemEnabled`＝オーバーレイ表示 OFF で非表示・**削除はしない**）だけで、
   コメント取得・配信はしない。**新規外部宛先・新規依存はゼロ**（同一 loopback WS 上の OBS 制御に限る）。
   検証は `lsof -i` で 4455 接続が sidecar PID 下のみ・外部 ESTABLISHED が増えないことで確認する。
+  - **046d（2026-07-29・自動追加の対象を 2 ソースへ拡張）**: 当初は「StreamDock コメントオーバーレイ」1 ソースのみだったが、
+    **固定コメント専用オーバーレイ（窓 `pinned-overlay`・ソース名「StreamDock 固定コメント」）も自動追加の対象**にした。
+    046/046b は「将来タスク」として先送りしていただけで技術的な障害は無く、依頼者の指示で解禁したもの。
+    **宛先・プロトコル・依存はいずれも不変**（同じ `ws://127.0.0.1:4455`・同じ obs-websocket 呼び出し・新規 npm ゼロ）で、
+    差分は「OBS のシーンに作られるソースが最大 2 つになる」点のみ。
+    **対象は viewer から名前で指定させない**: 制御フレームに載るのは `overlay: "comments" | "pinned"` の
+    **固定 union だけ**で、実際のソース名・キャプチャ窓名は sidecar 内の表（`OBS_OVERLAYS`）に閉じている
+    （allow-list 方式＝未知値は `"comments"` へ劣化。§3/§8「ユーザー入力が OS/外部アプリ操作へ渡る経路を作らない」を維持）。
+    接続契機も不変＝**「OBSに自動で反映する」が ON のときだけ**で、OFF なら固定オーバーレイを開いても OBS へは繋がない（045c の線引き）。
 - **OBS WebSocket パスワード（§9）**: OBS 側で**認証が有効なときだけ**必要（read-only 検出の `auth_required` で判定し、
   必要な時のみ UI で入力を求める）。パスワードは **loopback WS には載せず**、UI→Rust コマンド（`set_obs_websocket_password`）
   →**OS キーチェーン**（`token_vault` の account `obs-websocket`）→sidecar へ **stdin private pipe**（`COMMENT_SIDECAR_OBS_PW=`）
@@ -382,11 +391,38 @@ loopback WS で受信済みの値を Tauri コマンドで渡すだけ＝sidecar
 - **端末外へ送信しない・クラウド同期しない**。窓間伝達は **localStorage＋`storage` イベントのみ**で
   **Rust を一切経由しない**ため、固定コメントは **Rust の DB（`viewer_comments`）にもログにも入らない**。
   **新規の外部通信/宛先/capability/依存はゼロ**（`csp: null` 不変）。
-- **削除手段**は固定帯の「固定解除」。上限 1 件かつ固定中は常時画面に出るため取り残しが起きない。
+- **削除手段**は固定帯の「固定解除」と、**コメントビューアを開き直すこと**（046b レビュー S-1 で追加＝
+  マウント時に必ず空へ倒すので、セッションをまたいで端末に残らない。下記 ⚠ 節）。上限 1 件かつ固定中は
+  常時画面に出るため取り残しが起きない。
   **ただし 038a の `delete_viewer` / `clear_viewers` はこのキーを消さない**（SQLite のみを対象とするコマンドで、
   localStorage は別ストア）。すなわち視聴者メモリから視聴者を削除しても、その人の固定コメント（氏名・本文・金額）は
-  固定解除するまで端末に残る。**端末内保存データの一括削除・エクスポートを作る場合は、SQLite だけでなく
+  固定解除するかコメビュ窓を開き直すまで端末に残る。**端末内保存データの一括削除・エクスポートを作る場合は、SQLite だけでなく
   本キーも対象に含めること**（043e で `viewer_comments` の append-only 前提が崩れたことを明記したのと同種の申し送り）。
+- **読み手（046b・2026-07-29 追記）**: 固定コメント専用オーバーレイ窓（`pinned-overlay`）が同じキーを
+  **読むだけ**の消費者として増えた。**保存範囲・保存項目・キーは一切変えていない**（`pinnedComments.ts` は無改変）ため
+  本追補の内容は不変。046b が追加した localStorage キー（`...pinned-overlay-enabled`）は**トグルの ON/OFF**＝
+  ユーザー自身の UI 設定値で、本追補の対象外（詳細は「Tauri Permissions / Capabilities 方針」の 046b 節）。
+  なお表示先が増えたことで、**コメビュ窓を閉じた後もこのオーバーレイに第三者のコメント（氏名・本文・金額）が
+  表示され続ける**（固定解除するか窓を閉じるまで）。上記の「一括削除・エクスポート」を作る際は、SQLite と
+  本キーに加えて**この窓の表示状態**も対象に含めること。
+- **⚠→対応済み 配信をまたいだ自動復元（046b レビュー S-1・2026-07-29）**: 046b で
+  **①ピン本体（本追補のキー）②トグル ON/OFF（`...pinned-overlay-enabled`）**の 2 つが永続し、
+  さらに **ON ならコメビュ本体のマウント時に窓を自動 open** するようになった結果、
+  **前回配信で固定したコメント（表示名・本文・金額）が、次の配信の開始時にユーザー操作ゼロで本番画面に出る**
+  という経路が生まれていた。窓は `always_on_bottom` ＋ 透過 ＋ 装飾なしで配信者自身のデスクトップでは
+  気付きにくく、気付ける経路は OBS プレビューとコメビュ本体の固定帯のみ。**永続した第三者の個人データが
+  「配信に出る面」へ自動描画されるのは 046b が初めて**（046a 単体の復元先はコメビュ窓の固定帯＝OBS
+  キャプチャ対象外、既存 `comment-overlay` の中身は WS 由来で永続しない）。
+  **対応（依頼者の決定・挙動変更）＝コメントビューアを開くたびにピンストアを空へ倒す**
+  （`CommentViewerApp` の `pinned` state を `loadPinned()` 初期化から空配列へ変更し、既存の保存 effect が
+  マウント時に `"[]"` を書く）。**ピンストア（`pinnedComments.ts`）は無改変**＝キー・保存項目・保存形・
+  上限・046b の読み手契約はいずれも不変で、「いつ空へ倒すか」だけを本体側で決めている。
+  この担保は**未検証の `storage` 跨ぎ配送に依存しない**（アプリ再起動時はオーバーレイ窓がまだ存在せず、
+  窓が開くのは必ずこの書込の後＝read-on-mount が空を読む）。`storage` に依存するのは「オーバーレイを
+  開いたままコメビュ窓だけ開き直した」二次ケースのみ。
+  **副作用として、ピンは配信をまたいで残らない**（毎回固定し直す運用）。設定カードの注記で明示済み。
+  **再修正トリガー＝「配信をまたいで固定を残したい」要望が出たとき**。そのときは起動時クリアをやめるのではなく
+  「前回の固定を復元しますか」を明示操作にする（**無操作で配信面に出さない**、を守る）。
 - **本追補の追加自体が security-review の対象**（保存ポリシーの変更）。046a は当初「軽レビュー」指定だったが、
   「第三者の個人データを初めて localStorage に永続化する」点は下記「レビュー必須条件」の
   **「取得コメント・視聴者情報の端末保存」に該当**する。frontend のみ・通信ゼロでも、保存ポリシーに触れる変更は
@@ -466,6 +502,55 @@ sidecar の spawn は Rust の `app.shell().sidecar()` から行い IPC を通�
 にも `capabilities/default.json` にも **`shell:*` permission を一切追加しない**（`comment-viewer.json` は `core:default`
 のまま／`default.json`（main）不変）。viewer は読み取り専用の新 command `get_comment_stream_port` と既存パターンの
 `open_comment_viewer_window` のみを invoke する（アプリ定義 command は ACL 列挙不要）。`csp: null` 不変。
+
+**046b（固定コメント専用オーバーレイ窓＝4 つ目のウィンドウ・2026-07-29）**: 046a の固定コメント（ピン留め）を OBS へ
+出すため、既存の `comment-overlay` とは**独立した新ウィンドウ** `pinned-overlay` を追加した。
+
+- **新 capability は `capabilities/pinned-overlay.json` の 1 枚のみ**（`comment-overlay.json` と同型・
+  `windows:["pinned-overlay"]`・`permissions:["core:default"]`）。**`default.json` / `comment-viewer.json` /
+  `comment-overlay.json` は不変**。`windows` は**ラベル完全一致**なので、`default.json` が持つ広い permission
+  （`dialog:*` / `autostart:*` / `core:window:*`）はこの窓へ**継承されない**。`csp: null`・`macOSPrivateApi` 不変。
+  レビューで `gen/schemas/acl-manifests.json` を展開して実体も確認済み: `core:default` の窓/webview 面は
+  **すべて読み取り系**（`core:window:default` = `allow-get-all-windows` / `allow-*-position` / `allow-*-size` /
+  `allow-is-*` / `allow-title` / モニタ系、`core:webview:default` = `allow-get-all-webviews` /
+  `allow-webview-position` / `allow-webview-size` / `allow-internal-toggle-devtools`）で、
+  **`allow-create-*` / `allow-close` / `allow-set-*` は含まれない**＝この窓の JS から窓の生成・破棄や
+  他窓の操作はできない（**唯一の例外は `core:window:default` に含まれる `allow-internal-toggle-maximize`**＝
+  自窓の最大化トグルのみ内部コマンドとして残る。ドラッグ領域のダブルクリック用で、この窓は読み込むのが
+  ローカルバンドルのみ・外部コンテンツを踏む経路ゼロのため実害は無い）。
+  未使用の `core:menu` / `core:tray` も含まれるが、既存 `comment-overlay.json` と同型で
+  Tauri v2 の標準ベースラインを個別に分解する保守コストのほうが上回るため据え置く。
+- **この最小権限が守るのは ACL 面だけ**（レビュー指摘）: Tauri v2 では**アプリ定義コマンドは ACL の対象外**なので、
+  この窓の webview も `invoke_handler` に登録された全コマンド（`open_comment_viewer_window`＝sidecar 起動、
+  `launch_tool`、`clear_viewers` 等）を呼べる。これは既存 3 窓と同じ構造で 046b が広げたものではなく、
+  この窓が読み込むのはローカルバンドルのみ・外部コンテンツを踏む経路ゼロのため実害は無い。
+  capability だけを見て「この窓は無害」と判断しないこと。
+- **新 command は単一目的の 3 つのみ**（§3）: `open_pinned_overlay_window` / `close_pinned_overlay_window` /
+  `is_pinned_overlay_open`。いずれも**引数は `AppHandle` のみ＝frontend から値を受け取らない**（ラベルは Rust 内の
+  リテラル）。任意ラベル・任意オプションの汎用窓生成は露出しない。ユーザー入力が OS 操作へ渡る経路は無い（§8）。
+- **表示専用・通信面ゼロ**: この窓の frontend（`PinnedOverlayApp`）は **WS へ接続しない**（`connectCommentStream` を
+  呼ばない）。046a が localStorage へ書いた固定コメントを read-on-mount ＋ `storage` 購読で読むだけで、
+  **新規の外部通信・宛先・Rust emit・依存はゼロ**。`author.avatar` は保存されていないためアイコンはイニシャル丸で、
+  **外部 URL を踏む経路が存在しない**（036a の「webview が踏むのは data URI のみ」ガードは無傷）。
+- **sidecar に触れない＝no-orphan kill 契機は不変**: `comment-overlay` と同じく window イベント（sidecar 連動）を
+  **登録しない**ので、この窓を閉じても sidecar は落ちない。`close_pinned_overlay_window` は自アプリのウィンドウを
+  閉じるだけで、**PID kill・プロセス名 kill は行わない**（§6 の PID kill はそもそも発生しない）。
+- **窓タイトルは `StreamDock 固定コメント`**。044a の自動ソース追加は窓名の `includes` 一致で対象窓を探すため、
+  **2 つの窓名が互いに部分文字列にならない**ことが必須条件（「StreamDock 固定コメント」は
+  「StreamDock コメントオーバーレイ」を含まない＝取り違えない）。
+  **⚠ 046b 実装時点の「この窓は 044a の自動追加の対象外＝手動ウィンドウキャプチャ前提・sidecar 側は不変」という
+  記述は 046d で失効した**（上記 §1「例外（044a…）」の 046d 節が正）。046d で `obs-client.ts` / `index.ts` を改変し、
+  この窓も自動追加の対象になっている。したがって上記の窓名要件は「紛れないと分かりやすい」ではなく
+  **自動追加が窓を取り違えないための機能要件**として、いっそう厳格に守ること。
+- **新規 localStorage キー `stream-dock.comment-viewer.pinned-overlay-enabled`** はトグルの ON/OFF（boolean）＝
+  **ユーザー自身の UI 設定値**で、`obs-auto-add` と同種。§9 追補（046a）が対象とする第三者の個人データではないため、
+  下記「レビュー必須条件」の localStorage 追補には**該当しない**。
+- **新規ウィンドウ＋新規 capability＋新規 command のため security-review 必須**（2026-07-29 実施・判定「軽微な懸念あり」・
+  修正必須 0 件）。指摘は「永続 ON のときコメビュ本体のマウントで窓が自動オープンする＝**このセッション中に
+  ユーザー操作なしで窓が開く経路が 1 本増える**」の 1 点。045c が削除した経路と逆行するが、①起点は明示的な永続設定
+  （既定 OFF）②開く窓は表示専用で**新規通信・OBS 接続・sidecar 起動をいずれも伴わない**（045c が問題視した
+  「設定 ON が OBS への接続契機になる」点とは無関係）ため許容した。**自動 close は作っていない**
+  （親 046 の「ピン 0 件で窓が消えると OBS ソースが壊れる」を守るため・設定 OFF で窓が開いていても閉じない）。
 
 ## CSP方針
 

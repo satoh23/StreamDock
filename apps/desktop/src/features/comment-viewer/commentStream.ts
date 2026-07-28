@@ -24,6 +24,12 @@ export interface DeviceCodePrompt {
 /** 032c-d: 配信サービス（各サービス個別選択・併存）。 */
 export type CommentService = "twitch" | "youtube";
 
+/**
+ * 046d: OBS へ自動追加する対象オーバーレイの種別。sidecar 側の `ObsOverlayKind` と**同じ 2 値**で、
+ * 制御フレームにはこの識別子だけを載せる（ソース名・窓名は sidecar 内の表に閉じる＝任意の名前を渡さない）。
+ */
+export type ObsOverlayKind = "comments" | "pinned";
+
 export interface CommentStreamHandlers {
   onComments: (comments: CommentViewDto[]) => void;
   onDeviceCode?: (prompt: DeviceCodePrompt) => void;
@@ -48,10 +54,11 @@ export interface CommentStreamHandle {
   startSession(service: CommentService, channel?: string): void;
   stopSession(service: CommentService): void;
   /** 044a: OBS 連携を有効化し、指定ポート（read-only 検出由来・非秘密）の OBS へソースを自動追加させる。
-   *  パスワードはこの WS には載せず、Rust コマンド（set_obs_websocket_password）経由で sidecar へ渡す。 */
-  enableObs(port: number): void;
+   *  パスワードはこの WS には載せず、Rust コマンド（set_obs_websocket_password）経由で sidecar へ渡す。
+   *  046d: `overlay` は対象種別。実際のソース名/窓名は **sidecar 内の表**に閉じており、ここから名前は渡さない。 */
+  enableObs(port: number, overlay: ObsOverlayKind): void;
   /** 044a: オーバーレイ表示 OFF 連動。OBS 側ソースを削除せず非表示にする（ON で enableObs が再表示）。port のみ・非秘密。 */
-  hideObs(port: number): void;
+  hideObs(port: number, overlay: ObsOverlayKind): void;
   /** 044a: OBS 連携 OFF（状態を idle に戻す・OBS 側のソースは消さない）。 */
   disableObs(): void;
 }
@@ -201,11 +208,11 @@ export function connectCommentStream(
     stopSession(service: CommentService): void {
       send({ type: "stop-session", service });
     },
-    enableObs(port: number): void {
-      send({ type: "obs-enable", port });
+    enableObs(port: number, overlay: ObsOverlayKind): void {
+      send({ type: "obs-enable", port, overlay });
     },
-    hideObs(port: number): void {
-      send({ type: "obs-hide", port });
+    hideObs(port: number, overlay: ObsOverlayKind): void {
+      send({ type: "obs-hide", port, overlay });
     },
     disableObs(): void {
       send({ type: "obs-disable" });

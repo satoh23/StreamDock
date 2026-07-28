@@ -6974,3 +6974,594 @@ security.md・親 046・046b 申し送りの 3 箇所に明記した（連動削
 「ボタン押下で `onUnpin`」を「右クリック→メニュー項目で `onUnpin`」へ差し替え、**解除ボタンが存在しないこと**・
 `preventDefault` の抑止・Esc で閉じる（`onUnpin` を呼ばない）を追加で固定した。
 Rust / sidecar / capabilities / `package.json` は引き続き**差分ゼロ**、`csp: null` 不変、新規宛先・依存ゼロ。
+
+## 2026-07-29 (046b 固定コメント専用オーバーレイ窓: 新窓 `pinned-overlay`＋新 capability＋Rust 3 コマンド)
+
+046a の固定コメントを、既存のコメント一覧オーバーレイ（`comment-overlay`）とは**独立した別ウィンドウ**
+（label `pinned-overlay`）で OBS へ出せるようにした（親 [046](tasks/046-pinned-comment-overlay.md) の要望③後半）。
+専用オーバーレイは **WS に接続せず**、046a がピンストア（localStorage）に書いた固定コメントを
+read-on-mount ＋ `storage` 購読で描くだけ＝**表示専用・通信面ゼロ**。
+
+**046a の `pinnedComments.ts` は読むだけで無改変**、**044a（OBS 自動ソース追加）の sidecar コードも無改変**。
+`tauri.conf.json`（`csp: null`）/ `vite.config.ts` / `package.json` / `pnpm-lock.yaml` は**差分ゼロ**。
+
+### 依頼者の決定（設計の確定事項）
+
+計画段階で 4 点を確認し、以下に確定した（1 は当初のタスクファイル記載から変わっている）。
+
+| 論点 | 決定 | 補足 |
+|---|---|---|
+| トグルの置き場所 | **設定ビューに専用カード**（既存 OBS カードの直後） | 046b タスクファイルの初期案どおりだが、根拠は 045b 後の線引きで再確認した（下記） |
+| ON の意味 | **ON で即座に窓を開く** | ピン 0 件なら完全透明。OBS でソースを**先に**追加できる |
+| 永続化 | **覚えておく**（localStorage）。ON ならコメビュ本体のマウント時に窓を開き直す | 配信開始時に OBS ソースが黒いままにならない |
+| 描画方式 | `CommentList variant="overlay"` を流用（0 件は呼ばず `null`） | 本体の一覧と同じ描画を通る＝見え方が食い違わない |
+| 意匠 | 既存オーバーレイ設定（フォント / サイト名表示）に**追従** | 同じ OBS 画面に 2 窓出るため。設定項目は増やさない |
+| ジオメトリ | `position(456,48)` / `inner_size(480,320)` / `min(280,160)` | 下記 |
+
+### トグルを設定ビューに置いた理由（045b の線引きとの整合）
+
+045b は「**配信中に頻繁に切り替える＝本体ツールバー／一度きりのセットアップ＝設定カード**」で表示トグルを
+ツールバーへ移設した（034d の部分反転）。046b はこの基準に照らすと**後者**にあたる:
+
+- 固定コメントの出し入れは**固定/固定解除（右クリックメニュー）側の仕事**で、窓そのものは開けっぱなしにする。
+  親 046 が「ピン 0 件で窓が自動的に閉じると OBS のウィンドウキャプチャソースが壊れる」として自動 close を
+  禁じている以上、**窓の開閉は配信中の操作ではない**。
+- この窓は 044a の自動追加の**対象外**＝OBS で手動ウィンドウキャプチャを追加する作業が必要で、その手順注記と
+  同じカードにトグルがあるのが導線として自然。
+  → ⚠ **この理由は 046d で失効**（自動追加の対象に入れた）。トグルの置き場所は上記の別 2 点（一度きりの
+  セットアップ・固定/解除は右クリック側の仕事）で引き続き妥当なため、設定ビューのまま据え置いた。
+
+**なお計画時に依頼者へ伝えた事実訂正**: `.toolbarActions` は 045c で `flex-wrap: wrap` が入っており（同節参照）、
+3 つ目のトグルを足しても「溢れる」ことはない。ただし折り返すとツールバーが 2 段になり配信中に一覧位置がずれるため、
+混雑は補助的な理由に留めて上記の性質差を主理由にした。
+
+**既存 OBS カードには一切手を入れていない**（見出し・自動反映トグル・状態表示・パスワード欄・窓名注記すべて不変。
+`SettingsView.obs.test.tsx` の既存アサートも無改変で通る）。カードを分けたのは、既存カードが
+「見出しがカード内に無いコントロール名を指している」という指摘（045b レビュー）を既に抱えており、
+別機能のトグルを相乗りさせると悪化するため。
+
+### 親 046 の「自動開閉にしない」からの**意図的な逸脱**（重要）
+
+親 046 は「専用オーバーレイの開閉は明示トグル（**自動開閉にしない**）」と書いているが、**自動 open だけを解禁した**。
+
+- 046 が挙げている理由は「**ピン 0 件で窓が自動で閉じると** OBS ソースが黒くなる」＝**自動 close の禁止**。
+- 今回入れたのは、**ユーザーが明示的に ON にした永続設定**に基づく、コメビュ本体マウント時の自動 open。
+  窓がより確実に存在する方向＝親 046 の懸念とは向きが逆で、意図には沿う。
+- **自動 close は作っていない**。設定 OFF なのに窓が開いていた場合も**何もしない**（テストで固定）。
+- security-review の指摘（軽微）: 045c は「ユーザー操作なしに窓が開く経路が 1 本減る」ことをセキュリティ上の
+  前進として記録しており、方向としては逆行する。許容根拠は ①起点が明示的な永続設定（既定 OFF）
+  ②開く窓は表示専用で**新規通信・OBS 接続・sidecar 起動をいずれも伴わない**（045c が問題視したのは
+  「設定 ON が OBS への**接続契機**になっていた」点で、そこは無関係）。
+
+### Rust: 単一目的 3 コマンド（既存 overlay と同型）
+
+`open_pinned_overlay_window` / `close_pinned_overlay_window` / `is_pinned_overlay_open` を追加し、
+`invoke_handler` へ登録した。**引数は `AppHandle` のみ＝frontend から値を受け取らない**（ラベルは Rust 内のリテラル）。
+
+- `WINDOW_OPEN_LOCK` を再利用（viewer/comment-overlay と共有の二重生成ガード）。
+- **`SHARED_BROWSER_ARGS` を必ず渡す**。全 4 窓（`main` は `tauri.conf.json`・`comment-viewer`・`comment-overlay`・
+  `pinned-overlay`）で一致していないと Windows の WebView2 生成が `ERROR_INVALID_STATE` で失敗し**窓が開かない**
+  （033f 追修正③の回帰）。実測で 4 箇所一致を確認済み。
+- 透過 / `decorations(false)` / `always_on_bottom(true)` / `focused(false)` / `shadow(false)` /
+  `background_throttling(Disabled)` を踏襲。
+- **window イベント（sidecar 連動）を登録しない**（`comment-overlay` の 217-218 行に倣う）＝**この窓を閉じても
+  sidecar は落ちない**（no-orphan 3 段 kill の契機はコメビュ窓に集約のまま・§6 の PID kill は発生しない）。
+
+### 窓タイトルとジオメトリ
+
+| 項目 | 既存 `comment-overlay` | 新規 `pinned-overlay` | 理由 |
+|---|---|---|---|
+| title | `StreamDock コメントオーバーレイ` | **`StreamDock 固定コメント`** | 044a は `itemName.includes("StreamDock コメントオーバーレイ")` で窓を探す（`obs-client.ts`）。**部分一致で紛れない名前**が必須条件。テストで「含まない」ことを固定した |
+| position | `(24, 48)` | **`(456, 48)`** | 既存 overlay は x=24〜424 を占める。右隣に置いて**重ねない**＝デスクトップでも OBS の窓一覧でも取り違えない |
+| inner_size | `(400, 720)` | **`(480, 320)`** → ⚠ **046c で `(480, 560)` へ修正** | 幅は「2026-07-28 (OBS オーバーレイの横幅)」節の教訓（640 は広すぎ→400 へ差し戻し・「次に試すなら 480〜520」）の**下限**を採る。1 件だけなので画面を圧迫しない。~~高さは投げ銭カード＋長文（290 字）が収まる余裕~~ ← **この高さの見積りが誤り**（290 字には ≈554px 必要で、320 では約 57% しか出ない）。E2E で長文が見切れ、下記 046c 節で 560 へ引き上げた |
+| min_inner_size | `(240, 320)` | **`(280, 160)`** | `.decorations(false)` で手動リサイズが実質できず**サイズは永続化されない＝既定値がすべて**（同節の教訓） |
+
+### 描画: `CommentList variant="overlay"` の流用（0 件は呼ばない）
+
+**固定 0 件のときは `PinnedOverlayApp` が `null` を返す**ことで、`CommentList` の空表示
+「コメントはまだありません」が OBS に映り続ける問題を回避した（`CommentList` 側に空表示分岐を足さずに済む＝
+既存 `comment-overlay` の見え方は完全に不変）。
+
+- 既存 `comment-overlay` が 0 件時に空文言を許容している理由は「接続前に OBS でキャプチャ範囲を確認できる」
+  ＝**セットアップ時の一度きり**の利点。固定オーバーレイは親 046 が自動 close を禁じているため
+  **0 件が通常状態**で、性質が違う（本体の `PinnedCommentBar` が 0 件で `null` を返すのと同じ扱いに揃えた）。
+- 付属物はいずれも無害: `followMode` は既定 `"off"` ＝ `useFollowScroll` は no-op（固定は流れていかない）。
+  `<ol>` は `html[data-overlay="1"] ol::-webkit-scrollbar` の**既存**ルールでスクロールバーが消える。
+- 型: `CommentAuthor.avatar` が optional なので `PinnedComment[]` → `CommentViewDto[]` は構造的に代入可
+  （`pinnedComments.ts` の型注記どおり）。投げ銭カードのティア配色・要約文言も本体と同じ描画を通る。
+- **新規 CSS ファイルはゼロ**。`OverlayApp.module.css` の `.root` と透過ガード、`OverlayComment.module.css` を
+  **参照するだけ**（`CommentList.tsx` が 2 つの module CSS を import している前例に倣う）。既存 CSS は 1 行も変更していない。
+- アイコンは**イニシャル丸**（046a が avatar を保存しないため・この窓は WS へ繋がず再取得もしない）。
+  `parsePinned` が `author: { id, name }` を明示構築するので、**localStorage を手で書き換えても avatar を注入できない**
+  ＝036a の「webview が踏むのは data URI のみ」ガードは無傷。
+
+### `storage` 到達性（⚠ 実機で判定する唯一の未検証点）
+
+034e(review M1) と同じ未検証点を踏む＝**別 webview（comment-viewer → pinned-overlay）間で `storage` イベントが
+跨って届くかはプラットフォーム依存で未検証**。設計は二段構え（保証ベースライン＝read-on-mount／即時反映＝
+`storage` 購読）だが、**046b では即時反映が完了条件**（配信中に固定するたび窓を開き直す運用は OBS ソースが
+一瞬切れるため実用に耐えない）という点が 034e と決定的に違う。
+
+**実機判定が未了のため、代替案は実装していない**。届かないと判明した場合の候補（親 046 の制約＝新規 WS /
+Rust emit / 外部通信 / 依存を増やさない、の内側）:
+
+| 案 | コスト | 判定 |
+|---|---|---|
+| **localStorage ポーリング**（`setInterval` で生文字列を前回値と比較し、変化時だけ再読込） | 1〜2 秒間隔の同期 read（キー 1 個・avatar 抜きで数 KB＝μs 級）。最大 1 間隔ぶん遅延。常時タイマー | **採るならこれ**。制約に一切触れず、`storage` 購読と共存できる（届く環境では空振り） |
+| `BroadcastChannel` | 「別 webview 間で届くか」が `storage` と**同じ未検証点**に依存＝当てが無い。親 046 の「localStorage で完結」からも外れる | 却下 |
+| Tauri の `emit`/`listen` | 親 046 が「新規 emit を増やさない」と明記。capability 検討＝**線引き改訂＋security-review のやり直し** | 却下 |
+
+**実装側の備え**: 再読込を `reloadPinned()` の 1 関数に閉じてあるので、採用時は別契機から呼ぶだけで足りる
+（コード内に再修正トリガーとしてコメント済み）。
+
+### 永続化キー（新規 1 個）
+
+`overlaySettings.ts` に `PINNED_OVERLAY_ENABLED_KEY = "stream-dock.comment-viewer.pinned-overlay-enabled"` と
+`loadPinnedOverlayEnabled()` / `savePinnedOverlayEnabled()` を追加（`obsAutoAdd` と同型）。
+**`pinnedComments.ts` は触っていない。**
+
+この値は**ユーザー自身の UI 設定値（boolean）**で、§9 追補（046a）が対象とする第三者の個人データ
+（本文・表示名・金額）ではない＝**「レビュー必須条件」の localStorage 追補には該当しない**
+（`docs/security.md` の Capabilities 方針 046b 節に整理を明記）。
+
+### テスト（17 files / **220 tests**・192 から +28）
+
+- **新規** `PinnedOverlayApp.test.tsx`（11 ケース）: **WS へ接続しない**（`connectCommentStream` の呼び出し 0 回）／
+  read-on-mount で描く／`storage` で即反映／**固定解除は `"[]"` の書込として届き表示が消える**／
+  無関係なキーの書換では読み直さない／`clear()`（key=null）では読み直す／0 件なら何も描かない（空文言も出ない）／
+  サイト名表示の追従／`monthCount`・`tier` を保存している効果（要約文言が本体と同一）／
+  `data-overlay` を立てて unmount で外す／0 件でも `data-overlay` は立てる（窓は透明のまま）。
+- `CommentViewerApp.toolbar.test.tsx` に 7 ケース追記（046b describe）: 設定ビューに描画し**本体ツールバーには出さない**／
+  ON で `openPinnedOverlayWindow`＋永続化／OFF で `closePinnedOverlayWindow`＋永続値 false／
+  **永続 ON で窓が無ければマウント時に自動オープン**／窓が既に開いていれば開き直さない／
+  **永続 OFF なら自動で開かず、開いていた窓を自動で閉じもしない**（親 046 の自動 close 禁止）／
+  044a とは独立（`enableObs`/`hideObs`/`disableObs`・コメント用オーバーレイの開閉を呼ばない）。
+- `SettingsView.obs.test.tsx` に 5 ケース追記: トグルが props を呼ぶ／ON 表示／**窓名が Rust と同一文字列で
+  コメント用オーバーレイ名と部分一致しない**／044a の対象外である旨を明示／**既存 OBS カードが不変**。
+- `overlaySettings.obs.test.ts` に 5 ケース追記: 既定 OFF／往復／`"true"` 厳密一致／例外時フォールバック／
+  **044a のキーと独立**（互いに書き換えない）。
+- **ミューテーション実測**（4 件・すべて対応するケースだけがレッドになることを確認）:
+  ①0 件の early return 削除 → 「0 件なら何も描かない」がレッド
+  ②`storage` のキー絞り込み削除 → 「無関係なキーでは読み直さない」がレッド
+  ③マウント effect の `!open` 削除 → 「既に開いていれば開き直さない」がレッド
+  ④永続化 effect 削除 → ON/OFF の永続ケース 2 件がレッド。
+
+### ⚠ 落とし穴（次回も踏む）
+
+`CommentViewerApp.toolbar.test.tsx` の `vi.mock("...windowApi")` は**モジュールを丸ごと差し替える**ため、
+`windowApi.ts` に export を足したら**必ずここにも足す**。書き漏らすと `isPinnedOverlayOpen` が undefined になり、
+マウント effect が「undefined is not a function」で落ちて**実装が正しくても全 12 ケースがレッド**になる
+（今回まさにこれを踏んだ。同ファイル冒頭の「export 面を全て埋める」方針の実例）。
+
+### 検証結果
+
+`typecheck` / `lint` pass、`test` pass（**17 files / 220 tests**）、`cargo check` pass。
+`cargo fmt` は本 diff 部分について clean（lib.rs に残る 2 件は 046b 以前からの既存差分）。
+
+security-review 用の機械的担保（すべて実測）:
+- `git status --short -- apps/desktop/src-tauri/capabilities/` → **`pinned-overlay.json` の追加のみ**（既存 3 枚は差分ゼロ）
+- `git diff -- apps/desktop/src-tauri/tauri.conf.json apps/desktop/vite.config.ts apps/desktop/package.json pnpm-lock.yaml` → **出力ゼロ**
+- `git diff -- apps/comment-sidecar/` → **出力ゼロ**（044a 不変）
+- `git diff --stat -- .../pinnedComments.ts .../OverlayApp.tsx .../CommentList.tsx .../*.module.css` → **出力ゼロ**
+- `PinnedOverlayApp.tsx` の `fetch` / `WebSocket` / `invoke(` / `connectCommentStream` / 外部 URL / `console.*` → **ゼロ**
+  （唯一の `connectCommentStream` の文字列は「呼ばない」と書いた JSDoc）
+- Rust / frontend に `println!` / `eprintln!` / `console.*` / `app_logs` の追加 → **ゼロ**
+
+実機確認（`tauri dev`）は本人環境。目視項目: トグルで開閉／再起動後も ON なら自動で開く／既存 `comment-overlay` と
+別窓・別ソースとして OBS に取り込める／**046a で固定→即反映・解除で消える（⚠ の判定）**／開き直しで必ず最新／
+0 件で余計な文字が映らない／**専用オーバーレイを閉じても sidecar が落ちない**／既存 overlay と 044a が従来どおり。
+
+### security-review（2026-07-29・実装直後）
+
+**判定: 軽微な懸念あり（修正必須 0 件）**。
+
+- **懸念①（許容）**: 永続 ON のときマウントで窓が自動オープンする＝「このセッション中にユーザー操作なしで窓が開く」
+  経路が 1 本増える（045c が削除した経路と逆行）。根拠は上の「意図的な逸脱」節のとおり。
+- **懸念②（docs で対応）**: 親 046 の「自動開閉にしない」という**文言**とは食い違うため、本節と 046b タスクファイルに
+  逸脱として明記した。
+- **懸念③（整理を明文化）**: 新 localStorage キーは UI 設定値であり §9 追補（046a）の対象外。`security.md` に明記した。
+- **後回しでよい改善**: コメビュ窓を閉じても固定オーバーレイは残る（既存 `comment-overlay` と同じ挙動）ため、
+  第三者のコメントがコメント取得停止後も画面に残り続ける。046a で申し送り済みの「端末内保存データの一括削除・
+  エクスポート」を作る際は、SQLite・ピンストアに加えて**この窓の表示状態**も対象に含めること（`security.md` §9 追補に追記済み）。
+- **良かった点**: 3 コマンドとも引数ゼロ＝ユーザー入力が OS 操作に渡る経路が存在しない／新 capability が
+  ラベル完全一致で `default.json` の広い permission を遮断できている／窓名の部分一致回避をテストで固定／
+  046a の明示列挙により localStorage 改ざんでも avatar（外部 URL）を注入できない。
+
+### docs の更新
+
+- `docs/security.md`: 「Tauri Permissions / Capabilities 方針」に **046b 節を新設**（新窓・新 capability・
+  単一目的 3 コマンド・表示専用・no-orphan kill 不変・窓名の制約・新キーの位置づけ・review 判定）。
+  §9 追補（046a）に**読み手が増えた旨**と一括削除時の申し送りを追記。
+- `docs/tasks/046b-pinned-overlay-window.md` 冒頭に実装済み注記（トグル置き場所の根拠と、永続＋自動 open の決定）。
+- `docs/task-board.md` の 046 系を更新。
+
+## 2026-07-29 (046b 外部レビュー〔security + 品質〕の対応)
+
+別チャットで security-review ＋ code-review を実施し、その指摘へ apply-review で対応した。
+**総合判定は自己判定と同じ「軽微な懸念あり・修正必須 0 件」で追認**。通信・権限・プロセス・ファイル・ログ・
+依存のいずれにも新しい穴は見つからず、機械的担保（capability 追加 1 枚のみ／`tauri.conf.json`・`vite.config.ts`・
+`package.json`・`pnpm-lock.yaml`・sidecar・`pinnedComments.ts`・既存 overlay/CSS の差分ゼロ）はすべて再現された。
+
+**レビューが自己判定に同意しなかった点は 1 つだけ**＝「指摘 1 点」という粒度。下記 S-1 が漏れていた。
+
+### 要修正として直したもの（2 件）
+
+- **S-1 / docs（自己レビューに無かった指摘）**: **前回配信で固定したコメントが、次の配信の開始時に
+  ユーザー操作ゼロで本番画面に出る**。①ピン本体の永続（046a）②トグルの永続（046b）③ON ならマウント時に
+  自動 open（046b）の 3 つが重なった帰結で、**永続した第三者の個人データが「配信に出る面」へ自動描画されるのは
+  046b が初めて**（046a 単体の復元先はコメビュ窓の固定帯＝OBS キャプチャ対象外／既存 `comment-overlay` の
+  中身は WS 由来で永続しない）。窓は最背面・透過・装飾なしで配信者自身は気付きにくい。
+  **対応（依頼者が選択肢 B を決定・挙動変更）＝コメントビューアを開くたびにピンストアを空へ倒す**。
+  `CommentViewerApp` の `pinned` state を `loadPinned()` 初期化から**空配列**へ変え、既存の保存 effect
+  （`useEffect(() => savePinned(pinned), [pinned])`）がマウント時に `"[]"` を書くのをクリア手段として使う。
+  **`pinnedComments.ts` は無改変**＝キー・保存項目・保存形・上限・046b の読み手契約はいずれも不変で、
+  「いつ空へ倒すか」だけを本体側で決めた（ストアの役割は本体窓↔オーバーレイ窓の受け渡しであって
+  セッションをまたぐ保存ではないので、046a の設計意図とも矛盾しない）。
+  **この担保は未検証の `storage` 跨ぎ配送に依存しない**: アプリ再起動時はオーバーレイ窓がまだ存在せず、
+  窓が開くのは必ずこの書込の後なので read-on-mount が空を読む（`storage` に依存するのは「オーバーレイを
+  開いたままコメビュ窓だけ開き直した」二次ケースのみ）。
+  副作用＝**ピンは配信をまたいで残らない**（毎回固定し直す運用）。設定カードの注記を
+  「固定はコメントビューアを開くたびにリセットされます」に差し替えて明示した。
+  **落とし穴**: 保存 effect のマウント時 1 発がクリアを担うため、**そこに初回スキップ/前回値比較のガードを
+  足すと S-1 が再発する**（コード側にその旨をコメント済み）。
+  再修正トリガー＝「配信をまたいで固定を残したい」要望が出たら、起動時クリアをやめるのではなく
+  「前回の固定を復元しますか」を明示操作にする（**無操作で配信面に出さない**を守る）。
+- **Q2 / 連打レース（コード修正）**: `open_pinned_overlay_window` は `#[tauri::command(async)]`（別スレッド・
+  窓生成で数百 ms）、`close_pinned_overlay_window` は同期コマンドのため、ON→OFF 連打で
+  「close が『窓なし＝no-op』で先に流れ、その後 open が窓を作る」順序が起こりうる。046b は自動 close 経路を
+  持たないので、この状態は**セッション中ずっと**「設定 OFF なのに OBS へ固定コメントが映る」になる。
+  `pinnedOverlayOpRef`（`useRef<Promise<void>>`）で開閉要求を**直列化**し、マウント同期 effect も同じキューに
+  載せた（`.catch` はキューを詰まらせないための握りつぶし）。テストを 1 本追加（**220 → 221 tests**）。
+
+### コメントで残したもの（修正不要と判断・意図/理由/再修正トリガーを併記）
+
+| 指摘 | 置き場所 | 判断 |
+|---|---|---|
+| Q1 `.catch` を付けない根拠が `handleOverlayToggle` と「同じ」と書いてあるが実際は違う（あちらは `.then()` 内で state を立てる＝state が実窓の帰結／こちらは永続設定なので同期で先に立てる） | `CommentViewerApp.tsx` `handlePinnedOverlayToggle` | eager set 自体は正しいのでコメントの根拠だけ訂正 |
+| Q4 窓名の非衝突と `SHARED_BROWSER_ARGS` 全 4 窓一致が **grep と実機依存**（Rust に単体テストが無い） | `lib.rs` `open_pinned_overlay_window` | 定数切り出しが既存 overlay/`tauri.conf.json` の差分ゼロ要件に触れるため**別タスク**。書き方（`include_str!`＋既存 `serde_json`・新規依存ゼロ）まで明記 |
+| Q5 `OverlayApp` との重複（`data-overlay` effect・font/showSource の storage 購読 ≈30 行） | `PinnedOverlayApp.tsx` | 括り出すと既存 overlay に手が入るため据え置き。トリガー＝設定キー 3 つ目 or overlay 窓 3 つ目 |
+| Q6 `OverlayApp.module.css` の `:global(html[data-overlay="1"] ol)` が**この窓にも効く**（同 CSS のコメントは単数前提） | `PinnedOverlayApp.tsx` | CSS は差分ゼロを守り、読み手側に注記。この窓の `<ol>` も 1 つだけなので前提は崩れていない |
+| Q7 `is_pinned_overlay_open` を増やすコストの正当化 | `lib.rs` | 残す。read-only・引数ゼロ・既存 3 窓と API 形が揃う・テストで仕様固定できる。「余計な `show()` 回避」は副次的理由に格下げ |
+| Q8 マウント effect が state でなく `loadPinnedOverlayEnabled()` を直読み | `CommentViewerApp.tsx` | **むしろ正しい**（解決待ちの間に OFF にされたら開かない。state 参照＋deps 空だと stale closure で開いてしまう）。意図を明記 |
+| Q9 保存 effect がマウント時にも書き `storage` が 1 発飛ぶ | `CommentViewerApp.tsx` | 無害（読み手 2 窓ともこのキーを購読していない）。トリガー＝窓側がこのキーを購読したら前回値比較を足す |
+| Q10 `CommentViewDto` に**任意**フィールドが増えると `toPinned` が黙って落とし「本体と見え方が食い違わない」前提が静かに崩れる | `PinnedOverlayApp.tsx` | `pinnedComments.ts` は差分ゼロを守り読み手側に注記（必須フィールド追加は型エラーになるので安全） |
+| Q11 テストの `afterEach` が unmount cleanup を隠蔽しないか | `PinnedOverlayApp.test.tsx` | 隠蔽しない（`unmount()` を明示する専用ケースが担保）。その旨を注記 |
+| Q12 見出しとトグル label が同一文字列（045b 既知問題の複製） | `SettingsView.tsx` | 上の OBS カードと作法を揃える方を優先し据え置き。トリガー＝045b 指摘の一般解としてまとめて直すとき |
+| S-3/S-4 capability の最小権限が守る範囲 | `security.md` 046b 節 | ACL 面のみ＝**アプリ定義コマンドは ACL 対象外**で、この窓も全コマンドを呼べる（既存 3 窓と同構造・新規の穴ではない）。未使用の `core:menu`/`core:tray` も据え置き理由を明記 |
+
+### レビューが**追認**した点（記録に値するもの）
+
+- `core:default` の実体を `gen/schemas/acl-manifests.json` で展開して確認＝窓/webview 面は**すべて読み取り系**
+  （`allow-create-*` / `allow-close` / `allow-set-*` を含まない）＝**この窓の JS から窓の生成・破棄・移動・
+  リサイズはできない**。`windows` の glob 照合についても既存 3 枚はメタ文字を含まず `pinned-overlay` に一致しない。
+- **4 つ目の窓を足しても no-orphan が壊れない**ことを確認（自己レビューに無かった非退行）。034f の
+  `main` の `CloseRequested → app.exit(0)` が窓数に依らず全窓破棄＋`RunEvent::Exit` へ到達させるため、
+  固定オーバーレイが残っていても sidecar は孤児化しない。
+- **申し送り 3（新キーを §9 追補の対象外とした判断）は誤りの再発ではない**。`security.md` の
+  「レビュー必須条件」に 046a のレビュー時点で「ユーザー自身の UI 設定値（テーマ・フォント・トグル・
+  チャンネル名等）を localStorage に置く変更は本項に該当しない」と明文化済みで、**成文ポリシーの正しい適用**。
+- **申し送り 2（自動 open）は 045c と矛盾しない**。045c が消したのは「別機能のトグルの**隠れた副作用**で窓が開き、
+  かつ OBS への接続契機になる」経路。046b は「その窓を出すための専用トグル（既定 OFF）を明示 ON にした人への
+  設定復元」で性質が違い、開く窓は通信・OBS 接続・sidecar 起動をいずれも伴わない。
+- **行番号の照合はズレなし**（046a の一律 7 行ずれは再発せず）。ただし `lib.rs` の既存コメントにある
+  「`open_comment_viewer_window` の 64-71」は実際には 136-142 を指す**既存の陳腐化**（046b の追加分は
+  行番号を書かず関数名参照にしてあり、そちらが正しい作法）。
+
+### 検証結果
+
+`typecheck` / `lint` pass、`test` pass（**17 files / 222 tests**・220 から +2）、`cargo check` pass。
+**ミューテーション実測 3 件**で、いずれも**対応するケースだけが**レッドになることを確認:
+
+| ミューテーション | レッドになったケース |
+|---|---|
+| ①`handlePinnedOverlayToggle` の直列化を素の `void invoke()` へ戻す | 「ON→OFF を連打しても、OFF が窓生成の完了後に届く」のみ |
+| ②設定カードの窓名注記に「StreamDock コメントオーバーレイ」を混ぜる | 「窓名は Rust と同一文字列で、コメント用オーバーレイ名と部分一致しない」のみ |
+| ③`pinned` state の初期化を `loadPinned()` に戻す（S-1 が再発する状態） | 「前回セッションの固定は引き継がず、マウント時にピンストアを空へ倒す」のみ |
+
+**差分ゼロ要件は維持**（`capabilities/` は `pinned-overlay.json` の追加のみ／`tauri.conf.json`・`vite.config.ts`・
+`package.json`・`pnpm-lock.yaml`・`Cargo.toml`・`Cargo.lock`・sidecar・**`pinnedComments.ts`**・`OverlayApp.tsx`・
+`CommentList.tsx`・`*.module.css` はいずれも差分ゼロ）。Q6 / Q10 の注記を CSS や `pinnedComments.ts` ではなく
+`PinnedOverlayApp.tsx` に置いたのも、S-1 の対応を本体側の state に閉じたのも、この要件を壊さないため。
+
+## 2026-07-29 (046c 固定オーバーレイの長文見切れ修正: 窓 560 化 ＋ 自動縮小フィット)
+
+046b の E2E で「長文コメントを固定すると OBS 上で本文が見切れる」不具合が出たので修正した
+（設計・却下案の詳細は [`docs/tasks/046c-pinned-overlay-long-text-fit.md`](tasks/046c-pinned-overlay-long-text-fit.md) を正とする）。
+
+### 原因（CSS のクリップではなかった）
+
+`-webkit-line-clamp` / `max-height` はリポジトリ全体で **0 ヒット**で、本文は DOM に全部出ている
+（`CommentList.test.tsx:303-306` が 290 字で検証済み）。**窓の高さが足りず、溢れた分が黙って切れていた**。
+
+1. `pinned-overlay` が `inner_size(480, 320)`＝既存 `comment-overlay` の 720 の半分以下だった。
+2. `.root`（`height:100%`）と `ol.list`（`flex:1 + overflow-y:auto`）がどちらも窓高に固定される。
+3. `li.item { flex-shrink:0 }`（043c）なので `li` は縮まず、素直に `ol` を溢れる。
+4. `followMode` 既定 `"off"` ＝ `useFollowScroll` がスクロール位置に触れない → `scrollTop=0` のまま → **下側が切れる**。
+5. スクロールバーは overlay スコープで完全非表示なので、**溢れていること自体が視覚的に分からない**。
+
+**実測見積り**（480px 幅）: 横クローム 133px（`ol` padding 24 ＋ `li` padding 8 ＋ アイコン 44 ＋ gap 28 ＋
+吹き出し padding 24 ＋ border 5）→ 本文幅 ≈347px → 19px で ≈18 字/行 → 290 字 ≈17 行 ≈484px ＋ 縦クローム ≈70px
+＝ **≈554px 必要 vs 320px** ＝ 約 57%。報告の「『大好』（先頭から約 166 字目 ≒ 57%）で切れる」と一致した。
+
+⚠ **上の 046b 節が高さ 320 の根拠を「投げ銭カード＋長文（290 字）が収まる余裕」と書いていたが、
+この見積り自体が誤っていた**のが直接原因。当該行は取り消し線付きで訂正済み。
+
+### 対応（依頼者の決定）
+
+**「窓 560 化」が主役、「自動縮小フィット」は保険**という役割分担にした。
+
+- **`lib.rs` の `inner_size(480, 320)` → `(480, 560)`**（290 字が等倍で収まる高さ）。JSDoc に実測見積りと
+  「**ここを下げるとフィットが常時発動して文字が小さくなる**」警告を残した。`min_inner_size` は不変。
+- **収まらない分は縮小して必ず全文を出す。UX 上の下限は設けない**（＝「…」省略や行数制限は採らない）。
+
+### スケーリング手法: `transform: scale(k)` ＋ `width`/`height: ${100/k}%`
+
+- **サイズ補正が本体**。transform はレイアウトに影響しないので、補正が無いと `ol` の `clientHeight`/`scrollHeight`
+  が変わらず**収まり判定が永久に動かない**（クリップ済みの絵が縮むだけ）。補正すると内容が `W/k × H/k` で
+  レイアウトされ、本文が広い幅で再フローして行数が減る＝縮小が効率よく効く。
+- **却下 `zoom`**: macOS の WKWebView（レガシー実装）と Chromium 128+ で「`clientHeight` が zoom 適用後か否か」が
+  非対称＝測定ループの解釈がエンジン依存になる。クロスプラットフォームで最も避けたい性質。
+- **却下 ルート font-size ＋ em 化**: `OverlayComment.module.css` の全 px 改変＝既存 overlay に波及する。
+
+### 収束の保証（下限なしでも止まる）
+
+transform 方式では **CSS のフォントサイズは 19px のまま不変**。k を下げるとレイアウト幅 `W/k` が広がって行数は
+単調非増加、収容量 `available = H/k` は厳密単調増加 → `content/available` は k について厳密単調で、k→0 で 1 行に収まる。
+実装ではさらに `next = min(k * sqrt(available/content), k - 0.02)` として**毎回必ず 1 段は下げる**ので、
+measure が非単調・敵対的でも停止する。`MIN_FIT_SCALE = 0.1` は **UX 下限ではなく数値ガード**
+（`100/k` の発散防止。480px 窓で k=0.1 は約 24,000 字相当＝Twitch 500 字 / YouTube 200 字の上限に対し 40 倍以上の余裕）。
+
+### 実装上の判断
+
+- **純粋ソルバを切り出した**（`features/comment-viewer/overlayFit.ts`・DOM を知らない）。jsdom はレイアウトを
+  持たず `scrollHeight`/`clientHeight` が常に 0 なので、**合成 measure を注入して数値探索の性質だけを単体テスト**できる形にした。
+- **クリップ用ラッパを新規 CSS 1 枚で追加**（`PinnedOverlayApp.module.css` の `.fit`）。縮小時 `.root` の
+  レイアウトボックスは `W/k × H/k` のままで `#root` を溢れ、**透過窓に body スクロールバーが出うる**
+  （既存のバー消しは `ol` 限定なので防げない）。046b の「新規 CSS ファイルゼロ」は、共有 CSS を触らずに
+  済ませる唯一の手段としてここで**意図的に破った**。
+- `transform`/`width`/`height` は `useLayoutEffect` の**排他所有**にし、JSX の `style` には載せない
+  （載せると React の内部前回値と実 DOM がズレたとき diff が一致して**書き込みがスキップされる**事故が起きる）。
+  **等倍のときは 3 プロパティを一切書かない**（`scale(1)` すら残さない）＝短文では 046b 時点と DOM が完全に同一。
+- 測定対象は `rootRef.current.querySelector("ol")`（`CommentList` は共有で ref を受け取らないため。
+  **既存 CSS が同じ理由で `ol` 要素セレクタを使っている**前例に揃えた）。`getBoundingClientRect()` は使わない
+  （transform 適用後の視覚値を返し、変換前の値と混ぜると二重補正になる）。
+- **`ResizeObserver` は使わない**: ①再測定が要る非同期要因が無い（オーバーレイのフォントは全て OS 標準＝FOUT 無し、
+  `toPinned` が avatar を落とすので画像ロードも無い）②`.root` を observe すると自分でサイズを変えるたび再通知＝
+  自己ループで、しかもこの窓は `background_throttling(Disabled)` なので**裏に回っても回り続けて配信中の CPU を焼く**。
+  窓リサイズは `window.resize` を rAF コアレスで拾う（`TutorialOverlay` と同じ作法）。
+- **fitScale は毎回 k=1 から測り直す**ので、StrictMode の二重実行でも前回の縮小が累積しない（冪等）。
+
+### 依存している前提（壊すと機能が黙って死ぬ）
+
+- **`li.item { flex-shrink: 0 }`**（043c）。外れると `li` が縦圧縮されて `scrollHeight === clientHeight` になり、
+  カードが潰れたまま「収まっている」と誤判定して**恒久 no-op** になる。
+- **レイヤー昇格させない**。`will-change: transform` / `translateZ(0)` を足すとラスタ倍率が固定されて確実にボケる。
+
+### テスト（18 files / **239 tests**・222 から +17）
+
+- **新規 `overlayFit.test.ts`（12 ケース）**: 収まっているとき等倍を返し **measure は 1 回だけ**（短文で縮めない）／
+  安全余白の境界／290 字 × 320px 窓（見切れ再現）で**返り値のスケールで実際に収まっている**（後条件アサート）／
+  290 字 × 560px 窓ならほぼ等倍（**窓の高さが主役**であることの裏取り）／500 字でも収まる／
+  探索するスケールが**厳密減少**／常に「収まらない」と返す敵対 measure でも停止（**無限ループしない**）／
+  非単調・振動する measure でも停止／`available=0` では縮めない／下限到達時も**返り値が DOM に適用済み**（契約）／
+  返り値が常に (0,1] の 0.02 刻み。
+- `PinnedOverlayApp.test.tsx` に **046c describe（5 ケース）**＋レイアウト偽装ヘルパ
+  （`Element.prototype` の `scrollHeight`/`clientHeight` は configurable な getter なので上書き可。
+  **`afterEach` で必ず復元**する＝漏れると同ファイルの全ケースに波及する）:
+  収まるときは `transform` を付けない（**既存の見た目を変えない**の固定）／収まらないときは `transform` ＋
+  サイズ補正の 3 点が付く／**スタブ無し（jsdom 素のまま）では縮めない**（`available<=0` 即 return の回帰テスト。
+  これが無いと既存 11 ケースが全部スケール付きになる）／0 件ならラッパごと描かない／`resize` で測り直す。
+- **ミューテーション実測 3 件**（①`applyFitScale` から `width`/`height` を落とす ②`available<=0` の即 return を落とす
+  ③単調減少の強制 `k - FIT_STEP` を落とす）で、**対応する 1 ケースだけ**がレッドになることを確認。
+
+### 検証結果
+
+`typecheck` / `lint` pass、`test` pass（**18 files / 239 tests**）、`cargo check` pass。
+
+**既存 `comment-overlay` の非退行は diff の狭さで担保**: `OverlayApp.tsx` / `OverlayApp.module.css` /
+`OverlayComment.module.css` / `CommentViewerApp.module.css` / `CommentList.tsx` / `pinnedComments.ts` /
+`useFollowScroll.ts` はいずれも**差分ゼロ**（実測）。capability・`tauri.conf.json`・`vite.config.ts`・
+`package.json`・`pnpm-lock.yaml`・`Cargo.toml`・`Cargo.lock`・sidecar も差分ゼロ。
+**security-review は不要（軽レビュー）**＝新規コマンド・capability・外部通信・ファイル操作・依存はゼロで、
+Rust の変更は窓サイズの数値定数 1 つのみ。localStorage の保存範囲・保存項目・キーも不変。
+
+実機確認（`COMMENT_SIDECAR_MOCK=1 pnpm tauri dev`）は本人環境。目視項目は 046c タスクファイルの「検証」節。
+とくに **k≈0.6 でのにじみ**（`.bubble`/`.card` の `filter: drop-shadow` がオフスクリーンを経由するため）と
+**body スクロールバーが出ないこと**は、macOS / Windows の両方で確認が要る。
+にじみが許容できなかった場合のフォールバック（本文だけ要素セレクタで font-size を上書き）も同タスクファイルに記載した。
+
+## 2026-07-29 (046c 追修正 ＋ 046d 固定オーバーレイの OBS 自動ソース追加)
+
+E2E で 2 件の問題が出たので対応した。**1 件は私が 046c で入れたバグ、1 件は先送り判断の誤り**。
+
+### ① 046c の縮小フィットが常時発動していた（自分で入れたバグ）
+
+`scrollHeight` は仕様上**`clientHeight` を下限にクランプ**され、内容が収まっているときは
+`scrollHeight === clientHeight` になる。にもかかわらず収まり判定を
+
+```ts
+if (content <= available - FIT_SAFETY_PX) return scale;   // ← 絶対に真にならない
+```
+
+と書いていたため、**どんな短いコメントでも「収まっていない」と判定され、反復を使い切って約 0.86 倍まで縮小**されていた。
+
+- 判定を `content - available <= FIT_TOLERANCE_PX(1)` の向きへ修正。定数名も `FIT_SAFETY_PX` →
+  `FIT_TOLERANCE_PX` に変え、**「余白を取る向きに書いてはいけない」理由を JSDoc に明記**した。
+- **テストが素通しした理由**: 合成モデルが `content` と `available` を**独立に**返しており、
+  実 DOM ではありえない `content < available` を作れてしまっていた。モデルに
+  `content = max(natural, available)` の制約を入れ、`content === available` を明示的に使う回帰ケースを追加した。
+- ミューテーション実測: 旧判定式へ戻すと **4 ケース**がレッド（短文で縮めない／回帰／許容境界／290 字が 560px でほぼ等倍）。
+
+### ② 固定オーバーレイの OBS 自動追加を「将来タスク」として先送りしていた（判断ミス）
+
+親 046 と 046b の「やらないこと」に、固定専用オーバーレイの OBS 自動ソース追加が
+**「044a の枠組み拡張・将来タスク」**として書かれていた。**できない理由はどこにも記録されていない。**
+実際の障害は `obs-client.ts` がソース名／窓名を**モジュール定数 1 組**で持っていたという実装都合だけで、
+パラメータ化すれば足りる規模だった。
+
+**依頼者の意図は当初から「自動追加の対象内」**であり、先送りにした時点で確認を取るべきだった。
+この行が「※対象外です（手動で追加してください）」という UI 文言を生み、E2E で
+「固定しても OBS に自動で反映されない」として顕在化した。**先送りの判断そのものが誤り**なので、
+親 046・046b の該当項を取り消し線付きで撤回し、[046d](tasks/046d-pinned-overlay-obs-auto-add.md) として実装した。
+
+### 046d の実装（044a を 2 ソースへ一般化）
+
+| 種別 | OBS ソース名 | キャプチャ対象の窓 |
+|---|---|---|
+| `comments` | `StreamDock コメントオーバーレイ` | `open_comment_overlay_window`（033f） |
+| `pinned` | `StreamDock 固定コメント` | `open_pinned_overlay_window`（046b） |
+
+- `obs-client.ts` に `ObsOverlayKind` と `OBS_OVERLAYS` 表を新設し、`enable`/`hide`/`ensureOverlaySource`/
+  `findOverlayWindowItem`/`pickWgcMethodValue`/`setOverlaySceneItemEnabled` を種別でパラメータ化。
+- 制御フレーム `obs-enable`/`obs-hide` に `overlay` を追加。**viewer からソース名・窓名は渡さない**＝
+  載るのは `"comments" | "pinned"` の**固定 union だけ**で、実名は sidecar 内の表に閉じる（§3/§8）。
+  `parseOverlayKind` は allow-list 方式で、未知値・未指定は `"comments"` へ劣化（044a 時点のフレームとの後方互換）。
+- `handlePinnedOverlayToggle` が、**「OBSに自動で反映する」が ON のときだけ** ON で `enableObs(port,"pinned")`／
+  OFF で `hideObs(port,"pinned")` を出す。045c の「表示が主・自動反映は従」「明示的に有効化した時のみ接続」を維持。
+- **猶予タイマーは種別ごとに別 ref**（共有すると片方の ON がもう片方の仕掛かりを取り消す）。アンマウント掃除も両方。
+- 自動反映トグル ON 時・OBS パスワード保存後の再試行も、開いている方を両方対象にする。
+- `SettingsView` の「※上の『OBSに自動で反映する』の対象外です」を撤回し、自動追加される旨＋自動反映 OFF 時の手動手順へ差し替え。
+
+**セキュリティ（軽レビュー）**: 宛先・プロトコル・依存はすべて不変（`ws://127.0.0.1:4455`・obs-websocket-js・
+新規 npm/crate ゼロ）。増えるのは「OBS のシーンに作られるソースが最大 2 つになる」点のみで、
+`docs/security.md` の 044a 例外に 046d 節として明記した。capability・`csp: null`・Rust 完全同期はいずれも不変。
+
+### テスト（18 files / **243 tests**・239 から +4）
+
+- `overlayFit.test.ts`: 回帰ケース「短文（content === available）を縮めない」＋許容境界を追加。合成モデルに
+  `content >= available` の制約を入れた（**この制約が無いとバグを素通しする**旨をコメントで固定）。
+- `commentStream.obs.test.ts`: `overlay` 種別がフレームに載ることと、**送信フレームに `StreamDock` という
+  文字列が一切現れない**こと（＝ソース名を viewer から渡していない）を固定。
+- `CommentViewerApp.toolbar.test.tsx`: 旧「044a とは独立＝制御フレームを出さない」ケースを、新仕様 3 ケース
+  （自動反映 ON で ON→猶予後 `enableObs(pinned)`／OFF→`hideObs(pinned)`／**自動反映 OFF なら一切繋がない**）へ差し替え。
+- `SettingsView.obs.test.tsx`: 「対象外」を明示するケースを、自動追加を案内するケースへ反転。
+
+### 検証結果
+
+`typecheck`（desktop / sidecar）・`lint`・`test`（**18 files / 243 tests**）・`cargo check` pass。
+`node scripts/test-obs-client.mjs`（OBS-CLIENT PASS）・`node scripts/test-host-guard.mjs`（HOST-GUARD PASS）＝
+**loopback 限定の fail-closed は不変**。
+
+実機確認は本人環境（`COMMENT_SIDECAR_MOCK=1 pnpm tauri dev` ＋ OBS の WebSocket 有効）。目視項目は 046d タスクファイルの「検証」節。
+
+### 教訓
+
+- **「将来タスク」として先送りする判断は、依頼者に確認してから記録する**。理由を書かずに「やらないこと」へ入れると、
+  後続タスクがそれを確定した線引きとして踏襲し（046b の UI 文言）、E2E まで誤りが露見しない。
+- **測定 API の値域制約をテストモデルに入れる**。`scrollHeight >= clientHeight` のような「実装では絶対に成り立つ制約」を
+  合成モデルが破ると、判定式の誤りをテストが素通しする。
+
+## 2026-07-29 (046c/046d 外部レビュー〔security + 品質〕の対応)
+
+046b/046c/046d の未コミット差分に対する外部レビュー（security-review ＋ 品質・effort high）への対応。
+**総合判定は「軽微な懸念あり・コードの修正必須 0 件」**だが、`docs/security.md`（正）に実装と矛盾する記述が
+残っていた点を修正必須として扱い、併せて品質指摘 3 件を修正した。
+
+### 修正（要修正）
+
+- **S-1 `docs/security.md` の自己矛盾（正となる文書の誤り）**: 「Tauri Permissions / Capabilities 方針」046b 節に
+  「この窓は 044a の自動追加の**対象外**＝手動ウィンドウキャプチャ前提。sidecar 側 044a のコードは不変」が残り、
+  同ファイル §1 の 046d 節（自動追加の対象に入れた・sidecar を改変した）と**正面から矛盾**していた。
+  046 / 046b のタスクファイルは取り消し線＋失効注記で処理済みだったのに security.md だけ漏れていた。
+  失効を明記し、**窓名の非部分一致要件は「分かりやすさ」ではなく「自動追加が窓を取り違えないための機能要件」**として
+  格上げした。同じ誤りが `lib.rs` の `open_pinned_overlay_window` doc comment と
+  `SettingsView.obs.test.tsx` のファイル冒頭仕様にもあったので併せて訂正。
+- **S-5 `core:default` の言い換えが実際より狭かった**: `gen/schemas/acl-manifests.json` を展開すると
+  `core:window:default` に **`allow-internal-toggle-maximize`** が含まれる。「`allow-create-*`/`allow-close`/`allow-set-*`
+  は含まれない」という主要な主張は正しいが、「リサイズはできない」という言い換えは厳密には成立しないため
+  例外として明記した（ドラッグ領域のダブルクリック用・ローカルバンドルのみを読む窓なので実害なし）。
+- **Q1 `PinnedOverlayApp.test.tsx` に 046c 初回実装と同じモデリング欠陥が残っていた**（今回いちばん重要）。
+  `overlayFit.test.ts` のモデルには `content = max(natural, available)` の制約を入れたのに、こちらの
+  `stubLayout(200, 560)` は `scrollHeight < clientHeight` ＝**実 DOM では起こり得ない値**のままだった。
+  旧判定式 `content <= available - 8` を注入すると `200 <= 552` が真になり、**バグ入りでも
+  「収まっているときは縮めない」ケースがグリーンになる**（＝回帰テストとして機能していなかった）。
+  `stubLayout` 自身に `Math.max(content, available)` の丸めを入れて構造的に防いだ。
+  **ミューテーション実測: 旧判定式を注入すると 0 件 → 2 件レッドに変わることを確認。**
+- **Q2 `fitScale` が反復打ち切り経路で自分の契約を破っていた**。ループ末尾で `scale = next` を先に代入するため、
+  `MAX_FIT_ITERATIONS` を使い切った経路の返り値が **DOM に適用済みの値より 1 段（`FIT_STEP`）小さい**。
+  JSDoc の「return した時点で DOM には返り値のスケールが適用済み」は当該経路で偽だった
+  （`FIT_TOLERANCE_PX` を一定量だけ超え続ける measure＝分割不能な要素があるケースで到達する）。
+  `measure` を必ず通す `apply` ラッパを導入し「返り値は常に `applied`」を**構造的に**保証。契約テストも追加した
+  （既存の契約テストは下限クランプ経路だけで、打ち切り経路は未カバーだった）。
+- **Q3 固定側の自動追加が「設定値」でゲートされていた非対称**。コメント一覧側は `overlayOpen`（実窓）なのに
+  固定側は `pinnedOverlayEnabled`（**永続設定値**）で判定していた。設定 ON ／ 窓なし（open の invoke 失敗等）で走ると
+  sidecar 側 `ensureOverlaySource` が**先に `CreateInput` してから**窓探索に失敗するため、
+  キャプチャ対象未設定の空ソース「StreamDock 固定コメント」が OBS に残る（手で消すまで消えない）。
+  `requestPinnedObsAutoAddIfOpen()` を新設して `isPinnedOverlayOpen()` で実窓を見るようにした。
+- **Q4 S-1 の担保が汎用の永続化 effect への相乗りだった**のを、独立した専用 effect（`savePinned([])` をマウント時 1 回）
+  として明示化。指摘は ①意図が表明されていない ②同型の save effect が 10 個並ぶため「初回スキップ/前回値比較」の
+  一括最適化で静かに壊れる ③所有者の単位でテストできない、の 3 点。
+  **`pinnedComments.ts` は引き続き無改変**（`clearPinned()` を新設せず `savePinned([])` を使う）。
+  専用 effect は**窓を開く effect より前に宣言**し、これで宣言順とマイクロタスク境界の二重で
+  「クリアが窓生成より先」が保証される。永続化 effect からは禁止コメントを外した（もう S-1 の担保ではない）。
+- **Q5 窓タイトル契約を `#[cfg(test)]` でテスト化**（046d で重大度が上がったため「別タスク送り」から格上げ）。
+  046d 以後、`.title` は sidecar `OBS_OVERLAYS[kind].windowTitle` とバイト一致していないと自動追加が窓を探せない。
+  しかも `ensureOverlaySource` の M2 フォールバックにより **既存ソースがある状態での不一致は `"reused"`＝成功として返る**
+  （UI は成功表示・OBS のソースは真っ黒）ため、grep 頼みでは配信中に切り分けられない。
+  `lib.rs` に `pinned_overlay_contract` を新設し、`include_str!` で TS ソースを文字列照合する（新規依存ゼロ・
+  `#[cfg(test)]` のみで通常ビルドには入らない）。①非部分一致 ②`.title` の実使用 ③sidecar 表とのバイト一致
+  ④`SHARED_BROWSER_ARGS` の全 4 窓一致（`main` は `tauri.conf.json`）の 4 本。
+  **ミューテーション実測: sidecar 側の窓名を 1 文字変えると③がレッド。**
+  ⚠ `include_str!("lib.rs")` は**このテスト自身のソースも含む**ため、検索文字列を直書きすると自分がヒットして
+  数が 1 つ増える（実装中に実際に踏んだ）。needle は `format!` で実行時に組むこと。
+- **046d タスクファイルに「許容根拠の依存関係」を追記**（レビュー S-7）。通信面が軽レビューで足りるのは事実だが、
+  044a を例外にした理由は通信だけではなく「OBS シーンへ自動でソースを作る権限」であり、046d はその**対象窓の集合を
+  広げる**変更。増えた窓が描くのは §9 追補（046a）が対象とする第三者の個人データそのもの。
+  **したがって 046d の許容根拠には S-1 が含まれる**（S-1 が無ければ「永続 ON → 自動 open → 自動ソース作成 →
+  前回配信の固定が操作ゼロで本番へ」が完成する）。**再レビュー必須トリガー＝S-1 を撤回・緩和するとき**。
+
+### 修正不要（コメント化）
+
+- **`obsState` を 2 種別で共有している**点（`requestObsAutoAdd` の注記）。失敗表示がどちらのソースか区別できず、
+  同時実行では最後の書き手が勝つ。それでも分けないのは、これがセットアップ時の一度きりの操作で、失敗しても
+  OBS 側は壊れず設定カードに手動手順が併記されているため。sidecar 側は 2 種別で**別ソース名**を触るので
+  同時実行でも二重ソース作成・相互破壊は起きない（`obs-client.ts` の L5 注記が種別違いでも成立）。
+  再修正トリガー＝「どちらが出ていないか分からない」問い合わせが実際に出たら `Record<ObsOverlayKind, ObsState>` へ。
+- レビューで**変更不要と確認された**もの: `MIN_FIT_SCALE = 0.1` の整理（k=0.1 で約 47,000 字相当の容量＝
+  タスクファイルの「約 24,000 字」は控えめな安全側の見積り。Twitch 500 / YouTube 200 字に対し十分）／
+  `querySelector("ol")` と 3 プロパティの `useLayoutEffect` 排他所有（どちらも理由付けが正しい）／
+  `.fit` の `overflow:hidden`（`theme.css` の `html,body,#root{height:100%}` で百分率が解決し、
+  オーバーフローは祖先へ伝播しない＝body スクロールバーを確実に断てる）／`transform` の包含ブロック副作用
+  （この窓は `onContextMenu` を渡さないので `position:fixed` の子孫が存在しない）／
+  ジオメトリ（既存 overlay 24〜424 と新窓 456〜936 で 32px の間隔）／`SettingsView` の見出し重複（045b の既知問題を
+  悪化させていない）／`PinnedOverlayApp` と `OverlayApp` の重複（既存 overlay を触らない方針を優先）。
+
+### 意図的に対応しない（依頼者の決定・2026-07-29）
+
+- **`parseOverlayKind` の単体テストは追加しない**（選択肢 (b) 現状維持を採用）。
+  指摘の内容＝この関数は「信頼できない JSON（loopback WS の制御フレーム）が最初に入ってくる境界」に置かれた
+  **046d の実質的なセキュリティ制御**で、TypeScript の型は何も守らない（引数は `JSON.parse` 由来の `unknown`）のに、
+  `test-obs-client.mjs` は `isWgcMethodName` だけで**この関数を一切検証していない**
+  （`(v) => v as ObsOverlayKind` に書き換えても全テストがグリーン）。
+  **追加しない理由**＝テストするには `index.ts`（top-level で `main()` を呼ぶ＝**import すると sidecar が起動する**）
+  から関数を移す必要があり、移動先として自然な `obs/obs-helpers.ts` と `scripts/` は 046d で
+  **差分ゼロが要件**（fail-closed 層に手を入れていないことの担保）だった。要件を破ってまでの利得は無いと判断した。
+  **安全側の根拠**＝①`parseControlFrame` 内で**明示構築**したオブジェクトにしか値を載せない（`msg` をスプレッド
+  しないので未検証フィールドが混入しない）②`obs-enable` / `obs-hide` の**両方**に適用済み
+  ③未知値の劣化先 `"comments"` は 044a 時点と同一の挙動＝権限が広がらない。
+  判断と再修正トリガーは `index.ts` の `parseOverlayKind` の JSDoc に記載（3 つ目の種別を足すとき／
+  制御フレームに別の列挙型を足すとき／`obs-helpers.ts` を別の理由で改変するとき）。
+
+### テスト（18 files / **247 tests**・243 から +4）
+
+- `overlayFit.test.ts` +1（反復打ち切り経路の契約＝返り値が適用済み）
+- `CommentViewerApp.toolbar.test.tsx` +3（S-1 の**順序**＝窓を開く瞬間にストアが既に空／自動反映 ON 時に
+  両オーバーレイを対象／固定側は実窓でゲート）
+- Rust `pinned_overlay_contract` +4（`cargo test`・上記 Q5）
+
+### 検証
+
+`typecheck`（desktop / sidecar）・`lint`・`test`（**18 files / 247 tests**）・`cargo check`・
+`cargo test`（95 tests）・`test-obs-client.mjs` PASS・`test-host-guard.mjs` PASS。
+
+### 学び
+
+- **レビュー指摘の反映漏れは「正となる文書」で起きやすい**。046d はタスクファイル 3 本を取り消し線で正しく
+  訂正したのに、`docs/security.md` の別セクション（Capabilities 方針）に同じ主張が残っていた。
+  **線引きを撤回したら、その主張が書かれている箇所を全文検索して洗い出すこと**（今回は `対象外` で grep して発見）。
+- **モデリング欠陥の修正は、同じ欠陥を持つ全テストに適用する**。046c で `overlayFit.test.ts` のモデルは直したが、
+  同じ制約が要る `PinnedOverlayApp.test.tsx` の `stubLayout` は見落としていた。
+  制約は**呼び出し側の引数ではなくヘルパ内部に埋める**と再発しない。
+- **「返り値は DOM に適用済み」のような契約は、代入と適用の順序で静かに破れる**。
+  適用を必ず通すラッパ（`apply`）を作り、返り値をその記録から取ると構造的に守れる。
+- **`include_str!` で自ファイルを読むテストは、自分自身のソースもヒットする**。検索文字列は実行時に組む。

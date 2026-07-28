@@ -1,7 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { CommentViewerApp } from "./CommentViewerApp";
-import { OBS_AUTO_ADD_KEY } from "../../features/comment-viewer/overlaySettings";
+import {
+  OBS_AUTO_ADD_KEY,
+  PINNED_OVERLAY_ENABLED_KEY,
+} from "../../features/comment-viewer/overlaySettings";
+// 046b レビュー（S-1）: 起動時に前回セッションの固定を捨てることを検証するため、ピンストアのキーを直接見る。
+import { PINNED_COMMENTS_KEY } from "../../features/comment-viewer/pinnedComments";
 // 型のみの import（コンパイル時に消えるので vi.mock の巻き上げと競合しない）。偽ハンドルと捕捉した handlers を
 // 実型に縛るために使う。
 import type {
@@ -45,6 +50,10 @@ const mocks = vi.hoisted(() => ({
   isCommentOverlayOpen: vi.fn(),
   openCommentOverlayWindow: vi.fn(),
   closeCommentOverlayWindow: vi.fn(),
+  // 046b: 固定コメント専用オーバーレイ窓（label `pinned-overlay`）の開閉・状態取得。
+  isPinnedOverlayOpen: vi.fn(),
+  openPinnedOverlayWindow: vi.fn(),
+  closePinnedOverlayWindow: vi.fn(),
   // 045c: connectCommentStream に渡された handlers を捕捉する箱。sidecar からの obs.state 通知
   // （handlers.onObsState）をテストから直接叩いて、ツールバーの状態表示を検証するために使う。
   // 実型（CommentStreamHandlers）で縛るので、ハンドラ名が変わればここも typecheck で落ちる。
@@ -73,10 +82,16 @@ const mocks = vi.hoisted(() => ({
 
 // オーバーレイ窓の開閉（Rust command）。本テストの検証対象。
 // 後半 2 つは MainScreen 専用でこのツリーからは踏まないが、上記方針により export 面を揃えておく。
+// 046b: 固定コメント専用オーバーレイの 3 つも**必ず**ここへ足す。このモックはモジュールを丸ごと差し替えるため、
+// 書き漏らすと `isPinnedOverlayOpen` が undefined になり、CommentViewerApp のマウント effect が
+// 「undefined is not a function」で落ちる（実装が正しくても全ケースがレッドになる）。
 vi.mock("../../features/comment-viewer/windowApi", () => ({
   isCommentOverlayOpen: mocks.isCommentOverlayOpen,
   openCommentOverlayWindow: mocks.openCommentOverlayWindow,
   closeCommentOverlayWindow: mocks.closeCommentOverlayWindow,
+  isPinnedOverlayOpen: mocks.isPinnedOverlayOpen,
+  openPinnedOverlayWindow: mocks.openPinnedOverlayWindow,
+  closePinnedOverlayWindow: mocks.closePinnedOverlayWindow,
   closeCommentViewerWindow: vi.fn(async () => {}),
   isCommentViewerOpen: vi.fn(async () => false),
 }));
@@ -151,6 +166,8 @@ vi.mock("../../features/platform/useHostOs", () => ({
 const OVERLAY_TOGGLE = "コメントをOBSに表示";
 // 045c: 「いつ反映されるのか」が読み取れる条件付き label（鉤括弧内は上の表示トグルと同一文字列）。
 const AUTO_ADD_TOGGLE = "「コメントをOBSに表示」ON時、OBSに自動で反映する";
+// 046b: 固定コメント専用オーバーレイの表示トグル（設定ビュー）。カード見出しと同一文字列なので role で絞る。
+const PINNED_OVERLAY_TOGGLE = "固定コメントをOBSに表示";
 
 /** 実窓の初期状態（マウント同期の戻り値）を決めて描画する。 */
 function renderApp(overlayAlreadyOpen = false) {
@@ -176,12 +193,20 @@ function autoAddSwitch() {
   return screen.getByRole("switch", { name: AUTO_ADD_TOGGLE });
 }
 
+/** 046b: 設定ビューの固定コメント表示トグル（role="switch"）を取る。 */
+function pinnedOverlaySwitch() {
+  return screen.getByRole("switch", { name: PINNED_OVERLAY_TOGGLE });
+}
+
 beforeEach(() => {
   // clearMocks は呼び出し履歴のみを消す（実装は残る）ため、localStorage と既定の解決値は明示的に戻す。
   localStorage.clear();
   mocks.isCommentOverlayOpen.mockResolvedValue(false);
   mocks.openCommentOverlayWindow.mockResolvedValue(undefined);
   mocks.closeCommentOverlayWindow.mockResolvedValue(undefined);
+  mocks.isPinnedOverlayOpen.mockResolvedValue(false);
+  mocks.openPinnedOverlayWindow.mockResolvedValue(undefined);
+  mocks.closePinnedOverlayWindow.mockResolvedValue(undefined);
   // 045c: 捕捉した handlers はテスト間で持ち越さない（前のテストのアンマウント済みツリーを叩かないため）。
   mocks.handlers.current = null;
 });
@@ -245,7 +270,8 @@ describe("045b 本体ツールバーの OBS 表示トグル", () => {
     expect(mocks.stream.disableObs).not.toHaveBeenCalled();
     // 付随して port の既定値も固定する。detectObsWebsocketConfig を null にしているので `obsConfig?.port ?? 4455`
     // の既定側を通る＝044a の「検出できなくても既定 4455 で送る」契約。上の 1 行と意図が違うので分けてある。
-    expect(mocks.stream.hideObs).toHaveBeenCalledWith(4455);
+    // 046d: 対象種別が付いた（コメント一覧側は "comments"）。
+    expect(mocks.stream.hideObs).toHaveBeenCalledWith(4455, "comments");
   });
 });
 
@@ -289,7 +315,8 @@ describe("045c 自動反映は表示に従う（E2E 回帰）", () => {
       // **open の解決と同じマイクロタスクでは出さず、タイマー（マクロタスク）を経由して出る**という一点。
       // 秒数を 0 にしても 4000 にしても通り、同期呼び出しに変えたときだけ上の not.toHaveBeenCalled() が落ちる。
       await act(() => vi.advanceTimersByTimeAsync(10_000));
-      expect(mocks.stream.enableObs).toHaveBeenCalledWith(4455);
+      // 046d: 対象種別が付いた（コメント一覧側は "comments"）。
+      expect(mocks.stream.enableObs).toHaveBeenCalledWith(4455, "comments");
       // 045c レビュー: 二重発火するミューテーションを素通りさせないよう回数も固定する。
       expect(mocks.stream.enableObs).toHaveBeenCalledTimes(1);
     } finally {
@@ -396,5 +423,301 @@ describe("045c レビュー 猶予中の取り消し", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+/**
+ * 046b: 設定ビューの「固定コメントをOBSに表示」トグル（固定専用オーバーレイ窓 `pinned-overlay`）。
+ * あるべき挙動（docs/tasks/046b / 親 046 / 依頼者の決定）:
+ * - トグルは**設定ビュー**にある（配信中に切り替える操作ではなく、OBS にウィンドウキャプチャを仕込む
+ *   一度きりのセットアップ。固定/解除は右クリックメニュー側の仕事で、窓は開けっぱなしにする）。
+ * - ON で `openPinnedOverlayWindow` / OFF で `closePinnedOverlayWindow`。値は **localStorage に永続**する。
+ * - 永続 ON で開き直したとき、窓が無ければ**マウント時に自動で開く**（配信開始時に OBS ソースが黒くならない）。
+ *   逆に**自動で閉じる経路は作らない**（親 046: ピン 0 件で窓が消えると OBS のウィンドウキャプチャソースが壊れる）。
+ * - **046d: この窓も 044a の自動反映の対象**。「OBSに自動で反映する」が ON のときだけ、トグル ON で
+ *   `enableObs(port, "pinned")`／OFF で `hideObs(port, "pinned")` を出す。自動反映 OFF なら OBS へ一切繋がない
+ *   （045c の「明示的に有効化した時のみ接続」を維持）。コメント一覧側（"comments"）には干渉しない。
+ * - **固定コメントは配信をまたいで残らない**（046b レビュー S-1・依頼者の決定）。トグルの永続 ON ＋
+ *   マウント時の自動 open と組み合わさると、前回配信の固定が操作なしで本番へ出てしまうため。
+ */
+describe("046b 設定ビューの固定コメント表示トグル", () => {
+  /** 設定ビューを開く（このトグルは設定ビューにしか無い）。 */
+  async function openSettings() {
+    await waitFor(() => expect(overlaySwitch()).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "設定" }));
+  }
+
+  it("前回セッションの固定は引き継がず、マウント時にピンストアを空へ倒す（S-1: 前回配信の固定が本番へ出ない）", async () => {
+    // 前回配信で固定が残っている状態を作る（046a はキーを消さず JSON 配列を書く）。
+    localStorage.setItem(
+      PINNED_COMMENTS_KEY,
+      JSON.stringify([
+        {
+          id: "c-prev",
+          source: "twitch",
+          author: { id: "u1", name: "前回の視聴者" },
+          text: "前の配信で固定したコメント",
+          publishedAt: "2026-07-28T10:00:00Z",
+          eventType: "chat",
+        },
+      ]),
+    );
+    // 「固定コメントをOBSに表示」も ON のまま＝マウント時に窓が自動で開く条件を満たす。
+    localStorage.setItem(PINNED_OVERLAY_ENABLED_KEY, "true");
+
+    renderApp(false);
+
+    // 本体の固定帯にも出さない。
+    await waitFor(() =>
+      expect(screen.queryByText("前の配信で固定したコメント")).toBeNull(),
+    );
+    // ストア自体を空へ倒す（＝この後に開くオーバーレイ窓の read-on-mount が空を読む）。
+    // ここが "[]" でないと、前回のコメントが操作なしで OBS へ映る。
+    await waitFor(() =>
+      expect(localStorage.getItem(PINNED_COMMENTS_KEY)).toBe("[]"),
+    );
+    // 窓の自動オープン自体は従来どおり動く（クリアと自動 open は両立する）。
+    await waitFor(() =>
+      expect(mocks.openPinnedOverlayWindow).toHaveBeenCalledTimes(1),
+    );
+  });
+
+  it("S-1 の順序: オーバーレイ窓を開く時点で、ピンストアは既に空になっている", async () => {
+    // レビュー指摘（S-1 の担保根拠の明示）: クリアと窓オープンは「どちらも起きる」だけでは不十分で、
+    // **クリアが窓生成より先**でなければ、開いた窓の read-on-mount が前回の固定を読んで本番へ映してしまう。
+    // 担保は宣言順（クリア effect を open effect より前に置く）＋マイクロタスク境界
+    //（open は invoke＝async なので、同期の書込が必ず先に完了する）の二重。
+    // open 経路を同期化するとこの保証が消えるため、その退行をここで検出する。
+    localStorage.setItem(
+      PINNED_COMMENTS_KEY,
+      JSON.stringify([
+        {
+          id: "c-prev",
+          source: "twitch",
+          author: { id: "u1", name: "前回の視聴者" },
+          text: "前の配信で固定したコメント",
+          publishedAt: "2026-07-28T10:00:00Z",
+          eventType: "chat",
+        },
+      ]),
+    );
+    localStorage.setItem(PINNED_OVERLAY_ENABLED_KEY, "true");
+
+    // 窓を開くよう要求された**その瞬間**のストア内容を記録する。
+    let storeAtOpen: string | null = "(not called)";
+    mocks.openPinnedOverlayWindow.mockImplementation(async () => {
+      storeAtOpen = localStorage.getItem(PINNED_COMMENTS_KEY);
+    });
+
+    renderApp(false);
+
+    await waitFor(() =>
+      expect(mocks.openPinnedOverlayWindow).toHaveBeenCalledTimes(1),
+    );
+    expect(storeAtOpen).toBe("[]");
+  });
+
+  it("設定ビューに描画し、未保存なら OFF で出る（本体ツールバーには出さない）", async () => {
+    renderApp(false);
+    // 置き場所の担保: 表示（開閉）トグルが並ぶ本体ツールバーには**足していない**（045b の混雑を増やさない）。
+    expect(
+      screen.queryByRole("switch", { name: PINNED_OVERLAY_TOGGLE }),
+    ).not.toBeInTheDocument();
+    await openSettings();
+    expect(pinnedOverlaySwitch()).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("OFF→ON で openPinnedOverlayWindow を呼び、設定を永続化する", async () => {
+    renderApp(false);
+    await openSettings();
+    fireEvent.click(pinnedOverlaySwitch());
+
+    // 046b レビュー（連打レース修正）: 開閉要求は直列キューに載るため、invoke は同期ではなく次の
+    // マイクロタスク以降で走る（呼び出し自体は waitFor で待つ）。
+    await waitFor(() =>
+      expect(mocks.openPinnedOverlayWindow).toHaveBeenCalledTimes(1),
+    );
+    await waitFor(() =>
+      expect(pinnedOverlaySwitch()).toHaveAttribute("aria-checked", "true"),
+    );
+    // 永続化（034d/045b の overlayOpen と違い、こちらは localStorage に残す）。
+    expect(localStorage.getItem(PINNED_OVERLAY_ENABLED_KEY)).toBe("true");
+  });
+
+  it("ON→OFF で closePinnedOverlayWindow を呼び、永続値も false になる", async () => {
+    localStorage.setItem(PINNED_OVERLAY_ENABLED_KEY, "true");
+    // 既に開いている状態から始める（マウント時の自動オープンは走らない）。
+    mocks.isPinnedOverlayOpen.mockResolvedValue(true);
+    renderApp(false);
+    await openSettings();
+    expect(pinnedOverlaySwitch()).toHaveAttribute("aria-checked", "true");
+
+    fireEvent.click(pinnedOverlaySwitch());
+    await waitFor(() =>
+      expect(mocks.closePinnedOverlayWindow).toHaveBeenCalledTimes(1),
+    );
+    await waitFor(() =>
+      expect(pinnedOverlaySwitch()).toHaveAttribute("aria-checked", "false"),
+    );
+    expect(localStorage.getItem(PINNED_OVERLAY_ENABLED_KEY)).toBe("false");
+  });
+
+  it("ON→OFF を連打しても、OFF が窓生成の完了後に届く（設定 OFF なのに窓が残らない）", async () => {
+    // 046b レビュー（要修正）: open は #[tauri::command(async)]（窓生成で数百 ms）、close は同期コマンド。
+    // 直列化していないと「close が窓なし＝no-op で先に流れ、あとから open が窓を作る」順序が起こり、
+    // 自動 close 経路が無い 046b では**セッション中ずっと**「設定 OFF なのに OBS へ固定コメントが映る」になる。
+    let resolveOpen: () => void = () => {};
+    mocks.openPinnedOverlayWindow.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveOpen = () => resolve();
+        }),
+    );
+    renderApp(false);
+    await openSettings();
+
+    fireEvent.click(pinnedOverlaySwitch()); // ON（窓生成は未完了のまま止める）
+    await waitFor(() =>
+      expect(mocks.openPinnedOverlayWindow).toHaveBeenCalledTimes(1),
+    );
+
+    fireEvent.click(pinnedOverlaySwitch()); // OFF（open の解決前）
+    // 直列化されていれば、open が終わるまで close は走らない（走ると窓なしの no-op になってしまう）。
+    expect(mocks.closePinnedOverlayWindow).not.toHaveBeenCalled();
+
+    resolveOpen();
+    await waitFor(() =>
+      expect(mocks.closePinnedOverlayWindow).toHaveBeenCalledTimes(1),
+    );
+    expect(localStorage.getItem(PINNED_OVERLAY_ENABLED_KEY)).toBe("false");
+  });
+
+  it("永続 ON で開き直すと、窓が無ければマウント時に自動で開く", async () => {
+    localStorage.setItem(PINNED_OVERLAY_ENABLED_KEY, "true");
+    mocks.isPinnedOverlayOpen.mockResolvedValue(false);
+    renderApp(false);
+
+    await waitFor(() =>
+      expect(mocks.openPinnedOverlayWindow).toHaveBeenCalledTimes(1),
+    );
+    await openSettings();
+    expect(pinnedOverlaySwitch()).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("永続 ON でも窓が既に開いていれば開き直さない（最背面窓を余計に触らない）", async () => {
+    localStorage.setItem(PINNED_OVERLAY_ENABLED_KEY, "true");
+    mocks.isPinnedOverlayOpen.mockResolvedValue(true);
+    renderApp(false);
+
+    await waitFor(() => expect(mocks.isPinnedOverlayOpen).toHaveBeenCalled());
+    expect(mocks.openPinnedOverlayWindow).not.toHaveBeenCalled();
+  });
+
+  it("永続 OFF なら自動で開かず、開いていた窓を自動で閉じもしない（親 046: 自動 close を作らない）", async () => {
+    // 設定は OFF なのに窓が開いている状況（前回 OFF にし損ねた等）。ここで自動 close すると、
+    // OBS のウィンドウキャプチャソースがユーザーの操作なしに壊れる。
+    mocks.isPinnedOverlayOpen.mockResolvedValue(true);
+    renderApp(false);
+
+    await waitFor(() => expect(mocks.isPinnedOverlayOpen).toHaveBeenCalled());
+    expect(mocks.openPinnedOverlayWindow).not.toHaveBeenCalled();
+    expect(mocks.closePinnedOverlayWindow).not.toHaveBeenCalled();
+  });
+
+  it("046d: 自動反映 ON なら、トグル ON で猶予後に enableObs(pinned) が飛ぶ", async () => {
+    vi.useFakeTimers();
+    try {
+      localStorage.setItem(OBS_AUTO_ADD_KEY, "true");
+      renderApp(false);
+      await act(async () => {});
+      fireEvent.click(screen.getByRole("button", { name: "設定" }));
+
+      fireEvent.click(pinnedOverlaySwitch()); // ON
+      // 窓が OBS のウィンドウ一覧に載るまでの猶予中は、まだ飛ばない（044a と同じ作法）。
+      await act(async () => {});
+      expect(mocks.stream.enableObs).not.toHaveBeenCalled();
+
+      await act(() => vi.advanceTimersByTimeAsync(10_000));
+      expect(mocks.stream.enableObs).toHaveBeenCalledWith(4455, "pinned");
+      // コメント一覧側（"comments"）には干渉しない＝別ソースとして独立している。
+      expect(mocks.stream.enableObs).toHaveBeenCalledTimes(1);
+      expect(mocks.openCommentOverlayWindow).not.toHaveBeenCalled();
+      expect(mocks.closeCommentOverlayWindow).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("046d: 自動反映 ON なら、トグル OFF で hideObs(pinned) が飛ぶ（ソースは消さない）", async () => {
+    localStorage.setItem(OBS_AUTO_ADD_KEY, "true");
+    localStorage.setItem(PINNED_OVERLAY_ENABLED_KEY, "true");
+    mocks.isPinnedOverlayOpen.mockResolvedValue(true);
+    renderApp(false);
+    await openSettings();
+
+    fireEvent.click(pinnedOverlaySwitch()); // OFF
+    await waitFor(() =>
+      expect(mocks.stream.hideObs).toHaveBeenCalledWith(4455, "pinned"),
+    );
+    // 非表示であって連携解除ではない（disableObs は自動反映トグル専用）。
+    expect(mocks.stream.disableObs).not.toHaveBeenCalled();
+  });
+
+  it("046d: 自動反映 OFF なら、トグル操作で OBS へ一切繋がない（045c の線引きを維持）", async () => {
+    // OBS_AUTO_ADD_KEY を立てない＝自動反映 OFF。
+    renderApp(false);
+    await openSettings();
+
+    fireEvent.click(pinnedOverlaySwitch()); // ON
+    await act(async () => {});
+    fireEvent.click(pinnedOverlaySwitch()); // OFF
+    await act(async () => {});
+    await waitFor(() =>
+      expect(mocks.closePinnedOverlayWindow).toHaveBeenCalledTimes(1),
+    );
+
+    expect(mocks.stream.enableObs).not.toHaveBeenCalled();
+    expect(mocks.stream.hideObs).not.toHaveBeenCalled();
+    expect(mocks.stream.disableObs).not.toHaveBeenCalled();
+  });
+
+  it("046d: 自動反映トグル ON 時、開いている両オーバーレイを対象にする", async () => {
+    // 046d レビュー: この経路（「OBSに自動で反映する」を後から ON にする）は種別 2 つを対象にするのに
+    // テストが無かった。両方が開いているときは comments / pinned の 2 本が飛ぶことを固定する。
+    localStorage.setItem(PINNED_OVERLAY_ENABLED_KEY, "true");
+    mocks.isPinnedOverlayOpen.mockResolvedValue(true);
+    renderApp(true); // コメント一覧オーバーレイも開いている
+    await openSettings();
+
+    fireEvent.click(autoAddSwitch()); // 自動反映 ON
+
+    await waitFor(() =>
+      expect(mocks.stream.enableObs).toHaveBeenCalledWith(4455, "comments"),
+    );
+    await waitFor(() =>
+      expect(mocks.stream.enableObs).toHaveBeenCalledWith(4455, "pinned"),
+    );
+    expect(mocks.stream.enableObs).toHaveBeenCalledTimes(2);
+  });
+
+  it("046d: 固定側の自動追加は**実窓**の有無で判定する（設定 ON でも窓が無ければ送らない）", async () => {
+    // 046d レビュー（要修正）: 当初は永続設定値（pinnedOverlayEnabled）でゲートしていたため、
+    // 「設定 ON ／ 窓なし」（open の invoke が失敗した等）で enableObs("pinned") が飛び、sidecar 側が
+    // 先に CreateInput してから窓探索に失敗する＝キャプチャ対象未設定の空ソースが OBS に残っていた。
+    localStorage.setItem(PINNED_OVERLAY_ENABLED_KEY, "true");
+    mocks.isPinnedOverlayOpen.mockResolvedValue(false); // 設定は ON だが実窓は無い
+    // マウント同期 effect の自動 open も失敗させ、「設定 ON・窓なし」を維持する。
+    mocks.openPinnedOverlayWindow.mockRejectedValue(new Error("build failed"));
+    renderApp(true);
+    await openSettings();
+
+    fireEvent.click(autoAddSwitch()); // 自動反映 ON
+
+    // コメント一覧側（実窓 open）は従来どおり飛ぶ。
+    await waitFor(() =>
+      expect(mocks.stream.enableObs).toHaveBeenCalledWith(4455, "comments"),
+    );
+    // 固定側は実窓が無いので送らない（設定値ゲートのままなら 2 本目が飛んでレッドになる）。
+    expect(mocks.stream.enableObs).not.toHaveBeenCalledWith(4455, "pinned");
   });
 });

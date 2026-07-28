@@ -56,3 +56,32 @@ export function closeCommentOverlayWindow(): Promise<void> {
 export function isCommentOverlayOpen(): Promise<boolean> {
   return invoke<boolean>("is_comment_overlay_open");
 }
+
+/**
+ * 046b: 固定コメント（046a のピン留め）専用の背景透過オーバーレイ窓（label `pinned-overlay`）を開く。
+ * 既に開いていれば Rust 側で再利用する（冪等）。既存の `comment-overlay`（コメント一覧用）とは
+ * **独立した別窓**で、OBS では別ソースとして取り込む（窓名「StreamDock 固定コメント」）。
+ *
+ * この窓は**表示専用**で WS へ接続しない（046a が localStorage に書いた固定コメントを読むだけ）。
+ * sidecar の起動/停止にも関与しないため、閉じても sidecar は落ちない（no-orphan kill 契機は不変）。
+ */
+export function openPinnedOverlayWindow(): Promise<void> {
+  return invoke<void>("open_pinned_overlay_window");
+}
+
+/**
+ * 046b: 固定コメント専用オーバーレイ窓を閉じる（設定ビューのトグル OFF 用）。窓が無ければ Rust 側 no-op（冪等）。
+ * 最背面・非フォーカスで開くため Cmd+W では掴みにくく、設定から明示的に閉じられるよう用意する。
+ */
+export function closePinnedOverlayWindow(): Promise<void> {
+  return invoke<void>("close_pinned_overlay_window");
+}
+
+/**
+ * 046b: 固定コメント専用オーバーレイ窓が開いているかを返す（読み取り専用）。
+ * 設定トグルが、マウント時に「設定 ON なのに窓が無い」場合だけ開き直すために使う。
+ * アプリ定義 command のため capability 列挙不要（本ファイル冒頭の注記どおり）。
+ */
+export function isPinnedOverlayOpen(): Promise<boolean> {
+  return invoke<boolean>("is_pinned_overlay_open");
+}

@@ -63,6 +63,10 @@ interface SettingsViewProps {
   obsState: string; // sidecar からの状態通知（idle/connecting/added/reused/failed）
   onSetObsPassword: (password: string) => void;
   onClearObsPassword: () => void;
+  // 046b: 「固定コメントをOBSに表示」トグル（固定専用オーバーレイ窓 `pinned-overlay` の表示 ON/OFF）。
+  // 値は CommentViewerApp が保持し localStorage 永続。ここは表示とユーザー操作の受け渡しのみ。
+  pinnedOverlayEnabled: boolean;
+  onPinnedOverlayToggle: (next: boolean) => void;
 }
 
 export function SettingsView({
@@ -88,6 +92,8 @@ export function SettingsView({
   obsState,
   onSetObsPassword,
   onClearObsPassword,
+  pinnedOverlayEnabled,
+  onPinnedOverlayToggle,
 }: SettingsViewProps) {
   // 044a: OBS パスワード入力のローカル state（**この値は保存しない・保存は Rust→keychain**）。認証が必要な OBS の
   // ときだけ入力欄を出す。保存ボタンで onSetObsPassword に渡し、入力欄は即クリアして DOM/メモリに残さない（§9）。
@@ -395,6 +401,61 @@ export function SettingsView({
           <span className={styles.note}>
             ON にすると、OBSに表示する各コメントに配信サービス名（Twitch /
             YouTube）を小さく表示します。
+          </span>
+        </div>
+      </div>
+
+      {/* 046b: 固定コメント（右クリック→「上部に固定」）を OBS へ出す専用オーバーレイ窓のカード。
+          上の OBS カードとは**別ウィンドウ**（label `pinned-overlay`）で、OBS では別ソースとして取り込む。
+          置き場所を設定ビューにした理由（親 045 の線引きに照らした判断・依頼者の決定）: 表示（開閉）を
+          ツールバーへ移した 045b の基準は「配信中に頻繁に切り替えるか」だが、固定オーバーレイの出し入れは
+          **固定/固定解除（右クリックメニュー）側の仕事**で、窓そのものは開けっぱなしにする＝
+          「OBS にウィンドウキャプチャを仕込む」一度きりのセットアップに当たる。手動キャプチャの手順注記と
+          同じカードに置くのが導線として自然。
+          上の OBS カードには手を入れていない（見出し・自動反映トグル・状態表示・パスワード欄はすべて不変）。 */}
+      <div className={styles.card}>
+        {/* 046b レビュー（修正不要・既知の重複）: 見出しとトグル label が同一文字列で、テストが
+            `role="switch"` 絞りを強いられる点は 045b レビューの既知問題と同じ。上の OBS カードと
+            同じ作法に揃える方を優先して据え置く（片方だけ言い回しを変えると 2 カードが非対称になる）。
+            再修正トリガー＝045b 指摘の一般解として「見出しとコントロール名の重複」をまとめて直すとき。 */}
+        <div className={styles.cardHead}>固定コメントをOBSに表示</div>
+        <div className={styles.cardBody}>
+          {/* ON で専用ウィンドウが開く（固定が 0 件のときは完全に透明で何も映らない）。固定/固定解除では
+              窓は開閉せず中身が入れ替わるだけ＝OBS のソースが途切れない。 */}
+          <ToggleSwitch
+            label="固定コメントをOBSに表示"
+            checked={pinnedOverlayEnabled}
+            onChange={onPinnedOverlayToggle}
+          />
+          <span className={styles.note}>
+            ONにすると、コメントを右クリックして「上部に固定」したものが OBS
+            に表示されます。固定していない間は何も映りません。
+          </span>
+          {/* 046b レビュー（S-1・依頼者の決定）: この設定が ON だとコメントビューアを開いた時点で窓が自動で開く
+              ため、固定を永続させると「前回配信のコメントが次の配信開始時に操作なしで本番へ出る」ことになる。
+              そのため**固定はコメントビューアを開くたびに空へ戻す**仕様にした（CommentViewerApp の pinned state）。
+              ここでは「配信をまたいでは残らない」ことをユーザーに明示する（毎回固定し直す運用になるため）。 */}
+          <span className={styles.note}>
+            固定はコメントビューアを開くたびにリセットされます（前の配信で固定したコメントが、次の配信にそのまま映ることはありません）。
+          </span>
+          {/* 046d: この窓も 044a の自動反映の対象になった（当初は「対象外・手動キャプチャ前提」だったが、
+              親 046 が将来タスクとして先送りしていただけで技術的な障害は無く、依頼者の指示で解禁）。
+              自動反映が OFF のときのために手動手順も残す。 */}
+          <span className={styles.note}>
+            上の「OBSに自動で反映する」がONなら、OBSに「StreamDock
+            固定コメント」ソースが自動で追加されます。OFFのときは、OBSの「ウィンドウキャプチャ」でウィンドウ「StreamDock
+            固定コメント」を選んで手動で追加してください。位置やサイズの調整は、コメントを1件固定してから行うと分かりやすいです。
+          </span>
+          {hostOs === "windows" && (
+            <span className={styles.note}>
+              Windows
+              では、上のコメント用と同じく「キャプチャ方式＝Windows10（1903
+              以降）」と「透過を許可」の設定がこのソースにも必要です。
+            </span>
+          )}
+          {/* フォント・サイト名表示は上のカードの設定を共有する（同じ OBS 画面に 2 つ並ぶため）。 */}
+          <span className={styles.note}>
+            フォントとサイト名表示は、上の設定がこのウィンドウにも適用されます。
           </span>
         </div>
       </div>
