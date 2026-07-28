@@ -231,18 +231,25 @@ export function SettingsView({
           sidecar は落とさない（no-orphan kill 契機はコメビュ窓に集約のまま）。
           レビュー（ARIA 逸脱 / 修正不要）: 仕様は aria-pressed だが、switch ロールでは aria-checked が正しい等価
           表現のため既存 ToggleSwitch を流用した。再修正トリガー＝トグルを switch でなく通常の押しボタン
-          （toggle button）に置き換えるなら aria-pressed へ戻す。 */}
+          （toggle button）に置き換えるなら aria-pressed へ戻す。
+          045a: 可視文言のみ「コメントをOBSに表示」へ改名した。窓 label `comment-overlay` と OBS 実窓名
+          「StreamDock コメントオーバーレイ」は据え置き（044a の自動追加が窓名一致で探すため・親 045 の線引き）。 */}
       <div className={styles.card}>
-        <div className={styles.cardHead}>OBSオーバーレイ</div>
+        <div className={styles.cardHead}>コメントをOBSに表示</div>
         <div className={styles.cardBody}>
+          {/* 045a レビュー（見出しと同文 / 修正不要）: label をカード見出しと同じ文字列にしているのは、045b で
+              本体ツールバーへ移設しても単体で意味が通る自己完結型にするため（ツールバーの「VOICEVOX読み上げ」と
+              同じ流儀）＝移設時に再改名しなくて済む。見出しは div で見出し要素ではないため switch のアクセシブル名
+              とも競合しない。再修正トリガー＝045b の移設を取りやめてトグルをカード内に残すと決めた場合
+              （そのときは見出しかラベルのどちらかを変えて重複を解消する）。 */}
           <ToggleSwitch
-            label="OBS オーバーレイを表示"
+            label="コメントをOBSに表示"
             checked={overlayOpen}
             onChange={onOverlayToggle}
           />
           <span className={styles.note}>
-            OBSの「ウィンドウキャプチャ」で「StreamDock
-            コメントオーバーレイ」を選ぶとコメントを重ねられます。
+            OBSの「ウィンドウキャプチャ」で、コメント表示用のウィンドウ「StreamDock
+            コメントオーバーレイ」を選ぶと、配信画面にコメントを重ねられます。
           </span>
           {/* 033f Windows 追修正③: Windows は OBS 側の設定が macOS と異なる。旧「BitBlt」方式では GPU/透過の
               WebView2 窓を取り込めず真っ黒になるため、WGC＋透過許可を Windows のときだけ案内する。 */}
@@ -258,22 +265,23 @@ export function SettingsView({
               自動追加（既存なら再利用）する。手動でのウィンドウキャプチャ追加が不要になる。接続は loopback
               （127.0.0.1:4455）のみ・ユーザーが ON にした時のみ。失敗時は上の手動手順にフォールバックする。 */}
           <ToggleSwitch
-            label="OBS へ自動追加（連携）"
+            label="OBSに自動で反映する"
             checked={obsAutoAdd}
             onChange={onObsAutoAddToggle}
           />
           <span className={styles.note}>
-            ONにすると、コメントオーバーレイを表示する際、OBSに自動的にオーバーレイが反映されます。
+            ONにすると、上の手動でのウィンドウキャプチャ追加が不要になり、コメントをOBSに表示するときにOBS側へ自動で反映します。
           </span>
 
-          {/* 状態表示（idle 以外）。added/reused は「表示できた」ことだけ伝える（区別しない）。failed は赤字（エラー）。 */}
+          {/* 状態表示（idle 以外）。added/reused は「表示できた」ことだけ伝える（区別しない）。failed は赤字（エラー）。
+              045a レビュー（表記ゆれ / 修正不要）: 下の「OBS に接続しています…」だけ半角スペースありで、上下の
+              新文言（「OBSに…」）と表記がゆれている。045a は可視文言リネームの範囲に絞る（CLAUDE.md「1 回 1 機能」）
+              ため今回は据え置き。再修正トリガー＝表記ゆれ一括タスクを起票したとき、または 045b でこの周辺を触るとき。 */}
           {obsState === "connecting" && (
             <span className={styles.note}>OBS に接続しています…</span>
           )}
           {(obsState === "added" || obsState === "reused") && (
-            <span className={styles.note}>
-              OBSにオーバーレイを表示しました。
-            </span>
+            <span className={styles.note}>OBSにコメントを表示しました。</span>
           )}
           {obsState === "failed" && (
             <span className={styles.errorText}>
@@ -378,7 +386,7 @@ export function SettingsView({
             onChange={onOverlayShowSourceChange}
           />
           <span className={styles.note}>
-            ON にすると、オーバーレイの各コメントに配信サービス名（Twitch /
+            ON にすると、OBSに表示する各コメントに配信サービス名（Twitch /
             YouTube）を小さく表示します。
           </span>
         </div>

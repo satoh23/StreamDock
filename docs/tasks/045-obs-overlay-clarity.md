@@ -3,7 +3,7 @@
 > 状態: **未着手（親設計・線引きの正）**。実装は [045a](045a-overlay-rename.md)（文言リネーム）→ [045b](045b-overlay-toggle-to-viewer.md)（表示トグル移設）の順を推奨（045a で文言を確定してから移設すると差分が読みやすい。逆順でも可）。
 >
 > **必読前提**: 開閉トグルの現状 [034d](034d-overlay-controls-in-settings.md)（トグルを設定ビューへ集約した決定＝本親で**部分反転**する）、
-> オーバーレイ意匠 [034e](034e-overlay-design-refresh.md)、OBS 自動追加 [044a](044a-obs-auto-source-impl.md)（「OBS へ自動追加（連携）」は設定に残す）、
+> オーバーレイ意匠 [034e](034e-overlay-design-refresh.md)、OBS 自動追加 [044a](044a-obs-auto-source-impl.md)（自動反映トグル＝045a 改名後「OBSに自動で反映する」は設定に残す）、
 > [`docs/security.md`](../security.md)（§1 外部通信／Capabilities 方針）。CLAUDE.md どおり **「実装して」まで変更せず、まず変更計画と対象ファイルを提示する**。
 > 本親配下は **frontend の表示・文言・配置変更のみ**（通信面・capability・依存・Rust を変えない）＝**軽レビュー**。
 
@@ -18,11 +18,14 @@
 
 ## 現在の前提（調査結果・実コード）
 
-- 表示トグルは**設定ビュー**にある: [`SettingsView.tsx`](../../apps/desktop/src/screens/comment-viewer/SettingsView.tsx) の「OBSオーバーレイ」カード（235-385 行）。
-  - カード見出し `OBSオーバーレイ`（236 行）／表示トグル「OBS オーバーレイを表示」（238-242 行・`overlayOpen`/`onOverlayToggle`）。
-  - ウィンドウキャプチャ注記（244-246 行）／Windows 限定注記（249-255 行）。
-  - **044a の「OBS へ自動追加（連携）」トグル（260-264 行）＋注記（266 行）＋状態表示（270-282 行）＋有効化ガイド（285-295 行）＋パスワード入力（299-340 行）**＝これらは設定に残す対象。
-  - 意匠設定（フォント 345-374 行／サイト名表示トグル 375-379 行＋注記 380-383 行）も設定に残す。
+> **文言・行番号は 045a 実装後（2026-07-28）の現物**。改名前の語（「OBSオーバーレイ」「OBS オーバーレイを表示」
+> 「OBS へ自動追加（連携）」）は**もうコードに存在しない**ので grep しても出ない。カード内の行番号も 045a で後ろへずれた。
+
+- 表示トグルは**設定ビュー**にある: [`SettingsView.tsx`](../../apps/desktop/src/screens/comment-viewer/SettingsView.tsx) の「コメントをOBSに表示」カード（237-393 行）。
+  - カード見出し `コメントをOBSに表示`（238 行）／表示トグル「コメントをOBSに表示」（245-249 行・`overlayOpen`/`onOverlayToggle`。直前 240-244 行に 045a レビューコメント）。
+  - ウィンドウキャプチャ注記（250-253 行・**OBS 実窓名リテラルを含む**）／Windows 限定注記（254-262 行）。
+  - **044a の「OBSに自動で反映する」トグル（267-271 行）＋注記（272-274 行）＋状態表示（276-290 行）＋有効化ガイド（292-303 行）＋パスワード入力（305-348 行）**＝これらは設定に残す対象。
+  - 意匠設定（フォント 350-382 行／サイト名表示トグル 383-387 行＋注記 388-391 行）も設定に残す。
 - state/ハンドラは [`CommentViewerApp.tsx`](../../apps/desktop/src/screens/comment-viewer/CommentViewerApp.tsx) が保持:
   `overlayOpen`（315 行）、`handleOverlayToggle`（731-745 行）、`handleObsAutoAddToggle`（749-765 行）、
   `requestObsAutoAdd`（711-723 行）、`requestObsHide`（727-729 行）。SettingsView へ props 受け渡し（795-820 行・`overlayOpen` 808 / `onOverlayToggle` 809）。

@@ -99,6 +99,8 @@
 - 045 OBSオーバーレイ 分かりやすさ改善（命名見直し＋表示トグル移設・親設計 [docs/tasks/045-obs-overlay-clarity.md](tasks/045-obs-overlay-clarity.md)／「OBSオーバーレイ」→「コメントをOBSに表示」＋表示トグルを本体へ・自動反映(044a)は設定に残置・**034d を部分反転**・frontend のみ）
   - 実装順: 045a → 045b
   - 045a 「OBSオーバーレイ」等の可視文言を「コメントをOBSに表示」系へ統一（OBS 実窓名リテラルは据え置き＝044a の窓名一致を壊さない・**軽レビュー**）
+    → **2026-07-28 実装済み＋レビュー対応済み**（`SettingsView.tsx` の可視文言 7 箇所・自動追加トグルも「OBSに自動で反映する」へ／実窓名 `StreamDock コメントオーバーレイ` は据え置き＝Rust/sidecar/UI の 3 者一致を実測で確認済み・**回帰テスト追加**／`SettingsView.obs.test.tsx` のアサート追従／セキュリティ判定＝問題なし／typecheck・lint・test(140) pass・実機確認は本人環境）
+    - レビュー対応で **045b・親 045 のタスクファイルの行番号と旧 label 参照を現物へ更新**（045a でカード内の行番号が +2 ずれたため。045b 着手前に必読）
   - 045b 表示/非表示トグルを本体ツールバーへ移設（`handleOverlayToggle`/`handleObsAutoAddToggle` の連動維持・自動反映は設定に残す・**軽レビュー**）
 - 046 固定コメント（ピン留め）＋専用オーバーレイ（親設計 [docs/tasks/046-pinned-comment-overlay.md](tasks/046-pinned-comment-overlay.md)／右クリックでコメントを上部固定＋**既存 comment-overlay とは独立した専用オーバーレイ窓**で OBS 固定表示・窓間伝達は localStorage＋storage イベントで完結＝新規 WS/emit/外部通信なし）
   - 実装順: 046a → 046b
