@@ -305,7 +305,8 @@ export function CommentViewerApp() {
   // 032c-b: チャンネル名は localStorage から復元し、変更のたびに保存する（窓を閉じても空欄化しない）。
   const [channel, setChannel] = useState(() => loadChannel());
 
-  // 034d: OBS オーバーレイ窓の開閉状態（設定ビューのトグル表示に使う。開＝ON / 閉＝OFF）。窓の実状態と同期させ、
+  // 034d: OBS オーバーレイ窓の開閉状態（045b でトグルの置き場所は本体ツールバーへ移設。開＝ON / 閉＝OFF）。
+  // 045b 後も state はこの窓に置いたまま（handleObsAutoAddToggle が未開判定に参照する）。窓の実状態と同期させ、
   // ①初期化・再マウント時に isCommentOverlayOpen() で同期 ②トグル操作後に更新する。
   // 034f（回帰修正）: 旧実装は comment-overlay 窓へ cross-window の onCloseRequested を張っていたが、これがあると
   // Tauri が close-requested を JS へ委譲し（core が prevent_close）、JS ラッパの destroy() が capability
@@ -326,9 +327,18 @@ export function CommentViewerApp() {
   // - obsAutoAdd: 「OBS へ自動追加（連携）」トグルの永続状態（非機密・localStorage）。パスワードは保存しない。
   // - obsState: sidecar からの obs.state 通知（connecting/added/reused/failed/idle）。UI の状態表示に使う。
   //   ※失敗時の技術的 reason（ECONNREFUSED 等）はユーザーに無意味なため UI では表示しない（reason は受けても捨てる）。
+  //   045c レビュー（union にしない / 修正不要）: sidecar には ObsState union（obs-client.ts）があるが、こちらは
+  //   string のまま置く。①同コンポーネントの sessionState / youtubeSessionState も useState<string> で慣習が揃う
+  //   ②ツールバーの `obsState === "failed"` を typo すると CommentViewerApp.toolbar.test.tsx の failed ケースが落ちる
+  //   ③そもそも受け口 CommentStreamHandlers.onObsState が (state: string) なので、ここだけ union にしても境界は
+  //   守られない。再修正トリガー＝viewer/sidecar で状態型を共有する（別タスク）とき。中途半端な union 化はしない。
   const [obsConfig, setObsConfig] = useState<ObsWsConfig | null>(null);
   const [obsAutoAdd, setObsAutoAdd] = useState(() => loadObsAutoAdd());
   const [obsState, setObsState] = useState<string>("idle");
+  // 045c レビュー（回帰）: 表示 ON で仕掛ける猶予タイマー（OBS_ENABLE_DELAY_MS）の id。取り消せるように保持する。
+  // 旧実装は id を捨てていたため、猶予中に表示 OFF / 自動反映 OFF にしても発火が止まらず、hideObs / disableObs の
+  // **後に** enableObs が飛んでいた（OBS 側で閉じた窓のソースが再表示され、ツールバーにも表示 OFF のまま赤字が残る）。
+  const obsEnableTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     saveChannel(channel);
@@ -345,6 +355,17 @@ export function CommentViewerApp() {
   useEffect(() => {
     void detectObsWebsocketConfig().then(setObsConfig);
   }, []);
+
+  // 045c レビュー: アンマウント時にも猶予タイマーを止める。streamRef が null 化されるので enableObs 自体は飛ばないが、
+  // 破棄済みツリーへ setObsState("failed") が走るのを避ける。ヘルパを参照せず ref だけ見るので deps は空でよい。
+  useEffect(
+    () => () => {
+      if (obsEnableTimerRef.current !== null) {
+        window.clearTimeout(obsEnableTimerRef.current);
+      }
+    },
+    [],
+  );
 
   // 033c: トグル状態を localStorage に永続化する（channel と同型）。再オープン・再起動で復元される。
   useEffect(() => {
@@ -698,7 +719,9 @@ export function CommentViewerApp() {
     if (enabled) void ttsRef.current?.resume();
   };
 
-  // 034d: 設定ビューのオーバーレイ開閉トグル（ON=開く / OFF=閉じる）。033f のオープン/クローズ挙動は不変で、
+  // 034d/045b: オーバーレイ開閉トグルのハンドラ（ON=開く / OFF=閉じる）。呼び出し元は 045b で設定ビューから
+  // **本体コメントビューのツールバー**へ移設した（034d の部分反転）が、このハンドラ自体は無変更で流用している。
+  // 033f のオープン/クローズ挙動は不変で、
   // Rust が透過・フレームレス・最背面・非フォーカスで生成し（open_comment_overlay_window）、閉じても sidecar は
   // 落とさない（表示専用・no-orphan kill 契機はコメビュ窓に集約のまま）。
   // 034f（回帰修正）: 旧実装の cross-window onCloseRequested 購読を撤去（購読があると OFF で Tauri が JS の destroy()
@@ -739,40 +762,66 @@ export function CommentViewerApp() {
     streamRef.current?.hideObs(obsConfig?.port ?? 4455);
   };
 
+  // 045c レビュー（回帰）: 仕掛かり中の猶予タイマーを取り消す。表示 OFF・自動反映 OFF・アンマウントで呼ぶ。
+  // 「ユーザーが OFF にしたのに、その後 enableObs が飛ぶ」を止めるのが目的（§1 の「明示的に有効化した時のみ接続」）。
+  const clearObsEnableTimer = () => {
+    if (obsEnableTimerRef.current !== null) {
+      window.clearTimeout(obsEnableTimerRef.current);
+      obsEnableTimerRef.current = null;
+    }
+  };
+
   const handleOverlayToggle = (next: boolean) => {
     if (next) {
       void openCommentOverlayWindow().then(() => {
         setOverlayOpen(true);
         // 044a: OBS 自動追加が ON なら、窓が OBS のウィンドウ一覧に載る猶予をおいてソース追加を要求する。
+        // 045c レビュー: 連打で二重に仕掛からないよう、張り直す前に既存を取り消す。
         if (obsAutoAdd) {
-          window.setTimeout(() => requestObsAutoAdd(), OBS_ENABLE_DELAY_MS);
+          clearObsEnableTimer();
+          obsEnableTimerRef.current = window.setTimeout(() => {
+            obsEnableTimerRef.current = null;
+            requestObsAutoAdd();
+          }, OBS_ENABLE_DELAY_MS);
         }
       });
     } else {
       void closeCommentOverlayWindow().then(() => setOverlayOpen(false));
+      // 045c レビュー: 猶予中に表示 OFF されたら反映要求ごと取り消す（hideObs の後に enableObs が飛ぶのを防ぐ）。
+      // 自動反映の ON/OFF に関わらず取り消してよい（OFF ならそもそも仕掛かっていない）。
+      clearObsEnableTimer();
       // 044a: 連携 ON のときは、表示 OFF で OBS 側のソースも非表示にする（削除はしない）。
-      if (obsAutoAdd) requestObsHide();
+      if (obsAutoAdd) {
+        requestObsHide();
+        // 045c: 表示 OFF＝OBS 側も非表示なので、直前の結果（connecting/added/failed）は実態と食い違う。idle へ戻し、
+        // ツールバーのエラー表示と設定カードの状態表示が消えるようにする（残留した赤字が誤解を生む）。
+        // sidecar 側も hide()/disable() で onState("idle") を返す（obs-client.ts）ので、これは先取りの echo であり
+        // 状態機械の非対称にはならない。WS が落ちていて通知が来ない場合にも実態へ合わせられる利点がある。
+        setObsState("idle");
+      }
     }
   };
 
-  // 044a: 「OBS へ自動追加（連携）」トグル。ON でオーバーレイ窓を（未開なら開いて）キャプチャ対象にし、OBS へ
-  // ウィンドウキャプチャソースを自動追加（既存なら再利用）する。OFF は連携を止める（OBS 側のソースは消さない）。
+  // 044a: 「OBS へ自動追加（連携）」トグル。ON の間、オーバーレイ表示 ON に連動して OBS へウィンドウキャプチャ
+  // ソースを自動追加（既存なら再利用）する。OFF は連携を止める（OBS 側のソースは消さない）。
+  // 045c（E2E 回帰修正）: 旧実装は「未開ならオーバーレイを開いてから追加」＝このトグル ON だけで表示まで ON に
+  // していた。044a 当時は表示トグルも同じ設定カードにあり「ワンクリックでソース追加まで到達」が筋だったが、
+  // 045b で表示トグルをツールバーへ移設したことで「設定を ON にしただけで配信画面に窓が開く」隠れた副作用に
+  // 変質した（E2E で発覚）。開く経路を削除し、ON は**設定を立てるだけ**にする。実際の反映は表示 ON 時に
+  // handleOverlayToggle が行う＝「表示（開閉）が主・自動反映は従」という親 045 の線引きに揃えた。
+  // なお ①ユーザー操作なしに窓が開く経路が 1 本減る ②OBS への接続契機は表示 ON の明示操作だけになる、の
+  // 2 点でセキュリティ上も後退しない（§1・宛先は loopback 127.0.0.1:4455 のまま不変）。
   const handleObsAutoAddToggle = (next: boolean) => {
     setObsAutoAdd(next);
     if (!next) {
+      // 045c レビュー: 猶予中に連携 OFF されたら反映要求ごと取り消す（disableObs の後に enableObs が飛ぶのを防ぐ）。
+      clearObsEnableTimer();
       streamRef.current?.disableObs();
       setObsState("idle");
       return;
     }
-    if (overlayOpen) {
-      requestObsAutoAdd();
-    } else {
-      // 未開ならオーバーレイを開いてから猶予をおいて追加（ワンクリックでソース追加まで到達させる）。
-      void openCommentOverlayWindow().then(() => {
-        setOverlayOpen(true);
-        window.setTimeout(() => requestObsAutoAdd(), OBS_ENABLE_DELAY_MS);
-      });
-    }
+    // 既に表示中なら猶予不要（窓は OBS のウィンドウ一覧に載っている）ので即反映する。未表示なら何もしない。
+    if (overlayOpen) requestObsAutoAdd();
   };
 
   // 044a: OBS WebSocket パスワードを保存する（認証有効な OBS 用）。Rust が §8 検証→keychain→sidecar へ私信。
@@ -816,8 +865,6 @@ export function CommentViewerApp() {
           selectedSpeakerId={selectedSpeakerId}
           onSpeakerIdChange={setSelectedSpeakerId}
           onPreview={(id) => previewRef.current?.play(id)}
-          overlayOpen={overlayOpen}
-          onOverlayToggle={handleOverlayToggle}
           overlayFont={overlayFont}
           onOverlayFontChange={setOverlayFont}
           overlayShowSource={overlayShowSource}
@@ -975,6 +1022,49 @@ export function CommentViewerApp() {
               </ConnectionCard>
             </div>
             <div className={styles.toolbarActions}>
+              {/* 045b: OBS への表示（開閉）トグル。034d で設定ビューへ集約していたが、配信中に頻繁に切り替える操作
+                  なのでここへ移設した（034d の部分反転・親 045 の線引き）。移設は **UI の位置だけ**で、state
+                  （overlayOpen）・ハンドラ（handleOverlayToggle）・自動反映との連動は設定ビュー時代のものをそのまま
+                  呼ぶ。VOICEVOX 読み上げの左＝右クラスタの先頭に置くのは、右寄せクラスタでは先頭挿入だけが既存
+                  （読み上げ/視聴者/設定）の画面位置を動かさないため。label は 045a 確定の自己完結型をそのまま使う。
+                  045b レビュー（接続状態がここに出ない）→ **045c で解消済み**（下の状態表示）。トリガーに挙げた
+                  「実機で自動反映 ON かつ OBS 未起動を試して困ると確認できたとき」が E2E で発火した。 */}
+              {/* 045c: OBS 連携の**失敗だけ**をこのツールバーで伝える。旧実装は obsState を SettingsView のカードに
+                  しか出しておらず、表示トグルがここへ移設された 045b 以降は「押した画面に何も出ない」状態だった。
+                  短文＋title で全文。
+                  045c レビュー（role="status" の効き / 今回は表示条件を変えない）: aria-live リージョンは**先に DOM に
+                  あって中身が後から変わる**ときに読み上げられるのが基本挙動で、ここはリージョンごと条件付きで
+                  マウントするため、環境によっては読み上げられない。**視覚表示が主目的**（配信中に赤字で気付ければ足りる）
+                  と割り切り、role は「操作を妨げない状態通知」の意味付けとして残す（alert にしないのも同じ理由）。
+                  常時マウントして中身だけ差し替える形にすると、空のときも .toolbarActions の gap が 1 つ分入って
+                  トグル位置が常時ずれるため、視覚を犠牲にしてまで採らない。再修正トリガー＝スクリーンリーダー利用者
+                  から「気付けない」と報告が来たとき。そのときは空文字のリージョンを常時置き、gap 側を調整する。
+                  045c 実機 E2E（進行表示の撤回）: 一度は connecting も「OBSに接続中…」として出したが、成功時は
+                  ほぼ一瞬で消えるためチラつきにしかならず UX が悪化した（本人確認）。**進行は出さない**方針に確定。
+                  成功（added/reused）も出さない＝配信中のツールバーを騒がしくしない。ユーザーが知る必要があるのは
+                  「反映されなかった」ときだけ、という整理。再修正トリガー＝接続に体感できる待ちが生じるようになり
+                  （例: OBS 側の応答が遅い環境が実機で見つかる）、無反応に見えると分かったとき。そのときは即時表示
+                  ではなく**一定時間 connecting が続いた場合だけ**出す（遅延表示）形にする＝チラつきは再発させない。 */}
+              {/* 045c レビュー（ゲート条件の非対称 / 修正不要）: ここは obsAutoAdd で絞るが SettingsView の状態表示は
+                  絞っていない。両者が等価なのは **連携 OFF 時に必ず obsState を idle へ戻す**（handleObsAutoAddToggle の
+                  OFF 分岐）という不変条件があるためで、粒度の違い（ここは失敗のみ／カードは全状態）とは別の話。
+                  再修正トリガー＝setObsState の呼び出し箇所が増えてこの不変条件が崩れたとき（そのときは派生値に
+                  切り出して両方から使う）。 */}
+              {obsAutoAdd && obsState === "failed" && (
+                <span
+                  className={styles.toolbarError}
+                  role="status"
+                  title="OBSに接続できませんでした。OBSが起動しているか確認してください。"
+                >
+                  OBSに接続できませんでした
+                </span>
+              )}
+              <ToggleSwitch
+                label="コメントをOBSに表示"
+                checked={overlayOpen}
+                onChange={handleOverlayToggle}
+                inline
+              />
               <ToggleSwitch
                 label="VOICEVOX読み上げ"
                 checked={ttsEnabled}

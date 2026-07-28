@@ -6418,3 +6418,276 @@ JSX は行頭インデントを除去して 1 スペースで結合するため�
 
 レビュー対応後の検証: `typecheck` / `lint` pass、`test` pass（13 files / **140 tests**・回帰テスト 1 本追加）。
 なお prettier はこのリポジトリの依存に無く（gate は `typecheck`/`lint`）、日本語は分割点が無いため長い注記行は 1 行のまま。
+
+## 2026-07-28 (045b OBS表示トグルをコメビュ本体ツールバーへ移設 ／ 034d の部分反転)
+
+親 [045](tasks/045-obs-overlay-clarity.md) の要望②（OBS への表示 ON/OFF を配信中にワンタッチで切り替えたい）に対し、
+表示（開閉）トグルを設定ビューのカードから**本体コメントビューのツールバー**へ移設（本人「実装して」）。
+一度きりのセットアップである**自動反映（044a）は設定カードに残置**。前提の 045a（文言リネーム）は `bd9131b` で適用済みで、
+移設したトグルの label は 045a が確定した「コメントをOBSに表示」を**そのまま流用**（本タスクで文言は作っていない）。
+
+### 移設は UI の位置だけ（ロジック無変更）
+
+`git diff` で確認済みのとおり、以下は**1 行も変更していない**:
+`handleOverlayToggle` 本体 / `handleObsAutoAddToggle` / `requestObsAutoAdd` / `requestObsHide` / `OBS_ENABLE_DELAY_MS` /
+マウント時の実窓同期 `isCommentOverlayOpen().then(setOverlayOpen)`。`overlayOpen` state も `CommentViewerApp` に置いたまま
+（`handleObsAutoAddToggle` が「未開なら開いてから追加」の判定に参照するため、ここから動かせない）。
+トグル用の新しい state・ハンドラ・Rust command・capability・依存は**一切追加していない**。`csp: null` 不変。
+
+### 移した範囲 / 残した範囲
+
+| | 置き場所 |
+|---|---|
+| 表示（開閉）トグル「コメントをOBSに表示」 | **本体ツールバー**（`CommentViewerApp.tsx` の `toolbarActions`） |
+| 自動反映トグル「OBSに自動で反映する」・状態表示・有効化ガイド・パスワード入力 | 設定カード（044a の領分・据え置き） |
+| 手動ウィンドウキャプチャ注記（OBS 実窓名リテラル）・Windows 注記・意匠設定 | 設定カード（据え置き） |
+
+### 判断したこと（レビュー時の参照用）
+
+- **配置は右クラスタの先頭**（VOICEVOX 読み上げの左）。`.toolbarActions` は右寄せなので、**先頭挿入だけが既存
+  （読み上げ／視聴者／設定）の画面上の位置を動かさない**。VOICEVOX の右へ足すと読み上げトグルだけがずれる。
+- **CSS は変更しない**。親 `.toolbar` に既に `flex-wrap: wrap` があり、窓の最小幅は 560px（`lib.rs:131`）。
+  追加後の右クラスタは実測見積り ≈470px＋padding 32px で収まる。`.switch` は `flex: none`、`.toggleLabel` は
+  `white-space: nowrap` を持たないため、仮に squeeze されてもラベル折り返しになり**横溢れはしない**。
+  再検討トリガー＝実機で溢れたら `.toolbarActions` に `flex-wrap: wrap` を 1 行足す。
+- **設定カードに導線注記を 1 行残した**（「表示の ON/OFF は、コメント画面の上部にある「コメントをOBSに表示」で
+  切り替えます。」）。トグルを抜くと設定画面だけを見ている人が ON にする場所を辿れなくなるため。文言中の
+  「コメントをOBSに表示」は移設先トグルの label と**同一文字列**にして指示語を避けている。
+- **コメントの追従は 3 箇所だけ**（042b 注記の先例に倣い、既存文は消さず追記）: `SettingsView.tsx` のカード先頭
+  コメント／`CommentViewerApp.tsx` の `overlayOpen` state コメント・`handleOverlayToggle` 直上コメント。
+  撤去された props（`overlayOpen` / `onOverlayToggle`）とその 034d コメント、045a のレビューコメント（label を
+  自己完結型にした理由）は、対象ごと消えるため書き換えていない。
+
+### テスト（`CommentViewerApp` 初のコンポーネントテスト）
+
+`SettingsViewProps` から 2 プロパティを消すと `SettingsView.obs.test.tsx` の `baseProps()` が**余剰プロパティ検査で
+typecheck を落とす**（タスクファイル未記載の落とし穴）。該当 2 行を削除し、**このファイルの検証対象＝044a の OBS 連携 UI と
+アサートは一切変えていない**。
+
+そのうえで新規 `CommentViewerApp.toolbar.test.tsx` を追加（本人判断で「足す」を選択）。`CommentViewerApp` は
+テストハーネスが無かったため、マウント時に走る外部境界を全てモックして隔離する新設ハーネスを書いた
+（**外部通信も OS 操作もしない**＝`vitest.config.ts` の方針どおり）:
+`windowApi`（検証対象）/ `obsApi` / `commentStream`（制御フレームをスパイできる偽 `CommentStreamHandle`）/
+`voicevox` / `voicevoxApi` / `ttsQueue`・`voicevoxPreview`（jsdom に AudioContext が無い）/ `viewerMemoryApi` / `useHostOs`。
+`clearMocks` は呼び出し履歴しか消さないため、`beforeEach` で `localStorage.clear()` と既定の解決値を明示的に戻している。
+
+ケース: ①描画と OFF 初期表示 ②OFF→ON で `openCommentOverlayWindow` ③マウント時の実窓同期（034d/034f の回帰）
+④ON→OFF で `closeCommentOverlayWindow` ⑤**移設の担保**（設定ビューに表示トグルが無く自動反映トグルは在る）
+⑥**044a の連動維持**（自動反映 ON で表示 OFF → `hideObs(4455)`＝削除せず非表示・`disableObs` は呼ばない）。
+⑥は指示範囲（描画・ハンドラ呼び出し）を一歩出るが、「絶対に守る境界」に挙がった連動をハーネス新設のついでに
+1 ケースで固定できるため入れた（本人に提示済み）。
+
+**3 種のミューテーションでレッドになることを確認**: (A) ツールバーのトグルを削除 → ①〜⑥ 全て fail、
+(B) `if (obsAutoAdd) requestObsHide()` を削除 → ⑥ のみ fail、(C) 設定カードにトグルを残す → ⑤ のみ fail。
+
+### 検証結果
+
+`typecheck` / `lint` pass、`test` pass（**14 files / 146 tests**・045a 時点の 140 から +6）。
+`git status -- apps/desktop/src-tauri/ apps/comment-sidecar/` は差分ゼロ（Rust・sidecar 無変更）。
+`CommentViewerApp.module.css` / `ToggleSwitch.tsx` も無変更。実機確認（`tauri dev`）は本人環境。
+
+### 据え置き（トリガー未発火）→ レビューで反転
+
+045a が残した「『OBS に』/『OBSに』の表記ゆれ」（`SettingsView.tsx` の `obsState === "connecting"` の状態表示）は、
+再修正トリガーに「045b でこの周辺を触るとき」とあったが、**本タスクは状態表示ブロックに触れていない**
+（触ったのは同カード上部のトグル撤去と導線注記のみ）ため据え置き、と当初判断した。
+→ **レビューで反転し、045b 内で解消した**（下記「レビュー対応」）。
+
+### レビュー対応（2026-07-28・セキュリティ＋品質）
+
+セキュリティ判定は **軽微な懸念あり（修正必須 0 件）**。差分に新規の `invoke(` / `fetch(` / `new WebSocket` / 外部 URL は
+1 つも無く、`apps/desktop/src-tauri/` と `apps/comment-sidecar/` は差分ゼロ、capabilities・`tauri.conf.json`（`csp: null`）・
+`package.json` / `pnpm-lock.yaml` / `Cargo.toml` も差分ゼロであることを実測で確認。窓名リテラル
+「StreamDock コメントオーバーレイ」の 3 者一致（`lib.rs:197` / `obs-client.ts:39,41` / `SettingsView.tsx`）も維持。
+新規テストの `vi.mock` 9 件と `CommentViewerApp.tsx` の import 一覧を突き合わせ、**塞ぎ漏れが無い**ことも確認した
+（未モックの到達可能モジュールは localStorage・純粋関数・副作用なし UI のみ）。
+
+**修正した 4 点**:
+
+- **偽 `CommentStreamHandle` を `satisfies` で実型に固定**。`vi.mock` のファクトリ戻り値はモジュール型と照合されない
+  ため、これが無いと `CommentStreamHandle` にメソッドが増えても typecheck が素通りし、実行時の
+  `is not a function` まで落ちなかった。ガードが効くことを検証済み（`hideObs` を削ると **TS1360**）。
+- **モックの export 面を実モジュールへ揃えた**（`windowApi` 3→5 / `voicevox` 2→6 / `viewerMemoryApi` 1→7 /
+  `ttsQueue` 1→2）。`vi.mock` はモジュールを丸ごと差し替えるため、書かなかった export は `undefined` になる。
+  今は誰も踏まないが、将来 `CommentViewerApp` 配下が直接 import すると**6 ケースが pass したまま**コンポーネントだけ
+  不正な既定値で動く。実体をスプレッドする `importOriginal` 方式は実 invoke / 実 fetch を復活させるので採らない。
+- **表記ゆれを解消**（「OBS に接続しています…」→「OBSに接続しています…」）。045b が同カードの本文を編集し、
+  4 行上の導線注記で「OBSに」表記を新たに増やした以上、045a のトリガーは**発火**と判断を改めた。
+  `SettingsView.obs.test.tsx:192` のアサートも追従（検証の意図は不変）。
+- **`SettingsView.tsx` のカード先頭コメントの事実記述を修正**。「1 つのトグルで開閉し…ON=開く / OFF=閉じる」は
+  移設後は誤りで、042b 流の追記だけだと読者が誤文を先に読む。先頭の事実記述のみ現状（手動キャプチャ手順＋
+  自動反映のセットアップを担う）へ書き換え、034d→045b の反転経緯は残した。ARIA レビューコメントは残る
+  自動反映トグルに対して依然有効なので保持（その旨を明記）。
+
+**再修正トリガーをコメント化した 4 点（今回は修正不要）**:
+
+- **接続状態がツールバーに出ない**: 自動反映が localStorage で ON のまま永続するため、設定ビューを開かずに
+  ツールバーのトグル ON だけで OBS への loopback WS 接続が走る。宛先（`127.0.0.1:4455` のみ）も契機
+  （過去の明示同意＋今の明示操作）も 044a から不変で**新規解禁ではない**が、`obsState` の状態表示は設定カードに
+  しか無いため OBS 未起動時の失敗が本体画面に出ない。状態表示の追加は新規 UI＝移設タスクの範囲外。
+  トリガー＝実機で「自動反映 ON かつ OBS 未起動」を試して困ると確認できたとき（`CommentViewerApp.tsx` に記載）。
+- **カード見出しと中身のずれ**: 見出し「コメントをOBSに表示」がカードに無いコントロール名を指している。改名は
+  045a の領分。トリガー＝次の文言タスク起票時（`SettingsView.tsx` に記載）。
+- **テストファイル名の粒度**（`.toolbar` より `.overlayToggle` が内容に忠実）: 資産はケースよりハーネス側にあり、
+  改名は docs 3 箇所の参照追従を伴う。トリガー＝トグル以外のツールバー仕様を足すとき。
+- **ハーネスを共有ファイルへ切り出すか**: 消費者 1 本の段階での抽出は投機的。トリガー＝2 本目のテストファイル。
+
+**②③④の個別ミューテーション（当初未実施）をレビューで補完**し、写経でないことを確認:
+`checked={overlayOpen}`→固定値で **4 fail**、`onChange`→no-op で **3 fail**、マウント同期の削除で **3 fail**、
+`hideObs` の既定ポート改変で **1 fail**。あわせて ⑥ のアサートを「`hideObs` が 1 回（`disableObs` は 0 回）」と
+「port 既定 4455」に分離し、主眼（削除せず非表示）と付随（既定ポート）の意図を読み分けられるようにした。
+
+**横幅の見積り**はレビュー側の独立試算（表示トグル 178 + 読み上げ 168 + アイコン 56 + gap 36 + padding 32 ≒ **470px**）と
+一致し、CSS 変更不要の結論も追認。ただし最小幅 560px で先に効くのは**ラベル折り返しではなく `.toolbar` の
+`flex-wrap: wrap` による 2 行化**（`.connCluster` も `flex-wrap: wrap` を持つ）。横溢れは起きず、実質変わったのは
+2 行化する窓幅が広がった点のみ。実機確認は引き続き有効。
+
+レビュー対応後の検証: `typecheck` / `lint` pass、`test` pass（**14 files / 146 tests**・ケース数は不変でアサートのみ追加）。
+
+## 2026-07-28 (045c E2E回帰修正: 自動反映は表示に従う ／ ツールバーに OBS 接続エラー)
+
+045b の実機 E2E で 2 件の問題が出たため修正（本人「実装して」）。**frontend のみ**・Rust / sidecar / capabilities /
+`tauri.conf.json`（`csp: null`）/ 依存はいずれも無変更で、外部通信の宛先追加も無い。
+
+### ① 自動反映 ON でオーバーレイまで勝手に開いてしまう
+
+原因は `handleObsAutoAddToggle` の `else` 分岐（未開ならオーバーレイを開いてから追加）。044a の
+「ワンクリックでソース追加まで到達させる」という意図的な設計だったが、**両トグルが同じ設定カードに並んでいた
+当時の前提**に依存していた。045b で表示トグルをツールバーへ移設した結果、「設定を ON にしただけで配信画面に
+窓が開く」隠れた副作用へ変質していた＝045b が作った回帰。
+
+窓を開く経路を削除し、ON は**設定を立てるだけ**にした。実際の反映は表示 ON 時に `handleOverlayToggle` が行う
+（既存コードで対応済み・無変更）。既に表示中に ON にした場合だけ猶予なしで即反映する。
+「表示（開閉）が主・自動反映は従」という親 045 の線引きに UI もロジックも揃った形。
+
+セキュリティ的にも後退しない（**むしろ改善**）: ①ユーザー操作なしに窓が開く経路が 1 本減る ②OBS への接続契機が
+表示 ON の明示操作だけになる。宛先は loopback `127.0.0.1:4455` のまま不変（§1・044a の例外条件を維持）。
+
+### ② OBS に接続できなくても本体画面が無反応
+
+045b レビューで指摘し、`CommentViewerApp.tsx` に再修正トリガー（「実機で自動反映 ON かつ OBS 未起動を試して
+困ると確認できたとき」）をコメント化していた件が、E2E で**発火**した。`obsState` は `SettingsView` のカードにしか
+描画されておらず、表示トグルがツールバーへ出た 045b 以降は「押した画面に何も出ない」状態だった。
+
+`toolbarActions` の先頭（表示トグルの左）に、`obsAutoAdd` が ON のときだけ状態を出す:
+
+| `obsState` | 表示 | クラス |
+|---|---|---|
+| `failed` | `OBSに接続できませんでした`（`title` に全文） | `.toolbarError`（12px / 700 / `--danger-text`） |
+| `connecting` / `added` / `reused` / `idle` | 出さない | — |
+
+- **進行表示（connecting）は一度実装したが実機 E2E で撤回した**。本人要望で「黙って接続中だと UX が悪い」として
+  `OBSに接続中…`（`.toolbarStatus` / `--muted`）を出す形で入れたが、成功時はほぼ一瞬で消えるため**チラつき**に
+  しかならず、かえって UX が悪化した（本人確認）。進行も成功も出さず、**ユーザーが知る必要があるのは「反映され
+  なかった」ときだけ**、という整理に確定。`.toolbarStatus` は未使用になったので CSS ごと削除した。
+  再修正トリガー＝接続に体感できる待ちが生じるようになり無反応に見えると分かったとき。そのときは即時ではなく
+  **一定時間 connecting が続いた場合だけ**出す遅延表示にする（チラつきを再発させない形）。
+- 先頭に置くのは 045b と同じ理由＝右寄せクラスタでは先頭挿入だけが既存要素の画面位置を動かさない。出現/消滅で
+  既存トグルがずれない。
+- `role="status"` で切り替わりを読み上げさせる（操作は妨げないので alert にはしない）。
+- 表示 OFF 時に `setObsState("idle")` を追加。表示 OFF＝OBS 側も非表示なので、直前の結果が残ると実態と食い違う
+  （赤字が残留して誤解を生む）。
+
+### ③ 文言（自動反映トグル）
+
+`OBSに自動で反映する` → **`「コメントをOBSに表示」ON時、OBSに自動で反映する`**（本人が (a)(b)(c) から (b) を選択）。
+旧 label は**このトグル単体で反映が起きる**とも読め、実際 044a の旧実装もそう動いていた（①）。鉤括弧内は移設先
+トグルの label と同一文字列（045a 確定・045b 導線注記と同じ流儀）にして指示語を避けている。
+直下の注記は新 label と重複する後半を削り「ONにすると、上の手動でのウィンドウキャプチャ追加が不要になります。」へ。
+
+### CSS: `.toolbarActions` に `flex-wrap` を追加（045b の再検討トリガーが先に成立）
+
+045b では右クラスタ ≈470px が最小幅 560px（`lib.rs:131` の `min_inner_size`）に収まり、溢れても親 `.toolbar` の
+`flex-wrap` がクラスタごと 2 行目へ落として吸収できるため CSS 無変更としていた（再検討トリガー＝「実機で溢れたら
+`.toolbarActions` に `flex-wrap: wrap` を足す」）。045c のステータス（最長「OBSに接続できませんでした」≈182px）で
+クラスタ単体が行幅を超えうるうえ、子は `.switch` も `.toolbarStatus`/`.toolbarError` も `flex: none` で縮まないため、
+nowrap のままだと**横溢れする**。`flex-wrap: wrap` + `justify-content: flex-end` + `gap: 8px 12px` を入れ、
+折り返した行も右寄せのまま保つようにした。
+
+### テスト（14 files / **150 tests**・146 から +4）
+
+label 追従 2 ファイル（`SettingsView.obs.test.tsx` / `CommentViewerApp.toolbar.test.tsx`）。
+`connectCommentStream` のモックを **handlers 捕捉型**に変更し、sidecar からの `obs.state` 通知をテストから
+再現できるようにした（捕捉箱は実型 `CommentStreamHandlers` で縛る＝ハンドラ名が変われば typecheck で落ちる）。
+
+新規 4 ケース（`describe("045c 自動反映は表示に従う（E2E 回帰）")`）:
+① 自動反映 ON でオーバーレイ窓を開かない（**回帰の本丸**・`enableObs` も出さない・本体へ戻ると表示 OFF のまま）
+② 自動反映 ON の状態で表示 ON → 猶予後に `enableObs(4455)`
+③ `connecting` / `added` / `reused` / `idle` のいずれでもツールバーに何も出さない（**進行表示を出さない仕様の固定**）
+④ `failed` で赤字＋`title` 全文が出て、表示 OFF で消える
+
+③は `/OBS/` の部分一致だと表示トグルの label（「コメントをOBSに表示」）を拾ってしまうため、状態表示の文字列を
+名指しで見ている。
+
+**ミューテーション 10 種で確認**（レッドになるべきものが全て独立に 1 ケースずつ落ちる）:
+(M1) 旧バグ（自動反映 ON で窓を開く）を復活 → ①のみ fail、(M4) 表示 OFF の `setObsState("idle")` を削除 → ④のみ fail、
+(M7) 猶予を撤去して即時呼び出し → ②のみ fail、(M8) 表示 ON 時の連動を削除 → ②のみ fail、
+(M9) **撤回した connecting 表示を復活** → ③のみ fail、(M10) failed 表示を削除 → ④のみ fail。
+**猶予の長さには非依存**であることも確認（M5: 1200→0 / M6: 1200→4000 のいずれも 150 pass）。044a 自身が
+「本待ちは sidecar の有界リトライへ移したので E2E で不要と分かれば撤去してよい」とした調整値なので、秒数を
+pin せず「遅延して必ず出る」という契約だけを固定する形にしてある。
+
+### 検証結果
+
+`typecheck` / `lint` pass、`test` pass（**14 files / 150 tests**）。`act()` 警告なし。
+`git status -- apps/desktop/src-tauri/ apps/comment-sidecar/` は差分ゼロ。実機での再 E2E は本人環境。
+
+### レビュー対応（2026-07-28・セキュリティ＋品質）
+
+セキュリティ判定は **軽微な懸念あり（修正必須 0 件）**。「接続契機が減った」という主張はレビュー側の実測で追認された:
+`openCommentOverlayWindow` の呼び出しは `handleOverlayToggle` の 1 箇所だけになり、`requestObsAutoAdd` の呼び出し元 3 箇所
+（表示 ON の猶予後 / 自動反映 ON かつ表示中 / パスワード保存後）はいずれもユーザー明示操作起点。マウント時に走るのは
+`isCommentOverlayOpen()` と read-only の `detectObsWebsocketConfig()` のみ。`src-tauri`・sidecar・capabilities・`csp: null`・
+依存はいずれも差分ゼロ、新規 `invoke(`/`fetch(`/`new WebSocket`/外部 URL もゼロ（`VOICEVOX_BASE` はモック用リテラル）。
+
+**044a の設計を壊していないことも文書で裏取りされた**: 044a のタスクファイルが規定する連動は「オーバーレイ ON →自動追加」の
+**一方向だけ**（044a の 32・51・85 行）で、削除した `else`（自動反映 ON →窓を開く）は**文書に無い実装上の追加**だった。
+045c は 044a の設計を壊すのではなく、**文書化された仕様へ実装を戻している**。この整理を親 045 の線引き節にも反映した。
+
+また `setObsState("idle")` の追加は **044a の状態機械と非対称ではない**ことが確認された。sidecar 側の `hide()` / `disable()` も
+`onState("idle")` を返す（`obs-client.ts:261,272,277`）ため、viewer の 1 行は**どのみち届く状態の先取り**にすぎず、
+WS が落ちて通知が来ない場合にも実態へ合わせられる分だけ堅牢になっている。
+
+**修正した 1 点（回帰・レビュー側が一時テストで再現を実測）**:
+
+- **猶予タイマー（`OBS_ENABLE_DELAY_MS`）を取り消せるようにした**。旧実装は `window.setTimeout` の id を捨てており、
+  猶予中に**表示 OFF** / **自動反映 OFF** にしても発火が止まらず、`hideObs` / `disableObs` の**後に** `enableObs` が飛んでいた。
+  結果 ①OBS 側で「閉じた窓」のキャプチャソースが再表示される ②**表示トグルが OFF のままツールバーに赤字が出る**
+  （＝045c がテスト④で仕様として固定した「表示 OFF で赤字が消える」の反例が作れる）③ユーザーが連携を切った直後に
+  loopback 接続要求が出る（§1「明示的に有効化した時のみ」との軽微な乖離）。**044a 由来の既存バグ**で 045c が作ったものでは
+  ないが、045c が初めてこの不変条件を明文化し、`obsState` を常時見えるツールバーへ出したことで表面化した。
+  `obsEnableTimerRef` に id を保持し、①表示 OFF ②自動反映 OFF ③再度の表示 ON（張り直し前）④アンマウントで取り消す。
+  回帰テスト 2 本追加（**14 files / 152 tests**）。ミューテーション（`clearObsEnableTimer()` の呼び出しを全て削除）で
+  **この 2 本だけが独立に落ちる**ことを確認済み。
+
+**再修正トリガーをコメント化した 5 点（今回は修正不要）**:
+
+- **`role="status"` の効き方**: aria-live リージョンは「先に DOM にあって中身が後から変わる」ときに読み上げられるのが基本挙動で、
+  リージョンごと条件付きマウントする現状では環境により読み上げられない。視覚表示が主目的（配信中に赤字で気付ければ足りる）と
+  割り切り role は意味付けとして残す。常時マウント化すると空のときも `.toolbarActions` の gap が 1 つ分入り、トグル位置が
+  常時ずれる。トリガー＝スクリーンリーダー利用者から「気付けない」と報告が来たとき。
+- **`obsState` を union にしない**: ①同コンポーネントの `sessionState` / `youtubeSessionState` も `useState<string>` で慣習が揃う
+  ②ツールバーの `obsState === "failed"` の typo は toolbar テストの failed ケースが落ちる ③受け口
+  `CommentStreamHandlers.onObsState` が `(state: string)` なので、ここだけ union にしても境界は守られない。
+  トリガー＝viewer/sidecar で状態型を共有する別タスクを起こすとき（中途半端な union 化はしない）。
+- **ゲート条件の非対称**: ツールバーは `obsAutoAdd &&` で絞り、設定カードは絞っていない。等価なのは「連携 OFF 時に必ず
+  `obsState` を idle へ戻す」という不変条件があるため。トリガー＝`setObsState` の呼び出し箇所が増えて崩れたとき。
+- **CSS の効き方の正確な記述**: 560px では実際にはクラスタ内の折り返しより先に親 `.toolbar` の `flex-wrap` が効くため、
+  `.toolbarActions` の `flex-wrap` は**二段目の保険**。また「先頭挿入だから既存トグルが動かない」は**1 行に収まる間だけ**成立し、
+  折り返す幅ではトグル群が 2 行目へ落ちる。いずれも横溢れはしない側なので許容。
+- **テスト③の vacuous 回避**: `emitObsState` の `?.` は捕捉が壊れても黙って no-op になり、否定ケースが「通知が届いていないから
+  通る」状態になりうるため、`expect(mocks.handlers.current).not.toBeNull()` を 1 行足した。③の名指しアサートが「別文言の
+  進行表示」を素通りさせる点は、防ぎたいのが**撤回した実装の復活**である以上現状で足りるとしてトリガーのみ記載。
+
+**テストの記述粒度も 1 点補正**: ケース②が固定しているのは「猶予の長さ」でも「遅延」でもなく、**`open` の解決と同じ
+マイクロタスクでは出さず、タイマー（マクロタスク）を経由して出る**という一点（秒数を 0 にしても 4000 にしても通り、
+同期呼び出しに変えたときだけ落ちる＝M5/M6/M7 の結果と整合）。あわせて `toHaveBeenCalledTimes(1)` を足し、二重発火する
+ミューテーションを素通りさせないようにした。
+
+**docs の食い違いも 2 点解消**: `task-board.md` の「ミューテーション 8 種」→ **10 種**（progress.md 側が正）、
+本節の見出し「ツールバーに OBS 連携ステータス」→ **「ツールバーに OBS 接続エラー」**（connecting 撤回後の実態に合わせる）。
+045c にタスクファイルが無い件は、E2E 由来の即時修正として妥当と判断しつつ、**設計判断（044a の連動の一方向を切る）を
+親から辿れるように親 045 の子タスク表と線引き節へ 045c を追記**した（タスクファイルは起こさない）。
+
+レビュー対応後の検証: `typecheck` / `lint` pass、`test` pass（**14 files / 152 tests**・回帰テスト 2 本追加）。`act()` 警告なし。
+`git status -- apps/desktop/src-tauri/ apps/comment-sidecar/` は差分ゼロのまま（対応も frontend に閉じている）。

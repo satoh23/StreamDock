@@ -1,6 +1,14 @@
 # 045b OBS表示トグルをコメビュ本体へ移設（自動反映は設定に残置）
 
-> 状態: **未着手（実装サブタスク）**。分割・線引きは親 [045](045-obs-overlay-clarity.md) を正とする。
+> 状態: **2026-07-28 実装済み**（記録は [`docs/progress.md`](../progress.md) の 045b 節）。分割・線引きは親 [045](045-obs-overlay-clarity.md) を正とする。
+>
+> 実装時の差分（このファイルの記載との違い）:
+> - 移設先は `toolbarActions` の **先頭**（VOICEVOX 読み上げの左）。右寄せクラスタでは先頭挿入だけが既存要素の画面位置を動かさないため。
+> - 設定カードには**移設先への導線注記を 1 行残した**（トグル撤去だけだと設定画面から ON にする場所を辿れなくなるため）。
+> - CSS は変更なし（親 `.toolbar` に既に `flex-wrap: wrap` があり、最小幅 560px に右クラスタ ≈470px が収まる）。
+> - `SettingsViewProps` から 2 プロパティを消すと `SettingsView.obs.test.tsx` の `baseProps()` が余剰プロパティ検査で
+>   typecheck を落とすため追従。あわせて **`CommentViewerApp.toolbar.test.tsx` を新規追加**（移設先の描画・開閉・
+>   マウント同期・移設の担保・044a 連動の 6 ケース）。
 >
 > **必読前提**: 親 [045](045-obs-overlay-clarity.md)、**トグルを設定へ集約した [034d](034d-overlay-controls-in-settings.md)（本タスクで部分反転）**、
 > 自動追加 [044a](044a-obs-auto-source-impl.md)（表示↔自動追加の連動を壊さない）、[`docs/security.md`](../security.md)（§1）。

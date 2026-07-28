@@ -47,9 +47,8 @@ interface SettingsViewProps {
   onSpeakerIdChange: (id: number) => void;
   // 034c: 話者/スタイル選択時にその声のサンプルを試聴する（中断切替は CommentViewerApp が持つ preview プレイヤーが担う）。
   onPreview: (styleId: number) => void;
-  // 034d: OBS オーバーレイ窓の開閉（開＝ON / 閉＝OFF）。state は CommentViewerApp が保持し、外部 close も購読で同期。
-  overlayOpen: boolean;
-  onOverlayToggle: (next: boolean) => void;
+  // 045b: 表示（開閉）トグルは本体コメントビューのツールバーへ移設したため、この設定ビューは overlayOpen /
+  // onOverlayToggle を受け取らない（034d の部分反転）。開閉 state・ハンドラは CommentViewerApp が保持したまま。
   // 034e: オーバーレイの意匠設定（フォント選択・サイト名表示）。値は CommentViewerApp が保持し localStorage 永続。
   // 実際の描画反映はオーバーレイ窓（OverlayApp）が同一 localStorage を storage 購読で受けて行う（この設定ビューは表示専用）。
   overlayFont: OverlayFontId;
@@ -79,8 +78,6 @@ export function SettingsView({
   selectedSpeakerId,
   onSpeakerIdChange,
   onPreview,
-  overlayOpen,
-  onOverlayToggle,
   overlayFont,
   onOverlayFontChange,
   overlayShowSource,
@@ -226,27 +223,33 @@ export function SettingsView({
         </div>
       </div>
 
-      {/* 034d/034(UI刷新): OBSオーバーレイカード。1 つのトグルで開閉し、現在の状態を配色＋aria-checked
-          （ToggleSwitch は role="switch"）で明示する。ON=開く / OFF=閉じる。オーバーレイは表示専用で、閉じても
-          sidecar は落とさない（no-orphan kill 契機はコメビュ窓に集約のまま）。
+      {/* OBSオーバーレイカード。045b 以降このカードが担うのは**手動ウィンドウキャプチャの手順**と
+          **自動反映（044a）のセットアップ**で、表示（開閉）トグルはここには無い（本体ツールバーへ移設済み）。
+          オーバーレイは表示専用で、閉じても sidecar は落とさない（no-orphan kill 契機はコメビュ窓に集約のまま）。
+          経緯: 034d/034(UI刷新) で開閉トグルをこのカードへ集約したが、045b で**部分反転**した。表示（開閉）は
+          配信中に頻繁に切り替えるので本体へ、一度きりのセットアップである自動反映や手動キャプチャ手順はここに
+          残す、という線引き（親 045）。ここには移設先への導線注記だけを置く。
           レビュー（ARIA 逸脱 / 修正不要）: 仕様は aria-pressed だが、switch ロールでは aria-checked が正しい等価
-          表現のため既存 ToggleSwitch を流用した。再修正トリガー＝トグルを switch でなく通常の押しボタン
-          （toggle button）に置き換えるなら aria-pressed へ戻す。
+          表現のため既存 ToggleSwitch を流用した。045b 後もカードに残る自動反映トグルが同じ ToggleSwitch なので
+          この判断は現役。再修正トリガー＝トグルを switch でなく通常の押しボタン（toggle button）に置き換えるなら
+          aria-pressed へ戻す。
           045a: 可視文言のみ「コメントをOBSに表示」へ改名した。窓 label `comment-overlay` と OBS 実窓名
-          「StreamDock コメントオーバーレイ」は据え置き（044a の自動追加が窓名一致で探すため・親 045 の線引き）。 */}
+          「StreamDock コメントオーバーレイ」は据え置き（044a の自動追加が窓名一致で探すため・親 045 の線引き）。
+          レビュー（見出しと中身のずれ / 今回は修正不要）: 045b でトグルが出ていったので、見出し
+          「コメントをOBSに表示」は**このカードに無いコントロール名**を指している（設定を探しに来た人が見出しで
+          見つけたと思い、中では「上部へ行け」と言われる導線）。改名は 045a の領分（可視文言リネーム）で、
+          CLAUDE.md「1 回 1 機能」に沿って移設タスクに混ぜない。再修正トリガー＝次に文言タスクを起票するとき。
+          そのとき「OBSへの反映（セットアップ）」等へ改め、見出し・導線注記・移設先ラベルの同一文字列衝突
+          （CommentViewerApp.toolbar.test.tsx が role="switch" で絞って回避している）も併せて解消する。 */}
       <div className={styles.card}>
         <div className={styles.cardHead}>コメントをOBSに表示</div>
         <div className={styles.cardBody}>
-          {/* 045a レビュー（見出しと同文 / 修正不要）: label をカード見出しと同じ文字列にしているのは、045b で
-              本体ツールバーへ移設しても単体で意味が通る自己完結型にするため（ツールバーの「VOICEVOX読み上げ」と
-              同じ流儀）＝移設時に再改名しなくて済む。見出しは div で見出し要素ではないため switch のアクセシブル名
-              とも競合しない。再修正トリガー＝045b の移設を取りやめてトグルをカード内に残すと決めた場合
-              （そのときは見出しかラベルのどちらかを変えて重複を解消する）。 */}
-          <ToggleSwitch
-            label="コメントをOBSに表示"
-            checked={overlayOpen}
-            onChange={onOverlayToggle}
-          />
+          {/* 045b: 表示トグルの移設先への導線。設定画面だけを見ている人が「どこで ON にするのか」を辿れるようにする。
+              文言中の「コメントをOBSに表示」は移設先トグルの label と同一文字列（045a 確定）にして指示語を避ける。 */}
+          <span className={styles.note}>
+            表示の ON/OFF
+            は、コメント画面の上部にある「コメントをOBSに表示」で切り替えます。
+          </span>
           <span className={styles.note}>
             OBSの「ウィンドウキャプチャ」で、コメント表示用のウィンドウ「StreamDock
             コメントオーバーレイ」を選ぶと、配信画面にコメントを重ねられます。
@@ -261,24 +264,28 @@ export function SettingsView({
             </span>
           )}
 
-          {/* 044a: OBS へ自動追加（連携）。ON で OBS に接続し、オーバーレイを「ウィンドウキャプチャ」ソースとして
+          {/* 044a: OBS へ自動追加（連携）。ON の間、オーバーレイを「ウィンドウキャプチャ」ソースとして OBS へ
               自動追加（既存なら再利用）する。手動でのウィンドウキャプチャ追加が不要になる。接続は loopback
-              （127.0.0.1:4455）のみ・ユーザーが ON にした時のみ。失敗時は上の手動手順にフォールバックする。 */}
+              （127.0.0.1:4455）のみ・ユーザーが ON にした時のみ。失敗時は上の手動手順にフォールバックする。
+              045c: label を「いつ反映されるのか」が読み取れる条件付きの文へ変更した。旧「OBSに自動で反映する」は
+              **このトグル単体で反映が起きる**ようにも読め、実際 044a の旧実装も ON だけでオーバーレイを開いて
+              いた（045c で削除）。鉤括弧内は移設先トグルの label と同一文字列（045a 確定）にして指示語を避ける。 */}
           <ToggleSwitch
-            label="OBSに自動で反映する"
+            label="「コメントをOBSに表示」ON時、OBSに自動で反映する"
             checked={obsAutoAdd}
             onChange={onObsAutoAddToggle}
           />
           <span className={styles.note}>
-            ONにすると、上の手動でのウィンドウキャプチャ追加が不要になり、コメントをOBSに表示するときにOBS側へ自動で反映します。
+            ONにすると、上の手動でのウィンドウキャプチャ追加が不要になります。
           </span>
 
           {/* 状態表示（idle 以外）。added/reused は「表示できた」ことだけ伝える（区別しない）。failed は赤字（エラー）。
-              045a レビュー（表記ゆれ / 修正不要）: 下の「OBS に接続しています…」だけ半角スペースありで、上下の
-              新文言（「OBSに…」）と表記がゆれている。045a は可視文言リネームの範囲に絞る（CLAUDE.md「1 回 1 機能」）
-              ため今回は据え置き。再修正トリガー＝表記ゆれ一括タスクを起票したとき、または 045b でこの周辺を触るとき。 */}
+              045a レビュー（表記ゆれ）→ **045b で解消済み**: 「OBS に接続しています…」だけ半角スペースありで他と
+              ゆれていた。045a は据え置き（再修正トリガー＝「045b でこの周辺を触るとき」）としていたが、045b が
+              同カードの本文を編集し、4 行上の導線注記で「OBSに」表記を新たに増やしたためトリガー発火と判断し、
+              「OBSに接続しています…」へ statement を統一した。以降このカードの可視文言は全て「OBSに」で揃う。 */}
           {obsState === "connecting" && (
-            <span className={styles.note}>OBS に接続しています…</span>
+            <span className={styles.note}>OBSに接続しています…</span>
           )}
           {(obsState === "added" || obsState === "reused") && (
             <span className={styles.note}>OBSにコメントを表示しました。</span>

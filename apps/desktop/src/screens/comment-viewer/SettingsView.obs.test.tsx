@@ -7,7 +7,8 @@ import { DEFAULT_OVERLAY_FONT } from "../../features/comment-viewer/overlaySetti
 /**
  * 044a: 設定ビューの OBS 連携 UI の仕様テスト。
  * あるべき挙動（docs/tasks/044a / docs/security.md §9）:
- * - 「OBSに自動で反映する」トグル（045a 改名前は「OBS へ自動追加（連携）」）を描画し、操作で onObsAutoAddToggle を呼ぶ。
+ * - 自動反映トグル（045a「OBS へ自動追加（連携）」→「OBSに自動で反映する」→ 045c で条件付きの現 label）を
+ *   描画し、操作で onObsAutoAddToggle を呼ぶ。
  * - OBS パスワード欄は **認証が必要なとき（authRequired=true）だけ**出す。未検出/認証不要では出さない。
  * - WS 未検出（null）/未有効（enabled=false）のときだけ有効化ガイドを出す。
  * - 保存ボタンは入力が空/空白のみのとき無効。保存で onSetObsPassword に入力値を渡し、**入力欄を即クリア**（§9）。
@@ -38,8 +39,9 @@ function baseProps(over: Partial<Props> = {}): Props {
     selectedSpeakerId: 0,
     onSpeakerIdChange: vi.fn(),
     onPreview: vi.fn(),
-    overlayOpen: false,
-    onOverlayToggle: vi.fn(),
+    // 045b: 表示（開閉）トグルは本体ツールバーへ移設したため、SettingsViewProps に overlayOpen /
+    // onOverlayToggle は無い（余剰プロパティ検査で typecheck が落ちるので残さない）。移設先の検証は
+    // CommentViewerApp.toolbar.test.tsx が担う。このファイルの検証対象（044a の OBS 連携 UI）は不変。
     overlayFont: DEFAULT_OVERLAY_FONT,
     onOverlayFontChange: vi.fn(),
     overlayShowSource: false,
@@ -60,8 +62,9 @@ describe("SettingsView OBS 連携", () => {
   it("OBS 自動追加トグルを描画し、操作で onObsAutoAddToggle を呼ぶ", () => {
     const props = baseProps();
     render(<SettingsView {...props} />);
+    // 045c: label は「いつ反映されるのか」が読み取れる条件付きの文（鉤括弧内は本体ツールバーの表示トグルと同一文字列）。
     const toggle = screen.getByRole("switch", {
-      name: "OBSに自動で反映する",
+      name: "「コメントをOBSに表示」ON時、OBSに自動で反映する",
     });
     expect(toggle).toHaveAttribute("aria-checked", "false");
     fireEvent.click(toggle);
@@ -188,7 +191,8 @@ describe("SettingsView OBS 連携", () => {
     const { rerender } = render(
       <SettingsView {...baseProps({ obsState: "connecting" })} />,
     );
-    expect(screen.getByText("OBS に接続しています…")).toBeInTheDocument();
+    // 045b: 「OBS に」→「OBSに」へ表記統一（045a が残した表記ゆれの解消）。検証の意図は不変。
+    expect(screen.getByText("OBSに接続しています…")).toBeInTheDocument();
     rerender(<SettingsView {...baseProps({ obsState: "added" })} />);
     expect(
       screen.getByText("OBSにコメントを表示しました。"),

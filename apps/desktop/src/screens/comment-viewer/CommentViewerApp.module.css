@@ -33,11 +33,36 @@
   border-bottom: 1px solid var(--border-soft);
 }
 
-/* 034(UI刷新): ツールバー右クラスタ（VOICEVOX 読み上げトグル＋設定ボタン）を右寄せで並べる。 */
+/* 034(UI刷新): ツールバー右クラスタ（VOICEVOX 読み上げトグル＋設定ボタン）を右寄せで並べる。
+   045c: flex-wrap を追加。045b で表示トグルを足した時点では右クラスタ ≈470px で最小幅 560px（lib.rs の
+   min_inner_size）に収まり、溢れても親 .toolbar の flex-wrap がクラスタごと 2 行目へ落として吸収できていた。
+   045c で OBS エラー表示（「OBSに接続できませんでした」≈182px）が加わるとクラスタ単体で行幅を超えうるが、
+   子は .switch も .toolbarError も flex: none で縮まないため、ここが nowrap のままだと横溢れする。
+   クラスタ内でも折り返せるようにし、折り返した行も右寄せのままにする（右クラスタとしての見えを保つ）。
+   045c レビュー（効き方の正確な記述）: 560px では実際にはここより先に親 .toolbar の flex-wrap がクラスタごと
+   2 行目へ落とすため、クラスタ内の折り返しは**さらに狭い場合の二段目の保険**。また「先頭挿入なので既存トグルの
+   位置が動かない」が成り立つのは **1 行に収まっている間だけ**で、折り返す幅ではエラーが 1 行目を占めトグル群が
+   2 行目へ落ちる（＝位置は動く）。いずれも横溢れはしない側の挙動なので許容する。 */
 .toolbarActions {
   display: flex;
   align-items: center;
-  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px 12px;
+}
+
+/* 045c: ツールバーの OBS 連携エラー（接続失敗）。設定ビューの .errorText は margin: 8px 16px 0 を持つカード用で
+   インラインには使えないため、専用クラスを置く。トグル label（13px/700）より一段小さくして状態表示だと分かる
+   ようにしつつ、太字で埋もれないようにする。色は役割トークンのみ＝両テーマ追従。
+   .switch と同じく flex: none で、狭窓の squeeze でも文字が潰れないようにする（溢れる分は .toolbarActions の
+   flex-wrap: wrap が受ける）。
+   進行中（connecting）用の対になるクラスは置かない: 一度は .toolbarStatus として出したが、成功時はほぼ一瞬で
+   消えチラつきにしかならないため撤回した（詳細と再修正トリガーは CommentViewerApp.tsx の該当箇所）。 */
+.toolbarError {
+  flex: none;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--danger-text);
 }
 
 /* 033b: 戻る（コメントへ）の文字グリフボタン。Sidebar の .toolActionBtn と同方式の role トークン。 */
