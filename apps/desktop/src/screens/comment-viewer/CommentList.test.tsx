@@ -3,6 +3,8 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import type { CommentViewDto } from "../../features/comment-viewer/types";
 import type { RecordResult } from "../../features/viewer-memory/types";
 import { CommentList } from "./CommentList";
+// 047b: ティア配色が実際に当たっているかを、CSS Modules のハッシュ名に依存せず検証するために引く。
+import { TONE_CLASS } from "./monetaryTone";
 
 /**
  * 038b フォローアップ: 流れるコメントをクリック→視聴者詳細を開くための onSelect の仕様テスト。
@@ -678,5 +680,131 @@ describe("CommentList 046a 右クリック固定メニュー", () => {
     fireEvent.click(screen.getByText("hello"));
     expect(onSelect).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("menu")).toBeNull();
+  });
+});
+
+/**
+ * 047b: 本体（default 変種）の課金コメント行を **YouTube スパチャ風のティア色カード**（ヘッダ帯＋ボディの
+ * 2 段構造）へ変えた。043b の赤枠＋琥珀バッジ 1 行構造からマークアップが変わるため、
+ * **既存の行の契約が壊れていないこと**をここで固定する。
+ *
+ * 仕様（こうあるべき）:
+ * - 課金行でも `onSelect`（クリック→視聴者詳細）と `onPin`（右クリック→固定メニュー）は従来どおり動く。
+ * - 初見/久しぶりの判定バッジは、カードのヘッダ帯の中に文言そのままで出る（器だけ差し替わる）。
+ * - chat 行はカード化されず従来どおり（回帰なし）。
+ */
+describe("CommentList 047b 課金コメントのティアカード", () => {
+  const superchat = (over: Partial<CommentViewDto> = {}) =>
+    makeComment({
+      id: "m1",
+      eventType: "superchat",
+      text: "応援してます",
+      monetaryAmount: "1,000 JPY",
+      monetary: { amount: 1000, currency: "JPY" },
+      ...over,
+    });
+
+  it("課金行でも onSelect が従来どおり動く（カード化で行のクリック契約が壊れていない）", () => {
+    const onSelect = vi.fn();
+    render(<CommentList comments={[superchat()]} onSelect={onSelect} />);
+    fireEvent.click(screen.getByText("応援してます"));
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect.mock.calls[0][0].id).toBe("m1");
+  });
+
+  it("課金行でも右クリックで固定メニューが開く（onPin の契約が壊れていない）", () => {
+    const onPin = vi.fn();
+    render(<CommentList comments={[superchat()]} onPin={onPin} />);
+    fireEvent.contextMenu(screen.getByText("応援してます"));
+    fireEvent.click(screen.getByText("上部に固定"));
+    expect(onPin).toHaveBeenCalledTimes(1);
+    expect(onPin.mock.calls[0][0].id).toBe("m1");
+  });
+
+  it("課金カードのヘッダにも初見バッジ・配信元・種別・金額が出る", () => {
+    render(
+      <CommentList
+        comments={[superchat()]}
+        badges={badgesOf({ m1: { firstTime: true, longAbsence: false } })}
+      />,
+    );
+    expect(screen.getByText("初見")).toBeTruthy();
+    expect(screen.getByText("Twitch")).toBeTruthy();
+    expect(screen.getByText("スーパーチャット")).toBeTruthy();
+    expect(screen.getByText("1,000 JPY")).toBeTruthy();
+    expect(screen.getByText("Alice")).toBeTruthy();
+  });
+
+  it("金額も本文も無い課金行でも壊れず、ヘッダだけで成立する（空ボディを作らない）", () => {
+    render(
+      <CommentList
+        comments={[
+          superchat({
+            text: "",
+            monetaryAmount: undefined,
+            monetary: undefined,
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText("Alice")).toBeTruthy();
+    expect(screen.getByText("スーパーチャット")).toBeTruthy();
+  });
+
+  // 【重要】これが無いと「tone クラスを当てない」ミューテーションが全テストをすり抜ける（＝配色が丸ごと
+  // 消えても気付けない）。CSS Modules のハッシュ名は TONE_CLASS 経由で引くのでハッシュに依存しない。
+  // 金額でクラスが**変わる**ことまで見るので、「常に t0」のような潰れ方も落ちる。
+  it("金額に応じてティア色クラスが変わる（¥100→t0 / ¥1,000→t3 / ¥10,000→t6）", () => {
+    const row = (amount: number, text: string) =>
+      superchat({
+        id: `m${amount}`,
+        text,
+        monetaryAmount: `${amount} JPY`,
+        monetary: { amount, currency: "JPY" },
+      });
+    render(
+      <CommentList
+        comments={[row(100, "ひゃく"), row(1000, "せん"), row(10000, "いちまん")]}
+      />,
+    );
+    expect(screen.getByText("ひゃく").closest("li")?.className).toContain(
+      TONE_CLASS.t0,
+    );
+    expect(screen.getByText("せん").closest("li")?.className).toContain(
+      TONE_CLASS.t3,
+    );
+    expect(screen.getByText("いちまん").closest("li")?.className).toContain(
+      TONE_CLASS.t6,
+    );
+  });
+
+  it("ティア非対象の種別は種別ごとの単色クラスになる（ビッツ / サブスク）", () => {
+    render(
+      <CommentList
+        comments={[
+          superchat({
+            id: "b1",
+            text: "びっつ",
+            monetaryAmount: "100 bits",
+            monetary: { amount: 100, currency: "BITS" },
+          }),
+          makeComment({ id: "s1", eventType: "subscription", text: "さぶすく" }),
+        ]}
+      />,
+    );
+    expect(screen.getByText("びっつ").closest("li")?.className).toContain(
+      TONE_CLASS.bits,
+    );
+    expect(screen.getByText("さぶすく").closest("li")?.className).toContain(
+      TONE_CLASS.subscription,
+    );
+  });
+
+  it("chat 行はカード化されない（従来どおり本文と名前だけ・回帰なし）", () => {
+    render(<CommentList comments={[makeComment({ text: "ふつうのコメント" })]} />);
+    expect(screen.getByText("ふつうのコメント")).toBeTruthy();
+    expect(screen.getByText("Alice")).toBeTruthy();
+    // 種別ラベルは chat には出ない（eventLabel が空文字へ劣化する）。
+    expect(screen.queryByText("スーパーチャット")).toBeNull();
   });
 });

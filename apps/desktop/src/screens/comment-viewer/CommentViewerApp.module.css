@@ -299,6 +299,24 @@
   border-radius: 10px;
   background: var(--surface);
   border: 1px solid var(--border-soft);
+  /* 047c(実機不具合・このリポジトリで 3 回目の同一バグ): .list / .pinnedBar は overflow-y:auto の flex 縦積み
+     なので、子が既定の flex-shrink:1 のままだと「スクロールさせる」前に「子を縮める」。chat 行は
+     overflow:visible ＝ flex 自動最小高さ（automatic minimum size）が内容高になるため実質縮まないが、047b で
+     入れた .item.itemTipCard は overflow:hidden ＝自動最小高さが 0 になり、**はみ出し分を独りで全部吸って潰れる**。
+     実機症状は「コメントが 1 件増えるたびに課金カードが約 40px ずつ縮み、最後は高さ 0 ＋ 上下 border だけの
+     ティア色の線になる」。子を縮ませず自然高を保たせ、超過分は .list のスクロール（034a の追従で最新へ）へ回す。
+
+     先例: OverlayComment.module.css の .item（043c 追修正・現象の説明もそこにある）／このファイルの .card（035c）。
+     **再発防止のルール**: .item に別意匠を重ねるクラス（.itemTipCard 等）で overflow を visible 以外にしたら、
+     必ずこの flex-shrink:0 が生きているか確認すること。047b は OBS のカード意匠（overflow:hidden 込み）を本体へ
+     移植した際、別 CSS モジュールだったためこのガードだけが付いてこず再発した。
+     **この 1 行はテストで守られていない**: vitest は jsdom でレイアウトを計算せず（getBoundingClientRect は
+     常に 0・CSS モジュールのクラスは識別子に置換されカスケードも走らない）、CSS ソースを読む形のガードテストも
+     `?raw` が CSS モジュールに効かない（Vite が先に処理して {} を返す）ため node:fs ＝ @types/node の追加が要る。
+     依存を増やさない判断でテストは入れていないので、**レビュー時は目視でここを確認すること**。
+     再修正トリガー: 課金カードだけに絞りたくなったら .item.itemTipCard 側へ移す（ただし OBS 側は .item に
+     置いているので、揃えるならこちらが正）。 */
+  flex-shrink: 0;
 }
 
 /* 038c: 初見/久しぶりのコメント行の枠色。該当時のみ .item の後に border-color を差し替える（同一詳細度→ソース順で
@@ -313,12 +331,106 @@
   border-color: var(--info);
 }
 
-/* 043b: お金がかかるイベント（chat 以外＝スパチャ/ビッツ/サブスク/メンシプ/ギフト/ドネーション/ジュエル）の赤枠強調。
-   初見/久しぶりより後に定義＝同一詳細度でソース順が勝つため、投げ銭を最優先で赤枠にする（お金の見逃し防止・要望④⑤）。
-   border-color を danger（赤）にし、inset shadow で 1px 分厚く見せてレイアウトをずらさず気付きやすくする。役割トークンのみ。 */
-.itemMonetary {
-  border-color: var(--danger);
-  box-shadow: inset 0 0 0 1px var(--danger);
+/* 047b: 課金コメント行の YouTube スパチャ意匠カード（色付きヘッダ帯＋同系の淡色ボディ）。
+   **043b の赤枠強調（旧 .itemMonetary）を置き換えたもの。** 赤枠は「お金＝赤」という 1 ビットしか伝えず、
+   実機で「見にくい／額が分からない」となったため、色そのものに金額の情報を持たせるティア配色へ移行した
+   （OBS オーバーレイの投げ銭カード＝OverlayComment.module.css の .card と同型・トークンも共有）。
+   chat 行は無装飾のまま（.item のみ）＝ここは課金行にだけ当たる。
+
+   .item の padding/background/border を打ち消すために**複合セレクタ**を使う。OverlayComment.module.css の
+   .card は同じ打ち消しを「.card が .item より後に定義されている」ソース順に依存して行っており、その
+   再修正トリガーに「順序非依存にするなら複合セレクタへ」と明記されている。同じ轍を踏まない。 */
+.item.itemTipCard {
+  padding: 0;
+  overflow: hidden; /* ヘッダ/ボディの角を .item の角丸でクリップする */
+  background: var(--surface);
+  border-color: color-mix(in srgb, var(--tone-bg) 45%, transparent);
+}
+
+/* ヘッダ帯：ティアの濃色＋その上で AA を満たす文字色（theme.css が tone ごとに決める）。
+   アイコン／名前／配信元・判定・種別バッジ／金額／combo を 1 行に収める。 */
+.tipHeader {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  background: var(--tone-bg);
+  color: var(--tone-fg);
+}
+
+/* ヘッダ内の投稿者名。色付き帯の上なので .author（muted）ではなく帯の文字色を継承する。
+   flex: 1 ＋ min-width: 0 で、右側のバッジ群を押し出しつつ長い名前は省略記号で丸める。 */
+.tipName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 800;
+  color: inherit;
+}
+
+/* ヘッダ上のアイコン（28px 丸）。036a のガードを通した data URI のときだけ背景画像に差し、
+   無ければ頭文字を出す（OverlayComment.module.css の .icon と同じ作法・サイズだけ本体向けに小さい）。 */
+.tipAvatar {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background-color: color-mix(in srgb, currentColor 22%, transparent);
+  background-size: cover;
+  background-position: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  color: inherit;
+  user-select: none;
+}
+
+/* ヘッダ上に乗るチップ（配信元／初見・久しぶり／種別ラベル／金額）。
+   .badge 系の役割トークン（accent/danger/warn…）は**無彩色の .item 背景を前提にした配色**で、ティアの
+   濃色帯の上では下地と喧嘩するか沈む。そこでヘッダ上では帯の文字色から自己導出する半透過チップに統一する
+   （濃色帯なら薄い白チップ＋白文字、明色帯なら薄い黒チップ＋暗文字へ自動反転）。 */
+.tipChip {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  white-space: nowrap;
+  color: inherit;
+  background: color-mix(in srgb, currentColor 20%, transparent);
+}
+
+/* 金額。ヘッダ右端で最も強く出す（配信者が一番見たい値）。 */
+.tipAmount {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+  color: inherit;
+  background: color-mix(in srgb, currentColor 24%, transparent);
+}
+
+/* ボディ：要約文言と本文。**--tone-body（白基準の淡色）は使わない**——あれは OBS 映像上で正しい値で、
+   ダークテーマの本体 UI に置くと白い板が浮く。テーマ追従トークン --surface へ向けて color-mix することで、
+   ライトでは淡色・ダークでは暗色の「ティアに色づいた面」へ自動で振れる。文字は通常の本文色のまま。 */
+.tipBody {
+  padding: 7px 10px;
+  background: color-mix(in srgb, var(--tone-bg) 14%, var(--surface));
+}
+
+/* 課金カードには 038c の枠色（初見/久しぶり）を当てない。ヘッダ帯の色が主信号で、枠まで別の意味を持つと
+   信号が競合するため。判定は .tipChip としてヘッダ内に出るので情報は落ちない。 */
+.item.itemTipCard.itemFirstTime,
+.item.itemTipCard.itemLongAbsence {
+  border-color: color-mix(in srgb, var(--tone-bg) 45%, transparent);
 }
 
 .meta {
@@ -362,20 +474,15 @@
   border-color: var(--info-border);
 }
 
-/* 043b: 課金イベントの種別ラベル（「サブスク」「メンバーシップ」「ギフト」「ドネーション」「スーパーチャット」「ビッツ」「ジュエル」）。
-   金額バッジ（.amount）と同じ warn（琥珀）系で「注目値」であることを示し、source バッジ（accent/danger）と色で分ける。 */
-.badgeEvent {
-  color: var(--warn-text);
-  background: var(--warn-soft);
-  border-color: var(--warn-border);
-}
-
 .author {
   font-size: 12px;
   font-weight: 700;
   color: var(--muted);
 }
 
+/* 視聴者詳細パネル（ViewerDetailPanel）の過去コメント行の金額バッジ。
+   047b: コメント一覧と固定帯の課金行は .tipAmount（ティア色帯の上）へ移ったので、**現在の参照元はここ 1 つだけ**。
+   無彩色の .item 背景を前提にした warn（琥珀）系なので、ティア色帯の上には流用しないこと。 */
 .amount {
   margin-left: auto;
   font-size: 11px;
@@ -385,16 +492,6 @@
   border: 1px solid var(--warn-border);
   border-radius: 6px;
   padding: 1px 6px;
-}
-
-/* 043e: Jewels の combo 回数（「×3」）。金額バッジ（.amount）の直後に添える観測用の小さな表示で、
-   バッジではないため枠・背景は付けず muted で控えめにする。金額が無い（jewels_amount 未設定）ときは
-   .amount の margin-left:auto が効かないぶん名前の直後に並ぶが、観測用途では実害がないため許容する。 */
-.combo {
-  margin-left: 4px;
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--muted);
 }
 
 .text {
@@ -1165,12 +1262,29 @@
   margin: 8px 0 0;
   padding: 0 16px 8px;
   border-bottom: 1px solid var(--border-soft);
+  /* 047c: 帯の中身（.item）の潰れは .item 側の flex-shrink:0 で止まるが、**帯自身**にも縮み止めが無かった。
+     この帯も .root（flex 縦積み）の子で overflow-y:auto ＝ flex 自動最小高さが 0 になるため、上部の段が窓高を
+     超えたときに縮むのは .commentSplit（flex-basis:0 ＝縮小配分の対象外）ではなくこの帯になり、固定した
+     コメントが帯ごと 0 まで潰れる。隣の .tickerBar が同じ理由で flex:none を持っているのに合わせる
+     （高さの上限は従来どおり下の max-height:22vh が持つので、帯が出ている間の見た目は変わらない）。
+
+     【レビュー Q-8・修正不要】この flex:none で**劣化の向きが変わる**ことは意図的。.tickerBar / .pinnedBar が
+     ともに flex:none、.commentSplit は flex:1（＝flex-basis:0 なので**スケール済み縮小係数が 0＝負の空きを
+     一切吸わない**）なので、上段の合計が窓高を超えると「縮む要素が無い」状態になり、固定帯が潰れる代わりに
+     一覧側が 0 高へ寄る。据え置く理由は**最小窓では到達しない**ため——この帯は max-height:22vh で上限され、
+     最小窓 520px なら約 114px、上段合計 286px に対し一覧に約 234px 残る（算術は docs/task-board.md の 047 節）。
+     「固定帯が潰れて中身が読めない」ほうが実害が大きいので、この向きが正しい。
+     再修正トリガー: **窓の最小高さを 520px より下げるとき**、または上段に段を追加するとき。
+     そのときはこの 22vh キャップと上段合計を再計算すること（超えるなら .pinnedBar の max-height を下げる）。 */
+  flex: none;
   max-height: 22vh;
   overflow-y: auto;
 }
 
 /* 帯の 1 件。基底は流れるコメント行と同じ .item（背景/枠/角丸・display は block）で、中身も一覧の行と同じ
-   .meta ＋ 要約文言 ＋ 本文の縦積み。課金コメントの赤枠（.itemMonetary）も一覧と同じく重ねられる。
+   構成。047b: 課金コメントは一覧と同じティア色カード（.itemTipCard ＋ tone クラス）を重ねる
+   （旧 .itemMonetary の赤枠から移行）。固定帯は「一覧の 1 行の再掲」なので、一覧だけ意匠を変えると
+   同じコメントが 2 つの見た目で出てしまうため追従させている。
    実機確認後の修正(2026-07-28): 「固定解除」ボタンを廃止して解除を右クリックメニューへ一本化したため、
    本文カラムとボタンの 2 カラム構成（display:flex ＋ .pinnedBody）を解消して単一カラムへ戻した。 */
 .pinnedItem {
@@ -1228,4 +1342,291 @@
 .contextMenuItem:focus-visible {
   outline: 2px solid var(--primary-soft-border);
   outline-offset: -2px;
+}
+
+
+/* ============================================================================
+   047 / 047b: 課金コメントの常時ティッカー（固定帯の上・コメント一覧より前）
+   ============================================================================
+   課金 0 件のときは MonetaryTicker が null を返すので、この機能を使わないユーザーにはレイアウトが完全に不変。
+
+   047b（構造変更・実機フィードバック）: 当初は帯全体が 1 つの `overflow-x: auto` で、その中に未読チップを
+   `position: sticky` で貼り付けていた。**これは原理的に破綻する**——チップは `border-radius: 999px` の角丸要素で、
+   角丸は bounding box の四隅を塗らないため、**下をスクロールするピルが四隅から必ず覗く**。`box-shadow` による
+   目張りは右側しか塞げず、左キャップの丸みは塞げない（チップ 16px 高に対しピル 21px 高で上下にもはみ出す）。
+   そこで**ラベルをスクロールコンテナの外へ出す** 2 ブロック構成にした。sticky も z-index も目張りも不要になり、
+   「何の欄か分からない」（ラベル不在）も同時に解消する。 */
+.tickerBar {
+  display: flex;
+  align-items: stretch;
+  /* 上部の段が窓高を超えたときに縮むのは .commentSplit（flex-basis: 0 で縮小配分の対象外）ではなくこちら側に
+     なるため、縦寄与を約 46px で固定する（レビュー Q-5）。 */
+  flex: none;
+  padding: 8px 16px;
+  gap: 10px;
+  border-bottom: 1px solid var(--border-soft);
+
+  /* 047e（レビュー Q-2）: ピルの寸法を決めるレイアウト用ローカル変数（色ではなく寸法。
+     OverlayComment.module.css の --icon-size / --icon-gap と同じ idiom）。047d の二次防御
+     `min-height` はここから **calc で導出**する＝「アバター径と縦 padding を手で同期すること」という
+     申し送りが構造的に不要になる（3 箇所の数値がこの 2 変数に集約される）。 */
+  --pill-avatar: 24px;
+  --pill-pad-y: 3px;
+}
+
+/* 固定ラベル。**スクロールしない**＝ピルが下を通り抜けることが構造的に起きない。
+   右の縦罫でトラックとの境目を示す（背景を敷いて誤魔化す必要がない）。 */
+.tickerLabel {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 10px;
+  border-right: 1px solid var(--border-soft);
+}
+
+.tickerLabelText {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* 未読件数。0 件のときだけ描かない（ラベル本体は常に出るので帯が無名にならない）。 */
+.tickerUnread {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  white-space: nowrap;
+  color: var(--danger-text);
+  background: var(--danger-soft);
+  border: 1px solid var(--danger-border);
+}
+
+/* 横スクロールするのはここだけ。min-width: 0 が無いと flex アイテムが内容幅まで広がり帯が横溢れする。 */
+.tickerTrack {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  /* 047b: ピル同士が詰まって見えるという指摘に対し 6px → 10px。 */
+  gap: 10px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  /* 047d(実機不具合): **横スクロールバーがこのトラックの内側を食う**のが不具合の本体だった。
+     実機症状は「ピルが横に溢れたちょうどその瞬間に帯とピルが細くなり、**ピルが四角くなった**。次のコメントで
+     元に戻った」。角丸（border-radius: 999px）は要素が小さくなれば比例縮小して丸いままなので、
+     **四角く見える＝上下を切り落とされている**＝クリップの signature だった。
+
+     機構: .tickerBar の align-items:stretch でこのトラックの高さは**外から**与えられる（＝帯の行 cross size）。
+     そこへ横スクロールバー（占有型で約 15px）が出ると帯は伸びず、content box だけが 30px→15px に減り、
+     上の overflow-y:hidden が 30px のピルを上下から切り落とす。「次のコメントで元に戻る」のは、
+     次のレイアウトではスクロールバーが最初から在る状態で高さが計算し直されるため。
+     ＝**帯の高さが「横に溢れているか」「何回目のレイアウトか」に依存してブレていた**。
+
+     ⚠ macOS の「スクロールバーを表示: 自動的に」は**マウス接続時に占有型へ切り替わる**設定で、
+     オーバーレイ表示を前提にはできない（依頼者の環境がこれ）。
+
+     対処＝スクロールバーを出さず縦を食わせない。これで帯の高さが溢れ状態から切り離される。
+     先例: OverlayApp.module.css の :global(html[data-overlay="1"] ol)::-webkit-scrollbar（同じ手）。
+     操作性は落とさない: ピルは実 <button> なので Tab で自動横スクロールし、トラックパッド/Shift+ホイールの
+     横スクロールも効く。右端で見切れたピルが「まだ続く」という affordance を担う（YouTube のティッカーも同じ）。
+     再修正トリガー: 実機で「もっと投げ銭があることに気づけない」となったら、スクロールバーを戻すのではなく
+     右端のフェードや件数表示など**縦を食わない** affordance を足す（戻すと同じ不具合が再発する）。 */
+  scrollbar-width: none;
+  /* 047d 二次防御: ピルの実高を下限として明示する。上の対処で通常は発火しないが、「高さが外から決まる箱が
+     overflow:hidden で中身を黙って切る」という構造自体は残るため、切られる状態に入れない床を置く。
+     047e（レビュー Q-2）: 旧実装は `30px` のマジックナンバーで「.tickerAvatar の 24px と .tickerPill の
+     縦 padding と対で動かすこと」という手動同期の申し送りが必要だった。.tickerBar のローカル変数から
+     **導出**することで、値の同期が構造的に保証される（変えるときは --pill-avatar / --pill-pad-y だけ触る）。 */
+  min-height: calc(var(--pill-avatar) + var(--pill-pad-y) * 2);
+}
+
+/* 047d: WebKit（WKWebView＝Tauri の実行環境）は scrollbar-width をまだ見ないので、こちらが実効。
+   上の .tickerTrack のコメントが理由の正。 */
+.tickerTrack::-webkit-scrollbar {
+  display: none;
+}
+
+/* ティッカーの 1 件（クリックで全文ダイアログ）。実 <button> なので Tab 移動・Enter/Space・フォーカス時の
+   自動横スクロールがブラウザ標準で付く。theme.css の button 既定が border: 0 なので枠は明示的に指定する。
+
+   047b: YouTube のティッカー厳守＝**ティア色で塗りつぶし、中身はアイコン＋金額だけ**。枠線＋無彩色背景＋
+   10px 文字（実高 21px）では「額が分からない・細くて見にくい」ため、色に金額の情報を持たせ寸法も上げた
+   （実高 ≈30px）。名前と種別はピルには出さず、クリックで開くダイアログと aria-label / title が担う。 */
+.tickerPill {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 220px;
+  /* 左はアイコンを縁いっぱいに寄せるので詰める（YouTube と同じ見え）。縦 padding と左 padding は
+     .tickerTrack の min-height 導出と同じ変数を使う（047e・レビュー Q-2）。 */
+  padding: var(--pill-pad-y) 12px var(--pill-pad-y) var(--pill-pad-y);
+  border-radius: 999px;
+  text-align: left;
+  background: var(--tone-bg);
+  color: var(--tone-fg);
+  border: 0;
+}
+
+/* 047e（レビュー Q-3）: hover は**背景輝度を動かさない**こと。旧実装の `filter: brightness(1.08)` は
+   トーンによって効果の向きが逆になる——明るいティア（水/緑/黄/橙＝暗文字）ではコントラストが上がるが、
+   暗いトーン（白文字）では下がる。実測で jewels が 4.53:1 → 約 3.98:1、subscription が 5.04:1 → 約 4.44:1 と
+   **hover 中だけ AA を割っていた**。個別に 2 色を暗くする手もあるが、それは「トーンを足すたびに再検証が要る」
+   ＝Q-2 と同じ手動同期の匂いなので、演出のほうを輝度非依存（リング）に変えて 13 トーンすべてを一度に解決する。
+   再修正トリガー: リングでは hover が弱いという UX 指摘が出たら、輝度ではなく彩度や影で強める（bg の明度は動かさない）。 */
+.tickerPill:hover {
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 3px var(--tone-bg);
+}
+
+/* フォーカスリングはティア色に埋もれないよう、帯の地色で 1 本抜いてから accent を重ねる。 */
+.tickerPill:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
+/* 既読＝減光＋✓。**色チャネルはティアが占有している**ので、既読/未読は明度と記号で示す
+   （047 当初は未読＝赤枠だったが、ティア配色と信号が競合するため 047b で移した＝
+   MonetaryTicker.tsx に書いてあった再修正トリガーどおりの反転）。 */
+.tickerPillRead {
+  opacity: 0.45;
+}
+
+.tickerPillRead:hover {
+  opacity: 0.7;
+}
+
+.tickerCheck {
+  flex: none;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  color: inherit;
+}
+
+/* アイコン（24px 丸）。036a のガードを通した data URI のときだけ背景画像に差し、無ければ頭文字。
+   下地はティア色なので、プレースホルダは帯の文字色から自己導出した半透過にする（両文字色で成立する）。 */
+.tickerAvatar {
+  flex: none;
+  /* 047e: .tickerTrack の min-height 導出と同じ変数（値の同期を構造で保証する・レビュー Q-2）。 */
+  width: var(--pill-avatar);
+  height: var(--pill-avatar);
+  border-radius: 999px;
+  background-color: color-mix(in srgb, currentColor 24%, transparent);
+  background-size: cover;
+  background-position: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  color: inherit;
+  user-select: none;
+}
+
+/* 金額（整形済みの monetaryAmount を verbatim 表示）。金額を持たない種別は種別語がここに入る。 */
+.tickerAmount {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 800;
+  color: inherit;
+}
+
+/* 047b: 全文ダイアログのティア色ヘッダ帯。ピルが塗りつぶしになったので、開いた先が無彩色だと繋がりが切れる。
+   .confirmDialog は padding: 0 なので帯がダイアログ幅いっぱいに出る（.confirmBody 側が内側の余白を持つ）。 */
+.monetaryDialogHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: var(--tone-bg);
+  color: var(--tone-fg);
+}
+
+.monetaryDialogName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 800;
+  color: inherit;
+}
+
+/* 047: 全文ダイアログの受信時刻。枠は .confirmDialog 一式を流用しており、ここだけ既存に対応するクラスが無い。 */
+.monetaryDialogTime {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* ----------------------------------------------------------------------------
+   047b: tone（配色キー）表。`viewerFormat.ts` の `monetaryTone()` が返すキー 1 つにつき 1 クラス。
+   役割ローカル var（--tone-bg / --tone-fg）を差し替えるだけで、上の .tipHeader / .tickerPill /
+   .monetaryDialogHeader と .tipBody（--tone-bg から color-mix でボディ色を導出）がそれを参照する。
+
+   **OverlayComment.module.css が同じクラス名・同じローカル var 名で同型の表を持つ**（OBS の投げ銭カード用）。
+   片方だけ tone を足すと配色が欠けるので、追加・変更するときは必ず両方を揃えること。
+   文字色は tone ごとに theme.css 側で決まっている（明るいティア＝水/緑/黄/橙は暗文字）。
+   本体側は --tone-body（白基準の淡色）を使わない＝ダークテーマで白い板が浮くため .tipBody で色を作る。
+   ---------------------------------------------------------------------------- */
+.toneT0 {
+  --tone-bg: var(--tip-t0-bg);
+  --tone-fg: var(--tip-t0-fg);
+}
+.toneT1 {
+  --tone-bg: var(--tip-t1-bg);
+  --tone-fg: var(--tip-t1-fg);
+}
+.toneT2 {
+  --tone-bg: var(--tip-t2-bg);
+  --tone-fg: var(--tip-t2-fg);
+}
+.toneT3 {
+  --tone-bg: var(--tip-t3-bg);
+  --tone-fg: var(--tip-t3-fg);
+}
+.toneT4 {
+  --tone-bg: var(--tip-t4-bg);
+  --tone-fg: var(--tip-t4-fg);
+}
+.toneT5 {
+  --tone-bg: var(--tip-t5-bg);
+  --tone-fg: var(--tip-t5-fg);
+}
+.toneT6 {
+  --tone-bg: var(--tip-t6-bg);
+  --tone-fg: var(--tip-t6-fg);
+}
+.toneBits {
+  --tone-bg: var(--tip-bits-bg);
+  --tone-fg: var(--tip-bits-fg);
+}
+.toneSubscription {
+  --tone-bg: var(--tip-subscription-bg);
+  --tone-fg: var(--tip-subscription-fg);
+}
+.toneMembership {
+  --tone-bg: var(--tip-membership-bg);
+  --tone-fg: var(--tip-membership-fg);
+}
+.toneGift {
+  --tone-bg: var(--tip-gift-bg);
+  --tone-fg: var(--tip-gift-fg);
+}
+.toneDonation {
+  --tone-bg: var(--tip-donation-bg);
+  --tone-fg: var(--tip-donation-fg);
+}
+.toneJewels {
+  --tone-bg: var(--tip-jewels-bg);
+  --tone-fg: var(--tip-jewels-fg);
 }

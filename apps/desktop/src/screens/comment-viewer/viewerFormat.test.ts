@@ -11,6 +11,9 @@ import {
   displayEventType,
   composeEventMessage,
   superchatTier,
+  monetaryTone,
+  avatarDataUri,
+  authorInitial,
 } from "./viewerFormat";
 
 /**
@@ -251,5 +254,132 @@ describe("viewerIdOf", () => {
   });
   it("author.id は trim して Rust 側の key と完全一致させる", () => {
     expect(viewerIdOf({ source: "twitch", author: { id: "  u1  " } })).toBe("twitch:u1");
+  });
+});
+
+/**
+ * 047b: 課金コメントの配色キー（tone）。
+ *
+ * 仕様（こうあるべき）:
+ * - スパチャ（実通貨）だけ**金額ティア** `t0..t6`。それ以外は種別ごとの単色キー。
+ * - ビッツは `eventType="superchat"` ＋ `currency="BITS"` で届くので、ティア表ではなく "bits" へ振り替わる。
+ * - 金額（monetary）を持たないスパチャは t0 の保険（043c から踏襲）。
+ * - chat / 未知種別も壊れず t0 へ劣化する（呼び出し側は isMonetaryEvent で絞ってから使う）。
+ *
+ * この関数は本体の一覧カード・上部ティッカー・全文ダイアログ・固定帯の 4 箇所と OBS の投げ銭カードが
+ * 共有する**単一の判定**なので、ここが崩れると 5 箇所の配色が同時に狂う。
+ */
+describe("monetaryTone 047b 課金コメントの配色キー", () => {
+  it("スパチャ（実通貨）は金額ティアになる（JPY 系の閾値表）", () => {
+    const sc = (amount: number) =>
+      monetaryTone({ eventType: "superchat", monetary: { amount, currency: "JPY" } });
+    expect(sc(100)).toBe("t0");
+    expect(sc(200)).toBe("t1");
+    expect(sc(500)).toBe("t2");
+    expect(sc(1000)).toBe("t3");
+    expect(sc(2000)).toBe("t4");
+    expect(sc(5000)).toBe("t5");
+    expect(sc(10000)).toBe("t6");
+  });
+
+  it("境界未満は最低ティア、上限超えは最上ティアへ飽和する（壊れない）", () => {
+    const sc = (amount: number) =>
+      monetaryTone({ eventType: "superchat", monetary: { amount, currency: "JPY" } });
+    expect(sc(50)).toBe("t0");
+    expect(sc(999999)).toBe("t6");
+  });
+
+  it("ビッツ（superchat + BITS）はティア表に落とさず bits へ振り替わる", () => {
+    expect(
+      monetaryTone({
+        eventType: "superchat",
+        monetary: { amount: 10000, currency: "BITS" },
+      }),
+    ).toBe("bits");
+  });
+
+  it("金額を持たないスパチャは t0 の保険へ落ちる", () => {
+    expect(monetaryTone({ eventType: "superchat" })).toBe("t0");
+  });
+
+  it("ティア非対象の課金種別は種別ごとの単色キーになる", () => {
+    expect(monetaryTone({ eventType: "subscription" })).toBe("subscription");
+    expect(monetaryTone({ eventType: "membership" })).toBe("membership");
+    expect(monetaryTone({ eventType: "gift" })).toBe("gift");
+    expect(monetaryTone({ eventType: "donation" })).toBe("donation");
+    expect(monetaryTone({ eventType: "jewels" })).toBe("jewels");
+  });
+
+  it("donation / jewels は実金銭でもティアにしない（ティアは YT 同様スパチャ専用）", () => {
+    expect(
+      monetaryTone({
+        eventType: "donation",
+        monetary: { amount: 20000, currency: "JPY" },
+      }),
+    ).toBe("donation");
+    expect(
+      monetaryTone({
+        eventType: "jewels",
+        monetary: { amount: 20000, currency: "JEWELS" },
+      }),
+    ).toBe("jewels");
+  });
+
+  it("chat / 未知種別は壊れず t0 へ劣化する", () => {
+    expect(monetaryTone({ eventType: "chat" })).toBe("t0");
+    expect(monetaryTone({ eventType: "unknown_future_type" })).toBe("t0");
+  });
+});
+
+/**
+ * 036a のガード（`avatarDataUri`）と頭文字フォールバック（`authorInitial`）。047b で `CommentList.tsx` の
+ * file-local から移設したもの。**外部 URL を webview に踏ませない最終防波堤**なので、移設で緩んでいないことを
+ * この層でも固定する（描画側の CommentList.test / MonetaryTicker.test でも別途見ている）。
+ */
+describe("avatarDataUri / authorInitial 036a のガード", () => {
+  it("data: 始まりだけ通し、それ以外（外部 URL・空・未定義）は undefined へ落とす", () => {
+    expect(avatarDataUri("data:image/png;base64,AAAA")).toBe(
+      "data:image/png;base64,AAAA",
+    );
+    expect(avatarDataUri("https://evil.example/a.png")).toBeUndefined();
+    expect(avatarDataUri("//evil.example/a.png")).toBeUndefined();
+    expect(avatarDataUri("")).toBeUndefined();
+    expect(avatarDataUri(undefined)).toBeUndefined();
+  });
+
+  // 047e（セキュリティレビュー S-A）: 呼び出し側は値を `background-image: url("${uri}")` へ補間する。
+  // `background-image` は**カンマ区切りの多層指定が正当な単一値**なので、`data:` で始まりつつ `"` を含む値は
+  // `url("data:…"), url("https://evil.example/x.png")` という 2 層背景を作れてしまい、2 層目が
+  // **本体窓からの実 egress** になる（csp: null なので img-src の網も無い）。ガードの存在意義そのものなので固定する。
+  it("data: 始まりでも url(\"…\") の文字列を閉じられる値は通さない（CSS 多層指定による外部 URL 混入を防ぐ）", () => {
+    // 実際の攻撃形: 引用符で文字列を閉じ、2 層目に外部 URL を足す。
+    expect(
+      avatarDataUri('data:image/png;base64,AAA"),url("https://evil.example/x.png'),
+    ).toBeUndefined();
+    // 文字列を閉じうる文字は単体でも弾く（引用符・バックスラッシュ・生の改行）。
+    expect(avatarDataUri('data:image/png;base64,AA"A')).toBeUndefined();
+    expect(avatarDataUri("data:image/png;base64,AA\\A")).toBeUndefined();
+    expect(avatarDataUri("data:image/png;base64,AA\nA")).toBeUndefined();
+    expect(avatarDataUri("data:image/png;base64,AA\rA")).toBeUndefined();
+  });
+
+  // ⚠ 過剰なブロックは「アバターが 1 枚も出ない」という別の壊れ方になる。`;` と `,` は**あらゆる data URI の
+  // 構造そのもの**なので、引用符の内側で無害なこれらを弾いてはいけない（初回実装で弾いてしまい全滅した）。
+  it("正常な data URI は通る（`;` `,` `/` `=` `+` を含んでも落とさない）", () => {
+    const png = "data:image/png;base64,AAAA";
+    expect(avatarDataUri(png)).toBe(png);
+    // converter（036b）が実際に emit する形（base64 は / + = を含みうる）。
+    const jpeg = "data:image/jpeg;base64,/9j/4AAQSkZJRg==";
+    expect(avatarDataUri(jpeg)).toBe(jpeg);
+    const webp = "data:image/webp;base64,UklGRh4A+AABBg==";
+    expect(avatarDataUri(webp)).toBe(webp);
+  });
+
+  it("頭文字はコードポイント単位で取る（絵文字始まりの表示名を壊さない）", () => {
+    expect(authorInitial("Alice")).toBe("A");
+    expect(authorInitial("  Bob ")).toBe("B");
+    // サロゲートペア（charAt(0) だと孤立サロゲート「�」になる）。
+    expect(authorInitial("😀ねこ")).toBe("😀");
+    expect(authorInitial("   ")).toBe("?");
   });
 });

@@ -41,8 +41,13 @@ export const MAX_COMMENTS = 200;
  * 変わった更新を取りこぼす）。どちらか一方に減らせるのは、Rust が対応する列を SET しなくなったときだけ。
  *
  * 再修正トリガー: repository.rs の UPDATE 対象列を増減したら、本関数の比較キーも必ず合わせること。
+ *
+ * 047: 課金ティッカーの蓄積（`screens/comment-viewer/monetaryFeed.ts`）も「同一 id の jewels を差し替えるか」を
+ * 同じ規則で判定する必要があるため **export した**（本関数の中身と `mergeComments` の意味論は不変）。
+ * 比較キーを 2 箇所へ複製すると、上の「比較キー ⊇ Rust が書き込む列」という不変条件が片方だけ静かに腐る
+ *（ティッカーの金額が combo 更新後も古いまま固まる、という気付きにくい壊れ方になる）ので**単一の真実**として共有する。
  */
-const hasComboPayloadChanged = (
+export const hasComboPayloadChanged = (
   prev: CommentViewDto,
   next: CommentViewDto,
 ): boolean =>

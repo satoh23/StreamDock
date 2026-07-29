@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  act,
+  within,
+} from "@testing-library/react";
 import { CommentViewerApp } from "./CommentViewerApp";
 import {
   OBS_AUTO_ADD_KEY,
@@ -13,6 +20,8 @@ import type {
   CommentStreamHandle,
   CommentStreamHandlers,
 } from "../../features/comment-viewer/commentStream";
+// 047（レビュー Q-2）: 受信バッチの分配テストで使う受信 DTO の型。
+import type { CommentViewDto } from "../../features/comment-viewer/types";
 
 /**
  * 045b: 本体コメントビューのツールバーへ移設した「コメントをOBSに表示」トグルの仕様テスト。
@@ -61,6 +70,9 @@ const mocks = vi.hoisted(() => ({
   // 044a の制御フレーム送信先。connectCommentStream の戻り値（CommentStreamHandle）を差し替える。
   // `satisfies` で実型に縛る: vi.mock のファクトリ戻り値はモジュール型と照合されないため、これが無いと
   // CommentStreamHandle にメソッドが増えても typecheck では気付けず、実行時の "is not a function" まで落ちない。
+  // 047（レビュー Q-2）: 受信バッチが `setComments` の updater 内まで到達していることを見るための安定スパイ。
+  // モックのファクトリ内で `vi.fn()` を直に書くとテストから参照できないため、ここへ出しておく。
+  recordComments: vi.fn(),
   stream: {
     disconnect: vi.fn(),
     startLogin: vi.fn(),
@@ -150,7 +162,7 @@ vi.mock("../../features/comment-viewer/voicevoxPreview", () => ({
 // 残り 6 つは ViewersView/ViewerDetailPanel 専用（本ファイルでは一度もマウントしない）だが、export 面を揃えておく。
 vi.mock("../../features/viewer-memory/viewerMemoryApi", () => ({
   recordComment: vi.fn(),
-  recordComments: vi.fn(),
+  recordComments: mocks.recordComments,
   listViewers: vi.fn(async () => []),
   getViewer: vi.fn(),
   updateViewerNote: vi.fn(async () => {}),
@@ -719,5 +731,97 @@ describe("046b 設定ビューの固定コメント表示トグル", () => {
     );
     // 固定側は実窓が無いので送らない（設定値ゲートのままなら 2 本目が飛んでレッドになる）。
     expect(mocks.stream.enableObs).not.toHaveBeenCalledWith(4455, "pinned");
+  });
+});
+
+/**
+ * 047（レビュー Q-2 で追加）: 受信バッチ（`onComments`）の分配。
+ *
+ * **なぜここに統合テストが要るのか**（本ファイル冒頭「配線はロジックを持たないので単体で足りる」の例外）:
+ * - 047 は `onComments` を**アロー式からブロック本体へ書き換えて** `setMonetary` を並べた。ここは
+ *   表示（`setComments`）・TTS（`enqueueForSpeech`）・保存（`recordComments`）の 3 系統がぶら下がる
+ *   単一注入点で、要素を 1 つ足すのとは危険度が違う。「毎バッチで両方の setState が呼ばれる」ことを
+ *   守るテストがどこにも無かった。
+ * - `monetaryFeed.test.ts` は `mergeMonetary` を直接呼ぶため、**`CommentViewerApp` 側を
+ *   `comments.filter(isMonetaryEvent)` に書き戻す退行を構造的に検出できない**（`mergeMonetary` は
+ *   そのまま存在し、誰も呼ばなくなるだけ）。本タスク最大の設計判断を守れるのはこの層だけ。
+ *
+ * TTS（`enqueueForSpeech`）は `ttsEnabledRef` で門番されており既定 OFF なので、updater 内の生存確認には
+ * 無条件に走る `recordComments` を使う（TTS の門番自体は 033 系のテストの担当）。
+ */
+describe("047 受信バッチの分配（一覧・課金ティッカー・視聴者記録）", () => {
+  /** テスト用の受信コメント 1 件（既定は通常チャット）。実 WS は張らないので捕捉した handlers を直接叩く。 */
+  const dto = (over: Partial<CommentViewDto> = {}): CommentViewDto => ({
+    id: "c1",
+    source: "youtube",
+    author: { id: "u1", name: "Alice" },
+    text: "こんばんは",
+    publishedAt: "2026-01-01T00:00:00Z",
+    eventType: "chat",
+    ...over,
+  });
+
+  function emitComments(comments: CommentViewDto[]) {
+    // 045c と同じ理由: `?.` で黙って no-op になると否定ケースが vacuous に通るため捕捉の生存を落とす。
+    expect(mocks.handlers.current).not.toBeNull();
+    act(() => mocks.handlers.current?.onComments(comments));
+  }
+
+  it("課金コメントは一覧とティッカーの両方へ流れ、視聴者記録の経路も生きている", () => {
+    renderApp(false);
+    emitComments([
+      dto({
+        id: "m1",
+        eventType: "superchat",
+        text: "応援してます",
+        monetaryAmount: "1,000 JPY",
+        monetary: { amount: 1000, currency: "JPY" },
+      }),
+    ]);
+
+    // setMonetary 側: ティッカーが出て金額が読める（`comments` から導出する実装へ戻すとここは通るが、
+    // 下の「200 件流れても消えない」で落ちる）。
+    // 047b: ピルは YouTube 厳守で**金額だけ**を見せるので、投稿者名は textContent ではなく aria-label で見る。
+    const ticker = screen.getByLabelText("課金コメント");
+    expect(ticker).toBeInTheDocument();
+    expect(ticker).toHaveTextContent("1,000 JPY");
+    expect(
+      within(ticker).getByRole("button", { name: /Alice/ }),
+    ).toBeInTheDocument();
+    // setComments 側: 一覧に本文が出ている＝updater が走った。
+    expect(screen.getByText("応援してます")).toBeInTheDocument();
+    // updater 内の保存経路も生きている（TTS の単一注入点と同じ `added` を受け取る側）。
+    expect(mocks.recordComments).toHaveBeenCalled();
+  });
+
+  it("通常チャットだけのバッチではティッカーが出ない（既存レイアウトが不変）", () => {
+    renderApp(false);
+    emitComments([dto()]);
+
+    expect(screen.getByText("こんばんは")).toBeInTheDocument();
+    expect(screen.queryByLabelText("課金コメント")).not.toBeInTheDocument();
+  });
+
+  it("通常チャットが 200 件クランプを超えて流れてもティッカーの投げ銭は消えない（本機能の存在理由）", () => {
+    renderApp(false);
+    emitComments([
+      dto({
+        id: "m1",
+        eventType: "superchat",
+        text: "初回スパチャ",
+        monetaryAmount: "5,000 JPY",
+        monetary: { amount: 5000, currency: "JPY" },
+      }),
+    ]);
+    // MAX_COMMENTS(=200) を優に超える量。`comments.filter(isMonetaryEvent)` で導出する実装だと、
+    // ここで一覧から m1 が押し出されてティッカーが空になる＝このケースがレッドになる。
+    emitComments(
+      Array.from({ length: 300 }, (_, i) => dto({ id: `c${i}`, text: `chat${i}` })),
+    );
+
+    // 一覧からは押し出されている＝ティッカーが一覧の派生ではないことの直接の証明。
+    expect(screen.queryByText("初回スパチャ")).not.toBeInTheDocument();
+    const ticker = screen.getByLabelText("課金コメント");
+    expect(ticker).toHaveTextContent("5,000 JPY");
   });
 });

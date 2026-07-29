@@ -105,6 +105,106 @@ export const superchatTier = (amount: number, currency: string): number => {
 };
 
 /**
+ * 047b: 課金コメント 1 件の**配色キー（tone）**。スパチャ（実通貨）は金額ティア、それ以外は種別ごとの単色。
+ *
+ * CSS クラス名ではなく**キー**を返すのは、この module の「React/CSS/DOM 非依存の純ロジック」という契約を守るため
+ *（呼び出し側の各 CSS モジュールが `Record<MonetaryTone, string>` でクラスへ引く）。**Record が全キーを網羅している
+ * ことは typecheck が保証する**ので、tone を足したときの当て漏れがコンパイルで落ちる。
+ */
+export type MonetaryTone =
+  | "t0"
+  | "t1"
+  | "t2"
+  | "t3"
+  | "t4"
+  | "t5"
+  | "t6"
+  | "bits"
+  | "subscription"
+  | "membership"
+  | "gift"
+  | "donation"
+  | "jewels";
+
+export interface MonetaryToneInput extends DisplayEventTypeInput {
+  monetary?: { amount: number; currency: string };
+}
+
+/** ティア非対象の課金種別 → tone。superchat は金額欠落時の保険で t0（043c の既存挙動と同じ）。 */
+const TYPE_TONE: Record<string, MonetaryTone> = {
+  superchat: "t0",
+  bits: "bits",
+  subscription: "subscription",
+  membership: "membership",
+  gift: "gift",
+  donation: "donation",
+  jewels: "jewels",
+};
+
+/**
+ * 047b: 課金コメントの配色キーを決める。043c で `CommentList.tsx` の中にインラインで書かれていた判定
+ *（`dtype === "superchat" && c.monetary ? TIER[superchatTier(...)] : TYPE[dtype] ?? TIER[0]`）を、
+ * ティッカー・一覧カード・全文ダイアログ・固定帯の 4 箇所で共有するためここへ引き上げたもの＝**複製を増やす
+ * のではなく既存の重複を解消している**。
+ *
+ * ビッツは `eventType="superchat"` ＋ `currency="BITS"` で届くので、先に `displayEventType` を通して
+ * "bits" へ振り替える（ティア表に落とさない）。donation/jewels は実金銭だが、YouTube 同様ティアは
+ * スパチャ専用なので種別単色のまま（043c の判断を踏襲）。chat/未知種別は t0 へ無害に劣化する
+ *（呼び出し側は `isMonetaryEvent` で絞ってから使うので通常は到達しない）。
+ */
+export const monetaryTone = (c: MonetaryToneInput): MonetaryTone => {
+  const dtype = displayEventType(c);
+  if (dtype === "superchat" && c.monetary) {
+    return `t${superchatTier(c.monetary.amount, c.monetary.currency)}` as MonetaryTone;
+  }
+  return TYPE_TONE[dtype] ?? "t0";
+};
+
+/**
+ * 036a の最終防波堤: **`data:` 始まりで、かつ `url("…")` に安全に埋め込める値のときだけ**アバターを画像として
+ * 扱う。036b/036c にバグで raw URL が漏れても webview に外部 URL を踏ませない（親 036・§CSP の不変条件）。
+ *
+ * 047b: `CommentList.tsx` の file-local だったものを移設。ティッカーのピルと一覧の課金カードが同じガードを
+ * 必要とするため、**2 実装に分裂させない**のが移設の主目的（片方だけ緩むと外部 URL を踏む経路が生まれる）。
+ *
+ * 047e（セキュリティレビュー指摘）: 従来は `startsWith("data:")` だけの**型ガード**だったが、呼び出し側は
+ * 値を `background-image: url("${uri}")` へ文字列補間する。React の style prop は CSSOM 経由なので `;` による
+ * **宣言**注入は弾かれるが、`background-image` は**カンマ区切りの多層指定が正当な単一値**なので、
+ * `data:` で始まりつつ `"` を含む値は
+ *   `url("data:…AAA"), url("https://evil.example/x.png")`
+ * という 2 層背景を作れてしまい、2 層目が**本体窓からの実 egress** になる（`csp: null` なので img-src の網も無い）。
+ * そこで**二重引用符で囲われた CSS 文字列から抜け出せる文字だけ**を弾く＝`"`（閉じ引用符）と `\`（エスケープ）、
+ * および CSS 文字列を不正終端させる生の改行。
+ *
+ * ⚠ `;` `,` `(` `)` や空白は**あえて弾かない**。これらは `url("…")` の**引用符の内側では単なる文字**で構文から
+ * 抜け出せないうえ、`data:image/png;base64,AAAA` が示すとおり **`;` と `,` はあらゆる data URI の構造そのもの**
+ * だから（弾くと正常なアバターが 1 枚も表示されなくなる＝実際に初回実装でこれをやり全アバターが落ちた）。
+ * 防ぐべきは「文字列を閉じられること」だけ。
+ *
+ * **層の分担は変えていない**——整形済み base64 data URI であることの保証は egress 集約点＝converter
+ *（`resolve-avatar-data-uri.ts` の `DATA_URI_RE`）の責務のままで、ここは「補間先の構文から抜け出せないこと」
+ * だけを見る。MIME 許可リストをこちらへ複製すると 2 箇所でポリシーがドリフトするため、あえて持たない。
+ * 再修正トリガー: アバターの埋め込み先が `url("…")` 以外（`<img src>`・シングルクォート・引用符なしの url() 等）へ
+ * 変わったら、その構文に合わせて禁止文字集合を決め直すこと（引用符なし url() では `)` と空白も危険になる）。
+ */
+const URL_STRING_BREAKOUT = /["\\\r\n]/;
+
+export const avatarDataUri = (avatar?: string): string | undefined =>
+  avatar?.startsWith("data:") && !URL_STRING_BREAKOUT.test(avatar)
+    ? avatar
+    : undefined;
+
+/**
+ * アバター画像が無いときのフォールバック頭文字。配信コメントの表示名は絵文字始まりが多いため、
+ * `charAt(0)`（UTF-16 コードユニット＝サロゲートペアを分割し孤立サロゲート「�」になる）ではなく
+ * コードポイント単位（`[...s]`）で先頭 1 文字を取り、絵文字先頭でも壊さない。
+ *
+ * 047b: `avatarDataUri` と同じ理由で `CommentList.tsx` から移設（対で使うため片方だけ残さない）。
+ * ※`features/tools` の `toIconLetter` は入力特性（アプリ名・iconLabel 前提）が異なる別系統なので統合しない。
+ */
+export const authorInitial = (name: string): string => [...name.trim()][0] ?? "?";
+
+/**
  * 043b: 金額を持たない課金イベント（サブスク/メンシプ/ギフト）を「〇〇さんが…しました」の日本語文へ組み立てる。
  * 金額を持つ種別（superchat/bits/donation/jewels）や chat/未知は null を返し、呼び出し側は種別ラベル＋金額バッジ＋
  * 本文で表示する（重複した金額文言を避けるため文は作らない）。純関数（DOM/CSS 非依存・端末外へ出さない）。

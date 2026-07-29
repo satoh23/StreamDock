@@ -3,11 +3,14 @@ import type { CommentSource } from "../../features/comment-viewer/types";
 import type { PinnedComment } from "../../features/comment-viewer/pinnedComments";
 import styles from "./CommentViewerApp.module.css";
 import { CommentContextMenu } from "./CommentContextMenu";
+import { TONE_CLASS } from "./monetaryTone";
 import {
+  authorInitial,
   composeEventMessage,
   displayEventType,
   eventLabel,
   isMonetaryEvent,
+  monetaryTone,
   providerLabel,
 } from "./viewerFormat";
 
@@ -28,6 +31,12 @@ import {
  * 一覧側の行を右クリックしても解除できる（`onPin` がトグル）が、一覧は `MAX_COMMENTS`(=200) でクランプされるため
  * 固定したコメントが流れ去ると**右クリックする対象そのものが消えて解除できなくなる**。帯の側にも同じメニューを
  * 出すことでこの詰みを防ぐ。メニュー UI は `CommentList` と同じ `CommentContextMenu` を再利用する（新規依存なし）。
+ *
+ * 047b: 課金コメントの固定は**一覧と同じティア色カード**（`.itemTipCard` ＋ tone クラス）で描くようになった。
+ * 固定帯は「一覧の 1 行の再掲」なので、一覧だけ意匠を変えると**同じコメントが 2 つの見た目で出てしまう**ため
+ * 追従させている。**ただしアイコンは出さない**——046a は localStorage に data URI を載せないため `toPinned` が
+ * `author.avatar` を意図的に落としており、固定帯には画像が存在しない（頭文字のみで描く）。
+ * `pinnedComments.ts`（保存形・キー・上限・046b の読み手契約）は 047b でも**一切変更していない**。
  */
 
 /** 配信元バッジの色分けクラス（`CommentList` の `SOURCE_CLASS` と同型）。Record で持つので
@@ -63,7 +72,8 @@ export function PinnedCommentBar({ pinned, onUnpin }: PinnedCommentBarProps) {
           const typeLabel = eventLabel(displayEventType(p));
           const eventMessage = composeEventMessage(p);
           const itemClasses = [styles.item, styles.pinnedItem];
-          if (isMoney) itemClasses.push(styles.itemMonetary);
+          if (isMoney)
+            itemClasses.push(styles.itemTipCard, TONE_CLASS[monetaryTone(p)]);
           return (
             <div
               key={p.id}
@@ -83,27 +93,52 @@ export function PinnedCommentBar({ pinned, onUnpin }: PinnedCommentBarProps) {
                 });
               }}
             >
-              <div className={styles.meta}>
-                <span className={`${styles.badge} ${styles.badgePinned}`}>
-                  固定
-                </span>
-                <span className={`${styles.badge} ${SOURCE_CLASS[p.source]}`}>
-                  {providerLabel(p.source)}
-                </span>
-                {typeLabel && (
-                  <span className={`${styles.badge} ${styles.badgeEvent}`}>
-                    {typeLabel}
-                  </span>
-                )}
-                <span className={styles.author}>{p.author.name}</span>
-                {p.monetaryAmount && (
-                  <span className={styles.amount}>{p.monetaryAmount}</span>
-                )}
-              </div>
-              {eventMessage && (
-                <p className={styles.eventMessage}>{eventMessage}</p>
+              {isMoney ? (
+                <>
+                  {/* 047b: 一覧の課金カードと同じヘッダ帯。アイコンは頭文字のみ（046a が avatar を保存しない）。 */}
+                  <div className={styles.tipHeader}>
+                    <span className={styles.tipAvatar} aria-hidden="true">
+                      {authorInitial(p.author.name)}
+                    </span>
+                    <span className={styles.tipName}>{p.author.name}</span>
+                    <span className={styles.tipChip}>固定</span>
+                    <span className={styles.tipChip}>
+                      {providerLabel(p.source)}
+                    </span>
+                    {typeLabel && (
+                      <span className={styles.tipChip}>{typeLabel}</span>
+                    )}
+                    {p.monetaryAmount && (
+                      <span className={styles.tipAmount}>
+                        {p.monetaryAmount}
+                      </span>
+                    )}
+                  </div>
+                  {(eventMessage || p.text) && (
+                    <div className={styles.tipBody}>
+                      {eventMessage && (
+                        <p className={styles.eventMessage}>{eventMessage}</p>
+                      )}
+                      {p.text && <p className={styles.text}>{p.text}</p>}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <>
+                  <div className={styles.meta}>
+                    <span className={`${styles.badge} ${styles.badgePinned}`}>
+                      固定
+                    </span>
+                    <span
+                      className={`${styles.badge} ${SOURCE_CLASS[p.source]}`}
+                    >
+                      {providerLabel(p.source)}
+                    </span>
+                    <span className={styles.author}>{p.author.name}</span>
+                  </div>
+                  {p.text && <p className={styles.text}>{p.text}</p>}
+                </>
               )}
-              {p.text && <p className={styles.text}>{p.text}</p>}
             </div>
           );
         })}

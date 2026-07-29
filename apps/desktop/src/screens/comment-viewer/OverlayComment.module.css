@@ -4,8 +4,10 @@
    の :global ルール）で、吹き出しだけがほぼ純白＝OBS ウィンドウキャプチャで背景が抜ける（033f/034b の合成挙動を壊さない）。
    色はすべて theme.css の --overlay-* トークン経由（このファイルに生 hex/rgba を残さない）。名前の縁取りは多重
    text-shadow（白）で作る。フォントサイズ等の px は OBS 取り込み時の可読性優先で、tauri dev で目視調整する前提の初期値。
-   043c: chat 以外（投げ銭）は末尾の YouTube スパチャ風カード（.card 一式）で描く。カードも不透明色（--overlay-tip-*）
-   なので窓透過は不変。カード用の色トークンも生 hex/rgba を残さず --overlay-tip-* 経由で参照する。 */
+   043c: chat 以外（投げ銭）は末尾の YouTube スパチャ風カード（.card 一式）で描く。カードも不透明色（--tip-*）
+   なので窓透過は不変。カード用の色トークンも生 hex/rgba を残さず --tip-* 経由で参照する。
+   047b: このカード配色は本体 UI（コメント一覧の課金カード／上部の課金ティッカー）と**共有**になったため、
+   トークンの接頭辞が --overlay-tip-* から --tip-* へ変わっている（OBS 専用の --overlay-name-* 等はそのまま）。 */
 
 /* 1 コメント＝名前行（上）とアイコン｜吹き出し行（下）の縦積み。
    レイアウト用ローカル変数（色トークンではなく寸法）: --icon-size=アイコン径 / --icon-gap=アイコン⇔吹き出しの間隔。
@@ -173,9 +175,9 @@
 
 /* 043c: 投げ銭カード（YouTube スパチャ風・色付きヘッダ帯＋淡色ボディ）。chat 以外の課金コメントに .item と併せて当てる
    （chat は上の吹き出しのまま・非変更）。カードは不透明（ヘッダ/ボディとも不透明色）なので窓透過を壊さない（.bubble と
-   同原理・OBS ウィンドウキャプチャで背景は抜けカードのみ合成）。色はすべて theme.css の --overlay-tip-* トークン経由。
-   ティア/種別クラス（.tier0..tier6 / .tipBits ほか）が役割 var（--tip-header-bg / --tip-header-fg / --tip-body-bg）を
-   差し替え、.cardHeader/.cardBody がそれを参照する。px は tauri dev で微調整前提の初期値。 */
+   同原理・OBS ウィンドウキャプチャで背景は抜けカードのみ合成）。色はすべて theme.css の --tip-* トークン経由。
+   tone クラス（.tier0..tier6 / .tipBits ほか）が役割 var（--tone-bg / --tone-fg / --tone-body）を
+   差し替え、.cardHeader/.cardBody/.amountBadge がそれを参照する。px は tauri dev で微調整前提の初期値。 */
 .card {
   overflow: hidden; /* ヘッダ/ボディの角をカード角丸でクリップ */
   border-radius: 12px; /* 043c 追修正(本人フィードバック): 課金カードの角を少し丸く。18px は丸すぎたため 12px に減らす（chat 吹き出し 14px よりわずかに控えめ） */
@@ -196,8 +198,8 @@
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
-  background: var(--tip-header-bg);
-  color: var(--tip-header-fg);
+  background: var(--tone-bg);
+  color: var(--tone-fg);
 }
 
 /* ヘッダ内ユーザー名：色付きヘッダ上なので白縁取りは付けず、ヘッダ文字色を継承。flex:1 で source/金額を右端へ押す。 */
@@ -213,7 +215,12 @@
   color: inherit;
 }
 
-/* 金額バッジ：ヘッダ右端の pill。半透過の暗チップ＋白文字（不透明ヘッダ上に乗るため窓透過に影響なし）。 */
+/* 金額バッジ：ヘッダ右端の pill。
+   047b: 「半透過の**暗**チップ＋**白**文字」固定をやめ、**ヘッダの文字色（--tone-fg）から自己導出**する。
+   明るいティア（水/緑/黄/橙）が暗文字になったため、暗チップ＋白文字のままだと該当ティアで金額が読めなくなる。
+   currentColor はヘッダから継承した --tone-fg なので、濃色ヘッダでは「薄い白チップ＋白文字」、
+   明色ヘッダでは「薄い黒チップ＋暗文字」へ自動で反転し、どちらも下地とのコントラストが上がる方向に働く
+   （旧 --overlay-tip-amount-* の 2 トークンはこの自己導出で不要になったため theme.css から削除した）。 */
 .amountBadge {
   flex-shrink: 0;
   padding: 2px 9px;
@@ -222,8 +229,8 @@
   font-weight: 800;
   line-height: 1.4;
   white-space: nowrap;
-  color: var(--overlay-tip-amount-fg);
-  background: var(--overlay-tip-amount-bg);
+  color: inherit;
+  background: color-mix(in srgb, currentColor 20%, transparent);
 }
 
 /* ボディ：ヘッダと同系色の淡色・暗文字。種別文言（.eventMessage）と本文（.cardText）を縦に積む。 */
@@ -232,7 +239,7 @@
   flex-direction: column;
   gap: 3px;
   padding: 8px 12px;
-  background: var(--tip-body-bg);
+  background: var(--tone-body);
   color: var(--overlay-body-fg);
 }
 
@@ -254,71 +261,76 @@
   word-break: break-word;
 }
 
-/* スパチャ金額ティア（役割 var を差し替えるだけ・青→水→緑→黄→橙→桃→赤）。黄（tier3）だけ暗文字。 */
+/* 047b: tone クラス（`monetaryTone()` の戻り値 1 つにつき 1 クラス）。役割ローカル var（--tone-bg / --tone-fg /
+   --tone-body）を差し替えるだけで、.cardHeader / .cardBody / .amountBadge がそれを参照する。
+   **本体側（CommentViewerApp.module.css）も同じクラス名・同じローカル var 名で同型の表を持つ**ので、
+   片方だけ tone を足すと配色が欠ける。tone を追加/変更するときは必ず両方を揃えること
+   （キーの単一の真実は `viewerFormat.ts` の `MonetaryTone` 型で、Record の網羅は typecheck が保証する）。
+   文字色は tone ごとに theme.css 側で決まっている（明るいティア＝水/緑/黄/橙は暗文字）。 */
 .tier0 {
-  --tip-header-bg: var(--overlay-tip-t0-bg);
-  --tip-header-fg: var(--overlay-tip-fg-on-dark);
-  --tip-body-bg: var(--overlay-tip-t0-body);
+  --tone-bg: var(--tip-t0-bg);
+  --tone-fg: var(--tip-t0-fg);
+  --tone-body: var(--tip-t0-body);
 }
 .tier1 {
-  --tip-header-bg: var(--overlay-tip-t1-bg);
-  --tip-header-fg: var(--overlay-tip-fg-on-dark);
-  --tip-body-bg: var(--overlay-tip-t1-body);
+  --tone-bg: var(--tip-t1-bg);
+  --tone-fg: var(--tip-t1-fg);
+  --tone-body: var(--tip-t1-body);
 }
 .tier2 {
-  --tip-header-bg: var(--overlay-tip-t2-bg);
-  --tip-header-fg: var(--overlay-tip-fg-on-dark);
-  --tip-body-bg: var(--overlay-tip-t2-body);
+  --tone-bg: var(--tip-t2-bg);
+  --tone-fg: var(--tip-t2-fg);
+  --tone-body: var(--tip-t2-body);
 }
 .tier3 {
-  --tip-header-bg: var(--overlay-tip-t3-bg);
-  --tip-header-fg: var(--overlay-tip-fg-on-light);
-  --tip-body-bg: var(--overlay-tip-t3-body);
+  --tone-bg: var(--tip-t3-bg);
+  --tone-fg: var(--tip-t3-fg);
+  --tone-body: var(--tip-t3-body);
 }
 .tier4 {
-  --tip-header-bg: var(--overlay-tip-t4-bg);
-  --tip-header-fg: var(--overlay-tip-fg-on-dark);
-  --tip-body-bg: var(--overlay-tip-t4-body);
+  --tone-bg: var(--tip-t4-bg);
+  --tone-fg: var(--tip-t4-fg);
+  --tone-body: var(--tip-t4-body);
 }
 .tier5 {
-  --tip-header-bg: var(--overlay-tip-t5-bg);
-  --tip-header-fg: var(--overlay-tip-fg-on-dark);
-  --tip-body-bg: var(--overlay-tip-t5-body);
+  --tone-bg: var(--tip-t5-bg);
+  --tone-fg: var(--tip-t5-fg);
+  --tone-body: var(--tip-t5-body);
 }
 .tier6 {
-  --tip-header-bg: var(--overlay-tip-t6-bg);
-  --tip-header-fg: var(--overlay-tip-fg-on-dark);
-  --tip-body-bg: var(--overlay-tip-t6-body);
+  --tone-bg: var(--tip-t6-bg);
+  --tone-fg: var(--tip-t6-fg);
+  --tone-body: var(--tip-t6-body);
 }
 
-/* ティア非対象の課金種別（種別ごとの単色・すべて白文字）。 */
+/* ティア非対象の課金種別（種別ごとの単色）。 */
 .tipBits {
-  --tip-header-bg: var(--overlay-tip-bits-bg);
-  --tip-header-fg: var(--overlay-tip-fg-on-dark);
-  --tip-body-bg: var(--overlay-tip-bits-body);
+  --tone-bg: var(--tip-bits-bg);
+  --tone-fg: var(--tip-bits-fg);
+  --tone-body: var(--tip-bits-body);
 }
 .tipSubscription {
-  --tip-header-bg: var(--overlay-tip-subscription-bg);
-  --tip-header-fg: var(--overlay-tip-fg-on-dark);
-  --tip-body-bg: var(--overlay-tip-subscription-body);
+  --tone-bg: var(--tip-subscription-bg);
+  --tone-fg: var(--tip-subscription-fg);
+  --tone-body: var(--tip-subscription-body);
 }
 .tipMembership {
-  --tip-header-bg: var(--overlay-tip-membership-bg);
-  --tip-header-fg: var(--overlay-tip-fg-on-dark);
-  --tip-body-bg: var(--overlay-tip-membership-body);
+  --tone-bg: var(--tip-membership-bg);
+  --tone-fg: var(--tip-membership-fg);
+  --tone-body: var(--tip-membership-body);
 }
 .tipGift {
-  --tip-header-bg: var(--overlay-tip-gift-bg);
-  --tip-header-fg: var(--overlay-tip-fg-on-dark);
-  --tip-body-bg: var(--overlay-tip-gift-body);
+  --tone-bg: var(--tip-gift-bg);
+  --tone-fg: var(--tip-gift-fg);
+  --tone-body: var(--tip-gift-body);
 }
 .tipDonation {
-  --tip-header-bg: var(--overlay-tip-donation-bg);
-  --tip-header-fg: var(--overlay-tip-fg-on-dark);
-  --tip-body-bg: var(--overlay-tip-donation-body);
+  --tone-bg: var(--tip-donation-bg);
+  --tone-fg: var(--tip-donation-fg);
+  --tone-body: var(--tip-donation-body);
 }
 .tipJewels {
-  --tip-header-bg: var(--overlay-tip-jewels-bg);
-  --tip-header-fg: var(--overlay-tip-fg-on-dark);
-  --tip-body-bg: var(--overlay-tip-jewels-body);
+  --tone-bg: var(--tip-jewels-bg);
+  --tone-fg: var(--tip-jewels-fg);
+  --tone-body: var(--tip-jewels-body);
 }

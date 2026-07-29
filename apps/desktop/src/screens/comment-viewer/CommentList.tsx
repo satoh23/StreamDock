@@ -8,12 +8,15 @@ import {
 import styles from "./CommentViewerApp.module.css";
 import overlayStyles from "./OverlayComment.module.css";
 import { CommentContextMenu } from "./CommentContextMenu";
+import { OVERLAY_TONE_CLASS, TONE_CLASS } from "./monetaryTone";
 import {
+  authorInitial,
+  avatarDataUri,
   composeEventMessage,
   displayEventType,
   eventLabel,
   isMonetaryEvent,
-  superchatTier,
+  monetaryTone,
 } from "./viewerFormat";
 
 /**
@@ -44,34 +47,10 @@ const OVERLAY_SOURCE_CLASS: Record<CommentViewDto["source"], string> = {
   youtube: overlayStyles.sourceYoutube,
 };
 
-/** 043c: 投げ銭カードのスパチャ金額ティア配色クラス（0=青…6=赤）。superchatTier の戻り値で引く（実通貨の superchat のみ）。 */
-const OVERLAY_TIER_CLASS = [
-  overlayStyles.tier0,
-  overlayStyles.tier1,
-  overlayStyles.tier2,
-  overlayStyles.tier3,
-  overlayStyles.tier4,
-  overlayStyles.tier5,
-  overlayStyles.tier6,
-];
-
-/** 043c: ティア非対象の課金種別（種別ごとの単色）。displayEventType の戻り値で引く。superchat は金額欠落時の保険で tier0。 */
-const OVERLAY_TYPE_CLASS: Record<string, string> = {
-  superchat: overlayStyles.tier0,
-  bits: overlayStyles.tipBits,
-  subscription: overlayStyles.tipSubscription,
-  membership: overlayStyles.tipMembership,
-  gift: overlayStyles.tipGift,
-  donation: overlayStyles.tipDonation,
-  jewels: overlayStyles.tipJewels,
-};
-
-/** 036a: overlay アイコンの画像なしフォールバック（名前の頭文字）。features/tools の toIconLetter は
- *  ツール用の別系統なので import せず、comment-viewer 内に equivalent を持つ。
- *  配信コメントの表示名は絵文字始まりが多いため、charAt(0)（UTF-16 コードユニット＝サロゲートペアを分割し
- *  孤立サロゲート「�」になる）ではなくコードポイント単位（`[...s]`）で先頭 1 文字を取り、絵文字先頭でも壊さない。
- *  ※ツール用 toIconLetter は入力特性（アプリ名・iconLabel 前提）が異なるため据え置きで問題なく、こちらのみ配慮する。 */
-const authorInitial = (name: string): string => [...name.trim()][0] ?? "?";
+/* 043c/047b: 投げ銭の配色クラスは `monetaryTone()` の戻り値 1 本で引く（本体＝TONE_CLASS / OBS＝OVERLAY_TONE_CLASS）。
+   043c 時点はこのファイル内に「ティア表＋種別表＋どちらを引くかの三項演算」がインラインで書かれていたが、
+   047b で本体側の 3 箇所（ティッカー・一覧カード・全文ダイアログ）と固定帯も同じ判定を必要としたため、
+   判定は `viewerFormat.ts`（純関数）へ、クラス対応表は `monetaryTone.ts` へ切り出した。 */
 
 interface CommentListProps {
   comments: CommentViewDto[];
@@ -159,18 +138,34 @@ export function CommentList({
   const renderDefaultItem = (c: CommentViewDto) => {
     // 038c: firstTime と longAbsence は Rust 側で排他（初見が優先）。念のため frontend でも初見を優先して 1 つだけ出す。
     const badge = badges?.get(c.id);
-    // 043b: お金がかかるイベントは赤枠で強調（要望④⑤・見逃し防止）。金額を持たない種別（サブスク/メンシプ/ギフト）は
-    //   「〇〇さんが…しました」の文言を組み立て、金額を持つ種別（スパチャ/ビッツ/ドネーション/ジュエル）は種別ラベル＋
-    //   金額バッジ＋本文で見せる。chat は従来どおり無装飾。
+    // 043b/047b: お金がかかるイベントは **YouTube スパチャ風のティア色カード**で強調する（要望④⑤・見逃し防止）。
+    //   金額を持たない種別（サブスク/メンシプ/ギフト）は「〇〇さんが…しました」の文言を組み立て、金額を持つ種別
+    //   （スパチャ/ビッツ/ドネーション/ジュエル）は金額を主表示にする。chat は従来どおり無装飾（このカードに入らない）。
+    //   047b までは赤枠（.itemMonetary）だったが、実機で「見にくい・額が分からない」となり色に金額の情報を
+    //   持たせるティア配色へ移行した（OBS の投げ銭カードと同じトークン＝配信画面と本体で同じ額は同じ色になる）。
     const isMoney = isMonetaryEvent(c.eventType);
     const typeLabel = eventLabel(displayEventType(c));
     const eventMessage = composeEventMessage(c);
+    // 036a のガードは 1 回だけ評価して使い回す（下のヘッダ帯で背景画像と頭文字フォールバックの両方が見る）。
+    const tipAvatar = avatarDataUri(c.author.avatar);
     const itemClasses = [styles.item];
     if (onSelect) itemClasses.push(styles.itemClickable);
     if (badge?.firstTime) itemClasses.push(styles.itemFirstTime);
     else if (badge?.longAbsence) itemClasses.push(styles.itemLongAbsence);
-    // 赤枠は初見/久しぶりより優先（CSS ソース順で .itemMonetary が勝つ）。お金の見逃しを最優先で防ぐ。
-    if (isMoney) itemClasses.push(styles.itemMonetary);
+    // 課金カードは枠色（初見/久しぶり）より優先。判定は帯の中にチップとして出るので情報は落ちない。
+    if (isMoney) itemClasses.push(styles.itemTipCard, TONE_CLASS[monetaryTone(c)]);
+    // 初見/久しぶりのチップは chat 行（.badge 系）と課金カードのヘッダ帯（.tipChip）で下地が違うため、
+    // 文言は同じまま器だけ差し替える（色付き帯の上に無彩色前提の役割トークンを乗せると沈む/喧嘩する）。
+    const chipClass = isMoney ? styles.tipChip : styles.badge;
+    const judgementBadge = badge?.firstTime ? (
+      <span className={`${chipClass} ${isMoney ? "" : styles.badgeFirstTime}`}>
+        初見
+      </span>
+    ) : badge?.longAbsence ? (
+      <span className={`${chipClass} ${isMoney ? "" : styles.badgeLongAbsence}`}>
+        久しぶり
+      </span>
+    ) : null;
     return (
       <li
         key={c.id}
@@ -207,44 +202,73 @@ export function CommentList({
             : undefined
         }
       >
-        <div className={styles.meta}>
-          <span className={`${styles.badge} ${SOURCE_CLASS[c.source]}`}>
-            {SOURCE_LABEL[c.source]}
-          </span>
-          {badge?.firstTime ? (
-            <span className={`${styles.badge} ${styles.badgeFirstTime}`}>
-              初見
-            </span>
-          ) : (
-            badge?.longAbsence && (
-              <span className={`${styles.badge} ${styles.badgeLongAbsence}`}>
-                久しぶり
+        {isMoney ? (
+          <>
+            {/* 047b: ティア色ヘッダ帯。アイコン→名前→（配信元/判定/種別チップ）→金額→combo の順で、
+                一番見たい金額を右端に置く。アイコンは 036a のガード（avatarDataUri）を通した data URI のときだけ。
+                047e: ガードは**一度だけ評価して束ねる**（renderOverlayItem と同じ作法）。§1 の不変条件を背負う
+                唯一の関数なので「1 回評価・1 つの値」が読んで明らかな形に揃える。 */}
+            <div className={styles.tipHeader}>
+              <span
+                className={styles.tipAvatar}
+                style={
+                  tipAvatar
+                    ? { backgroundImage: `url("${tipAvatar}")` }
+                    : undefined
+                }
+                aria-hidden="true"
+              >
+                {!tipAvatar && authorInitial(c.author.name)}
               </span>
-            )
-          )}
-          {/* 043b: 課金イベントの種別ラベル（サブスク/メンシプ/ギフト/ドネーション/スパチャ/ビッツ/ジュエル）。chat は空で非表示。 */}
-          {typeLabel && (
-            <span className={`${styles.badge} ${styles.badgeEvent}`}>
-              {typeLabel}
-            </span>
-          )}
-          <span className={styles.author}>{c.author.name}</span>
-          {c.monetaryAmount && (
-            <span className={styles.amount}>{c.monetaryAmount}</span>
-          )}
-          {/* 043e: Jewels の combo（連続ギフト）回数。金額バッジの隣に「×3」として出す。
-              目的は装飾ではなく**観測**で、フェーズ2（jewels_amount が単価か累計かの判別）を実機で行うために
-              combo 値と金額の変化を同時に目視できるようにする。単発は mapper が undefined へ落とすので出ない。
-              オーバーレイ（renderOverlayItem）には**出さない**＝配信画面に出す情報を増やさない。 */}
-          {c.comboCount != null && (
-            <span className={styles.combo}>×{c.comboCount}</span>
-          )}
-        </div>
-        {/* 043b: 金額を持たない課金イベントは組み立て文言を主表示。視聴者が自由コメントを添えていれば下段に本文を続ける。 */}
-        {/* 【レビュー対応・修正不要】上の種別ラベルバッジ（.badgeEvent）と本文言が併存し軽い重複に見えるが、バッジ＝色付き分類・
-            文言＝月数/件数など内訳付きの説明で役割が異なるため意図的に両方出す。再修正トリガー: 冗長との UX 指摘が出たら一本化する。 */}
-        {eventMessage && <p className={styles.eventMessage}>{eventMessage}</p>}
-        {c.text && <p className={styles.text}>{c.text}</p>}
+              <span className={styles.tipName}>{c.author.name}</span>
+              <span className={styles.tipChip}>{SOURCE_LABEL[c.source]}</span>
+              {judgementBadge}
+              {/* 043b: 課金イベントの種別ラベル。色でも種別は分かるが、7 種別を色だけで覚えるのは無理なので残す。 */}
+              {typeLabel && <span className={styles.tipChip}>{typeLabel}</span>}
+              {c.monetaryAmount && (
+                <span className={styles.tipAmount}>{c.monetaryAmount}</span>
+              )}
+              {/* 043e: Jewels の combo（連続ギフト）回数。金額の隣に「×3」として出す。
+                  目的は装飾ではなく**観測**で、フェーズ2（jewels_amount が単価か累計かの判別）を実機で行うために
+                  combo 値と金額の変化を同時に目視できるようにする。単発は mapper が undefined へ落とすので出ない。
+                  オーバーレイ（renderOverlayItem）には**出さない**＝配信画面に出す情報を増やさない。 */}
+              {c.comboCount != null && (
+                <span className={styles.tipChip}>×{c.comboCount}</span>
+              )}
+            </div>
+            {/* 金額を持たない課金イベントは組み立て文言を主表示。自由コメントがあれば下段に本文を続ける。
+                【レビュー対応・修正不要】ヘッダの種別チップと本文言が併存し軽い重複に見えるが、チップ＝分類・
+                文言＝月数/件数など内訳付きの説明で役割が異なるため意図的に両方出す。 */}
+            {(eventMessage || c.text) && (
+              <div className={styles.tipBody}>
+                {eventMessage && (
+                  <p className={styles.eventMessage}>{eventMessage}</p>
+                )}
+                {c.text && <p className={styles.text}>{c.text}</p>}
+              </div>
+            )}
+          </>
+        ) : (
+          /* chat（と未知種別）の行。047b で課金分岐と JSX を分けた結果、この分岐は旧統合パスにあった
+             typeLabel / monetaryAmount / comboCount / eventMessage の描画を**持たない**。
+             【レビュー Q-4・修正不要】既知の種別ではすべて空になるので無害（composeEventMessage が非 null を
+             返すのは subscription/membership/gift＝全て課金・comboCount は jewels 専用・EVENT_LABEL に chat キー無し）。
+             唯一効くのは「上流に新しい課金種別が増えたのに MONETARY_EVENT_TYPES への追加を忘れた」場合で、
+             従来は金額だけ .amount で出ていたのがここでは出ない。フォールバックを足さないのは、その状態では
+             ティッカー・固定帯・OBS カードも同時に効かない＝**追加漏れというバグを一覧だけが隠してしまう**ため
+             （金額が出ると「動いている」ように見えて発見が遅れる）。正しい直し方は常に MONETARY_EVENT_TYPES への追加。
+             再修正トリガー: 課金種別の追加が頻繁になり、追加漏れの検知を型（union）側で担保できるようになったとき。 */
+          <>
+            <div className={styles.meta}>
+              <span className={`${styles.badge} ${SOURCE_CLASS[c.source]}`}>
+                {SOURCE_LABEL[c.source]}
+              </span>
+              {judgementBadge}
+              <span className={styles.author}>{c.author.name}</span>
+            </div>
+            {c.text && <p className={styles.text}>{c.text}</p>}
+          </>
+        )}
       </li>
     );
   };
@@ -255,24 +279,19 @@ export function CommentList({
   const renderOverlayItem = (c: CommentViewDto) => {
     // 036a: 描画シンクで「webview が踏むのは data URI のみ」（親 036・§CSP の不変条件）を強制する。avatar を
     // background-image に差すのは値が data: 始まりのときだけとし、それ以外（036b にバグで raw URL が漏れた等）は
-    // 画像化せずイニシャルにフォールバックさせて外部 URL を踏ませない。036a では送り側未実装で avatar は常に空＝
-    // この分岐は発火しない（挙動は従来のグレー丸＋イニシャルのまま）。data: 始まりでも整形済み base64 data URI か
+    // 画像化せずイニシャルにフォールバックさせて外部 URL を踏ませない。data: 始まりでも整形済み base64 data URI か
     // 否かの検証は egress 集約点＝converter（036b）の責務で、ここは最終防波堤の型ガードに徹する。
-    const avatarDataUri = c.author.avatar?.startsWith("data:")
-      ? c.author.avatar
-      : undefined;
+    // 047b: ガード本体は `viewerFormat.ts` の `avatarDataUri` へ移設した（本体側のティッカー/課金カードも
+    // 同じガードを必要とするため。**2 実装に分裂させると片方だけ緩んで外部 URL を踏む経路が生まれる**）。
+    const avatar = avatarDataUri(c.author.avatar);
     // 036a のガードを両分岐（chat 吹き出し／043c 投げ銭カード）で共有する 1 枚のアイコン要素。
     const icon = (
       <div
         className={overlayStyles.icon}
-        style={
-          avatarDataUri
-            ? { backgroundImage: `url("${avatarDataUri}")` }
-            : undefined
-        }
+        style={avatar ? { backgroundImage: `url("${avatar}")` } : undefined}
         aria-hidden="true"
       >
-        {!avatarDataUri && (
+        {!avatar && (
           <span className={overlayStyles.iconFallback}>
             {authorInitial(c.author.name)}
           </span>
@@ -306,13 +325,11 @@ export function CommentList({
     }
 
     // 043c: 投げ銭カード。superchat（実通貨）は金額ティアで色分け、それ以外の課金種別は種別ごとの単色。
-    //   金額換算はせず superchatTier が通貨コードで閾値表を引くだけ（038 のスコープ外）。金額欠落の superchat は tier0 の保険。
+    //   金額換算はせず superchatTier が通貨コードで閾値表を引くだけ（038 のスコープ外）。金額欠落の superchat は t0 の保険。
     //   【レビュー対応・修正不要】donation/jewels は実金銭だが意図的に種別単色（ティアは YT 同様スパチャ専用）。
-    //   金額は amountBadge に verbatim 表示されるため見逃さない。再修正トリガー: これらもティア配色したくなったら分岐条件を拡げる。
-    const cardClass =
-      dtype === "superchat" && c.monetary
-        ? OVERLAY_TIER_CLASS[superchatTier(c.monetary.amount, c.monetary.currency)]
-        : (OVERLAY_TYPE_CLASS[dtype] ?? OVERLAY_TIER_CLASS[0]);
+    //   金額は amountBadge に verbatim 表示されるため見逃さない。再修正トリガー: これらもティア配色したくなったら
+    //   `monetaryTone` の分岐条件を拡げる（本体側の一覧カード/ティッカーにも同時に効く）。
+    const cardClass = OVERLAY_TONE_CLASS[monetaryTone(c)];
     // 金額を持たない種別（サブスク/メンシプ/ギフト）は「〇〇さんが…しました」の要約をボディ主表示にする（本体 043b と同じ）。
     const eventMessage = composeEventMessage(c);
     return (

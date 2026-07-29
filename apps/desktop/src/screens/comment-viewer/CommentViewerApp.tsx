@@ -79,6 +79,8 @@ import { SettingsView } from "./SettingsView";
 import { ViewersView } from "./ViewersView";
 import { ViewerDetailPanel } from "./ViewerDetailPanel";
 import { PinnedCommentBar } from "./PinnedCommentBar";
+import { MonetaryTicker } from "./MonetaryTicker";
+import { mergeMonetary } from "./monetaryFeed";
 import { viewerIdOf } from "./viewerFormat";
 import { ConnectionCard } from "./ConnectionCard";
 import { ToggleSwitch } from "./ToggleSwitch";
@@ -363,6 +365,49 @@ export function CommentViewerApp() {
   // 拾って pinned の同 id を差し替える（そのときも保存形は変えなくてよい）。
   const [pinned, setPinned] = useState<PinnedComment[]>([]);
 
+  // 047: 上部の課金ティッカー（横スクロールの常時表示帯）が使う蓄積。**`comments` から導出しない**のは、
+  // `comments` が MAX_COMMENTS(=200) でクランプされ、200 件のコメントが流れた時点でティッカーから投げ銭が
+  // 消えてしまうため（「見失わないための常時表示」という機能の目的を直接壊す・046a が実機で踏んだのと同じ轍）。
+  // 蓄積規則は `monetaryFeed.ts` の純関数に閉じてある（上限 50・最新が先頭・jewels の combo 更新に追随）。
+  // **localStorage には保存しない**（前回配信の投げ銭が次の起動でユーザー操作ゼロで画面に出る経路を作らない＝
+  // 046b の S-1 と同じ方針・docs/security.md §9 追補〔046a〕）。
+  //
+  // 【セキュリティレビュー S-1・修正不要】「永続しない」は**ディスクに残らない**であって「画面から消える」では
+  // ない。従来 投げ銭の表示名・金額は MAX_COMMENTS(=200) のローリングで流れ去っていたが、ティッカーは配信 1 本の
+  // あいだ最大 50 件を出しっぱなしにする＝**画面滞在時間は明確に伸びている**。OBS のウィンドウキャプチャ経路
+  //（044a）は「StreamDock コメントオーバーレイ」「StreamDock 固定コメント」の 2 窓のみが対象でコメビュ本体窓は
+  // 含まれないため配信への露出は増えないが、配信者が**画面全体キャプチャ**を使う場合は視聴者名＋金額が配信中ずっと
+  // 映る。これはコメビュ本体窓（コメント一覧も同様に映る）が元から持つ性質で 047 が新しいリスク種別を作っては
+  // いないため据え置く。再修正トリガー＝「ティッカーを OBS オーバーレイにも出したい」要望が出たとき
+  //（そのときは 046b S-1 と同じ土俵＝§9 追補の対象になるので security-review を通すこと）。
+  //
+  // 【S-B（047e レビュー）・修正不要】047b で露出物が 1 つ増えている: **本体窓が第三者のアバター画像を描くように
+  // なった**（従来 画像を描くのは OBS オーバーレイだけで、本体窓は文字のみだった）。描画は一覧の課金カード／
+  // ティッカーのピル／全文ダイアログの 3 箇所。新規 fetch・新規永続化はゼロ（036b が既にメモリへ載せた data URI を
+  // 描くだけ・ガードは viewerFormat.ts の avatarDataUri 1 実装）なので §9 追補の発火条件（＝**永続化**の変更）には
+  // 当たらないが、画面全体キャプチャ時に露出するものに「顔写真」が加わったのは事実なので明記しておく。
+  // 固定帯（046a）は toPinned が author.avatar を落とすため頭文字のみ＝localStorage にも画面にも画像は出ない。
+  // 再修正トリガー＝アバターを**保存**するようになったとき（そのときは §9 追補の対象＝security-review 必須）。
+  const [monetary, setMonetary] = useState<CommentViewDto[]>([]);
+  // 047: 展開済み（＝既読）の課金コメント id。ティッカー側ではなく**ここ**が持つ理由は、設定ビュー／視聴者ビューへ
+  // 切り替えると `view === "comment"` の分岐ごとアンマウントされ、ティッカー内の state だと既読が消えるため
+  // （`pinned` / `viewerBadges` と同じ置き場所）。こちらも永続しない（セッション内のみ）。
+  //
+  // 【軽レビュー・修正不要】`monetary` は MONETARY_MAX(=50) でクランプされるが、この Set は**上限から落ちた
+  // id も持ち続ける**（＝配信中は単調増加する）。据え置く理由は ①要素は課金コメント 1 件あたり 1 個の id 文字列で、
+  // 長時間配信でも数百エントリ＝数十 KB 程度 ②`viewerBadges`（Map・同じく単調増加）が先例として同じ扱い
+  // ③落ちた id を掃除する側の実装（`monetary` の変化を購読して差集合を取る effect）は、掃除中に同じ id が
+  // 再来したときに「既読が未読へ戻る」ほうの壊れ方を作りうる。
+  // **③の具体的な発火機構（レビューで明示）**: 上限から落ちた jewels に後から 043e の combo 更新が届くと、
+  // `mergeMonetary` の findIndex が -1 を返して**新規として先頭へ積み直される**。掃除 effect を入れていると
+  // その id は既に Set から消えているため、**一度読んだ投げ銭が未読（赤枠）として復活する**。
+  // 単調増加のままならこの経路でも既読が保たれる＝掃除しないことが正しさに寄与している。
+  // 再修正トリガー＝プロファイルで実際にメモリが問題化したとき（そのときは `monetary` の id 集合で
+  // intersection を取る effect を 1 つ足す）。
+  const [readMonetaryIds, setReadMonetaryIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+
   // 046b: 「固定コメントをOBSに表示」トグルの状態＝固定専用オーバーレイ窓（label `pinned-overlay`）を出すか。
   // 034d/045b のオーバーレイ表示トグル（`overlayOpen`）と違い**localStorage に永続**する。理由は
   // ①これは配信中に切り替える操作ではなく「OBS のウィンドウキャプチャに固定コメント窓を仕込む」一度きりの
@@ -646,6 +691,14 @@ export function CommentViewerApp() {
     setPinned((prev) => prev.filter((p) => p.id !== id));
   }, []);
 
+  // 047: ティッカーのピルを押して全文ダイアログを開いたときに既読化する。同じ id を 2 度押しても Set を
+  // 作り直さない（＝参照が変わらず無駄な再レンダを起こさない）。
+  const handleMonetaryRead = useCallback((id: string) => {
+    setReadMonetaryIds((prev) =>
+      prev.has(id) ? prev : new Set(prev).add(id),
+    );
+  }, []);
+
   // 046a: メニュー文言（「上部に固定」/「固定解除」）の出し分け用。CommentList は表示のためだけに参照する。
   const pinnedIds = useMemo(
     () => new Set(pinned.map((p) => p.id)),
@@ -661,7 +714,7 @@ export function CommentViewerApp() {
   // Device Code の user_code / verification_uri と session.state を受け取り UI に反映する。
   useEffect(() => {
     const handle = connectCommentStream({
-      onComments: (incoming) =>
+      onComments: (incoming) => {
         setComments((prev) => {
           const { next, added, updated } = mergeComments(prev, incoming);
           // added（prev に無い id）だけが読み上げの対象。updated は下で記録のみ行い**ここには渡さない**。
@@ -682,7 +735,16 @@ export function CommentViewerApp() {
           // 集計は viewer_comments からの全再計算（total_comments は COUNT(*) で不変）なのでドリフトしない。
           recordComments(updated, sessionIdRef.current);
           return next;
-        }),
+        });
+        // 047: 上部ティッカー用の蓄積。**`mergeComments` の中には入れず、同じ `incoming` から独立に導出する**。
+        // ①`mergeComments` は表示・TTS・保存の 3 系統がぶら下がる単一注入点なので、表示専用の関心を混ぜない
+        // ②setState の updater 内で別の setState を呼ぶ入れ子を作らない
+        // ③ティッカーは 200 件クランプの影響を受けてはいけない（受けたら機能の目的が壊れる）ので、
+        //   そもそも `mergeComments` の `next` からは導出できない。
+        // `mergeMonetary` は chat を捨てて id 重複を排除する冪等な純関数なので、StrictMode の二重実行でも
+        // 件数はぶれず、課金が 1 件も無いバッチでは `prev` を同一参照で返す（無駄な再レンダを起こさない）。
+        setMonetary((prev) => mergeMonetary(prev, incoming));
+      },
       onDeviceCode: (prompt) => setDeviceCode(prompt),
       onSessionState: (platform, state, reason) => {
         // 032c-d: platform 別に反映（Twitch と YouTube を別パネルに）。
@@ -1372,6 +1434,19 @@ export function CommentViewerApp() {
               )}
             </div>
           )}
+
+          {/* 047: 課金コメントの常時ティッカー（横スクロール）。**固定帯の上**に置く理由は 3 つ:
+              ①ティッカーは「課金が 1 件でもあれば出っぱなし」なのに対し固定帯は 0/1 件で頻繁に出入りするため、
+                上に置けば固定の出入りでティッカーの縦位置が動かない
+              ②固定帯は自身の border-bottom でコメント一覧との境目を担っている（046a の実機修正）ので、
+                固定帯と一覧の隣接関係を壊さない＝`PinnedCommentBar` / `.pinnedBar` を 1 行も触らずに済む
+              ③YouTube のライブチャットも「ヘッダ直下がティッカー、その下が固定メッセージ」の順。
+              課金 0 件のときは MonetaryTicker が null を返すので、既存レイアウトは完全に不変。 */}
+          <MonetaryTicker
+            items={monetary}
+            readIds={readMonetaryIds}
+            onRead={handleMonetaryRead}
+          />
 
           {/* 046a: 固定コメント帯。クレジット（法的必須表記）と ENGINE バナー（role="alert"）の下、コメント一覧の
               直上に置く＝一覧に直結する情報を一覧の隣に置きつつ、上 2 つの優先度を崩さない。固定 0 件のときは
