@@ -14,6 +14,8 @@ import {
 } from "../../features/comment-viewer/overlaySettings";
 // 046b レビュー（S-1）: 起動時に前回セッションの固定を捨てることを検証するため、ピンストアのキーを直接見る。
 import { PINNED_COMMENTS_KEY } from "../../features/comment-viewer/pinnedComments";
+// 049 レビュー（Q-2）: TTS キューの getter 配線が消えていないことを見るため、モック済みの生成関数を参照する。
+import { createTtsQueue } from "../../features/comment-viewer/ttsQueue";
 // 型のみの import（コンパイル時に消えるので vi.mock の巻き上げと競合しない）。偽ハンドルと捕捉した handlers を
 // 実型に縛るために使う。
 import type {
@@ -823,5 +825,64 @@ describe("047 受信バッチの分配（一覧・課金ティッカー・視聴
     expect(screen.queryByText("初回スパチャ")).not.toBeInTheDocument();
     const ticker = screen.getByLabelText("課金コメント");
     expect(ticker).toHaveTextContent("5,000 JPY");
+  });
+});
+
+/**
+ * 049 レビュー（Q-2）: TTS キューへの **getter 配線**そのものを固定する。
+ *
+ * `TtsQueueOptions` の getter は 4 つとも optional ＋ 未注入フォールバック（`?? comment.text` /
+ * `?? Infinity` 等）なので、**本体側の注入行が消えても typecheck は通り、キュー単体テストも 1 件も落ちない**
+ * ——機能だけが黙って消える（048 レビューで `getMaxLength` について指摘され、049 で `getSpeechText` にも
+ * 同じ穴が増えた）。`ttsQueue.test.ts` が固定できるのは「注入したら効くこと」までで、
+ * 「本体が実際に注入していること」を見られるのはこの層だけ。
+ *
+ * required 化ではなくテストで塞ぐ理由: required にすると全テスト呼び出しに値を書かせるか `ttsQueue` 側へ
+ * 既定値を持たせることになり、「既定値の定義元は `ttsPrefs.ts` の 1 箇所」（048）と
+ * 「features は screens を知らない」（049）という 2 つの不変条件のどちらかが壊れる。
+ * 再修正トリガー＝getter を増やしたとき（ここへ 1 行足す）。
+ */
+describe("049 レビュー TTS キューの getter 配線", () => {
+  it("createTtsQueue に 5 つの getter をすべて渡している（注入が消える退行の検知）", async () => {
+    renderApp(false);
+    await waitFor(() => expect(createTtsQueue).toHaveBeenCalled());
+
+    expect(createTtsQueue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        getSpeakerId: expect.any(Function), // 033d: 話者
+        getReadingDictionary: expect.any(Function), // 041a: 読み替え辞書
+        getMaxLength: expect.any(Function), // 048: 文字数上限
+        getSpeechText: expect.any(Function), // 049: 課金イベントの読み上げ文言
+        isPriority: expect.any(Function), // 049 フォローアップ: 課金の優先キュー
+      }),
+    );
+  });
+
+  // 述語そのものの中身（＝課金だけ true）もここで固定する。`isMonetaryEvent` へ渡す値を
+  // `c.eventType` から取り違える（例: `c.source` を渡す）と、課金が優先キューに載らず静かに破棄される。
+  it("isPriority は課金イベントだけを true にする", async () => {
+    renderApp(false);
+    await waitFor(() => expect(createTtsQueue).toHaveBeenCalled());
+    const opts = vi.mocked(createTtsQueue).mock.calls[0][0];
+    const isPriority = opts?.isPriority;
+    expect(isPriority).toBeDefined();
+
+    const at = (eventType: CommentViewDto["eventType"]) =>
+      isPriority?.({
+        id: "x",
+        source: "youtube",
+        author: { id: "u", name: "A" },
+        text: "",
+        publishedAt: "2026-01-01T00:00:00Z",
+        eventType,
+      });
+
+    expect(at("superchat")).toBe(true);
+    expect(at("subscription")).toBe(true);
+    expect(at("membership")).toBe(true);
+    expect(at("gift")).toBe(true);
+    expect(at("donation")).toBe(true);
+    expect(at("jewels")).toBe(true);
+    expect(at("chat")).toBe(false);
   });
 });

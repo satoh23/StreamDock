@@ -1,6 +1,14 @@
 # 049 課金イベントの読み上げ（メンシプ／ギフト／サブスク／ジュエルを無音にしない）
 
-> 状態: **未着手（単体タスク・2026-07-28 起票）**。読み上げ不具合の調査で判明した**設計の穴**への対応。
+> 状態: **2026-07-31 実装済み＋レビュー対応済み（実機確認は未実施）**。実装内容は
+> [`docs/progress.md`](../progress.md) の「2026-07-31 (049 課金イベントの読み上げ…)」節を正とする。
+> 差分は 6 ファイル（新規 `speechText.ts` / `speechText.test.ts`、変更 `ttsQueue.ts` / `ttsQueue.test.ts` /
+> `CommentViewerApp.tsx` ＋ レビュー対応で `CommentViewerApp.toolbar.test.tsx`）で、
+> **表示側は 8 ファイルすべて差分ゼロを実測**。test **23 files / 365 tests** pass。
+> ⚠ **security-review の結果、[`docs/security.md`](../security.md) §1「例外（032c-c）」へ 049 追補を追記した**
+> （同節の「著者名は送らない」という条文を、課金イベントに限り改める変更だったため）。
+> ⚠ **以下の本文中の行番号は起票時（048 実装直後）のもので、049 実装後の現在はさらに下へずれている**。
+> 現在値は「実装後の実測行番号」節を参照し、原則は**行番号ではなくシンボル名で特定**すること。
 >
 > **必読前提**: TTS キュー [`ttsQueue.ts`](../../apps/desktop/src/features/comment-viewer/ttsQueue.ts)、表示文言の組立
 > [`viewerFormat.ts`](../../apps/desktop/src/screens/comment-viewer/viewerFormat.ts) の `composeEventMessage`、
@@ -8,6 +16,54 @@
 > [048 読み上げ文字数上限](048-tts-reading-length-cap.md)（**同じ `enqueue` を触るので実装順に注意**）、
 > [`docs/security.md`](../security.md)（§1/§9）。
 > CLAUDE.md どおり **「実装して」まで変更せず、まず変更計画と対象ファイルを提示する**。**frontend のみ・ローカル整形のみ**＝**軽レビュー**。
+
+## 実装後の実測行番号（2026-07-31 049 実装後）
+
+⚠ 起票時（048 実装直後）から**再度ずれている**。行番号ではなく**シンボル名で特定すること**。
+
+※ 宣言そのものの行（JSDoc の開始行ではない）。
+
+| 対象 | 起票時の記載 | 049 フォローアップ後の実測 |
+| --- | --- | --- |
+| `MAX_BACKLOG`（**6**・20 から変更） / `MAX_PRIORITY_BACKLOG`（50・新設） | 22 | **42 / 49** |
+| `TtsQueueOptions` | 91 | **126** |
+| `getSpeakerId` / `getReadingDictionary` / `getMaxLength` | 97 / 103 / 112 | **132 / 138 / 159** |
+| `getSpeechText`（本タスクで新設） | — | **177** |
+| `isPriority`（フォローアップで新設） | — | **190** |
+| `createTtsQueue` | — | **197** |
+| `pump`（優先キューを先に消費） | — | **211** |
+| `enqueue` | 170〜 | **254〜** |
+| ① 入力決定（差し替えた 1 行） | 174 | **261** |
+| ③ 読み替え適用 | 179 | **266** |
+| ④ 切り詰め `capForSpeech` | 188 | **275** |
+| ⑤ 空判定 / `priorityQueue.push` / `queue.push` | 189 | **276 / 280 / 288** |
+| `composeEventMessage`（viewerFormat.ts） | 133-157 | **233〜**（`EventMessageInput` は 212・**未変更**） |
+| `TIER_SUFFIX_RE` / `withSpokenTier` / `composeSpeechText`（speechText.ts） | — | **58 / 77 / 125** |
+| `createTtsQueue({...})`（CommentViewerApp.tsx） | — | **637**（`isPriority` は 642） |
+
+## 実装時に確定した細目（起票時に未決だった点）
+
+1. **Tier 整形は `composeEventMessage` の出力にだけ**後段置換（`/（Tier(\d+)）/g` → `ティア$1`）をかける。
+   自由コメント（`c.text`）には**かけない**。`tier: undefined` で接尾辞を消して自前で付け直す案は、
+   「どの種別に Tier を付けるか」という表示側の判断を複製するため不採用。**書式変更の退行はテストで検知**する。
+2. **`jewels` は `c.text` を連結しない**。実データは本文を持たず dev-mock だけが `"投げ銭ジュエル 🎁"` を入れているため、
+   連結すると dev と本番で読みが変わり dev 確認が本番の担保にならない。**dev の聞こえ方は意図的に変わる**。
+3. **`jewels` の `amount` が 0 / 負 / 非有限は「数なし」へ倒す**（`monetary` 未設定と同じ分岐）。
+4. **`comboCount` は読まない**（初回到達時に値が入っていても無視）。
+5. **自由コメントの連結順は「要約 →「。」→ 自由コメント」固定**（切り詰めが末尾から効くため要約を先に置く）。
+6. **60 文字上限に当たるのは主に自由コメント側**。要約だけで超えるのは名前が **40 文字以上**のときだけ（Twitch の
+   表示名は最大 25 文字なので起き得ない。レビュー Q-4 で 39 → 40 に訂正）。**文言側は短くしない**
+   ——詳細な実測表は `docs/progress.md` の 049 節。
+7. **レビュー対応（2026-07-31）**: security.md §1 032c-c 例外へ 049 追補を追記／`createTtsQueue` の getter 配線を
+   `CommentViewerApp.toolbar.test.tsx` で固定／種別網羅を `Record<CommentEventType, …>` で型強制／
+   `ttsQueue.test.ts` の同期前提を `await flush()` へ統一。
+8. **実機確認フォローアップ（2026-07-31・詳細は progress.md の「049 フォローアップ」節）**:
+   ①**041a の内蔵辞書の笑い w に後方境界 `(?![A-Za-z])` を追加**（`"that clutch was insane"` が
+   「わらas」と読まれていた／`wataru` →「わらataru」も同時に解消・新規 `readingDictionary.test.ts` で固定）。
+   ②③**課金専用の優先キュー**（`isPriority` 注入・破棄せず先に読む）＋ **`MAX_BACKLOG` 20 → 6**
+   ——読み上げが到着に構造的に追いつかず（1 件読む間に 5.6〜14.8 件届く）課金まで破棄されていたため。
+   ④**Tier を名前の直後へ**（「〜継続しましたティア2」→「**ティア2の**サブスクを3ヶ月継続しました」）。
+   **上記 6 の「Tier 接尾辞への後段置換」は④でフォールバック専用に降格**した（通常経路は語順差し込み）。
 
 ## 目的
 

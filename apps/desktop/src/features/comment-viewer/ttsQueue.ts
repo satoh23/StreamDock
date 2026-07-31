@@ -2,13 +2,21 @@
  * 032c-c: コメントビューアの TTS キュー（FIFO 直列・Web Audio 再生）。
  *
  * 取得コメントを VOICEVOX でローカル合成し、音が重ならないよう**直列**に読み上げる。
- * - FIFO 直列 ＋ 再生中フラグ（`onended` で次へ）。
- * - バックログ上限超過は**古い未読から破棄**（最新優先）。
+ * - FIFO 直列 ＋ 再生中フラグ（`onended` で次へ）。**キューは 2 本**（課金の優先キュー → 通常キュー）で、
+ *   取り出し順が変わるだけ＝同時に 2 件鳴ることはない（049 フォローアップ・`isPriority` で注入）。
+ * - バックログ上限超過は**古い未読から破棄**（最新優先）。**破棄されるのは通常キューだけ**で、
+ *   課金イベントは埋もれない（読み上げは到着に構造的に追いつかないため、単一 FIFO では課金が捨てられていた）。
  * - 最小整形（URL 除去・絵文字除去）。**著者名は読まない**（本文のみ）。
+ *   - 049 の限定的な例外: 課金イベント（membership/gift/subscription/jewels）だけは「〇〇さんが〜」と
+ *     **投稿者名を含む**文を読む。これらは `text` が空で（要約文言は 043b 以降**表示側**が組み立てる）
+ *     **完全に無音**だったためで、配信者が最も聞き逃したくない種別を音で分かるようにするのが目的。
+ *     文言の組立は `getSpeechText`（screens 側の `composeSpeechText`）に注入され、**本モジュールは種別を
+ *     一切見ない**（features → screens の層の逆転を避けるための注入）。通常チャット・スパチャは従来どおり本文のみで、
+ *     方針そのものは変えていない。
  * - id 冪等（単一注入点 = `mergeComments` の新規追加分から呼ばれる）。
  *
  * `enqueue` の整形パイプラインは **① 入力決定 → ② sanitize → ③ 読み替え(041a) → ④ 切り詰め(048) → ⑤ 空判定 → push**
- * の 5 段で、**分岐を増やさない単一チョークポイント**として維持する（049 は ① だけを差し替える予定）。
+ * の 5 段で、**分岐を増やさない単一チョークポイント**として維持する（049 は ① を `getSpeechText` へ差し替え済み）。
  *
  * AudioContext は本キューが 1 つだけ所有し、`dispose` で閉じる。合成 HTTP と再生プリミティブは
  * `voicevox.ts` に閉じ、通信はループバック 50021 のみ（docs/security.md §1 の例外を参照）。
@@ -18,8 +26,27 @@ import type { CommentViewDto } from "./types";
 import { applyReadingDictionary, type ReadingRule } from "./readingDictionary";
 import { playWav, synthesize, ZUNDAMON_NORMAL_SPEAKER_ID } from "./voicevox";
 
-/** バックログ上限。超過分は古い未読から破棄する（最新優先）。 */
-const MAX_BACKLOG = 20;
+/**
+ * 通常キューのバックログ上限。超過分は古い未読から破棄する（最新優先）。
+ *
+ * **049 フォローアップ（2026-07-31）で 20 → 6 に下げた**。読み上げは到着に構造的に追いつかない
+ * （60 文字＝10〜13 秒に対し dev-mock は 0.9〜1.8 秒に 1 件＝**1 件読む間に 6〜15 件届く**）ため、
+ * キューは定常的に満杯になる。20 件だと**満杯の消化に 3〜4 分**かかり、読み上げが画面から数分遅れて
+ * 「今は流れていないコメントを延々読む」状態になる（実機で「同じコメントが何度も読まれる」と報告された）。
+ * 6 件なら遅延の上限が **1 分程度**に収まり、常に「今」に近いコメントを読む。
+ *
+ * **課金イベントはこの上限の対象外**（下記 `priorityQueue`）。捨てるのは通常チャットだけ。
+ * 再修正トリガー＝実配信の流量で「もう少し拾ってほしい」となったら増やす。**安易に増やさない**
+ * （増やすほど「今」から離れる）。050 で可視化（`onSkipped`）を入れたら実測値で再評価すること。
+ */
+const MAX_BACKLOG = 6;
+
+/**
+ * 優先キュー（課金イベント）の上限。**通常運用では到達しない**防御的な値で、
+ * ENGINE 停止中に課金だけが延々積まれてメモリが伸び続けるのを防ぐためだけに置く。
+ * 到達した場合も通常キューと同じく古い未読から捨てる（最新優先）。
+ */
+const MAX_PRIORITY_BACKLOG = 50;
 
 /** URL を除去する（`https?://…` の連続非空白）。 */
 const URL_RE = /https?:\/\/\S+/g;
@@ -123,8 +150,44 @@ export interface TtsQueueOptions {
    * 「既定値の定義元は `ttsPrefs.ts` の 1 箇所」という不変条件のほうが壊れるため。
    * 再修正トリガー＝049/050 で `synthesize`/`playWav` をモックしてキュー本体のテストを足すとき、
    * **`getMaxLength` を注入した `enqueue` が実際に切り詰めること**を 1 ケース必ず固定して、この穴を塞ぐこと。
+   *   - 049 で `ttsQueue.test.ts` に `synthesize`/`playWav` のモックとキュー本体のテストを入れ、この 1 ケースを固定済み。
+   *   - **ただしそれで塞がるのは「注入したら効くこと」まで**（049 レビュー Q-2）。上の ⚠ が指す
+   *     「**本体側の注入行が消えた退行**」はキュー単体テストでは原理的に見えないため、
+   *     `CommentViewerApp.toolbar.test.tsx` の「049 レビュー TTS キューの getter 配線」で
+   *     `createTtsQueue` の実引数を固定して塞いだ（getter を増やすときはそちらにも 1 行足すこと）。
    */
   getMaxLength?: () => number;
+  /**
+   * 049: **読み上げ用テキスト**をコメントから組み立てる getter。`enqueue` の ①（入力決定）でのみ使い、
+   * 以降の ②〜⑤（sanitize → 読み替え → 切り詰め → 空判定）は入力の出どころに関わらず同一の処理を通る。
+   *
+   * **省略時は `comment.text`＝現行動作**（既存 getter 3 つと同じ「未注入なら従来どおり」の作法）。
+   *
+   * この関数を注入で受け取るのは、課金イベントの文言が表示側（`screens/comment-viewer/viewerFormat.ts` の
+   * `composeEventMessage`）に既にあり、**文言を二重管理しない**ために再利用する必要があるため。
+   * ここから直接 import すると features → screens の層の逆転になるので、組立は screens 側
+   * （`composeSpeechText`）に置いて注入する（049 決定事項 4）。**本モジュールは種別を一切見ない。**
+   *
+   * 注入されるのは純関数（state に依存しない）なので、他の getter と違い呼び出し側での ref 同期は不要。
+   *
+   * ⚠ `getMaxLength` と**同型の穴**（optional ＋ 未注入フォールバックなので、本体側の注入行が消えても
+   * typecheck もキュー単体テストも気付かず、課金イベントが再び無音に戻る）。049 レビュー Q-2 の対応として
+   * `CommentViewerApp.toolbar.test.tsx` の配線テストで実引数を固定してある（詳細は `getMaxLength` の ⚠）。
+   */
+  getSpeechText?: (comment: CommentViewDto) => string;
+  /**
+   * 049 フォローアップ: このコメントを**優先キュー**（＝バックログ超過で破棄せず、通常キューより先に読む）
+   * へ載せるかを返す述語。本体は課金イベント（`isMonetaryEvent`）を true にする。
+   *
+   * **なぜ必要か**: 読み上げは到着に構造的に追いつかない（`MAX_BACKLOG` の JSDoc 参照）ため、
+   * 単一 FIFO では**課金イベントが通常チャットの洪水に埋もれて破棄される**。配信者が最も聞き逃したくない
+   * 種別を守れないのは本末転倒なので、キューを 2 本に分けて「課金は捨てない・先に読む」を構造で担保する。
+   * 直列再生（音が重ならない）という中核設計は不変で、**取り出し順が変わるだけ**。
+   *
+   * **省略時は全件が通常キュー＝従来と完全に同じ**（既存 getter と同じ「未注入なら現行動作」の作法）。
+   * `getSpeechText` と同じく**本モジュールは種別を一切見ない**（判定は screens 側から注入する）。
+   */
+  isPriority?: (comment: CommentViewDto) => boolean;
 }
 
 /**
@@ -135,7 +198,11 @@ export function createTtsQueue(options: TtsQueueOptions = {}): TtsQueue {
   const getSpeakerId = options.getSpeakerId;
   const getReadingDictionary = options.getReadingDictionary;
   const getMaxLength = options.getMaxLength;
+  const getSpeechText = options.getSpeechText;
+  const isPriority = options.isPriority;
   const queue: string[] = [];
+  // 049 フォローアップ: 課金イベント用の優先キュー。**通常キューより先に消費し、破棄しない**。
+  const priorityQueue: string[] = [];
   const seenIds = new Set<string>();
   let playing = false;
   let disposed = false;
@@ -143,7 +210,9 @@ export function createTtsQueue(options: TtsQueueOptions = {}): TtsQueue {
 
   async function pump(): Promise<void> {
     if (playing || disposed) return;
-    const text = queue.shift();
+    // 049 フォローアップ: **課金（優先キュー）を先に空にしてから**通常チャットへ進む。
+    // 直列再生そのものは不変で、取り出し順だけが変わる（同時に 2 件鳴ることはない）。
+    const text = priorityQueue.shift() ?? queue.shift();
     if (text === undefined) return;
     playing = true;
     try {
@@ -186,7 +255,10 @@ export function createTtsQueue(options: TtsQueueOptions = {}): TtsQueue {
       if (disposed) return;
       if (seenIds.has(comment.id)) return; // 単一注入点の冪等化（二重 enqueue を無害化）。
       seenIds.add(comment.id);
-      const sanitized = sanitizeForSpeech(comment.text);
+      // 049: ①（入力決定）だけを差し替える。課金イベントは `text` が空で無音だったため、表示に出ている
+      // 文言（`composeSpeechText`）を読み上げ入力にする。未注入なら `comment.text`＝従来と完全に同じ。
+      // ②〜⑤ は入力の出どころを問わず同一（種別による分岐をここに増やさない）。
+      const sanitized = sanitizeForSpeech(getSpeechText?.(comment) ?? comment.text);
       // 041a: 読み替え辞書を sanitize の後段で適用する（URL/絵文字除去 → 空白畳み込み → 読み替え → trim の順）。
       // 辞書未注入・空辞書のときは applyReadingDictionary が素通しするため、従来と完全に同じ挙動になる。
       // 末尾 .trim() は防御的（sanitize が既に trim 済み・内蔵 reading も前後空白なしのため実質 no-op だが、
@@ -202,11 +274,23 @@ export function createTtsQueue(options: TtsQueueOptions = {}): TtsQueue {
       // 「② 以降は一切変えない」ことを前提にしており、分岐がここ以外に増えると単一チョークポイントが崩れる。
       const text = capForSpeech(replaced, getMaxLength?.() ?? Infinity);
       if (!text) return; // 整形・読み替え適用後に空（URL/絵文字のみ 等）なら読み上げない。
-      queue.push(text);
-      if (queue.length > MAX_BACKLOG) {
-        const dropped = queue.length - MAX_BACKLOG;
-        queue.splice(0, dropped); // 古い未読から破棄（最新優先）。
-        console.debug(`TTS backlog 上限超過: 古い未読 ${dropped} 件を破棄`);
+      // 049 フォローアップ: 課金イベントは**専用の優先キュー**へ積む。通常チャットの洪水で
+      // 破棄されないようにするため（判定は注入＝本モジュールは種別を見ない）。
+      if (isPriority?.(comment)) {
+        priorityQueue.push(text);
+        // 通常運用では到達しない防御的な上限（ENGINE 停止中の無限蓄積だけを防ぐ）。
+        if (priorityQueue.length > MAX_PRIORITY_BACKLOG) {
+          const dropped = priorityQueue.length - MAX_PRIORITY_BACKLOG;
+          priorityQueue.splice(0, dropped);
+          console.debug(`TTS 優先キュー上限超過: 古い未読 ${dropped} 件を破棄`);
+        }
+      } else {
+        queue.push(text);
+        if (queue.length > MAX_BACKLOG) {
+          const dropped = queue.length - MAX_BACKLOG;
+          queue.splice(0, dropped); // 古い未読から破棄（最新優先）。
+          console.debug(`TTS backlog 上限超過: 古い未読 ${dropped} 件を破棄`);
+        }
       }
       void pump();
     },
@@ -217,6 +301,7 @@ export function createTtsQueue(options: TtsQueueOptions = {}): TtsQueue {
     dispose() {
       disposed = true;
       queue.length = 0;
+      priorityQueue.length = 0;
       void ctx.close();
     },
   };

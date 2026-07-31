@@ -83,7 +83,8 @@ import { ViewerDetailPanel } from "./ViewerDetailPanel";
 import { PinnedCommentBar } from "./PinnedCommentBar";
 import { MonetaryTicker } from "./MonetaryTicker";
 import { mergeMonetary } from "./monetaryFeed";
-import { viewerIdOf } from "./viewerFormat";
+import { isMonetaryEvent, viewerIdOf } from "./viewerFormat";
+import { composeSpeechText } from "./speechText";
 import { ConnectionCard } from "./ConnectionCard";
 import { ToggleSwitch } from "./ToggleSwitch";
 import styles from "./CommentViewerApp.module.css";
@@ -628,10 +629,17 @@ export function CommentViewerApp() {
     // 重ねる（ライブマージ）際もキューを作り直さずに済むよう getter 注入の形にしておく。
     // 048: 読み上げ最大文字数も getter で渡す（設定を変えてもキューを作り直さない）。値は ttsPrefs 側で
     // クランプ済みの整数で、切り詰めは ttsQueue の enqueue（読み替え適用の直後）だけで起きる。
+    // 049: 読み上げ用テキストの組立も渡す。課金イベントは text が空で無音だったため、表示と同じ文言
+    // （composeEventMessage を再利用）を読ませる。**純関数なので ref 同期は不要**（state に依存しない）。
+    // 049 フォローアップ: 課金イベントを**優先キュー**へ載せる述語も渡す。読み上げは到着に構造的に
+    // 追いつかない（1 件読む間に 6〜15 件届く）ため、単一 FIFO だと課金が通常チャットの洪水で破棄される。
+    // 判定（種別を見る責務）は screens 側に置き、ttsQueue には述語だけを注入する（層の逆転を避ける）。
     const queue = createTtsQueue({
       getSpeakerId: () => selectedSpeakerIdRef.current,
       getReadingDictionary: () => BUILTIN_READING_DICTIONARY,
       getMaxLength: () => ttsMaxLengthRef.current,
+      getSpeechText: composeSpeechText,
+      isPriority: (c) => isMonetaryEvent(c.eventType),
     });
     ttsRef.current = queue;
     return () => {
