@@ -83,6 +83,7 @@ import { ViewerDetailPanel } from "./ViewerDetailPanel";
 import { PinnedCommentBar } from "./PinnedCommentBar";
 import { MonetaryTicker } from "./MonetaryTicker";
 import { mergeMonetary } from "./monetaryFeed";
+import { trackFirstOfStream } from "./firstOfStream";
 import { isMonetaryEvent, viewerIdOf } from "./viewerFormat";
 import { composeSpeechText } from "./speechText";
 import { ConnectionCard } from "./ConnectionCard";
@@ -240,6 +241,21 @@ export function CommentViewerApp() {
   // クランプに整合させて prune する。
   const [viewerBadges, setViewerBadges] = useState<Map<string, RecordResult>>(
     () => new Map(),
+  );
+  // 051: 「その配信で初めてしたコメント」＝ viewerId → その視聴者のこの配信での初コメント id。
+  // 038c の判定（初見/久しぶり）は**その視聴者の「来訪の 1 件目」**にしか付かないので、
+  // 「初見/久しぶり ⊂ その配信の初コメント」だが**逆は成り立たない**（毎回来る常連の初コメントには
+  // 判定が付かない）。「今日はじめて喋った人」に「初コメ」バッジ＋枠色を出すにはこちらが要る。
+  // 蓄積規則は `firstOfStream.ts` の純関数（**既記録の viewerId は上書きしない**＝冪等）に閉じてある。
+  // 永続しない（セッション内のみ・`viewerBadges` と同じ扱い）。窓のマウント単位＝`sessionIdRef` と同じ粒度。
+  const [firstOfStream, setFirstOfStream] = useState<
+    ReadonlyMap<string, string>
+  >(() => new Map());
+  // 表示側（CommentList）が要るのは「初コメントの id 集合」だけなので、Map から導出する。
+  // Map は同一参照 early-out を持つので、変化が無いバッチでは この useMemo も再計算されない。
+  const firstOfStreamIds = useMemo(
+    () => new Set(firstOfStream.values()),
+    [firstOfStream],
   );
   // TTS キュー（AudioContext を 1 つ所有）。マウントで生成し、アンマウントで dispose する。
   const ttsRef = useRef<TtsQueue | null>(null);
@@ -418,6 +434,20 @@ export function CommentViewerApp() {
   const [readMonetaryIds, setReadMonetaryIds] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
+  // 047f: `mergeMonetary` は setState の updater 内で呼ばれるので、既読集合を**その場で読む**手段が要る
+  // （クランプで「既読から先に捨てる」ため）。この window の他の getter 注入と同じ ref 同期イディオム。
+  //
+  // ⚠ ref は 1 レンダー遅れるが、**遅れは「捨てすぎる」方向ではなく「残しすぎる」方向にしか効かない**
+  // （既読化をまだ知らない ＝ 未読扱い ＝ 捨てない）。未読を落とさないことが本修正の目的なので、
+  // ラグは安全側に倒れている＝同期を厳密化する必要がない。
+  // ⚠ **この論証は「`readMonetaryIds` が単調増加（既読は減らない）」を前提にしている**。上の
+  // `setReadMonetaryIds` が唯一の更新点で、集合をクリアする経路は存在しないため成立している。
+  // 再修正トリガー＝「ティッカーをクリア」「配信切替で既読リセット」等で**既読が減る経路**を足すとき。
+  // そのときラグの向きは反転する（既読と誤認して**未読を捨てる**）ので、ref 同期では足りなくなる。
+  const readMonetaryIdsRef = useRef<ReadonlySet<string>>(readMonetaryIds);
+  useEffect(() => {
+    readMonetaryIdsRef.current = readMonetaryIds;
+  }, [readMonetaryIds]);
 
   // 046b: 「固定コメントをOBSに表示」トグルの状態＝固定専用オーバーレイ窓（label `pinned-overlay`）を出すか。
   // 034d/045b のオーバーレイ表示トグル（`overlayOpen`）と違い**localStorage に永続**する。理由は
@@ -776,7 +806,18 @@ export function CommentViewerApp() {
         //   そもそも `mergeComments` の `next` からは導出できない。
         // `mergeMonetary` は chat を捨てて id 重複を排除する冪等な純関数なので、StrictMode の二重実行でも
         // 件数はぶれず、課金が 1 件も無いバッチでは `prev` を同一参照で返す（無駄な再レンダを起こさない）。
-        setMonetary((prev) => mergeMonetary(prev, incoming));
+        // 047f: 既読集合を渡す＝上限超過で**捨てるのは既読だけ**になり、未読は帯から消えない
+        //（「未読数が 50 件以上数えられない」の本体は、未読が黙って消えて二度と押せなくなることだった）。
+        setMonetary((prev) =>
+          mergeMonetary(prev, incoming, (id) =>
+            readMonetaryIdsRef.current.has(id),
+          ),
+        );
+        // 051: 「その配信で初めてしたコメント」の確定。ティッカーと同じ位置（updater の外・同じ `incoming`
+        // から独立に導出）に置く＝**setState の updater 内で別の setState を呼ぶ入れ子を作らない**。
+        // `added` ではなく `incoming` を渡してよいのは、`trackFirstOfStream` が「既記録の viewerId を
+        // 上書きしない」＝再送も combo 更新も自然に no-op になるため（詳細は firstOfStream.ts）。
+        setFirstOfStream((prev) => trackFirstOfStream(prev, incoming));
       },
       onDeviceCode: (prompt) => setDeviceCode(prompt),
       onSessionState: (platform, state, reason) => {
@@ -848,10 +889,20 @@ export function CommentViewerApp() {
   };
 
   // ENGINE 稼働を GET /version で定期確認する（未起動→起動誘導、起動後は自動でバナーが消える）。
-  // fetch にタイムアウト/signal は付けていない: 宛先は loopback で応答は即時、`checkEngineRunning` が
-  // 例外を bool 化するため、稀に前回リクエストと重なっても副作用が無い（`cancelled` ガードで unmount 後の
-  // setState も防ぐ）。再検討条件: loopback 以外へ宛先が広がる、または応答遅延で tick が滞留するなら
-  // AbortController + タイムアウトを導入する。
+  // fetch にタイムアウト/signal は付けていない: `checkEngineRunning` が例外を bool 化するため、稀に
+  // 前回リクエストと重なっても副作用が無い（`cancelled` ガードで unmount 後の setState も防ぐ）。
+  //
+  // ⚠ **「宛先は loopback なので応答は即時」という当初の前提は崩れている（050・2026-07-31）**。
+  // ENGINE は**生きているのに応答を返さない**ことがある（スリープ復帰後・モデルロードのスタック等）。
+  // 050 はまさにその状況を前提に合成側へ `SYNTH_TIMEOUT_MS` を入れたので、ここの
+  // 「再検討条件＝応答遅延で tick が滞留するなら AbortController + タイムアウトを導入する」は
+  // **既に満たされている**。このコメントを「検討済みで問題なし」と読まないこと。
+  // 実害: `checkEngineRunning` が返らない間 `engineRunning` が更新されず**起動誘導バナーすら出ない**
+  // （読み上げは 050 で 1 件ずつ諦めて進むが、ユーザーには何も見えない）。加えて tick は前回の完了を
+  // 待たずに 5 秒ごと無条件に発火するので、pending の fetch が積み上がる。
+  // 対応は **052 として起票済み**（本タスク〔050〕では `src/screens/` 差分ゼロのスコープ規律を優先した）。
+  // 方針＝呼び出し側で AbortController ＋ ポーリング間隔より短いタイムアウトを張るだけ（新規依存ゼロ・
+  // abort は `checkEngineRunning` が false 化するので既存のバナー導線がそのまま働く）。
   useEffect(() => {
     let cancelled = false;
     const tick = async () => {
@@ -1504,6 +1555,7 @@ export function CommentViewerApp() {
                 followMode="release"
                 onSelect={(c) => setSelectedViewerId(viewerIdOf(c))}
                 badges={viewerBadges}
+                firstOfStreamIds={firstOfStreamIds}
                 onPin={handleTogglePin}
                 pinnedIds={pinnedIds}
               />

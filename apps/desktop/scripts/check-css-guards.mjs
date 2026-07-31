@@ -169,6 +169,78 @@ for (const rel of [VIEWER_CSS, OVERLAY_CSS]) {
 }
 
 // ---------------------------------------------------------------------------
+// (5) 051 の不変条件: 「その配信で初めてしたコメント」は **初見と同じ枠色**で囲まれ、
+//     **課金カードの上では枠色を当てない**（バッジのみ）こと。
+//     コンポーネント側のテストでは**原理的にここを守れない**——CSS モジュールは vitest 上で
+//     **存在しないキーでも文字列を返す**（実測: `styles.nonExistentKey` → `"_nonExistentKey_<hash>"`）ため、
+//     `className` に `styles.itemFirstComment` が入っていることを確かめても、CSS 側にルールが
+//     **無い／クラス名を打ち間違えている**状態がそのまま緑になる。色も jsdom では解決されないので、
+//     「ルールが実在し、初見と同じトークンを指していること」をここで押さえる。
+// ---------------------------------------------------------------------------
+{
+  const css = read(VIEWER_CSS);
+  // (5-a) 枠色が初見（--ok）と同じであること。
+  const firstTime = ruleBody(css, ".itemFirstTime");
+  const firstComment = ruleBody(css, ".itemFirstComment");
+  if (firstComment === null) {
+    fail(
+      `${VIEWER_CSS}: \`.itemFirstComment\` のルールがありません（051）。` +
+        `CommentList が付けるクラスに対応する CSS が無いと、枠色が無音で消えます` +
+        `（CSS モジュールは存在しないキーでも文字列を返すので、コンポーネントのテストでは検出できません）。`,
+    );
+  } else if (!hasDecl(firstComment, "border-color", "var\\(--ok\\)")) {
+    fail(
+      `${VIEWER_CSS}: \`.itemFirstComment\` の border-color が \`var(--ok)\` ではありません（051）。` +
+        `「初コメは初見と同じ色の枠」が要件です。`,
+    );
+  }
+  if (!hasDecl(firstTime, "border-color", "var\\(--ok\\)")) {
+    fail(
+      `${VIEWER_CSS}: \`.itemFirstTime\` の border-color が \`var(--ok)\` ではありません（038c/051）。` +
+        `初見の色を変えるなら .itemFirstComment も一緒に動かすこと（051 は「初見と同じ色」で固定されています）。`,
+    );
+  }
+  // (5-b) 課金カードの上では枠色を当てない（バッジのみ）。抑止セレクタに 3 種すべてが載っていること。
+  //   ⚠ **1 ブロックに束ねられていることは要求しない**（セレクタごとに個別に探す）。束ね前提の正規表現に
+  //   すると、将来ルールを 2 つに分割しただけで**正しい CSS なのに fail する**（しかもメッセージが
+  //   「セレクタがありません」になり真因と食い違う）。ここで守りたいのは「抑止されているか」だけ。
+  for (const name of ["itemFirstTime", "itemLongAbsence", "itemFirstComment"]) {
+    const re = new RegExp(`^\\s*\\.item\\.itemTipCard\\.${name}\\s*[,{]`, "m");
+    if (!re.test(css)) {
+      fail(
+        `${VIEWER_CSS}: 課金カードの枠色抑止セレクタに \`.item.itemTipCard.${name}\` がありません（047b/051）。` +
+          `ヘッダ帯の色が主信号なので、判定の枠色をカードに当てると信号が競合します（判定は .tipChip で出ます）。`,
+      );
+    }
+  }
+  // (5-b') セレクタが残っていても宣言が消えていれば抑止は効かない（セレクタだけの検査は素通りする）。
+  //   セレクタは（現状）カンマで束ねられていて `ruleBody` の「セレクタ直後が `{`」に当たらないので、
+  //   一致位置から次のブロックを自前で切り出す。
+  const suppressAt = /^\s*\.item\.itemTipCard\.itemFirstTime\s*[,{]/m.exec(css);
+  const suppressOpen = suppressAt ? css.indexOf("{", suppressAt.index) : -1;
+  const suppressClose = suppressOpen === -1 ? -1 : css.indexOf("}", suppressOpen);
+  const suppressBody =
+    suppressClose === -1 ? null : css.slice(suppressOpen + 1, suppressClose);
+  if (!hasDecl(suppressBody, "border-color", ".+")) {
+    fail(
+      `${VIEWER_CSS}: 課金カードの枠色抑止ルールに \`border-color\` の宣言がありません（047b/051）。` +
+        `セレクタだけ残して宣言を消すと、判定の枠色がカードに出たままになります。`,
+    );
+  }
+  // (5-c) チップ色も同じ穴を持つ。「初コメは初見と同じ色」を値の重複ではなくセレクタの束ねで
+  //   担保しているので、`.badgeFirstComment` が束ねから外れると**無音で無彩色に戻る**
+  //   （CSS モジュールは存在しないキーでも文字列を返すため、コンポーネントのテストでは検出できない）。
+  const badgeRule = /^\s*\.badgeFirstTime\s*,\s*\n?\s*\.badgeFirstComment\s*\{/m.test(css);
+  if (!badgeRule) {
+    fail(
+      `${VIEWER_CSS}: \`.badgeFirstTime, .badgeFirstComment\` の束ねルールがありません（051）。` +
+        `「初コメのチップは初見と同じ色」を値の重複ではなくセレクタの束ねで担保しているため、` +
+        `外すと片方だけ色が変わる／初コメのチップが無彩色に戻る退行が無音で通ります。`,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 if (failures.length > 0) {
   console.error("CSS guard check FAILED:\n");
   for (const f of failures) console.error(`  - ${f}\n`);

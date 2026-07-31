@@ -14,6 +14,9 @@
  *     一切見ない**（features → screens の層の逆転を避けるための注入）。通常チャット・スパチャは従来どおり本文のみで、
  *     方針そのものは変えていない。
  * - id 冪等（単一注入点 = `mergeComments` の新規追加分から呼ばれる）。
+ * - **1 件が永久に詰まらない**（050）。直列なので 1 件が返らないと以後すべてが無音になるため、合成には
+ *   タイムアウト（`SYNTH_TIMEOUT_MS`）、再生には AudioContext 停止の検知（`PLAYBACK_STALL_CHECK_MS`）を置き、
+ *   どちらもその 1 件だけを諦めて次へ進む（`playing` が必ず false に戻る）。
  *
  * `enqueue` の整形パイプラインは **① 入力決定 → ② sanitize → ③ 読み替え(041a) → ④ 切り詰め(048) → ⑤ 空判定 → push**
  * の 5 段で、**分岐を増やさない単一チョークポイント**として維持する（049 は ① を `getSpeechText` へ差し替え済み）。
@@ -47,6 +50,56 @@ const MAX_BACKLOG = 6;
  * 到達した場合も通常キューと同じく古い未読から捨てる（最新優先）。
  */
 const MAX_PRIORITY_BACKLOG = 50;
+
+/**
+ * 050: 1 件あたりの合成（`synthesize`）の制限時間。超えたらその 1 件を諦めて次へ進む。
+ *
+ * **塞いでいるのは「ENGINE が生きているのに応答を返さない」ケース**（スリープ復帰後・モデルロードの
+ * スタック等）。従来は `synthesize` が永久 pending になり `playing` が true 固定＝**読み上げが止まったまま
+ * 二度と復帰しない**（しかも `GET /version` も無反応なら `engineRunning` が更新されず起動誘導バナーすら
+ * 出ないため、ユーザーにはアプリ再起動以外の復帰手段が無い）。ENGINE の停止・クラッシュは接続拒否で
+ * 即エラーになり既存の catch → バナー → 自動起動が働くので、こちらは元から詰まらない。
+ *
+ * 値の根拠: 1 件の読み上げ所要（048 の既定 60 文字＝10〜13 秒）と同オーダーに置き、「最悪でも 1 件分
+ * 余計に待つだけ」という上限にする。ENGINE 起動直後の初回合成（モデルロード）を誤って切らない余裕も要る。
+ * **タイムアウトは 2 回の fetch（`/audio_query` → `/synthesis`）とその body 読みの合計に掛かる**
+ * （守りたい不変条件が「1 件が 10 秒以上詰まらない」なので、合計予算として持つ）。
+ *
+ * ⚠ **合成 1 件の所要を実測して決めた値ではない（未実測の暫定値）**（050 レビュー Q-2）。上の根拠が
+ * 比べているのは**再生**時間（10〜13 秒）であって**合成**時間ではないので、余裕があるのは結果論。
+ * それでも安全側に倒してあるのは**リスクが非対称**だから——長すぎても最悪 1 件分待つだけだが、
+ * **短すぎると正常な読み上げが恒常的に飛び、通知が無いのでユーザーは気付けない**。
+ * 再調整トリガー: (a) 実機で合成 1 件の所要を測ったら、その**実測値**を基準に引き直す。
+ * (b) **ENGINE 起動直後の 1 件目が読まれない**ならモデルロードが 10 秒を超えている＝伸ばす
+ * （「起動して最初のコメントだけ読まれない」という形で出るので、原因に辿り着きにくい症状）。
+ * (c) 正常運用で読み上げが飛ぶ（＝合成が間に合っていない）なら伸ばす。
+ */
+const SYNTH_TIMEOUT_MS = 10_000;
+
+/**
+ * 050: 再生中に AudioContext が止まっていないかを見に行く間隔。
+ *
+ * 再生（`playWav`）にも従来は打ち切りが無く、**再生中**に AudioContext が suspended になると
+ * `src.onended` が発火せず `playing` が true 固定になった（`pump` 冒頭のガードは**再生前**しか見ないので
+ * 素通りする）。ここで**時間では切らない**（まだ鳴っている音を打ち切ってしまう）。`ctx.state` が
+ * running でなくなったこと＝**音が出ていない**ことを条件に打ち切るので、音が重なることはない。
+ *
+ * **`statechange` イベントを使わずポーリングにしているのは意図的**。そもそも塞ごうとしている相手が
+ * 「発火するはずの `onended` が発火しない」ケースである以上、命綱をイベントの発火に預けない。
+ * 1 件の再生中だけ動く 1 Hz のタイマー 1 本なので費用は無視できる。
+ *
+ * 既知の割り切り（いずれも意図的・050 レビュー Q-5/Q-6）:
+ * - **塞げるのは suspended 由来だけ**。`ctx.state` が running のまま `onended` が来ない事象や、
+ *   `decodeAudioData` が返らない事象は**依然ハングする**（どちらも既知の原因が無いので追いかけていない）。
+ *   ⚠ そのとき `playWav` が解決しないので**下の `clearInterval` にも到達せず、この 1 Hz タイマーが
+ *   `dispose` 後も回り続ける**（`ctx.close()` は `decodeAudioData` を解決させないため）。実害は
+ *   1 Hz のタイマー 1 本ぶんなので放置しているが、「解除漏れは無い」と読まないこと。
+ *   再検討条件＝実機で「running のまま無音が続く」を観測したら、そこで初めて原因を追う。
+ * - **猶予（連続判定）は入れていない**。1 tick でも running でなければ即打ち切る。出力デバイス切替等で
+ *   一瞬 suspended → 自動 resume するケースではまだ聞ける音を落とすが、実害はその 1 件だけ。
+ *   再検討条件＝実機で単発の打ち切りが耳に付くなら 2 tick 連続で判定する。
+ */
+const PLAYBACK_STALL_CHECK_MS = 1000;
 
 /** URL を除去する（`https?://…` の連続非空白）。 */
 const URL_RE = /https?:\/\/\S+/g;
@@ -232,15 +285,56 @@ export function createTtsQueue(options: TtsQueueOptions = {}): TtsQueue {
         console.debug("TTS: AudioContext が running でないため、この 1 件の読み上げをスキップしました");
         return;
       }
-      // `synthesize` は AbortSignal 対応だが、ここでは渡さない（in-flight の合成を dispose で中断しない）。
-      // 理由: 宛先は loopback 50021 のみで 1 件の合成は軽量、dispose 後は `disposed` ガードで再生を抑止する
-      // ため実害が無い（残るのは高々 1 件の完了済み合成の破棄）。
-      // 再検討条件: 実データ配線（032c-b/-d）で高頻度・長文合成が常態化し、アンマウント連打時の無駄合成が
-      // 目立つようになったら、queue に AbortController を持たせ dispose で abort する。
+      // 050: **`dispose` 中断とタイムアウト中断は別目的**なので、signal を混ぜない。
+      // - dispose では従来どおり中断しない: 宛先は loopback 50021 のみで 1 件の合成は軽量、dispose 後は
+      //   `disposed` ガードで再生を抑止するため実害が無い（残るのは高々 1 件の完了済み合成の破棄）。
+      //   再検討条件: アンマウント連打時の無駄合成が目立つようになったら、queue 側に別の AbortController を
+      //   持たせて dispose で abort する（下の 2 つとは別の signal にすること）。
+      //   ⚠ ただし**再生は dispose で間接的に打ち切られる**ようになった（050 レビュー Q-4）＝
+      //     `ctx.close()` で state が running でなくなり、下の watchdog が abort する。従来は `onended` が
+      //     来ず `playWav` が pending のまま残っていたので、これは意図した改善（Promise と source が回収される）。
+      // - 下で作る signal は 2 つとも**この 1 件を諦めるため**だけのもので、スコープも pump 1 回分に閉じる。
       // 033d: 選択話者（style id）で合成する。未選択/getter 未指定は既定 3（ずんだもんノーマル）を維持。
       const speaker = getSpeakerId?.() ?? ZUNDAMON_NORMAL_SPEAKER_ID;
-      const wav = await synthesize(text, speaker);
-      if (!disposed) await playWav(ctx, wav);
+      // 050(A): 合成が返らないまま張り付くのを塞ぐ。abort は AbortError として下の catch に落ち、
+      // 通常の合成失敗と同じ扱い（この 1 件を捨てて次へ）になる＝分岐を増やさない。
+      const synthController = new AbortController();
+      const synthTimer = setTimeout(
+        () => synthController.abort(),
+        SYNTH_TIMEOUT_MS,
+      );
+      let wav: ArrayBuffer;
+      try {
+        wav = await synthesize(text, speaker, synthController.signal);
+      } finally {
+        // 解除は**ここ**（外側の finally ではない）。合成が終わった時点でこのタイマーの役目は終わりで、
+        // 再生中（最長で数十秒）まで残すと 1 件ごとに宙ぶらりんのタイマーを抱えることになる。
+        // 加えて、将来タイムアウトを通常の合成失敗と区別したくなったとき、再生中の発火が誤検知になる
+        // 余地を最初から作らない（現状は区別していないので実害は無く、これは予防的な作法）。
+        clearTimeout(synthTimer);
+      }
+      if (disposed) return;
+      // 050(B): 再生中に AudioContext が止まったら諦める（suspended＝音は出ていないので打ち切っても
+      // 音が重ならない）。打ち切った次の 1 件は `pump` 冒頭の既存ガード（resume を試す／ダメなら
+      // その 1 件をスキップ）に入る＝**そちらの挙動は変えていない**。
+      const playController = new AbortController();
+      const stallTimer = setInterval(() => {
+        if (ctx.state === "running") return;
+        // `dispose`（`ctx.close()`）でもここに来るが、それは**正常な後始末であってストールではない**
+        // ので事象名と食い違うログを出さない（§9: デバッグに必要な情報だけを書く。050 レビュー S-2）。
+        // abort 自体は dispose でも必要（打ち切らないと `playWav` が pending のまま残る）。
+        if (!disposed) {
+          console.debug(
+            "TTS: 再生中に AudioContext が停止したため、この 1 件を打ち切りました",
+          );
+        }
+        playController.abort();
+      }, PLAYBACK_STALL_CHECK_MS);
+      try {
+        await playWav(ctx, wav, playController.signal);
+      } finally {
+        clearInterval(stallTimer);
+      }
     } catch (e) {
       // 合成/再生に失敗しても直列を止めず次へ継続する（ENGINE 停止などは誘導 UI 側で扱う）。
       console.error("VOICEVOX 読み上げに失敗しました", e);

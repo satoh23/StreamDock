@@ -808,3 +808,107 @@ describe("CommentList 047b 課金コメントのティアカード", () => {
     expect(screen.queryByText("スーパーチャット")).toBeNull();
   });
 });
+
+/**
+ * 051: **その配信で初めてしたコメント**に「初コメ」バッジ＋初見と同じ枠色を付ける仕様テスト。
+ *
+ * 仕様（こうあるべき）:
+ * - `firstOfStreamIds` に載っている id の行に **「初コメ」バッジ**が出て、**初見と同じ枠色クラス**が付く。
+ * - 判定は **1 行 1 信号**。優先順は **初見 > 久しぶり > 初コメ**（情報量の多い方を残す）。
+ *   ⚠ 038c の判定（初見/久しぶり）は論理的に「その配信の初コメント」に含まれる（`record_comment` は
+ *   **その視聴者の来訪 1 件目**にしか肯定を返さない）ので、排他にしないと ①久しぶり（青枠）と初コメ（緑枠）が
+ *   同じ行に同時に付いて勝敗が CSS のソース順で決まる ②「初見」と「初コメ」が二重に出る、の 2 つが起きる。
+ * - **課金カード × 初コメはバッジのみ**（枠に色を付けない）。ヘッダ帯の色が主信号なので枠まで意味を持たせない
+ *   ＝初見/久しぶりが既に受けている扱いと同じ（047b）。
+ * - `firstOfStreamIds` 未指定・非該当は従来どおり無装飾。
+ *
+ * ⚠ **このテストで守れるのは「誰にどのクラス/バッジが付くか」まで**。CSS モジュールは vitest 上で
+ * **存在しないキーでも文字列を返す**（実測: `styles.nonExistentKey` → `"_nonExistentKey_<hash>"`）ため、
+ * 「CSS 側にルールが無い／クラス名を打ち間違えた／色が初見と違う」状態はここでは緑のまま通る。
+ * その層は `scripts/check-css-guards.mjs` のガード (5) が押さえている（`pnpm test` から実行される）。
+ */
+describe("CommentList 051 初コメバッジと枠色", () => {
+  /** 行に付いたクラス名（CSS モジュールのローカル名は `_<key>_<hash>`）。 */
+  const rowClass = (text: string): string =>
+    screen.getByText(text).closest("li")?.className ?? "";
+
+  it("その配信で初めてしたコメントに「初コメ」バッジと初見と同じ枠色が付く", () => {
+    render(
+      <CommentList
+        comments={[
+          makeComment({ id: "c1", text: "はじめまして" }),
+          makeComment({ id: "c2", text: "二回目です" }),
+        ]}
+        firstOfStreamIds={new Set(["c1"])}
+      />,
+    );
+    expect(screen.getByText("初コメ")).toBeTruthy();
+    expect(rowClass("はじめまして")).toContain("itemFirstComment");
+    // 同じ視聴者の 2 件目は無装飾（「今日はじめて喋った人」という意味が薄まらない）。
+    expect(rowClass("二回目です")).not.toContain("itemFirstComment");
+  });
+
+  it("初見の行は「初見」だけ出す（初コメと二重に出さない・枠も初見のまま）", () => {
+    const badges = new Map<string, RecordResult>([
+      ["c1", { firstTime: true, longAbsence: false }],
+    ]);
+    render(
+      <CommentList
+        comments={[makeComment({ id: "c1", text: "しょけん" })]}
+        badges={badges}
+        firstOfStreamIds={new Set(["c1"])}
+      />,
+    );
+    expect(screen.getByText("初見")).toBeTruthy();
+    expect(screen.queryByText("初コメ")).toBeNull();
+    const cls = rowClass("しょけん");
+    expect(cls).toContain("itemFirstTime");
+    expect(cls).not.toContain("itemFirstComment");
+  });
+
+  it("久しぶりの行は「久しぶり」だけ出し、枠は青のまま（緑に上書きされない）", () => {
+    const badges = new Map<string, RecordResult>([
+      ["c1", { firstTime: false, longAbsence: true }],
+    ]);
+    render(
+      <CommentList
+        comments={[makeComment({ id: "c1", text: "ひさしぶり" })]}
+        badges={badges}
+        firstOfStreamIds={new Set(["c1"])}
+      />,
+    );
+    expect(screen.getByText("久しぶり")).toBeTruthy();
+    expect(screen.queryByText("初コメ")).toBeNull();
+    const cls = rowClass("ひさしぶり");
+    expect(cls).toContain("itemLongAbsence");
+    // 枠色が 2 つ付くと CSS のソース順で勝敗が決まる＝意図が読めない状態になる。
+    expect(cls).not.toContain("itemFirstComment");
+  });
+
+  it("課金カード × 初コメはバッジだけ出す（枠色はカード側の抑止に任せる）", () => {
+    render(
+      <CommentList
+        comments={[
+          makeComment({
+            id: "s1",
+            text: "おうえん",
+            eventType: "superchat",
+            monetaryAmount: "1,000 JPY",
+            monetary: { amount: 1000, currency: "JPY" },
+          }),
+        ]}
+        firstOfStreamIds={new Set(["s1"])}
+      />,
+    );
+    // バッジはヘッダ帯の中に出る（情報は落ちない）。
+    expect(screen.getByText("初コメ")).toBeTruthy();
+    // クラス自体は付くが、色は `.item.itemTipCard.itemFirstComment` が打ち消す（CSS guard (5-b) の担当）。
+    expect(rowClass("おうえん")).toContain("itemTipCard");
+  });
+
+  it("firstOfStreamIds 未指定・判定なしなら従来どおり無装飾", () => {
+    render(<CommentList comments={[makeComment({ id: "c1", text: "ふつう" })]} />);
+    expect(screen.queryByText("初コメ")).toBeNull();
+    expect(rowClass("ふつう")).not.toContain("itemFirstComment");
+  });
+});

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { capForSpeech, createTtsQueue, sanitizeForSpeech } from "./ttsQueue";
-import { synthesize } from "./voicevox";
+import { playWav, synthesize } from "./voicevox";
 import type { CommentViewDto } from "./types";
 
 /**
@@ -123,7 +123,15 @@ describe("sanitizeForSpeech（既存仕様の回帰）", () => {
  * ガード）ため、"suspended" のままだと `synthesize` が呼ばれず**意図と違う理由でアサートが落ちる**。
  */
 class FakeAudioContext {
+  /**
+   * 050: 直近に生成されたインスタンス。`createTtsQueue` は AudioContext を内部で 1 つ作って外へ出さないため、
+   * 「再生中に AudioContext が止まる」状況を作るにはここから掴むしかない。
+   */
+  static last: FakeAudioContext | null = null;
   state = "running";
+  constructor() {
+    FakeAudioContext.last = this;
+  }
   async resume(): Promise<void> {
     this.state = "running";
   }
@@ -360,5 +368,420 @@ describe("createTtsQueue の優先キュー（049 フォローアップ: 課金�
     // 1 件目は dispose 前に pump が取り出しているが、2 件目以降は読まれない。
     expect(spoken()).not.toContain("課金2");
     queue = null; // afterEach の二重 dispose を避ける
+  });
+});
+
+/**
+ * 050: **1 件が永久に詰まらない**ことの仕様テスト。
+ *
+ * 読み上げは FIFO 直列（`playing` フラグ）なので、1 件が返らないと**以後すべてが無音**になり、
+ * ユーザーにはアプリ再起動以外の復帰手段が無い。塞ぐ経路は 2 つ:
+ * - **合成が返らない**（ENGINE が生きているのに応答しない）→ `SYNTH_TIMEOUT_MS` で諦める。
+ *   ENGINE の停止・クラッシュは接続拒否で即エラーになるので元から詰まらない（対象外）。
+ * - **再生が終わらない**（再生中に AudioContext が suspended になると `onended` が発火しない）
+ *   → `ctx.state` の監視で諦める。**時間では切らない**（まだ鳴っている音を打ち切らないため）。
+ *
+ * どちらも「その 1 件だけを捨てて次へ進む」＝直列は止まらない。
+ * ⚠ この describe だけ **fake timers**（上の 2 つは real timers のまま）。fake timers 下では
+ * `setTimeout(resolve, 0)` の flush が進まないので、`vi.advanceTimersByTimeAsync` に置き換える。
+ */
+describe("createTtsQueue の永久ハング防止（050）", () => {
+  let queue: ReturnType<typeof createTtsQueue> | null = null;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    FakeAudioContext.last = null;
+    vi.stubGlobal("AudioContext", FakeAudioContext);
+  });
+  afterEach(() => {
+    queue?.dispose();
+    queue = null;
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  const spoken = (): string[] =>
+    vi.mocked(synthesize).mock.calls.map((args) => args[0]);
+  /** マイクロタスクと 0ms タイマーだけを進める（real timers 側の flush と同じ役割）。 */
+  const flush = async (): Promise<void> => {
+    await vi.advanceTimersByTimeAsync(0);
+  };
+  /** `createTtsQueue` が内部で作った AudioContext を掴む（外へ出していないため）。 */
+  const audioCtx = (): FakeAudioContext => {
+    const ctx = FakeAudioContext.last;
+    if (!ctx) throw new Error("AudioContext が生成されていない");
+    return ctx;
+  };
+
+  it("合成が返らないままでも諦めて次の 1 件へ進む", async () => {
+    // ENGINE が応答しない状況。実装と同じく「signal の abort で reject する」形にする
+    // （`fetch` は abort されると AbortError で reject する）。
+    vi.mocked(synthesize).mockImplementationOnce(
+      (_text, _speaker, signal) =>
+        new Promise<ArrayBuffer>((_resolve, reject) => {
+          signal?.addEventListener("abort", () =>
+            reject(new DOMException("Aborted", "AbortError")),
+          );
+        }),
+    );
+    queue = createTtsQueue();
+    queue.enqueue(dto({ id: "c1", text: "詰まる方" }));
+    queue.enqueue(dto({ id: "c2", text: "次の方" }));
+    await flush();
+    // 直列なので、1 件目が終わるまで 2 件目には進まない（＝これが詰まると全部詰まる）。
+    expect(spoken()).toEqual(["詰まる方"]);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(spoken()).toEqual(["詰まる方", "次の方"]);
+  });
+
+  it("正常に読み上げ終わったら、合成・再生の見張りタイマーを残さない", async () => {
+    queue = createTtsQueue();
+    queue.enqueue(dto({ id: "c1", text: "こんにちは" }));
+    await flush();
+    expect(spoken()).toEqual(["こんにちは"]);
+
+    // 解除漏れがあると、1 件読むたびにタイマーが積み上がる（合成 10 秒 / 再生の監視は 1 秒間隔で永続）。
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("再生中に AudioContext が止まったら、その 1 件を打ち切って次へ進む", async () => {
+    // 再生中に suspended になると onended が発火しない＝この Promise は解決しない、という状況の再現。
+    // 実装と同じく「signal の abort で resolve する」形にする（打ち切りは異常ではないので reject しない）。
+    vi.mocked(playWav).mockImplementationOnce(
+      (_ctx, _wav, signal) =>
+        new Promise<void>((resolve) => {
+          signal?.addEventListener("abort", () => resolve());
+        }),
+    );
+    queue = createTtsQueue();
+    queue.enqueue(dto({ id: "c1", text: "再生が終わらない方" }));
+    queue.enqueue(dto({ id: "c2", text: "次の方" }));
+    await flush();
+    expect(spoken()).toEqual(["再生が終わらない方"]);
+
+    // 背面に回る等で AudioContext が止まる。
+    audioCtx().state = "suspended";
+    await vi.advanceTimersByTimeAsync(1000);
+
+    // 打ち切って次へ。2 件目は pump 冒頭の既存ガードが resume を試すので読み上げられる。
+    expect(spoken()).toEqual(["再生が終わらない方", "次の方"]);
+  });
+
+  it("AudioContext が動いている限り、長い再生でも時間では打ち切らない", async () => {
+    let aborted = false;
+    vi.mocked(playWav).mockImplementationOnce(
+      (_ctx, _wav, signal) =>
+        new Promise<void>((resolve) => {
+          signal?.addEventListener("abort", () => {
+            aborted = true;
+            resolve();
+          });
+          setTimeout(resolve, 30_000); // 30 秒鳴り続ける 1 件（上限 200 文字なら現実に起こる長さ）。
+        }),
+    );
+    queue = createTtsQueue();
+    queue.enqueue(dto({ id: "c1", text: "長い方" }));
+    queue.enqueue(dto({ id: "c2", text: "次の方" }));
+    await flush();
+
+    await vi.advanceTimersByTimeAsync(29_000);
+    // まだ鳴っているので打ち切ってはいけない（打ち切ると音が途切れる／次と重なる）。
+    expect(aborted).toBe(false);
+    expect(spoken()).toEqual(["長い方"]);
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(aborted).toBe(false);
+    expect(spoken()).toEqual(["長い方", "次の方"]);
+  });
+
+  it("合成が例外を投げても直列は止まらない（既存挙動の回帰）", async () => {
+    vi.mocked(synthesize).mockRejectedValueOnce(new Error("ENGINE 停止"));
+    queue = createTtsQueue();
+    queue.enqueue(dto({ id: "c1", text: "失敗する方" }));
+    queue.enqueue(dto({ id: "c2", text: "次の方" }));
+    await flush();
+
+    expect(spoken()).toEqual(["失敗する方", "次の方"]);
+  });
+
+  /**
+   * ⚠ **この 2 ケースは `SYNTH_TIMEOUT_MS`（既定 10 秒）の値そのものを仕様として固定している**。
+   * 定数を import すると「実装と同じものを実装と比べる」恒真式になり値の妥当性を固定できないので、
+   * `SPEECH_ELLIPSIS` と同じ作法で**意図的にリテラルで書いている**。実機確認で値を変えるときは
+   * ここの 9_000 / 1_000 / 10_000 も同時に直すこと（＝値を変える人が必ずこの仕様に気付く）。
+   *
+   * なぜ「切る」だけでなく「**切らない**」側を固定するのか: 短すぎると正常な読み上げが恒常的に飛び、
+   * しかも通知が無いのでユーザーは気付けない（050 レビュー Q-2 のリスク非対称性）。
+   */
+  it("合成は 10 秒までは打ち切らない（短すぎると正常な読み上げが黙って飛ぶ）", async () => {
+    let aborted = false;
+    vi.mocked(synthesize).mockImplementationOnce(
+      (_text, _speaker, signal) =>
+        new Promise<ArrayBuffer>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => {
+            aborted = true;
+            reject(new DOMException("Aborted", "AbortError"));
+          });
+        }),
+    );
+    queue = createTtsQueue();
+    queue.enqueue(dto({ id: "c1", text: "時間のかかる合成" }));
+    queue.enqueue(dto({ id: "c2", text: "次の方" }));
+    await flush();
+
+    await vi.advanceTimersByTimeAsync(9_000);
+    expect(aborted).toBe(false);
+    expect(spoken()).toEqual(["時間のかかる合成"]);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(aborted).toBe(true);
+    expect(spoken()).toEqual(["時間のかかる合成", "次の方"]);
+  });
+
+  it("タイムアウトは 1 件ごとに張り直される（前の 1 件の待ち時間を持ち越さない）", async () => {
+    // 守りたい不変条件は「**1 件が** 10 秒以上詰まらない」。キュー全体の予算にしてしまうと、
+    // 2 件目以降が前の 1 件の待ち時間を食って不当に短い時間で切られる。
+    const hang = (
+      _text: string,
+      _speaker?: number,
+      signal?: AbortSignal,
+    ): Promise<ArrayBuffer> =>
+      new Promise((_resolve, reject) => {
+        signal?.addEventListener("abort", () =>
+          reject(new DOMException("Aborted", "AbortError")),
+        );
+      });
+    vi.mocked(synthesize)
+      .mockImplementationOnce(hang)
+      .mockImplementationOnce(hang);
+    queue = createTtsQueue();
+    queue.enqueue(dto({ id: "c1", text: "詰まる1" }));
+    queue.enqueue(dto({ id: "c2", text: "詰まる2" }));
+    queue.enqueue(dto({ id: "c3", text: "正常" }));
+    await flush();
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(spoken()).toEqual(["詰まる1", "詰まる2"]);
+
+    // 2 件目はここでまだ 9 秒しか経っていない＝切られてはいけない。
+    await vi.advanceTimersByTimeAsync(9_000);
+    expect(spoken()).toEqual(["詰まる1", "詰まる2"]);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(spoken()).toEqual(["詰まる1", "詰まる2", "正常"]);
+  });
+
+  it("打ち切った後も直列は健在（後続が続けて読まれる）", async () => {
+    vi.mocked(playWav).mockImplementationOnce(
+      (_ctx, _wav, signal) =>
+        new Promise<void>((resolve) => {
+          signal?.addEventListener("abort", () => resolve());
+        }),
+    );
+    queue = createTtsQueue();
+    queue.enqueue(dto({ id: "c1", text: "打ち切られる方" }));
+    queue.enqueue(dto({ id: "c2", text: "次の方" }));
+    queue.enqueue(dto({ id: "c3", text: "その次の方" }));
+    await flush();
+
+    audioCtx().state = "suspended";
+    await vi.advanceTimersByTimeAsync(1000);
+    // 打ち切り後は `pump` 冒頭の既存ガードが resume を試すので、残りは普通に読まれる。
+    expect(spoken()).toEqual(["打ち切られる方", "次の方", "その次の方"]);
+  });
+
+  it("合成中に dispose されたら、返ってきた結果を再生しない", async () => {
+    // 「dispose では合成を中断しない」という設計が成立する根拠そのもの＝中断しない代わりに
+    // `disposed` ガードで再生を抑止する。ここが壊れると、閉じたはずの窓から音が出る。
+    let release: (wav: ArrayBuffer) => void = () => {};
+    vi.mocked(synthesize).mockImplementationOnce(
+      () =>
+        new Promise<ArrayBuffer>((resolve) => {
+          release = resolve;
+        }),
+    );
+    queue = createTtsQueue();
+    queue.enqueue(dto({ id: "c1", text: "合成中に閉じる" }));
+    await flush();
+
+    queue.dispose();
+    release(new ArrayBuffer(0)); // dispose の**後**に合成が返る＝実機で起きる順序
+    await flush();
+
+    expect(playWav).not.toHaveBeenCalled();
+    queue = null; // afterEach の二重 dispose を避ける
+  });
+
+  it("dispose 中の in-flight 再生は打ち切られ、見張りタイマーも残らない", async () => {
+    // 従来は dispose しても `playWav` が `onended` を待ち続け（closed な ctx では発火しない）、
+    // Promise と source が回収されないまま残っていた。050(B) の副作用として解消された分の固定。
+    vi.mocked(playWav).mockImplementationOnce(
+      (_ctx, _wav, signal) =>
+        new Promise<void>((resolve) => {
+          signal?.addEventListener("abort", () => resolve());
+        }),
+    );
+    queue = createTtsQueue();
+    queue.enqueue(dto({ id: "c1", text: "再生中に閉じる" }));
+    await flush();
+
+    queue.dispose();
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(vi.getTimerCount()).toBe(0);
+    queue = null;
+  });
+});
+
+/**
+ * 050 ＋ docs/security.md §9: **ログに読み上げテキストを出さない**ことの仕様テスト。
+ *
+ * 根拠（050 タスクファイル「このタスクでやらないこと」）: 「`console.error` / `console.debug` へ
+ * **URL・リクエスト内容・読み上げテキストを出さないこと**。出してよいのは**件数と理由**のみ」。
+ * 049 追補（security.md §1 例外 032c-c）で**課金イベントの読み上げには投稿者の表示名が入る**ため、
+ * 読み上げテキストの流出はそのまま第三者の個人情報の流出になる。
+ *
+ * デバッグのために本文を 1 つログへ足す、というのは**最もやりがちな退行**なので、
+ * 「黙って捨てる 3 経路」すべてについて、そのログに本文・投稿者名が現れないことを表明する。
+ */
+describe("createTtsQueue のログ（§9: 読み上げテキストを漏らさない）", () => {
+  let queue: ReturnType<typeof createTtsQueue> | null = null;
+  let debugSpy: ReturnType<typeof vi.spyOn>;
+  let errorSpy: ReturnType<typeof vi.spyOn>;
+
+  /** 課金イベントの読み上げ文言を模した、ログに出てはいけない文字列（投稿者名を含む）。 */
+  const SECRET = "Aliceさんがメンバーシップを6ヶ月継続しました";
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    FakeAudioContext.last = null;
+    vi.stubGlobal("AudioContext", FakeAudioContext);
+    debugSpy = vi.spyOn(console, "debug").mockImplementation(() => {});
+    errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    queue?.dispose();
+    queue = null;
+    debugSpy.mockRestore();
+    errorSpy.mockRestore();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  const flush = async (): Promise<void> => {
+    await vi.advanceTimersByTimeAsync(0);
+  };
+  const audioCtx = (): FakeAudioContext => {
+    const ctx = FakeAudioContext.last;
+    if (!ctx) throw new Error("AudioContext が生成されていない");
+    return ctx;
+  };
+  /** console へ渡された全引数を 1 本の文字列に潰す（Error は message/stack まで見る）。 */
+  const logged = (): string =>
+    [...debugSpy.mock.calls, ...errorSpy.mock.calls]
+      .flat()
+      .map((arg) =>
+        arg instanceof Error
+          ? `${arg.name} ${arg.message} ${arg.stack ?? ""}`
+          : String(arg),
+      )
+      .join("\n");
+
+  it("backlog 破棄のログは件数だけで、捨てたコメントの本文を出さない", async () => {
+    queue = createTtsQueue();
+    for (let i = 0; i < 30; i++) {
+      queue.enqueue(dto({ id: `c${i}`, text: `${SECRET}${i}` }));
+    }
+    await flush();
+
+    expect(logged()).toContain("破棄");
+    expect(logged()).not.toContain(SECRET);
+  });
+
+  it("合成が失敗したときのログに読み上げテキストを出さない", async () => {
+    vi.mocked(synthesize).mockRejectedValueOnce(new Error("ENGINE 停止"));
+    queue = createTtsQueue();
+    queue.enqueue(dto({ id: "c1", text: SECRET }));
+    await flush();
+
+    expect(logged()).toContain("VOICEVOX 読み上げに失敗しました");
+    expect(logged()).not.toContain(SECRET);
+  });
+
+  it("合成タイムアウト（AbortError）でも読み上げテキストを出さない", async () => {
+    // 050(A) で **AbortError が既存の catch へ新しく流れ込むようになった**経路の確認。
+    vi.mocked(synthesize).mockImplementationOnce(
+      (_text, _speaker, signal) =>
+        new Promise<ArrayBuffer>((_resolve, reject) => {
+          signal?.addEventListener("abort", () =>
+            reject(new DOMException("Aborted", "AbortError")),
+          );
+        }),
+    );
+    queue = createTtsQueue();
+    queue.enqueue(dto({ id: "c1", text: SECRET }));
+    await flush();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(logged()).not.toContain(SECRET);
+  });
+
+  it("再生の打ち切りログは事象名だけで、読み上げテキストを出さない", async () => {
+    vi.mocked(playWav).mockImplementationOnce(
+      (_ctx, _wav, signal) =>
+        new Promise<void>((resolve) => {
+          signal?.addEventListener("abort", () => resolve());
+        }),
+    );
+    queue = createTtsQueue();
+    queue.enqueue(dto({ id: "c1", text: SECRET }));
+    await flush();
+    audioCtx().state = "suspended";
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(logged()).toContain("再生中に AudioContext が停止した");
+    expect(logged()).not.toContain(SECRET);
+  });
+
+  it("dispose による打ち切りは「ストール」として記録しない（正常な後始末なので）", async () => {
+    // `ctx.close()` でも watchdog の条件（state !== "running"）は成立するが、それは正常な後始末。
+    // 事象名と食い違うログを出すと診断価値が下がる（§9「デバッグに必要な情報だけを書く」）。
+    vi.mocked(playWav).mockImplementationOnce(
+      (_ctx, _wav, signal) =>
+        new Promise<void>((resolve) => {
+          signal?.addEventListener("abort", () => resolve());
+        }),
+    );
+    queue = createTtsQueue();
+    queue.enqueue(dto({ id: "c1", text: SECRET }));
+    await flush();
+
+    queue.dispose();
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(logged()).not.toContain("再生中に AudioContext が停止した");
+    queue = null;
+  });
+
+  it("打ち切りログは 1 回だけで、毎秒出続けない（watchdog が回りっぱなしにならない）", async () => {
+    vi.mocked(playWav).mockImplementationOnce(
+      (_ctx, _wav, signal) =>
+        new Promise<void>((resolve) => {
+          signal?.addEventListener("abort", () => resolve());
+        }),
+    );
+    queue = createTtsQueue();
+    queue.enqueue(dto({ id: "c1", text: SECRET }));
+    await flush();
+    audioCtx().state = "suspended";
+
+    await vi.advanceTimersByTimeAsync(5000);
+    const stallLogs = debugSpy.mock.calls
+      .flat()
+      .filter((arg: unknown) =>
+        String(arg).includes("再生中に AudioContext が停止した"),
+      );
+    expect(stallLogs).toHaveLength(1);
   });
 });

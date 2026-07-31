@@ -1,6 +1,10 @@
 import { describe, it, expect } from "vitest";
 import type { CommentViewDto } from "../../features/comment-viewer/types";
-import { MONETARY_MAX, mergeMonetary } from "./monetaryFeed";
+import {
+  MONETARY_HARD_MAX,
+  MONETARY_MAX,
+  mergeMonetary,
+} from "./monetaryFeed";
 
 /**
  * 047: 課金ティッカーの蓄積ロジック（`mergeMonetary`）の仕様テスト。
@@ -151,5 +155,86 @@ describe("mergeMonetary 047 課金ティッカーの蓄積", () => {
     const incoming = [comment({ id: "m1", eventType: "membership" })];
     const once = mergeMonetary([], incoming);
     expect(mergeMonetary(once, incoming)).toBe(once);
+  });
+});
+
+/**
+ * 047f（実機不具合）: **未読は上限で捨てない**ことの仕様テスト。
+ *
+ * 実機報告は「課金チャットの未読数が 50 件以上数えられない」だったが、バッジの頭打ちは症状の一部で、
+ * 本体は**未読のまま帯から消えた投げ銭は二度と押せない＝見逃す**こと。本 module の docstring が
+ * `MAX_COMMENTS`(=200) について「機能の目的を直接壊す」と警告しているのと**同じ壊れ方**を、
+ * 自前の 50 件クランプで起こしていた。
+ *
+ * あるべき挙動（049 フォローアップの TTS 優先キューと同じ判断軸＝「見逃したくないものは捨てない」）:
+ * - 未読は `MONETARY_MAX` を超えても残る。捨てるのは**既読から古い順**。
+ * - 結果として「**未読数 ＝ 押せるピルの数**」が常に一致する（押せない未読が生まれない）。
+ * - `isRead` **未注入なら従来と完全に同じ**（後方互換）。
+ * - 未読だけで `MONETARY_HARD_MAX` に達したら、そこは資源の防御として最古から捨てる。
+ */
+describe("mergeMonetary 047f 未読は上限で捨てない", () => {
+  /** 課金コメントを新しい順（引数は古い順）に n 件作る。 */
+  const paid = (n: number, prefix = "m"): CommentViewDto[] =>
+    Array.from({ length: n }, (_, i) =>
+      comment({ id: `${prefix}${i}`, eventType: "donation" }),
+    );
+
+  it("未読は MONETARY_MAX を超えても捨てない（＝未読数が 50 で頭打ちにならない）", () => {
+    const many = paid(MONETARY_MAX + 20); // 70 件すべて未読
+    const next = mergeMonetary([], many, () => false);
+
+    expect(next).toHaveLength(MONETARY_MAX + 20);
+    // 最初に届いた 1 件目（＝いちばん古い未読）も残っている＝押して既読にできる。
+    expect(next.map((c) => c.id)).toContain("m0");
+  });
+
+  it("上限超過分は既読から古い順に捨て、未読は残す", () => {
+    const many = paid(MONETARY_MAX + 10); // 60 件
+    // 古い方 20 件（m0〜m19）だけ既読。超過は 10 件なので、そのうち最古 10 件（m0〜m9）が捨てられる。
+    const read = new Set(paid(20).map((c) => c.id));
+    const next = mergeMonetary([], many, (id) => read.has(id));
+
+    expect(next).toHaveLength(MONETARY_MAX);
+    const ids = next.map((c) => c.id);
+    expect(ids).not.toContain("m0"); // 既読・最古 → 捨てる
+    expect(ids).not.toContain("m9");
+    expect(ids).toContain("m10"); // 既読だが超過分を使い切ったので残る
+    expect(ids).toContain("m20"); // 未読 → 必ず残る
+  });
+
+  it("既読を使い切ったら未読は落とさない（未読数が上限を上書きする）", () => {
+    const many = paid(MONETARY_MAX + 30); // 80 件
+    // 既読は 5 件しかない＝超過 30 件に足りない。未読は 1 件も落とさない。
+    const read = new Set(["m0", "m1", "m2", "m3", "m4"]);
+    const next = mergeMonetary([], many, (id) => read.has(id));
+
+    expect(next).toHaveLength(MONETARY_MAX + 30 - 5);
+    expect(next.filter((c) => !read.has(c.id))).toHaveLength(MONETARY_MAX + 25);
+    expect(next.map((c) => c.id)).not.toContain("m0"); // 既読は捨てられた
+  });
+
+  it("並び（先頭＝最新）は捨てたあとも壊れない", () => {
+    const many = paid(MONETARY_MAX + 4);
+    const read = new Set(["m1", "m3"]);
+    const next = mergeMonetary([], many, (id) => read.has(id));
+
+    // 到着順の逆＝id の降順に並んでいること（間引いても相対順序は保たれる）。
+    const nums = next.map((c) => Number(c.id.slice(1)));
+    expect(nums).toEqual([...nums].sort((a, b) => b - a));
+    expect(next[0].id).toBe(`m${MONETARY_MAX + 3}`);
+  });
+
+  it("未読だけで防御上限に達したら、そこは最古から捨てる（資源の防御）", () => {
+    const many = paid(MONETARY_HARD_MAX + 10);
+    const next = mergeMonetary([], many, () => false);
+
+    expect(next).toHaveLength(MONETARY_HARD_MAX);
+    expect(next[0].id).toBe(`m${MONETARY_HARD_MAX + 9}`); // 最新は残る
+    expect(next.map((c) => c.id)).not.toContain("m0"); // 最古から捨てる
+  });
+
+  it("isRead 未注入なら従来どおり MONETARY_MAX で機械的に切る（後方互換）", () => {
+    const many = paid(MONETARY_MAX + 5);
+    expect(mergeMonetary([], many)).toHaveLength(MONETARY_MAX);
   });
 });

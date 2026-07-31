@@ -90,6 +90,13 @@ export async function fetchSpeakers(signal?: AbortSignal): Promise<VoicevoxSpeak
  * `text` を VOICEVOX で合成し、WAV を `ArrayBuffer` で返す。
  * (1) `POST /audio_query?text=&speaker=`（text/speaker はクエリパラメータ・body 空）→ query JSON
  * (2) `POST /synthesis?speaker=`（body = query JSON）→ WAV(`ArrayBuffer`)
+ *
+ * ⚠ **(1) の URL には読み上げ全文が載る**（049 以降は課金イベントの投稿者名を含む）。だから本モジュールは
+ * `console.*` を **1 行も持たない**（docs/security.md §9）——ここにログを足さないこと。
+ * なお DevTools には失敗/中断した fetch の URL が**ブラウザ機能として**出る——ネットワークパネルだけでなく
+ * **Console にも出る**（Chromium 系は接続失敗時に `POST http://127.0.0.1:50021/audio_query?text=… net::ERR_…`
+ * を自動で書く）。アプリのログ出力ではないので §9 の対象外だが、**診断のスクショを共有するときは
+ * Console 側にも読み上げ全文＋投稿者名が写る**ので必ずマスクすること（050 の E2E-10）。
  */
 export async function synthesize(
   text: string,
@@ -123,15 +130,65 @@ export async function synthesize(
 /**
  * WAV(`ArrayBuffer`) を渡された `AudioContext` で 1 回だけ再生し、`onended` で解決する。
  * AudioContext の生成/resume/close は呼び出し側の責務（直列再生の制御は ttsQueue が持つ）。
+ *
+ * 050: `signal` で**再生の打ち切り**を受け付ける（省略時は従来と完全に同じ）。目的は
+ * **永久ハングを塞ぐこと**——再生中に AudioContext が suspended になると `src.onended` が発火せず、
+ * この Promise が永久 pending になって ttsQueue の `playing` が true 固定になる（アプリ再起動以外に
+ * 復帰手段が無くなる）。呼び出し側は **`ctx.state` が running でなくなったときだけ** abort する契約で、
+ * 「まだ鳴っている音」を時間で打ち切ることはしない。
+ *
+ * 打ち切りでは **`stop()` ＋ `disconnect()` まで行う**。stop だけだと、後で `ctx.resume()` された瞬間に
+ * この source が息を吹き返し、既に次の 1 件を再生している ttsQueue と**音が重なる**（直列＝音が重ならない、
+ * という中核設計が壊れる）。suspended 中は音が出ていないので、この打ち切り自体は無音を生まない。
+ * **reject ではなく resolve する**のは、打ち切りが異常ではない（諦めた 1 件を捨てて次へ進むだけ）ため
+ * ——呼び出し側の catch（合成失敗のログ）を汚さない。
  */
-export async function playWav(ctx: AudioContext, wav: ArrayBuffer): Promise<void> {
+export async function playWav(
+  ctx: AudioContext,
+  wav: ArrayBuffer,
+  signal?: AbortSignal,
+): Promise<void> {
   // decodeAudioData が入力 ArrayBuffer を破壊的に消費する実装があるため slice で複製して渡す。
   const buffer = await ctx.decodeAudioData(wav.slice(0));
   await new Promise<void>((resolve) => {
+    // decode 中に打ち切られていたら鳴らさずに終える（start してから即 stop する無駄を避ける）。
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
     const src = ctx.createBufferSource();
     src.buffer = buffer;
     src.connect(ctx.destination);
-    src.onended = () => resolve();
+    const onAbort = () => {
+      // suspended 中は onended が発火しないため、stop() 任せにせず自分で解決する。
+      //
+      // ⚠ **後始末が失敗しても必ず `resolve()` に到達させる**（050 レビュー Q-1）。このハンドラは
+      // abort イベントのディスパッチ中に走るので、ここで投げた例外は `controller.abort()` の呼び出し側へ
+      // 伝わらず**その場で握り潰される**——`resolve()` を飛ばすとこの Promise が永久 pending になり、
+      // **ハング防止のコードがハングを作る**（呼び出し側の watchdog も `clearInterval` に到達できず
+      // 1 Hz で回り続ける）。`disconnect()` は仕様上は投げないが、`ctx.close()` 済み（ttsQueue の
+      // dispose 経路）でこのハンドラが走る経路が実在し、閉じた context のノード操作は実装差が出やすい。
+      // 例外を**外へ出さない**のも意図的（escape すると `window.onerror` に飛ぶだけで誰も直せない。
+      // 解決さえしていれば実害は無い）。
+      try {
+        // stop の失敗で disconnect を飛ばさないよう、内側でも握る。音が重ならない保証は
+        // disconnect の側にあるので、こちらを落とす方が高くつく。
+        try {
+          src.stop();
+        } catch {
+          /* 未 start / 二重 stop は無害（打ち切りが目的で、状態は問わない） */
+        }
+        src.disconnect();
+      } catch {
+        /* closed な context でのノード操作失敗など。打ち切りの本義は「必ず解決すること」なので無視する */
+      }
+      resolve();
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    src.onended = () => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    };
     src.start();
   });
 }

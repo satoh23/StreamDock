@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import type { CommentViewDto } from "../../features/comment-viewer/types";
 import styles from "./CommentViewerApp.module.css";
 import { MonetaryDetailDialog } from "./MonetaryDetailDialog";
@@ -45,6 +45,7 @@ import {
  *   フォーカス可能な子孫を含むスクロール領域はキーボード到達可能とみなされる（axe の
  *   `scrollable-region-focusable` も PASS）ため、ピルが実 `<button>` である限り不要。
  *   再修正トリガー: トラックの中身をボタン以外（テキストのみのピル等）に変えるとき。
+ * - **縦ホイールを横スクロールへ変換する**（047f・実機不具合）。詳細は `setTrack` の JSDoc。
  */
 
 interface MonetaryTickerProps {
@@ -72,11 +73,63 @@ export function MonetaryTicker({ items, readIds, onRead }: MonetaryTickerProps) 
   // 再修正トリガー: MONETARY_MAX を大きく下げる／ダイアログを開いたまま放置する運用が普通になったとき。
   const selected = items.find((c) => c.id === openId) ?? null;
 
+  /**
+   * 047f（実機不具合）: **縦ホイールを横スクロールへ変換する**トラックの ref。
+   *
+   * 背景: 047d で横スクロールバーを消した（帯の内側の高さを食ってピルが上下に切れる不具合の対処）。
+   * そのときの申し送りは「操作性は落とさない＝Tab の自動横スクロールとトラックパッド/Shift+ホイールが効く」
+   * だったが、**マウス（ホイールのみ）が想定から漏れていた**。スクロールバーも無いので、マウス利用時は
+   * 横へ動かす手段が実質ゼロだった（依頼者の環境がまさにマウス接続）。
+   *
+   * 実装上の落とし穴が 2 つあるので、素直に書けない:
+   * 1. **React の `onWheel` は使えない**。React は `wheel` を root へ **passive** で登録するため、
+   *    ハンドラ内の `preventDefault()` が無視される（＝親が縦に動くのを止められない）。
+   *    `addEventListener(..., { passive: false })` を自分で張る必要がある。
+   * 2. **`useRef` ＋ `useEffect([])` では付かない**。このコンポーネントは課金 0 件のとき `return null` し、
+   *    ティッカーは「初回 0 件 → 課金が来て初めて描画」なので、`[]` deps の effect は **ref が null の
+   *    初回に 1 度走って終わり**、実際のトラックには一生 listener が付かない。
+   *    そこで **callback ref**（React 19 はクリーンアップ関数を返せる）で attach/detach する。
+   *    ⚠ **React 19 の機能に依存している**（`package.json` は `react: ^19.1.0`）。18 以前へ落とすと
+   *    返したクリーンアップが**無視され、無音でリスナが外れなくなる**（要素の付け外し・アンマウントで漏れる）。
+   *    その場合は `useRef` ＋ 要素の有無を state で持つ effect へ書き換えること。
+   *
+   * 挙動の決め:
+   * - **`deltaX !== 0` のときは何もしない**（トラックパッドの横スワイプは既にブラウザ標準で効いており、
+   *   二重に動かすと倍速になる）。
+   * - **実際に横へ動かせるときだけ `preventDefault()`**。溢れていない／端に達しているときは既定動作へ流す
+   *   （＝標準のスクロールチェーン。常に止めると、ピルが少ないときホイールが「死んだ」ように感じる）。
+   * - `deltaMode === DOM_DELTA_LINE`(1) は行単位で届くので 16px 換算する（Windows のマウスで出る）。
+   * - **`DOM_DELTA_PAGE`(2) は扱わず既定動作へ流す**。ページ単位の `deltaY`（±1 程度）を px として
+   *   解釈すると「1px しか動かないのに `preventDefault()` で親の縦スクロールだけ殺す」という最悪の
+   *   組み合わせになる。現代のブラウザはまず出さないので、換算式を増やすより**知らない単位に手を
+   *   出さない**方を選ぶ。再修正トリガー＝実機で `deltaMode === 2` が観測されたら換算を足す。
+   */
+  const setTrack = useCallback((el: HTMLDivElement | null) => {
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaX !== 0) return;
+      if (e.deltaMode !== 0 && e.deltaMode !== 1) return;
+      const step = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+      const max = el.scrollWidth - el.clientWidth;
+      if (max <= 0) return;
+      const next = Math.max(0, Math.min(max, el.scrollLeft + step));
+      if (next === el.scrollLeft) return;
+      e.preventDefault();
+      el.scrollLeft = next;
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+
   if (items.length === 0) return null;
 
-  // 【レビュー・修正不要】未読件数は毎レンダー reduce で数え直す（useMemo を使わない）。items は
-  // MONETARY_MAX(=50) 件が上限で、`CommentList` の「renderDefaultItem は毎レンダー再生成・200 件では
-  // 無視できる」と同じ判断に揃えている。再修正トリガー: MONETARY_MAX を桁で増やすとき。
+  // 【レビュー・修正不要】未読件数は毎レンダー reduce で数え直す（useMemo を使わない）。
+  // `CommentList` の「renderDefaultItem は毎レンダー再生成・200 件では無視できる」と同じ判断に揃えている。
+  // 047f: 上限規則が変わり **items は「未読数 と MONETARY_MAX(=50) の大きい方」**（防御上限
+  // `MONETARY_HARD_MAX`=500 まで）になった。通常運用ではピルを押すたび既読化されるので 50 前後に収束し、
+  // 500 に張り付くのは「一度も押していない」異常系だけなので、判断は据え置く。
+  // 再修正トリガー: 実機で未読が数百件たまるのが常態化したとき（そのときは useMemo ではなく
+  // 「そもそも押させる導線」の問題として扱うこと）。
   const unreadCount = items.reduce(
     (n, c) => (readIds.has(c.id) ? n : n + 1),
     0,
@@ -93,7 +146,7 @@ export function MonetaryTicker({ items, readIds, onRead }: MonetaryTickerProps) 
           )}
         </div>
 
-        <div className={styles.tickerTrack}>
+        <div className={styles.tickerTrack} ref={setTrack}>
           {items.map((c) => {
             const isRead = readIds.has(c.id);
             // 043b と同じ整形（ビッツは superchat＋BITS で届くのでラベルだけ振り替わる）。重複実装しない。

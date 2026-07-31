@@ -331,6 +331,19 @@
   border-color: var(--info);
 }
 
+/* 051: 「その配信で初めてしたコメント」の枠色。**初見と同じ ok 緑**（依頼者の指定）で、
+   「初コメ」バッジと対で出す。初見/久しぶりとは `CommentList` 側の else if 連鎖で**排他**になっており
+   （優先順＝初見 > 久しぶり > 初コメ）、同じ行に 2 つの枠色が付くことはない。
+
+   ⚠ 当初は「本文を太字」にしていたが、実機で**分かりにくい**と判断され、038c と同じ
+   「バッジ＋枠色」へ寄せた（3 種すべてが同じ表現方式で揃う）。太字は完全に撤去してある。
+   ⚠ **このルールは `scripts/check-css-guards.mjs` のガード (5) が存在を検査している**。クラス名を変える・
+   ルールを消す場合はそちらも直すこと（CSS モジュールは vitest 上で**存在しないキーでも文字列を返す**ため、
+   コンポーネント側のテストだけでは「CSS 側にルールが無い」退行を検出できない）。 */
+.itemFirstComment {
+  border-color: var(--ok);
+}
+
 /* 047b: 課金コメント行の YouTube スパチャ意匠カード（色付きヘッダ帯＋同系の淡色ボディ）。
    **043b の赤枠強調（旧 .itemMonetary）を置き換えたもの。** 赤枠は「お金＝赤」という 1 ビットしか伝えず、
    実機で「見にくい／額が分からない」となったため、色そのものに金額の情報を持たせるティア配色へ移行した
@@ -427,9 +440,12 @@
 }
 
 /* 課金カードには 038c の枠色（初見/久しぶり）を当てない。ヘッダ帯の色が主信号で、枠まで別の意味を持つと
-   信号が競合するため。判定は .tipChip としてヘッダ内に出るので情報は落ちない。 */
+   信号が競合するため。判定は .tipChip としてヘッダ内に出るので情報は落ちない。
+   051: 「初コメ」も同じ扱い（**課金 × 初コメはバッジのみ・枠に色を付けない**＝依頼者の指定。
+   結果として 3 種の判定すべてが課金カード上では同じ扱いに揃う）。 */
 .item.itemTipCard.itemFirstTime,
-.item.itemTipCard.itemLongAbsence {
+.item.itemTipCard.itemLongAbsence,
+.item.itemTipCard.itemFirstComment {
   border-color: color-mix(in srgb, var(--tone-bg) 45%, transparent);
 }
 
@@ -461,8 +477,11 @@
 }
 
 /* 038c: 初見/久しぶりのバッジ（.badge を基底に色だけ差し替え）。.badge が border:1px solid transparent を持つので
-   border-color の上書きが効く。役割トークンのみ（生 hex/rgba なし）。初見=ok緑 / 久しぶり=info青。 */
-.badgeFirstTime {
+   border-color の上書きが効く。役割トークンのみ（生 hex/rgba なし）。初見=ok緑 / 久しぶり=info青。
+   051: 「初コメ」は**初見と同じ ok 緑**（枠色を初見に揃える指定なので、チップも同系に揃える）。
+   値を 2 箇所に書かないようセレクタを束ねる＝片方だけ色を変えて割れる余地を作らない。 */
+.badgeFirstTime,
+.badgeFirstComment {
   color: var(--ok);
   background: var(--ok-soft);
   border-color: var(--ok-border);

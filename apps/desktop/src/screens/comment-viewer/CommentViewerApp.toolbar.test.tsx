@@ -886,3 +886,72 @@ describe("049 レビュー TTS キューの getter 配線", () => {
     expect(at("chat")).toBe(false);
   });
 });
+
+/**
+ * 047f / 051 レビュー（Q-2）: **本体からの配線そのもの**を固定する。
+ *
+ * どちらも「本体が渡すのをやめても typecheck が通り、単体テストも 1 件も落ちない」形になっている
+ * ——`mergeMonetary` の第 3 引数 `isRead` は optional（未注入なら従来どおり 50 件で機械的に切る）、
+ * `CommentList` の `firstOfStreamIds` も optional（未指定なら無装飾）。実際に**レビュー時のミューテーション
+ * （注入行の削除／prop 行の削除）で 458 テストすべてが緑のまま通ることを実測した**＝機能が丸ごと消えても
+ * 誰も気付けない状態だった。
+ *
+ * これは 047 レビュー Q-2（`comments.filter` への書き戻しを検出できなかった）・049 レビュー Q-2
+ * （getter の注入が消えても落ちなかった）と**同型の穴の 3 回目**。同じ場所で 3 回起きているので、
+ * 「optional な注入を足したら、本体経由のケースを 1 つ足す」を定型として扱うこと。
+ * 再修正トリガー＝`mergeMonetary` / `CommentList` に optional な注入を増やしたとき（ここへ 1 行足す）。
+ */
+describe("047f/051 レビュー 本体からの配線（注入が消える退行の検知）", () => {
+  const dto = (over: Partial<CommentViewDto> = {}): CommentViewDto => ({
+    id: "c1",
+    source: "youtube",
+    author: { id: "u1", name: "Alice" },
+    text: "こんばんは",
+    publishedAt: "2026-01-01T00:00:00Z",
+    eventType: "chat",
+    ...over,
+  });
+
+  function emitComments(comments: CommentViewDto[]) {
+    expect(mocks.handlers.current).not.toBeNull();
+    act(() => mocks.handlers.current?.onComments(comments));
+  }
+
+  it("047f: 既読集合を mergeMonetary へ注入している（未読は 50 件で頭打ちにならない）", () => {
+    renderApp(false);
+    // 60 件すべて未読。`isRead` を渡していないと MONETARY_MAX(=50) で機械的に切られ「未読 50」になる。
+    emitComments(
+      Array.from({ length: 60 }, (_, i) =>
+        dto({
+          id: `m${i}`,
+          author: { id: `u${i}`, name: `Payer${i}` },
+          eventType: "donation",
+          text: "",
+          monetaryAmount: `${100 + i} JPY`,
+          monetary: { amount: 100 + i, currency: "JPY" },
+        }),
+      ),
+    );
+
+    const ticker = screen.getByLabelText("課金コメント");
+    expect(ticker).toHaveTextContent("未読 60");
+    // 「未読数 ＝ 押せるピルの数」が本修正の不変条件なので、ボタンの実数でも見る
+    //（数字だけだと、表示は 60 でもピルが 50 個しか無い退行を見逃す）。
+    expect(within(ticker).getAllByRole("button")).toHaveLength(60);
+  });
+
+  it("051: firstOfStreamIds を CommentList へ渡している（初コメ判定が画面に出る）", () => {
+    renderApp(false);
+    emitComments([dto({ id: "c1", text: "はじめまして" })]);
+    // 同じ視聴者の 2 件目。バッジは 1 件目にだけ付く（＝判定が最新行へ移らない）。
+    emitComments([dto({ id: "c2", text: "二回目です" })]);
+
+    expect(screen.getAllByText("初コメ")).toHaveLength(1);
+    expect(
+      screen.getByText("はじめまして").closest("li")?.className,
+    ).toContain("itemFirstComment");
+    expect(
+      screen.getByText("二回目です").closest("li")?.className,
+    ).not.toContain("itemFirstComment");
+  });
+});

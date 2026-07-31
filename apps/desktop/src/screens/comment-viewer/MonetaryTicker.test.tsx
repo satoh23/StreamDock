@@ -378,3 +378,114 @@ describe("MonetaryTicker 047 課金ティッカー", () => {
     expect(screen.getAllByText("90 jewels").length).toBeGreaterThan(0);
   });
 });
+
+/**
+ * 047f（実機不具合）: **マウスの縦ホイールで帯を横スクロールできる**ことの仕様テスト。
+ *
+ * 背景: 047d が横スクロールバーを消した（帯の内側の高さを食ってピルが上下に切れる不具合の対処）際の
+ * 申し送りは「Tab の自動横スクロールとトラックパッド/Shift+ホイールが効くので操作性は落ちない」だったが、
+ * **マウス（ホイールのみ）が想定から漏れており、横へ動かす手段が実質ゼロ**になっていた。
+ *
+ * あるべき挙動:
+ * - 縦ホイール（`deltaY`）で `scrollLeft` が動く。
+ * - **`deltaX` があるときは触らない**（トラックパッドの横スワイプはブラウザ標準が動かすので、倍速にしない）。
+ * - **実際に動かせるときだけ `preventDefault()`**。溢れていない／端に達しているときは既定動作へ流す
+ *   （＝標準のスクロールチェーン。常に止めるとピルが少ないときホイールが死んだように感じる）。
+ *
+ * ⚠ jsdom はレイアウトを持たない（`scrollWidth`/`clientWidth` は常に 0）ので、**寸法は明示的に注入**して
+ * ハンドラの契約だけを固定する。実際の操作感は E2E（実機）の担当。
+ */
+describe("MonetaryTicker 047f ホイールでの横スクロール", () => {
+  /**
+   * ティッカーのトラック（`overflow-x: auto` のスクロール領域）を取り出す。
+   *
+   * 【レビュー・修正不要】DOM 構造に依存した掴み方（`section > div:nth-of-type(2)`）である点は承知のうえ。
+   * トラックには role も aria-label も無く（ラベルは帯 `section` 側が持つ・中身のピルが実 `<button>` なので
+   * 支援技術向けの追加ラベルは不要という 047d の判断）、テストのためだけに `data-testid` を実装へ足すのを
+   * 避けた。構造が変わった場合も**listener が張られていない別要素を掴む＝ケースが落ちる**ので、
+   * 静かに緑になる（vacuous に通る）ことはない。
+   * 再修正トリガー: 帯の構造をもう一度変えるとき、または帯の中に別のスクロール領域が増えるとき。
+   */
+  const track = (container: HTMLElement): HTMLElement => {
+    const el = container.querySelector("section > div:nth-of-type(2)");
+    if (!(el instanceof HTMLElement)) throw new Error("トラックが見つからない");
+    return el;
+  };
+  /** jsdom に無い寸法を注入する（scrollWidth > clientWidth ＝ 横に溢れている状態）。 */
+  const sized = (el: HTMLElement, scrollWidth: number, clientWidth: number) => {
+    Object.defineProperty(el, "scrollWidth", { value: scrollWidth, configurable: true });
+    Object.defineProperty(el, "clientWidth", { value: clientWidth, configurable: true });
+    el.scrollLeft = 0;
+  };
+  /** `{ passive: false }` で張った listener を通す＝React の onWheel では届かない経路。 */
+  const wheel = (el: HTMLElement, init: WheelEventInit): WheelEvent => {
+    const e = new WheelEvent("wheel", { bubbles: true, cancelable: true, ...init });
+    el.dispatchEvent(e);
+    return e;
+  };
+
+  it("縦ホイールで横スクロールする（マウスだけで帯を動かせる）", () => {
+    const { container } = render(
+      <MonetaryTicker items={[comment()]} readIds={new Set()} onRead={vi.fn()} />,
+    );
+    const el = track(container);
+    sized(el, 800, 300);
+
+    const e = wheel(el, { deltaY: 120 });
+
+    expect(el.scrollLeft).toBe(120);
+    expect(e.defaultPrevented).toBe(true); // 親が縦に動くのを止める
+  });
+
+  it("トラックパッドの横スワイプ（deltaX あり）には手を出さない（倍速にしない）", () => {
+    const { container } = render(
+      <MonetaryTicker items={[comment()]} readIds={new Set()} onRead={vi.fn()} />,
+    );
+    const el = track(container);
+    sized(el, 800, 300);
+
+    const e = wheel(el, { deltaX: 40, deltaY: 10 });
+
+    expect(el.scrollLeft).toBe(0); // ブラウザ標準に任せる
+    expect(e.defaultPrevented).toBe(false);
+  });
+
+  it("溢れていないときは既定動作へ流す（ホイールが死んだように感じさせない）", () => {
+    const { container } = render(
+      <MonetaryTicker items={[comment()]} readIds={new Set()} onRead={vi.fn()} />,
+    );
+    const el = track(container);
+    sized(el, 300, 300); // 横に溢れていない
+
+    const e = wheel(el, { deltaY: 120 });
+
+    expect(el.scrollLeft).toBe(0);
+    expect(e.defaultPrevented).toBe(false);
+  });
+
+  it("右端まで来たら既定動作へ流す（スクロールチェーン）", () => {
+    const { container } = render(
+      <MonetaryTicker items={[comment()]} readIds={new Set()} onRead={vi.fn()} />,
+    );
+    const el = track(container);
+    sized(el, 800, 300);
+    el.scrollLeft = 500; // = scrollWidth - clientWidth ＝ 右端
+
+    const e = wheel(el, { deltaY: 120 });
+
+    expect(el.scrollLeft).toBe(500);
+    expect(e.defaultPrevented).toBe(false);
+  });
+
+  it("行単位で届くホイール（DOM_DELTA_LINE）は px 換算する", () => {
+    const { container } = render(
+      <MonetaryTicker items={[comment()]} readIds={new Set()} onRead={vi.fn()} />,
+    );
+    const el = track(container);
+    sized(el, 800, 300);
+
+    wheel(el, { deltaY: 3, deltaMode: 1 });
+
+    expect(el.scrollLeft).toBe(48); // 3 行 × 16px
+  });
+});

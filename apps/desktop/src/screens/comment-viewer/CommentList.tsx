@@ -90,6 +90,16 @@ interface CommentListProps {
    */
   badges?: ReadonlyMap<string, RecordResult>;
   /**
+   * 051: 「**その配信で初めてしたコメント**」の id 集合（`firstOfStream.ts` が確定させる）。該当行は
+   * **「初コメ」バッジ ＋ 初見と同じ枠色**（`.itemFirstComment` = `var(--ok)`）にする。
+   * ⚠ 当初の指定は「本文を太字・枠色は変えない」だったが、実機で分かりにくく作り直した（太字は撤去済み）。
+   * 枠色を持たせた結果、038c の判定と信号が競合しうるので**下の付与は `else if` 連鎖が必須**
+   * （優先順＝初見 > 久しぶり > 初コメ）。
+   * `badges` / `pinnedIds` と同じ「id で引く任意 prop」の作法で、**未指定なら従来どおり無装飾**。
+   * overlay バリアントには効かない（配信画面に出す情報を増やす判断は別件なのでコメビュ本体のみ）。
+   */
+  firstOfStreamIds?: ReadonlySet<string>;
+  /**
    * 046a: 既定バリアントのコメント行を**右クリック**したときに開くメニューから、押されたコメントを渡す
    * （コメビュ本体が上部の固定帯＋ピンストアへ反映する）。**トグル**で、既に固定済みのコメントを渡したときは
    * 親が解除する。指定時のみ行に `onContextMenu` が付き（ネイティブメニューの抑止もその行だけ）、未指定なら
@@ -112,6 +122,7 @@ export function CommentList({
   showSource = false,
   onSelect,
   badges,
+  firstOfStreamIds,
   onPin,
   pinnedIds,
 }: CommentListProps) {
@@ -150,13 +161,24 @@ export function CommentList({
     const tipAvatar = avatarDataUri(c.author.avatar);
     const itemClasses = [styles.item];
     if (onSelect) itemClasses.push(styles.itemClickable);
+    // 051: 枠色は **1 行 1 信号**。優先順は **初見 > 久しぶり > 初コメ**（情報量の多い方を残す＝
+    // 038c の「初見優先」と同じ考え方）。下の judgementBadge も同じ順で 1 つだけ出す。
+    //
+    // ⚠ **else if の連鎖であることが必須**。038c の判定（初見/久しぶり）は論理的に「その配信の初コメント」に
+    // 含まれる（どちらも `record_comment` が**その視聴者の来訪 1 件目**にしか返さないため）ので、素朴に
+    // 並べて足すと ①**久しぶり（青枠）と初コメ（緑枠）が同じ行に同時に付き**、勝敗が CSS のソース順で
+    // 決まる＝コードから意図が読めない ②「初見」と「初コメ」のバッジが**二重に出る**。
+    const isFirstOfStream = firstOfStreamIds?.has(c.id) ?? false;
     if (badge?.firstTime) itemClasses.push(styles.itemFirstTime);
     else if (badge?.longAbsence) itemClasses.push(styles.itemLongAbsence);
+    else if (isFirstOfStream) itemClasses.push(styles.itemFirstComment);
     // 課金カードは枠色（初見/久しぶり）より優先。判定は帯の中にチップとして出るので情報は落ちない。
     if (isMoney) itemClasses.push(styles.itemTipCard, TONE_CLASS[monetaryTone(c)]);
     // 初見/久しぶりのチップは chat 行（.badge 系）と課金カードのヘッダ帯（.tipChip）で下地が違うため、
     // 文言は同じまま器だけ差し替える（色付き帯の上に無彩色前提の役割トークンを乗せると沈む/喧嘩する）。
     const chipClass = isMoney ? styles.tipChip : styles.badge;
+    // 051: 「初コメ」を最後段に足す。上の枠色クラスと**同じ優先順**（初見 > 久しぶり > 初コメ）で
+    // 1 つだけ出す＝初見の行に「初見」と「初コメ」が並ばない。
     const judgementBadge = badge?.firstTime ? (
       <span className={`${chipClass} ${isMoney ? "" : styles.badgeFirstTime}`}>
         初見
@@ -164,6 +186,10 @@ export function CommentList({
     ) : badge?.longAbsence ? (
       <span className={`${chipClass} ${isMoney ? "" : styles.badgeLongAbsence}`}>
         久しぶり
+      </span>
+    ) : isFirstOfStream ? (
+      <span className={`${chipClass} ${isMoney ? "" : styles.badgeFirstComment}`}>
+        初コメ
       </span>
     ) : null;
     return (
