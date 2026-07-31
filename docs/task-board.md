@@ -189,6 +189,18 @@
   - 050 で直さなかったのは **`src/screens/` 差分ゼロというスコープ規律を優先した**ため（症状も別＝無音ではなく「バナーが出ない」）。判断自体は妥当だが、progress.md の散文にしか残っていなかったのでここへ起票した
   - → **2026-07-31 外部レビューで「判断は妥当・ただしコメントの訂正は今やるべき」と指摘され、[`CommentViewerApp.tsx`](../apps/desktop/src/screens/comment-viewer/CommentViewerApp.tsx) のポーリング effect のコメントだけ先に訂正済み**（挙動は 1 文字も変えていない）。「応答は即時」という前提が崩れたこと・再検討条件が既に満たされていること・実害・052 の方針をコメントに明記した（誤った前提のコメントが「検討済みで問題なし」というお墨付きとして働くのを止めるため）
   - 方針: `checkEngineRunning` は既に `signal?: AbortSignal` を受け取れるので、呼び出し側で `AbortController` ＋ `setTimeout`（**標準 API のみ・新規依存ゼロ**）を張るだけ。タイムアウト値はポーリング間隔（5 秒）より短くする（tick が重ならないこと）。`checkEngineRunning` は例外を bool 化するので abort は自然に `false`＝「未起動」扱いになり、**既存のバナー導線がそのまま働く**（新しい分岐は不要）
+- 054 内蔵コメビュ設定画面の可読性修正（タスク [docs/tasks/054-comment-viewer-settings-readability.md](tasks/054-comment-viewer-settings-readability.md)／設定項目名と補助説明が同じ見た目（どちらも 11px・`--text-faint`・weight 400）で読み分けられず、一方でトグルの label だけ 13px/700/`--text`＝**同じカード内に項目名の書式が 2 種類混在**。`formLayout.module.css` の `.field label`（12px/800/`--text`）と `.fieldHelp`（`--muted`）に揃え、`.speakerField` からタイポグラフィを剥がして `.fieldLabel` を新設、`.note` を `--muted` へ。`--text-faint` は無効/プレースホルダ専用に限定。CSS ガード (6) を追加・**軽レビュー**）
+  - **055c より先に実装する**（新画面が 3 つ目の流儀を持ち込まないよう、先に階層規則を確定させるため）
+- 055 アプリ自己アップデート（親設計 [docs/tasks/055-app-self-update.md](tasks/055-app-self-update.md)／ヘッダーのベル＋バッジ → アップデート画面 → 更新 → 再起動をアプリ内で完結。方式＝**`tauri-plugin-updater`（Rust API 専用）＋ public Release 上の静的 `latest.json`**・**capability ゼロ**（`tauri-plugin-shell` の先例と同型）・egress は `github.com` → `objects.githubusercontent.com` の 2 ホストのみ／GET のみ／送信データゼロ・完全性は minisign 公開鍵検証で fail-closed。**StreamDock 本体プロセス初のインターネット egress**＝§1 に例外節を新設）
+  - 実装順: 055a → 055b → 055c → 055d → 055e（実機 E2E は 099b）
+  - **⚠ 絶対制約: 055a〜055d は 099 の実タグ push・publish より前に完了させること**（updater を含まない v0.1.0 を配ると、そのユーザーは以後永久に自動更新できない）。ただし 055a の検証は `workflow_dispatch` の空回しだけで完結するので 098/099 の完了待ちにはならない
+  - **本人の決定**: チェックは**起動時に自動・ON/OFF トグルなし**（§1 例外節に「停止手段は設けない」と明記する）／バッジは**常に「1」**＝更新の有無（リリース件数ではない・`api.github.com` を叩かないため）／リリースノートは **`docs/release-notes/vX.Y.Z.md` がリポジトリ内の単一ソース**で CI が `latest.json` の `notes` と Release 本文の両方へ流す／描画は**自前の最小マークダウンレンダラ（新規依存ゼロ）**
+  - 055a リリース基盤（バージョン同期ガード〔5 箇所・新規依存ゼロの .mjs〕＋updater 署名鍵＋`createUpdaterArtifacts`／`plugins.updater`＋CI の updater 成果物と `latest.json` 生成＋`docs/release-notes/`＋README 更新・**アプリコード差分ゼロ**・**security-review 必須**）
+  - 055b 更新検出エンジン（`tauri-plugin-updater` 導入＋`app_update` モジュール＋`check_app_update`〔**リポジトリ初の真の `async fn` コマンド**〕＋薄い invoke ラッパ＋security.md §1 例外/§10 依存/Capabilities 方針の追記・**UI なし**・**security-review 必須**）
+  - 055c ベル＋バッジ＋アップデート画面（`Screen` に `app-update` 追加・自前インライン SVG のベル・`.navBadge`・`useAppUpdate`〔起動時 1 回チェック〕・3 状態表示〔更新あり/最新/取得失敗〕・**アップデートボタンは disabled のまま**・更新内容はプレーンテキスト・**軽レビュー**）
+  - 055d DL→インストール→再起動（`install_app_update`〔引数は `AppHandle` のみ＝フロントから URL/パス/バージョンを受け取らない〕＋`restart_app`〔`AppHandle::restart()`・`tauri-plugin-process` は入れない〕＋進捗表示＋**OS で分岐**〔macOS は再起動ボタン／Windows は NSIS がアプリを終了させるため案内文言〕＋**security.md §5 に自己置換の例外を新設**・**security-review 必須**）
+  - 055e リリースノートのマークダウン描画（`renderReleaseNotes` 純関数・見出し/箇条書き/太字/インラインコードのみ・**React 要素を返す＝`dangerouslySetInnerHTML` 不使用**・リンクは踏ませない・**新規依存ゼロ**〔`react-markdown`+`remark-gfm` は推移的依存 20+ で §10 に照らして却下〕・**軽レビュー**）
+  - ⚠ **既に埋まっている地雷（099a と衝突）**: `release.yml` の `sslcom/esigner-codesign` は tauri ビルド**後**に `.exe`/`.msi` を `override: true` で置換署名するため、updater の minisign `.sig`（バンドル時点のバイト列に対して作成）と**必ず不一致になり Windows の自己更新が署名検証で落ちる**。現在は `ES_USERNAME` 未設定でスキップされ顕在化していないが **099a に着手した瞬間に発火**する。対処＝`bundle.windows.signCommand` へ寄せる（**方針決定と記録は 055a／実際の移行は 099a**）
 
 ## 保留
 
@@ -222,3 +234,5 @@
 - 098 Windows Build
 - 099 User Test Package（フェーズ1＝未署名 CI ビルド）
   - 099a Windows コード署名（Azure Trusted Signing・フェーズ2／署名タスク [docs/tasks/099a-windows-code-signing.md](tasks/099a-windows-code-signing.md)・証明書取得後に着手・軽レビュー）
+    - ⚠ **055a の申し送り**: eSigner の `override: true` 置換署名は updater の minisign `.sig` を壊す。`bundle.windows.signCommand` へ寄せてから署名すること（詳細は [055a](tasks/055a-updater-release-pipeline.md) と [055](tasks/055-app-self-update.md)）
+- 099b アップデータ実機 E2E（タスク [docs/tasks/099b-updater-e2e.md](tasks/099b-updater-e2e.md)／**`tauri dev` では原理的に検証できない**ため実機で確定させる。着手条件＝**public 側に updater 入りの published リリースが 2 本ある**こと〔＝099 の完了条件そのもの。だから 055f ではなく 099b に置き、番号順＝実装順を保つ〕。潰す未知＝①**未署名 macOS の `.app` 自己置換**が成立するか ②**`externalBin` の sidecar が更新後も生きているか**〔壊れると「更新したらコメビュだけ死ぬ」〕 ③**Windows で再起動ボタンに到達するか**＋**minisign 検証が通るか**〔上記の地雷〕。E2E-1〜E2E-10・**コード変更なし**〔不具合は該当タスクへ差し戻す〕・軽レビュー）

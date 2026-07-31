@@ -10,6 +10,15 @@
 > **前提作業（ユーザー側・数日〜数週間）**: 本タスクの実装前に **Azure Trusted Signing のアカウント作成＋本人確認＋
 > 証明書プロファイル発行**が完了していること（個人は 3 年以上の実在証明を求められる場合あり）。また **フェーズ1 の CI
 > （[`.github/workflows/release.yml`](../../.github/workflows/release.yml)）がタグ push で未署名ビルドを生成できている**こと。
+>
+> ⚠ **【055a からの申し送り・着手時に必ず対処すること】eSigner の置換署名は updater の minisign 署名を壊す。**
+> 現行 CI は `sslcom/esigner-codesign` を **tauri のビルド後**に走らせ、`.exe` / `.msi` を `override: true` で
+> **置換署名**する。一方、[055a](055a-updater-release-pipeline.md) で有効化した `createUpdaterArtifacts` の `.sig`
+> （minisign）は **tauri がバンドルした時点のバイト列**に対して作られるため、**置換署名でバイト列が変わり `.sig` と
+> 一致しなくなり、Windows の自己更新が必ず署名検証で落ちる**。現在は `secrets.ES_USERNAME` 未設定でステップごと
+> スキップされるため顕在化していないが、**本タスクで Secrets を入れた瞬間に発火する**。
+> 対処方針（055a で決定・実施は本タスク）: **`bundle.windows.signCommand` へ寄せ、tauri のバンドル過程内で署名させてから
+> updater 署名を作らせる**（後段の `override` 置換をやめる）。検証は [099b](099b-updater-e2e.md) の E2E-6。
 
 ## 目的
 
