@@ -3,6 +3,7 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { SettingsView } from "./SettingsView";
 import { DEFAULT_OVERLAY_FONT } from "../../features/comment-viewer/overlaySettings";
+import { TTS_MAX_LENGTH_DEFAULT } from "../../features/comment-viewer/ttsPrefs";
 
 /**
  * 044a: 設定ビューの OBS 連携 UI の仕様テスト。
@@ -35,6 +36,9 @@ function baseProps(over: Partial<Props> = {}): Props {
     onSpeakTwitchChange: vi.fn(),
     speakYoutube: true,
     onSpeakYoutubeChange: vi.fn(),
+    // 048: 読み上げの文字数上限（このファイルの検証対象ではないので既定値を渡すだけ）。
+    ttsMaxLength: TTS_MAX_LENGTH_DEFAULT,
+    onTtsMaxLengthChange: vi.fn(),
     speakers: [],
     selectedSpeakerId: 0,
     onSpeakerIdChange: vi.fn(),

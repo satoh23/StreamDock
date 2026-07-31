@@ -7,6 +7,9 @@
  * - 最小整形（URL 除去・絵文字除去）。**著者名は読まない**（本文のみ）。
  * - id 冪等（単一注入点 = `mergeComments` の新規追加分から呼ばれる）。
  *
+ * `enqueue` の整形パイプラインは **① 入力決定 → ② sanitize → ③ 読み替え(041a) → ④ 切り詰め(048) → ⑤ 空判定 → push**
+ * の 5 段で、**分岐を増やさない単一チョークポイント**として維持する（049 は ① だけを差し替える予定）。
+ *
  * AudioContext は本キューが 1 つだけ所有し、`dispose` で閉じる。合成 HTTP と再生プリミティブは
  * `voicevox.ts` に閉じ、通信はループバック 50021 のみ（docs/security.md §1 の例外を参照）。
  */
@@ -35,6 +38,54 @@ export function sanitizeForSpeech(text: string): string {
     .trim();
 }
 
+/**
+ * 048: 上限超過で打ち切ったときに末尾へ足す文字列。
+ *
+ * 読点を付けるのは、OpenJTalk が読点をアクセント句の区切りに使うため。無いと本文末尾の語と融合して
+ * 誤アクセントになりやすく、「一拍おいて以下略」と聞こえる方が打ち切りだと分かりやすい。
+ * この文字列は**読み替え辞書（041a）の適用後**に足すので辞書ルールに書き換えられない（意図的）。
+ * 代替候補（実機で読みが崩れたら差し替える）: "、以下省略"（辞書語として安定・いかしょうりゃく）／
+ * "、いかりゃく"（読みは強制できるがアクセントは OpenJTalk 任せのまま）。
+ * ⚠ **差し替えはここ 1 行では終わらない**: `ttsQueue.test.ts` がこの文字列をリテラルで期待している 4 箇所
+ * （境界 2 件・290 文字 1 件・サロゲート 1 件）も同時に直すこと。テスト側から定数を import すると
+ * 「実装と同じものを実装と比べる」恒真式になって打ち切り表記の仕様を固定できなくなるため、意図的にリテラルのままにしてある。
+ */
+const SPEECH_ELLIPSIS = "、以下略";
+
+/**
+ * 048: 読み上げテキストを `max` 文字で打ち切り、超過分を `SPEECH_ELLIPSIS` に置き換える（**表示は切らない**）。
+ *
+ * 目的は「長文 1 件の読み上げ中に届いた後続コメントが `MAX_BACKLOG` 超過で無言破棄される」ことの解消
+ * （290 文字＝約 48〜64 秒の間に 27〜38 件届き 7〜18 件が捨てられる）。純関数なので単体テストできる
+ * （`createTtsQueue` は AudioContext を作るため、切り詰めを `enqueue` に直書きするとテスト不能になる）。
+ *
+ * **数える単位はコードポイント**（`[...text]`）。`slice` は UTF-16 コードユニット単位でサロゲートペアを割り、
+ * 孤立サロゲート「�」を作る。`sanitizeForSpeech` が消すのは絵文字（Extended_Pictographic）だけなので
+ * **𠮷 のような非絵文字のサロゲートペアは残る**。`viewerFormat.ts` の `authorInitial` が `charAt(0)` を避けて
+ * `[...s]` を使っているのと同じ理由・同じ手段。
+ *
+ * 既知の割り切り（いずれも意図的・仕様として残す）:
+ * - **書記素クラスタでは数えない**（`Intl.Segmenter` を使わない）。絵文字は sanitize 済みなので ZWJ 連結・肌色修飾は
+ *   ほぼ残らず、割れて困るのは結合濁点（U+3099）等だけ。結合文字は基底文字の**後ろ**にあるので、切断点で落ちるのは
+ *   常に濁点側＝**濁点を失った基底文字**が残る（`が` が `か` と読まれる）。宙に浮いた濁点にはならない。
+ *   誤読するのは打ち切り位置の 1 文字だけで直後に「、以下略」が続くため、孤立サロゲートのような壊れ方（表示・読みが
+ *   「�」に化ける）とは影響の桁が違う。再検討条件＝実機でこの 1 文字の誤読が耳に付いたら Segmenter を検討する。
+ * - **接尾辞は `max` に含めない**（実際に読まれるのは最大 `max + SPEECH_ELLIPSIS.length` 文字）。よって
+ *   `max + 1` 文字のコメントは切り詰めた方が僅かに長くなる。避けるにはヒステリシスが要るが複雑さに見合わない。
+ * - `max` が非有限・**1 未満**なら**切り詰めない**（防御）。`0 < max < 1` を通すと `slice` の truncate で本文が
+ *   0 文字になり「、以下略」だけを読む無意味な出力になるため、`<= 0` ではなく `< 1` で弾く。
+ *   `max` は 1 以上の数値が前提（小数は `slice` が truncate する）で、既定値・範囲クランプのポリシーは持たず
+ *   `ttsPrefs.ts` が持つ（本関数の呼び出し元は常にクランプ済みの整数を渡す）。
+ */
+export function capForSpeech(text: string, max: number): string {
+  if (!Number.isFinite(max) || max < 1) return text;
+  // 高速パス: コードポイント数 ≤ コードユニット数なので、`text.length` が上限以下なら配列化せず確定で素通し。
+  if (text.length <= max) return text;
+  const chars = [...text];
+  if (chars.length <= max) return text;
+  return chars.slice(0, max).join("") + SPEECH_ELLIPSIS;
+}
+
 export interface TtsQueue {
   /** コメントを読み上げキューに積む（id 冪等・整形後に空ならスキップ）。 */
   enqueue: (comment: CommentViewDto) => void;
@@ -58,6 +109,22 @@ export interface TtsQueueOptions {
    * 省略・戻り値なしのときは空辞書＝素通し（現行動作）。
    */
   getReadingDictionary?: () => ReadingRule[];
+  /**
+   * 048: 1 件あたりの読み上げ最大文字数（コードポイント数）を返す getter。`enqueue` のたびに呼び**その時点の設定値**を
+   * 読む（`getSpeakerId` / `getReadingDictionary` と同じ注入方式＝設定変更でキューを作り直さずに済む）。
+   *
+   * **省略・戻り値が非有限/1 未満のときは切り詰めない**（既存 getter と同じ「未注入なら現行動作」の作法）。
+   * 既定値と範囲クランプは `ttsPrefs.ts` が単独で持つ（キュー → 設定永続化の依存を張らないため、
+   * ここに既定値を二重定義しない）。アプリ本体は常にこの getter を注入するので、製品としては省略は常時有効。
+   *
+   * ⚠ **この optional ＋ `?? Infinity` は、注入が消えた退行を型でもテストでも検出できない**（`getMaxLength` を
+   * 渡さなくても typecheck は通り、テストも 1 件も落ちず、上限だけが黙って消える）。それでも required にしないのは、
+   * required にすると `ttsQueue` 側に既定値を持たせるか全テスト呼び出しに値を書かせるかになり、
+   * 「既定値の定義元は `ttsPrefs.ts` の 1 箇所」という不変条件のほうが壊れるため。
+   * 再修正トリガー＝049/050 で `synthesize`/`playWav` をモックしてキュー本体のテストを足すとき、
+   * **`getMaxLength` を注入した `enqueue` が実際に切り詰めること**を 1 ケース必ず固定して、この穴を塞ぐこと。
+   */
+  getMaxLength?: () => number;
 }
 
 /**
@@ -67,6 +134,7 @@ export interface TtsQueueOptions {
 export function createTtsQueue(options: TtsQueueOptions = {}): TtsQueue {
   const getSpeakerId = options.getSpeakerId;
   const getReadingDictionary = options.getReadingDictionary;
+  const getMaxLength = options.getMaxLength;
   const queue: string[] = [];
   const seenIds = new Set<string>();
   let playing = false;
@@ -123,10 +191,16 @@ export function createTtsQueue(options: TtsQueueOptions = {}): TtsQueue {
       // 辞書未注入・空辞書のときは applyReadingDictionary が素通しするため、従来と完全に同じ挙動になる。
       // 末尾 .trim() は防御的（sanitize が既に trim 済み・内蔵 reading も前後空白なしのため実質 no-op だが、
       // 将来 reading に前後空白を持つルールが混ざっても空判定を正しくするため残す）。
-      const text = applyReadingDictionary(
+      const replaced = applyReadingDictionary(
         sanitized,
         getReadingDictionary?.() ?? [],
       ).trim();
+      // 048: 読み替え適用の**直後・空判定の前**で読み上げテキストだけを打ち切る（表示は全文のまま）。
+      // ここが唯一のチョークポイントで、`enqueue` の 5 段（① 入力決定 → ② sanitize → ③ 読み替え → ④ 切り詰め →
+      // ⑤ 空判定 → push）はこの並びを保つこと。**この位置に置く理由は挙動ではなく契約**である:
+      // 切り詰めは空文字を生まないので空判定の前後で結果は同じだが、049（`getSpeechText` で ① を差し替える）は
+      // 「② 以降は一切変えない」ことを前提にしており、分岐がここ以外に増えると単一チョークポイントが崩れる。
+      const text = capForSpeech(replaced, getMaxLength?.() ?? Infinity);
       if (!text) return; // 整形・読み替え適用後に空（URL/絵文字のみ 等）なら読み上げない。
       queue.push(text);
       if (queue.length > MAX_BACKLOG) {

@@ -1,9 +1,23 @@
 # 048 ずんだもん読み上げ 文字数上限（以下略で省略）
 
-> 状態: **未着手（単体タスク）**。**読み上げ不具合の調査（2026-07-28）で最優先と確定**。
+> 状態: **実装済み（2026-07-31）／実機確認は未実施**。記録は [`docs/progress.md`](../progress.md) の
+> 「2026-07-31 (048 …)」節。実装の要点:
+> - 切り詰めは**純関数 `capForSpeech(text, max)`**（`ttsQueue.ts` から export・`sanitizeForSpeech` の隣）で行い、
+>   `enqueue` の読み替え適用直後・空判定の前で 1 回だけ呼ぶ。`enqueue` は
+>   **① 入力決定 → ② sanitize → ③ 読み替え → ④ 切り詰め → ⑤ 空判定 → push** の 5 段になった（049 は ① だけを差し替える）。
+> - **数える単位はコードポイント**（`[...text]`）。`slice` はサロゲートペアを割るため（`viewerFormat.ts` の
+>   `authorInitial` と同じ理由）。書記素クラスタ（`Intl.Segmenter`）は意図的に採らない。
+> - 上限値は getter 注入（`TtsQueueOptions.getMaxLength`）。**未注入なら切り詰めない**（既存 getter と同じ作法）。
+> - 既定 **60** / 下限 **20** / 上限 **200**。クランプは `ttsPrefs.ts` の `clampTtsMaxLength` 1 関数だけが持つ。
+> - 接尾辞は `SPEECH_ELLIPSIS = "、以下略"`。**実機での読みは未判定**——崩れていたら `、以下省略` /
+>   `、いかりゃく` へ差し替え、結果を progress.md に追記すること。⚠ **差し替えは定数 1 行では終わらない**：
+>   `ttsQueue.test.ts` がこの文字列をリテラルで期待している **4 箇所**も同時に直すこと
+>   （テストから定数を import すると恒真式になるため、意図的にリテラルにしてある）。
+> - 設定 UI は `<input type="number">`（**blur / Enter で確定**・打鍵ごとに localStorage へ書かない）。
+> - **新規 `ttsQueue.test.ts` / `ttsPrefs.test.ts`**＝TTS 経路に初めて単体テストが入った（049/050 が追記する土台）。
 >
-> **調査で判明した定量根拠（本タスクが最優先である理由）**: 読み上げは FIFO 直列で、1 件の再生が終わるまで次に進まない
-> （`ttsQueue.ts` の `playing` フラグ・76-114 行）。一方 `MAX_BACKLOG = 20`（19 行）は超過分を**古い未読から破棄**するため、
+> **調査で判明した定量根拠（本タスクが最優先である理由・**行番号は 048 実装前のもの**）**: 読み上げは FIFO 直列で、1 件の再生が終わるまで次に進まない
+> （`ttsQueue.ts` の `playing` フラグ）。一方 `MAX_BACKLOG = 20` は超過分を**古い未読から破棄**するため、
 > **長文 1 件の読み上げ中に届いたコメントが無言で捨てられる**。「長文コメントの後のコメントが読まれない」の直接原因。
 >
 > | 1 件の長さ | 読み上げ所要（≒4.5〜6 文字/秒） | dev-mock(1800ms) でその間に届く数 | 破棄される数 |
@@ -25,36 +39,64 @@
 長すぎるコメントをずんだもん（VOICEVOX）が全部読み上げると配信が地獄になるため、**一定文字数を超えたら「以下略」で打ち切る**（要望⑤）。
 省略は**常時有効**（トグルなし）で、**文字数はデフォルト値を持ち、設定画面からユーザーが変更できる**。表示（一覧/オーバーレイ）は従来どおり全文のまま、**読み上げテキストだけ**を切り詰める。
 
-## 現在の前提（調査結果・実コード）
+## 現在の前提（**行番号は 048 実装後の現状**。以下は実装済みの姿）
 
-- 読み上げテキストの組立は [`ttsQueue.ts`](../../apps/desktop/src/features/comment-viewer/ttsQueue.ts) の `enqueue`（117-138 行）:
-  1. `sanitizeForSpeech(comment.text)`（30-36 行・URL/絵文字除去・空白畳み込み・著者名は読まない）。
-  2. `applyReadingDictionary(sanitized, getReadingDictionary?.() ?? [])`（126-129 行・読み替え適用）→ `.trim()`。
-  3. 空ならスキップ（130 行）→ `queue.push(text)`（131 行）→ `pump()`（137 行）で `synthesize`（105 行）へ。
-  - **1 件あたりの文字数上限は現状なし**（`MAX_BACKLOG=20` は 19 行・**件数**上限であって文字数ではない）。切り詰めの単一チョークポイントは **129 行の `.trim()` 直後（130 行の空判定の前）**。ここを通せば表示に影響せず読み上げテキストだけ制限できる。
-- オプションは getter 注入方式: [`TtsQueueOptions`](../../apps/desktop/src/features/comment-viewer/ttsQueue.ts#L47)（`getSpeakerId` 54 行 / `getReadingDictionary` 60 行）。キューはマウント時 1 回生成（[`CommentViewerApp.tsx`](../../apps/desktop/src/screens/comment-viewer/CommentViewerApp.tsx) 405-408 行）で、**その時点の値**を getter で読むため、上限値の変更でキューを作り直さずに済む（同じ手本で `getMaxLength` を足す）。
-- 設定の永続化は [`ttsPrefs.ts`](../../apps/desktop/src/features/comment-viewer/ttsPrefs.ts)（名前空間 `stream-dock.comment-viewer.*`・localStorage 直 read/write・例外握りつぶし）。数値設定はまだ無いため、**数値の load/save を新設**する（既存は真偽値のみ）。
-- 本体の state/永続化/ref 同期の手本: `CommentViewerApp.tsx` の `useState(()=>load*())`＋`useEffect(()=>save*(x),[x])`（240-399 行）と、getter 用 ref 同期（`selectedSpeakerIdRef` 273/391-392 行）。
-- 設定 UI は [`SettingsView.tsx`](../../apps/desktop/src/screens/comment-viewer/SettingsView.tsx) の「読み上げ（VOICEVOX）」カード（127-227 行・`ToggleSwitch`/`Select` を使用）。数値入力欄は既存に無いため、この機能内で数値入力行を足す。
+- 読み上げテキストの組立は [`ttsQueue.ts`](../../apps/desktop/src/features/comment-viewer/ttsQueue.ts) の `enqueue`（170 行〜）:
+  1. `sanitizeForSpeech(comment.text)`（33 行・URL/絵文字除去・空白畳み込み・著者名は読まない）。
+  2. `applyReadingDictionary(sanitized, getReadingDictionary?.() ?? [])`（179 行・読み替え適用）→ `.trim()`。
+  3. **`capForSpeech(replaced, getMaxLength?.() ?? Infinity)`（188 行・048 の切り詰め）**。
+  4. 空ならスキップ（189 行）→ `queue.push(text)`（190 行）→ `pump()` で `synthesize`（158 行）へ。
+  - 切り詰めの実体は**純関数 `capForSpeech`（72 行・export 済み）**で、接尾辞は `SPEECH_ELLIPSIS`（50 行）。
+    `MAX_BACKLOG = 20`（22 行）は**件数**上限で文字数ではない（050 の領分・本タスクでは触っていない）。
+- オプションは getter 注入方式: `TtsQueueOptions`（91 行〜）の `getSpeakerId`（97 行）/ `getReadingDictionary`（103 行）/
+  **`getMaxLength`（112 行）**。キューはマウント時 1 回生成（[`CommentViewerApp.tsx`](../../apps/desktop/src/screens/comment-viewer/CommentViewerApp.tsx) 628 行）で、
+  **その時点の値**を getter で読むため、上限値を変えてもキューは作り直されない。
+- 設定の永続化は [`ttsPrefs.ts`](../../apps/desktop/src/features/comment-viewer/ttsPrefs.ts)（名前空間 `stream-dock.comment-viewer.*`・localStorage 直 read/write・例外握りつぶし）。
+  048 で**このモジュール初の数値設定**が入った: `TTS_MAX_LENGTH_KEY`（32 行）/ `_DEFAULT` 60（40 行）/ `_MIN` 20（45 行）/
+  `_MAX` 200（51 行）/ `clampTtsMaxLength`（59 行）/ `loadTtsMaxLength`（149 行）/ `saveTtsMaxLength`（160 行）。
+- 本体の state/永続化/ref 同期: `CommentViewerApp.tsx` の `ttsMaxLength`（275 行）＋ `ttsMaxLengthRef`（299 行）＋
+  永続化 effect ＋ ref 同期 effect（`selectedSpeakerId` と同じ作法）。
+- 設定 UI は [`SettingsView.tsx`](../../apps/desktop/src/screens/comment-viewer/SettingsView.tsx) の「読み上げ（VOICEVOX）」カード（167 行〜）。
+  文字数入力行は 200 行〜で、確定処理は `commitMaxLength`（127 行・blur / Enter で確定）。
 
-## このタスクでやること
+## このタスクでやったこと（2026-07-31 実装・計画時の記述を実装結果へ更新）
 
 ### (1) 設定の保存（数値・既定値・常時有効）
 
-- [`ttsPrefs.ts`](../../apps/desktop/src/features/comment-viewer/ttsPrefs.ts) に読み上げ最大文字数の load/save を追加する。
-  - キー例 `stream-dock.comment-viewer.tts-max-length`。**既定値 60 文字**（要調整・親方針は「デフォルト値あり・省略は常時有効」）。
-  - 読込は数値パース＋範囲クランプ（下限/上限を設け、不正・未保存・例外は既定へフォールバック）。**省略機能自体のトグルは設けない**（常時有効）。
+- [`ttsPrefs.ts`](../../apps/desktop/src/features/comment-viewer/ttsPrefs.ts) にキー `stream-dock.comment-viewer.tts-max-length` を追加した
+  （**このモジュール初の数値設定**。既存は真偽値のみ）。
+  - 既定 **60** / 下限 **20** / 上限 **200** を定数で公開し、**クランプは `clampTtsMaxLength` 1 関数**が持つ。
+    load（他窓・手書きの不正値への最後の砦）／save（範囲外を localStorage に残さない）／設定 UI の確定時 の 3 箇所が呼ぶ。
+  - `loadTtsMaxLength` は未保存・空文字（`Number("")===0` の罠）・パース不能・例外をすべて既定へ、範囲外はクランプへ落とす。
+  - **省略機能自体のトグルは設けない**（常時有効）。**「上限なし」も作らない**——クランプ下限/上限が構造的に保証する。
 
 ### (2) 切り詰めロジック（ttsQueue）
 
-- [`ttsQueue.ts`](../../apps/desktop/src/features/comment-viewer/ttsQueue.ts) の `TtsQueueOptions`（47-61 行）に `getMaxLength?: () => number` を足し、`enqueue` の **129 行 `.trim()` 直後・130 行の空判定の前**で、
-  `text.length > max` のとき `text.slice(0, max) + "、以下略"` に置き換える（読み替え適用後の実読み上げテキストに対して数える）。空判定・`queue.push` はそのまま後段に流す。
-  - 表示側（`renderDefaultItem`/`renderOverlayItem`・ティッカー 047）には触れない＝**表示は全文のまま**。
+- **純関数 `capForSpeech(text, max)` を export** した（`sanitizeForSpeech` の隣）。`createTtsQueue` は `new AudioContext()` を
+  作るため jsdom で動かず、**`enqueue` 直書きだと単体テストが書けない**ため切り出した。
+- `TtsQueueOptions` に `getMaxLength?: () => number` を足し、`enqueue` の**読み替え適用＋ `.trim()` の直後・空判定の前**で
+  1 回だけ呼ぶ。**未注入なら切り詰めない**（既存 getter と同じ「省略時は現行動作」）。
+- **数える単位はコードポイント**（`[...text]`）。`slice` は UTF-16 コードユニット単位でサロゲートペアを割り孤立サロゲート
+  「�」を作るため（`viewerFormat.ts` の `authorInitial` と同じ理由・非絵文字の 𠮷 は `sanitizeForSpeech` を通過する）。
+  書記素クラスタ（`Intl.Segmenter`）は意図的に不採用。`text.length <= max` の高速パスあり。
+- 接尾辞は定数 `SPEECH_ELLIPSIS = "、以下略"`（**読み替え辞書の適用後**に足すので辞書に壊されない）。`max` に含めない。
+- 表示側（`renderDefaultItem`/`renderOverlayItem`・ティッカー 047・固定帯 046a）には**触れていない**（差分ゼロを実測）。
 
 ### (3) 本体の配線と設定 UI
 
-- [`CommentViewerApp.tsx`](../../apps/desktop/src/screens/comment-viewer/CommentViewerApp.tsx) に `maxReadLength` state（`useState(()=>loadTtsMaxLength())`）＋永続化 `useEffect`＋ref 同期を追加し、`createTtsQueue`（405-408 行）へ `getMaxLength: () => maxReadLengthRef.current` を渡す。
-- [`SettingsView.tsx`](../../apps/desktop/src/screens/comment-viewer/SettingsView.tsx) の読み上げカード（127-227 行）に**文字数の数値入力行**を追加し、値・onChange を props で受け渡す（`SettingsViewProps` に prop を追加・表示専用の性質は不変）。注記で「これ以上は『以下略』で省略して読み上げます（表示は全文のまま）」を添える。
+- [`CommentViewerApp.tsx`](../../apps/desktop/src/screens/comment-viewer/CommentViewerApp.tsx) に `ttsMaxLength` state（`useState(() => loadTtsMaxLength())`）＋永続化 `useEffect`＋
+  `ttsMaxLengthRef` 同期を追加し、`createTtsQueue` へ `getMaxLength: () => ttsMaxLengthRef.current` を渡す
+  （**設定を変えてもキューを作り直さない**）。
+- [`SettingsView.tsx`](../../apps/desktop/src/screens/comment-viewer/SettingsView.tsx) の読み上げカードに `<input type="number">` の行を追加した（CSS 追加ゼロ・既存クラス流用）。
+  **確定は blur / Enter のみ**——打鍵途中の `8` が下限 20 へクランプされる事故と、1 打鍵ごとの localStorage 書き込みを
+  同時に避けるため。空・NaN（全角数字はここに落ちる）は**直前の確定値へ戻す**。注記は
+  「読み上げは指定文字数で打ち切り、続きは『以下略』と読みます（コメントの表示は全文のままです）。20〜200 文字。」
+
+### (4) テスト（TTS 経路に初めて単体テストが入った）
+
+- **新規** `ttsQueue.test.ts`（`capForSpeech` のみ・`createTtsQueue` は呼ばない＝AudioContext 不要）と
+  **新規** `ttsPrefs.test.ts`（クランプ・往復・破損値の劣化先・save 前クランプ・localStorage 例外）。
+  `SettingsView.obs.test.tsx` は `baseProps` に必須 props 2 つを足しただけ（検証対象は不変）。
 
 ## このタスクでやらないこと
 
@@ -71,7 +113,9 @@
 - 既定文字数を超えるコメントの**読み上げ**が「…、以下略」で打ち切られ、超えないコメントは従来どおり全文読み上げられる。
 - 文字数を設定画面から変更でき、再オープン・再起動で復元する。省略機能は常時有効（トグル無し）。
 - **表示（一覧/オーバーレイ/ティッカー）は全文のまま**で変わらない。新規宛先/API/capability/依存の追加が無い。`csp: null` 不変。
-- `pnpm --filter ./apps/desktop typecheck` / `lint` が通る。[`docs/progress.md`](../progress.md) を更新。
+- `pnpm --filter ./apps/desktop typecheck` / `lint` / `test` が通る。[`docs/progress.md`](../progress.md) を更新。
+  → **2026-07-31 時点: typecheck / lint / test（22 files / 324 tests ＋ CSS guard）すべて green・progress.md 更新済み。
+  残るのは実機確認のみ**（「以下略」の実際の読み・長文直後のコメントが読まれるかの実測）。
 
 ## 確認コマンド
 
@@ -79,8 +123,20 @@
 git diff --stat
 pnpm --filter ./apps/desktop typecheck
 pnpm --filter ./apps/desktop lint
-pnpm --filter ./apps/desktop tauri dev   # 長文コメントで読み上げが「以下略」で止まる／短文は全文読む／設定で文字数変更が効く／
-                                         #   一覧・オーバーレイ表示は全文のまま、を目視
+pnpm --filter ./apps/desktop test        # ttsQueue.test.ts / ttsPrefs.test.ts ＋ 既存テストの非退行
+
+# ゼロ拡大の担保（差分ゼロが期待）
+git status --short -- apps/desktop/src-tauri/ apps/comment-sidecar/ apps/desktop/package.json
+# 表示側を触っていないことの担保（差分ゼロが期待）
+git status --short -- apps/desktop/src/screens/comment-viewer/CommentList.tsx \
+  apps/desktop/src/screens/comment-viewer/PinnedCommentBar.tsx \
+  apps/desktop/src/screens/comment-viewer/OverlayApp.tsx \
+  apps/desktop/src/screens/comment-viewer/PinnedOverlayApp.tsx
+
+pnpm --filter ./apps/desktop tauri dev   # 長文コメントで読み上げが「以下略」で止まる／**「以下略」の読みが意図どおりか**／
+                                         #   短文は全文読む／設定で文字数変更が即座に効く（キューが作り直されない）／
+                                         #   一覧・ティッカー・固定帯・オーバーレイ表示は全文のまま／
+                                         #   **長文の直後に届いたコメントが読まれる**（本タスクの目的・050 の判断材料）
 ```
 
 ## 実装後に必要なレビュー

@@ -6,6 +6,11 @@ import {
   type OverlayFontId,
 } from "../../features/comment-viewer/overlaySettings";
 import type { ObsWsConfig } from "../../features/comment-viewer/obsApi";
+import {
+  TTS_MAX_LENGTH_MAX,
+  TTS_MAX_LENGTH_MIN,
+  clampTtsMaxLength,
+} from "../../features/comment-viewer/ttsPrefs";
 import { ToggleSwitch } from "./ToggleSwitch";
 import { Select } from "./Select";
 import { useHostOs } from "../../features/platform/useHostOs";
@@ -41,6 +46,10 @@ interface SettingsViewProps {
   onSpeakTwitchChange: (value: boolean) => void;
   speakYoutube: boolean;
   onSpeakYoutubeChange: (value: boolean) => void;
+  // 048: 1 件あたりの読み上げ最大文字数（超過分は「以下略」で打ち切る）。state/永続化は CommentViewerApp が保持し、
+  // ここは表示と確定値の受け渡しのみ。**省略の ON/OFF トグルは無い**（常時有効・変えられるのは文字数だけ）。
+  ttsMaxLength: number;
+  onTtsMaxLengthChange: (value: number) => void;
   // 033d: 読み上げ話者の選択（話者・スタイル一覧と選択中 style id。state は CommentViewerApp が保持）。
   speakers: VoicevoxSpeaker[];
   selectedSpeakerId: number;
@@ -78,6 +87,8 @@ export function SettingsView({
   onSpeakTwitchChange,
   speakYoutube,
   onSpeakYoutubeChange,
+  ttsMaxLength,
+  onTtsMaxLengthChange,
   speakers,
   selectedSpeakerId,
   onSpeakerIdChange,
@@ -98,6 +109,31 @@ export function SettingsView({
   // 044a: OBS パスワード入力のローカル state（**この値は保存しない・保存は Rust→keychain**）。認証が必要な OBS の
   // ときだけ入力欄を出す。保存ボタンで onSetObsPassword に渡し、入力欄は即クリアして DOM/メモリに残さない（§9）。
   const [obsPasswordInput, setObsPasswordInput] = useState("");
+  // 048: 読み上げ最大文字数の**入力中の生文字列**。確定（blur / Enter）まで親 state に反映しない。
+  // 理由: 打鍵ごとに確定すると「80 にしたい途中の 8」が下限 20 へクランプされて入力が壊れ、さらに
+  // 1 打鍵ごとに localStorage へ書くことになる（親の永続化 effect が state 変更のたびに走るため）。
+  // 設定ビューは view 切替でアンマウントされるので、開くたびに現在値で初期化される。
+  const [maxLengthInput, setMaxLengthInput] = useState(() =>
+    String(ttsMaxLength),
+  );
+
+  /**
+   * 048: 文字数入力を確定する（blur / Enter）。
+   * - 空・NaN（全角数字は `type="number"` が受け付けず空になる）は**直前の確定値へ戻す**。
+   *   既定値へ飛ばさない＝ユーザーが設定した値を打ち間違いで勝手に消さない。
+   * - 有限値は `clampTtsMaxLength` で丸め、**入力欄の表示もクランプ後の値へ書き戻す**
+   *   （「999 と打ったら 200 に落ちた」が見えるようにする。min/max 属性はブラウザの補助であって保証ではない）。
+   */
+  const commitMaxLength = () => {
+    const parsed = Number(maxLengthInput.trim());
+    if (maxLengthInput.trim() === "" || !Number.isFinite(parsed)) {
+      setMaxLengthInput(String(ttsMaxLength));
+      return;
+    }
+    const next = clampTtsMaxLength(parsed);
+    setMaxLengthInput(String(next));
+    onTtsMaxLengthChange(next);
+  };
   // 033f Windows 追修正③: OBS のウィンドウキャプチャ方式は OS で事情が異なる。Windows は
   // 「Windows 10(WGC)＋透過を許可」でないと GPU/透過の WebView2 窓を取り込めず黒くなるため、
   // Windows のときだけ設定手順の一文を出す。OS 判定は既存の host_os（タイトルバー出し分けと
@@ -159,6 +195,41 @@ export function SettingsView({
             配信元ごとに読み上げの ON/OFF を切り替えられます（OFF
             の配信元は読み上げませんが、コメント表示は残ります）。VOICEVOX
             読み上げが ON のときだけ設定できます。
+          </span>
+
+          {/* 048: 読み上げの文字数上限。長文 1 件の読み上げ中（290 文字なら 48〜64 秒）に届いたコメントが
+              バックログ上限で無言破棄されるのを防ぐため、**読み上げテキストだけ**を打ち切る（表示は全文のまま）。
+              省略の ON/OFF トグルは持たない（常時有効・変えられるのは文字数だけ）ので、クランプの下限/上限が
+              「上限なし」を作らせない役割も兼ねる。ttsEnabled=false でも disabled にしない（話者/スタイル選択と
+              同じ「読み上げの中身」を決める設定で、読み上げ前に決めておけるため。source トグルとは性質が違う）。 */}
+          <label className={styles.speakerField}>
+            読み上げの文字数上限
+            {/* step=10 は矢印キー/スピナーの刻みを 10 にするためだけの指定で、値の妥当性はここでは決めない
+                （65 のような step 外の値も確定時の clampTtsMaxLength が通すので有効。step 不整合は :invalid に
+                該当するが、この CSS モジュールに :invalid のスタイルは無いため見た目にも出ない）。
+                再修正トリガー＝:invalid の見た目を入れるとき、または「1 刻みで微調整したい」要望が出たとき（step=1 へ）。
+                onKeyDown で isComposing を見ていないのは、type="number" が IME 入力を実質受け付けない（変換中の
+                文字が value に載らない）ため。仮に誤発火しても commitMaxLength は現在の入力を確定するだけで、
+                空なら直前値へ戻る＝非破壊。再修正トリガー＝WKWebView/WebView2 実機で変換確定の Enter が
+                値を書き換える事象を観測したとき（そのとき e.nativeEvent.isComposing で弾く）。 */}
+            <input
+              className={styles.searchInput}
+              type="number"
+              inputMode="numeric"
+              min={TTS_MAX_LENGTH_MIN}
+              max={TTS_MAX_LENGTH_MAX}
+              step={10}
+              value={maxLengthInput}
+              onChange={(e) => setMaxLengthInput(e.target.value)}
+              onBlur={commitMaxLength}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") commitMaxLength();
+              }}
+            />
+          </label>
+          <span className={styles.note}>
+            読み上げは指定文字数で打ち切り、続きは「以下略」と読みます（コメントの表示は全文のままです）。
+            {TTS_MAX_LENGTH_MIN}〜{TTS_MAX_LENGTH_MAX} 文字。
           </span>
 
           {/* 033d: 読み上げ話者・スタイルの選択（話者→スタイルの 2 段）。ENGINE 稼働後に一覧（GET /speakers）が

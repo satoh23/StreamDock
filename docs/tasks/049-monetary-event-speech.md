@@ -16,9 +16,10 @@
 
 ## 現在の前提（調査結果・実コード）
 
-- **読み上げの入力は `comment.text` だけ**。[`ttsQueue.ts`](../../apps/desktop/src/features/comment-viewer/ttsQueue.ts) の `enqueue`（117-138 行）が
-  `sanitizeForSpeech(comment.text)`（121 行）→ 読み替え辞書（126-129 行）→ **空ならスキップ**（130 行）という流れで、
-  `comment.text` 以外のフィールドを一切見ない。
+- **読み上げの入力は `comment.text` だけ**。[`ttsQueue.ts`](../../apps/desktop/src/features/comment-viewer/ttsQueue.ts) の `enqueue`（170 行〜）が
+  `sanitizeForSpeech(comment.text)`（**174 行**）→ 読み替え辞書（179 行）→ **切り詰め（188 行・048）** → **空ならスキップ**（189 行）
+  という流れで、`comment.text` 以外のフィールドを一切見ない。
+  - ⚠ **行番号は 2026-07-31 の 048 実装後に更新済み**（`capForSpeech` と `getMaxLength` が入って全体が下にずれた）。
 - **一方、課金イベントの `text` は空**。043b の設計で「要約文言は表示側が組み立てる」ことにしたため、
   `membership` / `gift` は `text = ""`、`subscription` は自由コメントがある時だけ本文が入る。
   表示は [`viewerFormat.ts`](../../apps/desktop/src/screens/comment-viewer/viewerFormat.ts) の `composeEventMessage`（133-157 行）が
@@ -36,8 +37,9 @@
 
 - ⚠ **`jewels` は dev-mock でだけ読まれる**。`dev-mock.ts` が `text = "投げ銭ジュエル 🎁"` を入れているため
   dev では音が出るが、実データの `GIFT_EVENT` は本文を持たないので**本番で無音**になる。dev 確認では気付けない。
-- オプションは getter 注入方式（[`TtsQueueOptions`](../../apps/desktop/src/features/comment-viewer/ttsQueue.ts#L47) の
-  `getSpeakerId` 54 行 / `getReadingDictionary` 60 行）。キューはマウント時 1 回生成で、合成直前に getter で最新値を読む。
+- オプションは getter 注入方式（[`TtsQueueOptions`](../../apps/desktop/src/features/comment-viewer/ttsQueue.ts) 91 行〜 の
+  `getSpeakerId` 97 行 / `getReadingDictionary` 103 行 / `getMaxLength` 112 行）。キューはマウント時 1 回生成で、
+  合成直前に getter で最新値を読む。⚠ **行番号は 2026-07-31 の 048 実装後に更新済み**。
   **本タスクも同じ手本に乗る**（キューを作り直さない）。
 - `viewerFormat.ts` は「**依存ゼロ**（React/CSS/DOM 非依存）」と冒頭に明記された純関数モジュール。
   ただし置き場所は `screens/` 配下なので、`features/` 配下の `ttsQueue.ts` から直接 import すると**層が逆転する**。
@@ -77,11 +79,12 @@
 
 ### (2) 読み上げ入力の差し替え（ttsQueue）
 
-- [`TtsQueueOptions`](../../apps/desktop/src/features/comment-viewer/ttsQueue.ts#L47) に
-  `getSpeechText?: (comment: CommentViewDto) => string` を足す（既存 getter 2 つと同じ注入方式）。
-- `enqueue` の **121 行**を `sanitizeForSpeech(getSpeechText?.(comment) ?? comment.text)` に変える。
-  以降（読み替え辞書 → 048 の切り詰め → 空判定 → `queue.push`）は**一切変えない**。
-  ＝未注入時は現行と完全に同じ挙動（後方互換）。
+- `TtsQueueOptions`（91 行〜）に `getSpeechText?: (comment: CommentViewDto) => string` を足す
+  （既存 getter **3 つ**＝`getSpeakerId` 97 行 / `getReadingDictionary` 103 行 / `getMaxLength` 112 行 と同じ注入方式）。
+- `enqueue` の **174 行**を `sanitizeForSpeech(getSpeechText?.(comment) ?? comment.text)` に変える。
+  以降（読み替え辞書 → **048 の切り詰め `capForSpeech`（188 行）** → 空判定 → `queue.push`）は**一切変えない**。
+  ＝未注入時は現行と完全に同じ挙動（後方互換）。**この 5 段の順序は `enqueue` 内のコードコメントで不変条件として
+  明示されている**（048 実装時に追加）。本タスクが触るのは **① 入力決定だけ**。
 - 冒頭の docstring「著者名は読まない（本文のみ）」に、**課金イベントだけ例外である旨と理由**を追記する。
 
 ### (3) 本体の配線
@@ -94,9 +97,12 @@
 - **新規** `speechText.test.ts`: 種別ごとの文言（`membership` / `gift`(Twitch/YouTube 語彙) / `subscription` / `jewels`）／
   自由コメントの連結／`（TierN）` の整形／**`chat` と `superchat` は名前を読まない**（現行方針の維持を固定）／
   未知の種別は `c.text` へ劣化／`monthCount` 等が無いときの分岐。
-- **新規** `ttsQueue.test.ts`（**現状 TTS 経路には単体テストが 1 つも無い**ので、この機会に作る）:
+- `ttsQueue.test.ts` へ**追記**（048 で新規作成済み。現状は純関数のみを対象＝キュー本体のテストはまだ無い）:
   `getSpeechText` を注入すると `text` が空のコメントでも読み上げキューに載ること／未注入なら従来どおり `text` を読むこと／
   `sanitizeForSpeech` の既存仕様（URL・絵文字除去）。`synthesize` / `playWav` はモックし、**通信も音声再生も行わない**。
+  - **048 レビューからの申し送り（必須）**: 同じモックが入るこの機会に、**`getMaxLength` を注入した `enqueue` が
+    実際に切り詰めること**も 1 ケース固定すること。`getMaxLength` は optional ＋ `?? Infinity` のため、
+    本体（`CommentViewerApp`）の注入が将来消えても **typecheck も既存テストも通ってしまい、上限だけが黙って消える**。
 
 ## このタスクでやらないこと
 
@@ -107,11 +113,15 @@
 
 ## 実装順の注意（048 との関係）
 
-- 048 と本タスクは**同じ `enqueue`（121-130 行）を触る**。**048 を先に実装する**こと。
-  - 理由: 本タスクで読み上げテキストが長くなる（名前＋要約＋自由コメント）ため、先に上限が入っていないと
-    長文起因の取りこぼし（050 の背景）を悪化させる。
-  - 048 実装後の `enqueue` は「① 入力決定 → ② sanitize → ③ 読み替え → ④ 切り詰め → ⑤ 空判定」となり、
-    本タスクは **① だけ**を差し替える形になる（衝突しない）。
+- **048 は 2026-07-31 に実装済み**（この前提条件は解消済み）。`enqueue` は
+  「① 入力決定 → ② sanitize → ③ 読み替え → ④ 切り詰め → ⑤ 空判定 → push」の 5 段になっており、
+  本タスクは **① だけ**を差し替える形になる（衝突しない）。
+  - 048 を先にした理由: 本タスクで読み上げテキストが長くなる（名前＋要約＋自由コメント）ため、先に上限が
+    入っていないと長文起因の取りこぼし（050 の背景）を悪化させる。**上限は既定 60 文字**なので、
+    「〇〇さんがメンバーシップギフトを5件贈りました」＋自由コメントは**上限に当たりうる**（当たったら「以下略」で切れる）。
+    名前が長いケースの見え方は実機で確認し、必要なら 048 の既定値ではなく**この文言側**を短くすることを検討する。
+- **`ttsQueue.test.ts` は 048 で新規作成済み**（現状は純関数 `capForSpeech` / `sanitizeForSpeech` のみを対象）。
+  本タスクの「(4) テスト」はこのファイルへ**追記**する形になる（新規作成ではない）。
 
 ## セキュリティ制約（docs/security.md 準拠）
 

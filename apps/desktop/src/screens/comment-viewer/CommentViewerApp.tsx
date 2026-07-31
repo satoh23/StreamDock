@@ -34,6 +34,8 @@ import {
   saveSpeakTwitch,
   loadSpeakYoutube,
   saveSpeakYoutube,
+  loadTtsMaxLength,
+  saveTtsMaxLength,
 } from "../../features/comment-viewer/ttsPrefs";
 import {
   loadSpeakerId,
@@ -267,6 +269,11 @@ export function CommentViewerApp() {
   const [speakTwitch, setSpeakTwitch] = useState(() => loadSpeakTwitch());
   const [speakYoutube, setSpeakYoutube] = useState(() => loadSpeakYoutube());
 
+  // 048: 1 件あたりの読み上げ最大文字数（既定 60・localStorage 永続）。超過分は「、以下略」で打ち切る。
+  // 省略は常時有効（ON/OFF トグルは持たない）で、変えられるのは文字数だけ。**表示は全文のまま**で、
+  // 切り詰まるのは ttsQueue へ渡す読み上げテキストだけ。
+  const [ttsMaxLength, setTtsMaxLength] = useState(() => loadTtsMaxLength());
+
   // 033d: 読み上げ話者（VOICEVOX style id・localStorage 永続）。未選択時の既定は 3（ずんだもんノーマル）。
   const [selectedSpeakerId, setSelectedSpeakerId] = useState(() =>
     loadSpeakerId(),
@@ -287,6 +294,9 @@ export function CommentViewerApp() {
   // 033d: TTS キューは合成直前に getter で最新の選択話者を読む（キューを作り直さない）。state の stale closure を
   // 避けるため ref に同期し、createTtsQueue の getSpeakerId から参照する。
   const selectedSpeakerIdRef = useRef(selectedSpeakerId);
+  // 048: 読み上げ最大文字数も同じ理由で ref に同期し、createTtsQueue の getMaxLength から参照する
+  //（文字数を変えてもキューを作り直さない＝再生中の読み上げやバックログを落とさない）。
+  const ttsMaxLengthRef = useRef(ttsMaxLength);
   // 起動中フラグ（state ではなく ref）。launchEngine 先頭で最初の await より前に立て、同一 tick/並行の
   // 複数契機が来ても spawn を 1 回に抑える同期ガード（launchRequested は起動成功後の窓を守る別レイヤ）。
   const launchInFlightRef = useRef(false);
@@ -542,6 +552,14 @@ export function CommentViewerApp() {
   useEffect(() => {
     saveSpeakYoutube(speakYoutube);
   }, [speakYoutube]);
+  // 048: 読み上げ最大文字数を localStorage に永続化する（再オープン・再起動で復元）。設定 UI は blur/Enter で
+  // 確定するので、ここが走るのは確定 1 回分だけ（打鍵ごとに書かない）。
+  // マウント時にも 1 回走って同じ値を書き直す（＝他窓へ storage イベントが 1 発飛ぶ）が、既存の saveChannel /
+  // saveObsAutoAdd / savePinnedOverlayEnabled と同じ挙動で、読み手（OverlayApp / PinnedOverlayApp）は
+  // e.key で購読キーを絞っておりこのキーを見ないため無害。再修正トリガー＝このキーを購読する窓を足すとき。
+  useEffect(() => {
+    saveTtsMaxLength(ttsMaxLength);
+  }, [ttsMaxLength]);
   // 033d: 選択話者を localStorage に永続化する（再オープン・再起動で復元）。
   useEffect(() => {
     saveSpeakerId(selectedSpeakerId);
@@ -592,6 +610,10 @@ export function CommentViewerApp() {
   useEffect(() => {
     selectedSpeakerIdRef.current = selectedSpeakerId;
   }, [selectedSpeakerId]);
+  // 048: 読み上げ最大文字数を ref に同期（enqueue のたびに getMaxLength から最新値を読む）。
+  useEffect(() => {
+    ttsMaxLengthRef.current = ttsMaxLength;
+  }, [ttsMaxLength]);
   // 035c: source 別読み上げ ON/OFF を ref に同期（enqueueForSpeech から最新値を読む）。
   useEffect(() => {
     speakTwitchRef.current = speakTwitch;
@@ -604,9 +626,12 @@ export function CommentViewerApp() {
     // 033d: 合成直前に選択話者（style id）を ref から読む getter を渡す。話者変更でキューを作り直さない。
     // 041a: 合成前の読み替え辞書も getter で渡す。現状は内蔵辞書のみ（静的）だが、041b でユーザー辞書を内蔵へ
     // 重ねる（ライブマージ）際もキューを作り直さずに済むよう getter 注入の形にしておく。
+    // 048: 読み上げ最大文字数も getter で渡す（設定を変えてもキューを作り直さない）。値は ttsPrefs 側で
+    // クランプ済みの整数で、切り詰めは ttsQueue の enqueue（読み替え適用の直後）だけで起きる。
     const queue = createTtsQueue({
       getSpeakerId: () => selectedSpeakerIdRef.current,
       getReadingDictionary: () => BUILTIN_READING_DICTIONARY,
+      getMaxLength: () => ttsMaxLengthRef.current,
     });
     ttsRef.current = queue;
     return () => {
@@ -1164,6 +1189,8 @@ export function CommentViewerApp() {
           onSpeakTwitchChange={setSpeakTwitch}
           speakYoutube={speakYoutube}
           onSpeakYoutubeChange={setSpeakYoutube}
+          ttsMaxLength={ttsMaxLength}
+          onTtsMaxLengthChange={setTtsMaxLength}
           speakers={speakers}
           selectedSpeakerId={selectedSpeakerId}
           onSpeakerIdChange={setSelectedSpeakerId}

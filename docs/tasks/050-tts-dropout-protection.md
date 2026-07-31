@@ -1,11 +1,12 @@
 # 050 読み上げ取りこぼしの可視化と保護（無言で捨てない・詰まらせない）
 
-> 状態: **未着手（単体タスク・2026-07-28 起票）**。**[048](048-tts-reading-length-cap.md) の実装後に着手する**
-> （048 で長文起因の取りこぼしがどこまで減るかを実測してから、残りを潰すため）。
+> 状態: **未着手（単体タスク・2026-07-28 起票）**。[048](048-tts-reading-length-cap.md) は **2026-07-31 に実装済み**
+> だが、**実機での実測がまだ**（長文起因の取りこぼしがどこまで減ったか）。**実測してから着手する**という取り決めは
+> そのまま有効で、実測結果は `docs/progress.md` の「2026-07-31 (048 …)」節に追記されるので、それを見てから始めること。
 >
-> **必読前提**: TTS キュー [`ttsQueue.ts`](../../apps/desktop/src/features/comment-viewer/ttsQueue.ts)（`pump` 76-114 行 / `enqueue` 117-138 行）、
-> 合成クライアント [`voicevox.ts`](../../apps/desktop/src/features/comment-viewer/voicevox.ts)（`synthesize` 94-121 行）、
-> [`CommentViewerApp.tsx`](../../apps/desktop/src/screens/comment-viewer/CommentViewerApp.tsx)（`engineBanner` 1023-1040 行付近＝既存の通知面）、
+> **必読前提**（⚠ 行番号は **048 実装後の現状**に更新済み）: TTS キュー [`ttsQueue.ts`](../../apps/desktop/src/features/comment-viewer/ttsQueue.ts)（`pump` 129 行〜 / `enqueue` 170 行〜）、
+> 合成クライアント [`voicevox.ts`](../../apps/desktop/src/features/comment-viewer/voicevox.ts)（`synthesize` 94 行〜）、
+> [`CommentViewerApp.tsx`](../../apps/desktop/src/screens/comment-viewer/CommentViewerApp.tsx)（`engineBanner` 1442 行付近＝既存の通知面）、
 > [048](048-tts-reading-length-cap.md) / [049](049-monetary-event-speech.md)（同じ `enqueue` を触る）、[`docs/security.md`](../security.md)（§1/§9）。
 > CLAUDE.md どおり **「実装して」まで変更せず、まず変更計画と対象ファイルを提示する**。**frontend のみ**＝**軽レビュー**。
 
@@ -18,18 +19,18 @@
 
 ### 経路1: backlog 上限による「古い未読の破棄」（無言）
 
-[`ttsQueue.ts`](../../apps/desktop/src/features/comment-viewer/ttsQueue.ts) 131-136 行:
+[`ttsQueue.ts`](../../apps/desktop/src/features/comment-viewer/ttsQueue.ts) 190-195 行:
 
 ```ts
 queue.push(text);
-if (queue.length > MAX_BACKLOG) {          // MAX_BACKLOG = 20（19 行）
+if (queue.length > MAX_BACKLOG) {          // MAX_BACKLOG = 20（22 行）
   const dropped = queue.length - MAX_BACKLOG;
   queue.splice(0, dropped);                // 古い方＝直前の長文の後に来たコメントから捨てる
   console.debug(`TTS backlog 上限超過: 古い未読 ${dropped} 件を破棄`);
 }
 ```
 
-読み上げは FIFO 直列（`playing` フラグ・`pump` 76-114 行）で、1 件の再生が終わるまで次に進まない。**実測に基づく試算**:
+読み上げは FIFO 直列（`playing` フラグ・`pump` 129 行〜）で、1 件の再生が終わるまで次に進まない。**実測に基づく試算**:
 
 | 1 件の長さ | 読み上げ所要（VOICEVOX 日本語 ≒ 4.5〜6 文字/秒） | dev-mock（1800ms 間隔）でその間に届く数 | 破棄される数 |
 | --- | --- | --- | --- |
@@ -42,36 +43,38 @@ if (queue.length > MAX_BACKLOG) {          // MAX_BACKLOG = 20（19 行）
 
 ### 経路2: 合成のタイムアウトが無い（詰まると全部詰まる）
 
-[`voicevox.ts`](../../apps/desktop/src/features/comment-viewer/voicevox.ts) の `synthesize`（94-121 行）は
-`signal?: AbortSignal` を**受け取れるのに、`ttsQueue` から渡していない**（[`ttsQueue.ts`](../../apps/desktop/src/features/comment-viewer/ttsQueue.ts) 98-102 行に
+[`voicevox.ts`](../../apps/desktop/src/features/comment-viewer/voicevox.ts) の `synthesize`（94 行〜）は
+`signal?: AbortSignal` を**受け取れるのに、`ttsQueue` から渡していない**（[`ttsQueue.ts`](../../apps/desktop/src/features/comment-viewer/ttsQueue.ts) 151-155 行に
 「dispose で中断しないため意図的に渡さない」と明記）。結果、VOICEVOX ENGINE が応答を返さないと
 `playing` が **true のまま張り付き**、その間の到着分がすべて経路1 で捨てられる。
 
 ### 経路3: AudioContext が running でないときの「1 件スキップして次へ」（無言）
 
-[`ttsQueue.ts`](../../apps/desktop/src/features/comment-viewer/ttsQueue.ts) 87-97 行。`ctx.state !== "running"` なら `resume` を試み、
+[`ttsQueue.ts`](../../apps/desktop/src/features/comment-viewer/ttsQueue.ts) 140-150 行。`ctx.state !== "running"` なら `resume` を試み、
 それでも running でなければ**その 1 件を捨てて `finally` から `pump()` を再帰**する。
 macOS でアプリが背面に回る等で AudioContext が suspended になると、ユーザー操作が来るまで resume できないため
-**キュー全体が数十件まとめて無音消費**されうる。通知は `console.debug`（95 行）のみ。
+**キュー全体が数十件まとめて無音消費**されうる。通知は `console.debug`（148 行）のみ。
 
-- ⚠ この設計は「**永久ハングを塞ぐため**」に意図的にこうしてある（82-86 行のコメントに経緯が明記）。
+- ⚠ この設計は「**永久ハングを塞ぐため**」に意図的にこうしてある（135-139 行のコメントに経緯が明記）。
   **ハングを再発させない形でしか変えてはいけない**。
 - **未確定**: 実機で本当に発生しているかは未確認。**本タスクの (1) を先に入れて可視化し、発生の有無を確定させてから (3) を判断する**。
 
 ### その他
 
-- TTS 経路（`ttsQueue.ts` / `voicevox.ts`）には**単体テストが 1 つも無い**（`readingDictionary` も同様）。
-- 既存の通知面は `CommentViewerApp.tsx` の `engineBanner`（1023-1040 行・`role="alert"`／VOICEVOX 未起動の誘導）。
+- **048（2026-07-31）で `ttsQueue.test.ts` / `ttsPrefs.test.ts` が新設された**が、対象は純関数（`capForSpeech` /
+  `sanitizeForSpeech`）だけで、**キュー本体（`createTtsQueue` / `pump`）のテストはまだ無い**（`voicevox.ts` /
+  `readingDictionary.ts` も同様）。本タスクの (5) はこの `ttsQueue.test.ts` へ追記する形になる。
+- 既存の通知面は `CommentViewerApp.tsx` の `engineBanner`（1442 行付近・`role="alert"`／VOICEVOX 未起動の誘導）。
   本タスクの通知はここに相乗りするのが自然（新規の UI 概念を増やさない）。
 
 ## このタスクでやること
 
 ### (1) 捨てたことを見せる（3 経路すべて）
 
-- [`TtsQueueOptions`](../../apps/desktop/src/features/comment-viewer/ttsQueue.ts#L47) に
+- `TtsQueueOptions`（91 行〜・048 で `getMaxLength` が加わり getter は 3 つ）に
   `onSkipped?: (reason: "backlog" | "audio-suspended" | "synth-timeout", count: number) => void` を足す
   （既存 getter 群と同じ注入方式・未注入なら現行どおり `console.debug` のみ）。
-- 呼び出し箇所: 経路1（134 行の `splice` 直後）／経路2（新設のタイムアウト catch）／経路3（95 行の `console.debug` と同じ場所）。
+- 呼び出し箇所: 経路1（193 行の `splice` 直後）／経路2（新設のタイムアウト catch）／経路3（148 行の `console.debug` と同じ場所）。
 - [`CommentViewerApp.tsx`](../../apps/desktop/src/screens/comment-viewer/CommentViewerApp.tsx) 側で件数を集計し、
   既存 `engineBanner` の並びに**控えめな注記**を出す（例: 「読み上げが追いつかず 12 件スキップしました」）。
   - **一定時間で自動的に消す**（常時出しっぱなしにしない）。読み上げ OFF のときは出さない。
@@ -79,10 +82,10 @@ macOS でアプリが背面に回る等で AudioContext が suspended になる�
 
 ### (2) 合成タイムアウト（詰まりを塞ぐ）
 
-- [`ttsQueue.ts`](../../apps/desktop/src/features/comment-viewer/ttsQueue.ts) の `pump`（105 行）で `synthesize` に **`AbortSignal` を渡す**
+- [`ttsQueue.ts`](../../apps/desktop/src/features/comment-viewer/ttsQueue.ts) の `pump`（158 行）で `synthesize` に **`AbortSignal` を渡す**
   （`AbortController` ＋ `setTimeout` の標準 API のみ＝**新規依存ゼロ**）。既定 10 秒（要調整）。
 - タイムアウトしたら**その 1 件だけ諦めて次へ進む**（既存 catch と同じ作法・直列は止めない）。`onSkipped("synth-timeout", 1)` を呼ぶ。
-- 98-102 行の「意図的に signal を渡さない」コメントは、**dispose 中断とタイムアウト中断は別目的**である旨に更新する
+- 151-155 行の「意図的に signal を渡さない」コメントは、**dispose 中断とタイムアウト中断は別目的**である旨に更新する
   （dispose 時は従来どおり中断しない＝`disposed` ガードで再生を抑止する設計は維持）。
 
 ### (3) AudioContext suspended の扱い（**(1) の実測後に判断**）
@@ -93,13 +96,13 @@ macOS でアプリが背面に回る等で AudioContext が suspended になる�
 
 ### (4) MAX_BACKLOG の再評価
 
-- 048 実装後に実測し、20 のままでよいか判断する。**上限導入で溢れにくくなっているはずなので、安易に増やさない**
+- 048 は実装済み（2026-07-31）。**実機で実測してから** 20 のままでよいか判断する。**上限導入で溢れにくくなっているはずなので、安易に増やさない**
   （増やすと「今のコメント」ではなく「数分前のコメント」を読み続ける、より悪い体験になる）。
 - 変える場合は根拠（実測値）を [`docs/progress.md`](../progress.md) に残す。
 
 ### (5) テスト
 
-- **新規** `ttsQueue.test.ts`（049 が先に作っていれば追記）: `synthesize` / `playWav` をモックし、**通信も音声再生も行わない**前提で、
+- `ttsQueue.test.ts` へ**追記**（048 で新規作成済み・純関数のみが対象なのでキュー本体は未カバー）: `synthesize` / `playWav` をモックし、**通信も音声再生も行わない**前提で、
   - backlog 超過で**古い方から**破棄され `onSkipped("backlog", n)` が呼ばれる（現在の「無言で捨てる」の回帰検知）。
   - 合成がタイムアウトしたら**その 1 件だけ**諦め、**次の 1 件は読まれる**（直列が止まらない＝経路2 の担保）。
   - 合成が例外を投げても直列が止まらない（既存挙動の回帰）。
@@ -123,7 +126,7 @@ macOS でアプリが背面に回る等で AudioContext が suspended になる�
 - 読み上げが取りこぼしたとき、**件数と理由が画面に出る**（一定時間で消える・読み上げ OFF 時は出ない）。
 - VOICEVOX が応答しなくても**その 1 件で止まらず次が読まれる**。
 - 通知に本文・投稿者名が含まれない。新規宛先／API／capability／依存の追加が無い。`csp: null` 不変。
-- `ttsQueue.test.ts` が上記 4 ケースで緑（**TTS 経路に初めて単体テストが入る**）。
+- `ttsQueue.test.ts` が上記 4 ケースで緑（**キュー本体に初めて単体テストが入る**）。
 - `pnpm --filter ./apps/desktop typecheck` / `lint` / `test` が通る。[`docs/progress.md`](../progress.md) を更新
   （経路3 の発生有無と、MAX_BACKLOG を変えたならその実測根拠を必ず残す）。
 
