@@ -123,7 +123,13 @@ fn open_comment_viewer_window(app: AppHandle) -> AppResult<()> {
     // 同一 Vite バンドルを読み込み、frontend 側は `getCurrentWindow().label` で描画を分岐する。
     let window =
         WebviewWindowBuilder::new(&app, "comment-viewer", WebviewUrl::App("index.html".into()))
-            .title("コメントビューア")
+            // 053: **窓のタイトルバーに出る唯一の文言**（033a で窓の中の `<h1>` は OS タイトルと重複するため
+            // 削除済み＝ここが消えると窓が無名になる）。ツール一覧の表示名
+            // （`tools/repository.rs` の `BUILTIN_COMMENT_VIEWER_NAME`）と同じ文字列に揃える。
+            // ⚠ **この窓のタイトルには OBS 自動追加の文字列契約は無い**（044a の対象はオーバーレイ 2 窓のみで、
+            // 下の `#[cfg(test)]` が assert しているのもその 2 本）。オーバーレイ 2 窓のタイトルとは
+            // 相互に部分文字列にならないので、sidecar の `includes` 一致が取り違えることもない。
+            .title("コメントビューア for StreamDock")
             // 033f 追修正③（回帰修正）: Windows では UDF 共有窓の additional_browser_args を全窓一致させないと
             // WebView2 生成が失敗する。main / overlay と同一の SHARED_BROWSER_ARGS に揃える（定数の注記参照）。
             .additional_browser_args(SHARED_BROWSER_ARGS)

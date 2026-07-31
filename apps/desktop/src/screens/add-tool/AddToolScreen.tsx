@@ -233,7 +233,7 @@ export function AddToolScreen({
             </h3>
             <p>
               {isInternal
-                ? "内蔵のコメントビューアです。表示名・種別は変更できません。"
+                ? "内蔵の「コメントビューア for StreamDock」です。表示名・種別は変更できません。"
                 : isUrlKind
                   ? "ブラウザで開くサイトの URL（http / https）を登録します。"
                   : "起動したいアプリの実行ファイルを選びます。"}
@@ -280,7 +280,7 @@ export function AddToolScreen({
               <div className={styles.selectedApp}>
                 <div className={styles.appIcon}>🗪</div>
                 <div>
-                  <h3>{name || "コメントビューア"}</h3>
+                  <h3>{name || "コメントビューア for StreamDock"}</h3>
                   <div className={styles.path}>
                     内蔵ツール（別ウィンドウでコメントビューアを開きます）
                   </div>
