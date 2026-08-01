@@ -1,7 +1,31 @@
 # 055a リリース基盤（バージョン同期＋updater 署名鍵＋CI 成果物＋latest.json）
 
-> 状態: **未着手（実装サブタスク・055 系の先頭／配布側）**。位置づけ・方式決定・線引きは
-> 親 [055](055-app-self-update.md) を正とする。
+> 状態: **実装済み（2026-08-01）／CI 空回しは未実施・未コミット**。実装の記録は
+> [`docs/progress.md`](../progress.md) の「2026-08-01 (055a リリース基盤 …)」節を正とする。
+> **アプリのコード差分はゼロ**（`apps/*/src/` / `capabilities/` / `Cargo.toml` / `pnpm-lock.yaml` すべて無変更＝
+> **前借りフォールバックには該当しなかった**。ただし bundle 段階の可否は空回しで最終確認する）。
+>
+> **実装時に決めたこと（タスク記述からの変更点）**:
+> - `latest.json` の `version` は**タグ名ではなく `tauri.conf.json` から読む**。notes も `<tag>.md` ではなく
+>   **`docs/release-notes/v<version>.md`** を見る。**必須判定はタグ push 時のみ**（空回しはプレースホルダで続行）。
+>   → 空回しで `RELEASE_TAG` が `ci-<番号>` になり (5) と完了条件が両立しない問題と、`version` が semver に
+>   ならない問題を同時に解消するため。**タグ push 経路に抜け道は作っていない。**
+> - 欠落検出は **2 段**（build の `Verify updater artifacts` ＋ `make-latest-json.mjs` の fail-closed）。
+>   `if-no-files-found: error` は全パターン 0 件でしか落ちないため。
+> - eSigner 地雷は**申し送りだけでなく CI ガード**にした（`Guard - post-build signing breaks updater signature (099a)`）。
+> - `tauri-apps/tauri-action` を **コミット SHA へ固定**（秘密鍵を渡すため。挙動は不変）。
+> - Windows の updater 対象は **NSIS `.exe` のみ**（`.msi` は Release に並ぶが `latest.json` は指さない）。
+>
+> **security-review（2026-08-01）の指摘を反映済み**。判定は「軽微な懸念あり・修正必須ゼロ」で、
+> 反映した主なものは ①**署名鍵の同一性検査**（下の「(4) `release.yml`」6.）②**空回しの誤 publish 対策**
+> （`prerelease` ＋本文の警告バナー）③`Verify updater artifacts` の**シェルフラグ修正**
+> ④eSigner ガードの**両側判定化とビルド前への移動** ⑤`dtolnay/rust-toolchain` の SHA 固定。
+> 詳細は [`docs/progress.md`](../progress.md) の 055a 節「### レビュー指摘の反映（2026-08-01）」。
+>
+> ⚠ **空回し後に追記すること**: 成果物の**実ファイル名**（下の「空回しで確定した実ファイル名」節）。
+> `platforms` のキーと前借りフォールバックの該否は、**tauri のソースを読んで静的に確定済み**（同節）。
+>
+> 位置づけ・方式決定・線引きは親 [055](055-app-self-update.md) を正とする。
 >
 > **必読前提**: 親 [055](055-app-self-update.md)（方式決定・egress の定義・実装順の絶対制約・**099a との地雷**）、
 > 配布の親 [099](099-user-test-package.md) と署名 [099a](099a-windows-code-signing.md)、
@@ -124,6 +148,15 @@ updater の `.sig`（minisign）は **tauri がバンドルした時点のバイ
 5. **`draft: true` は維持する。** `releases/latest/download/latest.json` は draft 中 404 になり updater から見えないが、
    これは「成果物を確認してから publish する」安全弁として**望ましい**。
    README に **「publish した瞬間に全ユーザーへ配信が始まる」**と明記する。
+6. **（レビュー S-1 で追加）署名鍵の同一性を検査する。** tauri-cli の `sign_updaters` は、
+   `TAURI_SIGNING_PRIVATE_KEY` の鍵が `plugins.updater.pubkey` と食い違っても **`log::warn!` だけでビルドを通す**。
+   ＝**間違った鍵で署名された `.sig`** は存在チェックも対の検査も素通りし、publish 後に全ユーザーの更新だけが落ちる。
+   `make-latest-json.mjs` で `.sig` と `pubkey` の **keynum（minisign ボックス 2 行目のバイト 2..10）を突き合わせ**、
+   不一致なら fail する（併せて `.sig` の trusted comment の `file:` と実体名も照合する）。
+7. **（レビュー S-2 で追加）空回しの誤 publish を機械で無害化する。** `prerelease: ${{ github.ref_type != 'tag' }}` を
+   足す（`releases/latest` は draft と **prerelease の両方**を除外するため、誤 publish しても updater には見えない）。
+   併せて空回しの Release 本文の先頭に警告バナーを入れる（`docs/release-notes/v<version>.md` を実物として置いた結果、
+   下書きが本物のリリースと見分けがつかなくなったため）。
 
 ### (5) リリースノートの単一ソース
 
@@ -145,12 +178,23 @@ updater の `.sig`（minisign）は **tauri がバンドルした時点のバイ
   - **draft を publish した瞬間に全ユーザーへ配信が始まる**ことを書く。
   - updater 秘密鍵の Secrets 名と、**失うと更新を配れなくなる**ことを書く。
 
-## ⚠ 実装時に確認しフォールバックを持つこと
+## ⚠ 実装時に確認しフォールバックを持つこと → **該当しないことが確定した**
 
-**`createUpdaterArtifacts: true` なのに Rust 側に `tauri-plugin-updater` が無い状態を、Tauri CLI が拒否する可能性がある。**
-拒否された場合は、**`Cargo.toml` への crate 追加と `lib.rs` への `.plugin(…)` 1 行だけを本タスクに前借りし、
-コマンド（`check_app_update` 等）は [055b](055b-updater-check-command.md) のまま**にする。
-前借りした場合はその旨を本ファイルと 055b の両方に追記する（「アプリコード差分ゼロ」の完了条件も併せて緩める）。
+当初の懸念: **`createUpdaterArtifacts: true` なのに Rust 側に `tauri-plugin-updater` が無い状態を、Tauri CLI が
+拒否する可能性がある。** 拒否された場合は `Cargo.toml` への crate 追加と `lib.rs` への `.plugin(…)` 1 行だけを
+前借りする方針だった。
+
+**結論（レビューで tauri-cli のソースを読んで確定・2026-08-01）: 拒否されない。前借りは不要。**
+
+- 手元の `@tauri-apps/cli` と同版（2.11.4）の `crates/tauri-cli/src/interface/rust.rs` は、
+  `create_updater_artifacts != Bool(false)` のとき **`config.plugins` の `"updater"` キーだけ**を見る
+  （無ければ `failed to get updater configuration: plugins > updater doesn't exist` で落ちる）。
+  **`Cargo.toml` の依存も `lib.rs` の plugin 登録も一切参照しない。**
+- `crates/tauri-cli/src/bundle.rs` の `sign_updaters` も `settings.updater()`（＝上の config 由来）しか見ない。
+- ＝ **`plugins.updater` が config にあれば bundle は通る**。空回しでの確認は「念のため」であって、
+  ここが理由でビルドが落ちることはない。
+
+＝ **完了条件の「アプリのコードに差分が無い」は緩めない。**
 
 ## このタスクでやらないこと
 
@@ -207,6 +251,52 @@ git status --short -- apps/desktop/src-tauri/capabilities/
 #   （成果物の実ファイル名をこのタスクファイルへ追記すること）
 gh run list --workflow release --limit 3
 ```
+
+## 空回しで確定した実ファイル名と `platforms` キー
+
+> **`platforms` キーの妥当性は静的に確定済み**（レビューで `tauri-plugin-updater` の `get_urls` を読んだ）。
+> 残る未確定は**実ファイル名だけ**で、実装は「`dist/` を再帰走査して拡張子で発見」＝**決め打ちしていない**ため、
+> ここが埋まっていなくても CI は動く。埋めるのは記録のため。
+>
+> 確定させる手順:
+> 1. GitHub の Actions 画面から `release` を `workflow_dispatch` で実行する。
+> 2. build ジョブの **`Verify updater artifacts`** のログに bundle ディレクトリの全ファイル名が出る。
+> 3. release ジョブの **`Generate latest.json`** のログに、採用したファイル名と `latest.json` の中身が出る。
+> 4. `satoh23/StreamDock-releases` の draft `ci-<番号>` の添付ファイル一覧と突き合わせる。
+
+**updater がキーを引く規則（実測）**: `get_urls` は **`{os}-{arch}-{installer}` → `{os}-{arch}` の 2 段**でしか
+検索しない（`Installer::name()` は `app` / `nsis` / `msi` / `deb` / `rpm` / `appimage`）。`platforms` は `HashMap` で、
+**どの段でも引かれないキーは単に無視される**。
+
+| プラットフォーム | 実際に引かれるキー | 併記しているキー | 成果物の実ファイル名 | 署名ファイル |
+| --- | --- | --- | --- | --- |
+| macOS (universal) | `darwin-aarch64` / `darwin-x86_64`（2 段目） | `darwin-universal`（**引かれないが無害**・将来の保険） | *(空回し後に記入・`<productName>.app.tar.gz` の形)* | *(同左 `.sig`)* |
+| Windows x64 | `windows-x86_64`（2 段目。1 段目の `windows-x86_64-nsis` は置いていない） | ― | *(空回し後に記入・NSIS の `.exe`)* | *(同左 `.sig`)* |
+
+⚠ **記述の訂正（レビュー Q-2）**: 当初「1 キー 1 URL なので `.exe` と `.msi` の両方は載せられない」と書いていたが、
+**これは誤り**。1 段目に installer 名を含むキー（`windows-x86_64-nsis` / `windows-x86_64-msi`）を置けば**両方載せられる**。
+NSIS 一本にしている理由は「Tauri の Windows 自己更新の標準経路が NSIS で `installMode` も NSIS の概念であり、
+**MSI 経路の自己更新を 099b でまだ検証していない**」から。
+なお現在の `windows-x86_64` は 2 段目のフォールバックなので、**MSI で入れたユーザーにも NSIS の `.exe` が配られる**
+（＝インストール形式が入れ替わる）。**099b の確認項目に加えること。**
+
+`latest.json` の実物（`version` / `pub_date` / `url` の形）も確定後にここへ貼る。
+
+## security.md を変更しなかった判断（レビュー S-5 で追認）
+
+本タスクでは `docs/security.md` を**意図的に変更していない**。根拠:
+
+- §1 の「許可する可能性があるもの」に**「将来的なアップデート確認」が既にある**＝方針違反ではない。
+- 親 [055](055-app-self-update.md) の「security.md へ追記する節の割り当て」表が、§1 例外／§10 依存／
+  Capabilities 方針の追記を **055b の担当**と定めている（task-board にも記録済み）。
+- **実際の egress はゼロ**（`plugins.updater` を読むコードが存在しない。`apps/` 内で当該 URL が出るのは
+  `tauri.conf.json` の 1 箇所のみで、`tauri-plugin-updater` は `Cargo.toml` に無い）。
+  条文の追記は「実際に通信が発生する変更」に紐づけたほうが、条文と実装の対応が保てる。
+
+⚠ **残る非対称**: security.md は「正」なのに、`tauri.conf.json` には外部ホストの URL が書かれていて
+security.md からは辿れない。**再修正トリガー＝ 055b の着手が長引き、その間に別件の security-review が入るとき**。
+そのときは §1 の末尾に「055a で配布側のみ実装済み・読むコードが無く egress は発生しない・条文追記は 055b」という
+**所在のポインタ 1 行**を置く（条文の緩和ではないので 055b の担当範囲は侵さない）。
 
 ## 実装後に必要なレビュー
 

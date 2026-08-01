@@ -52,8 +52,14 @@ jobs:
       HAS_WINDOWS_SIGNING: ${{ secrets.ES_USERNAME != '' }}
 
     steps:
+      # 055a: このジョブは updater の秘密鍵（TAURI_SIGNING_PRIVATE_KEY）を扱うため、
+      # `.git/config` に GITHUB_TOKEN を残さない（release ジョブの checkout と揃える）。
+      # tauri-action は `tagName` を渡していない＝Release を作らないので git 資格情報は不要。
+      # pnpm-lock.yaml に git 依存（`git+…`）も無いので、fetch にも影響しない。
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -64,8 +70,35 @@ jobs:
           node-version: 20
           cache: pnpm
 
+      # 055a: バージョン番号 5 箇所（root/desktop/sidecar の package.json・Cargo.toml [package]・tauri.conf.json）の
+      # 同期を確かめる。タグ push のときは EXPECT_VERSION でタグ名との一致も検査する
+      # （`v` を除いたタグ名 == 5 箇所）。ズレたまま配信すると updater が無反応になるか、下位バージョンを
+      # 配って更新ループを作る。**重いビルドの前に置く**ことで数十秒で落ちる。
+      # 検査ロジックはローカルの `pnpm check:version` とまったく同じスクリプト（二重管理を作らない）。
+      - name: Check version sync
+        shell: bash
+        run: node apps/desktop/scripts/check-version-sync.mjs
+        env:
+          EXPECT_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+
+      # 055a: **ビルド後の置換署名は updater の minisign 署名を壊す**（`.sig` はバンドル時点のバイト列に対して
+      # 作られるため）。壊れ方が「CI 緑・インストーラも動く・自己更新だけが静かに落ちる」で 099b の実機 E2E まで
+      # 発覚せず、かつ 099a の作業者が 055a のタスクファイルを読む保証がないので、**文書ではなく検査**で止める。
+      # 実行条件は下の署名ステップと同じ `HAS_WINDOWS_SIGNING == 'true'`＝**今日は no-op**で、
+      # 099a で Secrets を入れた瞬間にここで止まる。移行手順はスクリプトのエラー文に書いてある。
+      # ⚠ 設定ファイルとワークフローを読むだけなので、**重いビルドの前**に置く（`Check version sync` と同じ思想）。
+      - name: Guard - post-build signing breaks updater signature (099a)
+        if: matrix.platform == 'windows-latest' && env.HAS_WINDOWS_SIGNING == 'true'
+        shell: bash
+        run: node .github/scripts/check-updater-signing-compat.mjs
+
+      # 055a: このジョブは updater 秘密鍵を扱うため、**ブランチ参照（`@stable`）をやめてコミット SHA へ固定**する
+      #   （`tauri-action` を固定したのと同じ理屈。同一ジョブの Action はワークスペースと PATH を書き換えられるので、
+      #   ステップ単位の env でも後続ステップの秘密を奪うラッパを仕込みうる）。
+      #   固定先は固定時点の `stable` ブランチ HEAD で、`inputs.toolchain` の既定は `stable` のまま
+      #   ＝**インストールされる Rust は従来どおり stable 最新**（挙動は変わらない）。更新は手動で行う。
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable ブランチ HEAD（2026-08-01 時点）
         with:
           targets: ${{ matrix.rust_targets }}
 
@@ -153,11 +186,65 @@ jobs:
           lipo -info comment-sidecar-universal-apple-darwin
 
       # Release は作らず、インストーラをビルドするだけ（tagName を渡さない）。未署名で生成する。
+      #
+      # 055a: updater 成果物（macOS `.app.tar.gz` / Windows インストーラ）の **minisign 署名**をここで作らせる。
+      #   秘密鍵は GitHub の暗号化 Secrets のみに置き、**env で渡すだけ**（echo も run での参照もしない）。
+      #   ⚠ tauri.conf.json に `createUpdaterArtifacts: true` と `pubkey` がある状態でこの env が無いと、
+      #     bundle 段階で「A public key has been found, but no private key」で失敗する（ローカルビルドも同様）。
+      #
+      # 供給網対策（055a）: 本ステップに updater 秘密鍵を渡すようになったため、floating tag `@v0` をやめて
+      #   コミット SHA へ固定する（099a が `sslcom/esigner-codesign@develop` について書いている理屈と同じ）。
+      #   固定時点で `v0` が指していた commit と同一なので**挙動は変わらない**。更新は手動で行う。
       - name: Build installers
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # action-v0.6.2
         with:
           projectPath: apps/desktop
           args: ${{ matrix.args }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      # 055a: updater 成果物が本当に生成されたかを明示的に確かめる。
+      # ⚠ 後段の `upload-artifact` の `if-no-files-found: error` は **全パターンが 0 件**のときしか失敗しない。
+      #   つまり `.sig` が 1 つも生成されなくても既存の dmg/exe が拾われる限り **CI は緑のまま**通ってしまい、
+      #   「配ったのに誰も更新できない」状態に気づけない。だから存在チェックを別に置く。
+      # 併せて bundle ディレクトリの中身を出力する（Tauri のバージョンによって変わる**実ファイル名**を
+      # 空回しのログから確定させるため）。
+      - name: Verify updater artifacts
+        shell: bash
+        run: |
+          # ⚠ `shell: bash` を明示すると GitHub は `bash --noprofile --norc -eo pipefail {0}` で起動する＝
+          #    **`-e` は最初から有効**。`set -uo pipefail` を書いても `-e` は解除されない。
+          #    ここは `$(find … | head -n1)` を使っており、`pipefail` と `-e` の組み合わせでは
+          #    find の非ゼロ終了（探索エラー・head の早期終了による SIGPIPE）で**代入の時点でステップが即死**し、
+          #    下の `::error::` も bundle 一覧も出ない——本ステップの主目的（実ファイル名をログに残す）が
+          #    失敗時にだけ失われる。Windows の git-bash では find が非ゼロを返しやすいので実際に起こりうる。
+          #    そこで **明示的に `-e` を落とす**。欠落の判定は下の `missing` と `exit 1` が担う。
+          set +e
+          set -uo pipefail
+          root="apps/desktop/src-tauri/target"
+          missing=""
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            archive=$(find "$root" -path "*/release/bundle/macos/*" -name "*.app.tar.gz" 2>/dev/null | head -n1)
+            sig=$(find "$root" -path "*/release/bundle/macos/*" -name "*.app.tar.gz.sig" 2>/dev/null | head -n1)
+            [ -n "$archive" ] || missing="${missing} macOS の updater アーカイブ(*.app.tar.gz);"
+            [ -n "$sig" ] || missing="${missing} その minisign 署名(*.app.tar.gz.sig);"
+          else
+            # Windows は `.sig` だけを見る（macOS と非対称）。`.app.tar.gz` は updater 専用の別成果物なので
+            # 本体の有無も確かめる必要があるが、Windows の署名対象は**インストーラそのもの**で、
+            # `*.exe.sig` があれば署名元の `*.exe` は必ず存在するため。
+            sig=$(find "$root" -path "*/release/bundle/nsis/*" -name "*.exe.sig" 2>/dev/null | head -n1)
+            [ -n "$sig" ] || missing="${missing} Windows NSIS インストーラの minisign 署名(*.exe.sig);"
+          fi
+          echo "--- bundle ディレクトリの中身（実ファイル名の確認用） ---"
+          find "$root" -path "*/release/bundle/*" -type f 2>/dev/null | sed "s|^|  |"
+          if [ -n "$missing" ]; then
+            echo "::error::updater 成果物が生成されていません:${missing}"
+            echo "tauri.conf.json の bundle.createUpdaterArtifacts と、Build installers の署名鍵 env" >&2
+            echo "（TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PASSWORD）を確認してください。" >&2
+            exit 1
+          fi
+          echo "updater 成果物 OK"
 
       # 099a-(II): Windows インストーラを SSL.com eSigner（クラウド署名）で署名する。
       # 日本の個人は Azure Trusted Signing 対象外のため、個人検証(IV)証明書＋eSigner を採用。
@@ -165,6 +252,9 @@ jobs:
       # 認証情報は Secrets のみ（ES_USERNAME / ES_PASSWORD / CREDENTIAL_ID / ES_TOTP_SECRET）。ログに出さない。
       # セキュリティ: sslcom/esigner-codesign は署名資格情報を受け取るため、@develop ではなく
       #   レビュー済みのコミット SHA / リリースタグへ固定することを推奨（供給網対策）。
+      # 055a のガード: **ビルド後の置換署名は updater の minisign 署名を壊す**ため、
+      #   ビルド前の `Guard - post-build signing breaks updater signature (099a)` が
+      #   `ES_USERNAME` を登録した瞬間に（＝下の署名ステップへ到達する前に）ビルドを止める。
       - name: Locate Windows installers
         if: matrix.platform == 'windows-latest' && env.HAS_WINDOWS_SIGNING == 'true'
         id: installers
@@ -198,8 +288,13 @@ jobs:
           file_path: ${{ steps.installers.outputs.msi }}
           override: true
 
-      # 生成されたインストーラだけを workflow artifact として保存する。
+      # 生成されたインストーラと updater 成果物を workflow artifact として保存する。
       # 各 OS は自分の成果物のみ一致する（他 OS のパターンは 0 件でよい）。
+      # 055a: updater 成果物（macOS の `.app.tar.gz` と各インストーラの `.sig`）を追加する。
+      #   ⚠ **ファイル名は決め打ちしない**（Tauri のバージョンで変わるため）。ディレクトリを限定した
+      #     拡張子ワイルドカードにしておき、実ファイル名は空回しのログで確定させる。
+      #   ⚠ `if-no-files-found: error` は「全パターンが 0 件」でしか落ちないので、欠落検出は
+      #     上の `Verify updater artifacts` と release ジョブの latest.json 生成側（fail-closed）が担う。
       - name: Upload installers (artifact)
         uses: actions/upload-artifact@v4
         with:
@@ -210,17 +305,59 @@ jobs:
             apps/desktop/src-tauri/target/**/release/bundle/dmg/*.dmg
             apps/desktop/src-tauri/target/**/release/bundle/nsis/*.exe
             apps/desktop/src-tauri/target/**/release/bundle/msi/*.msi
+            apps/desktop/src-tauri/target/**/release/bundle/macos/*.app.tar.gz
+            apps/desktop/src-tauri/target/**/release/bundle/macos/*.app.tar.gz.sig
+            apps/desktop/src-tauri/target/**/release/bundle/nsis/*.sig
+            apps/desktop/src-tauri/target/**/release/bundle/msi/*.sig
 
   release:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      # 055a: latest.json の生成に、リリースノート（docs/release-notes/）と生成スクリプトと
+      # バージョンの単一ソース（tauri.conf.json）が要るので checkout する。
+      # ⚠ **必ず download-artifact より前に置くこと。** actions/checkout は既定 `clean: true` で、
+      #   ワークスペースが git リポジトリでない場合は**中身を削除してから**チェックアウトするため、
+      #   後ろに置くと dist/ が消える。
+      # `permissions: contents: read`（ワークフロー冒頭）のままで足りる。public 側への書き込みは
+      # 従来どおり RELEASE_REPO_TOKEN。同じジョブで PAT を扱うので、.git/config に GITHUB_TOKEN を残さない。
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
       - name: Download all installers
         uses: actions/download-artifact@v4
         with:
           path: dist
 
-      # public の StreamDock-releases に Release 下書きを作り、全 OS の成果物を添付する。
+      # 055a: updater が読む静的 latest.json と、Release 本文を生成する（**新しい Action は増やさず素の node**）。
+      #   - version は tauri.conf.json が単一ソース（空回しでも semver になる。タグ push 時は build ジョブの
+      #     Check version sync がタグ名との一致を保証している）。
+      #   - notes は docs/release-notes/v<version>.md が単一ソース。**タグ push 時に無ければ fail**。
+      #   - updater 成果物が欠けている / .sig と対になっていない場合も fail（fail-closed）。
+      #   latest.json は dist/ 直下に書くので、下の `files: dist/**/*` がそのまま添付する。
+      #   Release 本文は dist/ の**外**（release-body.md）へ書く（中に書くと成果物として添付されてしまう）。
+      #   注: このジョブは `actions/setup-node` を通さず **ubuntu ランナー既定の node** を使う（build ジョブとは非対称）。
+      #   スクリプトは node の標準 API しか使わないため十分だが、ランナーイメージ側の node が前提であることは意識しておく。
+      - name: Generate latest.json
+        run: node .github/scripts/make-latest-json.mjs
+        env:
+          # RELEASE_TAG はワークフロー冒頭の env で全ステップに渡っている（ここで再定義しない）。
+          RELEASE_REPO: satoh23/StreamDock-releases
+          IS_TAG: ${{ github.ref_type == 'tag' }}
+          DIST_DIR: dist
+          BODY_PATH: release-body.md
+
+      # public の StreamDock-releases に Release 下書きを作り、全 OS の成果物と latest.json を添付する。
+      # ⚠ `draft: true` は維持する。draft のうちは releases/latest/download/latest.json が 404 になり
+      #   updater からは見えない＝**成果物を確認してから publish する**安全弁。
+      #   **publish した瞬間に全ユーザーへ配信が始まる**（README のリリース手順に明記）。
+      # ⚠ `prerelease` は **タグ push でないとき（空回し）に true** にする。
+      #   GitHub の `releases/latest` は **draft と prerelease の両方を除外**するので、
+      #   手動実行の下書き `ci-<番号>` を誤って publish しても **updater からは決して見えない**。
+      #   draft・下書き名・README の注意はいずれも人間依存だったが、これは機械的な安全弁になる。
+      #   （空回しの Release 本文には make-latest-json.mjs が警告バナーも付ける）
       - name: Publish to public releases repo (draft)
         uses: softprops/action-gh-release@v2
         with:
@@ -229,4 +366,6 @@ jobs:
           tag_name: ${{ env.RELEASE_TAG }}
           name: ${{ env.RELEASE_NAME }}
           draft: true
+          prerelease: ${{ github.ref_type != 'tag' }}
+          body_path: release-body.md
           files: dist/**/*

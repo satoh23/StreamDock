@@ -19,6 +19,23 @@
 > スキップされるため顕在化していないが、**本タスクで Secrets を入れた瞬間に発火する**。
 > 対処方針（055a で決定・実施は本タスク）: **`bundle.windows.signCommand` へ寄せ、tauri のバンドル過程内で署名させてから
 > updater 署名を作らせる**（後段の `override` 置換をやめる）。検証は [099b](099b-updater-e2e.md) の E2E-6。
+>
+> **055a で CI ガードを実装済み**（申し送りだけでは止まらないため）。`release.yml` の build ジョブ Windows レグにある
+> ステップ **`Guard - post-build signing breaks updater signature (099a)`**
+> （[`.github/scripts/check-updater-signing-compat.mjs`](../../.github/scripts/check-updater-signing-compat.mjs)）が、
+> **`ES_USERNAME` を登録した瞬間**に CI を fail させる。設定ファイルとワークフローを読むだけなので
+> **`Check version sync` の直後＝重いビルドの前**に置いてある（数十秒で落ちる）。
+> ＝本タスクは **(1) の `signCommand` 設定を先に済ませないとビルドが通らない**。
+>
+> ⚠ **ガードは両側を見る**（055a のレビュー Q-5 で追加）:
+> 1. `createUpdaterArtifacts` が真 かつ `bundle.windows.signCommand` **未設定** → fail（移行前）
+> 2. `createUpdaterArtifacts` が真 かつ `release.yml` に `sslcom/esigner-codesign` を `override: true` で使う
+>    ステップが**残っている** → fail（移行が中途半端）
+>
+> **＝ `signCommand` を設定しただけでは通らない。** ビルド後の置換署名ステップ
+> （`Locate Windows installers` / `Sign NSIS installer (.exe)` / `Sign WiX installer (.msi)` の 3 つ）を
+> **必ずセットで削除する**こと。片方だけだと元の地雷とまったく同じ壊れ方（`.sig` とバイト列の不一致）になる。
+> 移行手順はそのスクリプトのエラーメッセージにも書いてある。
 
 ## 目的
 

@@ -9762,3 +9762,259 @@ grep -nE "#[0-9a-fA-F]{3,8}|rgba?\(" apps/desktop/src/screens/comment-viewer/Com
 5. 055 へ進むなら `docs/tasks/055a-updater-release-pipeline.md`。055c を触るなら
    `docs/tasks/055c-update-notice-and-screen.md` **冒頭の 054 申し送り**を先に読むこと。
 6. OS 操作・ファイル操作・プロセス操作・外部通信に触れる変更をするなら `docs/security.md`（今回は不変）。
+
+## 2026-08-01 (055a リリース基盤 —— バージョン同期＋updater 署名鍵＋CI 成果物＋latest.json／**アプリコード差分ゼロ**)
+
+> 状態: **実装完了・CI 空回し未実施・未コミット**。空回しは依頼者が GitHub の Actions 画面から実行する。
+> タスク [docs/tasks/055a-updater-release-pipeline.md](tasks/055a-updater-release-pipeline.md)／親 [055](tasks/055-app-self-update.md)。
+
+### やったこと（配布側だけ・アプリは何も変わっていない）
+
+updater が動くための**配る側**を用意した。終了時点で「アプリはまだ更新を見に行かないが、public リリースに
+`latest.json` と `.sig` が並ぶ」状態。受け取る側（plugin 導入・Rust コマンド・UI）は 055b 以降。
+
+**(1) バージョン同期ガード（新規 `apps/desktop/scripts/check-version-sync.mjs`・依存ゼロ）**
+
+- 5 箇所（root / desktop / sidecar の `package.json`、`Cargo.toml` の `[package]`、`tauri.conf.json`）を検査。
+- `pnpm check:version` を追加し、`test` を `vitest run && pnpm check:css && pnpm check:version` に。
+- `--expect` / `EXPECT_VERSION` を受ける。**CI のタグ検証は同じスクリプトを使う**（二重管理を作らない）。
+- `Cargo.toml` は**セクションを追う行走査**で `[package]` の version だけを拾う。正規表現一発だと
+  `tauri = { version = "2" }` に先に当たり「アプリのバージョンを 1 度も見ないまま緑になる検査」ができあがる。
+
+**(2) `tauri.conf.json`** —— `bundle.createUpdaterArtifacts: true` と `plugins.updater` を新設。
+`endpoints` は `https://github.com/satoh23/StreamDock-releases/releases/latest/download/latest.json` の**1 本のみ**・
+**動的プレースホルダなし**（バージョンを外部へ送らない＝親 055 の egress 定義）。`pubkey` は本人が生成した公開鍵
+（**非機密**・鍵 ID `63401191CF3C28B7`）。`windows.installMode: "passive"`（実挙動の確定は 099b）。**`csp: null` 不変**。
+
+**(3) `release.yml`** —— ステップ名で特定できるよう以下を追加・変更した。
+
+- build: `Check version sync`（重いビルドの前。タグ push 時は `EXPECT_VERSION` でタグ名一致も見る）
+- build: `Build installers` に `TAURI_SIGNING_PRIVATE_KEY` / `…_PASSWORD` を env で渡す（`echo` しない）
+- build: `Verify updater artifacts`（新設・下記③）
+- build: `Guard - post-build signing breaks updater signature (099a)`（新設・下記④）
+- build: `Upload installers (artifact)` の glob に `macos/*.app.tar.gz(.sig)` / `nsis/*.sig` / `msi/*.sig` を追加
+- release: `Checkout`（**`Download all installers` より前**。checkout は既定 `clean: true` で dist/ を消すため）
+- release: `Generate latest.json`（素の node・**新 Action を増やさない**）
+- release: `Publish to…` に `body_path: release-body.md`。**`draft: true` は維持**
+
+**(4) `docs/release-notes/`** —— `README.md`（雛形・055e が描画できる記法だけ）と `v0.1.0.md`（実物 1 本）。
+
+**(5) 文書** —— README のリリース手順を全面改訂（3→5 箇所・**ノートを先に書く**・**publish＝配信開始**・
+鍵の Secrets 名と紛失時の帰結・ローカル `pnpm tauri build` にも鍵 env が要ること）。099a に CI ガードの申し送り。
+
+### 依頼者の指示で必ず残す 6 点
+
+**① 空回しと「リリースノート必須」の両立をどう解決したか**
+
+タスクどおりに「ノートが無ければ fail」を実装すると、`workflow_dispatch` では `RELEASE_TAG` が `ci-<run番号>` に
+なるため `docs/release-notes/ci-123.md` が存在せず**必ず落ちる**。しかし完了条件は「空回し 1 回で draft を目視確認」
+＝両立しない。加えて `latest.json` の `version` が `ci-123` になり **semver ではない**。
+
+解決: **`version` の出どころを `tauri.conf.json` に 1 本化**し、**notes は `docs/release-notes/v<version>.md`** を見る
+（タグ名を使わない）。必須判定は **`github.ref_type == 'tag'` のときだけ**効かせ、dispatch でファイルが無ければ
+プレースホルダ＋`::warning` で続行する。あわせて **`v0.1.0.md` を実物として置いた**ので、空回しでも notes 経路は
+プレースホルダではなく**実データ**で通る（＝完了条件「notes にファイルの内容がそのまま入っている」を空回しだけで検証できる）。
+**タグ push 経路には抜け道を作っていない。**
+
+**② `latest.json` の実物** —— ⚠ **空回し未実施のため未確定**。確定後にこの節と 055a タスクファイルへ追記する。
+生成側の実装は「`dist/` を再帰走査し拡張子で発見」＝**固定パスもファイル名も決め打ちしていない**。
+`platforms` のキーは `darwin-aarch64` / `darwin-x86_64` / `darwin-universal`（3 つとも同一の universal
+`.app.tar.gz` を指す）＋ `windows-x86_64`（**NSIS の `.exe`**。`.msi` は Release には並ぶが updater は参照しない）。
+**キーの妥当性はレビューで静的に確定した**（下の「レビュー指摘の反映」Q-2 / Q-3）。
+
+**③ updater 成果物の欠落検出**
+
+`upload-artifact` の `if-no-files-found: error` は**全パターンが 0 件のときしか失敗しない**ため、`.sig` が 1 つも
+生成されなくても既存の dmg/exe が拾われる限り CI は緑で通る。そこで **2 段**にした。
+(a) build ジョブの `Verify updater artifacts`（OS ごとに存在確認。bundle ディレクトリの中身も出力＝実ファイル名の確認用）。
+(b) `make-latest-json.mjs` を **fail-closed** に（mac/win いずれか欠落・`.sig` と実体が対でない・候補が複数で
+一意に決まらない → すべて `exit 1`）。**中身の欠けた `latest.json` は原理的に出ない。**
+
+**④ eSigner 地雷 —— 記録だけでなく CI ガードにした**
+
+`sslcom/esigner-codesign` は tauri ビルド**後**に `override: true` で置換署名する＝**バイト列が変わり minisign `.sig` と
+食い違う**。壊れ方が「CI 緑・インストーラも動く・**自己更新だけが署名検証で落ちる**」で 099b の実機 E2E まで発覚しない。
+`check-css-guards.mjs` 冒頭の「コメントはファイル境界を越えないので、境界を越える検査が要る」（同じバグ 3 回）と同型なので、
+**申し送り（既に b182801 で 099a に存在）に加えて機械のガードを入れた**。
+判定＝`createUpdaterArtifacts` が真 かつ `bundle.windows.signCommand` 未設定 → fail。
+実行条件は既存の `HAS_WINDOWS_SIGNING == 'true'` ＝ **今日は no-op**、099a で Secrets を入れた瞬間に署名より前で止まる。
+
+**⑤ 前借りフォールバック —— 該当しないことが確定した**（当初は「空回しで確定」としていた）
+
+安価な事前確認は 2 つ実施済み: `cargo check` 通過（`tauri-build` が型付きで `createUpdaterArtifacts` を読むため
+スキーマ不正ならここで落ちる）、`tauri info` 通過（設定パース・plugin 一覧に異常なし）。
+どちらも bundle 段階の可否は確定しなかったが、**レビューで tauri-cli 2.11.4（= 手元の `@tauri-apps/cli` と同版）の
+ソースを読んで確定した**: `interface/rust.rs` は `create_updater_artifacts != Bool(false)` のとき
+**`config.plugins` の `"updater"` キーだけ**を見て（無ければ `plugins > updater doesn't exist` で落ちる）、
+**`Cargo.toml` の依存も `lib.rs` の plugin 登録も一切参照しない**。`bundle.rs` の `sign_updaters` も
+`settings.updater()`（config 由来）しか見ない。＝**`plugins.updater` が config にあれば bundle は通る＝前借り不要。**
+
+**⑥ ミューテーション確認の結果（完了条件）—— 9/9 一致**
+
+作業ツリー非破壊（元バイト列を退避 →書き換え →実行 →`finally` で必ず復元）で実走した。
+- (1)〜(5) 5 箇所を 1 つずつ `0.1.1` へ → **すべて FAIL**
+- (6) `[package]` の version 行を削除 / (7) root の `version` キーを削除 → **FAIL**（fail-closed。黙って素通りしない）
+- (8) `[dependencies]` の `tauri = { version = "2" }` を書き換え / (9) `# version = "9.9.9"` コメント追加 → **PASS**（誤ヒットなし）
+
+`make-latest-json.mjs` も **7/7**: 正常系（notes が `v0.1.0.md` と一致・キー 4 つ・URL 生成）／mac 成果物欠落／
+`.sig` の片割れのみ／候補複数／`.exe.sig` だけ欠落 → すべて FAIL、notes 無し×タグ push → FAIL、
+notes 無し×空回し → プレースホルダで続行。
+eSigner ガードも 3 状態で確認（現状 OK ／ `createUpdaterArtifacts` だけ true → FAIL ／ `signCommand` も設定 → OK）。
+
+### そのほかの決定
+
+- **`tauri-apps/tauri-action` をコミット SHA へ固定**した（`@v0` → `84b9d35b5fc46c1e45415bdb6144030364f7ebc5`
+  ＝ `action-v0.6.2`）。**本タスクから updater 秘密鍵を env で渡すため**で、099a が
+  `sslcom/esigner-codesign@develop` について書いている理屈と同じ。固定時点で `v0` が指していた commit と同一なので
+  **挙動は変わらない**。なお `action-v1.0.0` が出ているが `v0` は追随しておらず、**v1 移行は別判断**（本タスクではやらない）。
+- **`.msi` を updater 対象にしない**（`latest.json` は NSIS `.exe` を指す）。Tauri の Windows 自己更新の標準経路が
+  NSIS で `installMode` も NSIS の概念だから。`.msi` の `.sig` は収集するが未使用。
+  ⚠ **訂正（レビュー Q-2）**: 当初ここに「1 キー 1 URL のため両方は載せられない」と書いていたが**誤り**。
+  下の Q-2 参照。
+- **`sslcom/esigner-codesign@develop` の SHA 固定は 099a の領分のまま**（本タスクでは触っていない）。
+
+### 検証（実測）
+
+```bash
+pnpm --filter ./apps/desktop typecheck   # 通過
+pnpm --filter ./apps/desktop lint        # 通過
+pnpm --filter ./apps/desktop test        # 461 tests + CSS ガード + バージョン同期ガード すべて緑
+cd apps/desktop/src-tauri && cargo check # 通過（tauri.conf.json の型付きフィールドも検証される）
+
+# ゼロ拡大の担保（すべて差分ゼロを確認）
+git status --short -- apps/desktop/src/ apps/desktop/src-tauri/src/ apps/comment-sidecar/src/
+git status --short -- apps/desktop/src-tauri/capabilities/
+git status --short -- apps/desktop/src-tauri/Cargo.toml apps/desktop/src-tauri/Cargo.lock pnpm-lock.yaml
+```
+
+差分は `.github/workflows/release.yml` / `README.md` / `apps/desktop/package.json` /
+`apps/desktop/src-tauri/tauri.conf.json` / `docs/tasks/099a-*.md` の 5 ファイルと、
+新規 `.github/scripts/`（2 本）/ `apps/desktop/scripts/check-version-sync.mjs` / `docs/release-notes/`（2 本）。
+
+### レビュー指摘の反映（2026-08-01・security-review ＋ 品質レビュー）
+
+判定は **「軽微な懸念あり・修正必須ゼロ」**。必須 2 点（ログに秘密鍵が出ない／`endpoints` が単一の
+コンパイル時定数）と、アプリ不変性・capability/CSP 不変・新規 Action ゼロは実測で確認された。
+そのうえで出た指摘に以下のとおり対応した。
+
+**S-1【最重要】署名鍵の取り違えが CI のどこでも止まらなかった → `make-latest-json.mjs` に検査を追加**
+
+tauri-cli の `sign_updaters` は、`TAURI_SIGNING_PRIVATE_KEY` の鍵と `plugins.updater.pubkey` が食い違っても
+**`log::warn!` を出すだけでビルドを続行する**。＝間違った鍵で署名された `.sig` は生成され、
+`Verify updater artifacts`（存在確認だけ）も `make-latest-json.mjs`（`.sig` の中身を載せるだけ）も素通りし、
+**CI 緑・インストーラも動く・publish 後に全ユーザーの更新だけが署名検証で落ちる**——
+④の eSigner 地雷とまったく同型の穴が鍵側に残っていた。Secrets の貼り間違い・鍵ローテーションで容易に起きる。
+
+対処（依存ゼロ）: minisign のボックスは `base64(テキスト)` で、2 行目が `alg(2) + keynum(8) + 本体`。
+**keynum（バイト 2..10）が鍵ペアの同一性**なので、`.sig` と `pubkey` の keynum を突き合わせて不一致なら fail する。
+alg は公開鍵が `Ed`、署名は prehash 有無で `Ed`/`ED` と揺れうるので**先頭 2 バイトは比較しない**。
+併せて `.sig` の trusted comment（`timestamp:<unix>\tfile:<名前>`）と実体名も照合する。
+ダミー `dist/` で **5/5 一致**を実走確認（正常 → exit 0 ／別鍵・名前不一致・壊れた `.sig`・mac 欠落 → すべて exit 1）。
+
+**S-2 空回しの誤 publish → `prerelease` ＋警告バナーで機械的に無害化**
+
+防御が「既定 draft／下書き名／README の注意」＝**すべて人間依存**だった。しかも `v0.1.0.md` を実物として置いた結果、
+空回しの下書きが本物のリリースと見分けがつかない（プレースホルダが出るのは notes 無しのときだけ）。
+対処: `Publish to public releases repo (draft)` に **`prerelease: ${{ github.ref_type != 'tag' }}`**。
+GitHub の `releases/latest` は **draft と prerelease の両方を除外**するので、誤 publish しても updater には見えない。
+併せて空回しの Release 本文の先頭に警告バナーを入れた（`latest.json` の `notes` は素のまま
+＝「notes がファイルの内容そのまま」を空回しだけで検証できる状態を保つ）。
+
+**S-3 / S-4 供給網とジョブの資格情報**
+
+- `dtolnay/rust-toolchain@stable` は**ブランチ参照**で、秘密鍵を持つジョブに同居していた。
+  `4cda84d5c5c54efe2404f9d843567869ab1699d4`（固定時点の `stable` ブランチ HEAD）へ固定。
+  `inputs.toolchain` の既定は `stable` のままなので**インストールされる Rust は従来どおり stable 最新＝挙動不変**。
+  ステップ単位の `env` は他ステップに漏れないが、同一ジョブの Action は PATH/ワークスペースを書き換えられるため。
+- build ジョブの `Checkout` に **`persist-credentials: false`** を追加（release ジョブと揃えた）。
+  `tauri-action` は `tagName` を渡していない＝Release を作らないので git 資格情報は不要、
+  `pnpm-lock.yaml` に git 依存も無いことを確認済み。
+- `tauri-action` の SHA は GitHub API で検証済み: `84b9d35b…` は `refs/tags/action-v0.6.2` の commit と一致し、
+  現在の `v0`（annotated tag）をデリファレンスしても同一 commit ＝「挙動不変」の記述は正しかった。
+- `sslcom/esigner-codesign@develop` は 099a の領分として据え置き。**下記 Q-5 のガードにより
+  `signCommand` 移行前は当該ステップへ到達しない**ので、現時点で実行されることはない。
+
+**S-5 security.md を変更しなかった判断 → 妥当（追認）**。根拠と**再修正トリガー**を 055a タスクファイルの
+「security.md を変更しなかった判断」節に明記した。
+
+**S-6 精度**: 「アプリの実行時の振る舞いは 1 ビットも変わっていない」は正確には
+**「実行時の振る舞いは不変だが、バイナリのバイト列は変わる」**。`tauri-build` が `tauri.conf.json` を
+バイナリへ埋め込むため、endpoint URL と pubkey は配布バイナリ内の文字列として存在する（どちらも公開値）。
+runtime で `plugins.updater` を読むのは updater plugin だけ＝**plugin 未登録なので誰も読まない**。
+
+**Q-1【重】`Verify updater artifacts` の `set -uo pipefail` は「`-e` なし」になっていなかった**
+
+`shell: bash` を明示すると GitHub は `bash --noprofile --norc -eo pipefail {0}` で起動する＝**`-e` は最初から有効**で、
+`set -uo pipefail` は `-u` を足すだけ。`$(find … | head -n1)` は `pipefail` と `-e` の組み合わせにより、
+find の非ゼロ終了（探索エラー・head の早期終了による SIGPIPE）で**代入の時点でステップが即死**し、
+`::error::` も bundle 一覧も出ない＝本ステップの主目的（実ファイル名をログに残す）が失敗時にだけ失われる。
+Windows の git-bash では find が非ゼロを返しやすく実際に起こりうる。**`set +e` を明示**して意図どおりにした。
+
+**Q-2 「1 キー 1 URL のため `.exe` と `.msi` の両方は載せられない」は事実誤り → 訂正**
+
+`tauri-plugin-updater` の `get_urls` は **`{os}-{arch}-{installer}` → `{os}-{arch}` の 2 段**で検索し、
+`Installer::name()` は `app` / `nsis` / `msi` / `deb` / `rpm` / `appimage`。
+＝ `windows-x86_64-nsis` と `windows-x86_64-msi` を**両方載せられる**。NSIS 一本にしている本当の理由は
+「標準経路が NSIS で `installMode` も NSIS の概念であり、**MSI 経路の自己更新を 099b でまだ検証していない**」から。
+なお現在の `windows-x86_64` は 2 段目のフォールバックなので、**MSI で入れたユーザーにも NSIS の `.exe` が配られる**
+（インストール形式が入れ替わる）。**099b の確認項目に追加した。**
+
+**Q-3 `darwin-universal` を足した理由が成立していなかった → コメント訂正**
+
+`get_urls` は `darwin-universal` を**一度も引かない**（キーは `{os}-{arch}[-{installer}]` のみ）。
+`platforms` は `HashMap` なので余分なキーは単に無視される＝**害は無く、判断の結果は安全側で正しい**。
+「Tauri のバージョンによってはこちらを見る経路がある」という根拠だけが誤りだったのでコメントを直した。
+実際に当たるのは macOS `darwin-<arch>`（2 段目）／Windows `windows-x86_64`（2 段目）。
+
+**Q-4 `pub_date` は通る。ただし失敗時の壊れ方が「pub_date だけ無視」ではない → コメントで記録**
+
+`RemoteRelease` の `Deserialize` は `pub_date` のパースに失敗すると `DeError::custom` を返す＝
+**`latest.json` 全体のデシリアライズが失敗し、更新チェックが丸ごとエラーになる**。
+`toISOString()` の小数秒付き（`…T00:00:00.000Z`）は RFC 3339 の `time-secfrac` として正当で
+`time` crate の `Rfc3339` も受理するので**現状の実装で問題ない**。
+再修正トリガー（099b で `invalid value for pub_date` が出たらフィールドごと落とす。`Option` なので無くても成立）を
+`make-latest-json.mjs` にコメントで残した。
+
+**Q-5 eSigner ガードが片側しか見ていなかった → 両側判定にし、ビルド前へ移動**
+
+`signCommand` を設定しさえすれば通り、**ビルド後の置換署名ステップが残っていても検出しなかった**。
+「移行途中で気を抜いた」＝一番ありそうな失敗が素通りする。`release.yml` をステップ単位（`- name:` で分割）に切って
+`sslcom/esigner-codesign` × `override: true` が残っていたら fail する判定を追加（YAML パーサは持ち込まず文字列検査）。
+併せて `tauri.conf.json` とワークフローを読むだけなので **`Check version sync` の隣＝重いビルドの前**へ移した。
+4 状態で実走確認（現状 → FAIL ／ `signCommand` だけ設定 → **新判定で FAIL** ／ 移行完了 → OK ／
+`createUpdaterArtifacts` false → OK）。
+
+**その他（軽微）**
+
+- `make-latest-json.mjs`: `p.split("/").pop()` → `node:path` の `basename`（POSIX 区切り決め打ちの解消）。
+- `check-version-sync.mjs`: 基準を `found[0]` ではなく **`baseline: true` フラグ**で選ぶ（配列の並べ替えで
+  黙って基準がすり替わらない）。`--expect` の semver 検査を**末尾までアンカー**（`0.1.0garbage` を弾く）。
+  ⚠ プレリリース（`0.2.0-beta.1`）は形としては通るが **Windows の MSI/NSIS が受け付けない**旨をコメントに追記。
+  変更後にミューテーション再走: 5/5 一致（5 箇所のズレ・キー削除で FAIL、依存クレートの version 書換で PASS）。
+- `docs/release-notes/v0.1.0.md`: **箇条書きの折返し継続行**（雛形の記法一覧に無く、055e では別段落に割れる）を解消し、
+  1 行 1 項目にした。併せて**前提条件**を追記（読み上げは VOICEVOX の別途インストールが必要／コメントビューアは
+  各サービスへのログインが必要／OBS 自動追加は obs-websocket 有効化と設定 ON が必要）。
+  内容と実装の突合では**事実誤認は無かった**が、前提が書かれておらず「無条件にできる」と読めた。
+- `.gitignore` に `release-body.md` を追加。
+- README: 手順 1 に「**これから付けるバージョン番号**で作る・CI はタグ名ではなく `tauri.conf.json` の
+  `version` でファイルを探す」を明記。ローカルビルドで鍵を**パスワード無し**にした場合は
+  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD=''` を明示 export しないと対話プロンプトで止まることを追記。
+- release ジョブが `actions/setup-node` を通さず**ランナー既定の node** を使っている点をコメントで明示。
+- `Verify updater artifacts` の Windows 側が `.sig` しか見ない（macOS と非対称）理由をコメントで明示。
+
+### 未完了・次にやること
+
+1. **CI 空回し（依頼者が Actions 画面から `workflow_dispatch`）** —— `satoh23/StreamDock-releases` の
+   draft `ci-<番号>` に `latest.json` / `*.sig` /（macOS の）`*.app.tar.gz` が並ぶことを目視確認する。
+   **実ファイル名と `latest.json` の中身**を受けて、上の②と 055a タスクファイルに追記する。
+   build ジョブの `Verify updater artifacts` のログにも bundle 内の全ファイル名が出る。
+   併せて **`Generate latest.json` のログに `署名鍵 : keynum=b7283ccf91114063` が出ること**を確認する
+   （＝Secrets の秘密鍵と `tauri.conf.json` の公開鍵が同じ鍵ペアであることの実地確認）。
+2. GitHub Secrets の登録（`TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`）—— 依頼者作業。
+   **未登録のまま空回しすると bundle 段階で「A public key has been found, but no private key」で落ちる。**
+3. `docs/task-board.md` の 055 系更新。
+4. **コミットは未実施**（依頼者の明示指示待ち）。
+   ⚠ レビュー Q-17 の提案: この差分には独立に価値がある塊が 3 つ（**バージョン同期ガード** /
+   **updater 配布基盤** / **eSigner ガード**）同居している。CLAUDE.md の「1 回の作業で複数機能をまとめて
+   実装しない」に照らすと **2〜3 本に分けられる**（バージョン同期ガードは updater と無関係に有用）。
+   分けるなら未コミットの今が唯一の機会。

@@ -72,18 +72,61 @@ macOS と Windows(x64) のインストーラをクラウドで生成する。
   - `ES_USERNAME` / `ES_PASSWORD` … SSL.com アカウントのログイン情報
   - `CREDENTIAL_ID` … eSigner の署名資格情報（証明書）ID（SSL.com ダッシュボード、または `get_credential_ids` で取得）
   - `ES_TOTP_SECRET` … 自動署名用の TOTP シークレット（eSigner の自動化設定で取得）
+- **アプリ自己アップデート（updater）の署名鍵（055a）**:
+  - `TAURI_SIGNING_PRIVATE_KEY` … `pnpm --filter ./apps/desktop tauri signer generate -w <保存先>` で作った**秘密鍵ファイルの中身**
+  - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` … 上記の生成時に設定したパスワード
+  - **公開鍵は非機密**なので `apps/desktop/src-tauri/tauri.conf.json` の `plugins.updater.pubkey` にコミットしてある。
+  - ⚠ **秘密鍵とパスワードを失うと、既に配布済みのインストールへ二度と更新を配れない**
+    （全ユーザーに手動で入れ直してもらうしかない）。パスワードマネージャ等に**必ずバックアップする**。
+    鍵を作り直すと、旧鍵で署名された配布物からは更新できない。
+  - ⚠ 鍵を設定した以上、**`pnpm tauri build`（インストーラ生成）にはこの 2 つの環境変数が必要**になる。
+    未設定だと「A public key has been found, but no private key」で失敗する。
 
 ### リリース手順
 
+**1. リリースノートを先に書く。** **これから付けるバージョン番号**でファイル名を決め、
+`docs/release-notes/vX.Y.Z.md` を作る（書式は
+[`docs/release-notes/README.md`](docs/release-notes/README.md)）。**このファイルが単一ソース**で、CI が
+アプリ内アップデート画面（`latest.json` の `notes`）と GitHub Release 本文の両方へ流す。
+CI は**タグ名ではなく手順 2 で入れる `tauri.conf.json` の `version`** でこのファイルを探すので、
+両者は必ず同じ番号にすること（手順 2・3 でズレていれば CI が落ちる）。
+**無いままタグを打つと CI が fail する。**
+
+**2. バージョンを 5 箇所すべて更新する。**
+
 ```sh
-# バージョンを更新（apps/desktop/package.json / src-tauri/Cargo.toml / tauri.conf.json）してから
+# package.json（root） / apps/desktop/package.json / apps/comment-sidecar/package.json /
+# apps/desktop/src-tauri/Cargo.toml の [package] / apps/desktop/src-tauri/tauri.conf.json
+pnpm --filter ./apps/desktop check:version   # 5 箇所が揃っているか（pnpm test からも走る）
+```
+
+updater が比較するのは `tauri.conf.json`、診断画面が表示するのは `Cargo.toml` 由来の値なので、
+**ズレたまま配ると「診断画面と updater でバージョンが食い違う」**という追いにくい不整合になる。
+CI もタグ push 時に「タグ名 − `v` == 5 箇所」を検証して落とす。
+
+**3. タグを push する。**
+
+```sh
 git tag v0.1.0
 git push --tags
 ```
 
-タグ push で Actions が走り、完了すると **`StreamDock-releases` の Releases に下書き**が作られる。
-内容を確認して publish する。動作確認だけなら GitHub の Actions 画面から `release` ワークフローを
-**手動実行（workflow_dispatch）**してもビルドできる（下書き名は `CI build <番号>`）。
+タグ push で Actions が走り、完了すると **`StreamDock-releases` の Releases に下書き**が作られる
+（インストーラ・`latest.json`・各 `.sig` が添付される）。動作確認だけなら GitHub の Actions 画面から
+`release` ワークフローを**手動実行（workflow_dispatch）**してもビルドできる（下書き名は `CI build <番号>`）。
+
+**4. 内容を確認して publish する。**
+
+> ⚠ **publish した瞬間に、既存の全ユーザーへの配信が始まる。**
+> updater は `releases/latest/download/latest.json` を見ており、下書きのうちはこの URL が 404 で
+> アプリからは見えない。**publish が配信スイッチ**なので、成果物を確認してから押すこと。
+> 手動実行（`ci-<番号>`）の下書きは**publish しない**（配布物ではない）。
+> なお手動実行の下書きは CI が **prerelease** としても作るので、誤って publish しても
+> `releases/latest` からは除外され updater には配信されない（本文にも警告バナーが入る）。
+> ただしこれは保険であって、**publish しないのが手順**。
+
+なお `release.yml` の `tauri-apps/tauri-action` と `dtolnay/rust-toolchain` は、updater の秘密鍵を扱うジョブに
+いるため**コミット SHA へ固定**してある（供給網対策）。更新するときは手でその SHA を上げる。
 
 ### 署名について
 
@@ -99,9 +142,22 @@ git push --tags
   - 認証情報はすべて GitHub Secrets のみ（`ES_USERNAME` / `ES_PASSWORD` / `CREDENTIAL_ID` / `ES_TOTP_SECRET`）。
     リポジトリ・生成物・ログには含めない。
 - **macOS = 未署名**（親 099 の決定どおり当面）。初回は Gatekeeper 警告が出るため、右クリック →「開く」で回避する。
+- **updater の署名（minisign）はコード署名とは別物**（055a）。前者は「配った更新が改ざんされていないか」を
+  アプリ自身が公開鍵で検証するためのもので、OS の「不明な発行元」警告とは無関係。両方必要。
+  - ⚠ Windows のコード署名を有効化する（`ES_USERNAME` を登録する）ときは、**ビルド後の置換署名をやめて
+    `bundle.windows.signCommand` へ寄せる**こと。置換署名はバイト列を変えるので minisign 署名と食い違い、
+    **Windows の自己更新だけが静かに壊れる**。CI にガードを入れてあり、移行前に Secrets を入れるとビルドが落ちる
+    （詳細は [`docs/tasks/099a-windows-code-signing.md`](docs/tasks/099a-windows-code-signing.md)）。
 
 ### ローカルで手動ビルドする場合
 
 ```sh
+# updater の署名鍵が必要（未設定だと bundle 段階で失敗する。055a）
+export TAURI_SIGNING_PRIVATE_KEY="$(cat <秘密鍵ファイル>)"
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD='<生成時のパスワード>'
 pnpm tauri build            # 実行した OS 向けのインストーラを生成
 ```
+
+⚠ 鍵を**パスワード無し**で生成した場合も、`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` は**空文字で export する**こと
+（`export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=''`）。未設定のままだと CLI が対話プロンプトで止まる。
+CI では `CI=true` のため空文字が自動で使われる。
