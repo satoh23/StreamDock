@@ -182,17 +182,15 @@ describe("SettingsView OBS 連携", () => {
     expect(input.value).toBe("");
   });
 
-  // 045a: 手動キャプチャ注記に出る窓名は、Rust の窓タイトル（src-tauri/src/lib.rs:197）と sidecar の
-  // OBS_SOURCE_NAME（apps/comment-sidecar/src/obs/obs-client.ts:39）と同一文字列でなければならない
-  // （044a の自動追加が owner_name + window_name の一致でこの窓を探すため）。プロセスを跨ぐ契約なので共有定数に
-  // できず、さらにこの注記は JSX で行分割されている＝改行位置を変えると結合結果（区切りの半角スペース）が
-  // 黙って変わる。getByText は空白を正規化してしまい差を吸収するため、**未正規化の textContent** で厳密に見る。
-  it("手動キャプチャ注記に OBS 実窓名を実体どおり出す（044a の窓名一致を壊さない）", () => {
-    const { container } = render(<SettingsView {...baseProps()} />);
-    expect(container.textContent).toContain(
-      "「StreamDock コメントオーバーレイ」",
-    );
-  });
+  // 054 追補(E2E): ここにあった「手動キャプチャ注記に OBS 実窓名を実体どおり出す（044a の窓名一致を壊さない）」を
+  // 削除した。**検査対象そのものが画面から無くなった**ため——045a 以来この検査は「手動キャプチャ注記に出る窓名が
+  // Rust の窓タイトル（src-tauri/src/lib.rs の `.title`）と sidecar の OBS_SOURCE_NAME
+  // （apps/comment-sidecar/src/obs/obs-client.ts）と同一文字列であること」を UI 側から見張るものだったが、
+  // 054 追補で依頼者の指示によりその注記を削除した（自動反映が既定の導線になり説明が過剰になっていたため）。
+  // ⚠ **手放した担保**: 窓名の一致は lib.rs ↔ sidecar の 2 者間だけの契約になり、このテストスイートからは
+  // 見えなくなった。窓名を変えるときは 2 ファイルを必ず同時に直すこと（片方だけ変えても desktop 側は緑のまま）。
+  // 再修正トリガー＝手動キャプチャ手順を UI へ戻すとき（そのときこの検査も一緒に戻す）、または窓名一致の
+  // 退行が実際に起きたとき（そのときは UI 依存をやめ、lib.rs と obs-client.ts を突き合わせる形にする）。
 
   it("connecting は接続中・added/reused は同じ『表示しました』を出す（再利用と区別しない）", () => {
     const { rerender } = render(
@@ -282,13 +280,16 @@ describe("SettingsView 046b 固定コメントオーバーレイのカード", (
     expect(note.textContent).toContain("手動で追加してください");
   });
 
-  it("既存の OBS カード（044a）は不変（自動反映トグルと窓名注記が残る）", () => {
-    const { container } = render(<SettingsView {...baseProps()} />);
+  // 054 追補(E2E): 旧名「既存の OBS カード（044a）は不変（自動反映トグルと窓名注記が残る）」。
+  // 窓名注記（「StreamDock コメントオーバーレイ」を含む手動キャプチャ手順）は依頼者の指示で削除したため、
+  // そのアサートを外した。**自動反映トグルが残っていること**は 046b が「上の OBS カードには手を入れていない」
+  // ことを担保する検査なので維持する（固定コメントカードの追加でこのトグルが巻き添えで消えないため）。
+  it("既存の OBS カードの自動反映トグルは残っている（046b/054 追補で巻き添えにしない）", () => {
+    render(<SettingsView {...baseProps()} />);
     expect(
       screen.getByRole("switch", {
         name: "「コメントをOBSに表示」ON時、OBSに自動で反映する",
       }),
     ).toBeInTheDocument();
-    expect(container.textContent).toContain("「StreamDock コメントオーバーレイ」");
   });
 });

@@ -1,6 +1,52 @@
 /* 032c-a: 内蔵コメントビューア（別ウィンドウ）。役割トークン参照でライト/ダーク両追従。
    ネイティブタイトルバーで開くため独自のウィンドウ枠装飾は持たない。 */
 
+/* ===========================================================================
+   054: コメビュ窓のタイポグラフィ規則（3 段）。**この窓の中に新しい流儀を増やさないための正**。
+
+   | 役割         | 色                | サイズ | 太さ | 実体                                        |
+   | ------------ | ----------------- | ----- | ---- | ------------------------------------------- |
+   | 設定項目名   | var(--text)       | 13px  | 700  | .toggleLabel / .fieldLabel                  |
+   | 補助説明     | var(--muted)      | 12px  | 400  | .note / .obsPasswordHelp（line-height:1.5） |
+   | 無効状態     | var(--text-faint) |   ―   |  ―   | .btn:disabled / .btnGhost:disabled / .dangerBtn:disabled |
+
+   ⚠ **この表は「設定項目名／補助説明／無効状態」の 3 役割だけの正**で、この窓の書式を網羅してはいない
+   （下の「■ 別段のもの」に、表の対象外として意図的に別書式を持つクラスを列挙してある）。
+
+   ■ 基準を .toggleLabel（13px/700）に置いた理由
+     ToggleSwitch は設定画面だけでなく**本体コメントビューのツールバー**でも使うため、値を動かすと
+     設定画面の外へ波及する＝動かせない。一方お手本になるアプリ本体側の値は互いに揃っていない
+     （formLayout.module.css の .field label = 12px/800、SettingsScreen.module.css の .optionLabel = 14px/800）ので、
+     「アプリ全体で 1 値」はそもそも成立しない。よって**統一の単位は「このコメビュ窓の中」**とし、
+     動かせない .toggleLabel を正にして .fieldLabel をそれに一致させる。
+     （コメビュは別ウィンドウ・別 CSS 集約という既存構造なので、formLayout.module.css は import しない。）
+     ⚠ **13px/700 という実値をこの窓の外へ持ち出さないこと**（055c 以降）。持ち出してよいのは
+     「項目名＝--text×太字／説明＝--muted×標準／faint は無効状態専用」という**役割の規則だけ**で、
+     メインウィンドウ側は既存のお手本（.field label / .optionLabel）の実値を使う。
+
+   ■ --text-faint の用途限定
+     --text-faint は theme.css で --muted をさらに 72% まで薄めた色＝**「押せない」を意味する濃度**。
+     **無効状態（:disabled）専用**で、**可読テキスト（設定項目名・補助説明）には使わない**。
+     - 正しい用法として現存: .btn:disabled / .btnGhost:disabled / .dangerBtn:disabled。
+     - .pastTime（視聴者詳細の過去コメント時刻）は**設定画面外のメタ情報**として据え置く（054 の対象外）。
+       ガード (6-b) の FAINT_ALLOWED に理由付きで登録してある**唯一の例外**。
+     - プレースホルダは**この窓では該当なし**（このモジュールに ::placeholder ルールは 1 つも無い。
+       faint をプレースホルダに使っているのは formLayout.module.css の .field input::placeholder 側）。
+       実体が無いので上表には載せない。
+
+   ■ 別段のもの（上表の 3 役割のどれでもない＝意図的に別書式）
+     - .cardHead（カード見出し 12px/800）… 「設定項目名」ではなく見出し。
+     - .fontPreviewLabel（11px/700/--muted）… .fontRow の中で .fontPreviewSample（16px）と
+       ベースライン揃えで並ぶインライン注記。12px へ上げると行の高さが動いてサンプルとの対比が鈍る。
+     - .status（11px/700/--muted）… 接続ポップオーバーの状態表示。**同じポップオーバー内で .note と隣接する**
+       ため、.note を触るときはこことの大小関係も一緒に見ること（現状 .note 12px > .status 11px）。
+
+   この規則の実在は scripts/check-css-guards.mjs のガード (6) が守る（色・太さ・サイズは jsdom で解決されず、
+   CSS モジュールは存在しないキーでも文字列を返すため、コンポーネントのテストでは検出できない）。
+   (6-a)=.fieldLabel が .toggleLabel と一致 ／ (6-b)=faint の全走査＋許可リスト ／
+   (6-c)=.speakerField はレイアウト専用 ／ (6-d)=SettingsView が styles.fieldLabel を参照。
+   =========================================================================== */
+
 .root {
   display: flex;
   flex-direction: column;
@@ -239,9 +285,35 @@
   cursor: not-allowed;
 }
 
+/* 補助説明文（3 段規則の 2 段目）。054: 11px/--text-faint（＝無効色）から --muted/12px へ。
+   旧値は .speakerField と完全に同一で、「読み上げの文字数上限」というラベルとその直下の説明文が
+   視覚的に一切区別できなかった。line-height は「固定コメントをOBSに表示」カードのように .note が
+   5 連続する箇所を読める行間にするために付ける（文章の要約・分割はしない＝054 のやらないこと）。
+
+   ⚠ このクラスは設定画面の外でも 2 箇所で使う。どちらも同じ「補助説明」の役割なので同じ規則が当たるのは意図どおり。
+     - ViewerDetailPanel の「この視聴者の情報を削除する」ボタン直下の <p>。
+     - CommentViewerApp の YouTube 接続カード内の <span>。**これはツールバーの中ではなく
+       ConnectionCard の children＝.connPopover の中**（position:absolute / top:calc(100% + 6px) / z-index:40 で
+       ピルの下に重ねる・open のときだけマウント）。したがって **.toolbar の高さにも折り返しにも影響しない**
+       （.toolbar / .toolbarActions の flex-wrap も .toolbarError / .switch の flex:none もこの件とは無関係）。
+       代わりに見るべきは次の 2 点:
+         (a) .connPopover には max-height も overflow も無いので、11px→12px＋line-height:1.5 のぶん
+             ポップオーバーが縦に伸びる。狭いコメビュ窓で下端からはみ出さないか。
+         (b) 同じポップオーバー内の .status（11px/700）より .note（12px/400）が大きくなり、
+             説明文が状態表示より目立つ。階層として許容できるか。
+       ※ 054 実装時は「ツールバーの高さに効きうるが flex-wrap で吸収される」と書いていたが、これは誤り
+         （ConnectionCard の描画先を追えていなかった）。レビューで指摘され訂正した。
+
+   ■ ガード (6) が守る範囲（意図的な線引き）
+     (6-b) が見るのは **color だけ**で、ここの font-size / line-height は検査していない。faint（無効色）を
+     可読テキストへ戻す退行は「項目名と説明が見分けられない」＝ 054 が直した症状に直結するが、
+     12px→11px は程度問題で、機械が「どこからが退行か」を決められないため。上表を正として人が読む。
+     再修正トリガー＝ここの font-size を戻す変更が実際に起きたら、(6-a) と同じ「.fieldLabel より小さくない」
+     という**関係**の検査に格上げする（絶対値をベタ書きした二重管理にはしないこと）。 */
 .note {
-  font-size: 11px;
-  color: var(--text-faint);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
 }
 
 .list {
@@ -552,11 +624,41 @@
   border-bottom: 1px solid var(--border-soft);
 }
 
+/* 054 追補（E2E フィードバック）: 縦の余白は **2 段**。
+   054 で設定項目名（.fieldLabel / .toggleLabel）と補助説明（.note）の**書式**は分離したが、ここが
+   `gap: 10px` の一律だったため「項目名 → その説明」も「説明 → 次の項目」も同じ 10px で、
+   **ブロックの切れ目と中身の区別が付かない**＝書式だけ変えても「どこからどこまでが 1 つの設定か」が
+   読み取れなかった（実機で確認された症状）。ブロック内だけを詰めて階層を作る。
+
+     --card-block-gap … 項目ブロック同士（据え置き。今回は広げない）
+     --card-inner-gap … ブロック内（項目名 → コントロール → 説明）
+
+   ローカル var で持つのは、下の `.cardBody > * + .note` の引き寄せ量が**この 2 つの差分**で決まるため。
+   片方だけ動かすと階層が黙って壊れる（ガード (7) が突き合わせる）。
+   本体側のお手本 formLayout.module.css も同じ発想（.form の gap 14px ＋ .fieldHelp の margin-top 6px）で、
+   新しい流儀ではない。比率も 1:2.5 でほぼ揃う。
+   再修正トリガー: 4px でもブロックが読み分けられない場合、次の一手は **--card-block-gap を 12px へ広げる**
+   （--card-inner-gap は動かさない＝ブロック内の値は .speakerField と揃えたままにする）。 */
 .cardBody {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  --card-block-gap: 10px;
+  --card-inner-gap: 4px; /* .speakerField の gap と同値に保つ（ガード (7-d) が突き合わせる） */
+  gap: var(--card-block-gap);
   padding: 14px;
+}
+
+/* 054 追補: 補助説明は「直前の項目に属するもの」なので、ブロック同士の gap ではなく**ブロック内の間隔**まで
+   引き寄せる（gap との差分を負の margin で相殺する）。
+   - カード先頭が .note の場合（OBS カード）は `* + .note` に当たらず引き寄せが起きない＝意図どおり。
+   - .note が連続する場合（固定コメントカードの 5 連続）も 4px でひとかたまりに見える＝意図どおり。
+   - .errorText は .note ではないので対象外＝自前の `margin: 8px 16px 0` による分離が保たれる
+     （逆向きに「非 .note へ margin を足す」形にするとここが特異度で潰れるため、この向きを選んだ）。
+   - 視聴者詳細（ViewerDetailPanel）の「情報の削除」カードも .cardBody なので同じ規則が当たる＝意図どおり
+     （削除ボタンと警告文が 1 ブロックに見える）。
+   - **.connPopover の .note は対象外**（.cardBody の子ではない）＝本体ウィンドウの見た目は不変。 */
+.cardBody > * + .note {
+  margin-top: calc(var(--card-inner-gap) - var(--card-block-gap));
 }
 
 /* 042b改: ヘッダー内の接続ピル群（Twitch / YouTube を横並び）。各ピルは position:relative のラッパで、真下に
@@ -755,13 +857,38 @@
   gap: 12px;
 }
 
-/* 033d: キャプション（上・小）＋ select（下）の縦積みフィールド。 */
+/* 033d: ラベル（上）＋ コントロール（下）の縦積みフィールド。
+   054: **レイアウト専用**（display / flex-direction / gap のみ）へ戻した。以前はここが font-size:11px と
+   color:var(--text-faint) も持つ「縦積みコンテナ兼ラベル書式」の二役で、ラベル文字列が <label> 直下の
+   テキストノードだったためラベルだけに書式を当てる術が無く、結果として設定項目名が .note（補助説明）と
+   同じ見た目になっていた。文字の書式は .fieldLabel が持つ。
+   ここに font-size / color を戻すと、ラベル以外の子（select / input / details）まで巻き添えで効く
+   （＝ガード (6-c) が止める）。
+   054 追補: この gap は .cardBody の --card-inner-gap（ブロック内の間隔）と**同値に保つ**こと。
+   このクラスの中（項目名 → コントロール）も、その外（コントロール → 説明）も同じ「1 ブロックの中」なので、
+   値が割れるとブロックの内側だけリズムが崩れる。var を直接参照しないのは、.speakerField が .cardBody の
+   外で使われた場合に var が未定義になり gap が無効化される（＝0 になる）のを避けるため。
+   一致はガード (7-d) が突き合わせる。 */
 .speakerField {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  font-size: 11px;
-  color: var(--text-faint);
+}
+
+/* 054: 設定項目名（3 段規則の 1 段目）。SettingsView が .speakerField 内のラベル文字列を
+   <span className={styles.fieldLabel}> で包んで使う。
+   値は .toggleLabel と**一致させる**こと（同じカードにトグルの label と縦積みフィールドの label が並ぶため、
+   書式が割れると「どこが項目名か読み取れない」状態に戻る）。.toggleLabel 側は ToggleSwitch が本体ツールバー
+   でも使うので動かせない＝こちらを合わせる。一致（font-size / font-weight / color の 3 つ）はガード (6-a) が
+   値の突き合わせで守るので、**片方だけ動かすと必ず落ちる**。落ちたら 2 つを揃えて直すこと（片方だけ直して
+   通そうとしない）。SettingsView 側の参照は (6-d) が見ている（クラス名を打ち間違えても CSS モジュールは
+   文字列を返すため typecheck も vitest も緑のまま通るので、静的検査でしか捕まらない）。
+   ⚠ **この 13px/700 はコメビュ窓ローカルの結論**。メインウィンドウ（055c 以降）へ実値をコピーしないこと
+   （理由はファイル先頭の規則コメント「■ 基準を .toggleLabel（13px/700）に置いた理由」）。 */
+.fieldLabel {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
 }
 
 /* 034(UI刷新): フォント select（左）＋プレビュー（右）を横並びにする行。 */
@@ -781,11 +908,15 @@
   white-space: nowrap;
 }
 
-/* 「プレビュー」の見出し。小さく淡色で、右のサンプルが表示見本だと分かるようにする。 */
+/* 「プレビュー」の見出し。小さく淡色で、右のサンプルが表示見本だと分かるようにする。
+   054: 無効色（--text-faint）だけをやめて --muted へ。**サイズ 11px と weight 700 は据え置き**——
+   これは 3 段規則の「設定項目名」でも「補助説明」でもなく、.fontRow の中で .fontPreviewSample（16px）と
+   同じ行にベースライン揃えで並ぶインライン注記。12px へ上げると行の高さが動いてサンプルとの対比が鈍り、
+   700 はサンプル文と混ざらないための区別なので、どちらも維持する。 */
 .fontPreviewLabel {
   font-size: 11px;
   font-weight: 700;
-  color: var(--text-faint);
+  color: var(--muted);
 }
 
 /* サンプル文（選択フォントで実際に描画される）。 */
@@ -985,10 +1116,12 @@
   font-weight: 400;
 }
 
-/* 044a: OBS サーバーパスワード取得方法（フォーム下の折りたたみ・native details）。淡色・summary はクリック可。 */
+/* 044a: OBS サーバーパスワード取得方法（フォーム下の折りたたみ・native details）。summary はクリック可。
+   054: 中身は読ませる手順文＝補助説明そのものなので、3 段規則の 2 段目（.note と同じ書式）へ揃える。 */
 .obsPasswordHelp {
-  font-size: 11px;
-  color: var(--text-faint);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
 }
 .obsPasswordHelp summary {
   cursor: pointer;

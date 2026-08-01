@@ -4,6 +4,26 @@
 > **[055b](055b-updater-check-command.md) の `check_app_update` と [054](054-comment-viewer-settings-readability.md) の
 > タイポグラフィ規則の完了が前提**。
 >
+> ✅ **054 は実装済み（2026-08-01）＝この画面が従う規則は確定している。**
+> 従うのは**役割の 3 段規則**——**設定項目名＝`var(--text)`×太字／補助説明＝`var(--muted)`×標準／
+> `--text-faint` は無効状態（`:disabled`）とプレースホルダ専用（可読テキストには使わない）**。
+> ⚠ **px/weight の実値は移さないこと。** 054 が決めた 13px/700 は「コメビュ窓の中で `.toggleLabel`
+> （本体ツールバーでも使うため動かせない）に合わせた」**ローカルな結論**で、055c は**メインウィンドウ**の
+> 画面なので、実値は既存のお手本——[`formLayout.module.css`](../../apps/desktop/src/screens/formLayout.module.css) の
+> `.field label`（12px/800）＋ `.fieldHelp`（`--muted`）と
+> [`SettingsScreen.module.css`](../../apps/desktop/src/screens/settings/SettingsScreen.module.css) の
+> `.optionLabel`（14px/800）＋ `.optionDesc`（`--muted`）——をそのまま使う。**新しい値を発明しないこと**が
+> 054 を先に置いた目的（3 つ目の流儀を作らない）。根拠と経緯は
+> [`docs/progress.md`](../progress.md) の 054 節「なぜ 13px/700 なのか」「055c への申し送り」を参照。
+>
+> ⚠ **階層は「書式」だけでなく「余白」でも作ること**（054 の E2E で判明）。054 は当初 書式（サイズ/太さ/色）
+> だけを分けたが、コンテナの `gap` が一律で「項目名 → その説明」と「説明 → 次の項目」が同じ間隔だったため、
+> **実機では依然として読み分けられなかった**。055c でも、項目ブロック同士の間隔がブロック内より広いことを
+> 必ず確認すること。メインウィンドウ側の実値は
+> [`formLayout.module.css`](../../apps/desktop/src/screens/formLayout.module.css) が既に持っている
+> （`.form` の `gap: 14px` ＋ `.field label` の `margin-bottom: 7px` ＋ `.fieldHelp` の `margin-top: 6px`
+> ＝ブロック内 6〜7px 対 項目間 14px）ので、**ここでも新しい値を発明しない**。
+>
 > **必読前提**: 親 [055](055-app-self-update.md)（**バッジは常に「1」＝更新の有無**・**起動時に自動チェック・トグルなし**）、
 > [055b](055b-updater-check-command.md)（`checkAppUpdate()` と `AppUpdateStatus`）、
 > [054](054-comment-viewer-settings-readability.md)（**設定項目名＝太字/`--text`、説明＝`--muted`** の階層規則）、

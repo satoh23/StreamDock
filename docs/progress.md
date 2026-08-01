@@ -9240,3 +9240,525 @@ OBS 透過オーバーレイ・投げ銭ティッカー・視聴者メモリま�
 長すぎたら定数 1 箇所で短縮版〔`投げ銭・視聴者管理`〕へ差し替え） (c) 説明を書き換えて保存 → **アイコンが
 消えない**か (d) 説明を書き換えて再起動 → **書き換えが保持される**か（backfill ② の確認）
 (e) 既存 DB で**名前とアイコンが実際に更新される**か（backfill ① の確認）。
+
+## 2026-08-01 (054 内蔵コメビュ設定画面の可読性修正 —— 「項目名」の書式が同じカードに 2 系統あった)
+
+実機フィードバック起点。コメビュ窓の設定画面で「読み上げの文字数上限」「話者」といった**設定項目名が、
+その下の補助説明文とまったく同じ見た目**で、どこが項目名でどこが説明か読み取れなかった。原因は
+`CommentViewerApp.module.css` の 3 クラスの実測値がこうなっていたこと:
+
+| クラス | 旧 | 役割 |
+| --- | --- | --- |
+| `.speakerField` | 11px / `--text-faint` / weight 400 | 設定項目名（文字数上限・話者・スタイル・フォント） |
+| `.note` | 11px / `--text-faint` / weight 400 | 補助説明文 |
+| `.toggleLabel` | 13px / 700 / `--text` | トグルの設定項目名 |
+
+`.speakerField` と `.note` は**指定が完全に同一**、そして `.toggleLabel` だけが別書式。つまり同じカードの中に
+**「設定項目名」の書式が 2 系統**あった。さらに `--text-faint` は theme.css で `--muted` をさらに 72% まで
+薄めた色で、同じモジュール内の `.btn:disabled` / `.dangerBtn:disabled` が使う「押せない」を意味する濃度——
+**無効色をラベルに当てていた**。
+
+### 確定した 3 段の規則（コメビュ窓の中の正）
+
+`CommentViewerApp.module.css` の先頭にコメントで明文化した。
+
+| 役割 | 色 | サイズ | 太さ | 実体 |
+| --- | --- | --- | --- | --- |
+| **設定項目名** | `var(--text)` | 13px | **700** | `.toggleLabel` / `.fieldLabel`（新設） |
+| **補助説明** | `var(--muted)` | 12px | 400 | `.note` / `.obsPasswordHelp`（`line-height:1.5`） |
+| 無効状態 | `var(--text-faint)` | ― | ― | `.btn:disabled` / `.btnGhost:disabled` / `.dangerBtn:disabled` |
+
+⚠ 表の 3 段目は当初「無効・**プレースホルダ**」＋実体 `*:disabled` と書いていたが、レビュー指摘で改めた。
+`*:disabled` というセレクタは実在せず（実体は上記 3 ルール）、`::placeholder` ルールもこのモジュールには
+1 つも無い（プレースホルダで faint を使うのは `formLayout.module.css` 側）。**「この窓の正」を名乗る表に
+実体の無い行を載せると誤読を生む**ので、プレースホルダは表から外して本文の注記に落とした。
+またこの表は「3 役割の正」であって窓の書式の網羅ではない（下記「別段のもの」を参照）。
+
+### なぜ 13px/700 なのか（お手本が揃っていない中での判断）
+
+タスクの指示は「規則は既にアプリ本体側で確立しているものを流用し、新しい流儀を発明しない」だったが、
+**実測するとお手本自体が揃っていなかった**:
+
+| 参照元 | 値 |
+| --- | --- |
+| `formLayout.module.css` の `.field label` | 12px / 800 |
+| `SettingsScreen.module.css` の `.optionLabel` | 14px / 800 |
+| `.toggleLabel`（コメビュ内・**変更不可**） | 13px / 700 |
+
+つまり「アプリ全体で 1 値」は**そもそも成立していない**（本体側で既に 2 値ある）。そこで
+**統一の単位を「コメビュ窓の中」と定義**し、動かせない `.toggleLabel` を正にして `.fieldLabel` を
+そちらへ合わせた。`.toggleLabel` が動かせないのは `ToggleSwitch` が設定画面だけでなく
+**本体コメントビューのツールバー**でも使われるため（値を変えると設定画面の外へ波及する）。
+逆に `.fieldLabel` を 12px/800 にすると**同じカード内で項目名の書式が割れたまま**になり、
+本タスクの目的そのもの（項目名の書式を 1 系統にする）が達成できない。
+コメビュは別ウィンドウ・別 CSS 集約という既存構造なので、`formLayout.module.css` の import 統合はしない。
+
+なお 3 段規則の表に**載らない別書式**（意図的な例外）はこの 3 つ。CSS 先頭の「■ 別段のもの」に列挙した。
+
+| クラス | 値 | 表に載せない理由 |
+| --- | --- | --- |
+| `.cardHead` | 12px / 800 / `--text` | 「設定項目名」ではなくカード見出し |
+| `.fontPreviewLabel` | 11px / 700 / `--muted` | `.fontRow` の中で `.fontPreviewSample`（16px）とベースライン揃えで並ぶインライン注記。12px へ上げると行の高さが動いてサンプルとの対比が鈍る |
+| `.status` | 11px / 700 / `--muted` | 接続ポップオーバーの状態表示。**同じポップオーバー内で `.note` と隣接する**ので、`.note` を触るときは大小関係も一緒に見る |
+
+⚠ 後ろ 2 つは初版では「別段のもの」に列挙しておらず、**表が窓の書式を網羅しているかのように読めた**
+（レビュー指摘）。実際にはこの窓には 13px/700・12px/400・12px/800・11px/700 の 4 系統がある。
+表は「3 役割の正」であって網羅ではない、と CSS 側にも明記した。
+
+### `.speakerField` の二役を解いた
+
+旧 `.speakerField` は `display/flex-direction/gap` に加えて `font-size` / `color` も持つ
+**「縦積みコンテナ兼ラベル書式」**で、`SettingsView.tsx` 側はラベル文字列を `<label>` 直下のテキストノードに
+置いていたため、**ラベルだけに書式を当てる術が無かった**。`.speakerField` をレイアウト専用へ戻し、
+`SettingsView.tsx` の**ラベル文字列を持つ 4 箇所**（文字数上限 / 話者 / スタイル / フォント）を
+`<span className={styles.fieldLabel}>` で包んだ。OBS パスワード欄の `.speakerField` は `<div>` で
+ラベル文字列を持たない（レイアウト用途のみ）ので据え置き。
+
+- `<label>` が子のコントロールを包む**暗黙ラベルのまま**で、`htmlFor`/`id` は導入していない。
+- `.searchInput`（12px/`--text`）・`.selectCustom`（12px/`--text`）・`.fontPreviewSample`（16px/`--text`）は
+  いずれも自分で `font-size`/`color` を持つので、`.speakerField` から typography を剥がしても
+  **コントロールの見た目は動かない**（影響はラベル文字列だけ）。
+- 既存テストへの影響はゼロ。`@testing-library/dom@10.4.1` の `getNodeText` は**直下のテキストノードだけ**を
+  連結する実装なので、`getByText` のマッチ対象が `<label>` から `<span>` へ移るだけで**マッチ数は 1 のまま**。
+  `Select` は `aria-label` を明示的に渡すのでアクセシブル名は暗黙ラベルに依存していない。
+  `getByLabelText` 経路も無傷（`<label>` のアクセシブル名は `textContent` 由来で `<span>` の中身を含む）。
+  ⚠ ただし**この 4 文字列をクエリしているテストは実際には 1 つも無い**（レビューで実測）。上の根拠づけ自体は
+  正しいが、正確には「影響ゼロ**かつ、そもそもカバレッジも無い**」。設定項目名の存在をテストで守りたければ
+  別途 `SettingsView` のレンダリングテストが要る（054 のスコープ外）。
+
+### `--text-faint` の用途限定と `.pastTime`
+
+`--text-faint` を **無効状態（`:disabled`）とプレースホルダ専用**に限定し、CSS コメントで明文化した。
+モジュール内 7 箇所の内訳と処置:
+
+| 箇所 | 処置 |
+| --- | --- |
+| `.btn:disabled, .btnGhost:disabled` / `.dangerBtn:disabled` | **残す**（正しい用法） |
+| `.note` | → `--muted` / 12px / `line-height:1.5` |
+| `.speakerField` | → `color` ごと**削除**（レイアウト専用へ） |
+| `.obsPasswordHelp`（パスワード取得手順の `details`） | → `.note` と同じ書式（読ませる手順文＝補助説明そのもの） |
+| `.fontPreviewLabel`（「プレビュー」の小見出し） | → **色だけ `--muted`**。11px/700 は据え置き（`.fontRow` で 16px のサンプル文と同じ行にベースライン揃えで並ぶインライン注記で、3 段規則のどの段でもない） |
+| `.pastTime`（視聴者詳細の過去コメント時刻） | **据え置き**（設定画面外のメタ情報・タスク (1) の明示指示） |
+
+⚠ **タスクの完了条件に内部矛盾があったので実態へ修正した**。原文は「`--text-faint` は無効状態と
+プレースホルダにしか残っていない」だったが、同じタスクの (1) が `.pastTime` を据え置きと指示しており、
+`.pastTime` は無効状態でもプレースホルダでもないため**実装後も原文の条件は満たされない**。加えて
+**この CSS モジュールに `::placeholder` ルールは 1 つも無い**（faint をプレースホルダに使っているのは
+`formLayout.module.css` 側）。完了条件を「無効状態（`:disabled`）と、設定画面外のメタ情報（`.pastTime`）に
+しか残っていない／設定画面内の可読テキストには一切残っていない」へ書き換えた。
+
+### CSS ガード (6) —— コンポーネントのテストでは原理的に守れない
+
+`check-css-guards.mjs` に (1)〜(5) と同じ作法（`read()` → `ruleBody()` → `hasDecl()` → `fail()`）で追加した。
+(5) と同じ穴がここにもある——**CSS モジュールは vitest 上で存在しないキーでも文字列を返す**
+（`styles.nonExistentKey` → `"_nonExistentKey_<hash>"`）ので、`<span className={styles.fieldLabel}>` が
+付いていることを確かめても CSS 側にルールが無い状態は緑のまま通る。色・太さも jsdom では解決されない。
+
+- **(6-a)** `.fieldLabel` のルールが実在し、`font-size` / `font-weight` / `color` が **`.toggleLabel` と一致**すること。
+  値をベタ書きで二重管理せず、`.toggleLabel` の実値を `declValue()` で読み取って突き合わせる
+  （＝将来 `.toggleLabel` を動かしたら `.fieldLabel` も一緒に動かさないと落ちる）。
+- **(6-b)** `color: var(--text-faint)` を使うルールを**全走査**し、セレクタが `:disabled` を含むか
+  **許可リスト `FAINT_ALLOWED`** に載っているもの以外は fail。
+- **(6-c)** `.speakerField` に `font-size` / `color` が戻っていないこと（レイアウト専用の担保）。
+  併せて `.speakerField` / `.note` のルールが**取り出せること**自体を要求する（fail-closed）。
+- **(6-d)** `SettingsView.tsx` が `styles.fieldLabel` を参照していること（CSS↔TSX の逆向き）。
+
+#### レビュー指摘を受けた改訂（2026-08-01・同日）
+
+初版のガード (6) はミューテーションが 2 種しか通っておらず、レビューで **26 種を実走**させた結果
+次の穴が実証されたため直した。**「守っているつもりで守れていない」を潰すのがこのガードの存在理由**なので、
+指摘はすべて取り込んだ。
+
+| 実証された問題 | 対応 |
+| --- | --- |
+| **偽陰性**: `.fieldLabel { color: var(--muted); background-color: var(--text); }` が (6-a) を素通り。`hasDecl` の `prop` が無拘束で `color` が `background-color` に部分一致するため | `hasDecl` の正規表現の先頭を `(?:^\|;\|\{)\s*` で縛った。**ヘルパ側を直したので既存 (1)〜(5) にも効く**（`border-color` を使う (5-a)/(5-b') 含め非退行を実測） |
+| **偽陽性**: `.speakerField` に `background-color` を足しただけで (6-c) が「**color** が戻っています」で落ちる。(5-b) が戒めた「正しい CSS で fail・メッセージが真因とずれる」と同型 | 同上（1 箇所の修正で両方向とも解消） |
+| **偽陰性**: `.fieldLabel` の `font-size` を 11px に戻しても緑。`.note` が 12px になった今、**054 が直した症状そのもの**が通る | (6-a) の突き合わせ対象に `font-size` を追加 |
+| **偽陰性**: 新設クラス（例 `.fieldHint`）に faint を誤用しても denylist は捕まえない＝「規則」ではなく「今あるもの」しか守っていない | (6-b) を**許可リスト付きの走査型**へ。`.pastTime` は `FAINT_ALLOWED` に**理由付きで**登録。これなら (5-b) の教訓（正しい CSS で fail させない）を守りつつ将来の誤用も捕まる。`@media` 内のルールも 1 件ずつ拾える |
+| **fail-open**: `.note` / `.speakerField` をカンマで束ねると `ruleBody` が null を返し、(6-b)/(6-c) が**黙って無効化**される | (6-c) にルール実在の要求を追加（(6-a) は元から fail-closed）。(6-b) は走査型化で解消 |
+| **偽陽性**: `.toggleLabel` の値を複数行値や `!important` 付きに書き換えると、値としては同じなのに (6-a) が落ちる | `declValue()` が値を正規化して返すようにした（空白畳み・括弧内空白除去・`!important` 除去）。突き合わせも `hasDecl` の前方一致ではなく**値どうしの直接比較**へ（`.fieldLabel` 側にだけ `!important` が付くと素通りする非対称も解消） |
+| `styles.fieldLabl` のような**打ち間違い**は typecheck（`vite/client` の `*.module.css` が `Record<string,string>`）・vitest（`css:false` で任意キーに文字列）・eslint・ガードのどれも捕まえない | (6-d) を追加。⚠ (4) の `monetaryTone.ts` 突き合わせをこのファイルにそのまま流用してはいけない——`SettingsView.tsx` には VOICEVOX の話者スタイル `sp.styles.some(…)` / `selectedSpeaker?.styles.map(…)` があり `\bstyles\.` に衝突する（実測で誤検出）。要求するクラスだけをピンポイントで見る形にした |
+
+**ミューテーション確認（31 種・改訂後）**: 作業ツリーを壊さないよう `scripts/` と対象ソースを隔離コピーして実走。
+
+| 壊し方 | 結果 |
+| --- | --- |
+| `.fieldLabel` をルールごと削除 / 宣言を全部消してコメントだけ残す | **FAIL**（(6-a)。コメント除去が効いている＝「常に緑」ではない） |
+| `.fieldLabel` の `font-size` / `font-weight` / `color` を個別に変更・削除 | **FAIL**（(6-a)） |
+| `.fieldLabel` の `color` を `--muted` にしつつ `background-color: var(--text)` で偽装 | **FAIL**（(6-a)・改訂前は生存） |
+| `.toggleLabel` を 12px/800 へ（`.fieldLabel` は据え置き） | **FAIL**（(6-a)・基準を動かしたら両方直せ、が効く） |
+| `.toggleLabel` の `color` を削除（基準側が欠ける） | **FAIL**（(6-a)「基準側」の専用メッセージ） |
+| `.note` の `color` を `var(--text-faint)` へ戻す | **FAIL**（(6-b)） |
+| 新設 `.fieldHint` / `@media` 内の新クラスに faint を誤用 | **FAIL**（(6-b)・改訂前は生存） |
+| `.note` / `.speakerField` をカンマ束ねにして faint・typography を戻す | **FAIL**（(6-b)/(6-c)・改訂前は生存） |
+| `.speakerField` に `font-size:11px` / `color:var(--text-faint)` を戻す | **FAIL**（(6-c)） |
+| `SettingsView.tsx` の `styles.fieldLabel` を `styles.fieldLabl` に打ち間違える | **FAIL**（(6-d)・改訂前は生存） |
+| 既存(1)非退行: `.item` の `flex-shrink: 0` を全削除 | **FAIL**（(1)・ヘルパ改訂で壊れていない） |
+| **正しい CSS**: `.speakerField` に `background-color` / `.note` に `background-color: var(--text-faint)` | **PASS**（改訂前は誤 fail していた） |
+| **正しい CSS**: `.toggleLabel` の複数行値 / `!important` / 末尾セミコロン省略 / `color` を先頭宣言へ / 両方を 800 へ揃える / `.pastTime` を faint のまま据え置く | **PASS** |
+
+**意図的に残した穴**（機械が「どこからが退行か」を決められないもの）:
+`.note` の `font-size` を 11px に戻す・`line-height` を消す変異は **PASS する**（(6-b) は色だけを見る）。
+再修正トリガーと格上げ方針は CSS の `.note` コメントに書いた。
+`.fieldLabel` を `@media` の中へ移す変異も PASS する（ルールとしては実在するため。条件付きになったことは検出できない）。
+
+### `.note` の変更が及ぶ設定画面外の 2 箇所
+
+`.note` は `SettingsView` に 16 箇所だが、**他に 2 箇所ある**。どちらも同じ「補助説明」の役割なので
+同じ規則が当たるのは意図どおりで、除外しなかった。
+
+| 画面 | 場所 | 文言 |
+| --- | --- | --- |
+| 視聴者詳細（`ViewerDetailPanel.tsx`） | 「この視聴者の情報を削除する」ボタン直下の `<p>` | 「…端末から削除します。取り消せません。」 |
+| 本体コメントビュー（`CommentViewerApp.tsx`） | YouTube 接続カード内の `<span>`（**接続ポップオーバーの中**） | 「YouTube はチャンネル名入力不要…無料クォータ（10,000 units/日）…」 |
+
+⚠ **記述の訂正（レビュー指摘・同日）**: 当初ここは「**ツールバー**の YouTube 接続カード内」と書き、
+「11px→12px で**ツールバーの高さに効きうる**が `.toolbar` も右クラスタ（045c）も `flex-wrap` 済みなので
+折り返しで吸収される想定」としていたが、**これは誤りだった**。`CommentViewerApp.tsx` の当該 `.note` は
+`<ConnectionCard service="YouTube">` の **children** で、`ConnectionCard.tsx` は children を
+`.connPopover`（`position:absolute` / `top:calc(100% + 6px)` / `z-index:40`・`open` のときだけマウント）に
+しか描画しない。したがって **`.toolbar` の高さにも折り返しにも一切影響しない**——`.toolbar` /
+`.toolbarActions` の `flex-wrap` も `.toolbarError` / `.switch` の `flex:none` もこの件とは無関係で、
+それらを根拠に「吸収される」と書いたのは `ConnectionCard` の描画先を追えていなかったため。
+
+実際に見るべきリスクは別で、次の 2 点（実機確認の対象をこちらへ差し替えた）:
+
+1. `.connPopover` には `max-height` も `overflow` も無い。`min-width:280px` で折り返す長文が
+   11px→12px ＋ `line-height:1.5` のぶん確実に背が伸びるので、**狭いコメビュ窓で下端からはみ出さないか**。
+2. 同じポップオーバー内の `.status`（11px/700/`--muted`）より `.note`（12px/400/`--muted`）が**大きくなり**、
+   説明文が状態表示より目立つ。**階層として許容できるか**（`.status` は 3 段規則の表に載せていなかったので
+   この衝突を検討していなかった。CSS 先頭の「■ 別段のもの」へ追記した）。
+
+なお `.toggleLabel` は別クラスなので **ツールバーのトグル自体（読み上げ / コメントをOBSに表示）は不変**、
+という点は変わらない。
+
+> **教訓**: 誤った前提のコメントは「検討済みで問題なし」というお墨付きとして働く。053 のポーリング
+> コメントで外部レビューに指摘されたのと同型の失敗を、同じリポジトリで繰り返した。**「〇〇で吸収される」と
+> 書く前に、その要素が本当にその親のレイアウトに乗っているかを描画先まで追う**こと。
+
+### 055c への申し送り
+
+**055c（ヘッダーのベル＋アップデート画面）はこの 3 段規則に従うこと。** ただし 055c は
+**メインウィンドウ**の画面なので、移すのは**役割の規則**（項目名＝`var(--text)`×太字 ／ 説明＝`var(--muted)`×標準 ／
+`--text-faint` は無効状態・プレースホルダ専用）であって、**px/weight の実値ではない**。
+13px/700 は「コメビュ窓の中で `.toggleLabel` に合わせた」ローカルな結論なので、メインウィンドウ側では
+既存のお手本（`formLayout.module.css` の `.field label` ＋ `.fieldHelp`、`SettingsScreen.module.css` の
+`.optionLabel` ＋ `.optionDesc`）の値をそのまま使う。**新しい値を発明しないこと**が守るべき点。
+
+### 検証
+
+`typecheck` / `lint` / `test`（**26 files / 462 tests** ＋ CSS guard (1)〜(6-d)）すべて green。
+差分は 3 ファイル（CSS / `SettingsView.tsx` / ガード）で、`SettingsView.tsx` の差分は
+**`className` の付け替えのみ**（ロジック・props・可視文言は不変）。`src-tauri/` / `comment-sidecar/` /
+`package.json` / `theme.css` / `ToggleSwitch.tsx` / `Select.tsx` / `formLayout.module.css` は**差分ゼロ**。
+`CommentViewerApp.module.css` に生 hex/rgba は無い（役割トークン経由）。`csp: null` 不変・
+新規外部通信/API/capability/依存の追加なし＝`docs/security.md` は変更なし。
+
+**実機で確認すること**: (a) 設定ビューで項目名がすべて同じ太字・濃色で、説明文と一目で区別できるか
+(b)「固定コメントをOBSに表示」カードの `.note` 5 連続が読めるか (c) ライト/ダーク両テーマで破綻しないか
+(d) **本体ツールバーのトグルが変わっていないか**（`.toggleLabel` 非変更の担保）
+(e) 視聴者詳細の削除説明の見た目 (f) **YouTube 接続ピルを開いたときのポップオーバー**——
+`.connPopover` に `max-height`/`overflow` が無いので**縦に伸びて窓の下端からはみ出さないか**、
+および `.note`（12px）が `.status`（11px）より大きくなった階層が許容できるか。
+※ (f) は当初「ツールバーの折り返しが破綻していないか」と書いていたが、当該 `.note` は
+`position:absolute` のポップオーバーの中でツールバーのレイアウトに乗っていないため差し替えた（上記の訂正）。
+
+### E2E フィードバック反映 —— 書式は直ったが「余白が一律」で読み分けられなかった
+
+上の実装を実機（E2E）で確認したところ、**まだ項目と説明が読み分けられない**という結果になった。
+書式（13px/700 対 12px/400/`--muted`）は確かに分かれているのに読めない原因は**余白**だった:
+
+`.cardBody` が `gap: 10px` の一律で、`.note` も `.speakerField` も `ToggleSwitch` も**同じ間隔で等間隔に並ぶ**。
+つまり「項目名 → その説明」＝ 10px、「説明 → 次の項目」＝ 10px で、**ブロックの切れ目とブロックの中身が
+同じ間隔**になっており、「どこからどこまでが 1 つの設定か」が視覚的に立ち上がらなかった。
+書式のコントラストだけでは、等間隔に積まれたテキストを「かたまり」として読ませられない。
+
+依頼者の指示は「**項目同士を広げるのではなく、そうじゃない方（ブロック内）を詰める**方向で一旦やる」。
+
+#### 確定した 2 段の余白（`.cardBody`）
+
+| 変数 | 値 | 意味 |
+| --- | --- | --- |
+| `--card-block-gap` | 10px | 項目ブロック同士（**据え置き**＝今回は広げない） |
+| `--card-inner-gap` | 4px | ブロック内（項目名 → コントロール → 説明）。`.speakerField` の `gap` と同値 |
+
+```css
+.cardBody {
+  --card-block-gap: 10px;
+  --card-inner-gap: 4px;
+  gap: var(--card-block-gap);
+}
+.cardBody > * + .note {
+  margin-top: calc(var(--card-inner-gap) - var(--card-block-gap));
+}
+```
+
+得られる縦リズム:
+
+| 位置 | 前 | 後 |
+| --- | --- | --- |
+| 項目名 → コントロール（`.speakerField` 内） | 4px | 4px（不変） |
+| コントロール → その説明 | 10px | **4px** |
+| 説明 → 説明（固定コメントカードの 5 連続） | 10px | **4px** |
+| 説明 → 次の項目 ／ 項目 → 次の項目 | 10px | 10px（不変） |
+| 何か → `.errorText` | 18px | 18px（不変） |
+
+#### なぜ「`.note` を負の margin で引き寄せる」向きにしたのか
+
+逆向き（`.cardBody { gap: 4px }` にして**非** `.note` へ `margin-top: 6px` を足す＝`* + *:not(.note)`）も
+成立するが、**`.errorText` が自前で `margin: 8px 16px 0` を持っている**。`* + *:not(.note)` は特異度 (0,2,0) で
+`.errorText`（0,1,0）の `margin-top` を上書きするため、**現状 18px ある分離が 10px に縮む**＝指示していない
+見た目変更が出る。`.note` だけを対象にすれば `.errorText` には一切触れない。
+
+各ブロックを `<div>` で包む案は約 20 箇所の JSX 変更になり、054 の「カードの再構成はしない」に抵触するので採らない。
+**結果として JSX の差分はゼロ**（`SettingsView.tsx` は 054 の `className` 付け替えのまま）。
+
+値を**ローカル var で持つ**のは、引き寄せ量が「2 つの差分」で決まるため。片方だけ動かすと階層が黙って壊れる。
+ローカル var は同ファイルの `--pill-avatar` / `--pill-pad-y` と同じ既存の作法。
+本体側のお手本 `formLayout.module.css` も同じ発想（`.form` の `gap:14px` ＋ `.fieldHelp` の `margin-top:6px`）で、
+新しい流儀ではない（比率も 1:2.5 でほぼ一致）。
+
+**再修正トリガー**: 4px でもブロックが読み分けられない場合、次の一手は **`--card-block-gap` を 12px へ広げる**
+（`--card-inner-gap` は動かさない＝`.speakerField` と揃えたまま）。
+
+#### 波及範囲
+
+- **設定画面**（`SettingsView`）と**視聴者詳細の「情報の削除」カード**（`ViewerDetailPanel`）の 2 箇所。
+  どちらも `.note` が `.cardBody` の**直接の子**なので、セレクタ 1 本で両方に正しく効く
+  （削除ボタンと警告文が 1 ブロックに見えるのは意図どおり）。
+- **`.connPopover`（本体ツールバーの接続カード）は対象外**（`.cardBody` の子ではない）＝依頼者の選択で、
+  本体ウィンドウの見た目は 1px も動かない。
+- カード先頭が `.note` の場合（OBS カード）は `* + .note` に当たらず引き寄せが起きない＝意図どおり。
+
+#### CSS ガード (7)
+
+余白は jsdom が**一切**解決しない（`getComputedStyle` も `getBoundingClientRect` も効かない）ので、(5)(6) と
+同じくここでしか守れない。`declValue()` を (6) のブロック内ローカルから**モジュールレベルへ引き上げて共用**した。
+
+- **(7-a)** `.cardBody` が 2 つの var を宣言し、`gap: var(--card-block-gap)` を使っている（ベタ書きに戻さない）。
+- **(7-b)** `.cardBody > * + .note` が実在し、`margin-top` が `calc(var(--card-inner-gap) - var(--card-block-gap))`
+  であること（`-6px` のベタ書きにすると var を動かしたとき追随せず、階層が無音で壊れる）。
+- **(7-c)** `--card-inner-gap` の px 値 < `--card-block-gap` の px 値（**階層の反転を止める**）。
+- **(7-d)** `.speakerField` の `gap` が `--card-inner-gap` と同値（ブロック内の間隔が 2 系統に割れない）。
+  `.speakerField` が var を直接参照しないのは、`.cardBody` の外で使われたとき var 未定義で `gap` が無効化される
+  （＝0 になる）のを避けるため。
+
+**ミューテーション確認（14 種・隔離コピーで実走）**: 退行 10 種すべて FAIL / 正しい CSS 4 種すべて PASS。
+
+| 壊し方 | 結果 |
+| --- | --- |
+| 引き寄せルールごと削除 ／ `margin-top` を消す ／ `-6px` のベタ書きへ | **FAIL**（(7-b)） |
+| `--card-inner-gap` を 12px（反転）／ 10px（同値）にする | **FAIL**（(7-c)＋(7-d)） |
+| `gap` を `10px` のベタ書きへ戻す ／ var を 2 つとも削除 | **FAIL**（(7-a)） |
+| `.speakerField` の `gap` を 8px にする ／ 削除する | **FAIL**（(7-d)） |
+| var の値を `rem` にする（大小比較が機械でできなくなる） | **FAIL**（(7-c)） |
+| **正しい CSS**: `--card-block-gap` を 12px へ広げる ／ ブロック内を 6px にして `.speakerField` も揃える ／ 宣言順の入れ替え ／ `calc` 内の改行 | **PASS** |
+
+併せて (6) の 31 種を再実走し、`declValue` の引き上げによる**非退行**を確認した（結果は改訂後と完全に同一）。
+
+#### 検証
+
+`typecheck` / `lint` / `test`（26 files / 462 tests ＋ CSS guard (1)〜(7)）すべて green。
+**隣接兄弟セレクタ `+` はこのリポジトリの CSS モジュールで初使用**なので、`pnpm build` してスコープを実測した:
+
+```
+._cardBody_1uepz_636>*+._note_1uepz_10{margin-top:calc(var(--card-inner-gap) - var(--card-block-gap))}
+._cardBody_1uepz_636{…;--card-block-gap: 10px;--card-inner-gap: 4px;gap:var(--card-block-gap);padding:14px}
+```
+
+`.cardBody` と `.note` が**同じモジュールハッシュ（`1uepz`）で正しくスコープ**され、var 宣言も残っている。
+他モジュールの `.cardBody`（OverlayComment 等）は別ハッシュで無関係。
+
+差分は 2 ファイル（`CommentViewerApp.module.css` / `check-css-guards.mjs`）＋ docs のみ。**JSX 差分ゼロ**。
+`src-tauri/` / `comment-sidecar/` / `package.json` / `pnpm-lock.yaml` / `theme.css` / `SettingsView.tsx` /
+`ViewerDetailPanel.tsx` / `formLayout.module.css` は**差分ゼロ**を実測。`csp: null` 不変・新規外部通信/API/
+capability/依存の追加なし＝`docs/security.md` は変更なし。
+
+**実機で確認すること**: (a) 読み上げカードで「読み上げの文字数上限＋入力＋説明」が 1 ブロックに見え、
+「話者」との間が離れているか (b) OBS カードの先頭の説明 2 連続・トグルとその説明・パスワード欄
+(c) 固定コメントカードの `.note` 5 連続が「1 つの説明のかたまり」に見え、上のトグルへの帰属が分かるか
+(d) 視聴者詳細「情報の削除」で削除ボタンと警告文がくっついているか (e) ライト/ダーク両テーマ
+(f) **本体ツールバーと接続ポップオーバーが 1px も動いていないこと**（対象外の担保）。
+
+### E2E フィードバック② —— OBS カードの説明 3 本を削除（依頼者の指示）
+
+余白の追補を入れた状態で実機を見た結果、**OBS カード（「コメントをOBSに表示」）の説明が過剰**という判断になり、
+依頼者の指示で `SettingsView.tsx` から可視文言 3 本を削除した。**削除のみで、書き換え・追加はしていない。**
+
+| 削除した注記 | 由来 |
+| --- | --- |
+| `表示の ON/OFF は、コメント画面の上部にある「コメントをOBSに表示」で切り替えます。` | 045b（トグル移設先への導線） |
+| `OBSの「ウィンドウキャプチャ」で、コメント表示用のウィンドウ「StreamDock コメントオーバーレイ」を選ぶと、配信画面にコメントを重ねられます。` | 033f（手動キャプチャ手順） |
+| `ONにすると、上の手動でのウィンドウキャプチャ追加が不要になります。` | 044a（自動反映の効果） |
+
+3 本目は当初の指示に含まれていなかったが、**2 本目を消すと「上の手動での…」の指す先が無くなって宙に浮く**ため
+確認のうえ一緒に削除した（自動反映の効果はトグル label「『コメントをOBSに表示』ON時、OBSに自動で反映する」が
+045c 以降単体で伝えるので、注記無しでも意味は通る）。
+
+#### 残したもの
+
+**Windows 向け注記**（`「キャプチャ方式＝Windows 10（1903 以降）」を選び、「透過を許可」を ON に…`）は残した。
+044a が自動設定するのは `pickWgcMethodValue` による**キャプチャ方式だけ**で、**「透過を許可」は自動化されていない**
+（`obs-client.ts` を読んで確認）ため、自動反映を使う人にも必要。固定コメントカードの Windows 注記
+（「上のコメント用と同じく」）が参照している先でもある。
+
+#### 手放した担保（意図的・再修正トリガー付き）
+
+1. **設定画面だけを見ている人が「表示をどこで ON にするか」を辿る導線**（045b が置いたもの）。
+   カード見出し「コメントをOBSに表示」は残るので、見出しを見て来た人はカード内で表示トグルを見つけられない。
+   再修正トリガー＝「表示の ON/OFF が見つからない」という実機フィードバックが出たとき。
+2. **自動反映が失敗した人向けの手動フォールバック手順**と、OBS 実窓名の可視提示。
+   固定コメントカード側の手動手順は指示範囲外で据え置いたため、**コメント用には手動手順が無く固定用には在る
+   という非対称**が残る。再修正トリガー＝2 カードの案内粒度を揃える文言タスクを起票するとき。
+3. **窓名一致の UI 側の検査**（下記）。
+
+#### 落ちたテスト 2 件と、その扱い
+
+削除した 2 本目の注記にしか無い文字列 `「StreamDock コメントオーバーレイ」` を見ていたテストが 2 件あった
+（他に削除文言へ依存するテストが無いことは grep で確認済み）。
+
+| テスト | 扱い |
+| --- | --- |
+| `手動キャプチャ注記に OBS 実窓名を実体どおり出す（044a の窓名一致を壊さない）` | **削除**（検査対象そのものが画面から消えたため） |
+| `既存の OBS カード（044a）は不変（自動反映トグルと窓名注記が残る）` | 窓名アサートのみ削除し、`既存の OBS カードの自動反映トグルは残っている（046b/054 追補で巻き添えにしない）` へ改名。**トグルが残る検査は維持**（046b の「上のカードに手を入れていない」担保なので） |
+
+⚠ **これで窓名の一致は `src-tauri/src/lib.rs` の `.title` ↔ `apps/comment-sidecar/src/obs/obs-client.ts` の
+`OBS_SOURCE_NAME` の 2 者間だけの契約になり、desktop のテストスイートからは見えなくなった。**
+窓名を変えるときは 2 ファイルを必ず同時に直すこと（片方だけ変えても desktop 側は緑のまま通る）。
+再修正トリガー＝手動キャプチャ手順を UI へ戻すとき（そのときこの検査も戻す）、または窓名一致の退行が実際に
+起きたとき（そのときは UI 依存をやめ、lib.rs と obs-client.ts を直接突き合わせる検査にする）。
+これらはテストファイル側にもコメントで残した（削除の痕跡がファイル境界を越えないと (1)〜(5) の教訓が効かないため）。
+
+#### 併せて実態へ直したコメント（挙動は不変）
+
+- カード冒頭 — 「このカードが担うのは**手動ウィンドウキャプチャの手順**と自動反映のセットアップ」→ 自動反映だけ。
+- 045a 注記 — 実窓名が UI から消えて 2 者間契約になったことを追記。
+- 044a 注記 — 「失敗時は**上の手動手順**にフォールバックする」が画面上の手順を指していた点を訂正
+  （挙動としてのフォールバック自体は不変）。
+- 046b 注記（固定コメントカード）— 置き場所の理由が「手動キャプチャの手順注記と同じカード」だった点を訂正。
+
+#### 検証
+
+`typecheck` / `lint` / `test`（**26 files / 461 tests**＝テスト 1 件削除で 462 → 461 ＋ CSS guard (1)〜(7)）すべて green。
+削除文言が可視要素として残っていないことを grep で確認（残るヒットは経緯を書いたコメント内のみ）。
+差分は `SettingsView.tsx` / `SettingsView.obs.test.tsx` ＋ docs のみ。Rust / sidecar / capability / CSP / 依存は不変。
+
+---
+
+## 2026-08-01 セッション引き継ぎ（054 レビュー → 追補 2 本まで／**未コミット・実機未確認**）
+
+### 今回完了したこと
+
+**(1) 054 のセキュリティレビュー＋品質レビュー**
+- セキュリティ判定 **問題なし・修正必須ゼロ**。「frontend の見た目のみ」を実測で検証
+  （`src-tauri/` / `capabilities/` / `tauri.conf.json`〔`csp: null`〕/ `comment-sidecar/` / `package.json` /
+  `pnpm-lock.yaml` / `theme.css` / `ToggleSwitch.tsx` / `Select.tsx` / `formLayout.module.css` /
+  `SettingsScreen.module.css` / `docs/security.md` がすべて差分ゼロ、untracked ゼロ）。
+- 品質レビューは**ミューテーション 26 種を隔離コピーで実走**して裏を取った。ガード (6) 初版に
+  偽陰性 4 種・偽陽性 3 種・fail-open 2 種が**実在**することを実証。
+
+**(2) レビュー指摘の反映（apply-review）** — 詳細は上の「レビュー指摘を受けた改訂」節。
+- `hasDecl` の正規表現に `(?:^|;|\{)` の境界を追加（**ヘルパ側を直したので既存 (1)〜(5) にも効く**）。
+- (6-a) に `font-size` を追加 ／ 突き合わせを `declValue` 同士の直接比較へ ／ `declValue` の値正規化。
+- (6-b) を名指し denylist から**許可リスト `FAINT_ALLOWED` 付きの走査型**へ。
+- (6-c) を fail-closed に ／ **(6-d) を新設**（`SettingsView.tsx` の `styles.fieldLabel` 参照＝CSS↔TSX の逆向き）。
+- **`.note` の波及先の事実誤認を訂正**（「本体ツールバー」ではなく `position:absolute` の `.connPopover` の中）。
+- 3 段規則の表から実体の無い「プレースホルダ」行を外し、「別段のもの」に `.fontPreviewLabel` / `.status` を追加。
+
+**(3) E2E フィードバック① — 余白の 2 段化**（上の「E2E フィードバック反映」節）
+- `.cardBody` に `--card-block-gap: 10px`（項目ブロック同士）/ `--card-inner-gap: 4px`（ブロック内）を導入し、
+  `.cardBody > * + .note { margin-top: calc(--card-inner-gap - --card-block-gap) }` で説明を直前の項目へ引き寄せ。
+- **JSX 差分ゼロ**。ガード **(7-a)〜(7-d)** を追加。
+
+**(4) E2E フィードバック② — OBS カードの可視文言 3 本削除**（上の「E2E フィードバック②」節）
+- 045b の移設先導線 ／ 033f の手動キャプチャ手順 ／ 044a の「上の手動での…が不要になります」を削除。
+- 依存していたテスト 2 件を整理（1 件削除・1 件は窓名アサートのみ削除して改名）。
+
+### 変更した主要ファイル（**8 件・すべて未 staged／base は `b182801 add:tasks追加`**）
+
+| ファイル | 内容 |
+| --- | --- |
+| `apps/desktop/src/screens/comment-viewer/CommentViewerApp.module.css` | 3 段のタイポグラフィ規則コメント ／ `.fieldLabel` 新設 ／ `.note`・`.obsPasswordHelp`・`.fontPreviewLabel` の色/サイズ ／ **`.cardBody` の余白 2 段＋`.cardBody > * + .note`** |
+| `apps/desktop/src/screens/comment-viewer/SettingsView.tsx` | ラベル 4 箇所を `<span className={styles.fieldLabel}>` で包む ／ **OBS カードの可視文言 3 本を削除** |
+| `apps/desktop/scripts/check-css-guards.mjs` | `hasDecl` 修正・`declValue` をモジュールレベルへ ／ ガード **(6-a)〜(6-d)** ／ ガード **(7-a)〜(7-d)** |
+| `apps/desktop/src/screens/comment-viewer/SettingsView.obs.test.tsx` | 窓名アサートを見ていたテスト 2 件の整理 |
+| `docs/progress.md` | 054 節（本文＋改訂＋追補①②＋本引き継ぎ） |
+| `docs/task-board.md` | 054 行を実装済みへ・追補①②を追記 |
+| `docs/tasks/054-comment-viewer-settings-readability.md` | 実装済み注記・完了条件の修正・追補①② |
+| `docs/tasks/055c-update-notice-and-screen.md` | 054 からの申し送り（役割の規則のみ移す・**px/weight は移さない**・階層は書式と余白の両方で作る） |
+
+### まだ未完了のこと
+
+1. **⚠ 実機確認が一度も済んでいない。** 本セッションの変更はすべて「静的に検証できる範囲」までしか担保がない。
+   jsdom は色・サイズ・余白・レイアウトを一切解決しないので、**見た目の正しさはコードレビューでは証明できない**。
+2. **⚠ コミット・push していない**（8 ファイル未 staged・ブランチ `main`）。方針どおり本人の明示指示待ち。
+3. **`.status`（11px/700）と `.note`（12px/400）の階層逆転**（接続ポップオーバー内）。要実機判断。
+   直すなら `.note` を戻すのではなく `.status` を 12px へ寄せる方が 3 段規則と整合する。**別タスク推奨**。
+4. **`.connPopover` に `max-height` / `overflow` が無い**（既存構造）。`.note` が 12px＋`line-height:1.5` になり
+   縦に伸びたので、狭い窓で下端からはみ出す可能性がある。実機ではみ出したら別タスクで起票。
+5. **2 カードの手動手順の非対称**（コメント用は削除済み・固定コメント用は残存）。文言タスクを起票するときに揃える。
+
+### 次にやるべきタスク
+
+1. **実機確認**（`pnpm tauri dev`）——これが最優先。見るべき点:
+   - (a) 設定ビューで項目名がすべて同じ太字・濃色 ／ (b) 項目＋説明が 1 ブロックに見え、ブロック同士が離れているか
+   - (c) 固定コメントカードの `.note` 5 連続がひとかたまりに見えるか ／ (d) 視聴者詳細「情報の削除」
+   - (e) ライト/ダーク両テーマ ／ (f) **本体ツールバーが 1px も動いていないこと**
+   - (g) YouTube 接続ピルを開いたポップオーバー（縦の伸び・`.status` と `.note` の階層）
+   - (h) OBS カードから 3 本消えた状態で説明が不足していないか
+2. 実機 OK なら**コミット**（本人の指示で実行）。
+3. その後は **055a リリース基盤**（`docs/tasks/055a-updater-release-pipeline.md`・IDE で開かれていたファイル）。
+   実装順は 055a → 055b → 055c → 055d → 055e。**⚠ 絶対制約: 055a〜055d は 099 の実タグ push・publish より前に完了させること。**
+   055c 着手時は 054 の申し送り（役割の規則だけ移す・**px/weight の実値は移さない**）を必ず読むこと。
+4. 052（VOICEVOX ポーリングのタイムアウト）は 054 とは独立。着手順は本人判断。
+
+### 既知のエラー
+
+**なし**（`typecheck` / `lint` / `test` / `check:css` すべて green・`pnpm build` も成功）。
+以下は**エラーではなく、意図的に残した穴**（機械が「どこからが退行か」を決められないもの）:
+
+- `.note` の `font-size` を 11px に戻す ／ `line-height` を消す変異は**ガードを通る**（(6-b) は色だけを見る）。
+  格上げ方針は CSS の `.note` コメントに記載。
+- `.fieldLabel` を `@media` の中へ移す変異も通る（ルールとしては実在するため、条件付きになったことは検出できない）。
+- **窓名 `StreamDock コメントオーバーレイ` の一致は `src-tauri/src/lib.rs` の `.title` ↔
+  `apps/comment-sidecar/src/obs/obs-client.ts` の `OBS_SOURCE_NAME` の 2 者間契約だけになった。**
+  desktop のテストからは見えないので、**窓名を変えるときは 2 ファイルを必ず同時に直すこと**。
+
+### 実行した確認コマンド
+
+```bash
+# 静的検査（すべて green）
+pnpm --filter ./apps/desktop typecheck
+pnpm --filter ./apps/desktop lint
+pnpm --filter ./apps/desktop test          # 26 files / 461 tests + pnpm check:css
+node apps/desktop/scripts/check-css-guards.mjs
+
+# CSS Modules のスコープ実測（隣接兄弟 `+` はこのリポジトリの CSS モジュール初使用）
+pnpm --filter ./apps/desktop build
+#   → ._cardBody_1uepz_636>*+._note_1uepz_10{...} で同一ハッシュのスコープを確認
+
+# 差分の範囲確認
+git status --short
+git diff --stat
+git status --short -- apps/desktop/src-tauri/ apps/comment-sidecar/ apps/desktop/package.json \
+  pnpm-lock.yaml apps/desktop/src/styles/theme.css docs/security.md   # すべて差分ゼロ
+grep -nE "#[0-9a-fA-F]{3,8}|rgba?\(" apps/desktop/src/screens/comment-viewer/CommentViewerApp.module.css  # 0 件
+
+# ミューテーション（作業ツリー非破壊・scratchpad へ隔離コピーして実走）
+#   ガード (6): 31 種（退行はすべて FAIL・正しい CSS はすべて PASS）
+#   ガード (7): 14 種（同上）
+#   既存 (1) 非退行: .item の flex-shrink 全削除 → exit 1
+```
+
+**実機（`pnpm tauri dev`）は未実行。**
+
+### 次回セッションで最初に読むべきファイル
+
+1. **`docs/progress.md` の「2026-08-01 (054 内蔵コメビュ設定画面の可読性修正 …)」節**（本セッションの全記録・この引き継ぎまで）。
+2. `docs/task-board.md` の 054 行（追補①②の要約）と **055 ブロック**（次の実装対象と絶対制約）。
+3. `apps/desktop/src/screens/comment-viewer/CommentViewerApp.module.css` **先頭の 3 段規則コメント**
+   （この窓のタイポグラフィと余白の「正」。`.cardBody` / `.note` / `.fieldLabel` / `.speakerField` の各コメントも）。
+4. `apps/desktop/scripts/check-css-guards.mjs` の **(6) と (7)**（何を守っていて、何を意図的に守っていないか）。
+5. 055 へ進むなら `docs/tasks/055a-updater-release-pipeline.md`。055c を触るなら
+   `docs/tasks/055c-update-notice-and-screen.md` **冒頭の 054 申し送り**を先に読むこと。
+6. OS 操作・ファイル操作・プロセス操作・外部通信に触れる変更をするなら `docs/security.md`（今回は不変）。
