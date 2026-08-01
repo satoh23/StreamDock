@@ -52,7 +52,12 @@ cd apps/desktop/src-tauri && cargo check
 ビルドは **GitHub Actions**（`.github/workflows/release.yml`）で自動化している。VM も Docker も不要で、
 macOS と Windows(x64) のインストーラをクラウドで生成する。
 
-- 生成物: macOS `.dmg`（universal・Intel/Apple Silicon 両対応）/ Windows x64 `.exe`(NSIS) + `.msi`(WiX)。
+- **ユーザーが落とすもの**: macOS `.dmg`（universal・Intel/Apple Silicon 両対応）/ Windows x64 `.exe`(NSIS) の**各 1 本だけ**。
+  - Release にはこのほか `latest.json` / `*.app.tar.gz` / `*.sig` が並ぶが、これらは **updater が使う**もので人は落とさない
+    （`.app.tar.gz` は macOS の自己更新時にアプリ自身が取得して自分を置き換える実体）。
+  - ⚠ **`.msi`(WiX) は作らない**（`bundle.targets` から除外）。updater の `windows-x86_64` は NSIS の `.exe` しか
+    指さないため、`.msi` を並べると **MSI で入れたユーザーが更新のたびに NSIS へ入れ替わる**（アンインストールの
+    エントリが二重化しうる）。使わない形式を並べる意味が無いので生成ごとやめた。
 - Windows は **x64 のみ**（一般ユーザーのほぼ全員。ARM64 Windows でも x64 エミュで動作）。
 - **このリポジトリ（ソース）は private のまま**。成果物だけを **別の public リポジトリ
   `satoh23/StreamDock-releases`** の Releases 下書きに添付する（ユーザーはそちらから登録不要で DL）。
@@ -131,7 +136,7 @@ git push --tags
 ### 署名について
 
 - **Windows**: CI に SSL.com の署名 Secrets（`ES_USERNAME` 他）が**設定されていれば**、tauri ビルド後に
-  NSIS `.exe` / WiX `.msi` を **SSL.com の個人検証(IV)証明書 + eSigner クラウド署名**で署名する
+  NSIS `.exe` を **SSL.com の個人検証(IV)証明書 + eSigner クラウド署名**で署名する
   （プロパティ →「デジタル署名」に発行者表示）。**Secrets 未設定なら署名ステップは自動スキップし、未署名で配布**される
   ＝証明書取得前でも comment-viewer 入り MVP を配布でき、Secrets を入れた瞬間からコード変更なしで署名に切り替わる。
   - 未署名の間は初回に SmartScreen「不明な発行元」警告（「詳細情報 → 実行」で回避）。

@@ -252,35 +252,56 @@ git status --short -- apps/desktop/src-tauri/capabilities/
 gh run list --workflow release --limit 3
 ```
 
-## 空回しで確定した実ファイル名と `platforms` キー
+## 空回しで確定した実ファイル名と `platforms` キー（**確定済み・2026-08-01**）
 
-> **`platforms` キーの妥当性は静的に確定済み**（レビューで `tauri-plugin-updater` の `get_urls` を読んだ）。
-> 残る未確定は**実ファイル名だけ**で、実装は「`dist/` を再帰走査して拡張子で発見」＝**決め打ちしていない**ため、
-> ここが埋まっていなくても CI は動く。埋めるのは記録のため。
->
-> 確定させる手順:
-> 1. GitHub の Actions 画面から `release` を `workflow_dispatch` で実行する。
-> 2. build ジョブの **`Verify updater artifacts`** のログに bundle ディレクトリの全ファイル名が出る。
-> 3. release ジョブの **`Generate latest.json`** のログに、採用したファイル名と `latest.json` の中身が出る。
-> 4. `satoh23/StreamDock-releases` の draft `ci-<番号>` の添付ファイル一覧と突き合わせる。
+`workflow_dispatch` の空回しが両 OS とも緑になり、`satoh23/StreamDock-releases` の draft に成果物が並んだ。
 
-**updater がキーを引く規則（実測）**: `get_urls` は **`{os}-{arch}-{installer}` → `{os}-{arch}` の 2 段**でしか
-検索しない（`Installer::name()` は `app` / `nsis` / `msi` / `deb` / `rpm` / `appimage`）。`platforms` は `HashMap` で、
-**どの段でも引かれないキーは単に無視される**。
+**updater がキーを引く規則（tauri-plugin-updater の `get_urls` を実測）**: **`{os}-{arch}-{installer}` → `{os}-{arch}`
+の 2 段**でしか検索しない（`Installer::name()` は `app` / `nsis` / `msi` / `deb` / `rpm` / `appimage`）。
+`platforms` は `HashMap` で、**どの段でも引かれないキーは単に無視される**。
 
 | プラットフォーム | 実際に引かれるキー | 併記しているキー | 成果物の実ファイル名 | 署名ファイル |
 | --- | --- | --- | --- | --- |
-| macOS (universal) | `darwin-aarch64` / `darwin-x86_64`（2 段目） | `darwin-universal`（**引かれないが無害**・将来の保険） | *(空回し後に記入・`<productName>.app.tar.gz` の形)* | *(同左 `.sig`)* |
-| Windows x64 | `windows-x86_64`（2 段目。1 段目の `windows-x86_64-nsis` は置いていない） | ― | *(空回し後に記入・NSIS の `.exe`)* | *(同左 `.sig`)* |
+| macOS (universal) | `darwin-aarch64` / `darwin-x86_64`（2 段目） | `darwin-universal`（**引かれないが無害**・将来の保険） | `StreamDock.app.tar.gz`（72.2 MB） | `StreamDock.app.tar.gz.sig`（408 B） |
+| Windows x64 | `windows-x86_64`（2 段目。1 段目の `windows-x86_64-nsis` は置いていない） | ― | `StreamDock_0.1.0_x64-setup.exe`（21.9 MB） | 同左 `.sig`（420 B） |
 
-⚠ **記述の訂正（レビュー Q-2）**: 当初「1 キー 1 URL なので `.exe` と `.msi` の両方は載せられない」と書いていたが、
-**これは誤り**。1 段目に installer 名を含むキー（`windows-x86_64-nsis` / `windows-x86_64-msi`）を置けば**両方載せられる**。
-NSIS 一本にしている理由は「Tauri の Windows 自己更新の標準経路が NSIS で `installMode` も NSIS の概念であり、
-**MSI 経路の自己更新を 099b でまだ検証していない**」から。
-なお現在の `windows-x86_64` は 2 段目のフォールバックなので、**MSI で入れたユーザーにも NSIS の `.exe` が配られる**
-（＝インストール形式が入れ替わる）。**099b の確認項目に加えること。**
+**Release の添付一覧（`ci-<番号>` の draft）**: `latest.json`（4.93 KB）/ `StreamDock.app.tar.gz`(+`.sig`) /
+`StreamDock_0.1.0_universal.dmg`（71.2 MB）/ `StreamDock_0.1.0_x64-setup.exe`(+`.sig`)。
 
-`latest.json` の実物（`version` / `pub_date` / `url` の形）も確定後にここへ貼る。
+**検算で確認したこと**:
+
+- `.sig` のサイズ 408 / 420 B は minisign ボックスの理論値と**完全一致**（差の 12 B は trusted comment に埋まる
+  `file:<ファイル名>` の長さの差 9 文字を base64 した分）＝ 切り詰めも混入もない本物の署名。
+- `latest.json` の 4.93 KB もリリースノート 2619 B ＋ mac 署名 3 回分 ＋ win 1 回分 ＋ URL 4 本から**計算値と一致**。
+- 8 個すべてのファイル名が **`encodeURIComponent` で 1 文字も変化しない**（英数字と `_ . -` のみ）
+  ＝ `latest.json` の `url` と GitHub 側のアセット名がズレて 404 になる余地はない。
+- `StreamDock_0.1.0_universal.dmg` の名前が **macOS ビルドが universal である**ことを示す
+  ＝ `darwin-aarch64` / `darwin-x86_64` に同じ `.app.tar.gz` を割り当てている前提が成立している。
+
+### ⚠ `.msi`(WiX) は配布対象から外した（**本人の決定・2026-08-01**）
+
+初回の空回しでは `.msi` も並んでいた（`StreamDock_0.1.0_x64_en-US.msi` ＋ `.sig`）。しかし:
+
+- `latest.json` の `windows-x86_64` は **NSIS の `.exe` しか指さない**。これは 2 段目のフォールバックなので、
+  **`.msi` で入れたユーザーにも NSIS の `.exe` が配られる**＝更新のたびにインストール形式が入れ替わり、
+  アンインストールのエントリが二重化しうる。
+- 「どちらを落としてもよい」状態は事故のもとで、**使わない形式を並べる意味が無い**。
+
+→ `tauri.conf.json` の `bundle.targets` を **`"all"` → `["app", "dmg", "nsis"]`** に変更した。
+
+- **`app` を必ず含めること。** tauri-bundler は `PackageType::MacOsBundle`（＝`app`）が package types に無いと
+  **`.app.tar.gz`（macOS の updater 成果物）を作らない**（`bundle.rs` の `matches!(package_type, PackageType::MacOsBundle)`）。
+  `dmg` だけにすると mac の自己更新が丸ごと死ぬ。
+- `package_types()` は**プラットフォーム外の指定を黙って除外する**ので、この 1 つのリストが mac（app+dmg）と
+  Windows（nsis）の両方で正しく効く。
+- 併せて `release.yml` から `msi/*.msi` / `msi/*.sig` の glob と、`Sign WiX installer (.msi)` ステップ、
+  `Locate Windows installers` の `msi=` 出力を削除した（099a の署名対象も `.exe` だけになる）。
+- **復活の検知**: `.msi` が dist/ に現れたら `make-latest-json.mjs` が `::warning` を出す
+  （`bundle.targets` に戻ったのに `latest.json` を直し忘れる、を防ぐため）。
+
+⚠ **記述の訂正（レビュー Q-2）**: 当初「1 キー 1 URL なので `.exe` と `.msi` の両方は載せられない」と書いていたが
+**これは誤り**。1 段目に installer 名を含むキー（`windows-x86_64-nsis` / `windows-x86_64-msi`）を置けば両方載せられる。
+`.msi` を採らない理由は上記のとおり「**そもそも配らない**」から。
 
 ## security.md を変更しなかった判断（レビュー S-5 で追認）
 

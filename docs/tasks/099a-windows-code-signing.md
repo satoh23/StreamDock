@@ -12,7 +12,7 @@
 > （[`.github/workflows/release.yml`](../../.github/workflows/release.yml)）がタグ push で未署名ビルドを生成できている**こと。
 >
 > ⚠ **【055a からの申し送り・着手時に必ず対処すること】eSigner の置換署名は updater の minisign 署名を壊す。**
-> 現行 CI は `sslcom/esigner-codesign` を **tauri のビルド後**に走らせ、`.exe` / `.msi` を `override: true` で
+> 現行 CI は `sslcom/esigner-codesign` を **tauri のビルド後**に走らせ、`.exe` を `override: true` で
 > **置換署名**する。一方、[055a](055a-updater-release-pipeline.md) で有効化した `createUpdaterArtifacts` の `.sig`
 > （minisign）は **tauri がバンドルした時点のバイト列**に対して作られるため、**置換署名でバイト列が変わり `.sig` と
 > 一致しなくなり、Windows の自己更新が必ず署名検証で落ちる**。現在は `secrets.ES_USERNAME` 未設定でステップごと
@@ -33,22 +33,26 @@
 >    ステップが**残っている** → fail（移行が中途半端）
 >
 > **＝ `signCommand` を設定しただけでは通らない。** ビルド後の置換署名ステップ
-> （`Locate Windows installers` / `Sign NSIS installer (.exe)` / `Sign WiX installer (.msi)` の 3 つ）を
+> （`Locate Windows installers` / `Sign NSIS installer (.exe)` の 2 つ。`.msi` は配布対象外にしたので
+> `Sign WiX installer (.msi)` は 055a で削除済み）を
 > **必ずセットで削除する**こと。片方だけだと元の地雷とまったく同じ壊れ方（`.sig` とバイト列の不一致）になる。
 > 移行手順はそのスクリプトのエラーメッセージにも書いてある。
 
 ## 目的
 
-Windows インストーラ（NSIS `.exe` / WiX `.msi`）を **Azure Trusted Signing** でコード署名し、DL/インストール時の
+Windows インストーラ（NSIS `.exe`）を **Azure Trusted Signing** でコード署名し、DL/インストール時の
 **SmartScreen「不明な発行元」警告を解消**する。macOS は当面未署名のまま（親 099 の決定どおり）。証明書取得後、
 **署名を GitHub Actions の CI に統合**する（VM/Docker 不使用・鍵はリポジトリに置かない）。
 
 ## 現在の前提（調査結果）
 
 - [`apps/desktop/src-tauri/tauri.conf.json`](../../apps/desktop/src-tauri/tauri.conf.json) の `bundle` は
-  `targets: "all"`・`externalBin`・`icon` のみで、**`bundle.windows` オブジェクトが存在しない**
-  （`certificateThumbprint`/`digestAlgorithm`/`timestampUrl`/`signCommand` いずれも未設定）。Windows は Tauri 既定で
-  **NSIS `.exe` と WiX `.msi` の両方**を生成する（両方に署名が要る）。`app.security.csp` は `null`。
+  `targets`・`createUpdaterArtifacts`・`externalBin`・`icon` のみで、**`bundle.windows` オブジェクトが存在しない**
+  （`certificateThumbprint`/`digestAlgorithm`/`timestampUrl`/`signCommand` いずれも未設定）。`app.security.csp` は `null`。
+- ⚠ **更新（055a・2026-08-01）**: `bundle.targets` は `"all"` ではなく **`["app", "dmg", "nsis"]`** になった。
+  ＝ Windows で生成されるインストーラは **NSIS `.exe` の 1 本だけ**で、**WiX `.msi` は作らない**
+  （updater の `windows-x86_64` は NSIS しか指さず、`.msi` を配ると更新のたびにインストール形式が入れ替わるため）。
+  **したがって本タスクの署名対象も `.exe` だけ**でよい（旧 `Sign WiX installer (.msi)` ステップは 055a で削除済み）。
 - CI は [`.github/workflows/release.yml`](../../.github/workflows/release.yml) の 1 本のみ。`build` ジョブが
   `macos-latest`/`windows-latest` マトリクスで `tauri-apps/tauri-action@v0`（`projectPath: apps/desktop`）を実行して
   未署名インストーラを artifact 化し、`release` ジョブが public リポジトリ `satoh23/StreamDock-releases` に下書き
@@ -64,7 +68,7 @@ Windows インストーラ（NSIS `.exe` / WiX `.msi`）を **Azure Trusted Sign
   **Azure Trusted Signing 用の外部 `signCommand`**（例: `trusted-signing-cli` もしくは `azuresigntool` を呼ぶコマンドで、
   署名対象パスをプレースホルダで受ける形）＋ **`timestampUrl`**（Azure Trusted Signing のタイムスタンプ URL）＋
   **`digestAlgorithm: "sha256"`** を設定する。
-- **NSIS `.exe` と WiX `.msi` の両方が署名される**ことを担保する（`targets: "all"` のため両生成物が対象）。
+- **NSIS `.exe` が署名される**ことを担保する（`.msi` は生成しないので対象外・上記の更新を参照）。
 - 署名に必要なパラメータ（エンドポイント/アカウント/プロファイル/認証）は **CI の環境変数（Secrets 由来）**から渡し、
   設定ファイルに秘匿値をハードコードしない。
 
@@ -106,7 +110,7 @@ Windows インストーラ（NSIS `.exe` / WiX `.msi`）を **Azure Trusted Sign
 ## 完了条件
 
 - [`tauri.conf.json`](../../apps/desktop/src-tauri/tauri.conf.json) に `bundle.windows`（`signCommand`＋`timestampUrl`＋
-  `digestAlgorithm`）があり、CI の Windows ビルドで **`.exe`(NSIS) と `.msi`(WiX) の両方が署名**される。
+  `digestAlgorithm`）があり、CI の Windows ビルドで **`.exe`(NSIS) が署名**される（`.msi` は生成しない）。
 - 署名済み `.exe` の Windows「プロパティ → デジタル署名」に**発行者が表示**され、**`signtool verify /pa` が通る**。
 - 署名済みインストーラの DL/実行で **SmartScreen の「不明な発行元」警告が解消**している（レピュテーション蓄積前でも
   発行者名が表示される）。

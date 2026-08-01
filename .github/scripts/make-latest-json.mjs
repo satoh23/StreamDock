@@ -113,7 +113,9 @@ const pick = (suffix) => {
 };
 
 const macCandidates = pick(".app.tar.gz");
-const winCandidates = pick(".exe"); // NSIS。`.msi.sig` は下の理由により updater 対象にしない
+const winCandidates = pick(".exe"); // NSIS。Windows の updater 対象はこれだけ
+// `.msi`(WiX) は **配布対象から外した**（tauri.conf.json の `bundle.targets` から除外）。
+// ここで拾うのは「気づかないうちに戻っていないか」を見るためだけ（下で ::warning を出す）。
 const msiCandidates = pick(".msi");
 
 const problems = [];
@@ -241,14 +243,14 @@ const latest = {
     "darwin-aarch64": macEntry,
     "darwin-x86_64": macEntry,
     "darwin-universal": macEntry,
-    // Windows は **NSIS の `.exe` のみ**を updater 対象にする。
-    // ⚠ 技術的には `windows-x86_64-nsis` と `windows-x86_64-msi` を**両方載せることはできる**
-    //   （上記のとおり 1 段目に installer 名を含むキーを引くため）。NSIS だけにしているのは、
-    //   Tauri の Windows 自己更新の標準経路が NSIS で `plugins.updater.windows.installMode` も NSIS の概念であり、
-    //   **MSI 経路の自己更新を 099b でまだ検証していない**から（レビュー Q-2）。
-    //   なお `windows-x86_64`（installer 名なし）は 2 段目のフォールバックなので、
-    //   **MSI で入れたユーザーにも NSIS の `.exe` が配られる**（＝インストール形式が入れ替わる）。
-    //   これも 099b の確認項目。`.msi` の `.sig` は収集するが latest.json には載せない。
+    // Windows は **NSIS の `.exe` のみ**。Tauri の Windows 自己更新の標準経路が NSIS で、
+    // `plugins.updater.windows.installMode` も NSIS の概念だから。
+    // ⚠ 技術的には `windows-x86_64-nsis` と `windows-x86_64-msi` を**両方載せることもできる**
+    //   （上記のとおり 1 段目に installer 名を含むキーを引くため。「1 キー 1 URL だから無理」は誤り）。
+    //   採らない理由は「`.msi` はそもそも**配布しない**」から——`windows-x86_64`（installer 名なし）は
+    //   2 段目のフォールバックなので、`.msi` を配ると **MSI で入れたユーザーにも NSIS の `.exe` が配られ、
+    //   更新のたびにインストール形式が入れ替わる**（アンインストールのエントリが二重化しうる）。
+    //   使わない形式を並べておく意味が無いので `bundle.targets` から `msi` ごと外した（本人の決定・2026-08-01）。
     "windows-x86_64": entry(win),
   },
 };
@@ -274,7 +276,13 @@ console.log(`  notes     : ${existsSync(notesPath) ? `docs/release-notes/v${vers
 console.log(`  macOS     : ${basename(mac.asset)}  (+ ${basename(mac.sig)})`);
 console.log(`  Windows   : ${basename(win.asset)}  (+ ${basename(win.sig)})`);
 if (msiCandidates.length > 0) {
-  console.log(`  ※ .msi の署名も生成されています（${msiCandidates.map((c) => basename(c.asset)).join(", ")}）が、updater は NSIS を使うため latest.json には載せません。`);
+  // 配布対象から外したはずの `.msi` が復活している。放置すると「MSI で入れたユーザーが
+  // 更新のたびに NSIS へ入れ替わる」状態が黙って戻るので、必ず気づけるようにする。
+  console.log(
+    `::warning::配布対象外のはずの .msi が dist/ にあります（${msiCandidates.map((c) => basename(c.asset)).join(", ")}）。` +
+      `tauri.conf.json の bundle.targets に msi が戻っていないか確認してください。` +
+      `latest.json は NSIS の .exe しか指さないため、MSI で入れたユーザーは更新でインストール形式が入れ替わります。`,
+  );
 }
 console.log(`  出力      : ${join(DIST_DIR, "latest.json")} / ${BODY_PATH}`);
 console.log(`  dist/ 内の全ファイル:\n${allFiles.map((f) => `    ${f.slice(DIST_DIR.length + 1)}`).join("\n")}`);

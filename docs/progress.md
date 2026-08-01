@@ -9816,10 +9816,11 @@ updater が動くための**配る側**を用意した。終了時点で「ア�
 プレースホルダではなく**実データ**で通る（＝完了条件「notes にファイルの内容がそのまま入っている」を空回しだけで検証できる）。
 **タグ push 経路には抜け道を作っていない。**
 
-**② `latest.json` の実物** —— ⚠ **空回し未実施のため未確定**。確定後にこの節と 055a タスクファイルへ追記する。
+**② `latest.json` の実物** —— **空回しで確定済み（2026-08-01）**。詳細は 055a タスクファイルの
+「空回しで確定した実ファイル名と `platforms` キー」節を正とする。
 生成側の実装は「`dist/` を再帰走査し拡張子で発見」＝**固定パスもファイル名も決め打ちしていない**。
 `platforms` のキーは `darwin-aarch64` / `darwin-x86_64` / `darwin-universal`（3 つとも同一の universal
-`.app.tar.gz` を指す）＋ `windows-x86_64`（**NSIS の `.exe`**。`.msi` は Release には並ぶが updater は参照しない）。
+`StreamDock.app.tar.gz` を指す）＋ `windows-x86_64`（`StreamDock_0.1.0_x64-setup.exe`）。
 **キーの妥当性はレビューで静的に確定した**（下の「レビュー指摘の反映」Q-2 / Q-3）。
 
 **③ updater 成果物の欠落検出**
@@ -10002,17 +10003,60 @@ Windows の git-bash では find が非ゼロを返しやすく実際に起こ�
 - release ジョブが `actions/setup-node` を通さず**ランナー既定の node** を使っている点をコメントで明示。
 - `Verify updater artifacts` の Windows 側が `.sig` しか見ない（macOS と非対称）理由をコメントで明示。
 
+### 空回し（`workflow_dispatch`）の結果と、そこで決めたこと（2026-08-01）
+
+**1 回目 —— `TAURI_SIGNING_PRIVATE_KEY` の値が 1 文字壊れていて両 OS とも同じ場所で落ちた。**
+
+エラーは `failed to decode base64 key: Invalid symbol 37, offset 348.`。base64 クレートの
+`InvalidByte(index, byte)` なので **バイト 37 = `%`** が **349 文字目**にある、という意味。
+ローカルの鍵ファイルは 348 バイトちょうど・末尾は `=`（改行なし）・base64 として完全に妥当だったので、
+**Secrets に入った値だけが `ファイルの中身 + %`** になっていた。原因は **zsh が「改行で終わらない出力」の末尾に
+出す反転表示の `%`** を、`cat` の出力から選択コピーしたときに一緒に拾ったこと。
+対処は `pbcopy < ~/.tauri/stream-dock-updater.key` で貼り直し（`pbpaste | wc -c` が 348 になることを確認）。
+
+この失敗で**副次的に確定したこと**（無駄ではなかった）:
+
+- **前借りフォールバックは不要**が実挙動でも裏付けられた。`createUpdaterArtifacts: true` なのに Rust に
+  `tauri-plugin-updater` が無い状態で **bundle は完走した**（`Finished 2 bundles at:`）。
+- **Windows の実ファイル名が確定**（`StreamDock_0.1.0_x64-setup.exe` / `StreamDock_0.1.0_x64_en-US.msi`）。
+- **署名はバンドルの後**であることが実挙動で確認できた ＝ eSigner ガードの前提が正しい。
+- **fail-closed が効いた**（`.sig` が作れない → build ジョブが落ちる → 不完全な成果物は public 側に出ない）。
+- **ログに鍵の中身は 1 バイトも出ていない**（§9 の観点でも問題なし）。
+
+**2 回目 —— 両 OS とも緑。draft に 8 ファイルが並んだ。** 実ファイル名・サイズの検算結果は
+055a タスクファイルの該当節を正とする（`.sig` のサイズも `latest.json` のサイズも理論値と一致・
+全ファイル名が URL エンコードで不変＝`url` と GitHub のアセット名がズレる余地なし）。
+
+**そこで決めたこと: `.msi`(WiX) を配布対象から外す（本人の決定）**
+
+draft に `.msi` が並んでいたが、`latest.json` の `windows-x86_64` は NSIS の `.exe` しか指さない
+（これは 2 段目のフォールバックなので **`.msi` で入れたユーザーにも NSIS が配られる**＝更新のたびに
+インストール形式が入れ替わり、アンインストールのエントリが二重化しうる）。
+本人の判断は「**危ないなら消す。使わないなら出す意味がない**」。
+
+- `tauri.conf.json` の `bundle.targets` を **`"all"` → `["app", "dmg", "nsis"]`**。
+  ⚠ **`app` は必ず含める**。tauri-bundler は `PackageType::MacOsBundle` が package types に無いと
+  **`.app.tar.gz` を作らない**ので、`dmg` だけにすると **mac の自己更新が丸ごと死ぬ**。
+  `package_types()` はプラットフォーム外の指定を黙って除外するため、この 1 リストで mac（app+dmg）と
+  Windows（nsis）の両方が正しく効く。
+- `release.yml` から `msi/*.msi` / `msi/*.sig` の glob、`Sign WiX installer (.msi)` ステップ、
+  `Locate Windows installers` の `msi=` 出力を削除。**099a の署名対象も `.exe` だけ**になった。
+- `make-latest-json.mjs` は `.msi` を見つけたら `::warning`（`bundle.targets` に戻ったのに `latest.json` を
+  直し忘れる、を防ぐ検知として残す）。
+- **099b の E2E-8b は再現条件が消えたので実施不要**にした（「MSI で入れたユーザー」が存在しなくなるため）。
+
+なお「どのファイルを落とすか」の案内は **別途ダウンロードサイトを作る想定**（本人の決定）なので、
+Release 本文やリリースノートには書かない。＝ `docs/release-notes/vX.Y.Z.md` は
+「Release 本文とアプリ内アップデート画面の両方に流れる」単一ソースのままでよい。
+
 ### 未完了・次にやること
 
-1. **CI 空回し（依頼者が Actions 画面から `workflow_dispatch`）** —— `satoh23/StreamDock-releases` の
-   draft `ci-<番号>` に `latest.json` / `*.sig` /（macOS の）`*.app.tar.gz` が並ぶことを目視確認する。
-   **実ファイル名と `latest.json` の中身**を受けて、上の②と 055a タスクファイルに追記する。
-   build ジョブの `Verify updater artifacts` のログにも bundle 内の全ファイル名が出る。
-   併せて **`Generate latest.json` のログに `署名鍵 : keynum=b7283ccf91114063` が出ること**を確認する
-   （＝Secrets の秘密鍵と `tauri.conf.json` の公開鍵が同じ鍵ペアであることの実地確認）。
-2. GitHub Secrets の登録（`TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`）—— 依頼者作業。
-   **未登録のまま空回しすると bundle 段階で「A public key has been found, but no private key」で落ちる。**
-3. `docs/task-board.md` の 055 系更新。
+1. ~~CI 空回し~~ **完了**（上記）。~~Secrets 登録~~ **完了**。~~実ファイル名の記録~~ **完了**。
+2. **`.msi` 除外後の再空回し** —— `bundle.targets` を変えたので**もう 1 回だけ空回しが要る**。確認するのは
+   ① draft の添付から `.msi` と `.msi.sig` が消えていること ② **`StreamDock.app.tar.gz` と `.sig` が今までどおり
+   出ていること**（`app` を targets に残した効果。ここが消えていたら mac の自己更新が死ぬ）
+   ③ `Generate latest.json` のログに `.msi` の `::warning` が出ていないこと。
+3. 確認後、`ci-<番号>` の draft を削除する（残すと将来の誤 publish の的になる）。
 4. **コミットは未実施**（依頼者の明示指示待ち）。
    ⚠ レビュー Q-17 の提案: この差分には独立に価値がある塊が 3 つ（**バージョン同期ガード** /
    **updater 配布基盤** / **eSigner ガード**）同居している。CLAUDE.md の「1 回の作業で複数機能をまとめて

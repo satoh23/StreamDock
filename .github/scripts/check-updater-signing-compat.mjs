@@ -66,7 +66,7 @@ const MIGRATION = [
   "  対処（099a の領分・055a で決定済み）:",
   "    1. tauri.conf.json の `bundle.windows.signCommand` に署名コマンドを設定し、",
   "       **tauri のバンドル過程の中で**署名させる（その後に updater 署名が作られる順序になる）。",
-  "    2. release.yml のビルド後 `Sign NSIS installer (.exe)` / `Sign WiX installer (.msi)` ステップと、",
+  "    2. release.yml のビルド後 `Sign NSIS installer (.exe)` ステップと、",
   "       その前段の `Locate Windows installers` を削除する。**1 と 2 は必ずセットで行う。**",
   "    3. 検証は 099b の E2E（実機の自己更新）で行う。",
   "",

@@ -28,7 +28,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["app", "dmg", "nsis"],
     "createUpdaterArtifacts": true,
     "externalBin": ["binaries/comment-sidecar"],
     "icon": [

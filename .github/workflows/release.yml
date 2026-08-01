@@ -38,7 +38,8 @@ jobs:
           - platform: macos-latest
             rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
             args: "--target universal-apple-darwin"
-          # Windows: 既定の x64 ランナー＝x86_64-pc-windows-msvc。NSIS(.exe)+WiX(.msi) を生成。
+          # Windows: 既定の x64 ランナー＝x86_64-pc-windows-msvc。NSIS(.exe) のみ生成する
+          # （WiX の .msi は tauri.conf.json の bundle.targets から外した。055a）。
           - platform: windows-latest
             rust_targets: ""
             args: ""
@@ -248,7 +249,8 @@ jobs:
 
       # 099a-(II): Windows インストーラを SSL.com eSigner（クラウド署名）で署名する。
       # 日本の個人は Azure Trusted Signing 対象外のため、個人検証(IV)証明書＋eSigner を採用。
-      # tauri ビルド後に NSIS(.exe)/WiX(.msi) を署名し override でその場置換する（macOS レグは署名しない）。
+      # tauri ビルド後に NSIS(.exe) を署名し override でその場置換する（macOS レグは署名しない）。
+      # ⚠ `.msi`(WiX) は配布対象外にしたため署名対象からも外した（旧 `Sign WiX installer (.msi)` を削除）。
       # 認証情報は Secrets のみ（ES_USERNAME / ES_PASSWORD / CREDENTIAL_ID / ES_TOTP_SECRET）。ログに出さない。
       # セキュリティ: sslcom/esigner-codesign は署名資格情報を受け取るため、@develop ではなく
       #   レビュー済みのコミット SHA / リリースタグへ固定することを推奨（供給網対策）。
@@ -262,7 +264,6 @@ jobs:
         run: |
           ws="${GITHUB_WORKSPACE//\\//}"
           echo "exe=$(ls "$ws"/apps/desktop/src-tauri/target/release/bundle/nsis/*.exe | head -n1)" >> "$GITHUB_OUTPUT"
-          echo "msi=$(ls "$ws"/apps/desktop/src-tauri/target/release/bundle/msi/*.msi | head -n1)" >> "$GITHUB_OUTPUT"
 
       - name: Sign NSIS installer (.exe)
         if: matrix.platform == 'windows-latest' && env.HAS_WINDOWS_SIGNING == 'true'
@@ -276,20 +277,10 @@ jobs:
           file_path: ${{ steps.installers.outputs.exe }}
           override: true
 
-      - name: Sign WiX installer (.msi)
-        if: matrix.platform == 'windows-latest' && env.HAS_WINDOWS_SIGNING == 'true'
-        uses: sslcom/esigner-codesign@develop
-        with:
-          command: sign
-          username: ${{ secrets.ES_USERNAME }}
-          password: ${{ secrets.ES_PASSWORD }}
-          credential_id: ${{ secrets.CREDENTIAL_ID }}
-          totp_secret: ${{ secrets.ES_TOTP_SECRET }}
-          file_path: ${{ steps.installers.outputs.msi }}
-          override: true
-
       # 生成されたインストーラと updater 成果物を workflow artifact として保存する。
       # 各 OS は自分の成果物のみ一致する（他 OS のパターンは 0 件でよい）。
+      # ⚠ `.msi`(WiX) は配布対象外にした（tauri.conf.json の `bundle.targets` から外した）ので glob も持たない。
+      #   理由は tauri.conf.json 側と `make-latest-json.mjs` の `windows-x86_64` のコメントを参照。
       # 055a: updater 成果物（macOS の `.app.tar.gz` と各インストーラの `.sig`）を追加する。
       #   ⚠ **ファイル名は決め打ちしない**（Tauri のバージョンで変わるため）。ディレクトリを限定した
       #     拡張子ワイルドカードにしておき、実ファイル名は空回しのログで確定させる。
@@ -304,11 +295,9 @@ jobs:
           path: |
             apps/desktop/src-tauri/target/**/release/bundle/dmg/*.dmg
             apps/desktop/src-tauri/target/**/release/bundle/nsis/*.exe
-            apps/desktop/src-tauri/target/**/release/bundle/msi/*.msi
             apps/desktop/src-tauri/target/**/release/bundle/macos/*.app.tar.gz
             apps/desktop/src-tauri/target/**/release/bundle/macos/*.app.tar.gz.sig
             apps/desktop/src-tauri/target/**/release/bundle/nsis/*.sig
-            apps/desktop/src-tauri/target/**/release/bundle/msi/*.sig
 
   release:
     needs: build
