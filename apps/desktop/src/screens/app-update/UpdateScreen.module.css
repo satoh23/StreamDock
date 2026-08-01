@@ -124,11 +124,17 @@
   }
 }
 
-/* リリースノート本文。**改行を保持したプレーンテキスト**（055e でマークダウン描画に差し替わる）。
+/* リリースノート本文の器。055e で中身が**マークダウンの最小サブセット**（見出し / 箇条書き /
+   太字 / インラインコード）として描画されるようになった（要素は renderReleaseNotes.tsx が組む）。
    ⚠ 055b レビュー S-5: notes は長さ無制限かつ minisign 署名の対象外（未署名）なので、
       縦に伸び続けると右下のアップデートボタンを画面外へ押し出す（055d で「押せない」に化ける）。
       max-height + overflow-y は DiagnosticsScreen.module.css の .logList と同じ作法・同じ値。
-      文字数そのものの上限は ReleaseNotes.tsx の clampNotes() が持つ（DOM に載る前に切る）。 */
+      文字数そのものの上限は ReleaseNotes.tsx の clampNotes() が持つ（DOM に載る前に切る）。
+      **この 2 つと `.notesBody` というクラス名は check-css-guards.mjs (8-b) が見ている**
+      ——ガードはこのセレクタのルール本体を探すので、**クラス名を変えると検査が黙って無効になる**。
+   ⚠ **`white-space: pre-wrap` は 055e でも残す**。1 行 = 1 ブロックで描くため改行は DOM に残らず
+      「改行を見せる」効果は消えるが、**行頭インデントを保つ**効果が残る——ネストしたリストや
+      コードブロックの中身など**対応外の記法をそのまま文字として出す**（消さない・壊さない）ために効く。 */
 .notesBody {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -137,4 +143,89 @@
   color: var(--text);
   font-size: 13px;
   line-height: 1.5;
+}
+
+/* 055e: マークダウン要素の書式。**すべて `.notesBody` の子孫セレクタで足す**（上記のとおり
+   クラス名そのものは動かせないため）。
+
+   ■ 実値はすべて**メインウィンドウ側の既存値**から採り、新しい値は発明していない（054 の階層規則）
+   | 対象 | 実値 | 出どころ |
+   | --- | --- | --- |
+   | h4（`#`） | 14px / 800 / var(--text) | SettingsScreen.module.css の `.optionLabel`（14px/800） |
+   | h5（`##`） | 13px / 800 / var(--text) | 本文と同じ 13px（`.notesBody`）＋ 項目名の 800（`.fieldLabel`） |
+   | h6（`###`） | 12px / 800 / var(--text) | `.fieldLabel` ＝ formLayout.module.css の `.field label` |
+   | ブロック同士の余白 | 14px | `.fields` の gap（＝ formLayout.module.css の `.form`） |
+   | ブロック内の余白 | 7px | `.fieldLabel` の margin-bottom（＝ formLayout.module.css の `.field label`） |
+   | ul の字下げ | 18px | formLayout.module.css の `.panelBody` の padding |
+   | code の意匠 | mono / var(--control-bg) / var(--border-soft) / radius 6px / padding 1px 6px | DiagnosticsScreen.module.css の `.code` |
+
+   ⚠ 見出しのタグが h4〜h6 なのは、画面が既に h2（ページ見出し）と h3（formLayout の .panelHead）を
+      使っているため。**theme.css のマージンリセットは `h1..h4, p` までで h5 / h6 を含まない**ので、
+      ここで margin を明示している（省くと UA 既定の大きな余白が出る）。
+   ⚠ `<code>` の font-size だけ `.code` の 10px を採らず **12px**（`.fieldLabel` と同値）。10px は
+      独立したチップ用のサイズで、13px の本文に混ぜると小さすぎるため。他の宣言は `.code` と同一。
+   ⚠ 色は役割トークン経由のみ（生 hex/rgba を書かない）。`--text-faint` は使わない（無効状態専用）。 */
+.notesBody h4,
+.notesBody h5,
+.notesBody h6 {
+  margin: 14px 0 7px;
+  color: var(--text);
+  font-weight: 800;
+}
+
+.notesBody h4 {
+  font-size: 14px;
+}
+
+.notesBody h5 {
+  font-size: 13px;
+}
+
+.notesBody h6 {
+  font-size: 12px;
+}
+
+/* 段落と箇条書きは「ブロック内」の 7px。隣接マージンは相殺されるので、見出しとの間は 7px、
+   見出しの上だけが 14px になる（＝書式だけでなく余白でも階層を作る・054 追補の教訓）。 */
+.notesBody p,
+.notesBody ul {
+  margin: 7px 0;
+}
+
+.notesBody ul {
+  padding-left: 18px;
+}
+
+/* 項目が折り返して 2 行以上になるので、項目同士は「ブロック内」の 7px で離す。 */
+.notesBody li + li {
+  margin-top: 7px;
+}
+
+/* 器の上下端に余白を作らない（.notesBody は overflow-y:auto で BFC を作るため、
+   子のマージンは器を突き抜けないがスクロール領域の先頭/末尾に空きとして残る）。 */
+.notesBody > *:first-child {
+  margin-top: 0;
+}
+
+.notesBody > *:last-child {
+  margin-bottom: 0;
+}
+
+.notesBody strong {
+  font-weight: 800;
+}
+
+.notesBody code {
+  padding: 1px 6px;
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--control-bg);
+  border: 1px solid var(--border-soft);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+/* notes が空白・改行だけだったときのフォールバック文言。補助説明の役割なので --muted（054）。 */
+.notesEmpty {
+  color: var(--muted);
 }

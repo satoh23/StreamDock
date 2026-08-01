@@ -757,6 +757,53 @@ loopback WS で受信済みの値を Tauri コマンドで渡すだけ＝sidecar
 - **`cargo audit` の再実行は不要**（`Cargo.lock` に差分が無いため。`.githooks/pre-commit` は
   ロックファイルをステージしたときだけ走る＝この差分では発火しない。これは意図どおり）。
 
+**追加した依存（055e・リリースノートのマークダウン描画）: ゼロ**（2026-08-02）。
+
+- **Rust も JS も新規依存は 1 つも無い。** `Cargo.toml` / `Cargo.lock` / `package.json` /
+  `pnpm-lock.yaml` は**すべて差分ゼロ**（`apps/desktop/src-tauri/` / `apps/comment-sidecar/` /
+  `.github/` も差分ゼロ）。実装は frontend の純関数
+  （`apps/desktop/src/screens/app-update/renderReleaseNotes.tsx`）＋ CSS だけ。
+- **明示的に落とした依存（マークダウンレンダラ 4 種）**——本タスクの本題なので理由まで残す:
+  - **`react-markdown` + `remark-gfm`**: unified / remark / micromark / mdast 系の**推移的依存が 20 以上**
+    増える。§10「依存関係を増やしすぎない」に照らして、**リリースノート 1 画面のために払うコストとして重い**。
+    描画対象は `docs/release-notes/vX.Y.Z.md` ＝**自分たちが書いた数十行**であり、任意のマークダウンを
+    正確に再現する必要がない。
+  - **`marked` + `DOMPurify`**: 依存数は小さいが、**HTML 文字列を経由する**ため
+    `dangerouslySetInnerHTML` が必須になる。`notes` は `latest.json` 由来で **minisign 署名の対象外**
+    （未署名。§1 / 上の 055b の記述を参照）なので、**サニタイザの正しさに安全性を預ける**形になる。
+    自前レンダラは **React 要素を返す**＝**HTML インジェクションの経路が構造的に存在しない**ので、
+    こちらを採った（＝「依存を減らす」だけでなく「面を減らす」判断）。
+  - **`highlight.js` / `prism` 等のシンタックスハイライタ**: コードブロック自体を対応記法にしていない
+    （そのまま文字として出す）ので不要。
+- **この不変条件は機械で固定した**。担保は**ランタイムのテストと静的検査の 2 本立て**で、
+  **役割が違うので両方要る**（当初ここには「React 要素しか組まないので『結果に生 HTML が混ざらない』は
+  構造的に必ず通る＝空虚（ミューテーションでも殺せない）」と書いていたが、**これは誤りだった**。
+  下記「記述の訂正」を参照）。
+  - **ランタイム**（`UpdateScreen.test.tsx` / `renderReleaseNotes.test.tsx`）… 描画結果に現れる違反を殺す
+    ＝生 HTML（`<img>`/`<b>` 非解釈）・`<a>`/`<img>` がゼロ・**組み立てた要素が属性を 1 つも持たない**
+    （未署名の `notes` が `title=` / `style=` などの属性値へ流れない。`style` は React が CSS 値を
+    サニタイズしないため `url(…)` で外部リソース取得が成立しうる）。
+  - **静的検査**（`apps/desktop/scripts/check-css-guards.mjs` の **(9)**）… 描画結果に**現れない**追加を殺す
+    ＝`dangerouslySetInnerHTML` / `openUrl` / `plugin-opener` / `window.open` / `<a ` / `href=` の不在を
+    **`src/screens/app-update/` 配下の非テスト `.ts(x)` 全部**に、`http` / `src=` / `url(` の不在を
+    **レンダラ本体 2 本**に課し、加えて `renderReleaseNotes(clampNotes(` という**呼び出しの順序**と
+    `styles.notesBody` の参照を固定する。Rust の `app_update/commands.rs` の `command_contract` と同じ手口。
+  - **新しい .mjs に分けなかった**のは、`package.json` に `check:*` を 1 行足すと
+    「新規依存ゼロ＝`package.json` 差分ゼロ」の担保が崩れるため（`pnpm test` は既に `check:css` を呼ぶ）。
+  - **記述の訂正（055e レビュー・2026-08-02）**: 当初は「静的検査だけが担保で、ランタイムのテストは空虚」と
+    書いていた。レビューのミューテーション実測で、`dangerouslySetInnerHTML` を足す変異も
+    `createElement("a", { href })` で needle を回避する変異も**ランタイムのテストが殺し、
+    当時の静的ガード（3 ファイル名指し）のほうがすり抜けた**ことが分かったため、上記のとおり改めた。
+    併せて **(9-a) をファイル名の列挙からディレクトリ走査へ**（新規ファイルを足す迂回を封じる）、
+    **`http` / `src=` / `url(` はレンダラ本体のみへ**（アップデート画面全体に課すと正しいコードで落ちる）、
+    **属性ゼロのランタイム検査を新設**した。**条文の緩和ではなく、担保の強化と役割分担の訂正**である
+    （禁止しているものは 1 つも減っていない）。
+- **リンクを開く経路は作っていない**（`tauri-plugin-opener` を新たに呼ばない）。リリースノート内の
+  `[text](url)` は**テキストとして表示するだけ**＝「外部から来た文字列に含まれる URL を開く」という
+  新しい面を作らない。再修正トリガー＝踏ませたくなったら **https 限定 ＋ ホスト検証**を入れて別タスクにする。
+- **外部リソースを 1 つも読み込まない**（画像・フォント・script・style）。`csp: null` は不変で、
+  CSP 方針の「inline script を増やさない」も維持している。
+
 **依存の脆弱性検査（055b で初めて実施・2026-08-01）**:
 
 本リポジトリには**依存の脆弱性検査の仕組みが存在しなかった**（`cargo audit` / `cargo deny` 未導入・Dependabot 設定なし・

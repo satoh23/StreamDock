@@ -19,9 +19,17 @@
 // 過去 2 回とも再修正トリガー付きのコメントを残したが、3 回目は **別 CSS モジュールへ意匠を移植した際に
 // コメントが付いてこなかった**ために再発した。コメントはファイル境界を越えないので、境界を越える検査が要る。
 //
+// ## ⚠ 名前は「CSS」だが CSS 専用ではない（055e レビュー Q-3）
+//
+// 047e は CSS モジュール専用として始まったが、いまは (4) / (6-d) が TS / TSX のソース文字列を、
+// (9) が **リリースノート描画のセキュリティ不変条件**（生 HTML / リンク / 外部リソースの不在）を
+// 見ている。＝**「テストでは守れない不変条件を静的に守る」チェッカー**と読むのが正しい。
+// `check-ui-guards.mjs` への改名は `package.json` の `check:css` を触る必要があり、
+// 055e の完了条件（新規依存ゼロ＝`package.json` 差分ゼロ）と衝突するので**別タスクに送る**。
+//
 // 実行: `node scripts/check-css-guards.mjs`（`pnpm test` から呼ばれる）
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -532,6 +540,165 @@ for (const rel of [VIEWER_CSS, OVERLAY_CSS]) {
           `文字数側の上限は ReleaseNotes.tsx の clampNotes() が持ちます（2 段構え・両方必要）。`,
       );
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// (9) 055e の不変条件: リリースノート描画の**面**をソース文字列で固定する。
+//
+//     ⚠ **ランタイムのテストとの役割分担（055e レビュー Q-2 で訂正）**。当初ここには
+//     「React 要素しか組まないので『結果に生 HTML が混ざらない』は構造的に必ず通る＝空虚で、
+//     ミューテーションでも殺せない」と書いていたが、**これは誤り**だった。レビューの実測では
+//     `dangerouslySetInnerHTML` を足す変異も `createElement("a", { href })` を足す変異も
+//     **ランタイムのテストが殺し、当時のこのガードのほうがすり抜けた**
+//     （`UpdateScreen.test.tsx` の `<img>`/`<b>` 非解釈、`renderReleaseNotes.test.tsx` の `<a>` ゼロ）。
+//     正しい分担はこう:
+//       - **ランタイムのテスト**… 描画結果に現れる違反（生 HTML・`<a>`・属性への流入）を殺す。**空虚ではない**。
+//       - **本ガード (9)** … 描画結果に**現れないのにソースには現れる**追加を殺す
+//         ——別ファイルへ経路を足す・needle を回避する書き方・clamp の順序（(9-b)）・クラス名の乖離（(9-c)）。
+//     ＝**両方が要る**。ランタイム側を「どうせ空虚だから」と消さないこと（消すと (9-a) が単独では
+//     `createElement` 経由の `<a>` を止められない）。
+//
+//     ⚠ **なぜ別スクリプトに分けないのか**。①055e の完了条件が「**新規依存ゼロ＝`package.json` 差分ゼロ**」
+//     なので、`check:*` を 1 行足すとその担保が崩れる（`pnpm test` は既に `check:css` を呼んでいる）。
+//     ②本スクリプトは既に (4) / (6-d) で **TS / TSX のソース文字列**を照合しており、CSS 専用ではない。
+//
+//     ⚠ 照合は `stripTsComments()` を通した後で行う。`ReleaseNotes.tsx` の JSDoc は
+//     「`dangerouslySetInnerHTML` を使わない」と**書いている**ので、剥がさないと**正しいコードで落ちる**
+//     （(5-b) が戒めた「正しいコードで fail させない」と同型）。本スクリプトは**自分自身を読まない**ので、
+//     needle をここに書いても自己ヒットはしない（Rust 側が踏んだ罠はここでは起きない）。
+//     ⚠ ただし `stripTsComments` は**文字列リテラル中の `//` も行末まで落とす**（雑なので）。
+//     `const a = "x//y";` と**同じ行に**違反を書かれると見逃す。prettier が整形する以上ほぼ起きないので
+//     受容するが、needle を増やすときはこの性質を前提にすること（→ (9-a) の `http` の項）。
+// ---------------------------------------------------------------------------
+{
+  const APP_UPDATE_DIR = "src/screens/app-update";
+  const RENDER_TSX = `${APP_UPDATE_DIR}/renderReleaseNotes.tsx`;
+  const NOTES_TSX = `${APP_UPDATE_DIR}/ReleaseNotes.tsx`;
+
+  /**
+   * (9) 用の読み取り。ファイルが無い（リネーム / 移動）ときに `node:fs` の**生スタックトレース**で
+   * 死ぬと真因が読めない（(5-b) の「メッセージが真因と一致する」原則から外れる）ので、
+   * ガードの失敗として報告する。⚠ **fail-open にはしない**——`null` を返した側は必ず fail() 済み。
+   */
+  const readSource = (rel, why) => {
+    try {
+      return stripTsComments(readRaw(rel));
+    } catch {
+      fail(`${rel} を読めません（リネーム / 移動しましたか？）。${why}`);
+      return null;
+    }
+  };
+
+  // (9-a) 描画面に「生 HTML」「リンクを開く」「外部リソース」の 3 経路を作らない。
+  //   `notes` / `latestVersion` は latest.json 由来で **minisign 署名の対象外**（未署名）＝
+  //   HTTPS で守られるだけの外部文字列なので、テキストノードと React 要素以外にしない。
+  //
+  //   ⚠ **対象はファイル名の列挙ではなくディレクトリ走査**（055e レビュー S-1）。当初は 3 本を
+  //   名指ししていたが、それだと **`dangerouslySetInnerHTML` を同ディレクトリの新規ファイルへ置くだけで
+  //   ガードが緑のまま通る**（実測済み）。「将来足されること」を止めるのが目的なので、
+  //   **ファイルを足す**という最も自然な足し方に穴があってはいけない。
+  //   ⚠ needle に `https://` を使わないのは、`stripTsComments` が `//` 以降を落とすため
+  //   `const u = "https://…"` が `const u = "https:` に化けて**すり抜ける**から（`http` なら残る）。
+  const FORBIDDEN_ANYWHERE = [
+    ["dangerouslySetInnerHTML", "未署名の外部文字列を HTML として解釈する経路になります"],
+    ["openUrl", "外部 URL を開く経路（リンクを踏ませない・055e の決定）"],
+    ["plugin-opener", "外部 URL を開く経路（リンクを踏ませない・055e の決定）"],
+    ["window.open", "外部 URL を開く経路（リンクを踏ませない・055e の決定）"],
+    ["<a ", "リンク要素（踏める導線）を作っています"],
+    ["href=", "リンク要素（踏める導線）を作っています"],
+  ];
+  //   ⚠ **こちらはレンダラ本体（2 本）にだけ掛ける**（055e レビュー S-1 / 申し送り 6）。
+  //   外部リソース参照は「リリースノートの文字列から作らせない」ための needle であって、
+  //   アップデート画面**全体**の禁止事項ではない。3 本目（UpdateScreen.tsx）以降にも掛けると、
+  //   将来この画面が正当な理由で `src=` や `http` を使った瞬間に**正しいコードで落ちる**。
+  const FORBIDDEN_IN_RENDERER = [
+    ["http", "外部リソース / 外部宛先を参照しています（§9 の URL 非表示にも触れます）"],
+    ["src=", "外部リソース（画像等）を読み込んでいます"],
+    ["url(", "外部リソース（画像・フォント）を読み込んでいます"],
+  ];
+
+  const sources = readdirSync(join(root, APP_UPDATE_DIR))
+    .filter((f) => /\.tsx?$/.test(f) && !/\.test\.tsx?$/.test(f))
+    .map((f) => `${APP_UPDATE_DIR}/${f}`)
+    .sort();
+
+  // レンダラ本体が消える / リネームされると (9-a) の強い側も (9-b)/(9-c) も無意味になるので、
+  // **在ることそのもの**を先に要求する（走査方式にした副作用で ENOENT では落ちなくなったため）。
+  for (const rel of [RENDER_TSX, NOTES_TSX]) {
+    if (!sources.includes(rel)) {
+      fail(
+        `${rel} がありません（055e）。リリースノートの描画点とレンダラはこの 2 本に閉じているのが前提で、` +
+          `リネーム / 移動すると (9-a) の外部リソース検査・(9-b) の clamp 順序・(9-c) のクラス名検査が` +
+          `まとめて無効になります。移すなら本ガードの対象も併せて更新してください。`,
+      );
+    }
+  }
+
+  for (const rel of sources) {
+    const code = readSource(rel, "(9-a) の検査ができません。");
+    if (code === null) continue;
+    const needles =
+      rel === RENDER_TSX || rel === NOTES_TSX
+        ? [...FORBIDDEN_ANYWHERE, ...FORBIDDEN_IN_RENDERER]
+        : FORBIDDEN_ANYWHERE;
+    for (const [needle, why] of needles) {
+      if (code.includes(needle)) {
+        fail(
+          `${rel}: \`${needle}\` を使っています（055e）。${why}。` +
+            `リリースノートは **React 要素としてしか組まない**のが要件で、` +
+            `リンクを踏ませたくなったら https 限定＋ホスト検証を入れたうえで別タスクにしてください。`,
+        );
+      }
+    }
+  }
+
+  // (9-b) **clamp が先・パースが後**。055c review Q-4 が予告した罠（描画点と丈の制御が同居しているため、
+  //   ReleaseNotes.tsx を書き直す形の作業をすると clampNotes が自然に消える）の 2 段目。
+  //   `UpdateScreen.test.tsx` の S-5 は「打ち切られること」を見るので**順序までは固定できない**——
+  //   `clampNotes(renderReleaseNotes(...))` は型で落ちるが、パースしてから別の場所で切る書き方だと
+  //   パーサに 20,000 字超が渡ったまま緑になる。ここで呼び出しの形そのものを固定する。
+  //   空白を落として比べるのは、prettier が引数を改行しただけで**正しいコードが落ちる**のを避けるため
+  //   （Rust 側の `code_compact()` と同じ理由）。
+  //
+  //   ⚠ **これは「形」の検査であって「振る舞い」の検査ではない**（055e レビュー S-3・修正不要と判断）。
+  //   同じ形をデッドコードに 1 つ置いておけば、実経路が `renderReleaseNotes(notes)` でも本検査は通る
+  //   （実測済み）。それでも直さないのは、その変異を **S-5 テストが独立に殺す**から
+  //   ——2 段構えの片側が「形」、もう片側が「振る舞い」を見ており、両方を同時に欺くのは
+  //   「clamp を消す」という単純な退行では起こらない。AST を読む方向は依存ゼロの前提と釣り合わない。
+  //   **再修正のトリガー**: S-5 テストを消す / 弱める変更が入るなら、ここも AST か描画結果ベースへ格上げする。
+  const notesCode = readSource(NOTES_TSX, "(9-b) の検査ができません。")?.replace(/\s+/g, "");
+  if (notesCode !== undefined && !notesCode.includes("renderReleaseNotes(clampNotes(")) {
+    fail(
+      `${NOTES_TSX}: \`renderReleaseNotes(clampNotes(…))\` の呼び出しがありません（055e / 055b review S-5）。` +
+        `**先に clamp してからパースする**のが要件です（パーサに 20,000 字超を渡さない）。` +
+        `clampNotes() を消した／外した／順序を入れ替えた可能性があります。` +
+        `文字数の上限は clampNotes()、丈の上限は .notesBody の max-height の **2 段構えで両方必要**です。`,
+    );
+  }
+
+  // (9-c) CSS↔TSX の逆向きを閉じる（(6-d) と同じ穴）。(8-b) は CSS 側にルールが在ることしか見ないので、
+  //   TSX 側でクラス名を変えると **max-height / overflow-y が当たらなくなるのにガードは緑のまま**になる。
+  //   CSS モジュールは存在しないキーでも文字列を返すため、typecheck は捕まえられない。
+  //
+  //   ⚠ **この検査が見ているのは「ファイルから名前が消えていないこと」だけ**（055e レビューで実測・
+  //   修正不要と判断）。`ReleaseNotes.tsx` には `styles.notesBody` が **2 箇所**ある
+  //   （本体の `<div>` と、空 notes のフォールバック `<p>`）ので、**本体だけを別名に変えても
+  //   もう片方が残っていて本検査は通る**。＝ここは「片方だけのリネーム」を殺せない。
+  //   それでも needle を `className={styles.notesBody}` の形まで狭めないのは、本体に正当な理由で
+  //   2 つ目のクラスが付いた瞬間に**正しいコードで落ちる**から（(5-b) が戒めた失敗と同型）。
+  //   **片方だけのリネームは `UpdateScreen.test.tsx` が殺す**——複数のテストが
+  //   `[class*="notesBody"]` で本体を引いて `not.toBeNull()` しているため（実測で killed を確認）。
+  //   ＝ (9) 全体の役割分担（上の冒頭コメント）どおり、**描画結果に現れる違反はランタイム側の担当**。
+  //   **再修正のトリガー**: `UpdateScreen.test.tsx` から `[class*="notesBody"]` の参照が無くなるとき。
+  const notesRaw = readSource(NOTES_TSX, "(9-c) の検査ができません。");
+  if (notesRaw !== null && !/\bstyles\.notesBody\b/.test(notesRaw)) {
+    fail(
+      `${NOTES_TSX}: \`styles.notesBody\` の参照がありません（055c / 055e）。` +
+        `(8-b) は CSS 側の \`.notesBody\` しか見ないので、TSX 側でクラス名を変えると` +
+        `max-height / overflow-y が当たらないまま検査だけが通り、` +
+        `長い notes が右下のアップデートボタンを画面外へ押し出します。`,
+    );
   }
 }
 

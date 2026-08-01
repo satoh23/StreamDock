@@ -23,7 +23,9 @@ import { UpdateScreen } from "./UpdateScreen";
  * - `downloading` / `installing` の間はボタンを**無効化**する（多重実行防止）。
  * - 総バイト数が分かるときは**決定形**の進捗バー、分からないときと `installing` 中は**不定形**。
  * - 完了後は **OS で分岐**する（macOS＝再起動ボタン／Windows＝案内文言）。
- * - 更新内容は**改行を保持したプレーンテキスト**（マークダウン記法はまだ文字として見える）。
+ * - 更新内容は**マークダウンの最小サブセット**として整形する（055e。見出し / 箇条書き / 太字 /
+ *   インラインコードのみ・対応外の記法は文字として残る）。**記法そのものの仕様テストは
+ *   `renderReleaseNotes.test.tsx`** にあり、ここでは「画面に組み込まれていること」だけを見る。
  * - §9: 失敗・進捗の表示に**生エラー文字列・URL・ローカルパスを出さない**。
  * - ⚠ 省略可フィールドは `undefined` ではなく **`null` で届く**（055b レビュー Q-4）。
  *   `!== undefined` で書くと `null` に対して true になり「新バージョン: null」と表示される。
@@ -96,7 +98,12 @@ describe("UpdateScreen —— 更新あり", () => {
     expect(screen.getByText("現在のバージョン")).toBeInTheDocument();
     expect(screen.getByText("0.0.9")).toBeInTheDocument();
     expect(screen.getByText("新しいバージョン")).toBeInTheDocument();
-    expect(screen.getByText("0.1.0")).toBeInTheDocument();
+    // ⚠ 055e で **値スロットに限定**した。テスト用の notes が `## 0.1.0` で始まるため、
+    //    マークダウン描画後は同じ文字列が見出し要素としても現れ、素の getByText が 2 件で落ちる。
+    //    限定したことで「新しいバージョンの**値**として出ている」ことまで固定できる（精度は上がっている）。
+    expect(
+      screen.getByText("0.1.0", { selector: '[class*="fieldValue"]' }),
+    ).toBeInTheDocument();
     expect(screen.getByText("更新内容")).toBeInTheDocument();
   });
 
@@ -110,15 +117,17 @@ describe("UpdateScreen —— 更新あり", () => {
     expect(onInstall).toHaveBeenCalledTimes(1);
   });
 
-  it("更新内容は改行を保持したプレーンテキストで出す（HTML として解釈しない）", () => {
+  it("055e: 更新内容をマークダウンとして整形して出す（記法の記号が文字として残らない）", () => {
     const { container } = renderScreen({ status: hasUpdate });
-    // jsdom は white-space: pre-wrap を解決しないので、改行が文字列として残っていることを見る。
     const notes = container.querySelector('[class*="notesBody"]');
     expect(notes).not.toBeNull();
-    expect(notes?.textContent).toBe(hasUpdate.notes);
-    expect(notes?.textContent).toContain("\n");
-    // マークダウン記法はまだ文字として見える（描画は 055e）。
-    expect(notes?.textContent).toContain("## 0.1.0");
+    // 055c までは "## 0.1.0" / "- 初回リリース" がそのまま文字として見えていた。
+    expect(notes?.querySelector("h5")?.textContent).toBe("0.1.0");
+    expect(notes?.querySelectorAll("li")).toHaveLength(2);
+    expect(notes?.textContent).toContain("初回リリース");
+    expect(notes?.textContent).toContain("不具合を修正");
+    expect(notes?.textContent).not.toContain("## ");
+    expect(notes?.textContent).not.toContain("- ");
   });
 
   it("S-5: 極端に長い notes は DOM に載る前に打ち切る（未署名・長さ無制限データの丈の制御）", () => {
@@ -138,11 +147,16 @@ describe("UpdateScreen —— 更新あり", () => {
     expect(shown.length).toBeLessThan(20100);
   });
 
-  it("通常の長さの notes は 1 文字も削らない（打ち切りが日常で発動しない）", () => {
+  it("通常の長さの notes は打ち切らない（打ち切りが日常で発動しない）", () => {
     const { container } = renderScreen({ status: hasUpdate });
     const shown = container.querySelector('[class*="notesBody"]')?.textContent ?? "";
-    expect(shown).toBe(hasUpdate.notes);
     expect(shown).not.toContain("以下省略");
+    // ⚠ 055e で記法の記号（`## ` / `- `）は要素になって消えるが、**中身は 1 文字も欠けない**。
+    // ⚠ 期待値は**フィクスチャから導出する**（055e レビュー Q-8）。手で連結した文字列リテラルだと、
+    //    notes を変えた人がテストの literal を書き換えて辻褄を合わせる形で「削られていない」の
+    //    担保が静かに緩む。記号を落として改行を詰めた形＝「整形で消えてよいものだけが消えた形」。
+    const expected = (hasUpdate.notes ?? "").replace(/^(#{1,3}|[-*]) /gm, "").replace(/\n/g, "");
+    expect(shown).toBe(expected);
   });
 
   it("notes に HTML が入っていても要素として解釈しない（未署名データ・dangerouslySetInnerHTML 不使用）", () => {
