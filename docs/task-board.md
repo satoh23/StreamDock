@@ -239,6 +239,7 @@
     - ✅ **security-review ＋ 品質レビュー実施・指摘反映済み（2026-08-02・progress.md ⑦）**。判定は**軽微な懸念あり（修正必須ゼロ）**。⚠ **レビュー側の独自ミューテーション 10 種で、上の 6/6 に入っていなかった生存変異が 3 件**（見出し / 段落分岐の `flushList` 削除・`notes` の `title=`/`style=` への流入）＝**自分のガードの主張を裏返す変異だけでは、ガードが見ていない領域の穴は見つからない**。⚠ **「ランタイムのテストは空虚」は誤りだった**——生 HTML / `<a>` を足す変異はランタイム側が殺し、当時の (9)（3 ファイル名指し）がすり抜けた。反映＝**(9-a) をディレクトリ走査へ**（新規ファイル経由の迂回を封じる）／`http`・`src=`・`url(` は**レンダラ本体のみ**（申し送り 6 の偽陽性を解消）／**属性 0 個**のテスト新設／`?raw` を **`import.meta.glob("…/v*.md")`** へ／`allowStrong` の JSDoc 訂正（等価変異と実測）。**588 → 592 tests**
     - **残**: 実機確認（⚠ **publish 済みリリースが要る**。ただし `v*.md` を通すテストがあるので実機に残るのは**見た目**だけ＝両テーマの可読性・スクロール・ボタンが押し出されないか）→ コミット
   - ✅ **055 系（055a〜055e）は全サブタスクの実装が完了**（2026-08-02）。⚠ **055a〜055d は `96f46d2` までで既にコミット済み**で、未コミットなのは **055e ぶんだけ**（上の 055a〜055d 節に残る「未コミット」表記はコミット前に書いたもので**いまは古い**）。残るのは実機確認・055e のレビュー・055e のコミット。実機 E2E は 099b
+    - → **2026-08-02 追記（訂正）: 055e も `d96f6fb` でコミット済み**で、作業ツリーはクリーン。**055 系に未コミットのものはもう無い**。⚠ したがって **上の 055a〜055e 各節に残る「未コミット」表記はすべて古い**（コミット状態についてのみ。「**実機確認は依頼者の手番で未実施**」は**今も正しい**ので消さないこと）。⚠ **055a の「残」のうち `.msi` 除外は `4df2b41` でコミット済み**だが、**`.msi` 除外後の再空回しと draft 削除の実施状況はボードからは確定できない**（実施したなら結果をここに追記すること）
   - ⚠ **既に埋まっている地雷（099a と衝突）**: `release.yml` の `sslcom/esigner-codesign` は tauri ビルド**後**に `.exe`/`.msi` を `override: true` で置換署名するため、updater の minisign `.sig`（バンドル時点のバイト列に対して作成）と**必ず不一致になり Windows の自己更新が署名検証で落ちる**。現在は `ES_USERNAME` 未設定でスキップされ顕在化していないが **099a に着手した瞬間に発火**する。対処＝`bundle.windows.signCommand` へ寄せる（**方針決定と記録は 055a／実際の移行は 099a**）。**055a で CI ガードを実装済み**＝`release.yml` の `Guard - post-build signing breaks updater signature (099a)` が、`ES_USERNAME` を登録した瞬間に署名ステップより前で fail する（申し送りだけでは止まらないため。`check-css-guards.mjs` 冒頭の「コメントはファイル境界を越えない／同じバグ 3 回」と同型）
 
 - 056 依存の脆弱性検査（**055b の指摘で起票・2026-08-01**／タスクファイル未作成）
@@ -248,6 +249,26 @@
   - **残 ①定期検査**: pre-commit は「**自分が依存を変えたとき**」しか見ない＝**既存依存に後から報告された脆弱性を捕まえられない**（脆弱性は日々公表される）。**`git merge` / `git pull` が持ち込む依存変更も素通りする**（merge commit は pre-commit を通らない・レビュー指摘）。Dependabot 設定 or スケジュール CI（`cargo audit` ＋ `pnpm audit`）が要る。**警告レベル（`unmaintained` 18 件）で落とすかは要判断**（そのままだと常時赤＝`ignore` の運用設計が必要）
   - **残 ②開発依存の脆弱性 5 件**: `pnpm audit`（`--prod` 無し）で high 4 / moderate 1。`brace-expansion`×3（eslint / typescript-eslint 経由・DoS）、`postcss`（vite 経由・パストラバーサル）、`esbuild`（sidecar のビルド用・dev server の問題）。**いずれも配布バイナリには入らない**が、更新するか `ignoreGhsas` で明示的に許容するかを決める
   - **残 ③条文**: security.md §10 に「新規依存追加時は既知脆弱性と照合する」を条文として足すか（現状は実施記録があるだけ）／`cargo deny` でライセンスと重複バージョンも見るか
+
+- 057 Discord コラボ配信 自動オーバーレイ（親設計 [docs/tasks/057-discord-voice-overlay-design.md](tasks/057-discord-voice-overlay-design.md)／**らくらくツール設定に載せる 1 件目の連携**。Discord でコラボ用 VC に入るだけで StreamKit Overlay の URL が OBS のブラウザソースへ自動で入る＝「StreamKit を開く→サーバーを探す→VC を選ぶ→URL をコピー→OBS に貼る」の 5 手順を消す・**起票のみ／実装未着手・2026-08-02**）
+  - 実装順: 057s（スパイク・**ここが通らなければ 057 系は止まる**）→ 057a → 057b → 057c ※**057b は 057a に依存しない**（URL 固定値で先行検証できる）
+  - **方式決定（親 057）＝A: StreamKit URL を自動反映**。StreamKit の URL は可変部が `guild_id` / `channel_id` の **2 つだけ**のテンプレートで、StreamKit のサイトは「OAuth でサーバー一覧を出して ID を穴埋めする GUI」に過ぎない＝**この 2 つの ID さえ取れればサイトを開かずに URL を組める**のが本機能の芯。⚠ **StreamDock 自身の egress は増えない**（URL を実際に開くのは OBS のブラウザソース）。方式 B＝自前オーバーレイ描画（RPC の `voice_states` ＋ `SPEAKING_*` を購読して透過窓に描き 044a/046d の window_capture に相乗り＝Overlayed の構成）は**不採用・Todo へ**（意匠の自由と引き換えに `cdn.discordapp.com` への新規 egress と購読スコープの拡大が要る）
+  - ⚠ **最大のリスク＝Discord の RPC 承認**。`rpc` スコープは**アプリ所有者と whitelist ユーザーのみ**（承認済みは **Overlayed / Reactive Images / Discord StreamKit / Streamdeck の 4 つだけ**）。`rpc.voice.read` は公式ドキュメントで「Public」と表記され**単独なら非承認でも通る可能性がある**が**未実証**。同じ目的の先行事例 [voice-channel-grabber](https://github.com/dichternebel/voice-channel-grabber) は**承認を取れず**「作者の app tester 枠 50 席に入る」か「ユーザーが自分で Discord アプリを登録する」の二択になっている
+  - **本人の決定（2026-08-02）**: 承認が取れない場合は **機能を出さない**（手動で VC を選ぶフォールバックも、ユーザーに Discord アプリを登録させる方式も**作らない**）。その場合は **057 系ごと `## 保留` へ移す**
+  - **アーキテクチャ**: Discord ローカル RPC（IPC パイプ or `ws://127.0.0.1:6463`）→ **sidecar**（既存の通信面）→ URL 組立 → **既存 `obs-client.ts`** で Browser Source を作成/更新／状態は **stdout private pipe → Rust → Tauri イベント**でメイン窓へ（**メイン窓は sidecar と WS を張らない**という既存境界を維持）。新規 egress は **`discord.com`（OAuth トークン交換）1 ホストのみ**
+  - ⚠ **[docs/security.md](security.md) の「らくらくツール設定（外部アプリ連携）方針」は現状「外部通信は追加しない（capability は追加しない）」と書いてあり、057 はこれを正面から破る**。同節の改訂が 057a の完了条件
+  - 057s Discord RPC ＋ StreamKit 技術検証（[docs/tasks/057s-discord-rpc-streamkit-spike.md](tasks/057s-discord-rpc-streamkit-spike.md)／**検証のみ・本実装しない**・044s と同型）
+    - ⚠ **最重要の落とし穴＝自分は Application の所有者なので `rpc` でも所有者特権で通ってしまう**。「自分の環境で動いた」は配布可否の証拠に**ならない**ので、**必ず非所有者アカウントで再現を取る**。結論は「配布可能／承認が要る／RPC 経路が使えない」の **3 択に必ず落とす**
+    - 他の実測項目: PKCE 可否（`AUTHORIZE` が `code_challenge` を受けるか＝client secret を同梱せずに済むか）／`GET_SELECTED_VOICE_CHANNEL` が `guild_id` を返すか・DM 通話時の戻り値／`VOICE_CHANNEL_SELECT` の発火（参加/移動/退出）／transport 選択（IPC は Origin 検証なし・Node の `net` で**新規依存ゼロ**／WS は `rpc_origins` 登録が要る）／**StreamKit URL が自分が管理者でない任意のサーバーで描画されるか**（NG なら方式 A ごと崩れる）／`SetInputSettings` の URL 差し替えで再読込されるか（ダメなら `PressInputPropertiesButton{refreshnocache}`）
+    - ⚠ **044s が「方式 B＝ブラウザソースは当該 macOS 環境で未描画」と記録している**（`CreateInput` は成功するが CEF が取得しに行かず Interact が真っ黒）。あのときの対象は loopback HTTP で今回は公開 HTTPS なので同じとは限らないが、**同じ症状が出たら方式 A ごと成立しない**ので最優先で確認する
+  - 057a Discord 接続基盤（[docs/tasks/057a-discord-rpc-voice-detection.md](tasks/057a-discord-rpc-voice-detection.md)／sidecar に RPC クライアント＋OAuth＋VC 常駐監視・host-guard 拡張・security.md 改訂・**security-review 必須**）
+    - **着手条件＝057s (1) が ✅（非所有者でも通った）**。⚠ **guild/channel ID は sidecar の外へ出さない**（stdout の状態行にも frontend にも載せない）／トークンは OS キーチェーン（Twitch/YouTube と同型）／方式 B 用の購読（`voice_states` / `SPEAKING_*`）は**スコープを増やす理由になるので購読しない**
+  - 057b OBS ブラウザソース自動追加（[docs/tasks/057b-obs-streamkit-browser-source.md](tasks/057b-obs-streamkit-browser-source.md)／`obs-client.ts` を `browser_source` へ一般化・**軽 security-review**）
+    - **046d の「1 → 2 ソースへの一般化」と同じ広げ方の 3 回目**。ソース名は `StreamDock Discord 通話`（⚠ 既存 2 ソースと `includes` で紛れないことをテストで固定。ただし**窓キャプチャではないので `lib.rs` の窓タイトル契約は無い**＝Rust 側の契約テストに行を足さない）。URL は **定数テンプレート ＋ ID の書式検証（`^\d{17,20}$`）＋ 新設 `assertAllowedStreamKitUrl` の三重**で組む。⚠ **URL が変わったときだけ**再読込する（毎回だと配信中に映像が一瞬消える）
+  - 057c らくらくツール設定への統合（[docs/tasks/057c-rakuraku-discord-integration-ui.md](tasks/057c-rakuraku-discord-integration-ui.md)／**空だった `INTEGRATION_REGISTRY` に 1 件目のエントリ**・**軽レビュー**）
+    - ⚠ **既存の `rakuraku_*` コマンド 3 本は使わない**（あれは「登録済み exe を単発で起動する」設計で常駐監視に向かない）＝**032 の per-integration アーキテクチャからの意図的な逸脱**。状態は 057a の Tauri イベントを購読する。⚠ **2 件目の連携を足すときに「一発実行型」と「常駐監視型」の 2 系統をどう表現するかを決めること**（1 件目は `Integration` 型を壊さない形に留める）
+    - 同意画面に必ず出す 3 点: Discord アカウント連携／OBS にソースを作ること／**コラボ相手の表示名とアイコンが配信画面に出ること**。⚠ **新しい永続化を足さない**（足すと 046 の教訓どおり軽レビューでは済まなくなる）
+    - ⚠ **らくらく関連のテストは現在 0 件**（画面シェルは 032a から一度もテストされていない）。057c が初めて入れる
 
 ## 保留
 
@@ -275,6 +296,7 @@
 ## Todo
 
 - OBSオーバーレイ 複数デザイン＋選択 UI は **037（現在保留）で着手予定**（意匠選択機構＋シンプル意匠＋投げ銭強調）。**画像/GIF プレビューで意匠を選ぶ**版はさらに次段（未タスク化）。
+- Discord コラボ表示の **方式 B＝自前オーバーレイ描画**（057 の親設計で**不採用**にしたもの・未タスク化）。RPC の `voice_states` ＋ `SPEAKING_START`/`SPEAKING_STOP` を購読して StreamDock の透過窓に自分で描き、044a/046d の window_capture 自動追加に相乗りする（[Overlayed](https://github.com/overlayeddev/overlayed) の構成）。**意匠を自由に作れる／StreamKit のサイト仕様変更に影響されない**のが利点だが、`cdn.discordapp.com` への**新規 egress**と**購読スコープの拡大**（＝承認要件が重くなる可能性）が要る。着手条件＝**意匠のカスタム要求が出たとき、または StreamKit が廃止されたとき**。⚠ **この判断を覆すには 057s 相当の再実測が要る**。
 
 ## MVP リリース前最後
 
