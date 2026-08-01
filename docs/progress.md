@@ -10598,3 +10598,381 @@ rejected: { code: "UPDATE_CHECK_FAILED",
 
 **残り**: ②到達不可 ③応答しないネットワーク（**15 秒判定＝ソースからは裏が取れない唯一の項目**）
 ④draft の publish ⑤`available:false` ⑥`available:true` と `pubDate` ⑦version を戻す。
+
+## 2026-08-02 (055c ヘッダーのベル＋バッジ＋アップデート画面 —— **表示まで**／実機確認は依頼者の手番)
+
+> 状態: **実装完了・静的検証すべて緑（500 tests）・実機確認は未実施（依頼者の手番）・未コミット**。
+> タスク [docs/tasks/055c-update-notice-and-screen.md](tasks/055c-update-notice-and-screen.md)／親 [055](tasks/055-app-self-update.md)。
+> **frontend の表示のみ**。DL/インストール/再起動は 055d、マークダウン描画は 055e。
+
+### やったこと
+
+055b で作った `check_app_update` を**初めて呼ぶ経路**を作った。ヘッダーのベル＋バッジ、アップデート画面、
+起動時の自動チェック。**Rust には 1 バイトも触れていない。**
+
+- `src/types.ts`: `Screen` に `"app-update"`。
+- `src/App.tsx`: `useAppUpdate()` を `MainWindowApp` で 1 つだけ持ち、`activeNav` 導出条件と画面分岐を追加。
+- `src/components/Header.tsx` / `Header.module.css`: ベル（自前インライン SVG）＋ `.bell` ＋ `.navBadge` ＋ `.hasUpdate`。
+- 新規 `src/features/app-update/useAppUpdate.ts`（＋テスト）。
+- 新規 `src/screens/app-update/`（`UpdateScreen.tsx` / `UpdateScreen.module.css` / `ReleaseNotes.tsx` ＋テスト）。
+- 新規 `src/components/Header.test.tsx`（**`src/components/` 初のテスト**。vitest の `include` は
+  `src/**/*.test.{ts,tsx}` なので設定変更は不要だった）。
+
+### 依頼者の指示で必ず残す 7 点
+
+**① StrictMode の二重発火をどう防いだか —— ガードを 2 本作って、1 本に畳んだ**
+
+`main.tsx` は `<React.StrictMode>` なので dev では `useEffect(…, [])` が mount → cleanup → mount と 2 回走る。
+素直に書くと**起動のたびに `check_app_update` が 2 回発火**し、055b の security-review S-4（ガードもレート制限も無い）が
+現実になる。
+
+当初は **`startedRef`（起動時 1 回）＋ `inFlightRef`（実行中は再実行しない）の 2 本**を入れた。
+ところが**ミューテーションを回したら `startedRef` を外しても全テストが緑のまま**だった。理由はこう:
+
+- StrictMode の二重 mount は**同一 tick で同期に**起きる。
+- `run()` は `inFlightRef.current = true` を **`await` の前**に同期で立てる。
+- ＝2 回目の effect が入った時点で必ず `true` なので、**`inFlightRef` だけで StrictMode は止まる**。
+- `run` は `useCallback(…, [])` で identity が固定なので、effect が mount 以外で再実行される経路が無い。
+  ＝ **`startedRef` を殺せるテストは原理的に書けない**（＝どのミューテーションでも区別できない防御コード）。
+
+progress の 054 節に「**テストがあること自体が誤った安心になる**」と書いた教訓に従い、
+**`inFlightRef` 1 本に畳んだ**。畳んだあとは「このガードを外す」変異が
+**StrictMode テストと連打テストの 2 本を同時に落とす**（下記ミューテーション表 M1）。
+
+⚠ **再修正トリガー**: `run` の `useCallback` に依存を足すと effect が再実行されうる。
+そのときは「完了済みでも再発火しない」ガード（旧 `startedRef` 相当）が別途要る —— コードにも書いた。
+
+⚠ **この不変条件は実機では観測できない**（下記⑦）。担保は完全に vitest 側にある。
+
+**② バッジに採った役割トークンと、ライト/ダーク両方で読める根拠**
+
+**`background: var(--surface)` ＋ `color: var(--text)`。`theme.css` は差分ゼロ**（新トークンを足していない）。
+
+| | ダーク | ライト |
+| --- | --- | --- |
+| ヘッダー帯 `--primary` | `#2f6bff` | `#0036cb` |
+| バッジ地 `--surface` | `#111827` | `#ffffff` |
+| **地 vs 帯** | **3.94:1**（非テキスト要素の 3:1 を満たす） | **8.78:1** |
+| **文字 `--text` vs 地** | **17.1:1** | **17.7:1** |
+
+`--surface` / `--text` は**パネルで既に対で使われている**組み合わせなので、可読性が構造的に保証される。
+両テーマで地の明暗が反転する（ダーク＝暗いチップ／ライト＝白いチップ）が、どちらも帯の青から十分に浮く。
+
+**⚠「赤い通知バッジ」は既存トークンでは作れない**（実測して落とした候補）:
+
+| 候補 | ダーク | ライト |
+| --- | --- | --- |
+| `--danger` 地 ＋ `--btn-primary-fg` 文字 | 地 vs 帯 **1.63:1** ✗ ／ 文字 **2.66:1** ✗ | 地 vs 帯 **1.82:1** ✗ |
+| `--warn` 地 | 地 vs 帯 **2.69:1** ✗ | 4.02:1 ○ |
+| `--accent` 地 | 地 vs 帯 **2.49:1** ✗ | **2.89:1** ✗ |
+| `--btn-primary-fg` 地 ＋ `--primary` 文字 | 文字 **4.33:1**（小サイズの AA 4.5 に届かない） | 8.78:1 ○ |
+| `--text` 地 ＋ `--text-inverse` 文字 | 4.33:1 ○ | 地 vs 帯 **2.02:1** ✗ |
+
+赤にするなら `--badge-bg` / `--badge-fg` の**新トークン 1 対**が要る。054 の「新しい値を発明しない」に反するので、
+依頼者の判断で**追加しなかった**（再修正トリガー＝赤が要ると判断されたとき）。
+
+⚠ **途中で 1 つ罠を踏んだ。** `.navBtn` は `opacity: 0.72` を持つ。`opacity` は**子要素へ合成として効き、
+子で `opacity: 1` と書いても親より濃くできない**。当初 `.navBadge { opacity: 1 }` と書いていたが**これは無効**で、
+実際のバッジ地は帯と合成されて **ダークで 2.86:1** まで落ち、上の 3.94:1 という前提が崩れていた。
+`.navBtn.hasUpdate { opacity: 1 }`（**更新があるときだけベル全体を不透明にする**モディファイア）を足して解決した。
+＝ **これは意匠ではなくコントラストの要件**である旨を CSS のコメントに残した。
+
+**③ `.navBtn` の position をどう扱ったか**
+
+**`.navBtn` を触らず、ベル専用のモディファイア `.bell { position: relative }` を併記した。**
+
+| 案 | 判定 |
+| --- | --- |
+| `.navBtn` に直接足す | 共有クラスを 1 ボタンの都合で変える。実害は無いが、**054 で `.toggleLabel` を動かせなかったのと同じ理由**（共有物をローカルな都合で触らない）で採らない |
+| ラッパ要素で包む | `nav`（flex・`gap:8px`）にレイアウトボックスが 1 つ増えるだけで得るものが無い |
+| **`.bell` モディファイア（採用）** | DOM も `.navBtn` の宣言も増えない。波及は**ベル 1 個だけ** |
+
+**④ `null` 対処とテストで固定した内容**
+
+省略可フィールドは `skip_serializing_if` が無いので **`undefined` ではなく `null` で届く**（055b レビュー Q-4）。
+**`!== undefined` を 1 箇所も書かず、すべて truthy 判定**にした。
+
+既存 `appUpdateApi.test.ts` のフィクスチャは**キーごと省略**しているのでこの食い違いを再現できない。
+そこで同ファイルと同じ作法（`WireAppUpdateStatus` を宣言して `as unknown as` で流す）を
+`UpdateScreen.test.tsx` にも持ち込み、**`null` を明示的に流すケースを 2 本**足した:
+
+1. **更新なし＋全フィールド `null`** → 「最新版です」が出て、画面のどこにも `null` の 4 文字が無い。
+2. **更新あり＋`latestVersion`/`notes` が `null`** → 「新しいバージョン」「更新内容」の**行そのものを出さない**・
+   `null` を描かない・落ちない。`latest.json` は **minisign 署名の対象外**で壊れた JSON も届きうるので、
+   「ありえない組み合わせ」ではなく**防御的に固定した**。
+
+ミューテーション M3/M4（truthy → `!== undefined`）で 2 本とも実際に落ちることを確認済み。
+
+**⑤ `notes` の表示丈の制御（S-5）**
+
+**2 段構え。どちらも `ReleaseNotes.tsx`（＝055e の差し替え点）の中に置いた**ので 055e がそのまま継ぐ。
+
+| 段 | 実体 | 目的 |
+| --- | --- | --- |
+| 文字数キャップ | `clampNotes()`（20,000 字で打ち切り＋「…（以下省略）」） | **DOM に載る前に**切る。`max-height` だけでは全量が DOM に入り、未署名データで webview を重くできる |
+| 高さ上限 | `.notesBody { max-height: 360px; overflow-y: auto }` | 縦に伸び続けて**右下のアップデートボタンを画面外へ押し出す**のを防ぐ（055d で「押せない」に化ける） |
+
+- 行数制限（`-webkit-line-clamp`）は**「内容を読ませる」という本タスクの目的そのものに反する**ので採らない。
+- `max-height: 360px` + `overflow-y: auto` は `DiagnosticsScreen.module.css` の `.logList` と**同じ作法・同じ値**
+  （＝新しい値の発明ではない）。
+- 20,000 字は「`docs/release-notes/vX.Y.Z.md` が数十行である限り絶対に当たらない」量。
+  **当たること自体が `latest.json` の異常の合図**である旨をコードに書いた。
+
+**⑥ 055e への差し替え点はどこか**
+
+**`src/screens/app-update/ReleaseNotes.tsx` の 1 ファイルだけ。**
+
+```tsx
+export function ReleaseNotes({ notes }: { notes: string }) {
+  // 055e: ここを `renderReleaseNotes(clampNotes(notes))` に差し替える。
+  return <p className={styles.notesBody}>{clampNotes(notes)}</p>;
+}
+```
+
+- `UpdateScreen.tsx` 側は `<ReleaseNotes notes={status.notes} />` の 1 行だけ＝**055e で 1 バイトも変わらない**。
+- 丈の制御（⑤）も同じファイルにあるので 055e が引き継ぐ。
+- CSS は `UpdateScreen.module.css` を共有（同じ画面の一部・モジュールを増やさない）。
+- ⚠ **`dangerouslySetInnerHTML` を使わない**。`notes` は `latest.json` 由来で **minisign 署名の対象外**＝
+  HTTPS で守られるだけの未署名の外部文字列なので、**テキストノードとしてしか描画しない**。
+  ミューテーション M6（`dangerouslySetInnerHTML` に差し替え）でテストが落ちることを確認済み。
+
+**⑦ publish 前後の実機確認 —— 未実施（依頼者の手番）／055b の未了ぶんを兼ねる**
+
+⚠ **まず 1 点訂正**: タスク依頼にあった「**起動時のチェックが 1 回だけであること**」は**実機では観測できない**。
+`check_app_update` の HTTP は **Rust プロセス側**で走るので webview の DevTools の Network に 1 本も出ず
+（055b の実機確認①でも通信は見えず `invoke` の戻り値だけが見えた）、`available:false` でも reject でも
+1 回目と 2 回目の結果が同じなので画面からも区別できない。**担保は vitest の StrictMode テストに置いた。**
+
+**publish 前に確認できること**（エンドポイントは現在 404 ＝ reject 経路のみ）:
+
+1. ベルが出る（ベル → 診断 → 設定 の順・36×36 が崩れない）
+2. ベルクリックでアップデート画面へ遷移し、active 表示が付く
+3. **「更新を確認できませんでした」**が出る（reject を reject として扱えている）
+4. **§9**: 画面にも DevTools コンソールにも生エラー文字列・URL・ローカルパスが出ていない
+5. **バッジが出ない**／**アップデートボタンも出ない**（取得失敗状態）
+6. ヘッダーのドラッグ移動が従来どおり効く／macOS の信号機回避余白／Windows の自作制御ボタンが崩れない
+7. ライト／ダーク両テーマで破綻しない
+8. 機内モードで起動しても他機能に影響が無い
+9. 「再確認」を連打しても通信が積み上がらない（実行中は同じフックのガードで弾かれる）
+
+**publish 後（依頼者が GitHub Web UI で publish）にしか確認できないこと**:
+
+10. **「最新版です」**（`available:false`）＋バッジが出ない＋ボタンも出ない
+11. `tauri.conf.json` の `version` を一時的に下げる（例 `0.1.0` → `0.0.9`）→ `tauri dev` を再起動 →
+    **「更新あり」＋バッジ「1」＋現在 `0.0.9` / 新 `0.1.0` ＋更新内容（改行保持）**＋
+    **アップデートボタンが出るが `disabled`**
+    - ⚠ この間 `pnpm --filter ./apps/desktop test` は `check-version-sync.mjs` で**赤くなる**。
+      **戻し忘れの検出装置として正しい挙動**なので、そのまま進めてよい。
+    - ⚠ `tauri.conf.json` を触るので Rust の再ビルドが走る。
+12. **必ず戻す**: `version` を戻す → `git status --short -- apps/desktop/src-tauri/tauri.conf.json` が空 →
+    `pnpm test` が緑に戻ることを確認
+13. 「新バージョン: null」のような `null` 由来の表示が出ないこと
+
+**055b の未了項目との対応（＝ 055c が兼ねるぶん）**:
+
+| 055b の残り | 055c で兼ねられるか |
+| --- | --- |
+| ②到達不可 | ✅ 上記 8（機内モード起動） |
+| ④draft の publish | ✅ 上記 10 の前提 |
+| ⑤`available:false` | ✅ 上記 10 |
+| ⑥`available:true` | ✅ 上記 11 |
+| ⑦version を戻す | ✅ 上記 12 |
+| ③「繋がるが応答しない」で 15 秒 reject | ❌ **兼ねられない**（`/etc/hosts` ＋ `nc` が要る。055b タスクファイル末尾の手順のまま） |
+| ⑥`pubDate` が `undefined` でないこと | ❌ **兼ねられない**（下記のとおり画面に出さない方針。DevTools で `invoke("check_app_update")` を叩いて確認） |
+
+### そのほかの決定
+
+- **`pubDate` は画面に出さない**（依頼者の判断）。理由 3 つ: ①タスクの表示表が「現在バージョン・新バージョン・
+  更新内容」の 3 つを正としており**仕様に無い** ②055b レビューが「キー名や型が違うと `as_str()` → `None` で
+  **静かに欠落し、テストでは絶対に捕まらない**」と記録している未検証データ ③RFC3339 のままでは読めず、
+  `toLocaleString()` で整形すると**ロケール／タイムゾーンという環境情報を画面に出す**方向へ一歩踏み出す（§9 の精神）。
+- **`recheck()` は作った。ただし発火点は「取得失敗表示の中の『再確認』ボタン」1 箇所だけ。**
+  **ベルは遷移だけ**（毎回通信しない）。**画面を開くたびの自動再チェックもしない。**
+  **失敗しても自動リトライしない**（S-4）。
+- **`toErrorMessage(e)` を使わなかった。** あれは `AppError.message` を**そのまま**返す実装で、
+  §9 の「生エラー文字列を出さない」に対する構造的な保証が無い（今日の Rust 側は固定文言だが、
+  素通しは「将来 message に何が入っても出す」形）。フックが持つ**定数** `UPDATE_CHECK_ERROR_MESSAGE` だけを
+  `error` に載せ、**例外オブジェクトはフックの外へ一切出さない**（`catch {}` で束縛すらしない＝
+  Rust 側の `map_err(|_| …)` と同じ構え）。ミューテーション M3（生 message を載せる）で落ちる。
+- **取得失敗に赤帯（`layout.error` の `--danger-soft`）を使わない。** 055b が「ネットワーク断は想定内」
+  「静かな表示に落とす」と決めているため、`--muted` の 1 文＋「再確認」ボタンに留めた。
+- **タイポグラフィの実値はすべて既存から採り、054 の 13px/700 は持ち込んでいない**（あれはコメビュ窓ローカルの結論）:
+  項目名 = `.field label` の **12px/800/`--text`** ／ 値・本文 = `.field input` の **13px/`--text`** ／
+  補足 = `DiagnosticsScreen` の `.empty` の **13px/`--muted`**。
+  **階層は余白でも作った**（054 の E2E の教訓）: ブロック内 **7px**（`.fieldLabel` の `margin-bottom`）対
+  項目間 **14px**（`.fields` の `gap`）＝どちらも `formLayout.module.css` の `.field label` / `.form` の実値。
+- **`--text-faint` を 1 箇所も書いていない。** アップデートボタンの無効表示は
+  `primitives.module.css` の `.primary:disabled` が既に `color: var(--text-faint)` を持っており、
+  **そこで正しく使われている**（054 の「無効状態専用」に合致）＝新しい CSS を書く必要が無かった。
+- **`HEADER_SECTIONS` には足していない**（アイコンボタンでありテキストセクション導線ではない）。
+  テストでも「単一ソースに `app-update` が無い」「ベルがセクションコンテナの外にある」の両方を固定した。
+
+### 検証（実測）
+
+```bash
+pnpm --filter ./apps/desktop typecheck   # 通過
+pnpm --filter ./apps/desktop lint        # 通過（警告 0）
+pnpm --filter ./apps/desktop test        # 30 files / 500 tests + CSS ガード + バージョン同期ガード すべて緑
+                                         # （055b 時点は 465 tests。本タスクで +35）
+
+# ゼロ拡大（すべて差分ゼロを確認）
+git status --short -- apps/desktop/src-tauri/ apps/comment-sidecar/ .github/ \
+  apps/desktop/package.json pnpm-lock.yaml
+git status --short -- apps/desktop/src/screens/comment-viewer/ apps/desktop/src/styles/theme.css \
+  apps/desktop/src/screens/formLayout.module.css apps/desktop/src/components/headerSections.ts \
+  apps/desktop/scripts/
+
+# 危険な描画・生の色（実コードには 0 件。ヒットするのはコメントとテストのフィクスチャのみ）
+grep -rn "dangerouslySetInnerHTML" apps/desktop/src/screens/app-update/ apps/desktop/src/features/app-update/
+grep -nE "#[0-9a-fA-F]{3,8}|rgba?\(" apps/desktop/src/screens/app-update/*.css apps/desktop/src/components/Header.module.css
+grep -rn "console\." apps/desktop/src/screens/app-update/ apps/desktop/src/features/app-update/
+grep -rn "!== undefined" apps/desktop/src/screens/app-update/ apps/desktop/src/features/app-update/
+```
+
+**ミューテーション確認 —— 10/10 一致**（元バイト列を退避 → 書換 → 実行 → `trap` で必ず復元）。
+テストが「あるだけ」でないことを実証した。
+
+| # | 変異 | 落ちたテスト | 結果 |
+| --- | --- | --- | --- |
+| M0 | 無変更（負のコントロール） | — | 全 PASS |
+| M1 | `inFlightRef` ガードを外す | **StrictMode 二重発火 ＋ 連打（S-4）の 2 本** | 一致 |
+| M2 | アップデートボタンの `disabled` を外す | ボタン disabled ＋ null ケースの 2 本 | 一致 |
+| M3 | `latestVersion` を `!== undefined` 判定へ | `null` ケース | 一致 |
+| M4 | `notes` を `!== undefined` 判定へ | `null` ケース | 一致 |
+| M5 | 取得失敗を「最新です」に潰す | 取得失敗の表示 | 一致 |
+| M6 | `notes` を `dangerouslySetInnerHTML` で描く | HTML を解釈しない | 一致 |
+| M7 | バッジを常に出す | バッジ非表示の 2 本 | 一致 |
+| M8 | `aria-label` の件数を落とす | 件数はアクセシブル名側 | 一致 |
+| M9 | ベルの遷移先を `diagnostics` に | ベルの遷移 | 一致 |
+| — | 復元後 | — | 全 PASS |
+
+⚠ **M1 の初回結果が「全 PASS」だった**ので、そこから①の畳み込みに至った。
+ミューテーションを回さなければ「テストが緑だから守られている」と誤認したまま終わっていた。
+
+差分は 4 ファイル（`types.ts` / `App.tsx` / `Header.tsx` / `Header.module.css`）と、
+新規 7 ファイル（`features/app-update/useAppUpdate.ts` ＋ テスト、`screens/app-update/` の 4 本、
+`components/Header.test.tsx`）。**`src-tauri/` は 1 バイトも変わっていない。**
+
+### 055d へ渡す情報
+
+- **`disabled` を外す場所**: `src/screens/app-update/UpdateScreen.tsx` の
+  `<Button variant="primary" disabled>アップデート</Button>`（`layout.bottomActions` の中）。
+  直前に「055d ではこの `disabled` を外して `onClick` を配線する」旨のコメントを置いてある。
+- **DL/進捗の state を足す場所**: `src/features/app-update/useAppUpdate.ts`。
+  `AppUpdatePhase` に `"downloading"` / `"installing"` / `"installed"` を足し、
+  進捗率の state と `install()` を `UseAppUpdateResult` に足す想定。**`inFlightRef` と同じ作法で
+  多重実行ガードを掛けること**（`install_app_update` にも Rust 側のガードは無い）。
+- **`recheck()` の隣に `install()` を置けば `App.tsx` の配線は 1 行増えるだけ**
+  （既に `appUpdate` オブジェクトごと `UpdateScreen` へ配っている）。
+- ⚠ **`toErrorMessage` を使わないこと**（§9）。定型文言の定数を足す形を踏襲する。
+- ⚠ **DL 側は既定で無期限**（055b レビューの訂正）。`configure_client` の
+  `connect_timeout` + `read_timeout` で上限を張ること。
+
+### 未完了・次にやること
+
+1. **実機確認**（依頼者）—— publish 前の 9 項目 ⇒ **publish** ⇒ publish 後の 4 項目（上記⑦）。
+   ⚠ **項目 5・9 は単体テストで担保済みになったので実機では省いてよい**（取得失敗時にバッジ／
+   アップデートボタンを出さないこと＝`Header.test.tsx` と `UpdateScreen.test.tsx`／再確認の連打で
+   通信が積み上がらないこと＝`useAppUpdate.test.tsx` の S-4）。項目 6 と 4 も一部を降ろした（上記表）。
+   ⚠ **レビュー後の追加 1 項目（申し送り 5 / 055b 未了項目⑥）**: publish 後に DevTools Console で
+   `await __TAURI__.core.invoke('check_app_update')` を 1 回だけ叩き、**`pubDate` が文字列で返ること**を
+   目視する。`pubDate` は画面に出していないので**壊れても画面からは永久に気づけない**うえ、Rust 側の
+   `pub_date_from_raw` は**キー名が変われば静かに `None` へ劣化する**（`commands.rs` に明記）。
+   055a の `make-latest-json.mjs` とのキー名一致は、この 1 回の目視でしか検証できない。
+   一度確認すれば以降は 055a を変えるまで再確認不要。
+   ⚠ **実機確認の重点は CSS 系**（ロジックは jsdom 側で固めてある）。バッジが帯から浮くか
+   （**ライト/ダーク両方**。合成バグはダーク限定だったので、ライトだけ見ても意味がない）／
+   改行が実際に保持されるか／`.notesBody` の `max-height` が効くか——この 3 つは
+   jsdom では原理的に検証できない。
+2. ~~**軽レビュー**~~ **完了**（security-review ＋ code-review を本セッションで実施）。
+   指摘への対応は下記「レビュー対応」節。
+3. **コミットは未実施**（依頼者の明示指示待ち）。
+
+### レビュー対応（2026-08-02・security-review ＋ code-review）
+
+**判定: セキュリティ＝軽微な懸念あり（修正必須なし）／品質＝良好。**
+§9 の非漏洩は構造で守られていること、ゼロ拡大 11 パスがすべて実測差分ゼロであること、
+`notes` の描画経路が `ReleaseNotes.tsx` 1 箇所であることを確認済み。
+
+**独立検算の結果:**
+
+- **コントラスト（申し送り 4）＝実装者の数値・結論とも正しい。** WCAG 相対輝度で再計算し、
+  ダーク 3.94:1 / ライト 8.79:1、合成バグ時 2.87:1 まで一致。「赤いバッジは既存トークンでは作れない」も正しい。
+  補足: **`--warn` はライトなら 4.09:1 で 3:1 を満たす**（ダークが 2.69 で落ちる）＝正確には
+  「どのステータス色も**両テーマ同時には**成立しない」。**opacity 合成のバグはダーク限定**だった
+  （ライトの合成後は 5.22:1）。
+- **`startedRef` 畳み込み（申し送り 1）＝判断は許容できるが、根拠は誤り。**
+  「殺せるテストが**原理的に**書けない」は事実に反する。React は **19.2.7** で `React.Activity` が
+  stable export として使え、`<Activity>` の hide → show で **`checkAppUpdate` が 2 回発火する**ことを
+  PoC で実測した（refs は保持され `inFlightRef` は false に戻っているため素通しする）。
+  `startedRef` を戻す必要は無いが、**再修正トリガーを 2 つに増やして `useAppUpdate.ts` に明記**した。
+- **ミューテーション再現＝報告の M1〜M9 はすべて KILLED を再現。** 加えて **5 種の生存変異を発見**
+  （`.navBtn.hasUpdate` の opacity ／ `.notesBody` の max-height ／ clamp の 2 倍緩和 ／
+  失敗時の `setStatus(null)` 削除 ／ `checking` から `idle` を落とす）し、**5 種すべてを本対応で潰した**。
+  対応の実効性確認として 3 種を追加（clamp の**縮小**方向 ／ `clampNotes` ごと削除 ／
+  成功時の `setError(null)` 削除）＝**全 21 変異中 20 killed / 1 survived**。
+  唯一の生存は下記「受容した残存リスク」の `.fieldValue` の `overflow-wrap`。
+
+**対応した指摘（コード修正）:**
+
+| 指摘 | 対応 |
+| --- | --- |
+| S-1: `.navBtn.hasUpdate { opacity: 1 }` と `.notesBody` の `max-height`/`overflow-y` が機械で守られていない（どちらも変異が生存） | `scripts/check-css-guards.mjs` に **(8) 055c 節**を追加。**本チェッカー初のメインウィンドウ側 CSS**（従来は comment-viewer 配下 4 本のみ）。両変異が FAIL することを実測 |
+| S-2: `clampNotes` の上限値を 20,000→40,000 に**緩める**変異が生存（テストが「50,000 未満のどこかで切れる」しか見ていなかった） | `UpdateScreen.test.tsx` の S-5 テストで**上限値を上下から挟む**（`>= 20000` かつ `< 20100`）。055e が `clampNotes` ごと消す事故も同時に落とせる |
+| Q-1: 失敗時に `setStatus(null)` する仕様が 1 本もテストされていない（削除しても緑だった） | `useAppUpdate.test.tsx` に**往復テストを 2 本**追加（成功→失敗で status を捨てる／失敗→成功で error を消す） |
+| S-3: `latestVersion` は長さ無制限なのに `.fieldValue` に折り返しが無い（`notes` にはある）＝防御の薄い方が壊れやすい | `.fieldValue` に `overflow-wrap: anywhere` を追加。文字種は Rust 側の `semver::Version` パースが拘束するので clamp までは掛けない |
+| Q-5: `checking` から `idle` を落とす変異が生存（見出しだけ見ていて本文を見ていなかった） | 確認中テストで**本文**もアサート |
+| 申し送り 1・3: 再修正トリガーの穴 | `useAppUpdate.ts` の JSDoc を訂正し、トリガーを 2 つに。StrictMode テストが固定しているのは「二重 mount で 1 回」であって「常に 1 回」ではない旨も明記 |
+| 申し送り 5: `pubDate` が壊れても永久に気づけない | 上記「未完了」に DevTools 1 回確認を追加 |
+
+**修正せずコメントで残した指摘**（意図・理由・再修正トリガーを該当箇所に併記）:
+
+- **Q-6** `title` と `aria-label` の食い違い／**Q-7** `type="button"` 無し（既存 3 ボタンに合わせた・
+  同ファイル内で既に不統一である事実も明記）／**Q-8** className の二重スペース → `Header.tsx`
+- **Q-10** 再確認導線が取得失敗時のみ／**Q-11** `available` の `!failed &&` が冗長（純関数としての
+  多重防御なので残す）／**S-4** `notes === ""` で行ごと消える → `UpdateScreen.tsx`
+- **品質観点 3** `headline()` / `headlineDescription()` を文言テーブルにすべき → 妥当な指摘だが
+  「仕様にないリファクタリングをしない」に従い据え置き。**再修正トリガー＝055d が DL 進捗の文言を
+  足すとき**（分岐を 3 箇所に増やさない） → `UpdateScreen.tsx`
+- **Q-4** 055e が `ReleaseNotes.tsx` を書き直すと `clampNotes` が一緒に消える危険 → テスト側で
+  落とせるようにしたうえで、「clamp を外側に残す」形を JSDoc に明記。併せて
+  **「差し替えは 1 ファイル」は .tsx の話で、CSS を含めると 2 ファイル**である点も訂正 → `ReleaseNotes.tsx`
+
+**追加テスト（2026-08-02・手動 E2E の一部を単体へ降ろした）: 502 → 511 tests**
+
+実機確認リストのうち **jsdom で機械化できるものを単体テストへ移した**。ミューテーション 6 種すべて KILLED を実測。
+
+| 実機項目 | 降ろした内容 | 置き場所 |
+| --- | --- | --- |
+| 6（ドラッグ／信号機余白／Windows 制御ボタン） | `data-tauri-drag-region` と `data-os` の**属性が付くこと**／Windows 制御ボタンの**存在・出し分け・呼び出し先**（`minimize`/`toggleMaximize`/`close` の取り違え回帰）／Windows でもベル・診断・設定の遷移が変わらないこと | `Header.test.tsx` |
+| 1（ベルが出る・順序） | **ベル → 診断 → 設定 の DOM 順**（nav は flex・order 指定なしなので DOM 順＝表示順） | `Header.test.tsx` |
+| 4（DevTools コンソールに漏れない） | 失敗経路で **`console.log/info/warn/error/debug/trace` が 1 度も呼ばれないこと**。`catch` に `console.error(e)` を足す変異を落とせるようになった（従来は grep でしか守られていなかった） | `useAppUpdate.test.tsx` |
+
+⚠ **Windows 制御ボタンは 055c 以前から一度もテストされていなかった**（申し送り 7 の既知の穴）。
+ベルを `nav` に足した変更は同じ `nav` の中身を触るため、ここで回帰を張った。
+
+⚠ **降ろせなかったもの＝実機に残る**: 実際にドラッグでウィンドウが動くか／信号機回避の 78px が実際に空くか／
+バッジが帯から浮いて見えるか／`white-space: pre-wrap` の実描画／`max-height` のスクロール——
+いずれも **jsdom がカスケードとレイアウトを解決しない**ため原理的に不可能。
+
+⚠ **`App.tsx` の配線（`updateAvailable={appUpdate.status?.available === true}` ／ `screen === "app-update"` 分岐）
+は単体テストを書いていない。** `App.tsx` は `CommentViewerApp` / `OverlayApp` / `PinnedOverlayApp` を
+transitive に import する（WebSocket・localStorage・OBS・TTS の一式）ため、**JSX 3 行の結線を確かめるのに
+モック面が過大**と判断した。この結線は実機項目 2・3・5 が押さえる。
+**再修正トリガー＝この結線に条件が増えたとき**（例: バッジの出し分けが `available` 以外にも依存し始めたら、
+述語を純関数へ切り出して単体で固定する）。
+
+**受容した残存リスク（対応しないと判断）:**
+
+- **`.fieldValue` の `overflow-wrap: anywhere` 自体は CSS ガードに入れていない**（変異が唯一生存する箇所）。
+  `.navBtn.hasUpdate` / `.notesBody` の 2 つをガードしたのは、**消えたときの失敗が具体的で重い**
+  （コントラスト 3:1 未満／055d のボタンが画面外）ためで、こちらは「壊れた `latest.json` が来たときに
+  版が横に突き抜ける」＝発生条件が GitHub 侵害または有効証明書を持つ MITM に限られ、実害も見た目のみ。
+  ガードを増やすほどチェッカー自体の保守コストが上がるので線を引いた。
+  **再修正トリガー＝実データで版が折り返す長さになったとき、または `.fieldValue` を他画面へ流用するとき。**
+- **4 窓すべてから `check_app_update` を呼べる**（055b の限界）。`MainWindowApp` でしかフックを
+  呼ばないことは「アプリが自分で余計に叩かない」緩和であって、限界そのものの緩和ではない。
+  ただし引数ゼロ・GET のみ・送信データゼロなので**窓が増えても攻撃面は増えない**＝055b の受容判断を維持。
+- **`docs/security.md` は 1 文字も変えない**のが正しい。055b が新設した §1 例外が本タスクの内容を
+  すべて包含しており（表示側は HTML として解釈しない・§9 は定型文言とバージョン文字列のみ）、
+  保存ポリシー変更も無いため条文更新は不要。

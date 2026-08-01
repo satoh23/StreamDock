@@ -1,6 +1,20 @@
 # 055c ヘッダーのベル＋バッジ＋アップデート画面（表示まで）
 
-> 状態: **未着手（実装サブタスク・UI）**。位置づけ・方式決定・線引きは親 [055](055-app-self-update.md) を正とする。
+> ✅ **実装済み（2026-08-02）。実機確認は依頼者の手番で未実施・未コミット。**
+> 記録は [`docs/progress.md`](../progress.md) の「2026-08-02 (055c …)」節が正。要点だけ:
+> - **StrictMode の二重発火**は `useAppUpdate` の **`inFlightRef` 1 本**で止めた（`await` の前に同期で立てる）。
+>   当初は `startedRef` も持っていたが、**ミューテーションで「外しても全テストが緑」と判明**したため畳んだ。
+>   ⚠ この不変条件は**実機では観測できない**（Rust 側の HTTP は DevTools の Network に出ない）＝
+>   担保は `useAppUpdate.test.tsx` の StrictMode テストにしかない。
+> - **バッジは `--surface` 地 ＋ `--text` 文字**（ダーク 3.94:1 ／ ライト 8.78:1 で帯から浮き、文字は両テーマ 17:1）。
+>   **`theme.css` は差分ゼロ**。⚠ **赤いバッジは既存トークンでは作れない**（`--danger` は帯に対して 2:1 未満）。
+>   ⚠ `.navBtn` の `opacity: 0.72` は**子で打ち消せない**ため `.navBtn.hasUpdate { opacity: 1 }` が要る（意匠ではなく要件）。
+> - **`.navBtn` は触っていない**。ベル専用モディファイア `.bell { position: relative }` を併記した。
+> - **`pubDate` は画面に出していない**（仕様の表示表に無い）。＝ 055b の未了項目⑥の確認は DevTools 経由のまま。
+> - **055e への差し替え点は `src/screens/app-update/ReleaseNotes.tsx` の 1 ファイルだけ**（丈の制御もそこに同居）。
+> - **`git commit` / `git push` は未実施**（依頼者の明示指示待ち）。
+
+> 状態: ~~未着手~~ **実装済み（実装サブタスク・UI）**。位置づけ・方式決定・線引きは親 [055](055-app-self-update.md) を正とする。
 > **[055b](055b-updater-check-command.md) の `check_app_update` と [054](054-comment-viewer-settings-readability.md) の
 > タイポグラフィ規則の完了が前提**。
 >

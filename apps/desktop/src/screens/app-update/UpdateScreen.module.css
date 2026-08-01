@@ -1,0 +1,81 @@
+/* 055c: アップデート画面。器（.top / .panel / .panelHead / .panelBody / .bottomActions）は
+   formLayout.module.css を共有し、ここには「バージョン行」と「リリースノート」だけを置く。
+
+   ■ 054 の階層規則に従う（**メインウィンドウ側の実値**をそのまま採り、新しい値を発明しない）
+   | 役割 | 実体 | 出どころ |
+   | --- | --- | --- |
+   | 項目名 | .fieldLabel = 12px / 800 / var(--text) | formLayout.module.css の `.field label` |
+   | 値・本文 | .fieldValue / .notesBody = 13px / var(--text) | formLayout.module.css の `.field input`（値スロット） |
+   | 補足 | .stateNote = 13px / var(--muted) | DiagnosticsScreen.module.css の `.empty` |
+   | 無効状態 | （このファイルには無い） | primitives.module.css の `.primary:disabled` が var(--text-faint) を持つ |
+
+   ⚠ 054 の 13px/700 は**持ち込まない**（あれはコメビュ窓の中で `.toggleLabel` に合わせたローカルな結論）。
+
+   ■ 階層は「書式」だけでなく「余白」でも作る（054 の E2E で判明）
+   ブロック内 7px（.fieldLabel の margin-bottom）対 項目間 14px（.fields の gap）。
+   どちらも formLayout.module.css の `.field label` / `.form` の実値で、新しい値ではない。
+
+   ■ 色は役割トークン経由のみ。生 hex/rgba を書かない（015/016 の方針）。 */
+
+.fields {
+  display: grid;
+  gap: 14px;
+}
+
+.field {
+  display: block;
+}
+
+.fieldLabel {
+  display: block;
+  margin-bottom: 7px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+/* バージョン文字列のスロット（現在 / 新しいバージョン）。
+   ⚠ `latestVersion` も `notes` と同じく **minisign 署名の対象外**の外部文字列。Rust 側は
+   `tauri-plugin-updater` が `semver::Version` としてパースするので**文字種**は拘束される
+   （`<` や空白は届かない＝ここは XSS の経路にならない）が、**長さは拘束されない**
+   （semver の pre-release 識別子は長さ無制限＝`1.0.0-<50000文字>` は正当）。
+   折り返しが無いと横に突き抜けるので `.notesBody` と同じ `overflow-wrap` を当てる
+   （055c review S-3: notes にだけ防御があり version に無いという非対称を消す）。
+   文字数 clamp までは掛けない——GitHub 侵害または有効証明書を持つ MITM が前提で、かつ
+   semver パースを通る必要があるため。再修正トリガー＝実データで版が折り返す長さになったとき。 */
+.fieldValue {
+  display: block;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 13px;
+}
+
+/* 「確認中」「最新版です」「確認できませんでした」の 1 文。補助説明の役割なので --muted。
+   ⚠ 取得失敗にも赤帯（formLayout の .error）を使わない——ネットワーク断は想定内の状態で、
+   055b が「静かな表示に落とす」と決めているため。 */
+.stateNote {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* 「再確認」ボタン。上の 1 文とは別ブロックなので項目間と同じ 14px を空ける。 */
+.stateActions {
+  display: flex;
+  margin-top: 14px;
+}
+
+/* リリースノート本文。**改行を保持したプレーンテキスト**（055e でマークダウン描画に差し替わる）。
+   ⚠ 055b レビュー S-5: notes は長さ無制限かつ minisign 署名の対象外（未署名）なので、
+      縦に伸び続けると右下のアップデートボタンを画面外へ押し出す（055d で「押せない」に化ける）。
+      max-height + overflow-y は DiagnosticsScreen.module.css の .logList と同じ作法・同じ値。
+      文字数そのものの上限は ReleaseNotes.tsx の clampNotes() が持つ（DOM に載る前に切る）。 */
+.notesBody {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 360px;
+  overflow-y: auto;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+}

@@ -4,6 +4,9 @@ export type Screen =
   | "add-preset"
   | "diagnostics"
   | "settings"
+  // 055c: アプリ自己アップデート画面（ヘッダーのベルアイコンから遷移）。
+  // テキストセクション導線ではないので HEADER_SECTIONS には載せない。
+  | "app-update"
   // 未実装機能の「準備中」ダミーページ（ヘッダーのセクション導線から遷移）
   | "rakuraku-tools"
   | "obs-effects";

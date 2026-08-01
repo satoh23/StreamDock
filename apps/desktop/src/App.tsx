@@ -12,6 +12,8 @@ import { DiagnosticsScreen } from "./screens/diagnostics/DiagnosticsScreen";
 import { SettingsScreen } from "./screens/settings/SettingsScreen";
 import { RakurakuToolsScreen } from "./screens/rakuraku-tools/RakurakuToolsScreen";
 import { ComingSoonScreen } from "./screens/coming-soon/ComingSoonScreen";
+import { UpdateScreen } from "./screens/app-update/UpdateScreen";
+import { useAppUpdate } from "./features/app-update/useAppUpdate";
 import { useTheme } from "./features/theme/useTheme";
 import { useHostOs } from "./features/platform/useHostOs";
 import { useTools } from "./features/tools/useTools";
@@ -45,6 +47,12 @@ function MainWindowApp() {
   const { tools, reload: reloadTools } = useTools();
   const { presets, reload: reloadPresets } = usePresets();
   const { items: presetItems, reload: reloadPresetItems } = usePresetItems();
+
+  // 055c: 起動時に 1 回だけ更新チェックする。他の use* hook と同じく **App が 1 つだけ持ち**、
+  // Header（バッジ）と UpdateScreen（本文）へ props で配る。
+  // ⚠ ここ（MainWindowApp）でしか呼ばない＝コメビュ窓/オーバーレイ窓からは発火しない。
+  // ⚠ 失敗してもこのフックの中で完結し、他機能には一切影響しない（phase: "error" に落ちるだけ）。
+  const appUpdate = useAppUpdate();
 
   const [activePresetId, setActivePresetId] = useState<string | null>(null);
   const [editingPresetId, setEditingPresetId] = useState<string | null>(null);
@@ -250,13 +258,14 @@ function MainWindowApp() {
     />
   );
 
-  // ヘッダーの active 表示：メイン(ツール管理)/準備中セクション/診断/設定を開いているとき導出する
+  // ヘッダーの active 表示：メイン(ツール管理)/準備中セクション/診断/設定/アップデートを開いているとき導出する
   const activeNav =
     screen === "main" ||
     screen === "rakuraku-tools" ||
     screen === "obs-effects" ||
     screen === "diagnostics" ||
-    screen === "settings"
+    screen === "settings" ||
+    screen === "app-update"
       ? screen
       : undefined;
 
@@ -276,6 +285,7 @@ function MainWindowApp() {
           <Header
             hostOs={hostOs}
             activeNav={activeNav}
+            updateAvailable={appUpdate.status?.available === true}
             onNavigate={handleNavigate}
           />
         }
@@ -324,6 +334,14 @@ function MainWindowApp() {
           <SettingsScreen
             preference={themePreference}
             onChangePreference={setThemePreference}
+          />
+        )}
+        {screen === "app-update" && (
+          <UpdateScreen
+            status={appUpdate.status}
+            phase={appUpdate.phase}
+            error={appUpdate.error}
+            onRecheck={() => void appUpdate.recheck()}
           />
         )}
         {screen === "rakuraku-tools" && (

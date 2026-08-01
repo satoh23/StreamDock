@@ -46,6 +46,9 @@ const VIEWER_CSS = "src/screens/comment-viewer/CommentViewerApp.module.css";
 const OVERLAY_CSS = "src/screens/comment-viewer/OverlayComment.module.css";
 const TONE_TS = "src/screens/comment-viewer/monetaryTone.ts";
 const SETTINGS_TSX = "src/screens/comment-viewer/SettingsView.tsx";
+// 055c: 本チェッカー初のメインウィンドウ側 CSS（それまでは comment-viewer 配下 4 本のみが対象だった）。
+const HEADER_CSS = "src/components/Header.module.css";
+const UPDATE_CSS = "src/screens/app-update/UpdateScreen.module.css";
 
 const failures = [];
 const fail = (msg) => failures.push(msg);
@@ -485,6 +488,50 @@ for (const rel of [VIEWER_CSS, OVERLAY_CSS]) {
         `ブロックの内側だけリズムが崩れます。片方だけ直さず 2 つを揃えてください` +
         `（.speakerField が var を直接参照しないのは、.cardBody の外で使われたとき gap が無効化されるのを避けるため）。`,
     );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// (8) 055c の不変条件: アップデート通知まわりの「意匠に見えるが要件である」2 つの宣言。
+//     どちらも **jsdom では原理的に検証できず**（カスケードも max-height も解決されない）、
+//     055c security-review のミューテーションで **どちらも生存**（消しても全テストが緑）だった。
+//     これまでは CSS コメントだけが守っていたが、本チェッカーの冒頭が記録しているとおり
+//     **コメントはファイル境界を越えない**（035c / 043c / 047c で 3 回再発した理由）ので機械で止める。
+// ---------------------------------------------------------------------------
+{
+  // (8-a) ベルの `opacity: 1` は**意匠ではなくコントラストの要件**。`.navBtn` は opacity: 0.72 を持ち、
+  //       `opacity` は子要素へ合成として効くので `.navBadge` 側で 1 と書いても親より濃くできない。
+  //       0.72 のままだとバッジ地が帯（--primary）と合成され、**ダークで 2.87:1**（非テキスト要素の
+  //       3:1 未満）まで落ちる。1 に戻して初めて 3.94:1 という前提が成立する。
+  //       ⚠ ライトでは合成後も 5.22:1 で 3:1 を満たすため、**この宣言はダークでのみ実効**。
+  //       「ライトで見た限り問題ない」を根拠に消されやすいので、ここで両テーマ分まとめて守る。
+  const bell = ruleBody(read(HEADER_CSS), ".navBtn.hasUpdate");
+  if (!hasDecl(bell, "opacity", "1")) {
+    fail(
+      `${HEADER_CSS}: .navBtn.hasUpdate に \`opacity: 1\` がありません（055c）。` +
+        `.navBtn の opacity: 0.72 は子へ合成として効くため .navBadge 側では打ち消せず、` +
+        `バッジ地が帯（--primary）と合成されてダークで 2.87:1（3:1 未満）まで落ちます。` +
+        `意匠ではなくコントラストの要件です。`,
+    );
+  }
+
+  // (8-b) リリースノートの丈の制御（055b review S-5）。`notes` は latest.json 由来で
+  //       **minisign 署名の対象外**＝長さ無制限の未署名データ。ReleaseNotes.tsx の clampNotes()
+  //       （20,000 字）が DOM に載る前に切る第 1 段で、こちらは縦に伸び続けないための第 2 段。
+  //       これが消えると 20,000 字が伸び切り、**055d で右下のアップデートボタンを画面外へ押し出す**。
+  const notes = ruleBody(read(UPDATE_CSS), ".notesBody");
+  for (const [prop, pattern, why] of [
+    ["max-height", ".+", "縦に伸び続けます"],
+    ["overflow-y", "auto|scroll", "はみ出した分が読めなくなります"],
+  ]) {
+    if (!hasDecl(notes, prop, pattern)) {
+      fail(
+        `${UPDATE_CSS}: .notesBody に \`${prop}\` がありません（055c / 055b review S-5）。${why}。` +
+          `notes は未署名（minisign の対象外）かつ長さ無制限の外部文字列で、` +
+          `伸び切ると 055d のアップデートボタンを画面外へ押し出します。` +
+          `文字数側の上限は ReleaseNotes.tsx の clampNotes() が持ちます（2 段構え・両方必要）。`,
+      );
+    }
   }
 }
 
