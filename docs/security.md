@@ -205,6 +205,70 @@ Twitch の chat イベントにはアバター URL が載らないため、**投
 - **明示同意（ユーザーの有効化操作）＋ security-review を必須**とする（方針反転＋新規 loopback 通信面＋新規依存＋
   外部アプリ設定の read-only 読取に該当）。
 
+### 例外（055・アプリ自己アップデート＝StreamDock 本体プロセス初のインターネット egress）
+
+上記「外部通信をしない」原則に対し、**StreamDock 自身のアップデート確認・取得に限り**、public リリースリポジトリ
+（`satoh23/StreamDock-releases`）へのインターネット通信を例外的に許可する。§1 が「許可する可能性があるもの」として
+既に**「将来的なアップデート確認」**を挙げていたものを実装するもの。**これは Tauri 本体プロセスが初めて
+インターネットに出る例外**である（従来 egress はすべて Node sidecar 側に集約され `host-guard.ts` の fail-closed
+allow-list で守られていた）。方式決定・分割は `docs/tasks/055-app-self-update.md` を正とする
+（配布側 055a ／ 検出 055b ／ DL・インストール 055d）。
+
+- **宛先は 2 ホストのみ・GET のみ・送信するアプリ側データはゼロ**＝
+  `github.com`（`…/releases/latest/download/latest.json`・302）→ `objects.githubusercontent.com`（実体）。
+  リクエストボディなし・Cookie なし・認証なし。**`api.github.com` は使わない**。
+- **宛先は `tauri.conf.json` の `plugins.updater.endpoints` というコンパイル時定数**で、
+  **実行時にもフロントからも差し替えない**（`UpdaterBuilder::endpoints()` を呼ばない。
+  `app_update/commands.rs` の `#[cfg(test)] mod check_command_contract` で機械的に固定）。
+  `{{current_version}}` 等の動的プレースホルダを URL に埋めない＝**バージョンを外部へ送らない**。
+  コマンドは `AppHandle` のみを取り、**frontend から URL もバージョンも受け取らない**（§3/§8）。
+  送るヘッダは `Accept: application/json` と plugin 自身の User-Agent（`tauri-plugin-updater/<crate version>`）だけで、
+  アプリ名もアプリバージョンも載らない（実測確認済み）。
+  ⚠ **不変なのは URL であって「経路」ではない**（レビュー指摘・055b）。`tauri-plugin-updater` は
+  `UpdaterBuilder::no_proxy()` を呼んでおらず、reqwest は既定で**システムプロキシ環境変数を尊重する**
+  （`auto_sys_proxy: true`）＝`HTTPS_PROXY` / `ALL_PROXY` 等でパケットの経路は変えられる。
+  ただし TLS 検証（`dangerousAcceptInvalidCerts` 不使用・release ビルドでは非 https の endpoint を拒否）と
+  minisign fail-closed が効くので、**経路上での改竄・盗聴は成立しない**。`no_proxy()` で塞ぐ選択もあるが、
+  **企業プロキシ配下で更新できなくなる**ので採らない。
+- **完全性は minisign 公開鍵検証で fail-closed**（`plugins.updater.pubkey`＝コンパイル時に焼き込まれる公開値）。
+  署名が合わないものは実行しない。⚠ ただし**署名が守るのはダウンロードした実体のバイト列だけ**で、
+  **`latest.json` 自体は署名されていない**。＝`version` / `notes` / `pub_date` は HTTPS で守られるだけの
+  未署名データなので、**表示側（055c / 055e）はこれらを HTML として解釈しない**
+  （055e が `dangerouslySetInnerHTML` を使わず自前の最小マークダウンレンダラを書く決定はここで意味を持つ）。
+- **チェックは起動時に自動・既定 ON 固定で、ユーザーが止める手段は設けない（本人の決定）**。
+  ＝**外部通信を止める手段をユーザー側に残さない**選択であることを明記して残す（055c で起動時フックを付ける）。
+- **§9**: 更新経路のログに **URL・ローカルパス・環境情報を出さない**。出してよいのはバージョン文字列と成否のみ。
+  ⚠ `tauri-plugin-updater` / reqwest の**生エラー文字列はエンドポイント URL を含む**
+  （`Error::Reqwest` が `#[error(transparent)]` で、reqwest の Display が `error sending request for url (…)`）。
+  そのため `AppError.message` には固定の安全文言だけを載せ、**エラー値は `map_err(|_| …)` で束縛せずに捨てる**
+  （`From<rusqlite::Error>` が生の DB エラー文字列を落としているのと同じ扱い。契約テストで固定）。
+  更新の成否は **SQLite / app_logs に記録しない**（新規の保存経路を作らない）。
+  ⚠ plugin 内部に `log::debug!("checking for updates {url}")` があるが、本アプリは `log` の実装
+  （`tauri-plugin-log` / `env_logger`）を 1 つも登録していないため実行時は出力されない。
+  **将来ロガーを入れるとこの 1 行で URL が出るようになる**ので、そのときは併せて塞ぐこと。
+- **ハング対策（panic と同じ事故を起こす経路）**: reqwest は既定でタイムアウトを持たない。
+  ネットワークが「切断」ではなく**「繋がるが応答しない」**（キャプティブポータル・パケット落ち）状態では
+  `check()` が返らず、055c の UI が「確認中」から永久に戻らない——**panic を全部潰しても同じ症状になる**。
+  そのため `UpdaterBuilder::timeout()` で上限（**15 秒**）を課す（`endpoints` には触らない）。
+  ⚠ **この値は `download()` には伝播しない**（レビュー指摘で訂正・当初は逆に書いていた）。plugin の
+  `Updater::check()` は戻り値を `Update { timeout: None, .. }` と**ハードコード**して組み立てるため、
+  **DL 側は既定で無期限**。＝055d の課題は「15 秒を引き継がせないこと」ではなく**DL に別途上限を張ること**で、
+  総リクエスト時間ではなく `configure_client` の `connect_timeout` + `read_timeout` を使うこと
+  （サイズが事前に分からない転送には総 deadline を張れないため）。
+- **応答ボディにサイズ上限が無い（受容した制約）**: `check()` は `res.json()` でボディ全体をメモリに読む。
+  plugin にもこちらにも上限は無く、実質の歯止めは上記 15 秒で流し込める量だけ。前提が「GitHub 侵害または
+  有効証明書を持つ MITM」で、かつ plugin を fork しない限り塞げないため受容する。表示側の長さ制御は 055c の領分。
+- **sidecar の fail-closed ホストガードには寄せない**。理由: ①sidecar はコメビュ窓を開いている間しか生きておらず、
+  更新チェックの契機（起動時）に存在しない ②インストールは Tauri プロセス側でしかできず、
+  **plugin 内部の reqwest は sidecar のホストガードを一切通らない**＝寄せても「守られているつもり」になるだけ
+  ③032c-a で切ったメイン窓⇄sidecar の依存が復活する。代わりにこの経路は
+  **コンパイル時定数の単一 endpoint ＋ minisign fail-closed** で担保する。
+- **capability 差分ゼロ・`csp: null` 不変・JS 側 plugin ゼロ**（下記「Tauri Permissions / Capabilities 方針」の 055b 節）。
+  telemetry / analytics / crash-report は追加しない。
+- **security-review 必須**（本体プロセス初のインターネット egress ＋ network/http crate ＋ auto update 系）。
+  ※ **§5 の例外（アップデータが自分自身の `.app` / インストール先を置換する＝管理領域外への書き込み）は
+  055d で追記する**（055b は検出のみでファイルを 1 バイトも書かない）。
+
 ### 2. frontendから自由なOS操作をさせない
 
 React / TypeScript側から、自由なshell実行・自由なファイル操作・自由なプロセス操作を行わない。
@@ -510,6 +574,117 @@ loopback WS で受信済みの値を Tauri コマンドで渡すだけ＝sidecar
 - **明示的に足さないもの**: ローカル HTTP サーバ（`hono` 等＝方式B 不採用のため不要）・画像処理系・network/http crate。
   telemetry/analytics 系は入れない。
 
+**追加した依存（055b・アプリ自己アップデート）**:
+- Rust/Tauri: **`tauri-plugin-updater`**（`default-features = false, features = ["rustls-tls", "zip"]`）。
+  公開リリースの `latest.json` を見て更新の有無を判定し（055b）、DL/インストールする（055d）。
+  **§10 の「auto update 系 / network・http 系 / updater 系」に正面から該当**するため 055b/055d は security-review 必須。
+  feature は**既定（`rustls-tls` + `zip`）と同じ内容を明示固定**した（`image` の `default-features = false` と同型）。
+  - `rustls-tls`: TLS を pure-Rust の rustls に固定し **`native-tls` / `native-tls-vendored` を選ばない**
+    ＝**OpenSSL を持ち込まない**・クロスビルドを増やさない。実測で担保済み（`cargo tree -i openssl-sys` /
+    `-i native-tls` / `-i openssl` がいずれも「該当パッケージなし」）。将来 crate 側の既定が変わっても
+    TLS 実装が黙って入れ替わらないよう明示する。
+  - `zip`: `flate2` / `tar` / `zip` を引く。**macOS の `.app.tar.gz` 展開に必須**。⚠ 落とさないこと。
+    （レビュー指摘で訂正: 当初「サイレントに mac の自己更新だけ死ぬ」と書いていたが誤り。plugin の
+    `#[cfg(target_os = "macos")] impl Update` は `flate2` / `tar` を **feature gate 無しで**使っており、
+    この 2 つは `zip` feature でしか有効化されない optional 依存＝落とすと **macOS では `cargo check` の時点で
+    コンパイルエラー**になり必ず気付く。危険度は当初の記述より低い。）
+- **実際に増えた依存（`Cargo.lock` の実測・29 crate）**:
+  - HTTP: `reqwest`（⚠ `Cargo.lock` には従来から在ったが、`tauri` 側の依存が **android / apple-non-macos 限定の
+    `cfg` ターゲット依存**だったため **macOS/Windows のバイナリには入っていなかった**。055b で初めてリンクされる）、
+    `hyper-rustls`。
+  - TLS(rustls): `rustls` / `rustls-webpki` / `rustls-pki-types` / `tokio-rustls` / `rustls-platform-verifier`
+    / `rustls-native-certs` / `webpki-root-certs` / `ring` / `untrusted` / `subtle` / `schannel`（Windows のみ）/
+    `openssl-probe`（**Linux の CA 証明書ファイルの場所を探すだけの crate で、OpenSSL をリンクしない**）。
+  - 署名検証: `minisign-verify`。
+  - 展開: `tar` / `zip`（Windows・Linux ターゲットのみ）/ `filetime` / `xattr`
+    （`flate2` は既に `png`→`ico`→`tauri-codegen` 経由で在ったため新規ではない）。
+  - **macOS の昇格インストール: `osakit` / `objc2-osa-kit`（＝AppleScript 実行）**。⚠ これは §4「Shell実行は
+    原則使わない」に触れる事実なので明記する: plugin の `Update::install_inner()` は、アプリの置換が
+    `PermissionDenied` になった**フォールバック時にだけ** `do shell script "rm -rf … && mv -f …"
+    with administrator privileges` を OSAKit で実行する。**`check()` からは到達しない**（055b の面はゼロ）ので
+    本タスクでの実害は無いが、**この経路の評価と §4/§5 への追記は 055d の領分**とする
+    （併せて、この plugin 内部コードは `expect` / `unwrap` を含む＝**こちらのコードでは消せない panic 経路**である）。
+  - Android 専用（macOS/Windows ではコンパイルされない）: `jni` / `jni-macros` / `simd_cesu8` / `simdutf8` /
+    `rustls-platform-verifier-android`。その他 `arbitrary` / `derive_arbitrary`（`zip` の optional）・`windows-sys`（新版）。
+- **「Rust は完全同期のまま（async/WS/HTTP crate を足さない）」方針を、本タスクで初めて崩す**。
+  032c-b 以降ずっと「通信面は sidecar に封じ込め、Rust は完全同期」を守ってきた（同じ `[dependencies]` の
+  `keyring` を「**同期 API**（Rust 完全同期の要件に適合・tokio 不要）」で選んだ記述がその方針の記録）。だが
+  自己アップデートは **Tauri プロセス自身が自分を置き換える**性質上 sidecar へ寄せられない（上記 §1 例外の
+  「sidecar に寄せない理由」）。＝**代替が存在しないための正面からの例外**であり、
+  `check_app_update` が**リポジトリ初の真の `async fn` コマンド**になる（tokio は Tauri v2 が既に保持）。
+- **代替案の検討と却下**: ①GitHub Releases API（`api.github.com`）を webview `fetch` で見て手動 DL へ誘導する案は
+  Rust に reqwest が入らない唯一の案だが、**「アプリから更新まで完結」という要望を満たさない**。
+  ②検出だけ `fetch`・DL/インストールは plugin という案は、**インストールで結局 reqwest が要るのに
+  egress ホストだけ 1 つ増える**（`api.github.com` の未認証レート制限も背負う）。
+- **明示的に足さないもの**: `tauri-plugin-process`（再起動は `AppHandle::restart()`＝`process:allow-restart` を
+  配らずに済む）／JS 側 `@tauri-apps/plugin-updater`（capability を広げない）／マークダウンライブラリ
+  （`react-markdown` + `remark-gfm` は推移的依存が 20 以上あるので 055e で自前の最小レンダラを書く）／
+  `time`（`pub_date` は `Update.raw_json` から RFC3339 文字列のまま取り出す）。
+  **JS 側の依存は 1 つも増えていない**（`apps/desktop/package.json` の `dependencies` と `pnpm-lock.yaml` は差分ゼロ。
+  `package.json` の差分は `check:bindings` の対象パス列挙 1 行のみ）。telemetry/analytics 系は入れない。
+- ⚠ **`ring` は pure-Rust ではない**（**C ファイル 17 個・アセンブリ 111 個**を含む）。本ファイルと `Cargo.toml` の
+  既存コメントは既存依存について「いずれも pure-Rust」と繰り返してきたが、**055b でその前提が初めて崩れた**。
+  `ring` は rustls が使う暗号実装で、Rust エコシステムで最も広く使われている TLS 用暗号ライブラリ
+  （高速化のためのアセンブリは業界標準）。ただし**事実として記録**しておく。
+  併せて、055b で増えた 30 crate のうち**ビルド時に自前スクリプト（`build.rs`）を走らせるのは `ring` と `rustls` の 2 つだけ**
+  （＝取り込み時に任意コードが走る面は最小）。
+
+**依存の脆弱性検査（055b で初めて実施・2026-08-01）**:
+
+本リポジトリには**依存の脆弱性検査の仕組みが存在しなかった**（`cargo audit` / `cargo deny` 未導入・Dependabot 設定なし・
+CI に検査ステップなし・過去タスクにも実施記録なし）。§10 は「**理由を説明する**」ことは求めていたが、
+**既知脆弱性との照合は求めていなかった**。055b で通信スタックが入るのを機に**初めて実施**した。
+
+- **結果（`cargo audit` v0.22.2・advisory DB 1177 件・Cargo.lock の 561 crate を走査）**:
+  **脆弱性（vulnerabilities）は 0 件**（exit code 0）。警告 18 件はすべて `unmaintained`(16) / `unsound`(2) で、
+  **055b が増やした 30 crate には 1 件も該当が無い**。
+- 警告 18 件の内訳と評価（いずれも Tauri 由来で 055b とは無関係）:
+  - **13 件は Linux 専用**（`gtk` / `gdk` / `atk` / `glib` / `gtk3-macros` / `proc-macro-error` 等の GTK3 バインディングと
+    `event-listener`〈zbus→D-Bus 経由〉）＝**mac/Windows のアプリにはコンパイルされない**（`cargo tree` で確認）。
+    本アプリは Linux を配布対象にしていない（親 055「やらないこと」）。
+  - **5 件は `unic-*`**（`urlpattern`→`tauri-utils` 経由。Tauri の URL パターン解析）。macOS でも依存グラフに現れるが、
+    到達経路は `tauri-macros`（proc-macro＝**コンパイル時**）を通っており、debug バイナリの文字列走査でも
+    `unic` 由来の文字列は 0 件だった。いずれも「メンテナンス停止」の警告で**脆弱性ではない**。
+- **JS 側（`pnpm audit`）の結果**: **配布される依存（`--prod`）は 0 件**。ただし**開発専用の依存に 5 件**
+  （high 4 / moderate 1）ある——`brace-expansion`(×3・eslint / typescript-eslint 経由・DoS)、
+  `postcss`(vite 経由・パストラバーサル)、`esbuild`(sidecar のビルド用・**dev server** の問題)。
+  **いずれもユーザーへ配るバイナリには入らない**（ビルド時にしか使わない）が、
+  **免罪したわけではない**ので task-board の 056 に残す。
+
+**継続的な検査（pre-commit ゲート・056・2026-08-01 導入）**:
+
+上記は「一度きりのスナップショット」でしかなかったため、**`.githooks/pre-commit` で入口を塞いだ**
+（依頼者の判断で CI ではなく pre-commit。壊れた依存を push してから CI で気づくと手戻りになるため）。
+
+- **`Cargo.lock` / `pnpm-lock.yaml` がステージされたコミットのときだけ**走る。この条件は 2 つの問題を同時に解く:
+  ①依存が変わらないコミットに時間を払わない ②どちらの audit も外部へ問い合わせるが、
+  **ロックファイルを更新できた＝直前にオンラインだった**はずなので「オフラインでコミットできない」がほぼ起きない。
+- **Rust は `cargo audit`（既定）**＝**脆弱性でのみ落ちる**。`unmaintained` / `unsound` の警告では落とさない
+  （上記 18 件で初日から常時赤になり、hook が「無視するもの」に成り下がるため）。
+- **JS は `pnpm audit --prod`**＝**配布される依存だけ**を見る（`--prod` 無しだと上記の開発依存 5 件で必ず落ちる）。
+  ⚠ **`--prod` は「配布物の依存を隠す」ものではない**（レビューで実測確認）。ワークスペース全体の
+  production 依存が対象で、**SEA に焼き込まれる `apps/comment-sidecar` の依存**（`ws` / `@grpc/grpc-js` /
+  `obs-websocket-js` / `tsyringe` / `reflect-metadata`）も検査される。除外される 5 件はすべて
+  devDependencies 経由（`esbuild` の path も `apps__comment-sidecar>esbuild`＝ビルド用）。
+- **`cargo-audit` 未導入なら fail-closed**（「ツールが無い」を「問題なし」と読み替えない）。
+- 仕組みは **`.githooks/` ＋ root `package.json` の `prepare` で `core.hooksPath` を設定**するだけ＝
+  **husky 等の新規依存はゼロ**（§10 の方針と整合）。手動実行は `pnpm audit:deps`。
+- **開発機側の新規 egress**（アプリの egress ではないが、§1 の一貫性のため記録する）: この hook により
+  **`git commit` が外部通信を 2 本行うようになった**——`cargo audit` は rustsec advisory-db を GitHub から
+  fetch し、`pnpm audit` は npm レジストリに問い合わせる。ロックファイルを変えるコミットのときだけ。
+- ⚠ **`core.hooksPath` を設定すると `.git/hooks/*` が丸ごと無効になる**。導入時点で `.git/hooks` には
+  サンプル以外が無いことを確認済み（回帰ゼロ）だが、**今後 `.git/hooks` に置いたものは黙って動かなくなる**。
+  フックを足すときは `.githooks/` 側に置くこと。
+- ⚠ **`prepare` は CI の `pnpm install --frozen-lockfile` でも走る**（`release.yml` に 3 箇所）。
+  `actions/checkout` が `.git` を作るので `git config` は成功するが、**055a で緑を確認したリリース経路に
+  未検証の副作用が 1 つ入った**状態＝`.github/` の差分がゼロでも「CI の挙動が不変」ではない。
+- ⚠ **限界（塞げていないもの）**: **依存が変わっていなくても脆弱性は日々公表される**。この hook は
+  「自分が依存を変えたとき」しか見ないので、**既存依存に後から報告されたものは捕まえられない**。
+  それには定期実行（Dependabot／スケジュール CI）が別途要る＝**task-board の 056 に残っている**。
+  また `git commit --no-verify` で飛ばせる（飛ばしたら理由を progress.md に残すこと）。
+  **`git merge` / `git pull` が持ち込む依存変更も素通りする**（merge commit は pre-commit を通らない）＝
+  これも定期実行でしか埋まらない（056 の残①）。
+
 ## Tauri Permissions / Capabilities 方針
 
 Tauriのpermissions/capabilitiesは最小限にする。
@@ -576,6 +751,29 @@ sidecar の spawn は Rust の `app.shell().sidecar()` から行い IPC を通�
   （既定 OFF）②開く窓は表示専用で**新規通信・OBS 接続・sidecar 起動をいずれも伴わない**（045c が問題視した
   「設定 ON が OBS への接続契機になる」点とは無関係）ため許容した。**自動 close は作っていない**
   （親 046 の「ピン 0 件で窓が消えると OBS ソースが壊れる」を守るため・設定 OFF で窓が開いていても閉じない）。
+
+**055b（tauri-plugin-updater を追加するが updater 権限はゼロ・2026-08-01）**: アプリ自己アップデートのため
+`tauri-plugin-updater` を Rust 依存に追加したが、更新チェック（055b）と DL/インストール（055d）はいずれも
+Rust の `app.updater_builder()` から行い IPC を通らないため、**4 枚の capability いずれにも `updater:*` /
+`process:*` permission を一切追加しない**（`default.json` / `comment-viewer.json` / `comment-overlay.json` /
+`pinned-overlay.json` は**差分ゼロ**）。**032c-b の「`tauri-plugin-shell` を入れつつ `shell:*` をゼロ付与」と
+完全に同型**の構え。
+
+- **JS 側 `@tauri-apps/plugin-updater` を入れない**（入れると `updater:default` をメイン窓へ配る必要が出る）。
+  再起動は `AppHandle::restart()` を使い **`tauri-plugin-process` も入れない**（`process:allow-restart` を配らずに済む）。
+  `csp: null` 不変。JS 側の依存は 1 つも増えていない（§10）。
+- **新 command は単一目的の 1 つのみ**（§3・055b 時点）: `check_app_update`（読み取り専用・ファイルを 1 バイトも書かない）。
+  **引数は `AppHandle` のみ＝frontend から値を受け取らない**（宛先も現在バージョンも Rust /`tauri.conf.json` 側が持つ）。
+  **DB State を取らない**（`extract_app_icon` と同じ最小権限）。ユーザー入力が OS 操作・外部通信へ渡る経路は無い（§8）。
+  055d で `install_app_update` / `restart_app` の 2 本が加わる。
+- **⚠ この最小権限が守るのは ACL 面だけ**（046b と同じ限界・レビュー指摘の再掲）: Tauri v2 では
+  **アプリ定義コマンドは ACL の対象外**なので、`check_app_update`（および 055d の `install_app_update` /
+  `restart_app`）は **コメビュ窓・オーバーレイ 2 窓を含む 4 窓すべての webview から呼べる**。
+  これは既存 3 窓と同じ構造で 055b が広げたものではなく、いずれの窓もローカルバンドルしか読み込まず
+  外部コンテンツを踏む経路がゼロ（オーバーレイが踏むのは data URI のみ）のため実害は無い。
+  **capability だけを見て「この機能はメイン窓に閉じている」と判断しないこと。**
+- **本体プロセス初のインターネット egress ＋ network/http crate ＋ auto update 系のため security-review 必須**
+  （詳細は §1 の「例外（055・アプリ自己アップデート）」と §10 を正とする）。
 
 ## CSP方針
 

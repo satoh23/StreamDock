@@ -26,6 +26,43 @@
 - [055b](055b-updater-check-command.md) で `tauri-plugin-updater` が Rust に入り、`app_update` モジュールと
   `check_app_update`（`async fn`・`AppResult<AppUpdateStatus>`）が動いている。
   宛先は `tauri.conf.json` の `plugins.updater.endpoints`（コンパイル時定数・1 本）。
+
+### ⚠ 055b からの申し送り（実装済み・2026-08-01。詳細は [`docs/progress.md`](../progress.md) の 055b 節）
+
+1. **DL 側にタイムアウトを別途張ること（⚠ 当初の申し送りは事実と逆で、レビューで訂正した）。**
+   055b は `UpdaterBuilder::timeout(15 秒)` を張って「繋がるが応答しない」ネットワークでのハングを塞いでいるが、
+   **この値は `download()` に伝播しない**。`tauri-plugin-updater` 2.10.1 の `Updater::check()` は戻り値を
+   **`Update { timeout: None, .. }` とハードコード**して組み立て、`Update::download()` はその
+   `self.timeout`（＝`None`）を見る。＝**DL 側は既定で無期限**で、いま無防備なのはこちら。
+   - ⚠ **当初「15 秒が伝播して 100MB の DL を殺すから updater を再利用するな」と書いていたのは誤り。**
+     これを信じて「timeout 無しの updater を別途 build」すると、**055b が塞いだのと同じ
+     「Promise 永久未解決」を DL 側で作る**（しかも DL のほうが長時間・高確率）。
+   - 正しい対処: `Update.timeout` は reqwest の**総**リクエスト時間なので、サイズ依存で値を決められない。
+     reqwest 自身が「サイズが事前に分からない転送には `read_timeout`（各 read でリセット）が適切」と
+     明記しているので、**`configure_client` で `connect_timeout` + `read_timeout` を張る**こと。
+   - ⚠ `configure_client` は `Update` 構築時に `configure_client: self.configure_client.clone()` として
+     **持ち越される**（当初「持ち越されない」と書いていたのも誤り）＝`download()` にも効く。
+2. **`osakit`（AppleScript 実行）が推移依存に入っている。** plugin の `Update::install_inner()` は、
+   macOS でアプリ置換が `PermissionDenied` になった**フォールバック時にだけ**
+   `do shell script "rm -rf '<extract_path>' && mv -f '<tmp>' '<extract_path>'" with administrator privileges` を
+   OSAKit で実行する。**`check()` からは到達しないので 055b の面はゼロ**だったが、
+   **`install` を配線する 055d で初めてこの経路が生きる**。security.md **§4「Shell実行は原則使わない」と
+   §5 の例外（自己置換）の両方**を、この事実を踏まえて書くこと。
+   ⚠ さらに、この plugin 内部コードは `script.compile().expect("invalid AppleScript")` と
+   `tx.send(r).unwrap()` を含む＝**こちらのコードでは消せない panic 経路**。`unwrap`/`expect` をゼロにしても
+   「invoke の Promise が永久未解決」を完全には防げないので、**UI 側にタイムアウト/中断の逃げ道を用意するか、
+   少なくともその限界を記録すること**（055b の `check` にはこの問題は無い）。
+3. **`zip` feature を落とさないこと。** `Cargo.toml` の `features = ["rustls-tls", "zip"]` の `zip` が
+   `flate2`/`tar`/`zip` を引いており、**macOS の `.app.tar.gz` 展開に必須**。
+   （⚠ レビューで訂正: 当初「サイレントに mac だけ死ぬ」と書いていたが誤り。plugin の macOS 実装は
+   `flate2`/`tar` を **feature gate 無しで**使うので、落とすと **macOS ではコンパイルエラー**＝必ず気付く。）
+4. **`ErrorCode` は `UpdateCheckFailed` の 1 個だけ**。DL/インストールの失敗に別 code が要るかは 055d の判断。
+   ただし**種別（到達不可/404/JSON 破損/署名検証失敗）で細かく分けない**方針は 055b で確定済み。
+5. **エラーに URL を載せない作法**（§9）: `AppError::update_check_failed()` は**引数を取らない**／
+   呼び出しは `map_err(|_| …)` のみ／`From<tauri_plugin_updater::Error> for AppError` は作らない。
+   `app_update/commands.rs` の `#[cfg(test)] mod check_command_contract` が `map_err(` の総数と
+   `map_err(|_|` の数の一致を照合しているので、**055d で追加するコードも同じ形にすること**
+   （`|e|` を 1 つ書くとテストが落ちる）。
 - [055c](055c-update-notice-and-screen.md) で `UpdateScreen` と `useAppUpdate` があり、
   **「アップデート」ボタンは `disabled`** のまま。更新内容はプレーンテキスト表示。
 - `capabilities/*.json` は 055b 時点で差分ゼロ（`updater:*` / `process:*` を配っていない）。

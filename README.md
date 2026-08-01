@@ -29,7 +29,33 @@ pnpm workspace のモノレポ構成。
 
 ```sh
 pnpm install
+# 依存の脆弱性検査に使う（pre-commit フックが要求する。未導入だと Cargo.lock を変えるコミットが通らない）
+cargo install cargo-audit --locked
 ```
+
+`pnpm install` は root の `prepare` スクリプトで `git config core.hooksPath .githooks` を自動設定します
+（新規依存ゼロ・husky 等は使いません）。設定されているかは `git config core.hooksPath` で確認できます。
+
+### pre-commit フック（依存の脆弱性検査・056）
+
+`.githooks/pre-commit` が、**`Cargo.lock` か `pnpm-lock.yaml` をステージしたコミットのときだけ**
+脆弱性検査を実行し、**既知の脆弱性があればコミットを中止**します。
+
+| 検査 | 対象 | 落ちる条件 |
+| --- | --- | --- |
+| `cargo audit` | `apps/desktop/src-tauri/Cargo.lock` | **脆弱性**があるとき（`unmaintained` / `unsound` の警告では落ちない） |
+| `pnpm audit --prod` | `pnpm-lock.yaml` | **配布される依存**に脆弱性があるとき（開発専用の依存は対象外） |
+
+- 依存を変えないコミットでは**一切走りません**（所要 0 秒・オフラインでも困らない）。
+- いつでも手動で回せます: `pnpm audit:deps`
+- 走るときは外部に問い合わせます（`cargo audit` は rustsec advisory-db を GitHub から取得、
+  `pnpm audit` は npm レジストリへ）。
+- ⚠ **`core.hooksPath` を設定すると `.git/hooks/` 配下は無効になります。** 今後フックを足すときは
+  `.githooks/` 側に置いてください（`.git/hooks/` に置いても黙って動きません）。
+- ⚠ **依存が変わっていなくても脆弱性は日々公表される。** このフックは「自分が依存を変えたとき」しか
+  見ないので、既存依存に後から報告されたものは捕まえられません（定期実行の仕組みは未整備・task-board の 056）。
+  `git merge` / `git pull` が持ち込む依存変更も素通りします（merge commit はフックを通らないため）。
+- 緊急時は `git commit --no-verify` で飛ばせますが、**飛ばした理由を `docs/progress.md` に残すこと**。
 
 ## 開発起動
 

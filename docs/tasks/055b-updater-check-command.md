@@ -1,6 +1,68 @@
 # 055b 更新検出エンジン（updater plugin 導入＋Rust コマンド・UI なし）
 
-> 状態: **未着手（実装サブタスク・UI なし基盤タスク）**。位置づけ・方式決定・線引きは
+> ## 実装済み（2026-08-01）— ただし**実機 DevTools 確認は依頼者の手番で未実施**
+>
+> 記録は [`docs/progress.md`](../progress.md) の「2026-08-01 (055b 更新検出エンジン …)」節を正とする。
+> 実装差分は `Cargo.toml` / `Cargo.lock` / `lib.rs` / `error.rs` / `package.json`（`check:bindings` の列挙のみ）/
+> `ErrorCode.ts`（再生成）/ `docs/security.md`（3 箇所）と、新規 `src-tauri/src/app_update/`（2 本）・
+> `src/features/app-update/`（3 本）。**capability / `tauri.conf.json` / CI / sidecar / JS 依存は差分ゼロ**。
+>
+> 本タスクで確定した要点（詳細は progress.md）:
+> - **タイムアウト 15 秒**（`UpdaterBuilder::timeout`）。タスクファイルが警戒していた panic だけでなく、
+>   **reqwest 既定の「無期限」が同じ症状（UI が「確認中」から戻らない）を作る**ため。`endpoints` は触っていない。
+>   ⚠ **この値は `download()` に伝播しない**（レビューで訂正・当初は逆に書いていた）。`check()` が返す
+>   `Update` は `timeout: None` ハードコードなので **DL 側が無期限**＝**055d は DL に別途上限を張ること**。
+> - feature は `default-features = false, features = ["rustls-tls", "zip"]`（既定と同内容を明示固定）。
+>   `cargo tree -i openssl-sys` / `-i native-tls` / `-i openssl` はいずれも **該当なし**。
+>   ⚠ **`zip` を落とすと macOS でコンパイルエラー**になる（当初「サイレントに死ぬ」と書いていたのは誤り）。
+> - `ErrorCode::UpdateCheckFailed` を **1 個だけ**追加。種別（到達不可/404/JSON 破損/署名検証失敗）では分けない。
+> - **URL 漏洩対策**: `AppError::update_check_failed()` は**引数を取らない**／呼び出しは `map_err(|_| …)` のみ／
+>   `From<tauri_plugin_updater::Error>` は作らない。契約テストで `map_err(` の総数＝`map_err(|_|` の数を照合。
+> - ⚠ **`notes` / `latest_version` / `pub_date` は minisign 署名の対象外**（`latest.json` 自体は未署名）。
+>   **055c / 055e は HTML として解釈しないこと。**
+> - ⚠ **`osakit`（AppleScript 実行）が推移依存に入った**。plugin の macOS 昇格インストール経路が使うもので
+>   **`check()` からは到達しない**が、**§4/§5 の評価は 055d の領分**（progress.md ⑥ 参照）。
+>
+> ### 残っている確認（**依頼者の手番**）
+>
+> `pnpm --filter ./apps/desktop tauri dev` → DevTools コンソール:
+>
+> ```js
+> (async () => {
+>   const t = performance.now();
+>   try { console.log("resolved:", await window.__TAURI_INTERNALS__.invoke("check_app_update")); }
+>   catch (e) { console.log("rejected:", e); }
+>   finally { console.log("elapsed(ms)", Math.round(performance.now() - t)); }
+> })();
+> ```
+>
+> ⚠ **`await import("@tauri-apps/api/core")` は使えない**（当初この形で書いていたが実機で構文エラーになった）。
+> 理由は 2 つ: ①DevTools のコンソールは入力を Module ではなく **Script** として解析するため
+> **トップレベル `await` が構文エラー**になる（`Unexpected keyword 'import'`）②bare specifier の動的 import は
+> ブラウザ側で解決できない（Vite が事前バンドルしていてもコンソールには import map が無い）。
+> **`window.__TAURI_INTERNALS__.invoke` は Tauri v2 が全窓に必ず注入する**ので、
+> `withGlobalTauri` 未設定（＝`window.__TAURI__` は無い）の本アプリでもこれが使える
+> （`@tauri-apps/api` の `invoke` の実体も `window.__TAURI_INTERNALS__.invoke(cmd, args, options)` を呼ぶだけ）。
+> **async IIFE にしてあるので何度貼り直しても `const` の二重宣言エラーにならない**（繰り返し実行するため重要）。
+>
+> | # | 状態 | 期待 | 前提 |
+> | --- | --- | --- | --- |
+> | 1 ✅ | **publish 前（今）** | 404 → **panic せず reject**。`code: "UPDATE_CHECK_FAILED"` ＋ 固定文言のみで **URL が入っていない** | **実施済み（2026-08-01・下記「実測結果」参照）** |
+> | 2 | 到達不可 | 同じく reject されるだけで固まらない | `/etc/hosts` に `127.0.0.1 github.com`（listener なし＝即 connection refused）→ **確認後に必ず削除** |
+> | 3 | **応答しないネットワーク** | **約 15 秒**で reject（永久 pending にならない） | 別ターミナルで `sudo nc -l 443` ＋ 上の `/etc/hosts` → **確認後に nc 停止＋行削除** |
+> | 4 | — | **draft を publish**（GitHub Web UI・`gh` は無い） | 依頼者 |
+> | 5 | publish 後 | `available: false` | |
+> | 6 | `tauri.conf.json` の `version` を一時的に下げて再起動 | `available: true` ＋ `latestVersion: "0.1.0"` ＋ `notes`（`docs/release-notes/v0.1.0.md` の内容そのまま） | **下げるのは `tauri.conf.json` だけでよい**（updater が比較するのは `app.package_info().version`） |
+> | 7 | version を**必ず戻す** | `pnpm test` が緑に戻る | |
+>
+> ⚠ **⑥ の間は `pnpm --filter ./apps/desktop test` が赤くなる**（055a の `check-version-sync.mjs` が 5 箇所の
+> 一致を要求するため）。**これは戻し忘れの検出装置として正しい挙動**なので、⑥ の前後で `pnpm test` は走らせず
+> ⑦ の後に緑を確認する。`tauri dev` は `beforeDevCommand` に `check:version` を含まないので起動はできる。
+>
+> ⚠ **`pnpm check:bindings` はコミット前は exit 1 になる**（`ErrorCode.ts` の意図した変更が未コミットのため。
+> 中身は `git diff --exit-code`）。生成にドリフトが無いことは別途確認済み（progress.md 参照）。
+
+> 状態: ~~**未着手（実装サブタスク・UI なし基盤タスク）**~~。位置づけ・方式決定・線引きは
 > 親 [055](055-app-self-update.md) を正とする。**配布側 [055a](055a-updater-release-pipeline.md) の完了が前提**
 > （エンドポイントに実物の `latest.json` が無いと検証できない）。
 >
@@ -180,10 +242,10 @@ git diff -- apps/desktop/package.json pnpm-lock.yaml
 
 # UI は無いので devtools から直接叩いて確認する
 pnpm --filter ./apps/desktop tauri dev
-#   DevTools コンソールで:
-#     const { invoke } = await import("@tauri-apps/api/core");
-#     await invoke("check_app_update");
-#   → available / latest_version / notes / current_version が返る
+#   DevTools コンソールで（⚠ トップレベル await と bare specifier の import は使えない。冒頭の注記参照）:
+#     (async () => { try { console.log(await window.__TAURI_INTERNALS__.invoke("check_app_update")) }
+#                    catch (e) { console.log("rejected:", e) } })();
+#   → available / latestVersion / notes / currentVersion が返る（JSON は camelCase）
 #   → 機内モード（ネット遮断）でも reject されるだけで、アプリが固まらない
 ```
 

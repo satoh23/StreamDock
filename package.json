@@ -7,7 +7,9 @@
     "build": "pnpm --filter ./apps/desktop build",
     "tauri": "pnpm --filter ./apps/desktop tauri",
     "typecheck": "pnpm --filter ./apps/desktop typecheck",
-    "lint": "pnpm --filter ./apps/desktop lint"
+    "lint": "pnpm --filter ./apps/desktop lint",
+    "prepare": "git config core.hooksPath .githooks",
+    "audit:deps": "cargo audit -f apps/desktop/src-tauri/Cargo.lock && pnpm audit --prod"
   },
   "packageManager": "pnpm@10.33.0+sha512.10568bb4a6afb58c9eb3630da90cc9516417abebd3fabbe6739f0ae795728da1491e9db5a544c76ad8eb7570f5c4bb3d6c637b2cb41bfdcdb47fa823c8649319"
 }

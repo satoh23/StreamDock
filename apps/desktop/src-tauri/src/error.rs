@@ -25,6 +25,7 @@ pub enum ErrorCode {
     DuplicatePath,
     DuplicateName,
     DuplicateToolInPreset,
+    UpdateCheckFailed,
 }
 
 impl ErrorCode {
@@ -54,6 +55,7 @@ impl ErrorCode {
             ErrorCode::DuplicatePath => "同じ実行ファイルパスのツールが既に登録されています。",
             ErrorCode::DuplicateName => "同じ名前のプリセットが既に登録されています。",
             ErrorCode::DuplicateToolInPreset => "このツールは既にプリセットに追加されています。",
+            ErrorCode::UpdateCheckFailed => "更新の確認に失敗しました。",
         }
     }
 }
@@ -132,6 +134,30 @@ impl AppError {
     pub fn internal(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::InternalError, message)
     }
+    /// 055b: アプリの更新確認に失敗した（ネットワーク到達不可 / エンドポイント 404 /
+    /// `latest.json` の JSON 破損 / 署名検証失敗を**すべてここに寄せる**）。
+    ///
+    /// **引数を取らない**のは意図的で、呼び出し側が生エラーを載せられないようにするため。
+    /// ⚠ `tauri-plugin-updater` の `Error::Reqwest` は `#[error(transparent)]` で、reqwest の Display は
+    /// **エンドポイント URL を含む**（`error sending request for url (https://…)`）。`Error::Network(String)`
+    /// も同様。`From<rusqlite::Error>` が DB パスを含みうる生エラー文字列を落としているのとまったく同じ理由で、
+    /// **生エラーは frontend にも log にも載せない**（docs/security.md §9）。呼び出し側は必ず
+    /// `map_err(|_| AppError::update_check_failed())` の形にし、エラー値を束縛しないこと。
+    ///
+    /// 種別（到達不可 / 404 / JSON 破損 / 署名検証失敗）で code を分けないのは、①plugin 側で 404 と
+    /// JSON 破損が `last_error` / `ReleaseNotFound` に合流しており綺麗に分かれない ②UI 上ユーザーが
+    /// 取れる行動が全ケース同一（後で再試行する）③粒度そのものがネットワーク/エンドポイント状態の
+    /// 情報になる（§9）ため。再修正トリガー＝099b の実機 E2E で「署名検証失敗だけ別扱いにしたい」
+    ///（＝鍵ローテ事故の検出）が出たら、そのとき 1 個だけ足す。
+    ///
+    /// なお「更新なし」は `Err` ではなく `Ok(AppUpdateStatus { available: false, .. })` で返す。
+    /// 「更新なし」と「確認できなかった」を 055c が別表示にできるよう、**ここへ潰さない**こと。
+    pub fn update_check_failed() -> Self {
+        Self::new(
+            ErrorCode::UpdateCheckFailed,
+            "更新の確認に失敗しました。時間をおいて再度お試しください。",
+        )
+    }
 
     /// UI 表示可の補足情報を付与する（ファイル名のみ等。フルパス・環境情報は入れない）。
     pub fn with_details(mut self, details: impl Into<String>) -> Self {
@@ -170,3 +196,137 @@ impl From<rusqlite::Error> for AppError {
 }
 
 pub type AppResult<T> = Result<T, AppError>;
+
+#[cfg(test)]
+mod tests {
+    //! `ErrorCode` の wire 形式と、055b で追加した `update_check_failed()` の仕様テスト。
+    //!
+    //! あるべき挙動（docs/security.md §9 / docs/tasks/055b / docs/progress.md 055b ④）:
+    //! - `ErrorCode` は SCREAMING_SNAKE_CASE の文字列として送受される。この文字列は
+    //!   **`ErrorCode.ts`（ts-rs 生成）と app_logs の DB 復元の両方が依存する契約**なので、
+    //!   variant 名を変えても wire 名が変わらないよう固定する。
+    //! - **DB 文字列 → `ErrorCode` の復元（app_logs）が往復する**。055b で variant を 1 個足したが、
+    //!   既存 variant の復元を壊していないこと（レビュー観点「共有部の非退行」）。
+    //! - `AppError::update_check_failed()` は**固定の安全文言だけ**を持ち、
+    //!   エンドポイント URL・ホスト名・スキームを一切含まない（§9）。付帯情報（details / operation）も空。
+    use super::*;
+
+    /// app_logs が DB の文字列から復元するときと**同じ経路**（`repository::enum_from_db`）。
+    /// 実装が変わったらこちらも合わせること。
+    fn from_db_string(s: &str) -> Option<ErrorCode> {
+        serde_json::from_value(serde_json::Value::String(s.to_string())).ok()
+    }
+
+    /// 各 variant の **wire 名（＝frontend と DB に出る文字列）**。
+    ///
+    /// ⚠ **網羅はコンパイラが強制する**（`match` に arm を足さないとビルドが通らない）。
+    /// variant を追加したらここへ wire 名を書くこと。そのとき `ALL` にも足す。
+    fn wire_name(code: ErrorCode) -> &'static str {
+        match code {
+            ErrorCode::ValidationError => "VALIDATION_ERROR",
+            ErrorCode::NotFound => "NOT_FOUND",
+            ErrorCode::UnsupportedFileType => "UNSUPPORTED_FILE_TYPE",
+            ErrorCode::LaunchFailed => "LAUNCH_FAILED",
+            ErrorCode::BulkLaunchPartialFailed => "BULK_LAUNCH_PARTIAL_FAILED",
+            ErrorCode::BulkLaunchFailed => "BULK_LAUNCH_FAILED",
+            ErrorCode::StopFailed => "STOP_FAILED",
+            ErrorCode::ProcessAlreadyExited => "PROCESS_ALREADY_EXITED",
+            ErrorCode::RuntimeStatusFailed => "RUNTIME_STATUS_FAILED",
+            ErrorCode::StorageFailed => "STORAGE_FAILED",
+            ErrorCode::PermissionDenied => "PERMISSION_DENIED",
+            ErrorCode::InternalError => "INTERNAL_ERROR",
+            ErrorCode::DuplicatePath => "DUPLICATE_PATH",
+            ErrorCode::DuplicateName => "DUPLICATE_NAME",
+            ErrorCode::DuplicateToolInPreset => "DUPLICATE_TOOL_IN_PRESET",
+            ErrorCode::UpdateCheckFailed => "UPDATE_CHECK_FAILED",
+        }
+    }
+
+    const ALL: [ErrorCode; 16] = [
+        ErrorCode::ValidationError,
+        ErrorCode::NotFound,
+        ErrorCode::UnsupportedFileType,
+        ErrorCode::LaunchFailed,
+        ErrorCode::BulkLaunchPartialFailed,
+        ErrorCode::BulkLaunchFailed,
+        ErrorCode::StopFailed,
+        ErrorCode::ProcessAlreadyExited,
+        ErrorCode::RuntimeStatusFailed,
+        ErrorCode::StorageFailed,
+        ErrorCode::PermissionDenied,
+        ErrorCode::InternalError,
+        ErrorCode::DuplicatePath,
+        ErrorCode::DuplicateName,
+        ErrorCode::DuplicateToolInPreset,
+        ErrorCode::UpdateCheckFailed,
+    ];
+
+    #[test]
+    fn every_code_serializes_to_its_pinned_wire_name() {
+        // `ErrorCode.ts` と app_logs の DB 値がこの文字列に依存している。
+        for code in ALL {
+            let json = serde_json::to_string(&code).expect("ErrorCode は直列化できる");
+            assert_eq!(
+                json,
+                format!("\"{}\"", wire_name(code)),
+                "{code:?} の wire 名が変わった（ErrorCode.ts と app_logs の既存レコードが壊れる）"
+            );
+        }
+    }
+
+    #[test]
+    fn every_code_round_trips_from_the_db_string() {
+        // app_logs は DB に入った文字列から復元する。055b の variant 追加で既存の復元が壊れていないこと。
+        for code in ALL {
+            assert_eq!(
+                from_db_string(wire_name(code)),
+                Some(code),
+                "{code:?} が DB 文字列から復元できない（app_logs の error_code が欠落する）"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_db_string_degrades_to_none_instead_of_panicking() {
+        // 将来 code を削除・改名しても、古いレコードの読み出しで落ちない（劣化して None）。
+        assert_eq!(from_db_string("NO_SUCH_CODE"), None);
+        assert_eq!(from_db_string(""), None);
+        // 過去に書かれた小文字表記なども None に落ちるだけで panic しない。
+        assert_eq!(from_db_string("update_check_failed"), None);
+    }
+
+    #[test]
+    fn update_check_failed_carries_only_a_fixed_safe_message() {
+        // §9: updater / reqwest の生エラーは**エンドポイント URL を含む**ため、
+        // ここには固定文言以外を載せない。引数を取らない設計なので構造的に載せられない。
+        let e = AppError::update_check_failed();
+        assert_eq!(e.code, ErrorCode::UpdateCheckFailed);
+        assert_eq!(e.message, "更新の確認に失敗しました。時間をおいて再度お試しください。");
+        // 付帯情報の経路からも漏らさない。
+        assert_eq!(e.details, None);
+        assert_eq!(e.operation, None);
+    }
+
+    #[test]
+    fn update_check_failure_never_leaks_the_endpoint() {
+        // frontend へ渡る JSON と、app_logs へ書かれる固定文言の**両方**を検査する
+        //（実装が message ではなく log_message 経由で漏らす退行も止めるため）。
+        let json = serde_json::to_string(&AppError::update_check_failed())
+            .expect("AppError は直列化できる");
+        let log = ErrorCode::UpdateCheckFailed.log_message();
+        for leak in [
+            "http", "github", "githubusercontent", "StreamDock-releases", "latest.json", "://",
+        ] {
+            assert!(
+                !json.contains(leak),
+                "更新確認エラーの JSON に {leak:?} が含まれている（§9: URL を frontend へ出さない）"
+            );
+            assert!(
+                !log.contains(leak),
+                "更新確認エラーのログ文言に {leak:?} が含まれている（§9: URL を log へ出さない）"
+            );
+        }
+        // wire 形式そのもの（055c がこの code 文字列で分岐する）。
+        assert!(json.contains("\"code\":\"UPDATE_CHECK_FAILED\""));
+    }
+}

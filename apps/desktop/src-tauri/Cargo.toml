@@ -39,6 +39,36 @@ tauri-plugin-autostart = "2"
 # 出さない＝capability に `shell:*` はゼロ付与（`app.shell().sidecar()` は IPC を通らない）。
 # 自由な shell 実行（§4）は解禁しない。詳細は docs/security.md「コメントビューア（配信サービス連携）方針」。
 tauri-plugin-shell = "2"
+# 055b アプリ自己アップデート: 公開リリース（`satoh23/StreamDock-releases`）の `latest.json` を見て更新の
+# 有無を判定し、055d で DL／インストールする公式プラグイン。宛先は `tauri.conf.json` の
+# `plugins.updater.endpoints`（コンパイル時定数・055a で設定済み）だけを正とし、**実行時に
+# `UpdaterBuilder::endpoints()` で上書きしない**（＝フロントから宛先を差し替える経路がゼロ）。
+# 完全性は minisign 公開鍵検証で fail-closed。
+#
+# ⚠ **「Rust は完全同期のまま（async/WS/HTTP crate を足さない）」方針への、正面からの例外**。
+# 032c-b 以降ずっと通信面は Node sidecar に封じ込めてきた（同じ `[dependencies]` の `keyring` が
+# 「同期 API（Rust 完全同期の要件に適合・tokio 不要）」で選ばれているのはその方針の記録）。だが自己
+# アップデートは **Tauri プロセス自身が自分を置き換える**性質上 sidecar に寄せられない（sidecar は
+# コメビュ窓を開いている間しか生きておらず、plugin 内部の reqwest は sidecar のホストガードを通らない）。
+# 推移依存として reqwest / rustls / zip / tar / flate2 / minisign-verify 等が入る（tokio は Tauri v2 が既に保持）。
+# 代替案と却下理由: ①GitHub API 直参照＋手動 DL 誘導は reqwest を避けられる唯一の案だが「アプリから更新まで
+# 完結」という要望を満たさない ②検出だけ webview fetch にする案は、インストールで結局 reqwest が要るのに
+# egress ホストだけ 1 つ増える。詳細は docs/security.md §1 の「例外（055・アプリ自己アップデート）」と §10。
+#
+# feature は**既定（rustls-tls + zip）と同じ内容を明示固定**する（`image` の default-features=false と同型）。
+# - rustls-tls: TLS を pure-Rust の rustls に固定し **native-tls/OpenSSL を持ち込まない**（クロスビルドを増やさない）。
+#   将来 crate 側の既定が変わっても TLS 実装が黙って入れ替わらないよう明示する。
+# - zip      : flate2/tar/zip を引く。**macOS の `.app.tar.gz` 展開に必須**。⚠ 落とさないこと。
+#              （レビュー指摘で訂正: 当初「サイレントに mac の自己更新だけ死ぬ」と書いていたが誤り。
+#              plugin の `#[cfg(target_os = "macos")] impl Update` は `flate2`/`tar` を **feature gate 無しで**
+#              使っており、この 2 つは `zip = ["dep:zip", "dep:tar", "dep:flate2"]` でしか有効化されない optional 依存。
+#              ＝落とすと **macOS では cargo check の時点でコンパイルエラー**になり、必ず気付く。）
+# 明示的に足さないもの: `tauri-plugin-process`（再起動は `AppHandle::restart()`＝`process:allow-restart` を
+# 配らずに済む）／JS 側 `@tauri-apps/plugin-updater`（capability を広げないため。`updater:*` はゼロ付与）。
+tauri-plugin-updater = { version = "2", default-features = false, features = [
+    "rustls-tls",
+    "zip",
+] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }

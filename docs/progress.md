@@ -10062,3 +10062,539 @@ Release 本文やリリースノートには書かない。＝ `docs/release-not
    **updater 配布基盤** / **eSigner ガード**）同居している。CLAUDE.md の「1 回の作業で複数機能をまとめて
    実装しない」に照らすと **2〜3 本に分けられる**（バージョン同期ガードは updater と無関係に有用）。
    分けるなら未コミットの今が唯一の機会。
+
+## 2026-08-01 (055b 更新検出エンジン —— updater plugin 導入＋Rust コマンド 1 本／**UI なし**)
+
+> 状態: **実装完了・静的検証すべて緑・実機 DevTools 確認は未実施（依頼者の手番）・未コミット**。
+> タスク [docs/tasks/055b-updater-check-command.md](tasks/055b-updater-check-command.md)／親 [055](tasks/055-app-self-update.md)。
+> 055a（配布側）の続きで、**受け取る側**の最初の 1 枚。UI は 055c、DL/インストール/再起動は 055d。
+
+### やったこと
+
+「更新があるか」だけを判定する **Rust コマンド 1 本**（`check_app_update`）と、その薄い invoke ラッパを作った。
+**UI は 1 つも作っていない**（ベル・バッジ・画面・起動時フックはすべて 055c）。
+
+- `Cargo.toml`: `tauri-plugin-updater`（理由コメント付き）。**JS 側の依存はゼロ増**。
+- `lib.rs`: `mod app_update;` ／ `.plugin(tauri_plugin_updater::Builder::new().build())`（**capability に
+  `updater:*` を付与しない**旨のコメントを shell の既存コメントと同じ調子で）／`generate_handler!` に 1 行。
+- `error.rs`: `ErrorCode::UpdateCheckFailed` ＋ `AppError::update_check_failed()`。
+- 新規 `src-tauri/src/app_update/`（`mod.rs` / `commands.rs` の **2 層**。DB を持たないので service/repository は作らない）。
+- 新規 `src/features/app-update/`（`bindings/AppUpdateStatus.ts`〈生成〉/ `appUpdateApi.ts` / `appUpdateApi.test.ts`）。
+- `package.json` の `check:bindings` のパス列挙に `src/features/app-update/bindings` を追加。
+- `docs/security.md` に 3 箇所（§1 例外 / §10 依存 / Capabilities 方針の 055b 節）。
+
+### 依頼者の指示で必ず残す 6 点
+
+**① タイムアウトをどう扱ったか（値・設定方法・確認結果）**
+
+タスクファイルは **panic（invoke の Promise が永久未解決）** を強く警戒していたが、**同じ症状はハングでも起こせる**。
+`app.updater()?.check().await` の実体は reqwest の HTTP GET で、**reqwest は既定でタイムアウトを持たない**。
+ネットワークが「切断」ではなく**「繋がるが応答しない」**（キャプティブポータル・パケット落ち）状態では
+`check()` が返らず、055c の UI が「確認中」から永久に戻らない——**panic を全部潰しても同じ事故になる**。
+機内モードは即 fail するのでこの経路では再現しない。
+
+採用したのは **`UpdaterBuilder::timeout(Duration::from_secs(15))`**（`CHECK_TIMEOUT` 定数）。
+
+```rust
+app.updater_builder()      // endpoints / pubkey は tauri.conf.json 由来のまま
+   .timeout(CHECK_TIMEOUT) // ← 足すのはこれだけ
+   .build()
+```
+
+**`endpoints` を触っていない**ことは crate のソースで確認済み: `UpdaterExt::updater_builder()` は
+`state::<UpdaterState>()` から config（endpoints / pubkey）を読み、`.timeout()` は `self.timeout` を
+差し替えるだけ。`.endpoints()` を呼ばないことは契約テストで機械的に固定した（後述③）。
+15 秒の根拠は「取得対象が `latest.json` 1 本（1KB 前後）＋302 リダイレクト 1 回」で十分に緩く、
+起動時の自動チェックが遅い回線で稀に空振りしても実害が無い側に倒せるから。
+
+⚠ **却下した案**: `.configure_client(|c| c.connect_timeout(…).read_timeout(…))`。`Update` に持ち越されないので
+055d への副作用が無い点は優れるが、reqwest の `ClientBuilder`（plugin の実装詳細）に直接依存し、
+`reqwest` を直接依存に書いていないのに API 面だけ使う形になるため採らなかった。
+
+⚠ **055d への申し送り** —— ⚠ **この段落は当初「事実と逆」を書いていた。下記「レビュー対応」で訂正済み。**
+正しくは: `check()` は `Update { timeout: None, .. }` を**ハードコード**して返すので、
+**15 秒は `download()` に伝播しない＝DL 側が既定で無期限**。055d の課題は「引き継がせないこと」ではなく
+**DL に別途上限を張ること**（`configure_client` の `connect_timeout` + `read_timeout`）。
+
+**確認結果**: 「繋がるが応答しない」の実機再現（`/etc/hosts` ＋ `sudo nc -l 443`）は **DevTools 操作が要るため未実施**
+（依頼者の手番。手順は 055b タスクファイル末尾に記載）。回帰防止として `.timeout(` の存在は契約テストで固定済み。
+
+**② 選んだ feature と `cargo tree -i openssl-sys` の結果、実際に増えた依存**
+
+```toml
+tauri-plugin-updater = { version = "2", default-features = false, features = ["rustls-tls", "zip"] }
+```
+
+crate の feature は**全 4 個で `rustls-tls` と `zip` が既定**（他は `native-tls` / `native-tls-vendored`）。
+＝この指定は「既定と同じ内容を明示固定した」もの（`image` の `default-features = false` と同型）。
+将来 crate 側の既定が変わっても TLS 実装が黙って入れ替わらない。
+
+⚠ **`zip` を落としてはいけない**。`flate2`/`tar`/`zip` が消えて **macOS の `.app.tar.gz` を展開できなくなり、
+055d で mac の自己更新だけが死ぬ**——本タスクの `check` では絶対に気付けない壊れ方なので Cargo.toml に明記した。
+
+**OpenSSL 非混入（実測）**: `cargo tree -i openssl-sys` / `-i native-tls` / `-i openssl` の**いずれも
+「該当パッケージなし」**。
+
+**実際に増えた依存は 29 crate**（`Cargo.lock` の diff。予想ではなく実測）:
+
+- HTTP: `reqwest` ⚠ / `hyper-rustls`
+  - ⚠ `reqwest` は **`Cargo.lock` には従来から在った**が、`tauri` 側の依存が
+    `cfg(any(target_os = "android", all(target_vendor = "apple", not(target_os = "macos"))))` の
+    **ターゲット限定依存**だったため **macOS/Windows のバイナリには入っていなかった**。**055b で初めてリンクされる**。
+    （だから `Cargo.lock` の `+name` diff には現れない。「増えた crate 一覧」だけ見ると見落とす。）
+- TLS(rustls): `rustls` / `rustls-webpki` / `rustls-pki-types` / `tokio-rustls` / `rustls-platform-verifier` /
+  `rustls-native-certs` / `webpki-root-certs` / `ring` / `untrusted` / `subtle` / `schannel`(Win) /
+  `openssl-probe`（**Linux の CA 証明書ファイルの場所を探すだけで OpenSSL をリンクしない**）
+- 署名検証: `minisign-verify`
+- 展開: `tar` / `zip`(Win/Linux のみ) / `filetime` / `xattr`（`flate2` は既に `png`→`ico`→`tauri-codegen` 経由で在った）
+- **macOS の昇格インストール: `osakit` / `objc2-osa-kit`（＝AppleScript 実行）**
+- Android 専用（mac/Win では未コンパイル）: `jni` / `jni-macros` / `simd_cesu8` / `simdutf8` /
+  `rustls-platform-verifier-android`。その他 `arbitrary` / `derive_arbitrary`（`zip` の optional）/ `windows-sys`(新版)
+
+⚠ **`osakit` は §4「Shell実行は原則使わない」に触れる**ので明記しておく。plugin の `Update::install_inner()` は
+アプリ置換が `PermissionDenied` になった**フォールバック時にだけ**
+`do shell script "rm -rf '<extract_path>' && mv -f '<tmp>' '<extract_path>'" with administrator privileges` を
+OSAKit で実行する。**`check()` からは到達しない**（055b の面はゼロ）が、**この経路の評価と §4/§5 への追記は 055d の領分**。
+併せて、その plugin 内部コードは `script.compile().expect("invalid AppleScript")` と `tx.send(r).unwrap()` を含む
+＝**こちらのコードでは消せない panic 経路**であることも 055d に申し送った。
+
+**バイナリの実測（リンク後）**: `strings target/debug/stream-dock` で
+① endpoint URL は **`https://github.com/satoh23/StreamDock-releases/releases/latest/download/latest.json` の 1 本だけ**
+（直後に pubkey と `windows/installMode/passive` が並ぶ＝`plugins.updater` の設定そのもの）
+② **`api.github.com` は 1 件も無い** ③ `objects.githubusercontent.com` はハードコードされていない（302 で実行時に決まる）。
+
+**③ `ErrorCode` を追加したか／しなかった理由**
+
+**`UpdateCheckFailed` を 1 個だけ追加した**（`log_message()` は「更新の確認に失敗しました。」）。
+
+- 既存で近いのは `InternalError` だが文言が「予期しないエラーが発生しました。」で、**起動時に自動で走る処理の
+  ネットワーク断は想定内**なので実態と食い違う。055c が「更新を確認できませんでした」の静かな表示に落とすとき、
+  他の内部エラーと区別できないのも困る。
+- **種別（到達不可 / 404 / JSON 破損 / 署名検証失敗）では分けなかった**。理由は ①plugin 側で 404 と JSON 破損が
+  `last_error` / `ReleaseNotFound` に合流していて綺麗に分かれない（分けるには公開 API として不安定な enum variant への
+  match が要る）②UI 上ユーザーが取れる行動が全ケース同一（後で再試行）③粒度そのものがネットワーク/エンドポイント
+  状態の情報になる（§9）。**再修正トリガー＝099b の実機 E2E で「署名検証失敗だけ別扱いにしたい」（鍵ローテ事故の検出）
+  が出たら、そのとき 1 個だけ足す。**
+- 波及は `error.rs` 2 行と `ErrorCode.ts` の再生成のみ（`log_message()` は網羅 match なのでコンパイラが教える）。
+  **この code を DB へ書く経路は作っていない**ので、既存の app_logs レコードには一切出ない。
+
+**④ URL をエラーに載せないための具体策**
+
+`tauri-plugin-updater` の `Error::Reqwest` は **`#[error(transparent)]`** で、reqwest の Display は
+`error sending request for url (https://github.com/satoh23/…)` のように **URL をそのまま含む**。
+`Error::Network(String)` も `"{0}"`。`e.to_string()` を `AppError.message` に載せると
+**フロントにもログにもエンドポイント URL が出る**。
+
+対策は 3 段:
+
+1. `AppError::update_check_failed()` を**引数を取らないコンストラクタ**にした。呼び出し側が生エラーを載せられない。
+2. コマンド側は **必ず `map_err(|_| …)`**（`|e|` で束縛しない＝そもそも文字列化できない形にする）。
+   `From<rusqlite::Error>` が DB パスを含みうる生エラーを落としているのと**まったく同じ扱い**。
+   **`From<tauri_plugin_updater::Error> for AppError` は作らなかった**——`?` で暗黙変換できるようにすると、
+   後から `?` を書いた誰かが意図せず漏洩経路を増やせるため。
+3. 契約テスト `never_binds_the_raw_updater_error` が **`map_err(` の総数と `map_err(|_|` の数が一致すること**を
+   照合する（`|e|` が 1 つでも増えると落ちる）。
+
+**plugin 側のログ**: `check()` には `log::debug!("checking for updates {url}")` が**ある**。ただし本アプリは
+`log` の実装（`tauri-plugin-log` / `env_logger`）を 1 つも登録していないので実行時はどこにも出ない。
+⚠ **将来ロガーを入れるとこの 1 行で URL が出るようになる**ので、security.md §1 の例外節にその旨を残した。
+app_logs（SQLite）へは一切書いていない（新規の保存経路を作らない）。
+
+**⑤ publish 前後の devtools 確認結果**
+
+**未実施（依頼者の手番）。** DevTools コンソールでの `invoke` はこちらから操作できないため、
+手順とチェックリストを 055b タスクファイル末尾に残した。**publish 前の前提条件だけは実測で確認済み**:
+
+```
+curl -sSL -o /dev/null -w '%{http_code}' https://github.com/satoh23/StreamDock-releases/releases/latest/download/latest.json
+→ 404（リダイレクト 0 回）
+```
+
+＝ 055a が `draft: true` を維持しているため、いま叩けば必ず「更新の確認に失敗しました」で reject される状態。
+**「更新なし（`available:false`）」と「更新あり（`available:true`）」の確認には依頼者による draft の publish が要る。**
+
+**⑥ 「Rust 完全同期」方針を崩した記録**
+
+032c-b 以降ずっと「通信面は Node sidecar に封じ込め、**Rust は完全同期のまま**（async/WS/HTTP crate を足さない）」を
+守ってきた。同じ `[dependencies]` の `keyring` に「**同期 API**（Rust 完全同期の要件に適合・tokio 不要）」と
+書いてあるのがその方針の記録で、**本タスクはそこを正面から崩す**。
+
+- 自己アップデートは **Tauri プロセス自身が自分を置き換える**性質上 sidecar へ寄せられない
+  （sidecar はコメビュ窓を開いている間しか生きておらず、更新チェックの契機＝起動時に存在しない。
+  そもそも **plugin 内部の reqwest は sidecar のホストガードを一切通らない**ので、寄せても
+  「守られているつもり」になるだけ。032c-a で切ったメイン窓⇄sidecar の依存も復活する）。
+- 代替案は 2 つとも成立しない: ①GitHub API 直参照＋手動 DL 誘導は reqwest を避けられる唯一の案だが
+  「アプリから更新まで完結」という要望を満たさない ②検出だけ webview `fetch` にする案は、インストールで
+  結局 reqwest が要るのに egress ホストだけ 1 つ増える。
+- 結果、`check_app_update` が**リポジトリ初の真の `async fn` コマンド**になった（既存の
+  `#[tauri::command(async)]` は同期 fn を tokio worker で走らせているだけ）。tokio は Tauri v2 が既に保持。
+- **await をまたいで非 Send な値を持たない**ことは構造で担保: このコマンドは **DB State を取らない**ので
+  `MutexGuard` を `.await` 跨ぎで保持する余地が無い（引数は `AppHandle` のみ＝`extract_app_icon` と同じ最小権限）。
+
+### そのほかの決定
+
+- **`pub_date` は `Update.raw_json` から取り出した**。`Update.date` は `time::OffsetDateTime` で、文字列化するには
+  `time` を**直接依存**に足す必要がある（いまは plugin の推移依存なので `use time::…` は書けない）。
+  `raw_json` はサーバ応答そのものなので、そこから RFC3339 文字列のまま抜けば直接依存を増やさずに済む（§10）。
+- **`current_version` は `app.package_info().version`**（＝`tauri.conf.json` の version＝**updater が実際に比較する値**）。
+  診断画面が出すアプリバージョンは `env!("CARGO_PKG_VERSION")`（＝Cargo.toml）で出どころが違うが、055a の
+  `check-version-sync.mjs` が 5 箇所の一致を強制しているので実運用ではズレない。updater の判定と同じ源を返すほうが
+  055c の表示と矛盾しない。
+- ⚠ **`latest_version` / `notes` / `pub_date` は minisign 署名の対象外**。署名が守るのはダウンロードした実体の
+  バイト列だけで、**`latest.json` 自体は署名されていない**（HTTPS で守られるだけ）。
+  ＝**055c / 055e はこれらを HTML として解釈してはいけない**。055e が `dangerouslySetInnerHTML` を使わず
+  自前の最小マークダウンレンダラを書く決定は、ここで初めて「好み」ではなく**要件**になる。型の doc コメントと
+  055c のタスクファイルに残した。
+- **`.plugin()` 登録は必須**（外すと `app.updater_builder()` の `state::<UpdaterState>()` が **panic** し、
+  まさに避けたかった「Promise 永久未解決」になる）。lib.rs のコメントに残した。
+
+### 検証（実測）
+
+```bash
+cargo check   # 通過（警告ゼロ）
+cargo build   # 通過（52MB の実バイナリまでリンク＝ring のネイティブコードも含めて確認）
+cargo test    # 100 passed / 0 failed（うち契約テスト 4 本 ＋ ts-rs export_bindings）
+pnpm --filter ./apps/desktop typecheck   # 通過
+pnpm --filter ./apps/desktop lint        # 通過
+pnpm --filter ./apps/desktop test        # 465 tests + CSS ガード + バージョン同期ガード すべて緑
+
+cargo tree -i openssl-sys / -i native-tls / -i openssl   # いずれも「該当パッケージなし」
+
+# ゼロ拡大（すべて差分ゼロを確認）
+git status --short -- apps/desktop/src-tauri/capabilities/ apps/desktop/src-tauri/tauri.conf.json \
+  .github/ apps/comment-sidecar/
+# JS 依存（差分は check:bindings の 1 行のみ・dependencies と pnpm-lock.yaml は不変）
+git diff -- apps/desktop/package.json pnpm-lock.yaml
+```
+
+**`pnpm check:bindings` は現時点で exit 1 になるが、これは正しい挙動**。中身は
+`gen:bindings && git diff --exit-code` で、`ErrorCode.ts`（＝今回 `UPDATE_CHECK_FAILED` を足した意図した変更）が
+**まだコミットされていない**ために差分として出る。実質の担保は別途取った:
+① `gen:bindings` を 2 回走らせても出力が 1 バイトも変わらない（**ドリフト無し**）
+② 列挙に足した `src/features/app-update/bindings` はディレクトリ名と一致している。
+コミット後は緑になる。⚠ なお新規 bindings は**未追跡の間は `git diff` に出ない**ので、
+**コミットして初めて検査対象として機能する**。
+
+**契約テストのミューテーション確認 —— 6/6 一致**（作業ツリー非破壊: 元バイト列を退避 → 書換 → 実行 → `trap` で必ず復元）。
+**4 つの変異はいずれも `cargo check --tests` が通ることを確認済み**＝テストが落ちた理由が型エラーではなく
+assert であることを確定させた。
+
+| # | 変異 | 期待 | 結果 |
+| --- | --- | --- | --- |
+| M0 | 無変更（負のコントロール） | 全 PASS | 一致 |
+| M1 | `.endpoints(Vec::new())` を実行時に呼ぶ | `does_not_override_endpoints_at_runtime` FAIL | 一致 |
+| M2 | `check()` の `map_err` を `unwrap()` に戻す | `has_no_panicking_unwrap_or_expect` FAIL | 一致 |
+| M3 | `.timeout(CHECK_TIMEOUT)` を削除 | `keeps_the_hang_guard` FAIL | 一致 |
+| M4 | `map_err(\|e\| …)` でエラー値を束縛 | `never_binds_the_raw_updater_error` FAIL | 一致 |
+| — | 復元後 | 全 PASS | 一致 |
+
+差分は `apps/desktop/package.json` / `Cargo.toml` / `Cargo.lock` / `src/error.rs` / `src/lib.rs` /
+`src/features/tools/bindings/ErrorCode.ts` / `docs/security.md` の 7 ファイルと、
+新規 `src-tauri/src/app_update/`（2 本）/ `src/features/app-update/`（3 本）。
+
+### 055c へ渡す情報
+
+- **型**: `AppUpdateStatus { currentVersion: string; available: boolean; latestVersion?: string; notes?: string; pubDate?: string }`
+  （`src/features/app-update/bindings/AppUpdateStatus.ts`）。呼び出しは `checkAppUpdate()` 1 本だけ。
+- **「更新なし」と「確認できなかった」の区別**:
+  - 更新なし ＝ **resolve** して `available: false`
+  - 確認できなかった ＝ **reject**（`AppError` の `code: "UPDATE_CHECK_FAILED"`）。
+    到達不可 / エンドポイント 404 / JSON 破損 / 署名検証失敗が**すべて**ここに来る。
+  - ⚠ **`catch` して `available: false` に潰さないこと**（潰すと 2 つが区別できなくなる）。
+- **タイムアウト既定 15 秒**。この Promise が永久 pending になることはないので、
+  「確認中」表示のための自前タイマーは不要。
+- **自動チェックの発火（起動時フック）は 055c の担当**。055b は呼ばれるまで何もしない。
+- ⚠ **`notes` は未署名データ**なので **HTML として解釈しない**（055e の自前レンダラ前提）。
+
+### 未完了・次にやること
+
+1. **実機 DevTools 確認**（依頼者）—— publish 前の 404 / 到達不可 / 「応答しないネットワーク」の 3 つ。
+   手順は 055b タスクファイル末尾。
+2. **draft の publish**（依頼者・GitHub Web UI）→ そのあと `available:false` と `available:true` の確認。
+   ⚠ version を下げる検証中は `pnpm test` が赤くなる（`check-version-sync.mjs` の**戻し忘れ検出装置**として正しい挙動）。
+3. **security-review**（本セッションで実施）。
+4. **コミットは未実施**（依頼者の明示指示待ち）。
+
+### 追補（依存の脆弱性検査 —— 依頼者の指摘で追加実施・2026-08-01）
+
+依頼者から「**取り込んだサードパーティのライブラリが安全であるという調査はしているか**」と問われ、
+**していなかった**ことが判明した。security-review では「増えた依存の一覧化」「OpenSSL 非混入」「`osakit` の発見」
+までしかやっておらず、**既知脆弱性との照合をしていなかった**。
+
+**まず判明した構造的な穴**（実測）: 本リポジトリには**依存の脆弱性検査の仕組みがそもそも無い**。
+`cargo audit` / `cargo deny` は未インストール、`.github/dependabot.yml` なし、CI に検査ステップなし、
+過去の progress にも実施記録なし。security.md §10 は「**理由を説明する**」ことは求めていたが
+**既知脆弱性との照合は求めていない**＝ルールは守っていたが検査はしていなかった、という状態だった。
+**055b で穴が空いたのではなく、最初から空いていた穴が 30 crate 増えたことで目立った**、が正確。
+
+**実施内容と結果**（`cargo install cargo-audit --locked` → `cargo audit`）:
+
+- advisory DB 1177 件・`Cargo.lock` の **561 crate** を走査（今回増えた分だけでなく全依存）。
+- **脆弱性（vulnerabilities）は 0 件**（exit code 0）。
+- 警告 18 件はすべて `unmaintained`(16) / `unsound`(2)。**055b が増やした 30 crate には 1 件も該当なし**
+  （`ring` / `rustls` / `reqwest` / `hyper-rustls` / `minisign-verify` / `tar` / `zip` / `osakit` 等はすべて無警告）。
+- 18 件の内訳（いずれも Tauri 由来・055b と無関係）:
+  - **13 件は Linux 専用**（GTK3 バインディング群と `event-listener`〈zbus→D-Bus〉）。`cargo tree` で
+    **mac/Windows ではコンパイルされない**ことを確認（本アプリは Linux を配布対象にしていない）。
+  - **5 件は `unic-*`**（`urlpattern`→`tauri-utils`。Tauri の URL パターン解析）。macOS でも依存グラフには現れるが
+    到達経路は `tauri-macros`（proc-macro＝コンパイル時）で、debug バイナリの文字列走査でも `unic` 由来は 0 件。
+    いずれも「メンテナンス停止」の警告で**脆弱性ではない**。
+
+**併せて記録した事実（security-review で書き漏らしていた）**:
+
+- ⚠ **`ring` は pure-Rust ではない**（**C 17 ファイル・アセンブリ 111 ファイル**）。`Cargo.toml` の既存コメントは
+  過去の依存について「いずれも pure-Rust」と繰り返してきたので、**055b でその前提が初めて崩れた**。
+  `ring` は rustls が使う暗号実装で、速度のためのアセンブリは業界標準だが、方針の変化として記録する。
+- 増えた 30 crate のうち **`build.rs`（取り込み時に任意コードが走る面）を持つのは `ring` と `rustls` の 2 つだけ**
+  ＝サプライチェーン上の最大リスク面は小さい。
+
+**やっていないこと（正直な限界）**: 各 crate のソース読解／作者の素性・タイプスクワッティングの確認／
+バージョン固定の妥当性評価。これらは 29 crate を人力で追う話で、現実的でない。
+また **`cargo audit` は「今日のスナップショット」に過ぎない**——継続検査の仕組み（CI の `cargo audit` ステップ／
+Dependabot／JS 側の `pnpm audit`）は**まだ無い**ので、**別タスクとして起票した**
+（CLAUDE.md の「1 回の作業で複数機能をまとめて実装しない」に従い 055b には混ぜない）。
+
+**この追補で増えたコード差分はゼロ**（`docs/security.md` §10 と本ファイルへの追記のみ。
+`cargo-audit` は開発機のツールで、アプリの依存には入らない）。
+
+### security-review の結果（2026-08-01・実施済み）
+
+判定は **「軽微な懸念あり・修正必須 0 件」**。必須級の観点はすべて実測で裏が取れた
+（宛先 1 本・`api.github.com` 0 件・capability 差分ゼロ・panic 経路なし・ハングガードあり・URL 非掲載・
+shell/fs/process ゼロ・引数ゼロ・ログゼロ）。指摘は以下。
+
+- **S-1【最重要の残課題】`.plugin()` 登録が機械で守られていない。** `.plugin(tauri_plugin_updater::Builder::new().build())`
+  を消しても**コンパイルは通り、実行時に `state::<UpdaterState>()` が panic する**＝本タスクで塞いだはずの
+  「invoke の Promise が永久未解決」が復活する。いま守っているのは lib.rs のコメント 1 行だけで、
+  契約テストは `commands.rs` しか見ていない。修正方針は `lib.rs` の既存 `mod pinned_overlay_contract` に
+  `assert!(LIB_RS.contains(&format!("{}::Builder::new().build()", "tauri_plugin_updater")))` を 1 行足すこと
+  （needle を実行時に組むのは同モジュール既存の注意点と同じ理由）。
+  **→ 依頼者の判断で 055c に送った**（起動時の自動チェックを配線して初めて実際に呼ばれる経路ができるため、
+  そのときセットで入れる）。055c のタスクファイルに追記済み。
+- **S-2 reqwest は既定でプロキシ環境変数を尊重する。** `no_proxy()` を呼んでいないため `HTTPS_PROXY` 等が効く
+  ＝**URL はコンパイル時定数でも、パケットの経路は環境変数で変えられる**。TLS 検証（`danger_accept_invalid_certs`
+  不使用）と minisign が効くので中身の改竄・盗聴はできない。`no_proxy()` で塞ぐ選択もあるが、
+  **企業プロキシ配下で更新できなくなるので推奨しない**（未実測・plugin 実装から読める挙動）。
+- **S-3 応答ボディにサイズ上限が無い**（plugin 側に上限が無く、実質 15 秒で落とせる量が上限）。
+  前提が「GitHub 侵害時」なので優先度は低く、fork しない限り塞げない。受容した制約として記録する。
+- **S-4 多重実行ガード・レート制限が無い**（窓生成コマンドの `WINDOW_OPEN_LOCK` に相当するものが無い）。
+  055c 側で「実行中は再実行しない」「失敗時に無限リトライしない」を守ること。
+- **S-5 `notes` の長さが無制限**（表示時の丈の制御は 055c の領分）。
+
+### 追補2（依存の脆弱性検査を pre-commit ゲートにした —— 依頼者の指示で 055b と同時に実施・2026-08-01）
+
+上の追補で「継続検査の仕組みが無い」と書き、CLAUDE.md の「1 回の作業で複数機能をまとめて実装しない」を理由に
+**別タスク（056）を提案した**が、依頼者の判断で**本タスク内で実施**することになった。
+理由は「**CI ではなく pre-commit のほうが手戻りが少ない**」——壊れた依存を持ち込んだコミットが push されて
+CI で初めて落ちると、そこから直すのは手戻りになる。コミットの時点で止めれば、まだ手元にあるうちに気づける。
+懸念（スコープを混ぜること）は伝えたうえで、依頼者の決定を優先した。
+
+**実装（新規依存ゼロ）**
+
+- **`.githooks/pre-commit`（新規・実行権限あり）**。root `package.json` に
+  `"prepare": "git config core.hooksPath .githooks"` を足し、**`pnpm install` で自動設定**されるようにした
+  （husky / lefthook / simple-git-hooks は入れない＝§10 の方針と整合。`prepare` が pnpm install で走ることは実測確認）。
+- 手動実行用に `"audit:deps": "cargo audit -f apps/desktop/src-tauri/Cargo.lock && pnpm audit --prod"` も追加。
+- README の「セットアップ」に `cargo install cargo-audit --locked` と hook の説明を追記。
+
+**設計判断（なぜこの形か）**
+
+| 判断 | 理由 |
+| --- | --- |
+| **ロックファイルがステージされたときだけ走る** | **速度とオフライン問題を同時に解く**。①依存が変わらないコミットは即 exit 0（無出力・0 秒）②どちらの audit も外部へ問い合わせるので毎回走らせると機内でコミットできなくなるが、**ロックファイルを更新できた＝直前にオンラインだった**はずなのでこの条件ならほぼ起きない |
+| **Rust は `cargo audit` の既定** | **脆弱性でのみ落ちる**。`unmaintained`/`unsound` の警告（現状 18 件）では落ちない。ここで落とすと**初日から常時赤**になり hook が「無視するもの」に成り下がる。警告でも落としたくなったら `-D warnings` |
+| **JS は `pnpm audit --prod`** | `--prod` 無しだと**開発依存の 5 件で必ず落ちる**（下記）。`--prod`＝**実際に配られる依存**は 0 件で、今日から緑で運用できる |
+| **`cargo-audit` 未導入なら fail-closed** | 「ツールが無い」を「問題なし」と読み替えない（security.md の一貫した方針）。ロックを変えるコミットでしか出ないので日常を止めない |
+| **成功時は 1 行だけ出力** | `cargo audit` は毎回 18 件の警告を吐く。そのまま流すとコミットのたびに画面が埋まり、**本当に落ちた日に気づけない**。失敗時のみ全文を出す |
+
+**ミューテーション確認 —— 6/6 一致**（index が空であることを確認したうえで stage → 実行 → `git reset`。
+`Cargo.lock` を差し替えるケースは元バイト列を退避し `trap` で必ず復元）
+
+| # | ケース | 期待 | 結果 |
+| --- | --- | --- | --- |
+| T0 | 何もステージしていない（負のコントロール） | 即通過・無出力 | 一致 |
+| T1 | 実物の `Cargo.lock` をステージ | 通過（`[OK]` 1 行） | 一致 |
+| T2 | `pnpm-lock.yaml` をステージ | 通過 | 一致 |
+| T3 | `cargo-audit` を PATH から隠す | **中止**（fail-closed） | 一致 |
+| T4 | 脆弱性入りの `Cargo.lock`（`time` 0.1.44 / RUSTSEC-2020-0071） | **中止**（詳細を表示） | 一致 |
+| — | 復元後 | 通過 | 一致 |
+
+**JS 側で新たに判明したこと（`pnpm audit`）**
+
+- **配布される依存（`--prod`）は 0 件**。
+- **開発専用の依存に 5 件**（high 4 / moderate 1）: `brace-expansion`×3（eslint / typescript-eslint 経由・DoS）、
+  `postcss`（vite 経由・パストラバーサル）、`esbuild`（sidecar のビルド用・**dev server** の問題で、
+  本プロジェクトはバンドル用途にしか使っていない）。**いずれもユーザーへ配るバイナリには入らない**。
+  免罪したわけではないので **task-board の 056 に残した**。
+
+**⚠ この hook で塞げていないこと（正直な限界）**
+
+- **依存が変わっていなくても脆弱性は日々公表される。** この hook は「自分が依存を変えたとき」しか見ないので、
+  **既存依存に後から報告されたものは捕まえられない**。定期実行（Dependabot／スケジュール CI）が別途要る
+  ＝ **task-board の 056 に残り①として明記**。
+- `git commit --no-verify` で飛ばせる（飛ばしたら理由を progress.md に残す運用にした）。
+- `cargo audit` は**ディスク上の `Cargo.lock`** を読むため、`git add -p` 等でステージ内容と作業ツリーが
+  食い違う場合は作業ツリー側を検査する（実運用では起きにくいので許容・hook のコメントに明記）。
+- `cargo audit` が見るのは「**すでに誰かが見つけて報告された危険**」だけ。未報告のものや
+  悪意を持って仕込まれてバレていないものは検出できない（どのツールでも同じ）。
+
+**この追補で増えたアプリのコード差分はゼロ**（`.githooks/pre-commit` 新規・root `package.json` の scripts 2 行・
+README・security.md・task-board・本ファイルのみ。`apps/` 配下の実装は 1 バイトも変わっていない）。
+
+### 追補3（別チャットでのセキュリティ／品質レビューと、その対応・2026-08-01）
+
+上の「security-review の結果」は**実装者の自己レビュー**だったため、別チャットで独立検証を依頼した。
+crate ソース（`tauri-plugin-updater` 2.10.1 / `reqwest` 0.13.4）の読解・バイナリの `strings`・
+契約テストと pre-commit のミューテーション再現まで含めて追試され、**主張のうち 1 件が事実と逆**と判明した。
+
+**独立に再現された主張**（＝自己申告が正しかったもの）: capability/`tauri.conf.json`/CI/sidecar/JS 依存の差分ゼロ、
+`cargo tree` の OpenSSL 非混入 3 本、バイナリの endpoint 1 本・`api.github.com` 0 件、契約テストのミューテーション 4/4、
+pre-commit のミューテーション（未ステージ→通過／`cargo-audit` を隠す→fail-closed／脆弱 lock→FAIL）、
+404 が `Err`（204 だけ `Ok(None)`）、`Error::Reqwest` の transparent と reqwest Display の URL 混入、静的検証すべて緑。
+
+**レビューで新たに判明した事実（自己申告に無かったもの）**:
+
+- plugin が送る User-Agent は **plugin 自身の `tauri-plugin-updater/<version>`**（`env!` は plugin crate の値）で、
+  アプリ名もアプリバージョンも載らない。ヘッダは他に `Accept: application/json` のみ。
+  ＝「送信するアプリ側データはゼロ」は文字どおり正しいことが裏付けられた。
+- `validate_endpoints` は **release ビルドでは非 https の endpoint を `Err`** にする（debug は警告のみ）。
+- `pnpm audit --prod` は **sidecar の production 依存（`ws` / `@grpc/grpc-js` / `obs-websocket-js` 等）も検査する**。
+  除外される 5 件はすべて devDependencies 経由＝「配布物の依存を隠している」わけではない。
+- `.git/hooks` にサンプル以外が無いことを確認（`core.hooksPath` 設定による回帰はゼロ）。
+
+**修正した指摘**:
+
+1. **【必須】`.timeout()` が `download()` に伝播するという記述が事実と逆だった（4 箇所）。**
+   `updater.rs` を読むと `UpdaterBuilder::build()` は `Updater { timeout: self.timeout }` を作るが、
+   **`Updater::check()` が返す `Update` は `timeout: None` をハードコード**しており、
+   `Update::download()` が見るのはそちら。＝**DL 側は既定で無期限**で、実態は申し送りと逆だった。
+   危険なのは誤誘導の向きで、055d が「timeout 無しの updater を別途 build」すると
+   **055b が塞いだ「Promise 永久未解決」を DL 側で作る**（しかも長時間・高確率）。
+   `commands.rs` の `CHECK_TIMEOUT` doc / security.md §1 / 本ファイル / 055b・055d のタスクファイルを訂正し、
+   正しい対処（`configure_client` の `connect_timeout` + `read_timeout`。`configure_client` は
+   `Update` に**持ち越される**）を書き直した。⚠ 「`configure_client` は持ち越されない」も誤りだった。
+2. **S-1（`.plugin()` 登録の機械固定）を 055c 送りから引き戻して実装した。**
+   先送りの根拠 2 つがどちらも成立しないと指摘された——①依頼者がこれから行う実機 DevTools 確認が
+   **今日その経路を通る**（4 窓すべてから呼べる）②`lib.rs` の `mod pinned_overlay_contract` に
+   **`LIB_RS` と `format!` の作法が既にあり**、追加は 1 テストで済む。
+   `updater_plugin_stays_registered` を追加し、055c のタスクファイルからは必須項目を消した。
+3. **契約テストを 4 点補強**（いずれも「本体を削除する変異」は殺せていたが、**別の壊し方に無力**だった）。
+   ⚠ **この作業中に、この手法の最悪の欠陥を実地で踏んだ**ので詳しく残す:
+   - **《本命》`include_str!` の自己ヒットが「コメントを書くほどガードが緩む」形になっていた。**
+     最初に上の 3 点を修正したとき、**その修正を説明するコメント自身が needle にヒットし、
+     `keeps_the_hang_guard` / `never_binds_the_raw_updater_error` / `updater_plugin_stays_registered` の
+     3 つが同時に骨抜きになった**（本体を削除しても全部 PASS する状態）。ミューテーションを回さなければ
+     「テストが緑だから守られている」と誤認したまま終わっていた。
+     対策として **行コメントを除いてから照合する `code_only()` を入れた**（`lib.rs` 側も同様）。
+     これで「説明を丁寧に書くほど検査が緩む」という逆立ちした性質が消える。needle を実行時に組む
+     従来の作法は、コード行の文字列リテラル（assert メッセージ等）に対する二重の保険として残した。
+     ＝**元の `pinned_overlay_contract` が「罠」と書いていたものは、注意では防げない構造的欠陥だった。**
+   - `keeps_the_hang_guard` の needle を `.timeout(` から**実引数まで含めた形**に変更。
+     旧 needle は「定数を残したまま値を 1 時間に書き換える」変異を素通しした（＝消されるだけでなく
+     **緩められること**も防ぐ）。
+   - `never_binds_the_raw_updater_error` の等値照合は `map_err` 全廃で **`0 == 0` で空虚に通る**
+     （`match` で `Err(e) =>` と書く形）→ 下限本数 `>= 2` の assert を追加。
+     ⚠ この assert も `code_only()` が無いとコメント中の `map_err(|_| …)` で満たされてしまい無効だった。
+   - `has_no_panicking_unwrap_or_expect` がテスト名の約束に反して 2 語しか見ていなかった
+     → panic 系マクロ 4 語（`panic!` / `todo!` / `unimplemented!` / `unreachable!`）を追加。
+   - モジュール doc の「3 つの不変条件」→「4 つ」（テストは 4 本ある）。
+   - **補強後にミューテーション 9 本を回して全部 kill を確認**（timeout の 削除／値を 1 時間に緩める／
+     コメント化、`map_err` 全廃＋生エラー文字列化、`map_err(|e|)` 混入、`panic!` 混入、`unwrap()` 混入、
+     `.endpoints()` 追加、plugin 登録の削除）。作業ツリーは shasum で復元確認済み。
+   - **今後この手法を増やすなら `code_only()` 相当を必ず通すこと。** 通さないものは
+     「書いた本人がコメントで壊す」ため、テストがあること自体が誤った安心になる。
+4. **`zip` feature の壊れ方の記述が誤り（4 箇所）。** plugin の `#[cfg(target_os = "macos")] impl Update` は
+   `flate2`/`tar` を **feature gate 無しで**使っており、この 2 つは `zip` feature でしか有効化されない
+   optional 依存＝落とすと **macOS では `cargo check` の時点でコンパイルエラー**になる。
+   「更新チェックでは気付けないサイレントな壊れ方」は誤りで、実際は必ず気付く。結論（落とすな）は変わらない。
+5. **security.md §1 の「実行時にもフロントからも差し替えない」の書きぶりを補強。**
+   URL については正確だが、読み手は「パケットの行き先が動かせない」と読む。実際は
+   reqwest の既定が `auto_sys_proxy: true` なので **`HTTPS_PROXY` / `ALL_PROXY` で経路は変えられる**
+   （TLS 検証と minisign で改竄・盗聴は不成立。`no_proxy()` は企業プロキシを壊すので採らない）。
+   「**不変なのは URL であって経路ではない**」を明記した。
+6. **その他の追記**: S-3（応答ボディにサイズ上限が無い＝受容した制約）を security.md §1 へ／
+   `pnpm audit --prod` が sidecar の配布依存も見ることを §10 へ／`git commit` が
+   **開発機側で外部通信 2 本**を行うようになったことを §10 へ／`core.hooksPath` が `.git/hooks` を
+   無効化することを §10 と README へ／`prepare` が **release CI の `pnpm install` でも走る**ことを §10 へ／
+   **`git merge` / `git pull` の依存変更は pre-commit を素通りする**ことを hook・§10・README・task-board へ。
+
+**コメントのみで済ませた指摘（修正不要と判断）**:
+
+- **`pub_date` を `raw_json` から抜く判断**は妥当（`raw_json` は `RemoteRelease` デシリアライズ前の
+  サーバ応答そのもの＝前提も正しい）。ただし**キー名や型が違うと `as_str()` → `None` で静かに欠落し、
+  panic もエラーも出ない＝テストでは絶対に捕まらない**ため、その旨と再修正トリガー
+  （publish 後に `pubDate` が `undefined` なら `make-latest-json.mjs` と突き合わせる）をコードに残した。
+- **`REPO_ROOT=$(git rev-parse …)` の失敗を見ていない**のは、失敗しても fail-closed に倒れるため許容。
+  ただしメッセージが誤解を招く旨を hook のコメントに残した。
+- **`Option<T>` + `#[ts(optional)]` が `null` を送る**のはリポジトリ全体の既存作法（`skip_serializing_if` は
+  **0 箇所**）なのでここで発明しない。代わりに **055c が `!== undefined` で書くと壊れる**ことを
+  055c のタスクファイルに明記した（テストのフィクスチャはキーごと省略しているので再現できない）。
+- **`unwrap` 禁止を lint（`clippy::unwrap_used`）へ移す**案は、既存の `db.lock().expect(…)` 等と
+  衝突するのでモジュール限定属性の設計から入る別タスク。既存の再修正トリガー（「あるいは lint へ移す」）に
+  含まれているため追記せず据え置き。
+- **`.githooks/pre-commit` の `case` 部分一致**（`Cargo.lock.bak` にも当たる）は偽陽性方向にしか外れず、
+  `git diff --cached --name-only` がこの ASCII パスをエスケープすることも無いので厳密化しない。
+- **S-3 / S-4 / S-5** は受容または 055c/055d の領分として据え置き（S-4・S-5 は 055c のタスクファイルに記載済み）。
+
+**据え置いた指摘（次のセッションで判断が要るもの）**:
+
+- **コミット分割**（レビュー提案）: 055b と 056a が同一差分に同居している（CLAUDE.md 違反・依頼者の判断で同時実施）。
+  提案は **C1: 056a（`.githooks/` + root `package.json` + README + security.md の依存監査 2 ブロック +
+  task-board 056 + 本ファイルの追補1・2）→ C2: 055b の実装（`apps/` 配下 + `Cargo.*`）→ C3: 055b の記録
+  （security.md の §1/§10/Capabilities + 本ファイルの 055b 節 + タスクファイル 4 本）** の 3 分割。
+  C1 を先に置くと **C2 のコミットで hook が自分自身をテストする**（`Cargo.lock` がステージされるため）という利点がある。
+  `security.md` と `progress.md` は C1/C3 にまたがるので `git add -p` が要る。**最低でも 056a の分離を推奨**。
+- **実機 DevTools 確認は依然として未実施**。レビューでも「**『応答しないネットワークで 15 秒 reject』と
+  『publish 後に `pubDate` が `undefined` にならない』の 2 つだけはソースから裏が取れない**」と指摘された。
+  この 2 つは省略しないこと。
+
+### 実機 DevTools 確認 ①（publish 前の 404・2026-08-01 実施）
+
+055b タスクファイルのチェックリスト①を依頼者が実施。**期待どおり reject され、想定より多くのことが同時に実測できた。**
+
+**実行**（メイン窓の DevTools コンソール）:
+
+```js
+(async () => {
+  const t = performance.now();
+  try { console.log("resolved:", await window.__TAURI_INTERNALS__.invoke("check_app_update")); }
+  catch (e) { console.log("rejected:", e); }
+  finally { console.log("elapsed(ms)", Math.round(performance.now() - t)); }
+})();
+```
+
+⚠ **当初この手順に書いていた `const { invoke } = await import("@tauri-apps/api/core")` は実機で構文エラーになった**
+（`SyntaxError: Unexpected keyword 'import'`）。原因は 2 つ: ①DevTools のコンソールは入力を Module ではなく
+**Script** として解析するため**トップレベル `await` が構文エラー**になる ②bare specifier の動的 import は
+ブラウザ側で解決できない（Vite が事前バンドルしていてもコンソールには import map が無い）。
+**`window.__TAURI_INTERNALS__.invoke` は Tauri v2 が全窓に必ず注入する**ので、`withGlobalTauri` 未設定
+（＝`window.__TAURI__` が無い）の本アプリでもこれが使える。async IIFE にすると貼り直しでも
+`const` 二重宣言にならない。**タスクファイルの 2 箇所を修正済み。**
+
+**結果**:
+
+```
+elapsed(ms) 362
+rejected: { code: "UPDATE_CHECK_FAILED",
+            message: "更新の確認に失敗しました。時間をおいて再度お試しください。",
+            details: null, operation: null,
+            occurredAt: "2026-08-01T15:31:09.138035+00:00" }
+```
+
+**この 1 回で裏が取れたこと（当初は①の 1 項目だけのつもりだった）**:
+
+- **§9 が実物で成立**——`message` は固定文言のみ。`http` / `github` / `latest.json` / `://` のいずれも含まれない。
+  `details` / `operation` も `null`＝付帯情報経由の漏洩も無い。`map_err(|_| …)` と引数なしコンストラクタが効いている。
+- **404 が `Err` に落ちる**ことの実測裏付け（crate ソース読解の結論と一致）。
+  ⚠ ここで `resolved: { available: false }` が出ていたら**オフライン/404 が「最新です」に化ける**重大な仕様違反だった。
+  「更新なし」と「確認できなかった」の区別が実物で成立している。
+- **`.plugin(tauri_plugin_updater::Builder::new().build())` が実際に効いている**
+  （`state::<UpdaterState>()` が panic していない）＝レビュー S-1 のガードが守ろうとしている経路が生きている。
+- **リポジトリ初の真の `async fn` コマンドが invoke 経由で往復した**（Future が `Send`・await 跨ぎの非 Send 値なし）。
+- **ハングしない**（362ms）。DNS → TLS → 302 → 404 の実通信が往復した時間で、経路自体は正常に出ている。
+- `AppError` も省略可フィールドを **`null`** で送る（`details: null` / `operation: null`）＝
+  `AppUpdateStatus` と同じ「`skip_serializing_if` を付けない」既存作法がエラー型でも一貫している。**055c は
+  `err.details` を truthy 判定で読むこと。**
+
+**残り**: ②到達不可 ③応答しないネットワーク（**15 秒判定＝ソースからは裏が取れない唯一の項目**）
+④draft の publish ⑤`available:false` ⑥`available:true` と `pubDate` ⑦version を戻す。

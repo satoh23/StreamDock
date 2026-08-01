@@ -1,0 +1,111 @@
+#!/bin/sh
+#
+# 056: 依存の脆弱性検査（pre-commit ゲート）
+#
+# 055b で通信スタック（reqwest / rustls / ring 等 30 crate）を入れた際、依頼者の指摘で
+# 「取り込んだ第三者ライブラリが安全かを調べていない」ことが判明した。当時のリポジトリには
+# 検査の仕組みが**一切無かった**（cargo audit / cargo deny 未導入・Dependabot 無し・CI ステップ無し）。
+# security.md §10 は「依存追加の理由を説明する」ことは求めていたが、既知脆弱性との照合は
+# 求めていなかった。この hook はその入口を塞ぐもの。
+#
+# ■ CI ではなく pre-commit にした理由（依頼者の判断）
+#   壊れた依存を持ち込んだコミットが push されて CI で初めて落ちると、そこから直すのは手戻りになる。
+#   コミットの時点で止めれば、直す対象がまだ手元にあるうちに気づける。
+#
+# ■ 依存ロックファイルがステージされたときだけ走る理由（2 つの問題を同時に解く）
+#   ① 速度: 毎コミット 1〜2 秒を払わない。依存が変わらないコミットは即 exit 0。
+#   ② オフライン: どちらの audit も外部に問い合わせる。毎回走らせると機内などでコミットできなくなる。
+#      ロックファイルを更新できたということは、その直前にパッケージを取得できている＝オンラインだった
+#      はずなので、この条件なら「オフラインでコミットできない」がほぼ起きない。
+#
+# ⚠ この設計の限界（塞げていないもの）
+#   - **依存が変わっていなくても、新しい脆弱性は毎日公表される**。この hook は「自分が依存を変えたとき」
+#     しか見ないので、既存依存に後から報告された脆弱性は捕まえられない。それには定期実行
+#     （Dependabot / スケジュール CI）が別途要る（docs/task-board.md の 056 に残してある）。
+#   - `cargo audit` はディスク上の Cargo.lock を読むため、**ステージ内容と作業ツリーが食い違っている場合**は
+#     作業ツリー側を検査する（`git add -p` で lock を部分ステージした場合など）。実運用では起きにくいので許容する。
+#   - **`git merge` / `git pull` が持ち込む依存変更は素通りする**（merge commit は pre-commit を通らない）。
+#     単独開発では影響が小さいので許容する。これも定期実行（056 の残①）でしか埋まらない。
+#
+# ■ 落ちたときの逃げ道
+#   緊急時は `git commit --no-verify` で飛ばせる。ただし飛ばした事実は記録に残らないので、
+#   飛ばしたなら理由を progress.md に書くこと。
+#
+# ■ 手動実行
+#   pnpm audit:deps（依存を変えていなくてもいつでも回せる）
+
+# 失敗を明示的に見ていないのは、pre-commit の中で git rev-parse が失敗する状況が実質無いのと、
+# 万一空になっても `cargo audit -f "/apps/desktop/..."` が失敗して status=1（fail-closed）に倒れるため。
+# ⚠ ただしその場合メッセージが「脆弱性が見つかりました」になって誤解を招く。
+# 再修正トリガー＝このメッセージで実際に混乱したら、ここで明示チェックする。
+REPO_ROOT=$(git rev-parse --show-toplevel)
+CARGO_LOCK_REL="apps/desktop/src-tauri/Cargo.lock"
+
+staged=$(git diff --cached --name-only)
+
+rust_changed=no
+js_changed=no
+case "$staged" in
+  *"$CARGO_LOCK_REL"*) rust_changed=yes ;;
+esac
+case "$staged" in
+  *pnpm-lock.yaml*) js_changed=yes ;;
+esac
+
+if [ "$rust_changed" = no ] && [ "$js_changed" = no ]; then
+  # 依存に変化なし＝検査不要。何も出力せず即座に通す。
+  exit 0
+fi
+
+status=0
+
+## 出力方針: **成功時は 1 行だけ**にする。cargo audit は既定で `unmaintained` 警告 18 件を毎回吐き、
+## そのまま流すとコミットのたびに画面が埋まって「読み飛ばすもの」になり、本当に落ちた日に気づけない。
+## 失敗したときだけ全文を出す（そのとき初めて詳細が要る）。
+
+if [ "$rust_changed" = yes ]; then
+  if ! command -v cargo-audit >/dev/null 2>&1; then
+    # fail-closed（security.md の一貫した方針）: ツールが無いことを「問題なし」と読み替えない。
+    # ロックファイルを変えたコミットでしか出ないので、日常の作業を止めることはない。
+    echo "pre-commit: [NG] cargo-audit が見つかりません。"
+    echo "            依存を変更するコミットは脆弱性検査を通す必要があります。次を実行してください:"
+    echo "              cargo install cargo-audit --locked"
+    status=1
+  else
+    # 既定では **脆弱性(vulnerabilities) があるときだけ** 非ゼロで終わる。
+    # `unmaintained` / `unsound` の警告では落ちない（2026-08-01 時点で 18 件。うち 13 件は Linux 専用で
+    # mac/Win のアプリには入らず、残りもメンテ停止の告知で脆弱性ではない。ここで落とすと初日から
+    # 常時赤になり、hook が「無視するもの」に成り下がる）。警告でも落としたくなったら `-D warnings`。
+    rust_out=$(cargo audit -q -f "$REPO_ROOT/$CARGO_LOCK_REL" 2>&1)
+    if [ $? -ne 0 ]; then
+      echo "$rust_out"
+      echo "pre-commit: [NG] Rust 依存に既知の脆弱性が見つかりました（上記）。"
+      status=1
+    else
+      echo "pre-commit: [OK] Rust 依存に既知の脆弱性はありません（Cargo.lock）。"
+    fi
+  fi
+fi
+
+if [ "$js_changed" = yes ]; then
+  # `--prod` ＝ **実際にユーザーへ配られる依存だけ**を見る。`--prod` 無しだと eslint / vite / esbuild など
+  # ビルド専用ツールの脆弱性（2026-08-01 時点で 5 件）で必ず落ち、これも初日から常時赤になる。
+  # ⚠ 開発依存を免罪したわけではない。5 件の扱いは docs/task-board.md の 056 に残してある。
+  js_out=$(cd "$REPO_ROOT" && pnpm audit --prod 2>&1)
+  if [ $? -ne 0 ]; then
+    echo "$js_out"
+    echo "pre-commit: [NG] 配布される JS 依存に既知の脆弱性が見つかりました（上記）。"
+    status=1
+  else
+    echo "pre-commit: [OK] 配布される JS 依存に既知の脆弱性はありません（pnpm-lock.yaml）。"
+  fi
+fi
+
+if [ "$status" -ne 0 ]; then
+  echo ""
+  echo "pre-commit: コミットを中止しました。"
+  echo "            どうしても今コミットする必要があるなら --no-verify で飛ばせますが、"
+  echo "            飛ばした理由を docs/progress.md に残してください。"
+fi
+
+exit "$status"

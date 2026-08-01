@@ -24,6 +24,41 @@
 > （`.form` の `gap: 14px` ＋ `.field label` の `margin-bottom: 7px` ＋ `.fieldHelp` の `margin-top: 6px`
 > ＝ブロック内 6〜7px 対 項目間 14px）ので、**ここでも新しい値を発明しない**。
 >
+> ✅ **055b は実装済み（2026-08-01）＝この画面が呼ぶ API と型は確定している。**（詳細は
+> [`docs/progress.md`](../progress.md) の「2026-08-01 (055b 更新検出エンジン …)」節「055c へ渡す情報」を正とする）
+> - **API は `checkAppUpdate()` 1 本**（`src/features/app-update/appUpdateApi.ts`・**引数なし**）。
+>   型は `AppUpdateStatus { currentVersion: string; available: boolean; latestVersion?: string; notes?: string; pubDate?: string }`
+>   （`src/features/app-update/bindings/AppUpdateStatus.ts`・ts-rs 生成）。
+> - ⚠ **「更新なし」と「確認できなかった」の区別はこう届く**:
+>   **更新なし ＝ resolve して `available: false`** ／ **確認できなかった ＝ reject**（`AppError` の
+>   `code: "UPDATE_CHECK_FAILED"`）。到達不可・エンドポイント 404・JSON 破損・署名検証失敗が**すべて** reject に来る。
+>   **`catch` して `available: false` に潰さないこと**（潰すと 2 つが区別できず、オフラインが「最新です」に化ける）。
+> - **タイムアウトは Rust 側で 15 秒**。この Promise が永久 pending になることはないので、
+>   「確認中」表示のための自前タイマー／中断処理は不要。
+> - ⚠ **省略可フィールドは `undefined` ではなく `null` で届く**（055b レビュー Q-4）。型は
+>   `latestVersion?: string` だが、serde 側に `skip_serializing_if` が無い（**リポジトリ全体で 0 箇所**＝
+>   既存作法どおり）ため、更新が無いときは `"latestVersion": null` が送られる。
+>   ＝**`if (status.latestVersion !== undefined)` と書くと `null` に対して true になり「新バージョン: null」と出る。**
+>   truthy 判定（`if (status.latestVersion)`）を使うこと。
+>   `appUpdateApi.test.ts` のフィクスチャはキーごと省略しているので**テストではこの食い違いを再現できない**。
+> - ⚠ **`notes` は minisign 署名の対象外**（署名が守るのは DL した実体のバイト列だけで `latest.json` 自体は未署名）。
+>   ＝**HTML として解釈しないこと**。055e まではプレーンテキスト表示に留め、055e も
+>   `dangerouslySetInnerHTML` を使わない自前レンダラで描く（この制約は「好み」ではなく**要件**）。
+> - **起動時の自動チェック（発火）は本タスクの担当**。055b は呼ばれるまで何もしない。
+>
+> ### ⚠ 055b の security-review からの申し送り（本タスクで対応すること）
+>
+> 1. ~~**【必須】`.plugin()` 登録を機械で固定する**~~ **→ 055b 側で対応済み（本タスクでは不要）。**
+>    当初は「起動時フックを配線して初めて経路が生きる」として本タスクへ送られたが、レビューで
+>    ①依頼者の実機 DevTools 確認（`invoke("check_app_update")`）が**今日その経路を通る** ②`lib.rs` の
+>    `mod pinned_overlay_contract` に **`LIB_RS` と `format!` の作法が既にあり修正コストが 1 テスト**、
+>    の 2 点が指摘され、**先送りの根拠が成立しないため 055b で入れた**
+>    （`updater_plugin_stays_registered`）。**本タスクで再実装しないこと。**
+> 2. **多重実行を防ぐこと**（S-4）。`check_app_update` には `WINDOW_OPEN_LOCK` に相当するガードもレート制限も無い。
+>    「実行中は再実行しない」「失敗時に無限リトライしない」を `useAppUpdate` 側で守る
+>    （4 窓すべてから呼べる＝アプリ定義コマンドは ACL 対象外、という限界も併せて意識すること）。
+> 3. **`notes` の表示丈を制御すること**（S-5）。長さは無制限で、しかも未署名データ。
+>
 > **必読前提**: 親 [055](055-app-self-update.md)（**バッジは常に「1」＝更新の有無**・**起動時に自動チェック・トグルなし**）、
 > [055b](055b-updater-check-command.md)（`checkAppUpdate()` と `AppUpdateStatus`）、
 > [054](054-comment-viewer-settings-readability.md)（**設定項目名＝太字/`--text`、説明＝`--muted`** の階層規則）、

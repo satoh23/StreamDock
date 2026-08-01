@@ -1,4 +1,5 @@
 mod app_logs;
+mod app_update;
 mod comment_sidecar;
 mod comment_viewer;
 mod error;
@@ -464,6 +465,14 @@ pub fn run() {
         // 032c-b: Twitch コメント取得 sidecar を Rust から起動/停止するためのプラグイン。
         // capability に `shell:*` を付与しないため frontend から shell 実行はできない（Rust 専用）。
         .plugin(tauri_plugin_shell::init())
+        // 055b: アプリ自己アップデート（更新チェック・DL・インストール）のためのプラグイン。
+        // capability に `updater:*` を付与しないため frontend から updater は呼べない（Rust 専用）。
+        // JS 側 `@tauri-apps/plugin-updater` も入れておらず、露出するのは単一目的のアプリ定義コマンド
+        // `check_app_update` だけ（アプリ定義コマンドは ACL を通らない）。宛先は `tauri.conf.json` の
+        // `plugins.updater.endpoints` だけを正とし、実行時に `UpdaterBuilder::endpoints()` で上書きしない。
+        // ⚠ この登録が無いと `app.updater_builder()` の `state::<UpdaterState>()` が panic する
+        //（＝invoke の Promise が永久未解決になる）ので、コマンドとセットで外さないこと。
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             // アプリデータディレクトリに SQLite を開き、State として共有する
             let data_dir = app.path().app_data_dir()?;
@@ -595,6 +604,7 @@ pub fn run() {
             viewer_memory::commands::update_viewer_note,
             viewer_memory::commands::delete_viewer,
             viewer_memory::commands::clear_viewers,
+            app_update::commands::check_app_update,
         ])
         // 032c-b: RunEvent::Exit フックを追加するため .run() を .build()+.run(closure) に分割した
         //（従来は lib.rs に exit フックが無かった）。no-orphan 3 段 kill の②。
@@ -781,6 +791,32 @@ mod pinned_overlay_contract {
             LIB_RS.matches(needle.as_str()).count(),
             3,
             "SHARED_BROWSER_ARGS を参照する窓が 3 つでない（窓を増減したらこの数も更新すること）"
+        );
+    }
+
+    #[test]
+    fn updater_plugin_stays_registered() {
+        // 055b レビュー S-1: updater plugin の `.plugin(...)` 登録を消しても
+        // **コンパイルは通り、実行時に `state::<UpdaterState>()` が panic する**
+        //（`UpdaterExt::updater_builder()` が無条件に state を引くため）。
+        // ＝`check_app_update` の invoke の Promise が永久未解決になり、055b が塞いだはずの事故が復活する。
+        // `app_update/commands.rs` の契約テストは自ファイルしか見ないので、ここでしか止められない。
+        //
+        // このモジュールに同居させる理由: `LIB_RS`（`include_str!("lib.rs")`）が既にあり、
+        // 「言語/ファイルをまたぐ暗黙の契約を文字列で固定する」という趣旨も同じだから。
+        //
+        // ⚠ **行コメントを除いてから照合する**。`include_str!` はこの説明コメント自身も読むため、
+        // 素の `LIB_RS` を使うと**この直上に needle を書いた瞬間にテストが常に通るようになる**
+        //（実際にそれで一度骨抜きになり、ミューテーションで発覚した）。needle を実行時に組むのは二重の保険。
+        let code_only: String = LIB_RS
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let needle = format!("{}::Builder::new().build()", "tauri_plugin_updater");
+        assert!(
+            code_only.contains(needle.as_str()),
+            "updater plugin の登録が消えている（check_app_update が実行時 panic する）"
         );
     }
 }
