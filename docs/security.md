@@ -219,7 +219,9 @@ allow-list で守られていた）。方式決定・分割は `docs/tasks/055-a
   リクエストボディなし・Cookie なし・認証なし。**`api.github.com` は使わない**。
 - **宛先は `tauri.conf.json` の `plugins.updater.endpoints` というコンパイル時定数**で、
   **実行時にもフロントからも差し替えない**（`UpdaterBuilder::endpoints()` を呼ばない。
-  `app_update/commands.rs` の `#[cfg(test)] mod check_command_contract` で機械的に固定）。
+  `app_update/commands.rs` の `#[cfg(test)] mod command_contract` で機械的に固定。
+  ⚠ 055d でこのモジュールは `check_command_contract` から改名した——`install_app_update` / `restart_app` も
+  同じファイルに置いて、`include_str!` による既存 3 本の検査を追加コードにも効かせているため）。
   `{{current_version}}` 等の動的プレースホルダを URL に埋めない＝**バージョンを外部へ送らない**。
   コマンドは `AppHandle` のみを取り、**frontend から URL もバージョンも受け取らない**（§3/§8）。
   送るヘッダは `Accept: application/json` と plugin 自身の User-Agent（`tauri-plugin-updater/<crate version>`）だけで、
@@ -230,6 +232,12 @@ allow-list で守られていた）。方式決定・分割は `docs/tasks/055-a
   ただし TLS 検証（`dangerousAcceptInvalidCerts` 不使用・release ビルドでは非 https の endpoint を拒否）と
   minisign fail-closed が効くので、**経路上での改竄・盗聴は成立しない**。`no_proxy()` で塞ぐ選択もあるが、
   **企業プロキシ配下で更新できなくなる**ので採らない。
+  ⚠ **固定されているのは check の宛先だけ**（レビュー指摘・055d）。**実体の DL 先は
+  `latest.json` の `platforms.*.url`＝未署名データが決める**（plugin の `Update.download_url`）。
+  上の「宛先は 2 ホストのみ」は**現在の観測事実であって強制ではない**。実体の完全性は minisign が守るが、
+  **どこへ取りに行くかは署名で守られていない**。前提が「GitHub 侵害または `latest.json` の改竄」で、
+  その前提なら endpoint 自体も差し替えられるため**リスクは増えていない**が、
+  「endpoint が定数だから DL 先も固定」と読み違えないこと。
 - **完全性は minisign 公開鍵検証で fail-closed**（`plugins.updater.pubkey`＝コンパイル時に焼き込まれる公開値）。
   署名が合わないものは実行しない。⚠ ただし**署名が守るのはダウンロードした実体のバイト列だけ**で、
   **`latest.json` 自体は署名されていない**。＝`version` / `notes` / `pub_date` は HTTPS で守られるだけの
@@ -267,7 +275,13 @@ allow-list で守られていた）。方式決定・分割は `docs/tasks/055-a
   telemetry / analytics / crash-report は追加しない。
 - **security-review 必須**（本体プロセス初のインターネット egress ＋ network/http crate ＋ auto update 系）。
   ※ **§5 の例外（アップデータが自分自身の `.app` / インストール先を置換する＝管理領域外への書き込み）は
-  055d で追記する**（055b は検出のみでファイルを 1 バイトも書かない）。
+  055d で追記済み**（055b は検出のみでファイルを 1 バイトも書かない）。
+  §4 の「例外（055d・macOS の昇格インストール経路＝`osakit` / AppleScript）」も併せて参照すること。
+  ※ **055d で DL 側にもタイムアウトを張った**（`configure_client` の `connect_timeout` 15 秒 /
+  `read_timeout` 30 秒）。上の「⚠ この値は `download()` には伝播しない」への対処にあたる。
+  ※ **055d で進捗イベント（`app-update:progress`）を導入したが capability は不変**。
+  frontend の `listen` に必要な `core:event:allow-listen` は `core:default` に既に含まれている
+  （下記「Tauri Permissions / Capabilities 方針」の 055d 節）。
 
 ### 2. frontendから自由なOS操作をさせない
 
@@ -337,6 +351,38 @@ sidecar が stdout 専用行 `COMMENT_SIDECAR_OPEN_URL=<url>` で URL を渡し�
 opener コマンドを frontend に公開しない（capability 追加なし）。既存の url 種別ツール（023）と同じ opener 委譲方式で、
 **host 検証を追加**した点のみ差分（`012` の `validate_http_url`＋host 完全一致・port/userinfo/サブドメイン偽装を fail-closed 拒否）。
 
+**例外（055d・macOS の昇格インストール経路＝`osakit` / AppleScript）**: `tauri-plugin-updater` の
+`Update::install_inner()` は、macOS で `.app` の置換が `PermissionDenied` になった**フォールバック時にだけ**
+`do shell script "rm -rf '<extract_path>' && mv -f '<tmp>' '<extract_path>'" with administrator privileges` を
+OSAKit（`osakit` crate・055b で入った推移依存）で実行する。**これは本アプリが書くコードではなく plugin 内部の経路**で、
+`check_app_update` からは到達せず、`install_app_update` の macOS 経路でのみ生きる（055b の面はゼロだった）。
+- 組み立てられる文字列に**フロントからの入力は一切入らない**。埋まるのは `current_exe()` 由来の
+  自アプリのパスと、plugin が作る一時ディレクトリ（`tempfile`）のパスだけである。
+- 起動されるのは `rm -rf` と `mv` の 2 つのみで、対象は**自アプリのインストール位置と一時ディレクトリに限られる**。
+- 昇格（管理者パスワードの入力ダイアログ）が発生するのは**このフォールバックに落ちたときだけ**……
+  **ではない**。`/Applications` は既定で `root:admin` なので、**標準ユーザー（非管理者）で実行すると毎回この分岐に入る**。
+  「稀な経路」として扱わないこと。
+- ⚠⚠ **plugin はこのパスをエスケープしない**（`format!` にシングルクォート内へ生で埋める）。
+  **`current_exe()` のパスはユーザーにも同一権限のプロセスにも書き換え可能**（`.app` のリネーム／
+  親ディレクトリ名）なので、**「ユーザー入力が入らないから安全」は担保にならない**:
+  - `'` … シェルのクォートを脱出できる ＝ **root 権限のコマンドインジェクション**。
+  - `"` / `\` … AppleScript リテラルが壊れ、`script.compile().expect(…)` が**メインスレッドで panic**。
+  - 悪意が無くても `~/Bob's Apps/StreamDock.app` のような普通のパスで `rm -rf` の引数が壊れる。
+  → **`install_app_update` は DL の前に `ensure_install_path_is_shell_safe()` で fail-closed に弾く**
+  （`'` `"` `\` `` ` `` `$` 改行を含むインストール位置では更新しない）。
+  **この経路が安全なのは、この検査があるからである。** 検査の消失は契約テスト
+  `install_refuses_shell_unsafe_install_paths` が止めている。
+  ⚠ ユーザーには定型文言しか出ない（パスを画面にもログにも出さない・§9 を優先した受容）。
+  根本原因は plugin 側にあり、**fork しない限りこちらでは直せない**。
+- ⚠ この plugin 内部コードは `script.compile().expect("invalid AppleScript")` /
+  `tx.send(r).unwrap()` / `rx.recv().unwrap()` を含む＝**こちらのコードでは消せない panic 経路**。
+  UI 側の緩和（`useAppUpdate` の watchdog）と、それでも救えない範囲は `docs/progress.md` の 055d 節に記録した。
+- ⚠ `install_app_update` を**同期コマンドにしてはいけない**（メインスレッドで走るとこの経路がデッドロックする）。
+  理由は同じく progress.md の 055d 節。
+
+自由な shell 実行・ユーザー入力を結合したコマンド実行は引き続き禁止で、この経路も**frontend からは起動できない**
+（`install_app_update` の引数は `AppHandle` のみ）。書き込みそのものの評価は §5 の「例外（055d・自己置換）」を正とする。
+
 ### 5. ファイル操作はアプリ管理領域に限定する
 
 MVPで許可するファイル操作は、原則としてアプリの管理領域内に限定する。
@@ -356,6 +402,64 @@ MVPで許可するファイル操作は、原則としてアプリの管理領�
 - 登録された外部アプリの設定ファイルを勝手に上書きする
 
 将来的に設定ファイルのバックアップ・上書きを行う場合は、別タスクでセキュリティレビューを必須とする。
+
+### 例外（055d・アプリ自己アップデート＝自分自身の置換）
+
+上記「アプリの管理領域内に限定する」原則に対し、**StreamDock 自身の更新に限り**、
+**アプリ自身のインストール位置への書き込み**を例外的に許可する。§1 の
+「例外（055・アプリ自己アップデート）」の DL・インストール側にあたる
+（検出だけの 055b はファイルを 1 バイトも書かない）。方式決定は `docs/tasks/055-app-self-update.md` を正とする。
+
+**⚠ §5 で「### 例外」を設けるのはこれが初めて**（§1 は 7 件あるが §5 は 0 件だった）。
+
+- **何が起きるか**
+  - **macOS**: `.app.tar.gz` を一時ディレクトリへ展開し、既存の `/Applications/StreamDock.app` を
+    一時ディレクトリへ退避（`std::fs::rename`）してから、展開したものを同じ位置へ移動する。
+    ＝**自分自身の `.app` を丸ごと置換する**。退避したものは成功後に破棄される。
+  - **Windows**: NSIS インストーラ（`*-setup.nsis.zip` を展開した `.exe`）を `ShellExecuteW` で起動し、
+    **インストーラがインストール先を書き換える**。plugin は起動直後に `std::process::exit(0)` する。
+  - どちらも「アプリの管理領域（設定 / SQLite / ログ）」の**外側**への書き込みである。
+
+- **担保の柱は 3 つ**
+  1. **書き込み先はアプリ自身のインストール位置に限定される。** パスは `tauri-plugin-updater` が
+     `current_exe()` から導出する（`extract_path_from_executable`）ものだけで、**任意パスは指定できない**。
+  2. **書き込む内容は minisign 公開鍵で検証済みのバイト列に限られる。** 署名が合わなければ
+     1 バイトも書かずに失敗する（fail-closed）。検証は `Update::download()` の中で、
+     ダウンロード完了後・`install()` の前に実行される。公開鍵は `tauri.conf.json` の
+     `plugins.updater.pubkey`＝**コンパイル時に焼き込まれる**。
+  3. **フロントから書き込み先・URL・バージョンを指定できない。** `install_app_update` の引数は
+     `AppHandle` のみで、`app_update/commands.rs` の `#[cfg(test)] mod command_contract` が
+     **シグネチャ全体**を機械的に固定している（引数を 1 つ足した瞬間にテストが落ちる）。
+
+- **汎用のファイル書き込みコマンドは新設していない**（§3 の「`write_file(path, content)` のような
+  強すぎる command を作らない」に抵触しない）。書き込み経路は `tauri-plugin-updater` の実装のみで、
+  こちらのコードはファイルを 1 バイトも直接書かない。
+
+- ⚠ **`bundle.externalBin` の sidecar（`comment-sidecar-*`）も同時に置き換わる**（本体バンドル同梱のため）。
+  更新後に**実行ビットと ad-hoc 署名が保たれるか**は未検証で、
+  [099b](tasks/099b-updater-e2e.md) の E2E-4 / E2E-8 で実測する。壊れると
+  「更新したらコメントビューアだけ死ぬ」という症状になる。
+
+- ⚠ **削除も伴い、ロールバック機構は無い。** macOS 経路は置換前に既存 `.app` を退避し、
+  失敗時は plugin が戻す実装になっているが、昇格経路（下記 §4 の例外）は `rm -rf` してから `mv` するため、
+  **その間に失敗するとインストール先が消えたままになりうる**。ロールバックは親 055 の「やらないこと」で、
+  復旧手段は手動での再インストールのみ。
+
+- ⚠ **DL のサイズに上限を課す手段が plugin API に無い（受容した制約）。** `Update::download()` は
+  応答ボディ全体を `Vec<u8>` に積んでから minisign 検証する。進捗コールバック
+  `on_chunk(usize, Option<u64>)` は**戻り値が `()` で中断を伝えられず**、`Update.timeout` は
+  総リクエスト時間なのでサイズ依存で値を決められない。＝ §1 の「応答ボディにサイズ上限が無い」と
+  **同じ制約が数十〜数百 MB のスケールで再来する**（前提は同じく「GitHub 侵害または有効証明書を持つ MITM」）。
+  塞ぐには plugin を fork して自前で DL する必要があるため受容する。
+
+- **更新の成否を SQLite / app_logs に記録しない**（新規の保存経路を作らない・§9）。
+
+- ⚠ **「何もしなかった」を成功と混ぜない**（055d review S-2）。`install_app_update` は
+  `AppUpdateInstallOutcome`（`installed` / `noUpdate` / `alreadyRunning`）を返す。
+  **`alreadyRunning` を「完了」として扱うと、走行中の自己置換の最中に再起動を促す**ことになり、
+  macOS では `install_inner()` の 2 回の `rename` の間に刺さって `.app` が消えうる（ロールバック機構は無い）。
+
+- **security-review 必須**（auto update 系 ＋ 自己置換）。
 
 ### 6. プロセス停止はstream-dock経由で起動したPIDに限定する
 
@@ -583,11 +687,19 @@ loopback WS で受信済みの値を Tauri コマンドで渡すだけ＝sidecar
     ＝**OpenSSL を持ち込まない**・クロスビルドを増やさない。実測で担保済み（`cargo tree -i openssl-sys` /
     `-i native-tls` / `-i openssl` がいずれも「該当パッケージなし」）。将来 crate 側の既定が変わっても
     TLS 実装が黙って入れ替わらないよう明示する。
-  - `zip`: `flate2` / `tar` / `zip` を引く。**macOS の `.app.tar.gz` 展開に必須**。⚠ 落とさないこと。
-    （レビュー指摘で訂正: 当初「サイレントに mac の自己更新だけ死ぬ」と書いていたが誤り。plugin の
-    `#[cfg(target_os = "macos")] impl Update` は `flate2` / `tar` を **feature gate 無しで**使っており、
-    この 2 つは `zip` feature でしか有効化されない optional 依存＝落とすと **macOS では `cargo check` の時点で
-    コンパイルエラー**になり必ず気付く。危険度は当初の記述より低い。）
+  - `zip`: `flate2` / `tar` / `zip` を引く。⚠ **落とさないこと。**
+    （⚠ **055d で理由を再訂正した。結論は変わらないが、危険度は当初の記述より高い。**
+    055b 時点の記述は「`flate2`/`tar` は `zip` feature でしか有効化されない optional 依存＝落とすと
+    **macOS でコンパイルエラー**になり必ず気付く」だったが、plugin の `Cargo.toml` を実際に読むと
+    `[target.'cfg(target_os = "macos")'.dependencies]` の `tar` / `flate2` に **`optional` 指定は無い**
+    ——`optional = true` なのは **Linux ターゲットの分だけ**である。＝**macOS では `zip` を落としてもビルドは通る。**
+    本当に効くのは **Windows 側**で、tauri の updater 成果物は `*-setup.nsis.zip`、`Update::extract()` の
+    zip 展開分岐が `#[cfg(feature = "zip")]` なので、落とすと `extract_exe()` にフォールバックする。
+    ⚠ **さらに訂正（055d review Q-12）**: そこで「zip のバイト列を `.exe` として書き出す」と書いていたのも誤り。
+    `extract_exe()` は `infer::app::is_exe` / `infer::archive::is_msi` を順に見て、
+    どちらでもなければ **`Err(InvalidUpdaterFormat)` を返すだけで 1 バイトも書かない**。
+    ＝正確には「**Windows の自己更新が、原因の分からない定型エラーで失敗するようになる**」。
+    **コンパイルエラーでは気付けない**という結論と「落とすな」は変わらない。）
 - **実際に増えた依存（`Cargo.lock` の実測・29 crate）**:
   - HTTP: `reqwest`（⚠ `Cargo.lock` には従来から在ったが、`tauri` 側の依存が **android / apple-non-macos 限定の
     `cfg` ターゲット依存**だったため **macOS/Windows のバイナリには入っていなかった**。055b で初めてリンクされる）、
@@ -628,6 +740,22 @@ loopback WS で受信済みの値を Tauri コマンドで渡すだけ＝sidecar
   （高速化のためのアセンブリは業界標準）。ただし**事実として記録**しておく。
   併せて、055b で増えた 30 crate のうち**ビルド時に自前スクリプト（`build.rs`）を走らせるのは `ring` と `rustls` の 2 つだけ**
   （＝取り込み時に任意コードが走る面は最小）。
+
+**追加した依存（055d・DL → インストール → 再起動）: ゼロ**（2026-08-02）。
+
+- **Rust も JS も新規依存は 1 つも無い。** 055d が使う API（`Update::download` / `Update::install` /
+  `UpdaterBuilder::configure_client` / `on_before_exit` / `Emitter::emit` / `AppHandle::restart`）は
+  すべて **055b で入れた `tauri-plugin-updater` と `tauri` 本体**に既にあるもの。
+  `Cargo.toml` / `Cargo.lock` / `package.json` / `pnpm-lock.yaml` は**すべて差分ゼロ**。
+- **`osakit`（AppleScript 実行）は 055b で既に推移依存として入っていた**が、
+  **055d で初めてその経路が実行されうる状態になった**（macOS の昇格インストール時のみ）。
+  評価は §4 の「例外（055d・macOS の昇格インストール経路）」を正とする。
+- **引き続き明示的に足さないもの**: `tauri-plugin-process`（再起動は `AppHandle::restart()`）／
+  JS 側 `@tauri-apps/plugin-updater`（capability を広げない）／
+  進捗バー・プログレス系の UI ライブラリ（既存の CSS トークンと `div` 2 段で足りる）／
+  マークダウンライブラリ（055e で自前の最小レンダラ）。
+- **`cargo audit` の再実行は不要**（`Cargo.lock` に差分が無いため。`.githooks/pre-commit` は
+  ロックファイルをステージしたときだけ走る＝この差分では発火しない。これは意図どおり）。
 
 **依存の脆弱性検査（055b で初めて実施・2026-08-01）**:
 
@@ -765,7 +893,8 @@ Rust の `app.updater_builder()` から行い IPC を通らないため、**4 �
 - **新 command は単一目的の 1 つのみ**（§3・055b 時点）: `check_app_update`（読み取り専用・ファイルを 1 バイトも書かない）。
   **引数は `AppHandle` のみ＝frontend から値を受け取らない**（宛先も現在バージョンも Rust /`tauri.conf.json` 側が持つ）。
   **DB State を取らない**（`extract_app_icon` と同じ最小権限）。ユーザー入力が OS 操作・外部通信へ渡る経路は無い（§8）。
-  055d で `install_app_update` / `restart_app` の 2 本が加わる。
+  **055d で `install_app_update` / `restart_app` の 2 本が加わった**（どちらも引数は `AppHandle` のみ・
+  下記 055d 節を参照）。
 - **⚠ この最小権限が守るのは ACL 面だけ**（046b と同じ限界・レビュー指摘の再掲）: Tauri v2 では
   **アプリ定義コマンドは ACL の対象外**なので、`check_app_update`（および 055d の `install_app_update` /
   `restart_app`）は **コメビュ窓・オーバーレイ 2 窓を含む 4 窓すべての webview から呼べる**。
@@ -774,6 +903,39 @@ Rust の `app.updater_builder()` から行い IPC を通らないため、**4 �
   **capability だけを見て「この機能はメイン窓に閉じている」と判断しないこと。**
 - **本体プロセス初のインターネット egress ＋ network/http crate ＋ auto update 系のため security-review 必須**
   （詳細は §1 の「例外（055・アプリ自己アップデート）」と §10 を正とする）。
+
+**055d（進捗イベントを導入するが capability は不変・2026-08-02）**: DL 進捗を frontend へ流すため
+**リポジトリで初めて Tauri のイベント機構**（Rust の `Emitter::emit` / JS の `listen`）を使ったが、
+**4 枚の capability はいずれも差分ゼロのまま**。
+
+- **根拠（実測）**: `core:default` は `core:event:default` を含み、`core:event:default` は
+  `allow-listen` / `allow-unlisten` / `allow-emit` / `allow-emit-to` を含む
+  （生成物 `src-tauri/gen/schemas/acl-manifests.json` と、`tauri` crate の `build.rs` が
+  `PLUGINS` から `core:default` を生成している実装で確認）。**4 枚すべてが `core:default` を持っている**ので、
+  `listen` のために追加する permission は無い。
+- **⚠ 進捗イベントは全窓へブロードキャストされる。** `app.emit()` は全 webview に配信する。
+  `emit_to(EventTarget::webview_window("main"), …)` に**絞っても実際には絞れない**——
+  tauri の `match_any_or_filter` は「リスナ側が `EventTarget::Any` で登録していれば emit のフィルタを
+  無条件に素通しする」実装で、`@tauri-apps/api` の `listen()` はオプション省略時にまさに `Any` で登録する。
+  ＝**絞ったつもりの記録だけが残る**ので、素直にブロードキャストしている。
+  実際にメイン窓しか受け取らないのは「`MainWindowApp` でしか購読していない」という**アプリ側の構造**によるもので、
+  イベント機構による保証ではない。**ペイロードは受信済みバイト数・総バイト数・フェーズの 3 つだけ**で、
+  URL・ローカルパス・バージョン・環境情報を含まない（§9。キー集合の完全一致を Rust のテストで固定）。
+- **⚠ `core:event:allow-emit` も既定で配られている＝webview 側から同名イベントを偽造できる。**
+  偽の進捗が表示されるだけで何のアクションも起こらないが、
+  **完了判定はイベントではなく invoke の resolve で行う**という不変条件を守ること
+  （`useAppUpdate` は実行中フラグが立っていないときの進捗イベントを捨てる）。
+  ⚠ **緩和はこれだけでは足りない**（055d review S-5）。**実行中は進捗イベントを信頼している**ので、
+  偽イベントを送り続けると「plugin 内部の panic から抜ける唯一の逃げ道」である 120 秒 watchdog を
+  **永久に張り直させて無力化できる**。そのため `useAppUpdate` は
+  **進捗では絶対に延長されない上限**（`INSTALL_DEADLINE_MS`）を別に 1 本張っている。
+- **⚠ `install_app_update` は 4 窓すべてから呼べる**（上の 055b と同じ限界）。055d でこれは
+  「実際にインストールを起こせるコマンド」になったため、Rust 側にも同時実行ガード
+  （`INSTALL_IN_FLIGHT` / `InstallGuard`）を置いて**走行中の 2 本目は何もせず返す**ようにした。
+  ⚠ これは**多重実行を防ぐだけで、呼べること自体は防いでいない**
+  （アプリ定義コマンドは ACL の対象外なので、Tauri v2 では構造的に防げない）。
+  **capability だけを見て「更新はメイン窓に閉じている」と判断しないこと。**
+- **JS 側 plugin ゼロ・`tauri-plugin-process` 不採用・`csp: null` 不変**は 055b から変わらない。
 
 ## CSP方針
 

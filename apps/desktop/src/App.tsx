@@ -341,7 +341,11 @@ function MainWindowApp() {
             status={appUpdate.status}
             phase={appUpdate.phase}
             error={appUpdate.error}
+            progress={appUpdate.progress}
+            hostOs={hostOs}
             onRecheck={() => void appUpdate.recheck()}
+            onInstall={() => void appUpdate.install()}
+            onRestart={() => void appUpdate.restart()}
           />
         )}
         {screen === "rakuraku-tools" && (

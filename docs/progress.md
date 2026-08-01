@@ -10976,3 +10976,422 @@ transitive に import する（WebSocket・localStorage・OBS・TTS の一式）
 - **`docs/security.md` は 1 文字も変えない**のが正しい。055b が新設した §1 例外が本タスクの内容を
   すべて包含しており（表示側は HTML として解釈しない・§9 は定型文言とバージョン文字列のみ）、
   保存ポリシー変更も無いため条文更新は不要。
+
+## 2026-08-02 (055d ダウンロード → インストール → 再起動 —— **実装済み・実機確認は未実施**)
+
+`docs/tasks/055d-update-install-and-restart.md` を実施。055c で `disabled` のまま残っていた
+「アップデート」ボタンに **DL → インストール → 再起動**を配線し、055 系の機能ループを閉じた。
+**自己置換（security.md §5 の例外）＋ auto update 系**のため security-review 必須。
+
+⚠ **実機での自己更新確認は 099b に積み残す**（048/049/050 と同じ「実装済み・実機確認は未実施」）。
+
+### 変更ファイル（12 変更 + 2 新規・+2031 / -83 行）
+
+| 層 | ファイル | 内容 |
+| --- | --- | --- |
+| Rust | `app_update/commands.rs` | `install_app_update` / `restart_app` / `AppUpdateProgress` / `AppUpdateProgressPhase` / `should_emit_progress` / `InstallGuard` ＋ 契約テスト 6 本 ＋ 振る舞いテスト 8 本 |
+| Rust | `error.rs` | `ErrorCode::UpdateInstallFailed` ＋ `AppError::update_install_failed()`（引数なし）＋ テスト更新 |
+| Rust | `lib.rs` | `generate_handler!` に 2 本（2 行） |
+| 生成物 | `bindings/AppUpdateProgress.ts` / `AppUpdateProgressPhase.ts`（新規）／ `bindings/ErrorCode.ts`（更新） | ts-rs |
+| TS | `features/app-update/appUpdateApi.ts` | `installAppUpdate` / `restartApp` / `APP_UPDATE_PROGRESS_EVENT` / `listenAppUpdateProgress` |
+| TS | `features/app-update/useAppUpdate.ts` | phase 7 状態 ／ `progress` ／ `install` / `restart` ／ 購読 ／ watchdog ／ 定型文言 2 本 |
+| TS | `screens/app-update/UpdateScreen.tsx` ＋ `.module.css` | 配線・進捗バー・OS 分岐・見出しの文言テーブル化 |
+| TS | `App.tsx` | props 3 行 |
+
+**ゼロ拡大は実測で差分ゼロ**: `capabilities/` ／ `tauri.conf.json` ／ `Cargo.toml` ／ `Cargo.lock` ／
+`apps/desktop/package.json` ／ `pnpm-lock.yaml` ／ `.github/` ／ `apps/comment-sidecar/` ／ `styles/theme.css`。
+
+**検証**: `cargo check` / `cargo test`（**131 passed**）／ `typecheck` / `lint` /
+`test`（**500 → 555 passed** ＋ `check:css` OK ＋ `check:version` OK）。
+
+---
+
+### ① DL タイムアウトの張り方と値の根拠
+
+`configure_client` で **`connect_timeout` 15 秒 ＋ `read_timeout` 30 秒**を張った。
+install 用 builder は `.timeout(CHECK_TIMEOUT)` も**併せて**持つ。効き方は次のとおり:
+
+| フェーズ | 効く上限 |
+| --- | --- |
+| install 内部の `check()` | 総 15 秒（`timeout`）＋ connect 15 秒 / read 30 秒 |
+| `download()` | connect 15 秒 / read 30 秒**のみ**（総 deadline は張らない） |
+
+**ソースで確認した事実（tauri-plugin-updater 2.10.1）**:
+- `Updater::check()` は戻り値を `Update { timeout: None, … }` と**ハードコード**する
+  → `UpdaterBuilder::timeout()` は `download()` に伝播しない（055b レビューの訂正どおり）。
+- `Update::download()` は `if let Some(ref configure_client) = self.configure_client { … }` で
+  **`configure_client` を適用する**。`check()` が `Update` を組むときに
+  `configure_client: self.configure_client.clone()` で持ち越すことも確認済み。
+- `configure_client` は `Updater::check()` のクライアント構築にも適用される（同じ 2 行がある）。
+
+**値の根拠**:
+- **connect 15 秒** … 既存の `CHECK_TIMEOUT` と同値。TCP + TLS ハンドシェイクに 15 秒かかる回線は
+  事実上使えないので「繋がらない」の判定として十分。思考単位を 2 つに割らないために合わせた。
+- **read 30 秒** … reqwest 0.13.4 の doc が明記するとおり **read ごとにリセット**される
+  （"resets after a successful read. This is more appropriate for detecting stalled connections
+  when the size isn't known beforehand."）。＝**総 DL 時間を縛らない**ので 100MB を低速回線で落とす
+  正常系を殺さない。一方、健全な TCP で 30 秒間 1 バイトも届かないことは再送のバックオフを考えても
+  事実上ありえないので、「繋がるが応答しない」を確実に検出できる。押してから 30 秒以内にエラーへ落ちる。
+- **総 deadline は張らない** … サイズ依存で妥当値を決められないため（055b レビューの結論を踏襲）。
+
+値の妥当性は `download_timeouts_stay_within_sane_bounds` が上下から挟んで固定している
+（短すぎ＝正常な DL を殺す／長すぎ＝固まって見える、の両方を殺す）。
+
+### ② イベントの仕組みと **capability が不変で済んだ根拠**
+
+- **イベント名**: `app-update:progress`。命名規約も新設した＝ **`<feature ディレクトリ名>:<出来事>`**
+  （`src/features/app-update/` と一致させる）。Tauri が許すのは英数と `-` `/` `:` `_` のみ
+  （`tauri::event::event_name::is_event_name_valid`）。
+  ⚠ **Rust と TS の 2 箇所に同じ文字列を持っている**（ts-rs は const を書き出さない）。
+  ズレると進捗が一切出ないまま気付けないので、`appUpdateApi.test.ts` で値を固定した。
+- **ペイロード**: `{ phase, downloadedBytes, totalBytes }` の 3 つだけ。
+  URL・ローカルパス・バージョン・環境情報は載せない（§9）。
+  `progress_payload_only_carries_bytes_and_phase` が **キー集合の完全一致**で固定している
+  （leak 語彙を列挙する形だと知らない名前の漏洩を見逃すため、完全一致にした）。
+- **送り先＝全窓ブロードキャスト**（`app.emit()`）。
+
+**capability が不変で済んだ根拠（実測）**: `src-tauri/gen/schemas/acl-manifests.json` を読むと
+
+```
+core.default_permission   = ["core:path:default", "core:event:default", "core:window:default", …]
+core:event.default_permission = ["allow-listen", "allow-unlisten", "allow-emit", "allow-emit-to"]
+```
+
+＝ **`core:default` に `core:event:allow-listen` が既に含まれている**。4 枚の capability はすべて
+`core:default` を持つので `capabilities/*.json` は 1 文字も変えていない（`gen/schemas/` は `.gitignore` 済み）。
+tauri crate 側では `build.rs` が `PLUGINS` 定数から `core:default` を生成しており、
+`core:event` の 4 コマンドが `enabled-by-default = true` になっている。
+
+⚠ **`emit_to` では絞れないことをソースで確認した**。`tauri-2.11.5/src/event/listener.rs` の
+
+```rust
+*target == EventTarget::Any || filter.as_ref().map(|f| f(target)).unwrap_or(true)
+```
+
+の `target` は**リスナ側が登録した target**で、`@tauri-apps/api` の `listen()` は
+オプション省略時に `{ kind: 'Any' }` で登録する（`event.js` で確認）。
+＝ **Any で登録したリスナは emit のフィルタを無条件に素通りする**。
+「絞れないのに `emit_to` を書くと絞ったつもりの記録が残る」ほうが有害と判断し、素直に `app.emit()` にした。
+実際にメイン窓だけが受け取るのは **`MainWindowApp` でしか購読していない**というアプリ側の構造による。
+
+⚠ **副次的な発見**: 同じ `core:event:default` で **`allow-emit` も既に配られている**＝
+webview 側から同名イベントを**偽造できる**。偽の進捗が出るだけで何も起こらないが、
+**完了判定はイベントではなく invoke の resolve で行う**という不変条件を守った
+（`useAppUpdate` は実行中フラグが立っていないときの進捗イベントを捨てる。テストで固定済み）。
+
+⚠ **（不採用）`tauri::ipc::Channel`**: ブロードキャストも購読ライフサイクルも消せるが、
+frontend が `new Channel()` を作って command 引数で渡す方式なので
+**`install_app_update` の引数が `AppHandle` のみでなくなる**。capability が不変で済むと分かった以上、
+規約を曲げる理由が無いので採らなかった。
+
+**スロットリング**: `on_chunk` は 1 チャンク（数 KB〜数十 KB）ごとに呼ばれるので、
+累積 **512 KiB ごと**に間引いた（100MB で数千発 → 約 200 発）。時間ベースにしなかったのは、
+**純関数 `should_emit_progress` にして境界をテストで固定できるようにするため**。
+
+### ③ `restart()` が `RunEvent::Exit` を発火するか —— **呼び出しスレッド依存**（ソースで確認）
+
+`tauri-2.11.5/src/app.rs` の `AppHandle::restart()`:
+
+```rust
+if self.event_loop.lock().unwrap().main_thread_id == std::thread::current().id() {
+    self.cleanup_before_exit();            // ← RunEvent は一切発火しない
+    crate::process::restart(&self.env());
+} else {
+    self.manager.restart_on_exit.store(true, …);
+    match self.runtime_handle.request_exit(RESTART_EXIT_CODE) { … }
+}
+```
+
+doc コメントにも "When this function is called on the main thread, we cannot guarantee the delivery of
+those events, so we skip them" と明記されている。
+
+- **メインスレッドから呼ぶと `RunEvent::Exit` が発火しない** → `lib.rs` の Exit フックが走らない
+  → **`comment_sidecar::shutdown` が呼ばれない＝孤児 sidecar**。
+- `cleanup_before_exit()` が触るのは**トレイアイコンと resources_table だけ**で、sidecar には一切触れない。
+- 別スレッドからなら `request_exit` 経由で発火する（`lib.rs` は `ExitRequested` を握っていないので止まらない）。
+
+**入れた対処（2 つとも入れた）**:
+1. `restart_app` を **`async fn`** にした（tokio worker で走る＝別スレッド分岐）。
+2. **それに依存せず**、`restart_app` の中で `comment_sidecar::shutdown(&app)` を**明示的に呼んでから**
+   `app.restart()` する。`shutdown` は `guard.take()` で idempotent なので二重呼び出しは無害。
+   契約テスト `restart_stops_the_sidecar_before_restarting` が消失を機械で止める。
+
+**`run_on_main_thread` は使ってはいけない**（使うとメインスレッド分岐に落ちて Exit を飛ばす）。
+
+#### ⚠ 追加で見つかった穴 1: Windows は `restart_app` を通らずにプロセスが死ぬ
+
+`Update::install_inner()`（Windows）は `ShellExecuteW` でインストーラを起動した直後に
+**`std::process::exit(0)`** を呼ぶ。＝`RunEvent::Exit` も `restart_app` も通らず、**sidecar が孤児になる**。
+plugin はその直前に `on_before_exit` フックを呼ぶので、**install 用 builder にフックを付けて sidecar を落とした**。
+
+⚠⚠ **さらにその中に罠があった**: `UpdaterExt::updater_builder()` は
+**既定で `on_before_exit` に `app_handle.cleanup_before_exit()` を入れている**。
+`on_before_exit` は `replace` なので、こちらで設定すると**plugin 既定の後始末が消える**。
+→ **両方呼ぶ**ようにした。契約テスト
+`windows_install_stops_the_sidecar_before_the_process_exits` が 3 点（フックの存在 / sidecar 停止 /
+既定の後始末）をまとめて固定している。
+
+併せて `windows.installMode: "passive"` が plugin の `nsis_args()` で `["/P", "/R"]` に展開されること
+（`/R` = インストール後にアプリを再起動）も確認した。＝Windows は **NSIS 側がアプリを立ち上げ直す**ので、
+「インストーラが起動します。完了後に自動で立ち上がります」という案内文言はソースと整合する（実測は 099b）。
+
+#### ⚠ 追加で見つかった穴 2: `install` を同期コマンドにするとデッドロックする
+
+plugin の macOS 昇格インストール経路は `(self.run_on_main_thread)(…)` で**イベントループにタスクを投げてから**
+`rx.recv()` で同期ブロックする。`#[tauri::command]` は `async` が無いと IPC ハンドラ＝**メインスレッド**で
+実行されるので、メインスレッドが `rx.recv()` で止まっているとそのタスクが永遠に実行されない
+＝ **panic ですらない無言のハング**で、タイムアウトでも救えない。
+→ `install_app_update` / `restart_app` はどちらも `async fn` にした（コメントに理由を明記）。
+
+### ④ plugin 内部の消せない panic への対処と、その限界
+
+`Update::install_inner()`（macOS）の昇格経路には**こちらのコードでは消せない panic が 3 つ**ある:
+
+| # | 箇所 | 走るスレッド | 発生条件 |
+| --- | --- | --- | --- |
+| P1 | `script.compile().expect("invalid AppleScript")` | **メインスレッド** | パスに `"` / `\` が含まれ AppleScript リテラルが壊れる（エスケープしていない） |
+| P2 | `tx.send(r).unwrap()` | **メインスレッド** | 受信側が既に drop |
+| P3 | `rx.recv().unwrap()` | tokio worker | `run_on_main_thread` が `Err` を返しクロージャが実行されない（`res.is_err()` の判定は**この後**にあるので防御が間に合っていない） |
+
+到達条件は「`/Applications` 等に書き込み権限が無い状態で更新」なので稀だが、ゼロではない。
+
+**入れた対処: `useAppUpdate` の watchdog（`INSTALL_WATCHDOG_MS` = 120 秒）。**
+`install()` を始めた時点でタイマを張り、進捗イベント / resolve / reject のたびに張り直す。
+時間切れになったら `phase: "error"` ＋ 専用の定型文言
+（「更新を完了できませんでした。アプリを終了して、もう一度起動してからお試しください。」）に落とす。
+
+- ⚠ **`installing` に入った時点ではなく `install()` の開始時に張る**のが要点。進捗イベントが来たときだけ
+  張る実装にしていたら、**「1 発目のイベントが永久に来ない」というまさに救いたいケースを取りこぼしていた**
+  （テストを書いていて実際に踏んだ）。
+- ⚠ **watchdog は `inFlightRef` も返す**。見捨てた実行の Promise は永久に settle しないので、
+  `finally` に任せるとフラグが立ちっぱなしになり **UI だけ戻って再確認もアップデートも二度と押せない**
+  という一番たちの悪い状態になる。これも実装中にテストで踏んだ。
+  副作用として「見捨てた Rust 側の処理が走ったままもう 1 本 install を始められる」が、
+  **Rust 側の `InstallGuard` が受け止める**（走行中の 2 本目は即 `Ok(())`）。
+- ⚠ 世代カウンタ `runRef` を **check と install で共有**している。別々に持つと、watchdog 後に始めた
+  `recheck` の実行中に見捨てた install が遅れて settle して `inFlightRef` を落とし、3 本目が走れてしまう。
+- 120 秒の根拠: DL は別フェーズなので、この 120 秒が測るのは**署名検証＋展開＋自己置換だけ**。
+  数百 MB でも数十秒に収まる想定で倍以上の余裕を取った（実測は 099b）。
+
+**⚠ 記録すべき限界（watchdog でも救えない範囲）**:
+- **P1 / P2 はメインスレッド上で panic する**＝イベントループごと落ちる可能性があり、
+  watchdog が動く前にアプリが消えることがある。**plugin を fork しない限り塞げない。**
+- watchdog は **UI を返すだけでキャンセルではない**。Rust 側の処理は止められない（invoke は abort できない）。
+- したがって「更新を完了できませんでした」は**再試行ではなくアプリの再起動を促す文言**にした
+  （「もう一度お試しください」は、この状態では正確でない）。
+
+### ⑤ 契約テストをどう拡張したか
+
+`check_command_contract` → **`command_contract` に改名**し、同じ `include_str!("commands.rs")` を共有した。
+**新コードを別ファイルに分けなかった最大の理由がこれ**——既存の 3 本
+（`does_not_override_endpoints_at_runtime` / `has_no_panicking_unwrap_or_expect` /
+`never_binds_the_raw_updater_error`）が**追加コードにも自動で効く**。分割するとその効果を丸ごと失う。
+
+**追加した契約テスト（6 本）**:
+
+| テスト | 固定する不変条件 |
+| --- | --- |
+| `install_takes_only_the_app_handle` | `pub async fn install_app_update(app: AppHandle) -> AppResult<()>` の**シグネチャ全体**＝引数を足した瞬間に落ちる |
+| `restart_takes_only_the_app_handle` | 同上（`restart_app`） |
+| `keeps_the_download_hang_guard` | `.configure_client(` ＋ `connect_timeout(DOWNLOAD_CONNECT_TIMEOUT)` ＋ `read_timeout(DOWNLOAD_READ_TIMEOUT)`（実引数まで含める＝値だけ緩める変異も殺す） |
+| `restart_stops_the_sidecar_before_restarting` | `comment_sidecar::shutdown(&app)` |
+| `windows_install_stops_the_sidecar_before_the_process_exits` | `.on_before_exit(` ＋ sidecar 停止 ＋ **plugin 既定の `cleanup_before_exit()` の呼び直し** |
+| `install_is_guarded_against_concurrent_runs` | `compare_exchange(` ＋ `impl Drop for InstallGuard`（Drop を消すと**サイレントな機能停止**になるので機械で守る） |
+
+**追加した振る舞いテスト（8 本）**: ペイロードのキー集合完全一致／camelCase と `totalBytes: null`／
+`installing` の文字列／値に URL・パスが混ざらないこと／イベント名の妥当性／間引きの境界／
+間引き粒度の上下限／タイムアウト値の上下限／`InstallGuard` が 1 本だけ通し drop で解放されること。
+
+**既存テストの更新**: `never_binds_the_raw_updater_error` の下限を **`>= 2` → `>= 6`** に上げた
+（check 2 本＋install 4 本）。`error.rs` の `ALL: [ErrorCode; 16]` → `17`、`wire_name` に 1 腕追加。
+
+⚠ **照合対象にはテストモジュール自身のコードも含まれる**ので、
+**新しく書くテストでも `unwrap()` / `.expect(` / panic 系マクロ / `map_err(|e|` を使えない**
+（`unwrap_or` / `unwrap_or_default` / `unwrap_or_else` は needle にヒットしないので使える）。
+モジュール doc にこの制約を明記した。
+
+**frontend のテスト（500 → 555）**: `appUpdateApi.test.ts` +6（イベント名の固定を含む）／
+`useAppUpdate.test.tsx` +24（進捗・相互排他・購読ライフサイクル・watchdog・偽イベントの無視・console 非漏洩）／
+`UpdateScreen.test.tsx` +16（進捗バーの決定形/不定形・0 除算・100% 頭打ち・OS 分岐・§9）。
+
+### ⑥ dev で確認できた範囲／できなかった範囲
+
+⚠ **`tauri dev` で「アップデート」を押してはいけない（`target/debug` が消える）。**
+
+`Update::install_inner()`（macOS）の置換先 `extract_path` は `extract_path_from_executable(current_exe())` で決まり、
+`Contents/MacOS` を含まないパスでは**実行ファイルの親ディレクトリ**になる。
+`tauri dev` の実行ファイルは `apps/desktop/src-tauri/target/debug/stream-dock` なので、
+**`extract_path` は `target/debug` そのもの**。install が走ると:
+
+1. `rename(target/debug → $TMPDIR/tauri_current_app*/current_app)`（macOS の `/var/folders` と `/Users` は
+   同一 APFS ボリュームなので成功する見込み）
+2. 展開した一時ディレクトリを `target/debug` へ rename
+3. 関数を抜けると `tempfile::TempDir` が drop → **退避した `target/debug` が丸ごと削除される**
+
+cargo で再ビルドすれば復旧するが数分〜十数分かかる。**依頼者の判断で「dev では install を押さない」とした。**
+
+**完了条件の読み替え**（タスクファイルにも追記済み）:
+
+| 段階 | dev で確認できること | 確認できないこと |
+| --- | --- | --- |
+| publish 前（endpoint が draft = 404） | ボタンが押せる／固まらない／`check()` が 404 で落ちて**定型エラー**（生エラー・URL なし）／多重押下で壊れない／インストール中に他画面へ行って戻っても壊れない | DL 経路（1 バイトも通らない） |
+| publish 後・version を一時的に下げる | **DL の進捗が進む**／`downloading` → `installing` の遷移 | **install 段は押さない** |
+| 単体テスト側（いつでも） | OS 分岐・完了表示・再起動ボタン・進捗バーの決定形/不定形・§9 の非漏洩 | 実際の置換・再起動・sidecar の生死 |
+
+**OS 分岐と完了表示は実機に頼らず `UpdateScreen.test.tsx` で固定した**（`useHostOs` をモック）。
+後で install 経路を安全に通したくなった場合は、`tauri build` した `.app` を `/Applications` ではない
+作業ディレクトリにコピーして起動すること（失敗しても消えるのはコピーだけ）。
+
+### ⑦ 099b へ積み残す実機項目
+
+1. **macOS: 未署名 `.app` の自己置換が成立するか**（E2E-3）。
+2. **macOS: sidecar の実行ビットと ad-hoc 署名が更新後も保たれるか**（E2E-4）。
+3. **macOS: Gatekeeper に再ブロックされないか**（E2E-5）。
+4. **Windows: minisign 検証が通るか**（E2E-6・099a の地雷）。
+5. **Windows: 「再起動」ボタンに到達するか** —— ソース上は `std::process::exit(0)` により
+   **到達しないことがほぼ確定**したので、E2E-7 は「到達しない前提の案内文言が実挙動と一致するか」に読み替える。
+6. **`windows.installMode: "passive"` の妥当性**（`/P /R` の `/R` が実際に効くか）。
+7. **更新後に sidecar が孤児になっていないか**（`on_before_exit` フックが効いたか。Windows は特に）。
+8. **macOS で `/Applications` の書き込み権限が無い場合に昇格ダイアログが出るか** ——
+   出る場合、plugin 内部の panic 経路 P1〜P3 に到達する唯一の経路なので、**watchdog が実際に効くか**も見る。
+9. **DL 進捗バーの実描画**（jsdom はレイアウトを解決しないので原理的に不可能）。
+
+### ⑧ `install_app_update` を毎回 `check()` し直す設計
+
+`Update` を State に持ち越さない（このリポジトリの State はすべて `std::sync::Mutex` で、`.await` を跨ぐと
+`Send` 境界で落ちるかロックを握ったまま await してデッドロックする）。`Update` は `Resource` を実装しているので
+Tauri の resources_table に載せる道もあるが、それは **frontend に rid を渡す設計**になり
+「引数は `AppHandle` のみ」に反するので採らなかった。
+
+**副作用として記録しておくこと**: 「押した時点では更新があったが、再 check したら無かった」場合も `Ok(())` を返す
+（多重押下・時間差の競合を吸収するため）。その結果 UI は `installed` になり、macOS では再起動ボタンが出る。
+押しても再起動するだけで害は無いので許容した。
+**再修正トリガー＝「更新していないのに再起動を促された」という混乱が実際に起きたら**、
+`Ok(())` を「更新なしで完了」と区別できる戻り値に変える。
+
+コストは `latest.json` の GET が 1 回増えること（起動時の check ＋ install 時の再 check）。
+GET のみ・送信データゼロなので §1 の評価は変わらない。
+
+### ⑨ Rust 側の `InstallGuard`（055b の security-review 指摘 S-4 への回答）
+
+frontend の `inFlightRef` が守るのは**メイン窓の中だけ**。アプリ定義コマンドは ACL の対象外で
+**4 窓すべてから呼べる**ので、Rust 側にも `static INSTALL_IN_FLIGHT: AtomicBool` + RAII ガードを置いた。
+走行中の 2 本目は **`Ok(())` で即返す**（「更新なし」と同じ扱い＝エラーコードを増やさずに済む）。
+
+`Mutex` ではなく `AtomicBool` にしたのは、`.await` を跨いでも `Send` 境界の問題もデッドロックも起きないため。
+⚠ **これは多重実行を防ぐだけで、呼べること自体は防いでいない**（Tauri v2 では構造的に防げない）。
+
+Windows は install 中に `std::process::exit(0)` するので `Drop` が走らないが、プロセスごと消えるので問題ない。
+
+### ⑩ 訂正した既存記述（調査で判明した事実誤認）
+
+1. **`zip` feature の理由が誤っていた**（`security.md` §10 を訂正）。
+   055b 時点の記述は「`flate2`/`tar` は `zip` feature でしか有効化されない optional 依存＝落とすと
+   **macOS でコンパイルエラー**になり必ず気付く」だったが、plugin の `Cargo.toml` を実際に読むと
+   `[target.'cfg(target_os = "macos")'.dependencies]` の `tar` / `flate2` に **`optional` 指定は無い**
+   （`optional = true` なのは **Linux ターゲットの分だけ**）。
+   ＝ **macOS では `zip` を落としてもビルドは通る。**
+   本当に効くのは **Windows 側**で、updater 成果物は `*-setup.nsis.zip`、`Update::extract()` の zip 展開分岐が
+   `#[cfg(feature = "zip")]` なので、落とすと `extract_exe()` にフォールバックして
+   **zip のバイト列を `.exe` として書き出し、Windows の自己更新が実行時に静かに壊れる**。
+   → **「落とすな」という結論は正しいまま。危険度は当初の記述より高い**（コンパイルエラーで気付けない）。
+   ⚠ `Cargo.toml` / `task-board.md` / 055b 節にも同じ誤りが残っているが、**本タスクでは
+   `security.md` だけを直した**（`Cargo.toml` を触るとゼロ拡大の担保が崩れるため）。
+   **再修正トリガー＝次に `Cargo.toml` を触るタスクで、コメントも合わせて直すこと。**
+2. **055b 節の「却下した案: `configure_client`。`Update` に持ち越されないので副作用が無い」は事実と逆**
+   （同節の後段レビュー対応で訂正済みだが、元の段落は未修正のまま残っている）。
+   055d はまさにこの API を使っており、**`configure_client` は `Update` に持ち越される**
+   （`Updater::check()` が `configure_client: self.configure_client.clone()` で引き継ぐ）。
+   ⚠ **この 1 件だけは「履歴として残す」で済ませてはいけない**（055d review Q-14）——
+   055d の DL タイムアウトは**その逆が真であることに全面的に依存**しており、
+   元段落を信じた人は「タイムアウトが効いていない」と誤診断する。
+   **055b 節の当該段落を読むときは、必ずこの ⑩-2 を正とすること。**
+3. **055a / 055b / 055c 節の「未コミット」表記は現状と食い違っている**（作業ツリーは clean で 5 コミット済み）。
+   履歴としてそのまま残すが、読むときは注意すること。
+
+### 実装中に踏んで直した穴（テストが見つけたもの）
+
+| # | 症状 | 直し方 |
+| --- | --- | --- |
+| 1 | watchdog を「進捗イベント受信時」だけ張っており、**1 発目が永久に来ないケースを取りこぼす** | `install()` の開始時に張る |
+| 2 | watchdog 発火後も `inFlightRef` が立ちっぱなしで、**再確認もアップデートも二度と押せない** | watchdog で `inFlightRef` を返し、世代を進める |
+| 3 | check と install で世代カウンタが別々だと、見捨てた install が `recheck` 中にフラグを落とす | 世代を **1 本に共有** |
+| 4 | 実行中はボタンのラベルが `<Spinner />` になり**アクセシブルネームが消える**（テストから掴めない＝読み上げでも名前が無い） | `aria-label="アップデート"` を明示 |
+| 5 | ts-rs が `u64` を **`bigint`** に写すが、wire は JSON の数値＝JS では `number`。そのままだと**嘘の型**になり進捗率の割り算が実行時例外になる | `#[ts(type = "number")]` / `#[ts(type = "number | null")]` を明示（リポジトリ慣習の `u32` 化は 4GB で静かに折り返すので採らなかった） |
+
+### その他の設計判断
+
+- **`ErrorCode::UpdateInstallFailed` を 1 つだけ足した。** `log_message()` が
+  `UpdateCheckFailed => "更新の確認に失敗しました。"` を返すので、インストール失敗に流用すると**文言が事実と食い違う**。
+  一方 055b が確定した「種別（到達不可 / 404 / JSON 破損 / 署名検証失敗）で細かく分けない」方針は維持
+  ＝分ける軸は「確認」対「インストール」の 2 つだけ。`restart_app` にエラーコードは不要
+  （`AppHandle::restart()` は `-> !` で失敗経路が無く、`!` が `AppResult<()>` に型強制される）。
+- **`phase: "error"` が取得失敗とインストール失敗の両方を表すようになった**ので、
+  見出しを「更新を確認できませんでした」→「更新できませんでした」に変えた。どちらだったかは本文の定型文言が示す。
+  ⚠ **`status !== null` から推測して見出しを出し分けない**こと（`UpdateScreen` は表示専用の純関数で
+  フックの契約を知らない、という既存の設計を崩すため）。
+  **再修正トリガー＝見出しまで分けたくなったら phase を 2 つに割るか、判別可能 union に統合する。**
+- **`headline()` / `headlineDescription()` を文言テーブル（`HEADLINES`）に畳んだ。**
+  055c review の品質観点 3 に「再修正トリガー＝055d が DL 進捗の文言を足すとき」と明記されていたとおり。
+  状態が 4 → 7 に増えたので、分岐が 3 箇所に散る前にテーブル 1 本＋キー導出 1 本にした
+  （`Record` なのでキー漏れはコンパイルエラー）。
+- **進捗バーは `<progress>` ではなく div 2 段。** `appearance: none` を当てると WebKit が
+  不定形アニメーションを描かなくなり、「総バイト数不明」と「固まった」が見分けられなくなるため。
+  色は既存の役割トークン（`--control-bg` / `--primary`）のみ、余白は既存の実値（7px / 14px）のみで、
+  **新しい値は発明していない**。
+- **`installing` 中は総バイト数が分かっていても不定形にする**（満杯で止まったバーは「固まった」に見えるため）。
+- **購読は `useAppUpdate`（＝`MainWindowApp`）に置いた**ので、購読/解除の寿命はアプリの生存期間と一致する。
+  `UpdateScreen` の unmount（他画面への遷移）では解除されない＝**インストール中に画面を離れて戻っても壊れない**。
+  非同期 `listen` の `cancelled` ガードが無いと StrictMode の二重 mount でリスナが 1 本漏れるので、
+  そこもテストで固定した。
+
+### security-review / code-review の対応（2026-08-02・同日実施）
+
+**総合判定は「修正必須 2 件」**。plugin（`tauri-plugin-updater` 2.10.1）と `tauri` 2.11.5 のソースを
+レビュー側が実際に読み直し、**申し送り 2 / 4 / 5 / 11 はすべて事実どおり**と裏取りされた。
+一方で**申し送りが取りこぼしていた穴が 2 つ**見つかり、両方このセッションで直した。
+
+| # | 指摘 | 対応 |
+| --- | --- | --- |
+| **S-1** | **macOS 昇格経路の AppleScript にインストール先パスが生で埋まる**（plugin 側・`format!` にシングルクォート内へ埋め込み）。`'` が入れば **root 権限のコマンドインジェクション**、`"` / `\` なら**メインスレッド panic**。しかも `/Applications` は `root:admin` なので**標準ユーザーでは毎回この分岐に入る**＝「稀」ではない | **修正**: `ensure_install_path_is_shell_safe()` を DL の**前**に置き、`'` `"` `\` `` ` `` `$` 改行 を含むインストール位置では fail-closed で更新しない。§4 の例外を「ユーザー入力が入らないから安全」→「**この検査があるから安全**」に書き換え。契約テスト 1 本＋境界テスト 1 本で固定 |
+| **S-2** | `InstallGuard` に弾かれた 2 本目も `Ok(())` を返すため、frontend が resolve を一律「完了」と読み、**走行中の自己置換の最中に再起動ボタンが出る**。watchdog 発火 → 再確認 → もう一度アップデート、の 2 クリックで到達。macOS で `install_inner()` の 2 回の `rename` の間に刺さると **`.app` が消える** | **修正**: 戻り値を `AppResult<AppUpdateInstallOutcome>`（`installed` / `noUpdate` / `alreadyRunning`）に変更。`useAppUpdate` は `alreadyRunning` を watchdog と同じ文言へ落とす。**新規依存ゼロ・引数は `AppHandle` のまま** |
+| **S-5** | 偽造イベントは「実行中でなければ捨てる」だけでは不十分——**実行中は信頼して watchdog を張り直す**ので、送り続けると唯一の逃げ道を無力化できる | **修正**: `INSTALL_DEADLINE_MS`（15 分・**進捗では延長されない絶対上限**）を別に 1 本張った |
+| **S-3 / S-4** | ①`endpoints` が固定なのは **check の宛先だけ**で、実体の DL 先は**未署名 `latest.json`** が決める ②`download()` のサイズ上限は **plugin API 上そもそも課せない**（`on_chunk` が中断を返せない） | **記録のみ**（どちらもコード修正不要）。§1 と §5 に明記 |
+| **S-6 / Q-7 / Q-8 / Q-10** | 契約テストの範囲が `commands.rs` に閉じている（`comment_sidecar::shutdown` の `expect`）／`spawn_blocking` にすべきか／間引き 1 発目の非対称／CSS ガードに `.progressTrack` を入れるか | **修正不要**。それぞれ該当箇所に意図・理由・再修正トリガーをコメントで残した |
+| **Q-9** | `UpdateScreen` が `useHostOs()` を自前で呼び、055c の「表示専用」契約から外れていた | **修正**: `hostOs` を props で受ける形に戻した（`App` は既に持っている）。テストからモックが 1 つ消えた |
+| **Q-12** | §10 の `zip` 訂正の**機構**が誤り（`extract_exe()` は zip を `.exe` として書き出さず `Err` を返すだけ） | **修正**（docs のみ） |
+| **Q-14** | `@tauri-apps/api/event` の import 制約コメントが type-only import と食い違う | **修正**（「値として」に限定） |
+
+**ミューテーションで見つかった生存変異 6 件と、その対応**（レビュー側が実測 → 対応後に再実測して全部 killed）:
+
+| 変異 | 対応前 | 対応 | 対応後 |
+| --- | --- | --- | --- |
+| `install_app_update` 冒頭の `InstallGuard::acquire()` を削除（impl は残す） | **生存** | 契約テストの needle を「定義」から**呼び出し**へ | killed |
+| Rust 側のイベント名だけを書き換える（TS とドリフト） | **生存**（Rust 136・frontend 555 とも緑のまま進捗が一切出なくなる） | Rust 側に `assert_eq!(APP_UPDATE_PROGRESS_EVENT, "app-update:progress")` を追加＝**片方を変えると必ず落ちる** | killed |
+| 引数を足したうえで needle と同じ文字列を**行末コメント**に書く | **生存** | `code_only()` を行末コメントも落とす形に | killed |
+| `INSTALL_WATCHDOG_MS` を 1 秒にする | **生存**（テストが定数をシンボル参照しているため） | Rust の `download_timeouts_stay_within_sane_bounds` と同型の値域テストを frontend にも | killed |
+| watchdog の `runRef.current += 1` を削除 | **生存**（見捨てた実行が後から settle して `error` を `installed` に巻き戻す経路にテストが無かった） | 遅延 resolve / 遅延 reject の 2 本を追加 | killed |
+| `installing` の emit を `download()` の**前**（＝minisign 検証の前）へ移す | **生存** | **最初に現れる修飾付き `AppUpdateProgressPhase::Installing` が `.download(` より後**であることを契約テストで固定 | killed |
+
+⚠ 併せて **rustfmt がシグネチャを改行すると `install_takes_only_the_app_handle` が偽陽性で落ちる**問題も直した
+（`code_compact()`＝空白を全部落とし、末尾カンマ付きの複数行を 1 行形と同一視する）。
+改行しても緑・引数を足すと赤、を実測で確認済み。
+
+**この対応で増えたテスト**: Rust 131 → **136**（`+5`）／frontend 555 → **562**（`+7`）。
+
+⚠ **`pnpm check:bindings` は未コミットの作業ツリーでは原理的に通らない**（`git diff --exit-code` が HEAD と比べるため）。
+再生成しても作業ツリーが変わらないこと＝**実 drift ゼロ**は別途確認済み。**コミット後に走らせること。**
+未追跡の生成物（`AppUpdateProgress.ts` / `AppUpdateProgressPhase.ts` / `AppUpdateInstallOutcome.ts`）が
+ガードの対象になるのもコミット後。
+
+### 未完了・次にやること
+
+1. **実機確認（依頼者）** —— **publish 前**に確認できること:
+   - 「アップデート」ボタンが押せる／押しても **UI が固まらず**、定型エラー表示になる（**生エラー文字列・URL が出ない**）
+   - 多重押下で壊れない／インストール中に他画面へ行って戻っても壊れない
+   - ⚠ **OS 分岐（macOS の再起動ボタン / Windows の案内文言）は単体テストで担保済み**なので実機では省いてよい
+   **publish 後**（依頼者が Release を publish し、`tauri.conf.json` の version を一時的に下げる）:
+   - **DL の進捗が進む**ことを確認 → ⚠ **install は押さない**（上記⑥）
+   - **version を必ず戻す**（戻し忘れは `pnpm test` の `check:version` が検出する）
+2. **security-review**（本セッションで実施予定）。
+3. **コミットは未実施**（依頼者の明示指示待ち）。

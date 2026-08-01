@@ -605,6 +605,8 @@ pub fn run() {
             viewer_memory::commands::delete_viewer,
             viewer_memory::commands::clear_viewers,
             app_update::commands::check_app_update,
+            app_update::commands::install_app_update,
+            app_update::commands::restart_app,
         ])
         // 032c-b: RunEvent::Exit フックを追加するため .run() を .build()+.run(closure) に分割した
         //（従来は lib.rs に exit フックが無かった）。no-orphan 3 段 kill の②。

@@ -14,10 +14,23 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
 }));
 
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(),
+}));
+
 import { invoke } from "@tauri-apps/api/core";
-import { checkAppUpdate } from "./appUpdateApi";
+import { listen } from "@tauri-apps/api/event";
+import {
+  APP_UPDATE_PROGRESS_EVENT,
+  checkAppUpdate,
+  installAppUpdate,
+  listenAppUpdateProgress,
+  restartApp,
+} from "./appUpdateApi";
+import type { AppUpdateProgress } from "./bindings/AppUpdateProgress";
 
 const mockInvoke = vi.mocked(invoke);
+const mockListen = vi.mocked(listen);
 
 /**
  * **Rust が実際に送ってくる JSON の形**。
@@ -50,6 +63,7 @@ const hasUpdate: AppUpdateStatus = {
 
 beforeEach(() => {
   mockInvoke.mockReset();
+  mockListen.mockReset();
 });
 
 describe("checkAppUpdate", () => {
@@ -117,5 +131,104 @@ describe("checkAppUpdate", () => {
     mockInvoke.mockResolvedValueOnce(noUpdate);
     await expect(checkAppUpdate()).resolves.toEqual(noUpdate);
     expect(mockInvoke).toHaveBeenCalledTimes(2);
+  });
+});
+
+/**
+ * 055d: DL / インストール / 再起動 / 進捗購読。
+ *
+ * あるべき挙動（docs/tasks/055d / security.md §3・§8・§9）:
+ * - `install_app_update` / `restart_app` を**パラメータなし**で呼ぶ
+ *   （URL・バージョン・ファイル名・保存先を frontend から渡す経路を作らない）。
+ * - 失敗は reject をそのまま伝播する（握り潰さない。文言化はフックの責務）。
+ * - 進捗イベント名は Rust 側の定数と**一字一句一致**していること
+ *   （ズレると進捗が一切出ないまま気付けない。ts-rs は const を書き出さないので機械同期できない）。
+ */
+describe("installAppUpdate / restartApp", () => {
+  it("install_app_update を引数なしで呼ぶ（宛先・バージョンを frontend から渡さない）", async () => {
+    mockInvoke.mockResolvedValueOnce("installed");
+    await expect(installAppUpdate()).resolves.toBe("installed");
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+    expect(mockInvoke).toHaveBeenCalledWith("install_app_update");
+  });
+
+  it("⚠ 「何もしなかった」を成功に潰さず、Rust の結果をそのまま返す（review S-2）", async () => {
+    // resolve ＝ 完了ではない。呼び出し側が 3 つを区別できることがこの層の責務。
+    for (const outcome of ["installed", "noUpdate", "alreadyRunning"] as const) {
+      mockInvoke.mockResolvedValueOnce(outcome);
+      await expect(installAppUpdate()).resolves.toBe(outcome);
+    }
+  });
+
+  it("restart_app を引数なしで呼ぶ", async () => {
+    mockInvoke.mockResolvedValueOnce(undefined);
+    await restartApp();
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+    expect(mockInvoke).toHaveBeenCalledWith("restart_app");
+  });
+
+  it("インストール失敗は reject をそのまま伝播する（握り潰さない）", async () => {
+    const appError = {
+      code: "UPDATE_INSTALL_FAILED",
+      message: "更新のインストールに失敗しました。時間をおいて再度お試しください。",
+      occurredAt: "2026-08-02T00:00:00Z",
+    };
+    mockInvoke.mockRejectedValueOnce(appError);
+    await expect(installAppUpdate()).rejects.toEqual(appError);
+  });
+});
+
+describe("listenAppUpdateProgress", () => {
+  it("イベント名が Rust 側の APP_UPDATE_PROGRESS_EVENT と一致する", () => {
+    // ⚠ ここが 2 箇所に持っている文字列の唯一の同期点。Rust 側の定数を変えたらここも変えること。
+    expect(APP_UPDATE_PROGRESS_EVENT).toBe("app-update:progress");
+    // Tauri が許すのは英数と `-` `/` `:` `_` のみ。
+    expect(APP_UPDATE_PROGRESS_EVENT).toMatch(/^[A-Za-z0-9\-/:_]+$/);
+  });
+
+  /**
+   * `listen` に渡された Tauri 側ハンドラを、モックの呼び出し記録から取り出す。
+   * ⚠ クロージャで掴む書き方（`let captured = null` に代入）は、TS が代入を追えず
+   * `never` に狭めてしまうので使わない。
+   */
+  function capturedTauriHandler() {
+    return mockListen.mock.calls[0][1] as (event: { payload: AppUpdateProgress }) => void;
+  }
+
+  it("その名前で listen し、ペイロードだけをハンドラへ渡す", async () => {
+    const unlisten = vi.fn();
+    mockListen.mockResolvedValueOnce(unlisten);
+
+    const handler = vi.fn();
+    const received = await listenAppUpdateProgress(handler);
+
+    expect(mockListen).toHaveBeenCalledTimes(1);
+    expect(mockListen.mock.calls[0][0]).toBe(APP_UPDATE_PROGRESS_EVENT);
+    expect(received).toBe(unlisten);
+
+    const payload: AppUpdateProgress = {
+      phase: "downloading",
+      downloadedBytes: 1024,
+      totalBytes: 4096,
+    };
+    // Tauri は `{ event, id, payload }` を渡してくるが、ハンドラに見せるのは payload だけ。
+    capturedTauriHandler()({ payload });
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler).toHaveBeenCalledWith(payload);
+  });
+
+  it("総バイト数が null のペイロードもそのまま通す（正規化しない）", async () => {
+    mockListen.mockResolvedValueOnce(vi.fn());
+
+    const handler = vi.fn();
+    await listenAppUpdateProgress(handler);
+    capturedTauriHandler()({
+      payload: { phase: "installing", downloadedBytes: 7, totalBytes: null },
+    });
+    expect(handler).toHaveBeenCalledWith({
+      phase: "installing",
+      downloadedBytes: 7,
+      totalBytes: null,
+    });
   });
 });

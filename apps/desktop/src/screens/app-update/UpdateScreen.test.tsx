@@ -1,25 +1,42 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import type { AppUpdateStatus } from "../../features/app-update/bindings/AppUpdateStatus";
-import type { AppUpdatePhase } from "../../features/app-update/useAppUpdate";
-import { UPDATE_CHECK_ERROR_MESSAGE } from "../../features/app-update/useAppUpdate";
+import type {
+  AppUpdatePhase,
+  AppUpdateProgressState,
+} from "../../features/app-update/useAppUpdate";
+import {
+  UPDATE_CHECK_ERROR_MESSAGE,
+  UPDATE_INSTALL_ERROR_MESSAGE,
+  UPDATE_INSTALL_STALLED_MESSAGE,
+} from "../../features/app-update/useAppUpdate";
 import { UpdateScreen } from "./UpdateScreen";
 
 /**
- * 055c: アップデート画面の仕様テスト。
+ * 055c/055d: アップデート画面の仕様テスト。
  *
- * 仕様（こうあるべき・docs/tasks/055c）:
- * - 3 状態を**別表示**にする（更新あり／最新／取得失敗）。⚠「更新なし」と「確認できなかった」を混ぜない。
- * - 更新ありのとき **現在バージョン・新バージョン・更新内容**が出て、右下の
- *   「アップデート」ボタンは **`disabled`**（配線は 055d）。
- * - 最新・取得失敗のときはアップデートボタンを**出さない**。
+ * 仕様（こうあるべき・docs/tasks/055c / 055d）:
+ * - 状態を**別表示**にする（更新あり／最新／失敗／DL 中／インストール中／完了）。
+ *   ⚠「更新なし」と「確認できなかった」を混ぜない。
+ * - 更新ありのとき **現在バージョン・新バージョン・更新内容**が出て、右下の「アップデート」ボタンが**押せる**。
+ * - 最新・失敗のときはアップデートボタンを**出さない**。
+ * - `downloading` / `installing` の間はボタンを**無効化**する（多重実行防止）。
+ * - 総バイト数が分かるときは**決定形**の進捗バー、分からないときと `installing` 中は**不定形**。
+ * - 完了後は **OS で分岐**する（macOS＝再起動ボタン／Windows＝案内文言）。
  * - 更新内容は**改行を保持したプレーンテキスト**（マークダウン記法はまだ文字として見える）。
- * - §9: 取得失敗の表示に**生エラー文字列・URL・ローカルパスを出さない**。
+ * - §9: 失敗・進捗の表示に**生エラー文字列・URL・ローカルパスを出さない**。
  * - ⚠ 省略可フィールドは `undefined` ではなく **`null` で届く**（055b レビュー Q-4）。
  *   `!== undefined` で書くと `null` に対して true になり「新バージョン: null」と表示される。
  *
  * このコンポーネントは表示専用＝invoke も通信も一切起こさない（props を描くだけ）。
+ * ⚠ 055d review Q-9 で `useHostOs()` の呼び出しを **props（`hostOs`）に寄せた**ので、
+ * この性質は 055d でも保たれている＝**モックが 1 つも要らない**。
  */
+let hostOs: string | null = "macos";
+
+beforeEach(() => {
+  hostOs = "macos";
+});
 
 /**
  * **Rust が実際に送ってくる JSON の形**（`appUpdateApi.test.ts` と同じ作法）。
@@ -39,21 +56,31 @@ function renderScreen(
     status?: AppUpdateStatus | null;
     phase?: AppUpdatePhase;
     error?: string | null;
+    progress?: AppUpdateProgressState | null;
+    hostOs?: string | null;
   } = {},
 ) {
   const onRecheck = vi.fn();
+  const onInstall = vi.fn();
+  const onRestart = vi.fn();
   const utils = render(
     <UpdateScreen
       status={overrides.status ?? null}
       phase={overrides.phase ?? "ready"}
       error={overrides.error ?? null}
+      progress={overrides.progress ?? null}
+      hostOs={overrides.hostOs ?? hostOs}
       onRecheck={onRecheck}
+      onInstall={onInstall}
+      onRestart={onRestart}
     />,
   );
-  return { onRecheck, ...utils };
+  return { onRecheck, onInstall, onRestart, ...utils };
 }
 
 const updateButton = () => screen.queryByRole("button", { name: "アップデート" });
+const restartButton = () => screen.queryByRole("button", { name: "再起動" });
+const progressBar = () => screen.queryByRole("progressbar");
 
 describe("UpdateScreen —— 更新あり", () => {
   const hasUpdate: AppUpdateStatus = {
@@ -73,11 +100,14 @@ describe("UpdateScreen —— 更新あり", () => {
     expect(screen.getByText("更新内容")).toBeInTheDocument();
   });
 
-  it("⚠ アップデートボタンは disabled（配線は 055d）", () => {
-    renderScreen({ status: hasUpdate });
+  it("055d: アップデートボタンが押せて onInstall に配線されている", () => {
+    const { onInstall } = renderScreen({ status: hasUpdate });
     const button = updateButton();
     expect(button).toBeInTheDocument();
-    expect(button).toBeDisabled();
+    expect(button).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "アップデート" }));
+    expect(onInstall).toHaveBeenCalledTimes(1);
   });
 
   it("更新内容は改行を保持したプレーンテキストで出す（HTML として解釈しない）", () => {
@@ -142,19 +172,53 @@ describe("UpdateScreen —— 最新（available:false）", () => {
   });
 });
 
-describe("UpdateScreen —— 取得失敗（phase:error）", () => {
-  it("「更新を確認できませんでした」と再確認の導線を出す（アップデートボタンは出さない）", () => {
+describe("UpdateScreen —— 失敗（phase:error）", () => {
+  it("定型文言と再確認の導線を出す（アップデートボタンは出さない）", () => {
     const { onRecheck } = renderScreen({
       status: null,
       phase: "error",
       error: UPDATE_CHECK_ERROR_MESSAGE,
     });
-    expect(screen.getByText("更新を確認できませんでした")).toBeInTheDocument();
+    // ⚠ 055d で見出しを「更新を確認できませんでした」→「更新できませんでした」に変えた。
+    //    `phase: "error"` が**取得失敗とインストール失敗の両方**を表すようになったため
+    //    （どちらだったかは本文の定型文言が示す）。
+    expect(screen.getByText("更新できませんでした")).toBeInTheDocument();
     expect(screen.getByText(UPDATE_CHECK_ERROR_MESSAGE)).toBeInTheDocument();
     expect(updateButton()).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "再確認" }));
     expect(onRecheck).toHaveBeenCalledTimes(1);
+  });
+
+  it("055d: インストール失敗も同じ枠で、定型文言だけを出す", () => {
+    // status は残ったまま error になる（フックは install 失敗時に status を捨てない）。
+    // ⚠ それでも「更新あり」と「失敗」が同時に描かれないこと（`!failed &&` の多重防御）。
+    const { container, onRecheck } = renderScreen({
+      status: { currentVersion: "0.0.9", available: true, latestVersion: "0.1.0" },
+      phase: "error",
+      error: UPDATE_INSTALL_ERROR_MESSAGE,
+    });
+    expect(screen.getByText("更新できませんでした")).toBeInTheDocument();
+    expect(screen.getByText(UPDATE_INSTALL_ERROR_MESSAGE)).toBeInTheDocument();
+    expect(updateButton()).toBeNull();
+    expect(restartButton()).toBeNull();
+    expect(progressBar()).toBeNull();
+    expect(container.textContent).not.toMatch(
+      /https?:|:\/\/|github|latest\.json|\/Users\/|\\Users\\|\/Applications|\/var\/folders/,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "再確認" }));
+    expect(onRecheck).toHaveBeenCalledTimes(1);
+  });
+
+  it("055d: watchdog 発火時も同じ枠で、再起動を促す定型文言を出す", () => {
+    const { container } = renderScreen({
+      status: { currentVersion: "0.0.9", available: true, latestVersion: "0.1.0" },
+      phase: "error",
+      error: UPDATE_INSTALL_STALLED_MESSAGE,
+    });
+    expect(screen.getByText(UPDATE_INSTALL_STALLED_MESSAGE)).toBeInTheDocument();
+    expect(container.textContent).not.toMatch(/https?:|:\/\/|\/Users\/|\/var\/folders/);
   });
 
   it("§9: 生エラー文字列・URL・ローカルパスを画面に出さない", () => {
@@ -212,8 +276,8 @@ describe("UpdateScreen —— 省略可フィールドが null で届くケー�
     expect(container.textContent).not.toContain("null");
     expect(screen.queryByText("新しいバージョン")).toBeNull();
     expect(screen.queryByText("更新内容")).toBeNull();
-    // 「更新あり」自体は成立しているので、ボタンは出るが押せない。
-    expect(updateButton()).toBeDisabled();
+    // 「更新あり」自体は成立しているので、ボタンは出るし押せる（055d で disabled を外した）。
+    expect(updateButton()).toBeEnabled();
   });
 });
 
@@ -227,7 +291,231 @@ describe("UpdateScreen —— 確認中", () => {
       //   本文だけが空になる状態を見逃していた。
       expect(screen.getByText("最新のリリース情報を取得しています。")).toBeInTheDocument();
       expect(updateButton()).toBeNull();
+      expect(progressBar()).toBeNull();
       unmount();
     }
+  });
+});
+
+describe("UpdateScreen —— 055d ダウンロード中 / インストール中", () => {
+  const hasUpdate: AppUpdateStatus = {
+    currentVersion: "0.0.9",
+    available: true,
+    latestVersion: "0.1.0",
+  };
+
+  it("総バイト数が分かるときは決定形の進捗バーとパーセントを出す", () => {
+    renderScreen({
+      status: hasUpdate,
+      phase: "downloading",
+      progress: { downloadedBytes: 2_500_000, totalBytes: 10_000_000 },
+    });
+    expect(screen.getByText("更新をダウンロードしています")).toBeInTheDocument();
+    const bar = progressBar();
+    expect(bar).toBeInTheDocument();
+    expect(bar).toHaveAttribute("aria-valuenow", "25");
+    expect(screen.getByText("ダウンロードしています（25%）。")).toBeInTheDocument();
+  });
+
+  it("総バイト数が不明（Content-Length 無し）なら不定形にする（パーセントを出さない）", () => {
+    renderScreen({
+      status: hasUpdate,
+      phase: "downloading",
+      progress: { downloadedBytes: 2_500_000, totalBytes: null },
+    });
+    const bar = progressBar();
+    expect(bar).toBeInTheDocument();
+    // ⚠ 不定形なので現在値を持たない（0% と表示して「止まっている」ように見せない）。
+    expect(bar).not.toHaveAttribute("aria-valuenow");
+    expect(screen.getByText("ダウンロードしています。")).toBeInTheDocument();
+  });
+
+  it("総バイト数が 0 でも 0 除算にならず不定形へ落ちる", () => {
+    renderScreen({
+      status: hasUpdate,
+      phase: "downloading",
+      progress: { downloadedBytes: 0, totalBytes: 0 },
+    });
+    expect(progressBar()).not.toHaveAttribute("aria-valuenow");
+    expect(screen.getByText("ダウンロードしています。")).toBeInTheDocument();
+  });
+
+  it("受信済みが総バイト数を超えても 100% で頭打ちにする（バーが枠から出ない）", () => {
+    renderScreen({
+      status: hasUpdate,
+      phase: "downloading",
+      progress: { downloadedBytes: 12_000_000, totalBytes: 10_000_000 },
+    });
+    expect(progressBar()).toHaveAttribute("aria-valuenow", "100");
+  });
+
+  it("進捗 state がまだ無くても（1 発目のイベント前）壊れず不定形で出る", () => {
+    renderScreen({ status: hasUpdate, phase: "downloading", progress: null });
+    expect(progressBar()).toBeInTheDocument();
+    expect(progressBar()).not.toHaveAttribute("aria-valuenow");
+  });
+
+  it("installing 中は総バイト数が分かっていても不定形にする（満杯で止まって見せない）", () => {
+    renderScreen({
+      status: hasUpdate,
+      phase: "installing",
+      progress: { downloadedBytes: 10_000_000, totalBytes: 10_000_000 },
+    });
+    expect(screen.getByText("更新をインストールしています")).toBeInTheDocument();
+    expect(progressBar()).not.toHaveAttribute("aria-valuenow");
+    expect(
+      screen.getByText("ダウンロードが完了しました。インストールしています。"),
+    ).toBeInTheDocument();
+  });
+
+  it("DL / インストール中はアップデートボタンを無効化する（多重実行防止）", () => {
+    for (const phase of ["downloading", "installing"] as const) {
+      const { unmount, onInstall } = renderScreen({
+        status: hasUpdate,
+        phase,
+        progress: { downloadedBytes: 1, totalBytes: 2 },
+      });
+      const button = updateButton();
+      expect(button).toBeDisabled();
+      // 念のため：無効でもクリックが通ってしまう退行を落とす。
+      fireEvent.click(button as HTMLElement);
+      expect(onInstall).not.toHaveBeenCalled();
+      unmount();
+    }
+  });
+
+  it("§9: 進捗表示に URL・ローカルパス・ファイル名を出さない", () => {
+    const { container } = renderScreen({
+      status: hasUpdate,
+      phase: "downloading",
+      progress: { downloadedBytes: 2_500_000, totalBytes: 10_000_000 },
+    });
+    expect(container.textContent ?? "").not.toMatch(
+      /https?:|:\/\/|github|latest\.json|\.tar\.gz|\.app|\/Users\/|\\Users\\|\/var\/folders/,
+    );
+  });
+});
+
+describe("UpdateScreen —— §9 全状態の網羅", () => {
+  it("どの phase・どちらの OS でも、画面が自前で URL・ローカルパス・ファイル名を出さない", () => {
+    // ⚠ 個別の phase については既にテストがあるが、**状態を足したときの漏れ**は止められない
+    //   （055d で 4 → 7 に増えた／055e でも増えうる）。ここで全状態を機械的に舐める。
+    // ⚠ サーバ由来の可変データ（notes）と `error` の文言は「渡されたものを出す」のが仕様なので、
+    //   ここでは漏れの無い値を渡し、**画面が自分で足す文字列**だけを見る。
+    const phases: AppUpdatePhase[] = [
+      "idle",
+      "checking",
+      "ready",
+      "downloading",
+      "installing",
+      "installed",
+      "error",
+    ];
+    const leaks = /https?:|:\/\/|github|latest\.json|\.tar\.gz|\.app\b|\/Users\/|\\Users\\|\/Applications|\/var\/folders|AppData/;
+
+    for (const phase of phases) {
+      for (const os of ["macos", "windows", null] as const) {
+        const { container, unmount } = renderScreen({
+          status: {
+            currentVersion: "0.0.9",
+            available: true,
+            latestVersion: "0.1.0",
+            notes: "- 不具合を修正",
+          },
+          phase,
+          error: phase === "error" ? UPDATE_INSTALL_ERROR_MESSAGE : null,
+          progress: { downloadedBytes: 2_500_000, totalBytes: 10_000_000 },
+          hostOs: os,
+        });
+        expect(
+          container.textContent ?? "",
+          `phase=${phase} / hostOs=${String(os)} で漏洩語彙が出ている`,
+        ).not.toMatch(leaks);
+        unmount();
+      }
+    }
+  });
+
+  it("どの phase でも「アップデート」と「再起動」が同時に出ることはない（操作の取り違えを防ぐ）", () => {
+    // 仕様: 更新あり → アップデート／完了後 → 再起動。**同時に出る状態は無い**。
+    const phases: AppUpdatePhase[] = [
+      "idle",
+      "checking",
+      "ready",
+      "downloading",
+      "installing",
+      "installed",
+      "error",
+    ];
+    for (const phase of phases) {
+      const { unmount } = renderScreen({
+        status: { currentVersion: "0.0.9", available: true, latestVersion: "0.1.0" },
+        phase,
+      });
+      const both = updateButton() !== null && restartButton() !== null;
+      expect(both, `phase=${phase} で両方のボタンが出ている`).toBe(false);
+      unmount();
+    }
+  });
+});
+
+describe("UpdateScreen —— 055d 完了後の OS 分岐", () => {
+  const hasUpdate: AppUpdateStatus = {
+    currentVersion: "0.0.9",
+    available: true,
+    latestVersion: "0.1.0",
+  };
+
+  it("macOS では再起動ボタンを出して onRestart に配線する", () => {
+    hostOs = "macos";
+    const { onRestart } = renderScreen({ status: hasUpdate, phase: "installed" });
+
+    expect(screen.getByText("更新の準備ができました")).toBeInTheDocument();
+    expect(
+      screen.getByText("「再起動」を押すと、新しいバージョンで起動し直します。"),
+    ).toBeInTheDocument();
+    // 完了後にアップデートボタンは残さない（もう一度走らせる導線を作らない）。
+    expect(updateButton()).toBeNull();
+
+    const button = restartButton();
+    expect(button).toBeInTheDocument();
+    fireEvent.click(button as HTMLElement);
+    expect(onRestart).toHaveBeenCalledTimes(1);
+  });
+
+  it("Windows では再起動ボタンを出さず、案内文言に分岐する", () => {
+    hostOs = "windows";
+    renderScreen({ status: hasUpdate, phase: "installed" });
+
+    expect(
+      screen.getByText("インストーラが起動します。完了後に自動で立ち上がります。"),
+    ).toBeInTheDocument();
+    expect(restartButton()).toBeNull();
+    expect(updateButton()).toBeNull();
+  });
+
+  it("⚠ Windows は installing の時点で案内文言を出す（installed に到達しないため）", () => {
+    // plugin の `install()` はインストーラ起動後に `std::process::exit(0)` するので、
+    // Windows で最後に見える状態は `installing`。ここで案内が出ないと何も説明されないまま消える。
+    hostOs = "windows";
+    renderScreen({
+      status: hasUpdate,
+      phase: "installing",
+      progress: { downloadedBytes: 10, totalBytes: 10 },
+    });
+    expect(
+      screen.getByText("インストーラが起動します。完了後に自動で立ち上がります。"),
+    ).toBeInTheDocument();
+  });
+
+  it("hostOs が未判定（null）なら Windows 扱いにしない（安全側フォールバック）", () => {
+    // `useHostOs` は invoke 失敗時に null のまま。判定できないことを Windows 扱いにして
+    // 「自動で立ち上がります」と嘘をつかない（macOS では自動で立ち上がらない）。
+    hostOs = null;
+    renderScreen({ status: hasUpdate, phase: "installed" });
+    expect(restartButton()).toBeInTheDocument();
+    expect(
+      screen.queryByText("インストーラが起動します。完了後に自動で立ち上がります。"),
+    ).toBeNull();
   });
 });

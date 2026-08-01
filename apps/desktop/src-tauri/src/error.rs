@@ -26,6 +26,7 @@ pub enum ErrorCode {
     DuplicateName,
     DuplicateToolInPreset,
     UpdateCheckFailed,
+    UpdateInstallFailed,
 }
 
 impl ErrorCode {
@@ -56,6 +57,7 @@ impl ErrorCode {
             ErrorCode::DuplicateName => "同じ名前のプリセットが既に登録されています。",
             ErrorCode::DuplicateToolInPreset => "このツールは既にプリセットに追加されています。",
             ErrorCode::UpdateCheckFailed => "更新の確認に失敗しました。",
+            ErrorCode::UpdateInstallFailed => "更新のインストールに失敗しました。",
         }
     }
 }
@@ -159,6 +161,32 @@ impl AppError {
         )
     }
 
+    /// 055d: アプリ更新のダウンロード／インストールに失敗した（DL 途中の切断 / read タイムアウト /
+    /// **minisign 署名検証失敗** / アーカイブ展開失敗 / 自己置換の権限不足を**すべてここに寄せる**）。
+    ///
+    /// **引数を取らない**理由は `update_check_failed()` とまったく同じ（生エラーに URL やローカルパスが
+    /// 入る・§9）。呼び出し側は必ず `map_err(|_| AppError::update_install_failed())` の形にすること。
+    /// ⚠ DL 経路の生エラーは URL に加えて**一時ディレクトリの絶対パス**（`/var/folders/…/tauri_updated_app…`）や
+    /// インストール先（`/Applications/StreamDock.app`）も含みうるので、`update_check_failed()` より
+    /// 漏らしてはいけない情報が多い。
+    ///
+    /// **`UpdateCheckFailed` と分けた理由**: `ErrorCode::log_message()` は
+    /// `UpdateCheckFailed => "更新の確認に失敗しました。"` を返すので、インストール失敗に流用すると
+    /// **文言が事実と食い違う**。一方で 055b が確定した「**種別（到達不可 / 404 / JSON 破損 /
+    /// 署名検証失敗）で細かく分けない**」方針はそのまま維持する＝分ける軸は「確認」対「インストール」の
+    /// 2 つだけ。ユーザーが取れる行動（後で再試行する）はどちらも同じなので、これ以上は増やさない。
+    /// 再修正トリガー＝099b の実機 E2E で「署名検証失敗だけ別扱いにしたい」（＝鍵ローテ事故の検出）が
+    /// 出たら、そのとき 1 個だけ足す。
+    ///
+    /// なお `install_app_update` は「押した時点では更新があったが、再 check したら無かった」場合も
+    /// `Ok(())` を返す（ここへ潰さない）。詳細は `app_update::commands::install_app_update` の注記。
+    pub fn update_install_failed() -> Self {
+        Self::new(
+            ErrorCode::UpdateInstallFailed,
+            "更新のインストールに失敗しました。時間をおいて再度お試しください。",
+        )
+    }
+
     /// UI 表示可の補足情報を付与する（ファイル名のみ等。フルパス・環境情報は入れない）。
     pub fn with_details(mut self, details: impl Into<String>) -> Self {
         self.details = Some(details.into());
@@ -239,10 +267,11 @@ mod tests {
             ErrorCode::DuplicateName => "DUPLICATE_NAME",
             ErrorCode::DuplicateToolInPreset => "DUPLICATE_TOOL_IN_PRESET",
             ErrorCode::UpdateCheckFailed => "UPDATE_CHECK_FAILED",
+            ErrorCode::UpdateInstallFailed => "UPDATE_INSTALL_FAILED",
         }
     }
 
-    const ALL: [ErrorCode; 16] = [
+    const ALL: [ErrorCode; 17] = [
         ErrorCode::ValidationError,
         ErrorCode::NotFound,
         ErrorCode::UnsupportedFileType,
@@ -259,6 +288,7 @@ mod tests {
         ErrorCode::DuplicateName,
         ErrorCode::DuplicateToolInPreset,
         ErrorCode::UpdateCheckFailed,
+        ErrorCode::UpdateInstallFailed,
     ];
 
     #[test]
@@ -308,25 +338,60 @@ mod tests {
     }
 
     #[test]
-    fn update_check_failure_never_leaks_the_endpoint() {
+    fn update_install_failed_carries_only_a_fixed_safe_message() {
+        // 055d: 確認側とまったく同じ構え（引数を取らない＝生エラーを構造的に載せられない）。
+        let e = AppError::update_install_failed();
+        assert_eq!(e.code, ErrorCode::UpdateInstallFailed);
+        assert_eq!(
+            e.message,
+            "更新のインストールに失敗しました。時間をおいて再度お試しください。"
+        );
+        assert_eq!(e.details, None);
+        assert_eq!(e.operation, None);
+    }
+
+    #[test]
+    fn update_failures_never_leak_the_endpoint_or_local_paths() {
         // frontend へ渡る JSON と、app_logs へ書かれる固定文言の**両方**を検査する
         //（実装が message ではなく log_message 経由で漏らす退行も止めるため）。
-        let json = serde_json::to_string(&AppError::update_check_failed())
-            .expect("AppError は直列化できる");
-        let log = ErrorCode::UpdateCheckFailed.log_message();
-        for leak in [
-            "http", "github", "githubusercontent", "StreamDock-releases", "latest.json", "://",
+        //
+        // ⚠ 055d でインストール側を足したので**両方の code を回す**。DL/インストールの生エラーは
+        // URL に加えて一時ディレクトリやインストール先の**絶対パス**も含みうるため、
+        // パス断片も leak 語彙に入れている（§9）。
+        for (code, error) in [
+            (ErrorCode::UpdateCheckFailed, AppError::update_check_failed()),
+            (
+                ErrorCode::UpdateInstallFailed,
+                AppError::update_install_failed(),
+            ),
         ] {
-            assert!(
-                !json.contains(leak),
-                "更新確認エラーの JSON に {leak:?} が含まれている（§9: URL を frontend へ出さない）"
-            );
-            assert!(
-                !log.contains(leak),
-                "更新確認エラーのログ文言に {leak:?} が含まれている（§9: URL を log へ出さない）"
-            );
+            let json = serde_json::to_string(&error).expect("AppError は直列化できる");
+            let log = code.log_message();
+            for leak in [
+                "http",
+                "github",
+                "githubusercontent",
+                "StreamDock-releases",
+                "latest.json",
+                "://",
+                "/Users/",
+                "/var/folders",
+                "/Applications",
+                "tauri_updated_app",
+                "tauri_current_app",
+                ".app.tar.gz",
+            ] {
+                assert!(
+                    !json.contains(leak),
+                    "{code:?} の JSON に {leak:?} が含まれている（§9: URL/パスを frontend へ出さない）"
+                );
+                assert!(
+                    !log.contains(leak),
+                    "{code:?} のログ文言に {leak:?} が含まれている（§9: URL/パスを log へ出さない）"
+                );
+            }
+            // wire 形式そのもの（055c / 055d がこの code 文字列で分岐しうる）。
+            assert!(json.contains(&format!("\"code\":\"{}\"", wire_name(code))));
         }
-        // wire 形式そのもの（055c がこの code 文字列で分岐する）。
-        assert!(json.contains("\"code\":\"UPDATE_CHECK_FAILED\""));
     }
 }

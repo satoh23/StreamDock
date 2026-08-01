@@ -65,6 +65,65 @@
   margin-top: 14px;
 }
 
+/* 055d: DL / インストールの進捗ブロック（バー ＋ 1 文）。
+   ブロック内の間隔は .fieldLabel と同じ 7px、下の項目群との間隔は .fields と同じ 14px。
+   どちらも既存の実値で、新しい値は発明していない。 */
+.progressBlock {
+  display: grid;
+  gap: 7px;
+  margin-bottom: 14px;
+}
+
+/* バーの器。高さ 6px は「線」の役割なので --line 相当の細さに寄せ、
+   色は役割トークン経由のみ（生 hex/rgba を書かない）。
+   ⚠ `<progress>` を使わず div 2 段にしているのは、`appearance: none` を当てると
+   WebKit が不定形（インデターミネート）アニメーションを描かなくなり、
+   「総バイト数不明」と「固まった」が見分けられなくなるため。
+
+   ⚠ **`check-css-guards.mjs` には入れていない**（055d review Q-10）。ガードの採用基準は
+   055c review S-1 の「消えたときの失敗が具体的で重い」——`.notesBody` の `max-height` は
+   消えるとアップデートボタンが画面外に出て**押せなくなる**のに対し、ここの `overflow: hidden` が
+   消えても不定形バーが枠外へ滑るだけで**一目で分かる**（099b の E2E-13 で必ず気付く）。
+   再修正トリガー＝進捗バーが「消えても気付かない」種類の不変条件を持つようになったら入れる。 */
+.progressTrack {
+  position: relative;
+  overflow: hidden;
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  background-color: var(--control-bg);
+}
+
+/* 決定形。幅は React 側から % で当てる（TutorialOverlay と同じくレイアウト値のみインライン）。 */
+.progressValue {
+  height: 100%;
+  border-radius: 999px;
+  background-color: var(--primary);
+  transition: width 0.2s linear;
+}
+
+/* 不定形。総バイト数が取れないときと installing 中に使う。
+   Spinner（primitives.module.css）と同じく「動いていること」だけを示す。 */
+.progressIndeterminate {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 40%;
+  height: 100%;
+  border-radius: 999px;
+  background-color: var(--primary);
+  animation: update-progress-slide 1.2s ease-in-out infinite;
+}
+
+@keyframes update-progress-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(250%);
+  }
+}
+
 /* リリースノート本文。**改行を保持したプレーンテキスト**（055e でマークダウン描画に差し替わる）。
    ⚠ 055b レビュー S-5: notes は長さ無制限かつ minisign 署名の対象外（未署名）なので、
       縦に伸び続けると右下のアップデートボタンを画面外へ押し出す（055d で「押せない」に化ける）。
