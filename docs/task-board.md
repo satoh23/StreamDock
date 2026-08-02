@@ -250,15 +250,114 @@
   - **残 ②開発依存の脆弱性 5 件**: `pnpm audit`（`--prod` 無し）で high 4 / moderate 1。`brace-expansion`×3（eslint / typescript-eslint 経由・DoS）、`postcss`（vite 経由・パストラバーサル）、`esbuild`（sidecar のビルド用・dev server の問題）。**いずれも配布バイナリには入らない**が、更新するか `ignoreGhsas` で明示的に許容するかを決める
   - **残 ③条文**: security.md §10 に「新規依存追加時は既知脆弱性と照合する」を条文として足すか（現状は実施記録があるだけ）／`cargo deny` でライセンスと重複バージョンも見るか
 
+- 058 配信音声ルーティング（親設計 [docs/tasks/058-stream-audio-routing.md](tasks/058-stream-audio-routing.md)／通知音・VOICEVOX 読み上げを「配信に載せる/載せない」で切り替える**3 機能共通の土台**・**方式未確定＝スパイク先行**）
+  - 実装順: 058s（スパイク・**ここが通らなければ「載せる/載せない」は出さない**）→ 058a → 058b
+  - ⚠ **土台が存在しない**: `setSinkId` / `enumerateDevices` の使用は**リポジトリ全体でゼロ**。音は全部 frontend の Web Audio（`playWav` の `ctx.destination`＝OS 既定デバイス直結）で、Rust に `rodio`/`cpal` は無い。**注入点は `AudioContext` の 1 か所だけ**なので、Web 側で通るなら差分は極小で済む
+  - ⚠ **macOS(WKWebView) は `setSinkId` 非対応の公算が高い**（Chromium 系の API）。Windows(WebView2) とで割れると「Windows だけ効く設定項目」になる。**044s / 057s と同型のスパイク先行**にした理由がここ
+  - ⚠ **OBS はウィンドウキャプチャ方式（044s）＝映像のみ**。音が配信に載るのは OBS のデスクトップ音声等の別系統で、現状は「全部載るか全部載らないか」の 2 択しかない
+  - 058s 出力デバイス指定の技術検証（[docs/tasks/058s-audio-output-device-spike.md](tasks/058s-audio-output-device-spike.md)／macOS/Windows の `setSinkId` 実測・仮想オーディオデバイス運用・Rust `rodio` 案の評価・**検証のみ／本実装しない**・結論は「① Web 側で成立／② Rust 側再生が必要／③ 機能を出さない」の**3 択に必ず落とす**）
+    - ⚠ **(5) を最優先で確認する**: OBS 側でアプリ単位の音声キャプチャができるなら、**058 系ごと不要になる**（最短の逃げ道）
+    - ⚠ **`getUserMedia` を呼ばない**（マイク権限を取りに行かない）。ラベルが取れない環境は「選べない」を結論として記録する
+  - 058a ルーティング基盤（[docs/tasks/058a-audio-routing-foundation.md](tasks/058a-audio-routing-foundation.md)／`audioRouting.ts` 新設＋デバイス列挙＋`applyRoute`＋設定 UI・`ttsQueue` に `getRoute` の口を開ける・**①なら軽レビュー／②なら security-review 必須**〔新規 crate・§4・§10〕）
+  - 058b VOICEVOX 読み上げの「配信に載せる」設定（[docs/tasks/058b-voicevox-stream-output-toggle.md](tasks/058b-voicevox-stream-output-toggle.md)／要望②・既定 OFF・**出力先未設定時の注意文が必須**〔ON にしたのに載らない事故を防ぐ〕・**軽レビュー**）
+
+- 059 通知音（コメント／投げ銭）（親設計 [docs/tasks/059-notification-sounds.md](tasks/059-notification-sounds.md)／要望①＋④の音の部分・**音源はアプリ同梱**〔外部 CDN を参照しない＝§1/CSP 方針〕・**新規依存ゼロ**）
+  - 実装順: 059a → 059b（**「配信に載せる」トグルだけ 058a に依存**。音を鳴らすだけなら 058s の前でも着手できる）
+  - ⚠ **通知音の実装は 0 件**（`public/` はフォントのみで音源アセットなし）。再生プリミティブ（`playWav`）と課金判定（`isMonetaryEvent`）は既存を流用する
+  - ⚠ **レート制限が必須**（10 連投で 10 回鳴らさない）。⚠ **音源のライセンス確認**を必ず行い progress.md に記録する（配布バイナリに入る）
+  - 059a 通知音の基盤＋コメント通知音（[docs/tasks/059a-comment-notification-sound.md](tasks/059a-comment-notification-sound.md)／`notificationSound.ts`＋`soundPrefs.ts` 新設・**専用 `AudioContext`**〔`ttsQueue` の `dispose` で死なせない〕・クールダウン・音量・**試聴ボタン必須**・既定 OFF・**軽レビュー**）
+    - ⚠ **`resume()` の配線を忘れると macOS で「ON なのに一度も鳴らない」**（ログにも出ない）
+    - ⚠ **1 バッチ 1 回**（`added.length` の回数だけ鳴らさない）／**`updated`〔043e の Jewels combo〕では鳴らさない**
+  - 059b 投げ銭通知音（[docs/tasks/059b-monetary-notification-sound.md](tasks/059b-monetary-notification-sound.md)／別音・コメント音と**排他**・**クールダウンは音源ごとに独立**〔共有するとコメント連投中のスパチャ音が消える＝一番気づいてほしい音が鳴らない〕・**軽レビュー**）
+    - ⚠ **Twitch コミュニティギフトの N+1**（043a の既存課題）はクールダウンで凌ぐ。**依存していることをテストで固定する**
+
+- 060 オーバーレイ カスタム CSS テーマ（親設計 [docs/tasks/060-overlay-custom-css.md](tasks/060-overlay-custom-css.md)／要望③・ユーザーの CSS を import して名前を付け、配信画面からデザインを切り替える・**037 を supersede**）
+  - 実装順: 060a → 060b → 060d → 060c（**060d を 060c より先**＝ローカル CSS で通しで動く状態を見てから、リスクの高い外部取得を判断する）
+  - ⚠⚠ **依頼者のサンプル CSS はそのままでは 1 行も効かない**。`yt-live-chat-text-message-renderer #message` / `.chat-line__no-background` は**YouTube/Twitch 純正チャットの DOM 向け**で、StreamDock のオーバーレイは独自 DOM ＋ CSS Modules（クラス名ハッシュ化）。**「差分を吸収」の実体はプラットフォーム間の差ではなく「純正チャット DOM と StreamDock の DOM の差」**（YouTube/Twitch の値の差は `CommentViewDto` で既に正規化済み）
+  - ⚠ **本人決定＝互換エイリアス＋独自契約**。DOM を純正チャットの形に寄せるのではなく、**取り込んだ CSS のセレクタを sd 語彙へ機械的に書き換える**（DOM がきれいなまま・対応表が古くなっても StreamDock 側は壊れない）
+  - ⚠ **本人決定＝外部 `@import` は取り込み時に 1 回だけ取得してスナップショット化**。実行時は完全オフライン。**§1「CDN からの css 読み込み禁止」／CSP 方針「外部 style を読み込まない」に正面から当たる**ので §1 に例外節を新設する
+  - 060a セレクタ契約＋変換表（[docs/tasks/060a-overlay-selector-contract.md](tasks/060a-overlay-selector-contract.md)／安定クラス `sd-*`・`data-sd-source`/`data-sd-event`/`data-sd-tone`・CSS 変数・`cssCompat.ts`〔純関数〕・**既存意匠は 1px も変えない**・`check-css-guards.mjs` にクラス名の存在検査を追加・**軽レビュー**）
+    - ⚠ **CSS 変数は「定義しただけで実値が直値のまま」にしない**（誰も読んでいない変数は最悪の API）
+  - 060b CSS 取り込み基盤（[docs/tasks/060b-custom-css-import-backend.md](tasks/060b-custom-css-import-backend.md)／`app_data_dir/themes/`＋`overlay_themes` テーブル＋Rust 検証＋**外部 URL 除去**＋`comment-viewer.json` に `dialog:allow-open` を 1 件追加・**039 の確定方針をなぞる**・**security-review 必須**）
+    - ⚠ **保存するのは変換前の CSS**（変換は注入時に frontend が毎回行う＝変換表の更新が既存テーマにも効く）
+    - ⚠ **CSS エスケープ・コメント挿入による除去の迂回**をテストで具体的に潰すこと
+  - 060d テーマ管理 UI＋注入（[docs/tasks/060d-css-theme-management-ui.md](tasks/060d-css-theme-management-ui.md)／名前・一覧・切替・削除・プレビュー・`storage` 伝播・**軽レビュー**）
+    - ⚠ **注入は `<style>` の `textContent` のみ**（`innerHTML` だと `</style>` で DOM が壊れる／`dangerouslySetInnerHTML` 使用ゼロという事実を壊さない）
+    - ⚠ **「既定のデザインに戻す」を必ず置く**（`.sd-comment { display:none }` を入れると配信画面が空になり、表示専用のオーバーレイ窓からは復帰できない）
+    - ⚠ **プレビューの CSS が窓全体へ漏れる**（`<style>` はスコープを持たない）→ `scopeSelectors` で `.sd-preview` を前置する
+  - 060c 外部 `@import` のスナップショット（[docs/tasks/060c-external-css-snapshot.md](tasks/060c-external-css-snapshot.md)／sidecar が 1 回だけ GET →インライン化→保存・**§1 に例外節を新設**・**security-review 必須**・**実装しない判断も最後まで残る**）
+    - ⚠⚠ **宛先が allow-list で固定できない**（ユーザーの CSS に書かれた URL）＝既存 7 例外との決定的な違い。代わりに**毎回の明示同意**＋**取得できる形を極端に狭める**（https のみ／443 のみ／`.css` のみ／リダイレクト禁止／サイズ・タイムアウト上限）で担保する
+    - ⚠⚠ **SSRF が本タスク最大のリスク**。`assertAllowedThemeImportUrl` は **loopback / プライベート IP / `169.254.169.254` / `.local` / IP リテラルを拒否**する。⚠ **`assertAllowedObsUrl` は loopback を許可する逆向きのガード**なので絶対に流用しない
+    - ⚠ **「今後確認しない」を作らない**（宛先が固定できない以上、毎回の同意が唯一の担保）
+
+- 061 OBS エフェクト基盤＋投げ銭エフェクト（親設計 [docs/tasks/061-obs-effects.md](tasks/061-obs-effects.md)／要望④の視覚部分・**ヘッダーの「OBSエフェクト」は `implemented: false` の導線だけ既に存在**〔`ComingSoonScreen`〕・061 がこれを実体化する）
+  - 実装順: 061a → 061b → 061c → 061d（**061a+061b で「組み込みエフェクトが配信に出る」まで通しで動く**）
+  - ⚠ **本人決定＝テンプレートは「アセット＋宣言的レイアウト」**（画像/GIF/APNG/WebM(alpha)/音源＋`manifest.json`）。**HTML/CSS/JS は実行しない**＝たぬえさ3 の `forOBS3.html` 互換は捨てる。理由＝第三者の任意コード実行になり、`csp: null` ＋**アプリ定義コマンドが ACL 対象外**（046b）なので**注入された JS が Tauri コマンドを全部呼べる**
+  - 061a エフェクト窓＋OBS ソース自動追加＋画面の枠（[docs/tasks/061a-effect-overlay-window.md](tasks/061a-effect-overlay-window.md)／`effect-overlay` 窓〔`open_pinned_overlay_window` の完全踏襲〕＋`ObsOverlayKind` の**3 本目**〔046d の一般化の続き〕＋capability 1 枚追加〔`core:default` のみ〕・**軽 security-review**）
+    - ⚠ **窓名「StreamDock エフェクト」の 2 者間契約**（Rust `.title` ↔ sidecar `windowTitle` のバイト一致・**3 つが互いに部分文字列でないこと**）を `pinned_overlay_contract` 相当のテストで固定する。⚠ **壊れると M2 フォールバックで `"reused"`＝成功として返り、UI は成功表示・OBS は真っ黒**になる
+    - ⚠ 045c の規律を踏襲（自動反映は設定を立てるだけ／反映の契機は表示 ON／**猶予タイマーの取り消し**）
+  - 061b 組み込み投げ銭エフェクト＋発火層（[docs/tasks/061b-monetary-effect-builtin.md](tasks/061b-monetary-effect-builtin.md)／「〇〇さんが ¥1,000」・`effectTrigger.ts`＋`effectQueue.ts`〔localStorage＋`storage`・新規 WS/Tauri イベントを増やさない〕・**軽レビュー**）
+    - ⚠ **多重発火の 3 経路を基盤側で塞ぐ**: ①043e の combo 再送〔`updated` で出さない〕 ②043a のコミュニティギフト N+1〔同一投稿者の gift をバッチ内で 1 件に畳む〕 ③バースト上限〔1 バッチ最大 N 件・キューに溜めない〕
+    - ⚠ **`EffectRequest` に本文（`text`）とアバターを載せない**（§9・配信画面に第三者の自由入力を大写しにしない）。**テストで固定する**
+  - 061c エフェクトテンプレート取り込み（[docs/tasks/061c-effect-template-import.md](tasks/061c-effect-template-import.md)／`app_data_dir/effects/<id>/`＋`effect_templates` テーブル＋`manifest.json` のスキーマ検証・**security-review 必須**）
+    - ⚠ **パス検証が本タスクの本体**: `..` / 絶対パス / **symlink** を canonicalize で実際に確認する。**`manifest.json` が参照するファイルだけコピーする**（`.html` が紛れ込む経路を作らない）
+    - ⚠ **差し込み変数は `{name}` / `{amount}` / `{event}` の 3 つに固定**（061b の §9 判断を形式レベルで固定する）
+    - ⚠ **capability 追加ゼロ**（main 窓は既に `dialog:allow-open` を持つ）
+  - 061d テンプレート適用 UI（[docs/tasks/061d-effect-template-ui.md](tasks/061d-effect-template-ui.md)／一覧・**イベント種別ごとの割り当て**〔行は最初から全部ある＝「条件を追加」を作らない〕・プレビュー・**軽レビュー**）
+    - ⚠ **プレビューは `obs-effects` 画面内で再生**（エフェクト窓で再生すると配信中に出る）
+    - ⚠ **「すべての割り当てを解除」を必ず置く**（壊れたテンプレートからの脱出路）／**メディア読み込み失敗は組み込みへフォールバック**（無反応にしない）
+
+- 062 配信サマリー（集計・保存・フィルタ・レイド）（親設計 [docs/tasks/062-stream-summary.md](tasks/062-stream-summary.md)／要望⑤＋⑥・配信終わりに総コメント数/総課金額/課金回数/サブスク件数/**誰がいくら**〔マスト〕/**誰がレイドしたか**〔マスト・Twitch のみ〕を出し、配信ごとに保存してフィルタできる）
+  - 実装順: 062a → 062b → 062c → 062d
+  - ⚠⚠ **062a と 062b は他の親タスクより優先して着手する価値がある**＝**取得層と境界の記録は遡れない**（着手が遅れるほど、その間の配信のレイドと「いつの配信か」が永久に失われる）
+  - ⚠ **土台は半分できている**: `viewer_comments` は既に `session_id` 列と `idx_viewer_comments_session` を持つ。⚠ **ただし `session_id` は「1 配信」ではない**（`sessionIdRef` が**コメビュ窓のマウント単位**で採番＝開き直すと分裂／開きっぱなしだと 2 日ぶんが混ざる）
+  - ⚠ **既知の歪み 3 つを隠さず注記する**（数字が売りの機能なので、限界を隠すと配信者が誤った数字を信じる）: ①043a の**コミュニティギフト N+1**〔サブスク件数が水増し〕 ②043e の**Jewels の単位未確定**〔**総課金額に合算しない**・件数のみ〕 ③**通貨の混在**〔換算せず通貨ごとに並べる。外部レート取得＝§1 違反／固定レート＝すぐ古くなる〕
+  - 062a Twitch レイドの取り込み（[docs/tasks/062a-twitch-raid-ingestion.md](tasks/062a-twitch-raid-ingestion.md)／sidecar mapper＋wire DTO＋Rust model＋binding・**security-review 必須**〔受信面拡張・§9〕）
+    - ⚠ **現状 mapper が明示的に捨てている**（`if (!isDonation && !isGift && !isSubscription) return null;`）。`channel.chat.notification` は**既に購読済み**なので raid は受信経路に載っている
+    - ⚠ **(1) 既存購読で足りるかを最初に確認する**。`channel.raid` の別購読が要ると**新規スコープ＝既存ユーザーの再ログイン**（043a の `bits:read` の先例）→ **その時点で本人に確認**
+    - ⚠ **`RECOMPUTE_VIEWER_AGGREGATES_SQL` の `subscription_count`/`is_member` に `raid` を足さない**（レイドはサブスクではない）／**`MONETARY_EVENT_TYPES` にも足さない**（課金ではない＝ティア色カード・ティッカー・読み上げ・エフェクトを発火させない）
+    - ⚠ **sidecar と Rust で語彙がずれている**（`normal`↔`Chat` / `super_chat`↔`Superchat`）。両方に足して serde rename と wire の実値の一致を確認する
+  - 062b 配信セッションの記録（[docs/tasks/062b-stream-session-recording.md](tasks/062b-stream-session-recording.md)／`stream_sessions` テーブル＋境界の確定＋`sessionIdRef` の置き換え・**security-review 必須**〔§9 保存データ種別の変更〕）
+    - **境界の推奨＝接続開始/全切断＋猶予（例 30 分）。猶予中の再接続は同一セッションを継続**（配信中の一時的な切断で記録が割れないように）／起動時に閉じ忘れを回収する
+    - ⚠ **`viewer_comments.session_id` に FK を張らない**（既存データに対応行が無く、`PRAGMA foreign_keys = ON` で**既存 DB が壊れる**）／**バックフィルもしない**（セッションを捏造しない・過去の配信が一覧に出ない旨を UI に出す）
+    - ⚠ **051 の初コメ判定が `session_id` の粒度に依存している**可能性がある。粒度が変わることで挙動が変わらないかを必ず確認し、変わるなら意図した変更としてテストで固定する
+  - 062c 配信サマリー画面（[docs/tasks/062c-stream-summary-view.md](tasks/062c-stream-summary-view.md)／`stream_summary` モジュール新設＋数字のタイル＋**貢献者一覧**〔マスト・金額降順・行から視聴者詳細へ〕＋**レイド一覧**〔マスト〕・**軽レビュー**）
+    - ⚠ **`viewers` の列を使わない**（あれは全期間の累計でこの配信のぶんではない）／**既存 SQL と分類を揃える**（視聴者一覧と数字が矛盾しないように）／**集計結果をキャッシュテーブルに保存しない**（§9 の判断をやり直さない）
+  - 062d 配信履歴とフィルタ（[docs/tasks/062d-stream-history-filter.md](tasks/062d-stream-history-filter.md)／配信別/月別/年別・プリセット〔今月・先月・今年・全期間〕・**軽レビュー**）
+    - ⚠⚠ **§8 が本タスク最大の注意点**。「識別子はコンパイル時定数のみ・値はパラメータバインド」（`viewer_memory/repository.rs` 冒頭の規律）を**動的 WHERE / 動的 ORDER BY で破りたくなる唯一の場所**。ソートは `ViewerSort` と同型の enum で受ける
+    - ⚠ **月境界のタイムゾーン**: `published_at` は UTC の ISO8601、ユーザーが期待するのはローカルタイム。**frontend でローカルの月境界を UTC へ変換して渡す**（`chrono-tz` を足さない）。⚠ **9 時間差を跨ぐケースをテストで固定する**（月初のスパチャが前月に入るのは気づきにくい）
+
+- 063 ガチャエフェクト（たぬえさ代替）（親設計 [docs/tasks/063-gacha-effect.md](tasks/063-gacha-effect.md)／要望⑦・**着手条件＝061 系の完了**〔エフェクト窓・発火層・テンプレート形式を共有する〕）
+  - 実装順: 063s（スパイク）→ 063a → 063b → 063c
+  - ⚠ **「たぬえさより簡単」が唯一の成功条件**。機能の多さではなく**設定手順の少なさ**で勝つ（1 画面・1 表・「条件を追加」に相当する操作をゼロに・**確率は自動計算して常時表示**）
+  - ⚠ **依頼者の「if 文をたくさん書く」は伝聞**。条件式を書くのか、たぬえさ3 の「**抽選タグをコピペで増やす**」手作業を指すのかが未確定＝**取り違えると、解こうとした問題を解かないまま作ることになる**
+  - ⚠ **チャンネルポイントは扱えない**（新規 EventSub 購読＋新規スコープ＝既存ユーザーの再ログイン）。⚠ **たぬえさ3 のガチャが主にチャンネルポイントで回されているなら、StreamDock のガチャは「代替」にならない**→ 063s で確認して 3 択を本人に提示する
+  - ⚠ **差別化点候補**: ①**StreamDock は YouTube にも対応**（たぬえさ3 は Twitch 専用）＝YouTube 配信者には唯一の選択肢 ②**OBS ソースの自動追加（044a）済み**でセットアップの手数が少ない（たぬえさ3 はブラウザソースで `forOBS3.html` を手動指定）
+  - ⚠⚠ **IP／ライセンス上の線引き**（親 063 に明記）: 逆コンパイル・コード/アセット/**設定ファイル形式の流用**・利用規約に反する解析・**設定ファイルのインポート機能**は**すべて不可**。やってよいのは公開ドキュメント/Wiki/記事の読解と実際に触った UI の手順把握まで。**「たぬえさ互換」を目指さない**
+  - 063s たぬえさ3 のガチャ設定モデル調査（[docs/tasks/063s-tanuesa-gacha-spike.md](tasks/063s-tanuesa-gacha-spike.md)／**調査のみ・本実装しない**・成果物は設計目標メモ・**「たぬえさ3 は十分簡単で不満は別のところにある」という結論もありうる**〔そのときは 063 系ごと保留へ〕）
+  - 063a ガチャ定義＋作成 UI（[docs/tasks/063a-gacha-definition-editor.md](tasks/063a-gacha-definition-editor.md)／`gachas`/`gacha_prizes` テーブル＋**表 1 枚**〔景品名・重み・**確率は自動計算で編集不可**・エフェクト〕・テスト抽選ボタン・**軽レビュー**）
+    - ⚠ **確率を保存しない**（重みから毎回計算する。保存すると重みとずれる）／**`weight` は 1 以上のみ**（0 を許すと合計 0 で 0 除算）
+  - 063b 抽選ロジック＋トリガー（[docs/tasks/063b-gacha-draw-and-triggers.md](tasks/063b-gacha-draw-and-triggers.md)／重み付きランダム＋061b の発火層に相乗り＋**回しすぎ防止**・**軽レビュー**）
+    - ⚠ **抽選は 061b の畳み込み・バースト上限の「後」に行う**（順序を間違えると畳んだはずのギフトで N 回引く）
+    - ⚠ **`chat` トリガーはキーワード必須＋クールダウン必須**（無条件だと誰でも無限に回せて配信が荒らされる）。⚠ **キーワードは単純な前方一致 1 本のみ**（正規表現にすると ReDoS の経路になり、かつ「条件を書く」に近づいて設計目標に反する）
+    - ⚠ **抽選履歴・当選者・視聴者 id を永続化しない**（保存すると §9 追補〔046a〕の対象になり軽レビューでは済まなくなる）
+  - 063c ガチャ演出（[docs/tasks/063c-gacha-presentation.md](tasks/063c-gacha-presentation.md)／**抽選中 → 結果**の 2 段・抽選中テンプレートは任意・**軽レビュー**）
+    - ⚠ **抽選のタイミングを演出に合わせて遅らせない**（バースト上限・クールダウンとの整合が崩れる）＝**結果が決まった後に決まっていないふりをする**のが演出
+    - ⚠ **抽選中に景品名を漏らさない**（`{prize}` を空にする）／⚠ **投げ銭通知音（059b）＋抽選中の音＋結果の音の重なりは実機でしか分からない**ので必ず確認する
+
 ## 保留
 
 > 優先度が高くないため一旦保留（着手時は該当ブロックを ## Next へ戻す）。
 
-- 037 OBSオーバーレイ 意匠の拡張（親設計 [docs/tasks/037-overlay-design-expansion.md](tasks/037-overlay-design-expansion.md)／意匠選択機構を新設し複数意匠から選べるように＋新デザイン2種・表示専用/外部通信なし・下記 Todo「複数デザイン＋選択 UI」の実体化）
+- ~~037 OBSオーバーレイ 意匠の拡張~~ → **[060](tasks/060-overlay-custom-css.md) に supersede（2026-08-02）**（親設計 [docs/tasks/037-overlay-design-expansion.md](tasks/037-overlay-design-expansion.md)／意匠選択機構を新設し複数意匠から選べるように＋新デザイン2種・表示専用/外部通信なし・下記 Todo「複数デザイン＋選択 UI」の実体化）
+  - **037a（意匠選択機構）は 060 が実体化する**＝テーマ一覧＋切替 UI（[060d](tasks/060d-css-theme-management-ui.md)）が 037a そのもので、二重に作る意味がない。**037b は既に [043c](tasks/043c-overlay-monetary-highlight.md) へ supersede 済み（実装完了）**なので、**037 は親ごと supersede**
+  - ⚠ **手放すもの**: 037 が予定していた「**StreamDock が新デザイン 2 種を作って同梱する**」は 060 に**含まれない**（060 はユーザーが CSS を持ち込む機構）。**060 完了時点の姿＝現行意匠 1 種＋ユーザーの持ち込み**。組み込み意匠を増やしたくなったら、060d のテーマ一覧に「組み込みテーマ」として並べる形で別タスクを立てる
   - 実装順: 037a → 037b
   - 037a 意匠選択機構＋シンプル意匠（ユーザー名＋コメントのみ・背景透過・白い細字・**軽レビュー**）
   - 037b 投げ銭メッセージ（スパチャ/サブスク/ビッツ）強調意匠（`event_type` 分岐・全意匠に相乗り・**軽レビュー**）→ **[043c](tasks/043c-overlay-monetary-highlight.md) に supersede**（現行意匠単独で実体化・037a 非依存。オーバーレイ投げ銭強調は 043c を正とする）＝**043c は 2026-07-26 実装済み（YT スパチャ風カード）**
 - 039 フォントインポート（親設計 [docs/tasks/039-font-import.md](tasks/039-font-import.md)／ユーザーのフォントファイルを app data dir にコピー保存＋data URI で `@font-face` 供給・外部フォント非追加/CSP 不変）
+  - ⚠ **保留のままでよいが、設計は [060b](tasks/060b-custom-css-import-backend.md) / [061c](tasks/061c-effect-template-import.md) の必読前提**（2026-08-02）。039 の「app_data_dir へコピー＋Rust 検証＋SQLite レジストリ＋data URI で webview へ供給」という**確定方針をそのままなぞる**ので、実装は 060b が先行して 1 例目になる見込み。⚠ **`comment-viewer.json` への `dialog:allow-open` 追加も 060b が先に済ませる**ため、039a 着手時にはその論点が解消済みになる
+  - ⚠ **060 は 039 の代替にならない**（カスタム CSS の `@font-face` は書けるが、**外部フォント URL は取り込み時に除去される**ため、ローカルのフォントファイルを持ち込む手段は 039 が要る）
   - 実装順: 039a → 039b
   - 039a Rust 取込基盤（管理ディレクトリへコピー＋検証＋`fonts` レジストリ＋import/list/delete/get_font_data コマンド＋security.md 更新・**security-review 必須**・新規ファイル書き込み経路/dialog capability 追加）
   - 039b `@font-face` 動的注入（data URI）＋フォント選択 UI 拡張（OS 標準＋インポート済み合流）＋プレビュー/適用（**軽レビュー**）
@@ -295,7 +394,9 @@
 
 ## Todo
 
-- OBSオーバーレイ 複数デザイン＋選択 UI は **037（現在保留）で着手予定**（意匠選択機構＋シンプル意匠＋投げ銭強調）。**画像/GIF プレビューで意匠を選ぶ**版はさらに次段（未タスク化）。
+- ~~OBSオーバーレイ 複数デザイン＋選択 UI は **037（現在保留）で着手予定**~~ → **[060](tasks/060-overlay-custom-css.md) に移管（2026-08-02）**（意匠選択機構＋シンプル意匠＋投げ銭強調）。**画像/GIF プレビューで意匠を選ぶ**版は [060d](tasks/060d-css-theme-management-ui.md) の**静止プレビューまで実体化**する（GIF での意匠プレビューは含まない＝残りは引き続き未タスク化）。⚠ ただし **060 が配るのは「ユーザーが CSS を持ち込む機構」で、StreamDock が新意匠を作って同梱する部分は移管されていない**（037 の supersede 注記を参照）。
+- **チャンネルポイント連携（Twitch）**（未タスク化・2026-08-02 起票）。`channel.channel_points_custom_reward_redemption.add` の**新規 EventSub 購読＋新規スコープ**が要り、**既存ユーザーの再ログイン**が発生する（[043a](tasks/043a-monetary-ingestion-fidelity.md) の `bits:read` の先例）。[061](tasks/061-obs-effects.md)（エフェクト）・[063](tasks/063-gacha-effect.md)（ガチャ）のトリガーとして本命だが、**両親タスクとも対象外**にしてある。⚠ **着手条件＝[063s](tasks/063s-tanuesa-gacha-spike.md) の調査で「たぬえさ3 のガチャは主にチャンネルポイントで回されている」と判明したとき**（そのとき StreamDock のガチャは課金トリガーだけでは代替にならない）。**security-review 必須**。
+- **エフェクト／ガチャ用のフォント持ち込み**（未タスク化・2026-08-02 起票）。[061c](tasks/061c-effect-template-import.md) のテンプレートは**外部フォント URL を持てない**（§1）ので、凝った意匠を作るには [039](tasks/039-font-import.md) のフォントインポートが要る。着手条件＝061 系の完了後に「テンプレートの文字が OS 標準フォントに縛られて困る」と実機で判明したとき。
 - Discord コラボ表示の **方式 B＝自前オーバーレイ描画**（057 の親設計で**不採用**にしたもの・未タスク化）。RPC の `voice_states` ＋ `SPEAKING_START`/`SPEAKING_STOP` を購読して StreamDock の透過窓に自分で描き、044a/046d の window_capture 自動追加に相乗りする（[Overlayed](https://github.com/overlayeddev/overlayed) の構成）。**意匠を自由に作れる／StreamKit のサイト仕様変更に影響されない**のが利点だが、`cdn.discordapp.com` への**新規 egress**と**購読スコープの拡大**（＝承認要件が重くなる可能性）が要る。着手条件＝**意匠のカスタム要求が出たとき、または StreamKit が廃止されたとき**。⚠ **この判断を覆すには 057s 相当の再実測が要る**。
   - ⚠⚠ **057s の実測（2026-08-02）により、方式 B は「方式 A がダメだったときの逃げ道」にはならないことが確定した**。方式 B も現在の VC を知るために**同じローカル RPC が要る**うえ、`voice_states` と `SPEAKING_*` の購読で**スコープはむしろ増える**。RPC 系スコープは**非所有者では全滅**（`rpc` も `rpc.voice.read` も `5000 invalid_scope`）なので、**方式 B の着手条件にも「Discord の RPC 承認」が加わる**。詳細は [057s の「スパイク結果」節](tasks/057s-discord-rpc-streamkit-spike.md)。
 
