@@ -11681,3 +11681,70 @@ Technique。既存 `v0.1.0.md` と食い違うので書き方は動かさない�
    **055 系（055a〜055e）はこれで全サブタスクの実装が完了**——残るのは実機確認と 055e のコミット。
    ⚠ task-board / progress の 055c・055d 節に残る「未コミット」表記は**コミット前に書いた記述で、いまは古い**
    （実害は無いので 055e では触っていない）。
+
+## 2026-08-02 (057s Discord RPC ＋ StreamKit スパイク：**中止**＝非所有者では RPC スコープが払い出されず配布不可)
+
+Discord コラボ配信 自動オーバーレイ（057）の生死を実測で決めるスパイク（本実装 057a/057b/057c はしない）。
+**結論＝⚠「承認が要る／配布不可」**で、親 [057](tasks/057-discord-voice-overlay-design.md) の中止条件（本人決定・2026-08-02）を発動し、
+**057 系ごと [docs/task-board.md](task-board.md) の `## 保留` へ移した**。検証は**リポジトリ外の単体スクリプト**（`~/057s-spike`・
+`ws` / `obs-websocket-js` はスクラッチパッド側にのみ導入）で行い、**本体コード・依存・host-guard は未改変**（検証コードは破棄・本体マージ無し）。
+Developer Portal の操作・Discord/OBS の GUI 操作・**アカウント切替**・目視は本人が担当。
+
+- **実測環境**: macOS 14.6.1 (23G93) / Apple M3 Pro / Node v22.12.0 / OBS **32.2.1** / obs-browser 2.26.9 / CEF 127.0.6533.120 /
+  obs-websocket 5.7.4。Discord Application は**新規登録・team 非所属**。IPC 実測パスは **`$TMPDIR/discord-ipc-0`**（`/tmp` 直下には無い）。
+  アカウント **A＝Application の所有者** ／ **B＝所有者でも App Tester でもないサブアカウント**。
+- **(1) 承認要件 ＝ ⚠（本スパイクの主目的・3 択の真ん中）**: `AUTHORIZE` の実測で
+  **`rpc` は A で成功・B で `5000 "OAuth2 Error: invalid_scope: The requested scope is invalid, unknown, or malformed."`**、
+  **`rpc.voice.read` は A でも B でも `5000`**。⚠ **親 057 が期待した「Public 表記のサブスコープに逃げる」道は存在しなかった**
+  （現行公式ドキュメントでも `rpc.voice.read` は `rpc` と同じ "only available to approved partners"。「Public: Yes」の記述は無い）。
+  **対照実験の `identify` は A/B とも成功**＝接続もアプリ設定も壊れておらず、拒否されているのは **RPC 系スコープだけ**と確定。
+  同じ `client_id`・同じマシン・同じスクリプトで**変えたのはログイン中のアカウントだけ**。
+  **OAuth を迂回する道も無い**（`HANDSHAKE`/`READY` のみで `GET_SELECTED_VOICE_CHANNEL` / `GET_VOICE_SETTINGS` / `GET_CHANNELS` /
+  `GET_GUILDS` / `SUBSCRIBE VOICE_CHANNEL_SELECT` を叩き **5 コマンドすべて `4006 "Not authenticated or invalid scope"`**）。
+  Portal の現況＝**RPC whitelist の独立欄は無く実体は App Testers（50 枠）**・**一般承認の申請窓口は公開されていない**。
+- **(2) OAuth の形 ＝ ⚠（部分実測・打ち切り）**: `code_challenge`/`code_challenge_method` を付けても `AUTHORIZE` はエラーにならず
+  認可コードが返る（`identify` で確認）。ただし**受理か黙殺かは不明**で、**PKCE 可否の本判定（secret 抜き＋code_verifier で交換できるか）は未実測**。
+  **client_secret は本スパイクを通じて一度も作成・使用していない**（(1) の判定は `AUTHORIZE` の応答だけで付くため）。
+- **(3) RPC の実挙動 ＝ 未実測**（打ち切り規則により停止）。ただし副産物として:
+  **ソケットファイルは Discord 終了後も残る**（＝存在は起動の証拠にならず `ECONNREFUSED` の graceful 処理が必須）、
+  **接続を張り直すと次の HANDSHAKE が無応答になる**（7 回中 5 回 READY タイムアウト → **1 接続に集約して安定**。057a は常駐 1 接続設計にすべき）。
+- **(4) transport ＝ ✅ IPC 採用**: WS は **`4001 "Invalid Origin"`** で `rpc_origins` 登録が必須、IPC は Origin 検証なしで READY 到達・
+  **新規依存ゼロ**（`node:net`）。`-1`〜`-9` へのフォールバックは当環境では発生せず（`-0` のみ実在）。
+  フレームは `opcode(u32 LE)+length(u32 LE)+JSON`、**CLOSE(op 2) と FRAME(op 1) は別扱い**（無効 client_id は op2 `4000 "Invalid Client ID"`）、
+  **部分受信の再組立が必須**。⚠ **Windows 未検証**（`\\?\pipe\discord-ipc-N`・実装のみ・098 VM 待ち）。
+- **(5) StreamKit URL の描画条件 ＝ ✅**: **自分が管理者でないサーバー**（サブ垢が作成・本人はロール無しの一般メンバー）で参加者が描画された。
+  **ウィジェット無効・非コミュニティ・非公開のまま**＝**隠れた前提なし／コラボ相手に設定を頼む必要なし**。誰もいない VC は**空表示**（エラーにならない）。
+  ⚠ 限界＝**サブアカウントが作成したサーバー**での検証であり、真に第三者が運用するサーバーでは未検証。
+- **(6) OBS ブラウザソース ＝ ✅（前提が 1 つ）**: ⚠⚠ **044s の未描画症状が再現したが、原因は方式ではなく OBS の設定だった。**
+  CEF は初期化済み（GPU ヘルパー起動）だが **renderer プロセスが皆無・CEF キャッシュ書き込みゼロ**＝**読み込みが始まってすらいない**。
+  インストールは健全（全ヘルパー存在・`codesign --verify --deep --strict` exit 0・隔離属性なし）。
+  **OBS 既定の `https://obsproject.com/browser-source` すら真っ黒**だったため StreamKit/URL スキームとは無関係と切り分け、
+  **`global.ini` の `BrowserHWAccel=true` を OFF にして再起動したら描画された**。
+  → ⚠ **[044s](tasks/044s-obs-websocket-spike.md) の「方式 B は未描画」も同じ 1 台・同じ設定だった可能性が高い**
+  （044s の方式 A 採用自体は覆さないが、「ブラウザソースは使えない」と一般化しないこと）。
+  その他: **`SetInputSettings` の URL 差し替えだけで再読込 ✅（`refreshnocache` 不要）**／`GetInputList` で重複作成防止 ✅／
+  作成先は `currentProgramSceneName`／`SetSceneItemEnabled` で表示切替 ✅／既定は**背景透過 css**・`shutdown:false`・`width 800/height 600`。
+  ⚠ **`webpage_control_level` の既定は `1`**＝埋め込みページに OBS ステータス読取を許す。**第三者サイトを載せるので `0` へ落とすこと**（057b で対処）。
+- **通信面**: 検証の外部 egress は **`discord.com`（OAuth）のみ**。`streamkit.discord.com` へ取りに行くのは **OBS のブラウザソースであってスクリプトではない**
+  （＝親 057 の「StreamDock の egress は増えない」という主張の裏付け）。OBS は `127.0.0.1:4455`、RPC は unix ソケット／`127.0.0.1:6463` の loopback のみ。
+- **成果物（ドキュメントのみ）**: [docs/tasks/057s-discord-rpc-streamkit-spike.md](tasks/057s-discord-rpc-streamkit-spike.md)（末尾に**スパイク結果＋決定メモ**・状態行を「完了（結論＝中止）」へ）／
+  [docs/tasks/057-discord-voice-overlay-design.md](tasks/057-discord-voice-overlay-design.md)（状態行を「保留」へ・中止条件の直下に**「発動の記録」**を新設）／
+  [docs/task-board.md](task-board.md)（057 ブロックを `## Next` → `## 保留` へ移動＋結論 1 行。Todo の方式 B にも申し送り 1 行）／本エントリ。
+  **[docs/security.md](security.md) は未編集**（中止のため追記する例外が無い）。
+  ⚠ **057a / 057b / 057c は本スパイクより前に既に起票済み**だったため、**内容は変更せず状態行だけを「保留」に更新**した
+  （057a＝着手条件を満たさず・`rpc.voice.read` 前提の設計は再開時に要書き直し／**057b＝着手条件 (5)(6) は満たしているが ID の供給元が無く保留・実測値を状態行に転記**／057c＝057a に連動）。
+- **半自動版（ID を手登録 → OBS へ自動反映）を再検討し、改めて却下（本人決定・2026-08-02）**: 「自動反映が無理でも URL の自動生成だけなら」を検討したが**作らない**（親 057 の中止条件 1 つ目を維持）。URL の可変部は `guild_id`/`channel_id` の 2 つだけで **(5)(6) が ✅ なので OBS 側は完全自動になる**ものの、**チャンネル一覧が user の OAuth トークンでは取得できない**（Bot か RPC が要る）ため **VC は必ず手入力**になる。サーバー一覧は `guilds`（公開スコープ）で取れる見込みだが**未検証**。Guild Widget JSON は**サーバー側の有効化が必要**＝コラボ相手に頼むことになり目的に反する。⚠ StreamKit のサイトがサーバー/VC を選ばせられるのは**あのサイト自身が承認済みアプリとしてローカル RPC を使っている**ため（OBS のブラウザソースが当該ページを読み込んだ際にDiscord の同意モーダルが出たことで裏付け）＝**非承認アプリで同じことをする道は無い**。⚠ **当初の却下は「半分 vs 全部」の比較、今回は「半分 vs ゼロ」の比較**だったが、**チャンネル手入力が残る以上「VC を探す負担を消す」という芯が解消されない**ため却下を維持した。**再検討のトリガー＝「VC の指定は手作業でよいから OBS 反映だけ自動化したい」という要望が実際に出たとき**（そのときは `guilds` の非所有者実測から始める）。
+- **再開条件と粒度**: **Discord の RPC 承認が下りたとき**（または `rpc.voice.read` が実際に Public として払い出されたとき）。
+  ⚠ **申請窓口が公開されていないため見込みは高くない**（先行事例 voice-channel-grabber も承認を取れていない）。
+  再開時は **(1)(4)(5)(6) は測り済み**なので **057s の (3) と (2) の残りから**再開してそのまま 057a へ。**057b は (5)(6) だけで先行着手できる。**
+  ⚠ **再開しても使えるのは `rpc`（ローカル Discord クライアントの制御権限）**であって `rpc.voice.read` ではない＝
+  **security.md §3（最小権限）に照らして「この広さを受け入れるか」を親 057 で再判断すること。**
+- **やらないこと（線引き）**: 本実装（057a/057b/057c）・検証コードの本体マージ・新規依存の本採用・security.md 本体の編集・
+  Discord への承認申請そのもの（申請するかは本人判断）・コミット/プッシュ（本人の明示指示待ち）。
+- **⚠ 検証中の事故（記録）**: 検証スクリプトの自作サマリでキー名を `errorCode` としたフィールドに `data.code` をそのまま入れており、
+  **成功時の認可コードが平文で出力された**（4 件）。`data.code` は「成功時＝認可コード（機密）／失敗時＝エラーコード（数値）」の**両義フィールド**である。
+  実害は無い（認可コードは単回使用・短命で、交換には未漏洩の `client_secret` が必要）が、
+  **キー名ベースの伏せ字は「想定したキー」しか守れない**という教訓として残す。対処＝キー名に依存しない網
+  （24 文字以上の `[A-Za-z0-9_-]` のみからなる不透明文字列を無条件で伏せる。ただし SCREAMING_SNAKE_CASE の定数名は除外）を追加した。
+- **変更**: ドキュメント **7 ファイルのみ**（`progress.md` / `task-board.md` / 057 / 057s / 057a / 057b / 057c）。**本体コード差分ゼロ・依存追加ゼロ・host-guard 未改変**
+  （`git status --short -- apps/ package.json pnpm-lock.yaml` が空であることを確認済み）。

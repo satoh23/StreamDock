@@ -1,9 +1,25 @@
 # 057b OBS ブラウザソース自動追加（StreamKit URL の自動投入・自動更新）
 
-> 状態: **未着手（実装サブタスク）**。分割・線引きは親 [057](057-discord-voice-overlay-design.md) を正とする。
+> 状態: **保留（2026-08-02・親 057 の中止条件に連動）**。分割・線引きは親 [057](057-discord-voice-overlay-design.md) を正とする。
 >
 > ⚠ **着手条件**: [057s](057s-discord-rpc-streamkit-spike.md) の検証項目 **(5) StreamKit URL の描画**と
 > **(6) OBS ブラウザソースの自動作成 / URL 更新**がどちらも ✅ であること。
+>
+> ⚠⚠ **2026-08-02: 本タスク自身の着手条件は満たされている（(5)(6) とも ✅）。**
+> 止まっているのは **057a（VC の検出）が Discord の承認要件で不可能になった**ためで、本タスクの技術的障害ではない。
+> **URL を組むための guild_id / channel_id を供給する側が無い**ので、単独で作っても機能にならない＝親 057 の中止条件に連動して保留。
+> **再開時は本タスクから着手できる**（実測値は下記のとおり既に揃っている）。
+>
+> **057s で確定した実測（そのまま実装仕様に使える）**:
+> - **`SetInputSettings` で URL を差し替えるだけで再読込される** → **`PressInputPropertiesButton{refreshnocache}` は不要**
+> - `GetInputList` による既存検出 → 重複作成の防止が効く。作成先は `GetSceneList.currentProgramSceneName`
+> - `browser_source` の既定値: **css は既定で背景透過**・`shutdown:false`・`restart_when_active:false`・`fps 30`・`width 800 / height 600`
+> - 誰もいない VC の URL は**空表示**（エラーにならない）。VC 退出時は `SetSceneItemEnabled` で非表示にするのが妥当
+> - ⚠ **`webpage_control_level` の既定は `1`**（埋め込みページに OBS ステータス読取を許す）。
+>   **第三者サイト `streamkit.discord.com` を載せるので `0`（NONE）へ落とすこと**
+> - ⚠ **`BrowserHWAccel` が有効だとブラウザソースが描画されない環境がある**（macOS 14.6.1 / OBS 32.2.1 / M3 Pro で実測。
+>   OBS 既定 URL すら真っ黒になり、OFF にすると直る）。**「描画されないときはこれを疑う」という案内が要る。**
+>   [044s](044s-obs-websocket-spike.md) が「方式 B は未描画」と結論した根拠も同じ現象だった可能性が高い。
 > ⚠ **本タスクは [057a](057a-discord-rpc-voice-detection.md) に依存しない。**
 > URL を固定値（自分のサーバーの guild / channel）で通せるので、057a が承認待ちで止まっても**先に進められる**。
 >

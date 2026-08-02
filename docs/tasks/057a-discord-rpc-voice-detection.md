@@ -1,9 +1,17 @@
 # 057a Discord 接続基盤（ローカル RPC ＋ OAuth ＋ VC の常駐監視）
 
-> 状態: **未着手（実装サブタスク）**。分割・線引きは親 [057](057-discord-voice-overlay-design.md) を正とする。
+> 状態: **保留（2026-08-02・着手条件を満たさないことが実測で確定）**。分割・線引きは親 [057](057-discord-voice-overlay-design.md) を正とする。
 >
 > ⚠ **着手条件**: [057s](057s-discord-rpc-streamkit-spike.md) の検証項目 (1) が **✅（非所有者でも `rpc.voice.read` で通った）**
 > であること。⚠ / ✕ なら親 057 の中止条件が発動し、本タスクには着手しない。
+>
+> ⚠⚠ **2026-08-02: 着手条件は満たされなかった。** 057s の実測で **(1) は ⚠**——`rpc` は Application の所有者では通るが
+> **非所有者アカウントでは `5000 invalid_scope`**、**`rpc.voice.read` は所有者ですら `5000`**。親 057 の中止条件を発動し、
+> 057 系ごと [`docs/task-board.md`](../task-board.md) の `## 保留` へ移した。**本タスクには着手しない。**
+> 詳細は [057s の「スパイク結果」節](057s-discord-rpc-streamkit-spike.md)と[親 057 の「発動の記録」](057-discord-voice-overlay-design.md)。
+> ⚠ **再開時の注意**: 承認が下りても使えるのは **`rpc`（ローカル Discord クライアントの制御権限）**であって
+> `rpc.voice.read` ではない。本ファイルの設計は `rpc.voice.read` 前提で書かれているため、**スコープ前提の書き直しが要る**
+> （[`docs/security.md`](../security.md) §3 最小権限の再判断を含む）。
 > 併せて 057s の (2)(3)(4) の結論（OAuth の形・イベント挙動・transport）が確定していること。
 >
 > **必読前提**: 親 [057](057-discord-voice-overlay-design.md)、[057s](057s-discord-rpc-streamkit-spike.md)（実測結果が実装の前提）、

@@ -1,8 +1,13 @@
 # 057c らくらくツール設定への統合（Discord コラボ連携を 1 件目の連携として載せる）
 
-> 状態: **未着手（実装サブタスク）**。分割・線引きは親 [057](057-discord-voice-overlay-design.md) を正とする。
+> 状態: **保留（2026-08-02・親 057 の中止条件に連動）**。分割・線引きは親 [057](057-discord-voice-overlay-design.md) を正とする。
 >
 > ⚠ **着手条件**: [057a](057a-discord-rpc-voice-detection.md) と [057b](057b-obs-streamkit-browser-source.md) の両方が完了していること。
+>
+> ⚠⚠ **2026-08-02: 057a が Discord の承認要件で着手不可になったため保留。**
+> 詳細は [057s の「スパイク結果」節](057s-discord-rpc-streamkit-spike.md)と[親 057 の「発動の記録」](057-discord-voice-overlay-design.md)。
+> ⚠ **`INTEGRATION_REGISTRY` は空のまま**である（本タスクが 1 件目のエントリになる予定だった）。
+> **らくらく画面はカードが 0 件の状態が続く**ので、他の連携を先に載せる判断をする場合はここを参照すること。
 >
 > **必読前提**: 親 [057](057-discord-voice-overlay-design.md)、[057a](057a-discord-rpc-voice-detection.md)（状態イベントの契約）、
 > [032](032-rakuraku-auto-setup-design.md)（per-integration アーキテクチャ）、
