@@ -1,8 +1,22 @@
-(async()=>{const AC=window.AudioContext||window.webkitAudioContext;if(!AC){console.log("SD058S-DIAG {\"error\":\"no AudioContext\"}");return}
-const ctx=new AC();let r="ok";try{await ctx.resume()}catch(e){r=e.name}
-const o=ctx.createOscillator(),g=ctx.createGain();o.frequency.value=440;g.gain.value=0.2;o.connect(g);g.connect(ctx.destination);o.start();
-console.log("SD058S-DIAG "+JSON.stringify({state:ctx.state,resume:r,sampleRate:ctx.sampleRate,secure:isSecureContext,proto:location.protocol}));
-setTimeout(async()=>{try{o.stop()}catch{};await ctx.close();console.log("SD058S-DIAG stopped")},10000)})()
+(async()=>{const AC=window.AudioContext||window.webkitAudioContext;
+const t=(o,k)=>{try{return typeof o?.[k]}catch{return "throw"}};
+const d=(p,k)=>{try{return !!Object.getOwnPropertyDescriptor(p,k)}catch{return false}};
+const A={secure:isSecureContext,proto:location.protocol,mediaDevices:typeof navigator.mediaDevices,
+enumerateDevices:t(navigator.mediaDevices,"enumerateDevices"),selectAudioOutput:t(navigator.mediaDevices,"selectAudioOutput"),
+audioContext:typeof AC,ac_setSinkId:AC?t(AC.prototype,"setSinkId"):"n/a",ac_sinkId_getter:AC?d(AC.prototype,"sinkId"):false,
+ac_createMediaStreamDestination:AC?t(AC.prototype,"createMediaStreamDestination"):"n/a",
+me_setSinkId:t(HTMLMediaElement.prototype,"setSinkId"),me_sinkId_getter:d(HTMLMediaElement.prototype,"sinkId"),ua:navigator.userAgent};
+console.log("SD058S-A "+JSON.stringify(A));
+if(!navigator.mediaDevices?.enumerateDevices){console.log('SD058S-B {"error":"enumerateDevices unavailable"}');return}
+const ds=await navigator.mediaDevices.enumerateDevices();const outs=ds.filter(x=>x.kind==="audiooutput");
+const cls=id=>id===""?"empty":id==="default"?"default":id==="communications"?"communications":"opaque("+id.length+")";
+window.__sd058s=outs;
+console.warn("↓ この表は画面で見るだけ。貼り戻さないでください（デバイス名が入っています）");
+console.table(outs.map((x,i)=>({i,label:x.label,idClass:cls(x.deviceId)})));
+const idc={};for(const x of outs){const c=cls(x.deviceId);idc[c]=(idc[c]||0)+1}
+console.log("SD058S-B "+JSON.stringify({total:ds.length,audiooutput:outs.length,
+audioinput:ds.filter(x=>x.kind==="audioinput").length,labeled:outs.filter(x=>x.label!=="").length,
+labelLens:outs.map(x=>x.label.length),idClasses:idc}))})()
 
 # stream-dock
 
