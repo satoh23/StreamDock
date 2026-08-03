@@ -1,22 +1,6 @@
-(async()=>{const AC=window.AudioContext||window.webkitAudioContext;
-const t=(o,k)=>{try{return typeof o?.[k]}catch{return "throw"}};
-const d=(p,k)=>{try{return !!Object.getOwnPropertyDescriptor(p,k)}catch{return false}};
-const A={secure:isSecureContext,proto:location.protocol,mediaDevices:typeof navigator.mediaDevices,
-enumerateDevices:t(navigator.mediaDevices,"enumerateDevices"),selectAudioOutput:t(navigator.mediaDevices,"selectAudioOutput"),
-audioContext:typeof AC,ac_setSinkId:AC?t(AC.prototype,"setSinkId"):"n/a",ac_sinkId_getter:AC?d(AC.prototype,"sinkId"):false,
-ac_createMediaStreamDestination:AC?t(AC.prototype,"createMediaStreamDestination"):"n/a",
-me_setSinkId:t(HTMLMediaElement.prototype,"setSinkId"),me_sinkId_getter:d(HTMLMediaElement.prototype,"sinkId"),ua:navigator.userAgent};
-console.log("SD058S-A "+JSON.stringify(A));
-if(!navigator.mediaDevices?.enumerateDevices){console.log('SD058S-B {"error":"enumerateDevices unavailable"}');return}
-const ds=await navigator.mediaDevices.enumerateDevices();const outs=ds.filter(x=>x.kind==="audiooutput");
-const cls=id=>id===""?"empty":id==="default"?"default":id==="communications"?"communications":"opaque("+id.length+")";
-window.__sd058s=outs;
-console.warn("↓ この表は画面で見るだけ。貼り戻さないでください（デバイス名が入っています）");
-console.table(outs.map((x,i)=>({i,label:x.label,idClass:cls(x.deviceId)})));
-const idc={};for(const x of outs){const c=cls(x.deviceId);idc[c]=(idc[c]||0)+1}
-console.log("SD058S-B "+JSON.stringify({total:ds.length,audiooutput:outs.length,
-audioinput:ds.filter(x=>x.kind==="audioinput").length,labeled:outs.filter(x=>x.label!=="").length,
-labelLens:outs.map(x=>x.label.length),idClasses:idc}))})()
+SD058S-A {"secure":true,"proto":"http:","mediaDevices":"object","enumerateDevices":"function","selectAudioOutput":"undefined","audioContext":"function","ac_setSinkId":"function","ac_sinkId_getter":true,"ac_createMediaStreamDestination":"function","me_setSinkId":"function","me_sinkId_getter":true,"ua":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0"}
+
+SD058S-B {"total":2,"audiooutput":1,"audioinput":0,"labeled":0,"labelLens":[0],"idClasses":{"empty":1}}
 
 # stream-dock
 
