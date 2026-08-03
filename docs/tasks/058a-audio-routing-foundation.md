@@ -1,6 +1,13 @@
 # 058a 音声ルーティング基盤（出力先の抽象＋デバイス選択 UI）
 
-> 状態: **未着手（実装サブタスク）**。分割・線引きは親 [058](058-stream-audio-routing.md) を正とする。
+> 状態: **未着手（実装サブタスク）。⚠ 2026-08-03: [058s](058s-audio-output-device-spike.md) の結論が
+> **②（Rust 側再生・採る形は「②-軽」）**に決まったため、**本ファイルの内容は着手時に書き直しが要る**。
+> 下記は ①（Web 側 `setSinkId`）前提で書かれており、`audioRouting.ts` / `applyRoute` / `ttsQueue` の `getRoute` は
+> **いずれも成立しない**（`setSinkId` は macOS で非対応、Windows では `deviceId`/`label` が空で選択不能＝実測）。
+> **層が frontend から Rust（`rodio`）へ移り、security-review が必須になる。**
+> 置き換え後のスコープと security 方針の差分ドラフトは **058s の「スパイク結果」節**を正とする。
+> 内容を変更していないのは 057a〜057c と同じ作法（書き直すのは着手時）。**
+> 分割・線引きは親 [058](058-stream-audio-routing.md) を正とする。
 >
 > **必読前提**: 親 [058](058-stream-audio-routing.md)、**方式決定 [058s](058s-audio-output-device-spike.md)（着手条件）**、
 > [`ttsQueue.ts`](../../apps/desktop/src/features/comment-viewer/ttsQueue.ts)（`AudioContext` の所有者）、

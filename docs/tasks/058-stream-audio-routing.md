@@ -1,6 +1,13 @@
 # 058 配信音声ルーティング（親・設計/方針）
 
-> 状態: **未着手（親ドキュメント）**。本ファイルは 058s〜058b の**分割・線引き・実装順の正**。
+> 状態: **方式決定済み（2026-08-03・[058s](058s-audio-output-device-spike.md) の結論＝**② Rust 側再生**。採る形は「②-軽」）**。
+> 本ファイルは 058s〜058b の**分割・線引き・実装順の正**だが、**方式に関する記述は 058s の「スパイク結果」節が上書きする**。
+>
+> ⚠ 本ファイルの前提のうち **2 点が実測で覆った**（詳細は 058s）:
+> ① 「`setSinkId` は WebView2 なら期待できる」→ **Windows でも使えない**（API はあるが `deviceId`/`label` が空で選択不能）。
+> ② 「設定の単位は音の種類ごと」→ **②-軽では読み上げのルーティングができない**ため、
+> トグルが付くのは**通知音だけ**になった（[058b](058b-voicevox-stream-output-toggle.md) は保留）。
+> なお「試聴（`voicevoxPreview`）には効かせない」という既定は**そのまま成立**する（読み上げ経路を触らないため）。
 >
 > **必読前提**: TTS キュー [`ttsQueue.ts`](../../apps/desktop/src/features/comment-viewer/ttsQueue.ts)（`AudioContext` を 1 つだけ所有する層）、
 > 再生プリミティブ [`voicevox.ts`](../../apps/desktop/src/features/comment-viewer/voicevox.ts)（`playWav`）、

@@ -11748,3 +11748,78 @@ Developer Portal の操作・Discord/OBS の GUI 操作・**アカウント切�
   （24 文字以上の `[A-Za-z0-9_-]` のみからなる不透明文字列を無条件で伏せる。ただし SCREAMING_SNAKE_CASE の定数名は除外）を追加した。
 - **変更**: ドキュメント **7 ファイルのみ**（`progress.md` / `task-board.md` / 057 / 057s / 057a / 057b / 057c）。**本体コード差分ゼロ・依存追加ゼロ・host-guard 未改変**
   （`git status --short -- apps/ package.json pnpm-lock.yaml` が空であることを確認済み）。
+
+## 2026-08-03 (058s 音声出力デバイス指定スパイク：**結論＝② Rust 側再生**〔採る形は「②-軽」＝通知音だけ `rodio`〕)
+
+「通知音・VOICEVOX 読み上げを**配信に載せる／載せない**で切り替える」方式を実測で確定させるスパイク（本実装 058a/058b はしない）。
+結論は 3 択のうち **② Rust 側再生**で、採る形は本人決定（2026-08-03）で **②-軽**＝**通知音（059）だけ Rust（`rodio`）で鳴らして
+出力デバイスを指定し、読み上げは Web Audio のまま無改変**。検証は**リポジトリ外**（DevTools スニペットと `cargo new` した
+使い捨て Rust プロジェクト）で行い、**本体コード・依存は未改変**。アプリの起動・OBS 操作・耳での確認・OS の出力デバイス切替は本人が担当。
+実測値の正は [058s](tasks/058s-audio-output-device-spike.md) の「スパイク結果」節。
+
+- **実測環境**: macOS **14.6.1 (23G93)** / Apple Silicon / Rust **1.95.0** / OBS **32.2.1**、Windows **NT 10.0 x64（実機）**。
+  webview は macOS＝**WKWebView**（UA `AppleWebKit/605.1.15`）／Windows＝**WebView2 Chromium 150**。
+  検証用 crate は `rodio` **0.22.2** / `cpal` **0.17.3**（スクラッチパッド側のみ）。
+- **① Web 側（`setSinkId`）＝ ✕。両 OS で成立せず、しかも詰まっている場所が違う**:
+  - **macOS**: `navigator.mediaDevices` が**そもそも存在しない**（`enumerateDevices` も `setSinkId` も `undefined`）。
+    `createMediaStreamDestination` はあるが `setSinkId` が無いので**要素経由の回避策も成立しない**。
+  - **Windows**: `AudioContext.setSinkId` / `HTMLMediaElement.setSinkId` は **`function` として存在する**のに、
+    `enumerateDevices` が **`deviceId` も `label` も空文字の 1 件**しか返さない＝**渡せる ID が無く選べない**。
+    ⚠ **「API は存在した」を「切り替えられる」と読むと誤判定する典型**で、判定条件に「label が取れること」を
+    入れておいたことがそのまま効いた。
+  - `selectAudioOutput` は**両 OS とも `undefined`**。＝ **マイク権限を取らずに label を得る手段は現時点で存在しない**
+    （`getUserMedia` は本スパイクを通じて一度も呼んでいない）。
+- **③（機能を出さない）は不採用**: (5) の OBS アプリ単位キャプチャは**そのプロセスの音を丸ごと**拾うため
+  **読み上げと通知音を区別できない**。「読み上げを載せる」を選ぶと**通知音も必ず載る**。
+  本人の判断＝「載せるかを選べるならよいが、**それで結果的に通知音が載るなら保留はダメ**」。
+- **(5) OBS の実態**: **macOS ✅**（「アプリケーション音声キャプチャ」で StreamDock を選べば拾え、
+  デスクトップ音声をミュートした状態で**別アプリの音では振れない**＝排他性も確認）。
+  **Windows ⚠**——`StreamDock` を選んでも振れず、**`Microsoft Edge WebView` を選ぶと振れる**（アプリ再起動もまたぐ）。
+  原因は Windows の音量ミキサーで確認でき、**音声セッションの持ち主が `msedgewebview2.exe`**。
+  ⚠ ⚠ を付けたのは技術ではなく**案内の質**の問題（名前が StreamDock でないうえ、他の WebView2 アプリの音も乗りうる）。
+- ⚠⚠ **`tauri dev` では (5) を判定できなかった（macOS）**: dev で走るのは `target/debug/stream-dock` という**素の実行ファイル**で
+  **bundle identifier を持たない**ため、OBS がアプリ選択を保存できず**OK を押すと空に戻る**。
+  `tauri build --debug` の `StreamDock.app`（`com.tetsuya.stream-dock`）に替えた瞬間に解決した。
+  → **「dev で動かない」を「製品で動かない」の証拠にしてはいけない。** 057s の教訓（自分の環境で動いた＝配布可否ではない）の**実行形態版**。
+- **(3)(4) ＝ ✅**: `rodio` から**仮想オーディオデバイスを指定して再生**すると、**既定デバイスからは鳴らず**、
+  **OBS の「音声入力キャプチャ」でその仮想デバイスを選んだソースのメーターが振れた**（＝「載せる」側の経路が成立）。
+  仮想デバイスは耳で聞こえないので「聞こえない」だけでは「どこにも出ていない」と区別できず、**OBS のメーターがその区別を与えている**。
+- **② の依存コスト（実測）**: 直接依存は **`rodio` 1 本**。**`default-features = false, features = ["playback","wav"]` が必須**
+  （⚠ 既定のままだと symphonia 一式で **126 crate**）。実際に入るのは **macOS 39 / Windows 38**。
+  **`tokio` / `async-std` / `futures-executor` を 1 つも引かない＝「Rust は完全同期のまま」の方針を破らない**。
+  `cargo audit` は **exit 0**（脆弱性 0・警告 0）。⚠ `rodio::speakers` は `experimental` feature 配下なので使わず、
+  **cpal 列挙＋`DeviceSinkBuilder::from_device`** の安定 API を使うこと。
+- **① が詰んだ理由がそのまま ② の長所**: webview は権限が無いと `label` も `deviceId` も空しか返さないのに対し、
+  **Rust は権限なしでデバイス名と、cpal が「再起動・再接続をまたいで持続する」と明記する安定 ID（`DeviceId(HostId, String)`）を返す**。
+  「ユーザーが出力先を選べる」という機能の前提条件は Rust 側にしか存在しない。
+- **なぜ ②-フルではなく ②-軽か**（本人決定）: ②-フル（読み上げも Rust 再生）は読み上げにもトグルを付けられるが、
+  代償が **`ttsQueue` の再生経路の全面移設**（WAV の IPC 受け渡し＋直列制御と再生完了通知の作り直し）。
+  **050 でハング対策を入れたばかりの最も繊細な箇所を書き換える**ため退行リスクが高い。
+  ②-軽なら `ttsQueue.ts` / `voicevox.ts` / `voicevoxPreview.ts` は**無改変**で、通知音は新規実装なので**移設ですらない**。
+  ⚠ **代わりに「読み上げを載せない」は選べない**（要望②のトグルは出せない）＝ **058b は保留**。
+- **②-軽の運用**: 読み上げ＝Web Audio → **OS 既定（仮想デバイス／複数出力装置）** → 載る。
+  通知音＝**Rust から実デバイスを明示指定** → 載らない・本人には聞こえる。
+  OBS 側は**アプリ単位キャプチャではなく仮想デバイスの「音声入力キャプチャ」**にする（アプリ単位はデバイス指定を無視するため両立しない）。
+  ⚠ **ユーザーに仮想オーディオデバイスの導入と OBS の構成変更を求めることになる**（058a/059 の UI に案内が必須）。
+- **成果物（ドキュメントのみ）**: [058s](tasks/058s-audio-output-device-spike.md)（末尾に**スパイク結果＋決定メモ＋058a の実装スコープ＋
+  security 方針の差分ドラフト**〔§10 `rodio`／§4 デバイス列挙と再生／§9／§1〕・状態行を「完了」へ）／
+  [058](tasks/058-stream-audio-routing.md)（**覆った前提 2 点**を状態行に明記）／[058a](tasks/058a-audio-routing-foundation.md)（**内容は変更せず**
+  状態行に「① 前提のため着手時に書き直しが要る・層が Rust へ移り security-review 必須」）／[058b](tasks/058b-voicevox-stream-output-toggle.md)（**保留**）／
+  [059](tasks/059-notification-sounds.md) [059a](tasks/059a-comment-notification-sound.md) [059b](tasks/059b-monetary-notification-sound.md)（**再生層が Rust に変わる申し送り**）／
+  [task-board.md](task-board.md)（058 に結論 1 行・059 の実装順を **058a → 059a → 059b** に修正）／本エントリ。
+  **[security.md](security.md) は未編集**（正式追記と security-review は 058a で行う＝本スパイクの責務はドラフトまで）。
+- ⚠ **Windows 未検証（申し送り）**: rodio の実再生／仮想デバイス運用／**バンドル版での (5)**（`StreamDock.exe` なら拾える可能性は残る）。
+  098 か 058a 着手時に実測すること。**058a には「Windows 未検証」の注記を残す**（013/019/021/028 と同じ作法）。
+- ⚠ **手順上の落とし穴（記録）**: Windows の Chromium 系 DevTools は**コンソールへの貼り付けを既定で拒否**する（self-XSS 警告）。
+  `allow pasting` は**警告が出ている最中にだけ**受け付けられ、それ以外のタイミングで打つと `Unexpected identifier` になる。
+  **Sources → Snippets は貼り付け保護の対象外**なので、長いスニペットはそちらが確実。
+  また Windows では `before*Command` の `pnpm check:sidecar` が **Windows 用 sidecar 未生成（098 未完了）**で落ちるため、
+  sidecar を必要としない経路で検証した（音を鳴らすのは webview であってコメビュ窓である必要すら無い）。
+- **やらないこと（線引き）**: 本実装（058a/058b）・検証コードの本体マージ・依存の本採用・`security.md` 本体の編集・
+  通知音そのものの追加（059）・コミット/プッシュ（**本人の明示指示待ち**）。
+- **変更**: ドキュメント **9 ファイルのみ**（`progress.md` / `task-board.md` / 058 / 058s / 058a / 058b / 059 / 059a / 059b）。
+  **本体コード差分ゼロ・依存追加ゼロ**（`git status --short -- apps/ package.json pnpm-lock.yaml
+  apps/desktop/src-tauri/Cargo.toml apps/desktop/src-tauri/Cargo.lock` が空であることを確認済み）。
+  ⚠ `apps/desktop/src-tauri/target/debug/bundle/` に検証用の debug ビルド（`StreamDock.app` / `.dmg`）が残っているが
+  `target/` は gitignore 済み。なお `tauri build --debug` は最後に **updater の署名鍵が無いというエラーで非ゼロ終了する**が、
+  `.app` と `.dmg` はその手前で生成済み（本スパイクには無関係）。

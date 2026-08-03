@@ -2,6 +2,14 @@
 
 > 状態: **未着手（親ドキュメント）**。本ファイルは 059a〜059b の**分割・線引き・実装順の正**。
 >
+> ⚠⚠ **2026-08-03 の [058s](058s-audio-output-device-spike.md) の結論により、通知音の再生層が変わる（申し送り）**:
+> 結論は **②-軽**＝**通知音は Rust（`rodio`）で鳴らし、出力デバイスを指定する**。読み上げ（Web Audio）は無改変。
+> 理由＝**webview では出力デバイスを選べないことが実測で確定**したため（macOS は `setSinkId` ごと非対応、
+> Windows は `deviceId`/`label` が空で選択不能）。**Web Audio のままだと「配信に載せない」が原理的に作れない**
+> （OBS はアプリ単位でしか分離できず、読み上げと通知音を区別できない）。
+> → **本ファイルおよび 059a/059b の「専用 `AudioContext` で鳴らす」前提は差し替えが要る。**
+> 実装形・security 方針の差分ドラフトは **058s の「スパイク結果」節**を正とする。
+>
 > **必読前提**: 音声ルーティングの親 [058](058-stream-audio-routing.md)（「配信に載せる」の土台）、
 > 再生プリミティブ [`voicevox.ts`](../../apps/desktop/src/features/comment-viewer/voicevox.ts)（`playWav` / `AudioContext`）、
 > TTS キュー [`ttsQueue.ts`](../../apps/desktop/src/features/comment-viewer/ttsQueue.ts)（直列 FIFO・課金優先キュー・`resume()`）、
@@ -84,11 +92,12 @@
 058a（「配信に載せる」トグルのみ依存。音を鳴らす部分は非依存）
 ```
 
-- **059a は [058s](058s-audio-output-device-spike.md) の前でも着手できる**。音を鳴らすだけなら既存の Web Audio で足りる。
-  その場合は**トグル抜きで実装し、[058a](058a-audio-routing-foundation.md) 完了後にトグルを足す**
-  （＝059a を 2 回に分けず、058a が終わってから 1 回で入れたいなら 058a を待ってもよい。順序は本人の判断）。
-- ⚠ **[058s](058s-audio-output-device-spike.md) が ③（機能を出さない）に倒れた場合、
-  059a/059b の「配信に載せる」トグルは実装しない**（音の ON/OFF だけになる）。
+- ~~**059a は [058s](058s-audio-output-device-spike.md) の前でも着手できる**（音を鳴らすだけなら既存の Web Audio で足りる）~~
+  → ⚠ **2026-08-03 に無効化。** 058s の結論（②-軽）により**通知音の再生層は Rust（`rodio`）**になる。
+  Web Audio で先行実装すると**後で必ず作り直しになる**（Web Audio では出力デバイスを選べず「配信に載せない」が作れないため）。
+  **058a（Rust 側の列挙＋再生の基盤）を先に済ませてから 059a に入ること。**
+- ⚠ **[058s](058s-audio-output-device-spike.md) は ③ には倒れなかった**（結論＝②-軽）。
+  「配信に載せる」トグルは**通知音には付く**が、**読み上げには付かない**（[058b](058b-voicevox-stream-output-toggle.md) は保留）。
 
 ## 横断セキュリティ方針（docs/security.md 準拠）
 

@@ -2,6 +2,11 @@
 
 > 状態: **未着手（実装サブタスク）**。分割・線引きは親 [059](059-notification-sounds.md) を正とする。
 >
+> ⚠ **2026-08-03: 再生層が変わる（[058s](058s-audio-output-device-spike.md) の結論＝②-軽）。**
+> 本ファイルの「**専用 `AudioContext`** で鳴らす」前提は差し替えが要る——通知音は **Rust（`rodio`）で鳴らし出力デバイスを指定する**。
+> Web Audio では出力先を選べず「配信に載せない」が原理的に作れないことが実測で確定した。
+> **着手条件＝058a（Rust 側の列挙＋再生の基盤）完了**。詳細は 058s の「スパイク結果」節と親 059 の申し送りを正とする。
+>
 > **必読前提**: 親 [059](059-notification-sounds.md)、
 > 再生プリミティブ [`voicevox.ts`](../../apps/desktop/src/features/comment-viewer/voicevox.ts)（`playWav`）、
 > TTS キュー [`ttsQueue.ts`](../../apps/desktop/src/features/comment-viewer/ttsQueue.ts)（`AudioContext` の所有・`resume()`・suspended 時の扱い）、

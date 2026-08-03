@@ -250,23 +250,28 @@
   - **残 ②開発依存の脆弱性 5 件**: `pnpm audit`（`--prod` 無し）で high 4 / moderate 1。`brace-expansion`×3（eslint / typescript-eslint 経由・DoS）、`postcss`（vite 経由・パストラバーサル）、`esbuild`（sidecar のビルド用・dev server の問題）。**いずれも配布バイナリには入らない**が、更新するか `ignoreGhsas` で明示的に許容するかを決める
   - **残 ③条文**: security.md §10 に「新規依存追加時は既知脆弱性と照合する」を条文として足すか（現状は実施記録があるだけ）／`cargo deny` でライセンスと重複バージョンも見るか
 
-- 058 配信音声ルーティング（親設計 [docs/tasks/058-stream-audio-routing.md](tasks/058-stream-audio-routing.md)／通知音・VOICEVOX 読み上げを「配信に載せる/載せない」で切り替える**3 機能共通の土台**・**方式未確定＝スパイク先行**）
-  - 実装順: 058s（スパイク・**ここが通らなければ「載せる/載せない」は出さない**）→ 058a → 058b
+- 058 配信音声ルーティング（親設計 [docs/tasks/058-stream-audio-routing.md](tasks/058-stream-audio-routing.md)／通知音・VOICEVOX 読み上げを「配信に載せる/載せない」で切り替える**3 機能共通の土台**）
+  - ✅ **058s 完了（2026-08-03）→ 結論＝② Rust 側再生（採る形は「②-軽」＝通知音だけ `rodio` で鳴らし出力デバイスを指定。読み上げは Web Audio のまま無改変）**。① は**両 OS で ✕**（macOS は `navigator.mediaDevices` ごと非対応／Windows は `setSinkId` はあるが `deviceId`・`label` が空で**選べない**）。③ は不採用＝**OBS のアプリ単位キャプチャでは読み上げと通知音を区別できず、通知音まで必ず載る**ため
+  - 実装順: ~~058s~~ → **058a（要書き直し・Rust 側へ移る・security-review 必須）** → ~~058b~~（**保留**＝②-軽では読み上げのルーティングができないため要望②のトグルは出せない）
   - ⚠ **土台が存在しない**: `setSinkId` / `enumerateDevices` の使用は**リポジトリ全体でゼロ**。音は全部 frontend の Web Audio（`playWav` の `ctx.destination`＝OS 既定デバイス直結）で、Rust に `rodio`/`cpal` は無い。**注入点は `AudioContext` の 1 か所だけ**なので、Web 側で通るなら差分は極小で済む
   - ⚠ **macOS(WKWebView) は `setSinkId` 非対応の公算が高い**（Chromium 系の API）。Windows(WebView2) とで割れると「Windows だけ効く設定項目」になる。**044s / 057s と同型のスパイク先行**にした理由がここ
   - ⚠ **OBS はウィンドウキャプチャ方式（044s）＝映像のみ**。音が配信に載るのは OBS のデスクトップ音声等の別系統で、現状は「全部載るか全部載らないか」の 2 択しかない
-  - 058s 出力デバイス指定の技術検証（[docs/tasks/058s-audio-output-device-spike.md](tasks/058s-audio-output-device-spike.md)／macOS/Windows の `setSinkId` 実測・仮想オーディオデバイス運用・Rust `rodio` 案の評価・**検証のみ／本実装しない**・結論は「① Web 側で成立／② Rust 側再生が必要／③ 機能を出さない」の**3 択に必ず落とす**）
-    - ⚠ **(5) を最優先で確認する**: OBS 側でアプリ単位の音声キャプチャができるなら、**058 系ごと不要になる**（最短の逃げ道）
-    - ⚠ **`getUserMedia` を呼ばない**（マイク権限を取りに行かない）。ラベルが取れない環境は「選べない」を結論として記録する
-  - 058a ルーティング基盤（[docs/tasks/058a-audio-routing-foundation.md](tasks/058a-audio-routing-foundation.md)／`audioRouting.ts` 新設＋デバイス列挙＋`applyRoute`＋設定 UI・`ttsQueue` に `getRoute` の口を開ける・**①なら軽レビュー／②なら security-review 必須**〔新規 crate・§4・§10〕）
-  - 058b VOICEVOX 読み上げの「配信に載せる」設定（[docs/tasks/058b-voicevox-stream-output-toggle.md](tasks/058b-voicevox-stream-output-toggle.md)／要望②・既定 OFF・**出力先未設定時の注意文が必須**〔ON にしたのに載らない事故を防ぐ〕・**軽レビュー**）
+  - ✅ 058s 出力デバイス指定の技術検証（[docs/tasks/058s-audio-output-device-spike.md](tasks/058s-audio-output-device-spike.md)／**完了・2026-08-03**。実測値は同ファイルの「スパイク結果」節が正）
+    - **(5) OBS**: macOS ✅（StreamDock を選べば拾える・他アプリの音は混ざらない）／Windows ⚠（**`Microsoft Edge WebView` を選ばないと拾えない**＝音声セッションの持ち主が `msedgewebview2.exe`）。⚠ **どちらもアプリ単位＝音の種類は分離できない**
+    - ⚠⚠ **`tauri dev` では (5) を判定できなかった**（素の実行ファイルには bundle identifier が無く、OBS が選択を保存できない）。**「dev で動かない」を「製品で動かない」の証拠にしない**——057s の教訓の実行形態版
+    - **(4) `rodio` のコスト実測**: 直接依存 1 本・crate は macOS 39 / Windows 38（⚠ **`default-features = false, features = ["playback","wav"]` 必須**。既定だと symphonia 一式で 126）・**tokio を引かない＝Rust 完全同期の方針を破らない**・`cargo audit` exit 0・**デバイス名と再起動をまたぐ安定 ID が権限なしで取れる**
+    - ⚠ **Windows 未検証**: rodio の実再生／仮想デバイス運用／バンドル版での (5)。098 か 058a 着手時に実測すること
+  - 058a ルーティング基盤（[docs/tasks/058a-audio-routing-foundation.md](tasks/058a-audio-routing-foundation.md)／⚠ **内容は ① 前提で書かれており着手時に書き直しが要る**。②-軽では**層が frontend → Rust へ移る**＝出力デバイス列挙＋指定デバイス再生の単一目的コマンド 2 本＋設定 UI。`ttsQueue`/`voicevox.ts`/`voicevoxPreview.ts` は**無改変**・**security-review 必須**〔新規 crate `rodio`・§4・§10〕。差分ドラフトは 058s に記載済み）
+  - ⏸ 058b VOICEVOX 読み上げの「配信に載せる」設定（[docs/tasks/058b-voicevox-stream-output-toggle.md](tasks/058b-voicevox-stream-output-toggle.md)／**保留**＝②-軽では読み上げの出力先を変えられないため要望②のトグルは出せない。再開条件は 058s の「再開条件」節）
 
 - 059 通知音（コメント／投げ銭）（親設計 [docs/tasks/059-notification-sounds.md](tasks/059-notification-sounds.md)／要望①＋④の音の部分・**音源はアプリ同梱**〔外部 CDN を参照しない＝§1/CSP 方針〕・**新規依存ゼロ**）
-  - 実装順: 059a → 059b（**「配信に載せる」トグルだけ 058a に依存**。音を鳴らすだけなら 058s の前でも着手できる）
-  - ⚠ **通知音の実装は 0 件**（`public/` はフォントのみで音源アセットなし）。再生プリミティブ（`playWav`）と課金判定（`isMonetaryEvent`）は既存を流用する
+  - 実装順: **058a → 059a → 059b**（⚠ **2026-08-03 変更**）
+  - ⚠⚠ **058s の結論（②-軽）で再生層が変わった**: 通知音は **Rust（`rodio`）で鳴らし出力デバイスを指定する**。~~音を鳴らすだけなら 058s の前でも着手できる（Web Audio で足りる）~~ は**無効**——Web Audio では出力先を選べず「**配信に載せない**」が原理的に作れないため、先行実装すると必ず作り直しになる。**058a を先に済ませること**
+  - ⚠ **通知音の実装は 0 件**（`public/` はフォントのみで音源アセットなし）。課金判定（`isMonetaryEvent`）は既存を流用する（⚠ **再生プリミティブ `playWav` の流用は不可**＝Rust 側再生になったため）
   - ⚠ **レート制限が必須**（10 連投で 10 回鳴らさない）。⚠ **音源のライセンス確認**を必ず行い progress.md に記録する（配布バイナリに入る）
   - 059a 通知音の基盤＋コメント通知音（[docs/tasks/059a-comment-notification-sound.md](tasks/059a-comment-notification-sound.md)／`notificationSound.ts`＋`soundPrefs.ts` 新設・**専用 `AudioContext`**〔`ttsQueue` の `dispose` で死なせない〕・クールダウン・音量・**試聴ボタン必須**・既定 OFF・**軽レビュー**）
-    - ⚠ **`resume()` の配線を忘れると macOS で「ON なのに一度も鳴らない」**（ログにも出ない）
+    - ⚠ **2026-08-03: 上記の「専用 `AudioContext`」前提は差し替え**（058s ②-軽＝Rust 再生）。`resume()` 配線・autoplay 制限・`ttsQueue` の `dispose` との干渉といった **Web Audio 由来の罠は丸ごと消える**代わりに、**出力デバイス選択と Rust 側の再生管理**が新しい論点になる
+    - ~~⚠ **`resume()` の配線を忘れると macOS で「ON なのに一度も鳴らない」**（ログにも出ない）~~
     - ⚠ **1 バッチ 1 回**（`added.length` の回数だけ鳴らさない）／**`updated`〔043e の Jewels combo〕では鳴らさない**
   - 059b 投げ銭通知音（[docs/tasks/059b-monetary-notification-sound.md](tasks/059b-monetary-notification-sound.md)／別音・コメント音と**排他**・**クールダウンは音源ごとに独立**〔共有するとコメント連投中のスパチャ音が消える＝一番気づいてほしい音が鳴らない〕・**軽レビュー**）
     - ⚠ **Twitch コミュニティギフトの N+1**（043a の既存課題）はクールダウンで凌ぐ。**依存していることをテストで固定する**

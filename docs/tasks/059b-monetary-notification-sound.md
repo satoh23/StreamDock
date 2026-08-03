@@ -2,6 +2,10 @@
 
 > 状態: **未着手（実装サブタスク）**。分割・線引きは親 [059](059-notification-sounds.md) を正とする。
 >
+> ⚠ **2026-08-03: 再生層が変わる（[058s](058s-audio-output-device-spike.md) の結論＝②-軽）。**
+> 通知音は **Rust（`rodio`）で鳴らし出力デバイスを指定する**（Web Audio の「専用 `AudioContext`」前提は差し替え）。
+> 詳細は 058s の「スパイク結果」節と親 059 の申し送りを正とする。
+>
 > **必読前提**: 親 [059](059-notification-sounds.md)、**基盤 [059a](059a-comment-notification-sound.md)（`notificationSound.ts` / `soundPrefs.ts` の正）**、
 > 課金判定 [`viewerFormat.ts`](../../apps/desktop/src/screens/comment-viewer/viewerFormat.ts)（`isMonetaryEvent` / `MONETARY_EVENT_TYPES` / `displayEventType`）、
 > 課金の扱いの先例 [043b](043b-monetary-emphasis-in-viewer.md) / [049](049-monetary-event-speech.md)、

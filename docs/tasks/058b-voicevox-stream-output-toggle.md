@@ -1,6 +1,11 @@
 # 058b VOICEVOX 読み上げの「配信に載せる」設定
 
-> 状態: **未着手（実装サブタスク）**。分割・線引きは親 [058](058-stream-audio-routing.md) を正とする。
+> 状態: **保留（2026-08-03・[058s](058s-audio-output-device-spike.md) の結論により着手しない）**。
+> 採用した **②-軽**（通知音だけ Rust 再生・読み上げは Web Audio のまま）では**読み上げの出力先を変えられない**ため、
+> 本タスクの「配信に載せる／載せない」トグルは**出せない**（読み上げは常に OS 既定デバイスへ出る＝載る側）。
+> **内容は変更していない**（057a〜057c と同じ作法）。**再開条件＝058s の「再開条件」節**
+> （webview が出力デバイス選択に対応する／②-フルの工数を払うと判断する、のいずれか）。
+> 分割・線引きは親 [058](058-stream-audio-routing.md) を正とする。
 >
 > **必読前提**: 親 [058](058-stream-audio-routing.md)、**基盤 [058a](058a-audio-routing-foundation.md)（`AudioRoute` / `applyRoute` / `getRoute` の正）**、
 > 読み上げ設定の保存 [`ttsPrefs.ts`](../../apps/desktop/src/features/comment-viewer/ttsPrefs.ts)、
