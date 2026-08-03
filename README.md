@@ -1,7 +1,3 @@
-SD058S-A {"secure":true,"proto":"http:","mediaDevices":"object","enumerateDevices":"function","selectAudioOutput":"undefined","audioContext":"function","ac_setSinkId":"function","ac_sinkId_getter":true,"ac_createMediaStreamDestination":"function","me_setSinkId":"function","me_sinkId_getter":true,"ua":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0"}
-
-SD058S-B {"total":2,"audiooutput":1,"audioinput":0,"labeled":0,"labelLens":[0],"idClasses":{"empty":1}}
-
 # stream-dock
 
 配信者がPC上の複数ツールをプリセット単位で起動・停止するためのデスクトップアプリ。
