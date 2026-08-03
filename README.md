@@ -1,3 +1,16 @@
+# 前提: Node + pnpm / Rust (rustup・MSVC toolchain) / VS Build Tools (C++) / WebView2 Runtime
+# リポジトリのルートで
+pnpm install
+
+# ── ターミナル 1（Vite 開発サーバ・:1420）
+pnpm --filter ./apps/desktop dev
+
+# ── ターミナル 2（Tauri CLI を通さず直接起動＝check:sidecar を通らない）
+cd apps\desktop\src-tauri
+cargo run
+
+
+
 # stream-dock
 
 配信者がPC上の複数ツールをプリセット単位で起動・停止するためのデスクトップアプリ。
