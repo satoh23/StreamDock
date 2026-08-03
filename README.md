@@ -1,14 +1,8 @@
-# 前提: Node + pnpm / Rust (rustup・MSVC toolchain) / VS Build Tools (C++) / WebView2 Runtime
-# リポジトリのルートで
-pnpm install
-
-# ── ターミナル 1（Vite 開発サーバ・:1420）
-pnpm --filter ./apps/desktop dev
-
-# ── ターミナル 2（Tauri CLI を通さず直接起動＝check:sidecar を通らない）
-cd apps\desktop\src-tauri
-cargo run
-
+(async()=>{const AC=window.AudioContext||window.webkitAudioContext;if(!AC){console.log("SD058S-DIAG {\"error\":\"no AudioContext\"}");return}
+const ctx=new AC();let r="ok";try{await ctx.resume()}catch(e){r=e.name}
+const o=ctx.createOscillator(),g=ctx.createGain();o.frequency.value=440;g.gain.value=0.2;o.connect(g);g.connect(ctx.destination);o.start();
+console.log("SD058S-DIAG "+JSON.stringify({state:ctx.state,resume:r,sampleRate:ctx.sampleRate,secure:isSecureContext,proto:location.protocol}));
+setTimeout(async()=>{try{o.stop()}catch{};await ctx.close();console.log("SD058S-DIAG stopped")},10000)})()
 
 
 # stream-dock
