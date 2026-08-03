@@ -65,6 +65,18 @@ import {
   clearObsWebsocketPassword,
   type ObsWsConfig,
 } from "../../features/comment-viewer/obsApi";
+// 058a: 通知音の出力デバイス（②-軽）。列挙と再生は Rust command 経由（webview では出力先を選べない＝058s 実測）。
+// 選択の永続化は他の UI 設定と同じ localStorage。読み上げ（Web Audio）には一切触れない。
+import {
+  listAudioOutputDevices,
+  playNotificationSound,
+  type AudioOutputDevice,
+} from "../../features/comment-viewer/audioOutputApi";
+import {
+  loadAudioOutputDeviceId,
+  saveAudioOutputDeviceId,
+  NO_AUDIO_OUTPUT_DEVICE,
+} from "../../features/comment-viewer/audioOutputPrefs";
 import { mergeComments } from "../../features/comment-viewer/mergeComments";
 import { recordComments } from "../../features/viewer-memory/viewerMemoryApi";
 import type { RecordResult } from "../../features/viewer-memory/types";
@@ -77,7 +89,11 @@ import {
   isPinnedOverlayOpen,
 } from "../../features/comment-viewer/windowApi";
 import { CommentList } from "./CommentList";
-import { SettingsView } from "./SettingsView";
+import {
+  SettingsView,
+  type AudioOutputListState,
+  type AudioTestState,
+} from "./SettingsView";
 import { ViewersView } from "./ViewersView";
 import { ViewerDetailPanel } from "./ViewerDetailPanel";
 import { PinnedCommentBar } from "./PinnedCommentBar";
@@ -489,9 +505,89 @@ export function CommentViewerApp() {
   //（片方の ON がもう片方の仕掛かりを取り消してしまわないようにする）。
   const pinnedObsEnableTimerRef = useRef<number | null>(null);
 
+  // 058a: 通知音の出力デバイス（②-軽）。
+  // - audioOutputDeviceId: ユーザーが選んだデバイス ID の永続状態（非機密・localStorage）。
+  //   `""`＝未選択で、これは**「既定デバイスで鳴らす」ではなく「鳴らさない」**を意味する
+  //   （②-軽では OS 既定＝仮想オーディオデバイス＝配信に載る側なので、既定へ落とすと
+  //   「載せないつもりの通知音が配信に載る」＝機能の存在理由が壊れる。fail-closed）。
+  // - audioOutputDevices / audioOutputListState: Rust の列挙結果とその状態。
+  //   **デバイス名は state に置くだけで保存しない**（古い名前を残さない・§9）。
+  // - audioTestState: テスト再生の状態。obsState と同じ「操作の結果を 1 行で出す」構え。
+  //   ここは string ではなく union にする（受け口が sidecar 由来の `(state: string)` である
+  //   obsState と違い、この state の書き手はこのファイルだけ＝union を守り切れるため）。
+  const [audioOutputDeviceId, setAudioOutputDeviceId] = useState(() =>
+    loadAudioOutputDeviceId(),
+  );
+  const [audioOutputDevices, setAudioOutputDevices] = useState<
+    AudioOutputDevice[]
+  >([]);
+  const [audioOutputListState, setAudioOutputListState] =
+    useState<AudioOutputListState>("loading");
+  const [audioTestState, setAudioTestState] = useState<AudioTestState>("idle");
+
   useEffect(() => {
     saveChannel(channel);
   }, [channel]);
+
+  // 058a: 選んだ出力デバイスを localStorage に永続化する（再オープン・再起動で復元）。
+  // マウント時にも 1 回走って同じ値を書き直すが、既存の saveChannel / saveObsAutoAdd と同じ挙動で、
+  // このキーを `storage` イベントで購読している窓は無いため無害（音はコメビュ窓でしか鳴らない）。
+  // 再修正トリガー＝このキーを購読する窓を足すとき。
+  useEffect(() => {
+    saveAudioOutputDeviceId(audioOutputDeviceId);
+  }, [audioOutputDeviceId]);
+
+  // 058a: 出力デバイスを列挙し直す。
+  //
+  // ⚠ **失敗を空配列で潰さない。** 「デバイスが 1 つも無い」と「列挙できなかった」は UI の案内が違い、
+  // どちらも「選んだデバイスが一覧に無い」＝**通知音が鳴らない**状態なので、黙って既定へ落とさず
+  // ユーザーに気付かせる必要がある（058s が明示的に警告している論点）。
+  //
+  // アンマウント後 setState のガード（AbortController / mounted フラグ）は**意図的に持たない**
+  // （レビュー指摘に対する判断）。理由＝`CommentViewerApp` はこの窓のルート相当で通常アンマウント
+  // されず、React 18 以降はアンマウント後 setState の警告も出ない。「再読み込み」連打で複数の invoke が
+  // in-flight になると後勝ちになるが、同じ列挙結果なので実害が無い。
+  // 再修正トリガー＝このコンポーネントを条件付きレンダリングするようになるか、列挙結果が呼び出しごとに
+  // 変わりうる（フィルタ引数を足す等）ようになったとき。そのときは世代番号（useRef）で最新のみ採用する。
+  const refreshAudioOutputDevices = useCallback(() => {
+    setAudioOutputListState("loading");
+    listAudioOutputDevices()
+      .then((devices) => {
+        setAudioOutputDevices(devices);
+        setAudioOutputListState("ready");
+      })
+      .catch(() => {
+        // §9: 例外オブジェクトを画面にもコンソールにも出さない（デバイス名/ID を含みうる経路を作らない）。
+        setAudioOutputDevices([]);
+        setAudioOutputListState("failed");
+      });
+  }, []);
+
+  // 058a: 設定ビューを開くたびに列挙し直す（＝デバイスを挿し直したら開き直せば直る）。
+  // ホットプラグ監視（デバイス着脱イベントの購読）は 058a では入れない——設定を開いた時点の突き合わせと
+  // 「再読み込み」ボタンとテスト再生の失敗表示の 3 段で、「黙って載る側に倒れる」は防げる。
+  useEffect(() => {
+    if (view !== "settings") return;
+    refreshAudioOutputDevices();
+  }, [view, refreshAudioOutputDevices]);
+
+  // 058a: 選んだデバイスでテスト音を鳴らす。
+  // 「選んだデバイスから鳴る」と「既定デバイスからは鳴らない」の 2 点を耳で確かめるための唯一の手段で、
+  // これが無いと 058s の合格基準を 058a 単体で測れない（034c の話者試聴ボタンと同じ考え方）。
+  const handleTestNotificationSound = useCallback(() => {
+    if (audioOutputDeviceId === NO_AUDIO_OUTPUT_DEVICE) return;
+    setAudioTestState("playing");
+    playNotificationSound(audioOutputDeviceId, "test")
+      .then(() => setAudioTestState("idle"))
+      // 失敗＝そのデバイスでは鳴らせない。**既定デバイスで鳴らし直さない**（fail-closed）。
+      .catch(() => setAudioTestState("failed"));
+  }, [audioOutputDeviceId]);
+
+  // 058a: デバイスを選び直したら直前の失敗表示を消す（古い赤字が残って混乱させない）。
+  const handleAudioOutputDeviceIdChange = useCallback((deviceId: string) => {
+    setAudioOutputDeviceId(deviceId);
+    setAudioTestState("idle");
+  }, []);
 
   // 034d: マウント時に実際の窓状態へトグルを同期する（外部で開閉されていても実状態に合わせる）。
   useEffect(() => {
@@ -1254,6 +1350,13 @@ export function CommentViewerApp() {
           selectedSpeakerId={selectedSpeakerId}
           onSpeakerIdChange={setSelectedSpeakerId}
           onPreview={(id) => previewRef.current?.play(id)}
+          audioOutputDevices={audioOutputDevices}
+          audioOutputListState={audioOutputListState}
+          audioOutputDeviceId={audioOutputDeviceId}
+          onAudioOutputDeviceIdChange={handleAudioOutputDeviceIdChange}
+          onReloadAudioOutputDevices={refreshAudioOutputDevices}
+          onTestNotificationSound={handleTestNotificationSound}
+          audioTestState={audioTestState}
           overlayFont={overlayFont}
           onOverlayFontChange={setOverlayFont}
           overlayShowSource={overlayShowSource}

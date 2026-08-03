@@ -383,6 +383,49 @@ OSAKit（`osakit` crate・055b で入った推移依存）で実行する。**�
 自由な shell 実行・ユーザー入力を結合したコマンド実行は引き続き禁止で、この経路も**frontend からは起動できない**
 （`install_app_update` の引数は `AppHandle` のみ）。書き込みそのものの評価は §5 の「例外（055d・自己置換）」を正とする。
 
+### 追補（058a・音声出力デバイスの列挙とアプリ内生成音の再生）
+
+**shell は一切経由しない**（`rodio` / `cpal` が OS の音声 API を直接叩く）。本項は §4 の禁止事項に触れないが、
+**OS 操作の面が 1 つ増える**ので、その範囲をここで固定する。
+
+- **増えるのは 2 つだけ**: ①音声**出力**デバイスの**列挙**（読み取りのみ） ②**アプリ内で合成した音の再生**。
+- ⚠ **入力（マイク）には一切触れない。** `cpal::traits::HostTrait::output_devices()` しか呼ばず、
+  `devices()`（入力を含む全件）・`default_input_device()`・`build_input_stream()` を使わない。
+  `rodio` の `recording` feature も落としてある（§10）。**この不変条件は `audio::service` の
+  契約テスト（`never_touches_input_devices`）がソース文字列で機械的に守っている**——
+  実デバイスは環境依存で単体テストできないため、ここだけは静的検査に頼る。
+  frontend 側も `getUserMedia` / `enumerateDevices` を呼ばない（webview の音声デバイス API 使用はゼロ）。
+- **コマンドは単一目的の 2 本に限定**（§3）: `list_audio_output_devices()`（read-only）と
+  `play_notification_sound(deviceId, sound)`。`run_command` 的な汎用は作らない。
+- **frontend から任意のファイルパスを受け取らない。** 鳴らす音は
+  **`NotificationSound` enum に列挙されたアプリ内合成音だけ**で（058a は「テスト音」1 種）、
+  同梱音源ファイルすら存在しない＝**パスという概念が経路上に無い**。
+  ⚠ この enum を `String` / `PathBuf` に変えると「任意ファイル再生コマンド」に化ける。変えないこと。
+  契約テスト（`accepts_no_file_path_from_the_frontend`）が `PathBuf` / `include_bytes!` / `std::fs` の
+  出現を止めている。
+- **デバイス ID は Rust 側で列挙結果と照合してから使う**（§8）。frontend が渡せるのは
+  `list_audio_output_devices()` が返した値だけで、組み立てさせない。
+- ⚠⚠ **照合に失敗しても既定デバイスへフォールバックしない（fail-closed）。**
+  058s の結論（②-軽）では **OS 既定＝仮想オーディオデバイス＝配信に載る側**なので、既定へ落とすと
+  **「載せないつもりの通知音が配信に載る」**——本機能の存在理由そのものが壊れる。鳴らないのは軽微な不便で、
+  載るのは事故。契約テスト（`never_falls_back_to_the_default_output_device`）が
+  `default_output_device` / `from_default_device` / `open_default_sink` / `open_sink_or_fallback` の
+  出現を止めている。
+- **出力ストリームは State に持たず、再生のたびに開いて閉じる。** 音声デバイスを掴みっぱなしにしないためと、
+  **毎回デバイスを解決し直すことで「抜かれた」を再生時点で必ず検出する**ため。
+- **同時再生は 1 本に制限する**（`audio::service` の `PLAYING` / `PlaybackGuard`）。⚠ これは
+  **クールダウンではなく可用性（自己 DoS）対策**で、`#[tauri::command(async)]` ＋ 同期 fn が
+  tokio の worker を占有するため（根拠と実測は §10 の該当項）。競合時は鳴らさず `Ok(())` を返す。
+- **列挙は「一覧に出るなら必ず鳴らせる」を不変条件にする。** `list_output_devices` は、コマンド側の検証
+  （`trim()` ＋ 制御文字拒否）を通らない ID を**列挙の時点で落とす**。ここがずれると「UI には出るのに
+  再生時に必ず失敗する」原因不明の故障になる（fail-closed なので危険ではないが、直せない不便になる）。
+- **新規 egress ゼロ・capability 追加ゼロ・`csp: null` 不変・`tauri.conf.json` 差分ゼロ**
+  （音源を同梱しないので `bundle.resources` を足していない）。
+- **全経路が `AppResult`**。`src/audio/` に `unwrap()` / `expect()` / `panic!` は 1 つも無い
+  （契約テスト `has_no_panicking_paths`）。
+- ⚠ **Windows 未検証**（058s の実測は macOS のみ）。WASAPI でのデバイス名・安定 ID の取得と実再生は
+  098 完了後に実機で確認する。詳細は `docs/tasks/058a-audio-routing-foundation.md`。
+
 ### 5. ファイル操作はアプリ管理領域に限定する
 
 MVPで許可するファイル操作は、原則としてアプリの管理領域内に限定する。
@@ -621,6 +664,26 @@ loopback WS で受信済みの値を Tauri コマンドで渡すだけ＝sidecar
   **「取得コメント・視聴者情報の端末保存」に該当**する。frontend のみ・通信ゼロでも、保存ポリシーに触れる変更は
   レビュー必須として扱うこと。
 
+### 追補（058a・音声出力デバイスの名前と ID）
+
+**デバイス名・デバイス ID をログに出さない。** 端末外へ送らない・DB にも保存しない。
+接続中のオーディオ機器の構成は、配信者の環境（同居人の機材・職場の会議システム・使用中の外部サービス）を
+推測できる情報になりうるため、コメント本文や表示名と同じ扱いにする。
+
+- **ログ DB へ到達する経路が構造的に無い**: `audio` の 2 コマンドは **`DbState` を取らない**
+  （`extract_app_icon` の「DB は使わないため State を取らない（最小権限）」と同型）。
+  したがって `app_logs` にも診断サマリー（共有用）にも載りようがない。
+- **`AppError` に載せない**: `AppError::audio_device_unavailable()` / `audio_playback_failed()` は
+  **引数を取らない**（`update_check_failed()` と同じ構え）ので、呼び出し側が cpal の生エラーや
+  デバイス名を載せられない。呼び出し側は必ず `map_err(|_| ...)` の形にし、エラー値を束縛しないこと。
+  `error.rs` の `audio_failures_carry_only_fixed_messages_without_device_identity` が固定している。
+- **UI にも出さない**: 「デバイスが見つかりません」の警告文は
+  **「以前選んだ音声出力デバイス」**と書き、名前も ID も出さない。`console.*` も書かない。
+- **localStorage に置くのは「ユーザー自身が選んだデバイス ID」1 つだけ**
+  （`stream-dock.comment-viewer.audio-output-device`）。これは§9 追補（046a）が対象とする
+  **第三者の個人データではなく、ユーザー自身の非機密 UI 設定値**（`OBS_AUTO_ADD_KEY` と同種）。
+  ⚠ **デバイス名は保存しない**（表示のたびに Rust の列挙結果から取る＝古い名前が残らない）。
+
 ### 10. 依存関係を増やしすぎない
 
 新しいnpm package、Rust crate、Tauri pluginを追加する場合は、理由を説明する。
@@ -803,6 +866,76 @@ loopback WS で受信済みの値を Tauri コマンドで渡すだけ＝sidecar
   新しい面を作らない。再修正トリガー＝踏ませたくなったら **https 限定 ＋ ホスト検証**を入れて別タスクにする。
 - **外部リソースを 1 つも読み込まない**（画像・フォント・script・style）。`csp: null` は不変で、
   CSP 方針の「inline script を増やさない」も維持している。
+
+**追加した依存（058a・通知音の Rust 再生）**:
+- Rust: **`rodio`（`default-features = false, features = ["playback"]`）**。
+  用途は「音声**出力**デバイスの列挙」と「アプリ内で合成した音を、指定したデバイスで鳴らす」の 2 つだけ（§4 追補）。
+  **§10 の「特に注意するもの」のどれにも該当しない**（shell / fs / auto update / network / telemetry いずれでもない）が、
+  **§4 の OS 操作面が増えるため 058a は security-review 必須**とした。
+- **なぜ必要か（webview では代替できない）**: 058s（2026-08-03）の実測で ①macOS(WKWebView) は
+  `navigator.mediaDevices` ごと非対応で `setSinkId` が存在しない ②Windows(WebView2) は `setSinkId` はあるが
+  `enumerateDevices` が `deviceId`・`label` とも空の 1 件しか返さず**渡せる ID が無い** ③`selectAudioOutput` は
+  両 OS とも未実装、と確定した。**マイク権限を取らずに出力デバイスを選ぶ手段は webview に存在しない**。
+  Rust（cpal）は権限なしでデバイス名と安定 ID を返すので、機能の前提条件は Rust 側にしか無い。
+- **feature を `playback` だけに絞る理由**（実測・2026-08-04）:
+  - 既定は `playback, recording, flac, mp3, mp4, vorbis, wav, dither` で、symphonia のデコーダ一式が入り
+    **126 crate** に膨らむ。⚠ **`default-features = false` を外さないこと**
+    （`zip` feature を落とすなという 055b の申し送りと同種の地雷だが、向きは逆＝こちらは「足すな」）。
+  - ⚠ **`wav` も足していない。058s の指示からの訂正である。** rodio 0.22 の `wav` は
+    `["symphonia-wav", "symphonia-pcm"]` の別名で、足すと symphonia / -core / -format-riff / -codec-pcm /
+    -metadata が入る（058s が `features = ["playback","wav"]` と書き、増加 crate を「macOS 39」と見積もったのは
+    これを含む数字）。**058a はデコーダを必要としない**——音は `SineWave` / `SamplesBuffer` /
+    `Player::connect_new().append()`（いずれも feature gate されていない）でアプリ内合成する。
+    decoder が要るのは `rodio::play(mixer, reader)` だけで、それは使わない。
+    実測: **`cargo tree -i symphonia` が「該当パッケージなし」**。
+  - `recording`（マイク入力）も落としてある＝**入力に触れないことが依存レベルでも担保されている**。
+- **増える crate は 2 通りの数え方があるので書き分ける**（レビュー指摘で追記）:
+  - **`Cargo.lock` への追加は 16 件・削除ゼロ。** `cargo audit` は **lock 全体**を読むので、**監査対象はこの 16 件**。
+  - **macOS ビルドツリーへの実増分は 11 件**（`cargo tree --edges normal --prefix none | sort -u` が **315 → 326**）:
+    `rodio` / `cpal` / `coreaudio-rs` / `dasp_sample` / `mach2` / `num-rational` / `num-bigint` / `num-integer` /
+    `objc2-audio-toolbox` / `objc2-core-audio` / `objc2-core-audio-types`。
+  - 差の 5 件（`alsa` / `alsa-sys` / `ndk-context` / `num-derive` / `objc2-avf-audio`）は Linux / Android / iOS 専用で、
+    `--target aarch64-apple-darwin` のツリーには現れない（実測確認済み）。
+  - objc2 系の大半・`thiserror` / `libc` / `bitflags` は Tauri が既に持っているため増分に入らない。
+  ⚠ 058s の見積もり（macOS 39 / Windows 38）は**使い捨てプロジェクトで測った総数**であって本体への増分ではない。
+- **`tokio` / async ランタイムを引かない**＝**「Rust は完全同期のまま」の方針を破らない**。
+  実測: `cargo tree -p rodio --edges normal` に `tokio` / `async-std` / `futures-executor` が現れない。
+  ⚠ `cargo tree -i tokio` は**担保に使えない**（tokio は Tauri v2 が既に保持しているので必ずヒットする）。
+  再生は同期関数で行い、UI を止めないために `#[tauri::command(async)]`（＝既存の async runtime へ逃がす）に載せる。
+- ⚠⚠ **`#[tauri::command(async)]` ＋ 同期 fn は tokio の worker を占有する**（レビューでソースを確認して追記）。
+  `tauri-macros` が付ける tracing ラベル `"sync_threadpool"` は**ラベル文字列にすぎず**、実体は
+  `tauri/src/ipc/mod.rs` の `respond_async` → **`async_runtime::spawn`**（`spawn_blocking` **ではない**）で、
+  `async_runtime` は tokio のマルチスレッドランタイム。つまり**再生が終わるまで worker を 1 本ブロックする**。
+  窓生成コマンドや `check_app_update` / `install_app_update` と**同じランタイムを共有する**ため、
+  積み上がると IPC 全体が詰まる（可用性＝自己 DoS の論点）。
+  → 058a は `audio::service` に**同時再生 1 本の上限**（`PLAYING` / `PlaybackGuard`・競合時は鳴らさず `Ok(())`）
+  を持たせて構造的に塞いだ。⚠ **これはクールダウンではない**（「どの音を何秒に 1 回まで」は 059 の責務）。
+  ⚠ **この上限を外さないこと。** 外すと 059 のコメント受信ごとの呼び出しで worker が積み上がる。
+  契約テスト `only_one_playback_runs_at_a_time` が固定している。
+- **`cargo audit` は exit 0**（2026-08-04・Cargo.lock 577 crate 走査）。
+  **今回 lock に増えた 16 crate に advisory は 1 件も無い**（既存の警告 18 件＝GTK/glib 等の Linux 専用
+  unmaintained/unsound は不変）。⚠ ここが「11 件」ではないのは上記のとおり `cargo audit` が lock 全体を見るため。
+- ⚠ **`rodio::speakers`（`available_outputs` / `SpeakersBuilder`）は使わない**——`experimental` feature 配下。
+  安定 API の `DeviceSinkBuilder::from_device(device)` → `open_stream()` 経路を使う。
+- **明示的に足さないもの**: **`cpal` の直接依存**（`rodio::cpal` の再エクスポートを使う＝バージョン不整合を作らない）／
+  音声デコーダ（上記）／HTTP・async 系 crate／音源アセットの同梱（`bundle.resources` を足していない＝
+  `tauri.conf.json` 差分ゼロ。**同梱ファイルが無いのでパス解決もファイル I/O も存在しない**）。
+- ⚠ **Windows 申し送り（098）**: cpal 0.17 は `windows` crate を `>=0.59, <=0.62` で要求する。
+  ⚠ **レビューで実測して訂正した**（当初「058a のせいで 2 系統並ぶ」と書いていたが誤り）。
+  `cargo tree --target x86_64-pc-windows-msvc -i windows` の実測は **0.58.0 / 0.61.3 / 0.62.2 の 3 系統**:
+
+  | 版 | 供給元 | 058a 以前 |
+  | --- | --- | --- |
+  | 0.58.0 | 自前（028 の Win32 コード） | ✅ あり |
+  | 0.61.3 | `tao` → `tauri-runtime-wry` → `tauri` | ✅ あり |
+  | 0.62.2 | **`cpal` → `rodio`** | ❌ **058a で追加** |
+
+  つまり **0.58 と 0.61.3 の併存は 058a 以前からの状態**で、058a が足すのは **3 本目の 0.62.2 だけ**。
+  ⚠ さらに 0.x 同士は semver 非互換なので cargo は決して統合しない＝**「統一」は 098 でも達成できない**
+  （028 を 0.62 へ上げても `tao` の 0.61.3 が残る＝到達点は 3→2）。098 で判断するのは統一の可否ではなく
+  **ビルドサイズと重複コストを許容するか**である。なお上記の「11 crate」は **macOS の実測値**であって
+  Windows の増分ではない（Windows の実増分は 098 で測る）。
+- ⚠ **Windows 未検証**（058s の実測は macOS のみ）。WASAPI での実再生・デバイス名・安定 ID は 098 で確認する。
 
 **依存の脆弱性検査（055b で初めて実施・2026-08-01）**:
 
@@ -1263,6 +1396,15 @@ distill（vendor）したもので、keyring・`open`・hono/zod・dotenv・goog
 - ログ出力処理
 - 外部通信
 - 自動アップデート
+- **音声デバイスの列挙・音声の再生**（058a）
+  - 列挙対象を**出力デバイス以外へ広げる**変更（＝入力／マイクに触れる変更）は**本項に必ず該当する**。
+  - 再生できる音を **enum 以外**（ファイルパス・バイト列・URL）で指定できるようにする変更も同様。
+  - 「デバイスが見つからないときに既定デバイスへフォールバックする」向きの変更も同様
+    （§4 追補のとおり、②-軽では既定＝配信に載る側なので**意味が反転する**）。
+  - **同時再生の上限（`PLAYING` / `PlaybackGuard`）を外す・緩める**変更も同様（§10 のとおり
+    `#[tauri::command(async)]` は tokio worker を占有するので、上限を外すと自己 DoS になる）。
+  - `NotificationSound` の variant に**ペイロード（`Test { name: String }` 等）を持たせる**変更も
+    「enum 以外で指定できるようにする変更」に含む。契約テストの `PathBuf` needle では捕まらない。
 - 設定ファイルのバックアップ・上書き
 - ユーザー入力をOS操作に渡す処理
 - ログイン項目（autostart / 永続 OS 連携）の登録・解除処理

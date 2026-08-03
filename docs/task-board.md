@@ -252,20 +252,35 @@
 
 - 058 配信音声ルーティング（親設計 [docs/tasks/058-stream-audio-routing.md](tasks/058-stream-audio-routing.md)／通知音・VOICEVOX 読み上げを「配信に載せる/載せない」で切り替える**3 機能共通の土台**）
   - ✅ **058s 完了（2026-08-03）→ 結論＝② Rust 側再生（採る形は「②-軽」＝通知音だけ `rodio` で鳴らし出力デバイスを指定。読み上げは Web Audio のまま無改変）**。① は**両 OS で ✕**（macOS は `navigator.mediaDevices` ごと非対応／Windows は `setSinkId` はあるが `deviceId`・`label` が空で**選べない**）。③ は不採用＝**OBS のアプリ単位キャプチャでは読み上げと通知音を区別できず、通知音まで必ず載る**ため
-  - 実装順: ~~058s~~ → **058a（要書き直し・Rust 側へ移る・security-review 必須）** → ~~058b~~（**保留**＝②-軽では読み上げのルーティングができないため要望②のトグルは出せない）
+  - 実装順: ~~058s~~ → ~~058a~~ → ~~058b~~（**保留**＝②-軽では読み上げのルーティングができないため要望②のトグルは出せない）。**058 系は 058a 完了をもって打ち止め**（残りは 059 が使う側）
   - ⚠ **土台が存在しない**: `setSinkId` / `enumerateDevices` の使用は**リポジトリ全体でゼロ**。音は全部 frontend の Web Audio（`playWav` の `ctx.destination`＝OS 既定デバイス直結）で、Rust に `rodio`/`cpal` は無い。**注入点は `AudioContext` の 1 か所だけ**なので、Web 側で通るなら差分は極小で済む
   - ⚠ **macOS(WKWebView) は `setSinkId` 非対応の公算が高い**（Chromium 系の API）。Windows(WebView2) とで割れると「Windows だけ効く設定項目」になる。**044s / 057s と同型のスパイク先行**にした理由がここ
   - ⚠ **OBS はウィンドウキャプチャ方式（044s）＝映像のみ**。音が配信に載るのは OBS のデスクトップ音声等の別系統で、現状は「全部載るか全部載らないか」の 2 択しかない
   - ✅ 058s 出力デバイス指定の技術検証（[docs/tasks/058s-audio-output-device-spike.md](tasks/058s-audio-output-device-spike.md)／**完了・2026-08-03**。実測値は同ファイルの「スパイク結果」節が正）
     - **(5) OBS**: macOS ✅（StreamDock を選べば拾える・他アプリの音は混ざらない）／Windows ⚠（**`Microsoft Edge WebView` を選ばないと拾えない**＝音声セッションの持ち主が `msedgewebview2.exe`）。⚠ **どちらもアプリ単位＝音の種類は分離できない**
     - ⚠⚠ **`tauri dev` では (5) を判定できなかった**（素の実行ファイルには bundle identifier が無く、OBS が選択を保存できない）。**「dev で動かない」を「製品で動かない」の証拠にしない**——057s の教訓の実行形態版
-    - **(4) `rodio` のコスト実測**: 直接依存 1 本・crate は macOS 39 / Windows 38（⚠ **`default-features = false, features = ["playback","wav"]` 必須**。既定だと symphonia 一式で 126）・**tokio を引かない＝Rust 完全同期の方針を破らない**・`cargo audit` exit 0・**デバイス名と再起動をまたぐ安定 ID が権限なしで取れる**
+    - **(4) `rodio` のコスト実測**: 直接依存 1 本・**tokio を引かない＝Rust 完全同期の方針を破らない**・`cargo audit` exit 0・**デバイス名と再起動をまたぐ安定 ID が権限なしで取れる**
+      - ⚠ **2026-08-04（058a）で 2 点訂正**: ①`wav` feature は `["symphonia-wav","symphonia-pcm"]` の別名で **symphonia を引く**。トーン合成なら decoder は不要なので **`features = ["playback"]` だけ**にした（`cargo tree -i symphonia`＝該当なし）。②「macOS 39 / Windows 38」は**使い捨てプロジェクトの総数**であって本体への増分ではない——**実際の純増は macOS 11 crate**（315 → 326）。⚠ `cargo tree -i tokio` は担保に使えない（tokio は Tauri v2 が既に保持）
     - ⚠ **Windows 未検証**: rodio の実再生／仮想デバイス運用／バンドル版での (5)。098 か 058a 着手時に実測すること
-  - 058a ルーティング基盤（[docs/tasks/058a-audio-routing-foundation.md](tasks/058a-audio-routing-foundation.md)／⚠ **内容は ① 前提で書かれており着手時に書き直しが要る**。②-軽では**層が frontend → Rust へ移る**＝出力デバイス列挙＋指定デバイス再生の単一目的コマンド 2 本＋設定 UI。`ttsQueue`/`voicevox.ts`/`voicevoxPreview.ts` は**無改変**・**security-review 必須**〔新規 crate `rodio`・§4・§10〕。差分ドラフトは 058s に記載済み）
+  - ✅ 058a ルーティング基盤（[docs/tasks/058a-audio-routing-foundation.md](tasks/058a-audio-routing-foundation.md)／**実装済み・2026-08-04**。②-軽版へ全面的に書き直したうえで実装。`ttsQueue`/`voicevox.ts`/`voicevoxPreview.ts` は**差分ゼロ**）
+    - **成果物**: Rust `src/audio/`（列挙・トーン合成・指定デバイス再生）＋**単一目的コマンド 2 本**（`list_audio_output_devices` / `play_notification_sound`）＋`audioOutputApi.ts` / `audioOutputPrefs.ts`＋設定カード「音声出力（通知音）」（デバイス選択・**テスト再生**・再読み込み・仮想デバイス案内）
+    - **音源は Rust でトーン合成**（同梱ファイルゼロ）＝`bundle.resources` 不要・**`tauri.conf.json` 差分ゼロ**・パス解決もファイル I/O も存在しない。副次効果で `wav` feature が不要になり **symphonia をゼロ**にできた
+    - **`OutputStream` は State に持たず再生のたびに開いて閉じる**＝`Sync` 問題が発生せず、**デバイスが抜かれたことを再生時点で必ず検出できる**。`#[tauri::command(async)]`＋完了まで**上限つき**で待つ（⚠ `sleep_until_end()` は無限待ちなので使わない）
+    - ⚠⚠ **フォールバックは fail-closed（鳴らさない）＝旧 058a の判断を意図的に反転**。②-軽では**既定＝仮想オーディオデバイス＝配信に載る側**なので、既定へ落とすと「載せないつもりの通知音が配信に載る」。契約テストが `default_output_device` 等の出現を止めている
+    - **依存**: `rodio`（`default-features = false, features = ["playback"]`）のみ。**Cargo.lock 追加 16 件・削除ゼロ／macOS ビルドツリー純増 11 件**（315 → 326。差の 5 件は Linux/Android/iOS 専用）・**symphonia ゼロ**・**async ランタイムを引かない**・`cargo audit` exit 0（⚠ audit は lock 全体＝16 件を見る）
+    - ⚠ **Windows 未検証**（058s の実測は macOS のみ）: デバイス名の可読性／実再生／**再起動をまたぐ `DeviceId` の安定性**（最大の未検証点）／抜いたときの警告／依存の実増分。⚠ **`windows` crate はレビュー実測で訂正**——0.58.0〔自前・028〕/ 0.61.3〔tao→tauri〕/ 0.62.2〔cpal〕の **3 系統**で、**0.58 と 0.61.3 の併存は 058a 以前から**＝058a が足すのは 0.62.2 のみ。⚠ 0.x 同士は cargo が統合しないので**「統一」は 098 でも達成できない**（到達点は 3→2）。098 で判断するのは重複コストの許容可否
+    - ⚠ **同時再生は Rust 側で 1 本に制限**（`service::PLAYING` / `PlaybackGuard`・競合時は鳴らさず `Ok(())`）。⚠ クールダウンではなく**可用性対策**——`#[tauri::command(async)]` ＋ 同期 fn の実体は `async_runtime::spawn`（`spawn_blocking` ではない）＝**tokio worker を再生時間ぶん占有**し、窓生成コマンドや updater と同じランタイムを共有するため（レビューで tauri のソースを確認して追加）
+    - ⚠ **実機確認は未実施**（本人の手番）。「選んだデバイスで鳴る」＋「既定では鳴らない」の 2 点セット、OBS の音声入力キャプチャで**読み上げは拾えて通知音は拾えない**こと
   - ⏸ 058b VOICEVOX 読み上げの「配信に載せる」設定（[docs/tasks/058b-voicevox-stream-output-toggle.md](tasks/058b-voicevox-stream-output-toggle.md)／**保留**＝②-軽では読み上げの出力先を変えられないため要望②のトグルは出せない。再開条件は 058s の「再開条件」節）
 
-- 059 通知音（コメント／投げ銭）（親設計 [docs/tasks/059-notification-sounds.md](tasks/059-notification-sounds.md)／要望①＋④の音の部分・**音源はアプリ同梱**〔外部 CDN を参照しない＝§1/CSP 方針〕・**新規依存ゼロ**）
-  - 実装順: **058a → 059a → 059b**（⚠ **2026-08-03 変更**）
+- 059 通知音（コメント／投げ銭）（親設計 [docs/tasks/059-notification-sounds.md](tasks/059-notification-sounds.md)／要望①＋④の音の部分・**音源はアプリ内**〔外部 CDN を参照しない＝§1/CSP 方針〕・**新規依存ゼロ**〔再生基盤の `rodio` は 058a で導入済み〕）
+  - 実装順: ~~058a~~（✅ 2026-08-04 完了）→ **059a → 059b**（⚠ 順序は **2026-08-03 変更**）
+  - **058a から渡ってきたもの（059 はこれを使う側）**:
+    - コマンドは `play_notification_sound(deviceId, sound)`。**音を増やすのは `NotificationSound` enum に variant を足すだけ**（059a が `Comment`、059b が `Monetary`）。ts-rs が frontend の型を自動追従させる
+    - **音を増やす 3 つの道**: ①エンベロープ付きトーンを合成し続ける（decoder 不要・`service::samples_for` に 1 アーム）②`include_bytes!` で**生 PCM**を焼き `SamplesBuffer` へ（decoder 不要・`bundle.resources` も不要。⚠ **現行の契約テスト `accepts_no_file_path_from_the_frontend` が `include_bytes!` を禁止しているので、採るなら needle を外して `PathBuf`/`std::fs`/実行時パス解決の不在で守り直すこと**＝レビュー指摘）③WAV 同梱（⚠ `wav` feature ＝ +symphonia 4〜5 crate ＋**ライセンス確認**）
+    - **クールダウン（どの音を何秒に 1 回まで）は 059 の責務**。059b の「音源ごとに独立したクールダウン」も 059 側に置く。⚠ **ただし「同時再生 1 本」の上限だけは 058a が Rust 側に持つ**（可用性対策・上記）。クールダウンはその上限に当たって音が捨てられる状態を避けるために依然必要
+    - デバイス ID は `loadAudioOutputDeviceId()` で読む。**未選択（`""`）なら呼ばない＝鳴らさない**。⚠ **既定デバイスへ落とさないこと**（載せないつもりの音が配信に載る）
+    - `play_notification_sound` は**鳴り終わってから resolve する**。059 は待たずに投げっぱなしでよい。⚠⚠ **ただし `.catch(() => {})` で握り潰して終わりにしないこと**（レビュー指摘で反転）——058a は fail-closed かつ**ホットプラグ監視を持たない**ので、無言で捨てると**配信中にデバイスを抜いたとき通知音が鳴らなくなったことに気付く手段がゼロ**になる。`AUDIO_DEVICE_UNAVAILABLE` を受けたら**画面に継続表示される indicator を出す**こと（表示設計は 059 の責務）
   - ⚠⚠ **058s の結論（②-軽）で再生層が変わった**: 通知音は **Rust（`rodio`）で鳴らし出力デバイスを指定する**。~~音を鳴らすだけなら 058s の前でも着手できる（Web Audio で足りる）~~ は**無効**——Web Audio では出力先を選べず「**配信に載せない**」が原理的に作れないため、先行実装すると必ず作り直しになる。**058a を先に済ませること**
   - ⚠ **通知音の実装は 0 件**（`public/` はフォントのみで音源アセットなし）。課金判定（`isMonetaryEvent`）は既存を流用する（⚠ **再生プリミティブ `playWav` の流用は不可**＝Rust 側再生になったため）
   - ⚠ **レート制限が必須**（10 連投で 10 回鳴らさない）。⚠ **音源のライセンス確認**を必ず行い progress.md に記録する（配布バイナリに入る）

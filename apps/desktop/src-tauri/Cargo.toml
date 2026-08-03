@@ -90,6 +90,58 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "sync-s
 image = { version = "0.25", default-features = false, features = ["png"] }
 base64 = "0.22"
 
+# 058a 音声ルーティング基盤（通知音の Rust 再生）: 出力デバイスを**列挙**し、**指定したデバイスで**音を鳴らす。
+# 用途は「配信に載せる音（読み上げ＝OS 既定へ出す）」と「載せない音（通知音＝実デバイスへ明示指定）」の
+# 出し分けで、059 の通知音がこの基盤を使う。**入力（マイク）には一切触れない**（`output_devices()` のみ）。
+#
+# ⚠ **webview 側では実現できないことが 058s の実測で確定している**（＝この crate が要る理由）。
+# macOS(WKWebView) は `navigator.mediaDevices` ごと非対応で `setSinkId` が存在しない。Windows(WebView2) は
+# `setSinkId` が存在するのに `enumerateDevices` が `deviceId`・`label` とも空の 1 件しか返さず、**渡せる ID が
+# 無い**。`selectAudioOutput` は両 OS とも未実装で、**マイク権限を取らずに label を得る道は存在しなかった**。
+# ＝「ユーザーが出力先を選べる」の前提条件は Rust 側にしか無い（Rust は権限なしで名前と安定 ID を返す）。
+#
+# ⚠ **「Rust は完全同期のまま（async/WS/HTTP crate を足さない）」方針の例外ではない。**
+# `tokio` / `async-std` / `futures-executor` を 1 つも引かない（rodio のサブツリーで実測）。
+# `tauri-plugin-updater`（正面からの例外）とはそこが違う。再生は同期関数で行い、UI を止めないために
+# `#[tauri::command(async)]`（＝Tauri v2 が既に持つ async runtime へ逃がすだけ）に載せる。
+# ⚠ **ただし「逃がすだけ」で済む話ではない**（レビューでソースを確認して追記）。`tauri-macros` が付ける
+#   tracing ラベル `"sync_threadpool"` は**ラベル文字列にすぎず**、実体は `tauri/src/ipc/mod.rs` の
+#   `respond_async` → **`async_runtime::spawn`**（`spawn_blocking` **ではない**）＝ tokio の
+#   マルチスレッドランタイムの **worker を 1 本占有したまま**再生完了を待つ。窓生成コマンドや
+#   `check_app_update` / `install_app_update` と同じランタイムを共有するので、積み上がると IPC が詰まる。
+#   → `audio::service` に**同時再生 1 本の上限**（`PLAYING` / `PlaybackGuard`）を持たせて構造的に塞いだ。
+# 外部通信ゼロ・ファイル I/O ゼロ（音源はアプリ内で合成するので、同梱アセットもパス解決も存在しない）。
+#
+# feature は `default-features = false` ＋ **`playback` だけ**に絞る（`image` / `tauri-plugin-updater` と同型）。
+# - playback: `cpal` を引く。デバイス列挙（`cpal::traits::HostTrait::output_devices`）と
+#   OS 出力ストリーム（`rodio::DeviceSinkBuilder`）の本体。**これが無いと何もできない。**
+# ⚠ **既定のままにしないこと。** default は `playback, recording, flac, mp3, mp4, vorbis, wav, dither` で、
+#   symphonia のデコーダ一式が入り **126 crate** に膨らむ（`zip` feature を落とすなという 055b の申し送りと
+#   同種の地雷だが、向きは逆＝こちらは「足すな」）。
+# ⚠ **`wav` も足さない。** rodio 0.22 の `wav` は `["symphonia-wav", "symphonia-pcm"]` の別名で、
+#   足すと symphonia / -core / -format-riff / -codec-pcm / -metadata が入る（058s は
+#   `features = ["playback", "wav"]` を指示していたが、これは 058a 着手時の実測で訂正した）。
+#   **本タスクはデコーダを必要としない**——音は `SineWave` / `SamplesBuffer` でアプリ内合成し、
+#   `Player::connect_new(mixer).append(source)` で鳴らす（この 3 つはいずれも feature gate されていない）。
+#   decoder が要るのは `rodio::play(mixer, reader)` だけで、それは使わない。
+#   059 で既製の WAV を同梱したくなったときに初めて `wav` を足す（そのとき §10 に追記すること）。
+# ⚠ **`rodio::speakers`（`available_outputs` / `SpeakersBuilder`）は使わない**——`experimental` feature 配下。
+#   安定 API の `DeviceSinkBuilder::from_device(device)` → `open_stream()` 経路を使う。
+# 明示的に足さないもの: **`cpal` の直接依存**（`rodio::cpal` の再エクスポートを使う＝バージョン不整合を作らない）／
+#   音声デコーダ（上記）／HTTP・async 系 crate／`recording`（マイク＝入力に触れないため feature ごと落とす）。
+#
+# ⚠ **Windows 申し送り（098）**: cpal 0.17 は `windows` crate を `>=0.59, <=0.62` で要求する。
+#   ⚠ レビューで実測して訂正（当初「058a のせいで 2 系統並ぶ」と書いていたが誤り）:
+#   `cargo tree --target x86_64-pc-windows-msvc -i windows` の実測は **0.58.0 / 0.61.3 / 0.62.2 の 3 系統**で、
+#   内訳は 0.58.0＝自前（028 の Win32）／0.61.3＝`tao`→`tauri-runtime-wry`／0.62.2＝**cpal**。
+#   つまり **0.58 と 0.61.3 の併存は 058a 以前からの状態**であって、058a が足すのは **3 本目の 0.62.2 だけ**。
+#   ⚠ しかも 0.x 同士は semver 非互換で cargo が決して統合しないため、**「統一」は 098 でも達成できない**
+#   （028 を 0.62 へ上げても `tao` の 0.61.3 が残る＝到達点は 3→2）。098 で判断するのは統一の可否ではなく
+#   **ビルドサイズと重複コードの重複コストを許容するか**である。
+# ⚠ **Windows は未検証**（058s の実測は macOS のみ）。詳細は docs/tasks/058a の「Windows 未検証」節。
+# docs/security.md §4（OS 操作）／§9（デバイス名・ID をログに出さない）／§10（依存）。
+rodio = { version = "0.22", default-features = false, features = ["playback"] }
+
 # macOS の `.app` は `/usr/bin/open`（LaunchServices）経由で起動するため、掴む Child は実アプリでは
 # なく即終了する open ヘルパになる。013 では起動した実アプリの PID を解決し、その PID の生存確認・停止
 # （kill）に sysinfo を用いる（shell 非経由）。用途は自分が起動したプロセスの PID 解決・生存確認・kill に

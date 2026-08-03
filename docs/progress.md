@@ -11823,3 +11823,261 @@ Developer Portal の操作・Discord/OBS の GUI 操作・**アカウント切�
   ⚠ `apps/desktop/src-tauri/target/debug/bundle/` に検証用の debug ビルド（`StreamDock.app` / `.dmg`）が残っているが
   `target/` は gitignore 済み。なお `tauri build --debug` は最後に **updater の署名鍵が無いというエラーで非ゼロ終了する**が、
   `.app` と `.dmg` はその手前で生成済み（本スパイクには無関係）。
+
+## 2026-08-04 (058a 音声ルーティング基盤 —— 通知音を Rust〔`rodio`〕で鳴らし**出力デバイスを明示指定**する②-軽の土台)
+
+- **やったこと**: [058s](tasks/058s-audio-output-device-spike.md) の結論「②-軽」に沿って
+  [058a](tasks/058a-audio-routing-foundation.md) を**全面的に書き直したうえで実装**した。
+  出力デバイスの**列挙**と**指定デバイスでの再生**を Rust（`rodio`）に置き、設定 UI で選ばせて localStorage に永続化する。
+  **`ttsQueue.ts` / `voicevox.ts` / `voicevoxPreview.ts` は無改変（差分ゼロを実測）**＝読み上げ経路には一切触れていない。
+- **①音源アセットをどう扱ったか（B/C の決定）＝ Rust でトーンを合成する（同梱ファイルゼロ）**:
+  058s は `play_notification_sound`（同梱音源 ID の enum）を 058a のスコープに入れているが、
+  **通知音そのものの追加は 059 の領分**で、058a の時点で鳴らす音が存在しないという問題があった。
+  選択肢は (a) Rust でトーン生成 (b) 最小 WAV を `include_bytes!` で同梱 (c) 再生を 059 へ譲る の 3 つ。
+  **(a) を採用**（本人決定）。理由:
+  - 058s のスパイクが**正弦波で検証した経路そのもの**を本番にできる。
+  - `bundle.resources` も `include_bytes!` も要らない＝**`tauri.conf.json` 差分ゼロ・ファイル I/O ゼロ・パス解決ゼロ**。
+    「frontend からパスを渡させない」より強く、**パスという概念が経路上に存在しない**（§4 の面が最小になる）。
+  - ライセンス確認の論点が 058a に発生しない（059 の責務のまま残る）。
+  - **副次効果が大きかった**: decoder が不要になり `wav` feature を落とせた（下記④）。
+  - (c) を採らなかったのは、**鳴らせる音が 1 つも無いと 058s の合格基準
+    「選んだデバイスで鳴る」＋「既定デバイスでは鳴らない」を 058a 単体で測れない**ため。
+    `rodio` を `Cargo.toml` に足して security-review を通すのに、再生経路が 1 行も無い状態になるのも筋が悪い。
+  - **テスト再生ボタンを設定 UI に置いた**（034c の話者試聴ボタンと同じ考え方）。これが 058a の唯一の検証手段。
+  - 059 へは「音を増やす 3 つの道」（トーン合成を続ける／`include_bytes!` で**生 PCM**／WAV 同梱〔+symphonia〕）を
+    058a に明記して申し送った。**前 2 者は decoder ゼロのまま増やせる。**
+- **②`OutputStream` のライフサイクルと `Send`/`Sync` の解き方 ＝ State に持たず、再生のたびに開いて閉じる**:
+  - `MixerDeviceSink` は内部に `cpal::Stream` を持つ。これを `app.manage` すると
+    `Mutex<MixerDeviceSink>` が `Sync` であるために `MixerDeviceSink: Send` が要る、という話になる。
+    **State を持たなければその話自体が発生しない**ので、そちらを選んだ。
+  - 他の利点: ①音声デバイスを掴みっぱなしにしない ②**毎回デバイスを解決し直すので「抜かれた」を再生時点で必ず検出できる**
+    （キャッシュしていると「もう無いデバイス」へ鳴らし続ける）。
+  - **完了まで待つのは選択ではなく帰結**。`MixerDeviceSink` を drop するとストリームが閉じて音が切れるので、
+    開きっぱなしにしない以上 待つ以外にない。副産物として invoke の Promise 解決＝再生完了通知になり 059 が使える。
+  - **`#[tauri::command(async)]` ＋ 同期 fn**（窓生成コマンドと同型）。同期コマンドはメインスレッドで走るので、
+    再生完了まで待つと UI が固まる。⚠ **ここを同期に戻さないこと。**
+    tokio は Tauri v2 が既に持っているので**新規依存にならない**＝「Rust 完全同期」方針は破っていない。
+  - ⚠ **`Player::sleep_until_end()` は使わない**（内部でチャネル受信を無期限に待ち、ストリームが死ぬと戻らない
+    ＝invoke の Promise が永久未解決になる）。合成した音の長さは自分で知っているので、`player.empty()` を
+    **`音の長さ + 1 秒` の期限つきでポーリング**する（050 の再生ストール監視と同じ発想＝最初から上限を持たせる）。
+  - `Send` 自体はコンパイラが強制しない（await を跨がないため）が、**tripwire として `const _: fn() = ...` の
+    コンパイル時アサートを置いた**——rodio/cpal の更新でこの性質が崩れたら実行時ではなく `cargo check` で落ちる。
+    実測: macOS は `Stream { inner: Arc<Mutex<StreamInner>>, _disconnect_manager }` でソースに
+    「dedicated thread architecture ensures Stream can implement Send」と明記、Windows(WASAPI) は `unsafe impl Send`。
+  - **多重再生・クールダウン・排他は 058a では持たない**（1 呼び出し 1 再生で独立）。
+    059b が「音源ごとに独立したクールダウン」を要求しているので、状態は 059 側に置くのが正しい。
+- **③フォールバック時に UI で気付かせる仕組み ＝ fail-closed（鳴らさない）＋ 3 段の気付き**:
+  - ⚠ **旧 058a（① 前提）の判断を意図的に反転させた。** 旧文は「音が鳴らなくなるより、意図と違うデバイスから
+    鳴るほうがマシ」だったが、それは**読み上げ**の理屈（配信中の無音が事故）。**通知音では逆転する**——
+    ②-軽の運用では **OS 既定＝仮想オーディオデバイス＝配信に載る側**なので、既定へ落とすと
+    **「載せないつもりの通知音が配信に載る」＝この機能の存在理由そのものが壊れる**。
+    鳴らないのは軽微な不便で、載るのは事故。**Rust も frontend も同じ向きに揃えた。**
+  - Rust: `find_output_device` が**現在の `output_devices()` を舐めて ID を照合**し、無ければ
+    `AppError::audio_device_unavailable()`（既定へ落ちる分岐そのものが存在しない）。
+    ⚠ `HostTrait::device_by_id()` は使わない（内部で `devices()`＝**入力を含む全件**を舐めるため）。
+    出力一覧を自分で舐めれば「存在する」と「出力である」が 1 回の検査で済み、**再生経路が入力デバイスへ構造的に到達しない**。
+  - UI（3 段）: ①**設定を開くたびに列挙し直して突き合わせ**、保存済み ID が無ければ赤字で警告
+    ②「再読み込み」ボタンで再列挙 ③テスト再生の失敗表示。⚠ 列挙中（`loading`）は警告を出さない
+    （起動直後に必ず一瞬赤くなるため）。⚠ **保存済み ID は消さない**（挿し直せば復帰する）。
+  - ⚠ **警告文にデバイス名・ID を出さない**（§9）。「以前選んだ音声出力デバイス」で特定せずに済ませる。
+  - ホットプラグ監視（着脱イベント購読）は入れていない。上記 3 段で「黙って載る側に倒れる」は防げるため。
+- **④`cargo tree` の実測値と `cargo audit` の結果**:
+  - **⚠ 058s の指示に対する訂正 1**: 058s は `features = ["playback","wav"]` を指示していたが、
+    rodio 0.22 の `wav` は **`["symphonia-wav", "symphonia-pcm"]` の別名**で、足すと symphonia 一式が入る。
+    **トーン生成なら decoder は一切不要**（`SineWave` / `SamplesBuffer` / `Player::connect_new().append()` は
+    いずれも feature gate されていない。decoder が要るのは `rodio::play(mixer, reader)` だけ）。
+    → **`default-features = false, features = ["playback"]`** に絞った。
+    実測 **`cargo tree -i symphonia` が「該当パッケージなし」**（058s の確認コマンド案は OK を出さない設計だった）。
+  - **⚠ 訂正 2**: `cargo tree -i tokio` は**「引いていない」の担保に使えない**——tokio は Tauri v2 が既に保持しているので
+    必ずヒットする。正しい担保は **`cargo tree -p rodio --edges normal` に async ランタイムが現れないこと**（実測 OK）。
+  - **crate 純増は 11 件**（macOS・ユニーク解決後で **315 → 326**）:
+    `rodio` / `cpal` / `coreaudio-rs` / `dasp_sample` / `mach2` / `num-rational` / `num-bigint` / `num-integer` /
+    `objc2-audio-toolbox` / `objc2-core-audio` / `objc2-core-audio-types`。
+    objc2 系の大半・`thiserror` / `libc` / `bitflags` は Tauri が既に持っているので増分に入らない。
+    ⚠ 058s の「macOS 39 / Windows 38」は**使い捨てプロジェクトで測った総数**であって本体への増分ではない。
+  - **`cargo audit` は exit 0**（Cargo.lock 577 crate 走査）。**今回増えた 11 crate に advisory は 1 件も無い**
+    （既存の警告 18 件＝GTK/glib 等 Linux 専用の unmaintained/unsound は不変）。
+- **⑤Windows で未検証の項目**（058s の実測は macOS のみ・098 も未完了。013/019/021/028 と同じ作法で注記を残して進めた）:
+  1. **デバイス名が読める文字列で並ぶか**（WASAPI の `description()` が空・記号だけにならないか）
+  2. 選んだデバイスからテスト音が鳴る／既定デバイスからは鳴らない
+  3. **アプリ再起動後も選択が復元されるか**（＝WASAPI で `DeviceId` が安定するか。**Windows 最大の未検証点**）
+  4. デバイスを OS から抜く → 警告が出て、既定へ落ちずに鳴らない
+  5. 仮想オーディオデバイス（VB-CABLE 等）を入れて ②-軽の運用が成立するか
+  6. **依存の実増分**。⚠ **cpal 0.17 は `windows` crate を `>=0.59, <=0.62` で要求するが、本 crate は 028 の
+     Win32 コードで `windows = "0.58"` を固定している**＝**Windows ビルドでは `windows` crate が 2 系統並ぶ**見込み。
+     上記「11 crate」は macOS の実測値であって Windows の増分ではない。統一は 028 のコードに手が要るため 098 へ送る。
+- **セキュリティ（[security.md](security.md) に正式追記）**: §4 追補（列挙は出力のみ・**入力に触れない**・
+  単一目的コマンド 2 本・任意パスを受けない・ID は Rust 側で照合・**fail-closed**・ストリームを State に持たない）／
+  §9 追補（**デバイス名/ID をログ・エラー・UI に出さない**。コマンドが `DbState` を取らないので
+  app_logs へ到達する経路が構造的に無い）／§10（`rodio` の追加理由・feature を絞る根拠と上記の訂正・
+  crate 純増 11・tokio を引かない・audit exit 0・`rodio::speakers` を使わない・`cpal` を直接依存にしない）／
+  **レビュー必須条件に「音声デバイスの列挙・音声の再生」を追加**（入力へ広げる／enum 以外で音を指定する／
+  既定へフォールバックする、の 3 変更を名指しで該当と書いた）。
+- **テスト**: 環境依存で単体テストできない部分（デバイス列挙・実再生）は
+  **`include_str!` の契約テスト**で不変条件を機械的に固定した（`obs_config` / `app_update` の先例と同型）。
+  ⚠ 自己ヒットを避けるため **`#[cfg(test)]` 以降を切り落とし＋行コメントを剥がし＋needle は `format!` で実行時に組む**。
+  - `never_falls_back_to_the_default_output_device`（`default_output_device` / `from_default_device` /
+    `open_default_sink` / `open_sink_or_fallback` の不在）
+  - `never_touches_input_devices`（`input_devices` / `default_input_device` / `build_input_stream` /
+    `microphone` / `.devices(` の不在）
+  - `has_no_panicking_paths`（`unwrap()` / `.expect(` / `panic!(` の不在）
+  - `accepts_no_file_path_from_the_frontend`（`PathBuf` / `include_bytes!` / `std::fs` の不在）
+  - 純関数（波形合成）は Rust で 3 本、`audioOutputPrefs` は vitest で 16 本、設定 UI は 16 本。
+  - **ミューテーションで実効性を確認済み（8 件すべてレッド）**: ①`find_output_device` に既定へのフォールバックを足す
+    ②`output_devices()` を `input_devices()` に変える ③エンベロープを外す（クリップ・クリックノイズ）
+    ④`isValidAudioOutputDeviceId` の空文字判定を反転 ⑤「見つかりません」警告を出さなくする
+    ⑥未選択でもテスト再生を押せるようにする。
+- **変更ファイル**: Rust＝`Cargo.toml`（理由コメント）／`src/audio/`（`mod` / `model` / `service` / `commands` 新規）／
+  `src/error.rs`（`AudioDeviceUnavailable` / `AudioPlaybackFailed` ＋引数を取らないコンストラクタ 2 本）／`src/lib.rs`（登録 2 行）。
+  frontend＝`audioOutputApi.ts` / `audioOutputPrefs.ts`（新規）＋テスト 2 本＋bindings 2 本（ts-rs 生成）／
+  `CommentViewerApp.tsx` / `SettingsView.tsx`（設定カード）／`SettingsView.obs.test.tsx`（`baseProps` に新 props）。
+  docs＝`058a`（書き直し）/ `security.md` / `progress.md` / `task-board.md`。
+- **ゼロ拡大の実測**: `capabilities/` / `tauri.conf.json` / `.github/` / `apps/comment-sidecar/` /
+  `package.json` / `pnpm-lock.yaml` / **`CommentViewerApp.module.css`（CSS 差分ゼロ）** /
+  `ttsQueue.ts` / `voicevox.ts` / `voicevoxPreview.ts` がすべて差分ゼロ。`csp: null` 不変・外部通信ゼロ。
+  設定カードは**既存クラスだけ**で組んだので 054 の書式規則（項目名 13px/700・説明 `--muted`）に自動的に従い、
+  `check-css-guards.mjs` の (6)(7) にも触れていない。
+- **検証**: `cargo check` / `cargo test`（**146 passed**・うち 058a の新規 10 本＝契約 4・波形 3・ts-rs export 2・
+  `AppError` 1）/ `typecheck` / `lint` / `pnpm test`（**628 passed**・うち 058a の新規 36 本＝prefs 20・設定 UI 16。
+  CSS guard OK・version sync OK）/ `cargo audit` exit 0。
+- ⚠ **実機確認は未実施**（本人の手番）。`tauri dev` で「選んだデバイスから鳴る」＋「既定デバイスからは鳴らない」の
+  2 点セット、OBS の音声入力キャプチャで仮想デバイスを選んだとき**読み上げは拾えて通知音は拾えない**こと、
+  デバイスを抜いたときの警告、ライト/ダーク両テーマを確認すること。
+- **やらないこと（線引き）**: 通知音そのもの・クールダウン・排他（059）／読み上げのルーティング（058b＝保留）／
+  音量調整・正規化・ダッキング／仮想オーディオデバイスの自動導入（**案内文言のみ**）／ホットプラグ監視／
+  `windows` crate のバージョン統一（098 へ）／コミット・プッシュ（**本人の明示指示待ち**）。
+
+### 2026-08-04 追記: security-review / code-review の指摘反映（058a）
+
+別セッションで security-review ＋ code-review（effort high）を実施し、指摘を反映した。**セキュリティ上の欠陥は
+検出されず**（fail-closed・enum による型レベル封鎖・Rust 側照合・`DbState` 非取得・音源ファイル不在はすべて
+実コードで成立を確認）、指摘は「一貫性の穴」と「文書の事実誤り」に限られた。
+
+- **① `audioOutputPrefs.test.ts` に生の NUL バイトが入っていた**（修正）。`localStorage.setItem` の引数が
+  エスケープではなく**リテラルの U+0000 バイト**で、git がファイル全体を binary 判定していた
+  （`Bin 0 -> 5940 bytes`）。＝**このファイルは以後どの `git diff` にも内容が出ない**＝差分ベースのレビュー運用
+  （security-review / code-review / PR）の網から構造的に外れる。エスケープ表記へ置換し、テキスト（143 行）として
+  diff に出ることを確認した。テストの入力値（NUL）そのものは変えていない。
+- **② 列挙とコマンド検証の不一致を解消**（修正）。`play_notification_sound` は受け取った ID を `trim()` ＋
+  制御文字拒否してから**完全一致**で照合するのに、`list_output_devices` はその正規化に耐えない ID も返しうる状態
+  だった。＝**UI には出て選べるのに再生時に必ず失敗する**デバイスが理論上作れる（fail-closed 方向なので危険では
+  ないが、直しようのない不便になる）。列挙側で落として「**一覧に出るなら必ず鳴らせる**」を不変条件にした。
+  ⚠ Rust の `char::is_control` は U+0080..=U+009F も含み frontend 側の判定より広いので、**広いほうに合わせた**。
+- **③ ⚠⚠ `#[tauri::command(async)]` が tokio worker をブロックする件に構造的な上限を入れた**（修正）。
+  レビューで tauri のソースを確認した結果、自己レビューの見立てが**事実であると裏付けられた**——`tauri-macros`
+  の tracing ラベル `"sync_threadpool"` は**ラベル文字列にすぎず**（`command/wrapper.rs:264`）、実体は
+  `tauri/src/ipc/mod.rs:329` の `respond_async` → **`async_runtime::spawn`**（`spawn_blocking` ではない）で、
+  `async_runtime` は tokio のマルチスレッドランタイム（`async_runtime.rs:223`）。＝**再生が終わるまで worker を
+  1 本占有する**。窓生成コマンドや `check_app_update` / `install_app_update` と同じランタイムを共有する。
+  058a 単体では実害が無いが、**059 がコメント受信ごとに呼ぶ**ため「059 が正しくクールダウンを実装すること」に
+  可用性を賭ける形になっていた。→ `service::PLAYING` / `PlaybackGuard`（`AtomicBool` の RAII ガード）で
+  **同時再生を 1 本に制限**した。競合時は**エラーにせず鳴らさずに `Ok(())`**（新しいエラー面を増やさない・
+  059 の投げっぱなし導線と噛み合う）。⚠ **これはクールダウンの代わりではない**（クールダウンは 059 の責務）。
+  契約テスト `only_one_playback_runs_at_a_time` で固定。
+- **④ 再生末尾が最大 50ms 切れうる問題を修正**（修正）。`Player::empty()` が見るカウンタは `Done` ラッパが
+  **内部ソースを消費し切った**ときに減るもので、消費しているのは cpal のデータコールバック。
+  `DeviceSinkBuilder::from_device()` は buffer_size を **50ms 相当**に固定する（rodio 0.22 の
+  `// aim for 50ms of audio`＝`sample_rate / 20`）ため、`empty()` が true になった時点で**まだ最大 50ms 分が
+  未再生のままキューに残っている**。そこで `sink` を drop するとその分が破棄される
+  （180ms・tau=60ms のテスト音だと打ち切り位置の振幅はピーク比 11% 程度＝クリックになりうる）。
+  `PLAYBACK_TAIL = 80ms` の post-roll を追加した。⚠ **実機（特にヘッドホン）で末尾を聴いて確認すること。**
+- **⑤ 契約テストに「在ること」の検査を追加**（修正）。従来は禁止 API の**不在**しか見ておらず、
+  ⓐ `require_non_empty` / `reject_control_chars` の削除 ⓑ `#[tauri::command(async)]` → 同期 ⓒ `DbState` の追加
+  ⓓ `audio/` へのファイル追加（検査対象から漏れる）がすべてすり抜けていた。`assert_present_in` を追加し、
+  `validates_the_device_id_before_using_it` / `both_commands_stay_off_the_main_thread` /
+  `commands_take_no_db_state` / `the_contract_covers_every_file_in_the_audio_module` の 4 本を新設
+  （⑤＋③で **Rust 146 → 151 passed**）。
+- **⑥ `<details>` の案内文が 1 段落に潰れていた**（修正）。`.note` は `font-size`/`line-height`/`color` のみで
+  `display` を持たず、カード直下で改行されて見えるのは `.cardBody` が `display:flex; flex-direction:column`
+  ＝**フレックスアイテムが blockify される**からだった。`<details className={styles.obsPasswordHelp}>` は
+  flex ではないので `<span>` のままだと 3 段落が**空白すら無しに連結**する（JSX は要素間の改行を除去する）。
+  `<div>` へ変更＝**CSS 差分ゼロのまま**解決（`.errorText` を `<div>` で使う前例と同型）。
+- **⑦ 文書の事実誤りを訂正**（修正）:
+  - **crate 数の書き分け**: `Cargo.lock` **追加 16 件・削除ゼロ** ／ macOS ビルドツリー**純増 11 件**
+    （315→326）。差の 5 件（`alsa` / `alsa-sys` / `ndk-context` / `num-derive` / `objc2-avf-audio`）は
+    Linux/Android/iOS 専用で darwin ツリーに現れないことを実測確認。⚠ **`cargo audit` は lock 全体を読む**ので
+    「今回増えた 11 crate に advisory 無し」は根拠と主張がずれていた（正しくは 16 件）。§10 で両方を書き分けた。
+  - **⚠ `windows` crate の記述が誤りだったので訂正**: 「058a のせいで 2 系統並ぶ」と書いていたが、
+    `cargo tree --target x86_64-pc-windows-msvc -i windows` の実測は **0.58.0〔自前・028〕/ 0.61.3〔tao→tauri〕/
+    0.62.2〔cpal〕の 3 系統**。**0.58 と 0.61.3 の併存は 058a 以前からの状態**で、058a が足すのは
+    **3 本目の 0.62.2 だけ**だった（HEAD の lock にも `windows 0.62.2` はあるが、参照元は macOS 限定ターゲット
+    依存の `sysinfo` なので Windows ビルドツリーには入っていなかった）。⚠ さらに 0.x 同士は semver 非互換で
+    cargo が決して統合しないため、**「統一」は 098 でも達成できない**（028 を 0.62 へ上げても tao の 0.61.3 が
+    残る＝到達点は 3→2）。098 で判断するのは統一の可否ではなく**重複コストの許容可否**である。
+    このまま渡すと 098 に存在しない目標を持たせることになるため、`Cargo.toml` / `security.md` / `058a` /
+    `task-board` の 4 か所を訂正した。
+- **⑧ 059 への申し送りを 2 点修正**（修正）:
+  - ⚠ **`.catch(() => {})` で握り潰す導線を反転**。058a は fail-closed かつ**ホットプラグ監視を持たない**ので、
+    無言で捨てると**配信中にデバイスを抜いたとき通知音が鳴らなくなったことに気付く手段がゼロ**になる。
+    「鳴らないほうがマシ」は「鳴らないことに気付けなくてよい」ではない。`AUDIO_DEVICE_UNAVAILABLE` を受けたら
+    **画面に継続表示される indicator を出す**ことを 059 の要件として明記した。
+  - **「音を増やす道②（`include_bytes!` で生 PCM）」が 058a 自身の契約テストに禁止されていた**
+    （`accepts_no_file_path_from_the_frontend`）。推奨した道をそのまま実装すると `cargo test` が落ちる状態
+    だったので、「採るなら needle を外し `PathBuf` / `std::fs` / 実行時パス解決の不在で守り直す」ことを注記した
+    （守りたいのは「frontend から任意のパス／バイト列を受け取らない」であって、コンパイル時に確定する
+    `include_bytes!` はその対象ではない）。
+- **`open_sink_or_fallback` の禁止理由を分離**（修正）。あれは**既定デバイスへは落ちず**、同一デバイス上で
+  別の supported config を試すだけなので、`default_output_device` 等と同じ失敗メッセージにすると将来の実装者を
+  誤誘導する。禁止自体は維持（失敗の意味を単純に保つため）だが、理由を別立てにした。
+- **`SAMPLE_RATE` / `sleep_until_end` のコメントを訂正**（修正）。前者は「0 を書いたらコンパイルエラー」と
+  書いていたが実際は `SampleRate::MIN`（1Hz）へ**静かに縮退**する（検出は波形テストが担う）。後者は
+  「ストリームが死ぬと戻らない」と書いていたが、**sink を drop した場合は `recv()` が即 `Err` で戻る**——
+  本当に戻らないのは**デバイスが stall した**ときで、上限つき待機はそのために load-bearing である。
+- **修正不要と判断してコメントだけ残したもの**（意図・理由・再修正トリガーを該当箇所に記載）:
+  ⓐ 契約テストのコメント剥がしが `//` 限定でブロックコメント非対応（誤検知方向にしか倒れない）
+  ⓑ `SettingsView.audio.test.tsx` の `baseProps` 重複（共通化すると片方の既定値変更が他方を巻き添えにする）
+  ⓒ `refreshAudioOutputDevices` のアンマウント後 setState（`CommentViewerApp` は窓のルート相当で
+  アンマウントされない・React 18 は警告も出さない）
+  ⓓ `.obsPasswordHelp` を汎用 `<details>` として流用している点（CSS 冒頭の書式表が `.note` と並べて
+  「補助説明」役割で定義しているクラスなので書式規則どおり。3 箇所目が出たら `.helpDetails` へ改名）。
+- **検証**: `cargo test` **151 passed**（146 + 新規 5）／`pnpm typecheck` / `lint` / `pnpm test` **628 passed**
+  （CSS guard OK・version sync OK）／ゼロ拡大の再実測（`capabilities/` / `tauri.conf.json` /
+  `CommentViewerApp.module.css` / `ttsQueue.ts` / `voicevox.ts` / `voicevoxPreview.ts` / `package.json` /
+  `pnpm-lock.yaml` がすべて差分ゼロ）。
+- ⚠ **実機確認は引き続き未実施**（本人の手番）。上記に加えて **④の末尾（ヘッドホンでクリックが出ないか）**と
+  **⑥の案内文（3 段落に見えるか）**を確認すること。
+
+### 2026-08-04 追記: 058a のテスト補強（write-tests）
+
+レビュー反映後、**「ユニットで固定できるのに固定していない仕様」**を洗い出して追加した。
+実機でしか確かめられないもの（実デバイスからの発音・OBS への載り方・テーマ）は E2E 手順として残した。
+
+- **Rust +2 本（152 → 154）**:
+  - `append_makes_the_player_non_empty_right_away` — `wait_until_finished` は `Player::empty()` に依存する。
+    `append` がカウンタを**同期的に**増やさないと、直後の `empty()` が true になって**一度も鳴らないまま抜ける**。
+    rodio 更新でこの性質が崩れたら落とす。実デバイス不要（`rodio::mixer::mixer()` で OS に繋がらない mixer を作る）。
+  - `waiting_for_playback_always_has_an_upper_bound` — **058a の可用性の要**。`MixerSource` を消費しない
+    ＝誰もサンプルを引かない＝「デバイスが stall した」状態を再現し、`wait_until_finished` が
+    `PLAYBACK_GRACE` で必ず抜けることを実測する（＝invoke の Promise を永久未解決にしない）。
+    ⚠ このテストだけ約 1 秒かかる（上限そのものを測るため。suite 全体 0.2s → 1.0s）。
+  - 併せて波形テスト 3 本を **`ALL_SOUNDS` ループへ一般化**した。`sound_label` の `match` が exhaustive なので、
+    **059 が variant を足すとコンパイルエラーになり、一覧への追加を忘れられない**（`error.rs` の `wire_name` と同じ idiom）。
+    ＝059 が足す音も自動でクリップ・クリックノイズ・長さ整合の検査対象になる。
+- **frontend +28 本（628 → 656）／新規 2 ファイル**:
+  - `audioOutputApi.test.ts`（新規・`obsApi.test.ts` と同型）— command 名と**引数キーが camelCase であること**
+    （`{ deviceId, sound }`。ここを間違えると実機でしか落ちない）／0 件は成功として透過／**reject を握り潰さない**／
+    **ラッパは値を加工しない**（照合は Rust の仕事）／**失敗時に 2 回目を呼ばない**（既定へのリトライを作らない）。
+  - `CommentViewerApp.audio.test.tsx`（新規）— 配線の仕様。設定を開くと列挙／再読み込みで再列挙／
+    **列挙失敗を空配列で潰さない**／§9: 例外の中身（デバイス識別子・OSStatus）を画面に出さない／
+    選択の保存と復元／⚠⚠ **一覧に無くても localStorage の保存値を消さない**（挿し直せば復帰）／
+    テスト再生の引数／⚠⚠ **失敗しても既定デバイスで鳴らし直さない**／選び直しで失敗表示が消える／
+    **未選択のあいだは再生 command を一度も呼ばない**／**設定を開くまで列挙もしない**。
+  - `SettingsView.audio.test.tsx` +4 — 列挙失敗時は「見つかりません」を併記しない（取る行動が違う）／
+    未選択なら警告を出さない／「未選択＝鳴らさない」を常に説明する／§8: **デバイス名を HTML として解釈しない**。
+  - `audioOutputPrefs.test.ts` +4 — C1 制御文字（下記）／実在しうる記号は弾かない／
+    save 側の trim ／一覧に無い ID も load はそのまま返す。
+- **⚠ テストが仕様と実装の食い違いを 1 件炙り出したので実装を直した**:
+  `audioOutputPrefs.ts` の doc は「**Rust 側も同じ検査で弾く**」と宣言しているのに、判定は
+  `/[ -]/` で **C1 制御文字（U+0080..=U+009F）を通していた**。Rust は `char::is_control`
+  なので C1 も弾く＝「frontend は保存を許すのに Rust が必ず拒否する」値が作れる状態（§8 の多層防御が片肺）。
+  劣化方向は fail-closed なので危険ではないが、原因不明の「そのデバイスだけ鳴らない」になる。
+  **広いほう（Rust）に合わせて** `/[ --]/` へ修正した。
+- **`CommentViewerApp.toolbar.test.tsx` に `audioOutputApi` のモックを追加**（漏れの修正）。同ファイルは
+  「マウント時に走る外部境界を全てモックして隔離する」方針だが、058a が足した境界が塞がれておらず、
+  設定ビューへ移動するケースで**実 invoke が走っていた**（jsdom には Tauri が居ないので reject → 実装の
+  `.catch` が握って表示が変わるだけでテストは通る＝気付けない）。
+- **ミューテーション（10 件すべてレッド）**: Rust 6（検証削除／同期コマンド化／同時再生ガード削除／
+  契約対象ファイルの取りこぼし／選択可否判定の無効化／判定の呼び出し削除）＋ frontend 4（列挙失敗を
+  ready に潰す／一覧に無い保存値を消す／失敗時に既定デバイスで鳴らし直す／C1 判定を元に戻す）。
+- **検証**: `cargo test` **154 passed** ／ `pnpm typecheck` / `lint` / `pnpm test` **656 passed**（35 files・
+  CSS guard OK・version sync OK）。

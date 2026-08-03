@@ -6,6 +6,8 @@ import {
   type OverlayFontId,
 } from "../../features/comment-viewer/overlaySettings";
 import type { ObsWsConfig } from "../../features/comment-viewer/obsApi";
+import type { AudioOutputDevice } from "../../features/comment-viewer/audioOutputApi";
+import { NO_AUDIO_OUTPUT_DEVICE } from "../../features/comment-viewer/audioOutputPrefs";
 import {
   TTS_MAX_LENGTH_MAX,
   TTS_MAX_LENGTH_MIN,
@@ -33,6 +35,18 @@ import styles from "./CommentViewerApp.module.css";
  * 接続系の state・ハンドラは受け取らない（表示専用で WS を持たない性質は不変・窓内 1 本のまま）。
  */
 
+/**
+ * 058a: 出力デバイス列挙の状態。
+ *
+ * `"ready"` と 0 件・`"failed"` を区別するのは、**どれも「通知音が鳴らない」状態なのに
+ * ユーザーが取る行動が違う**から（デバイスを挿す／再読み込みする／選び直す）。
+ * ⚠ `"loading"` の間は「見つかりません」の警告を出さないこと（起動直後に必ず一瞬赤くなる）。
+ */
+export type AudioOutputListState = "loading" | "ready" | "failed";
+
+/** 058a: テスト再生の状態（`obsState` と同じ「操作の結果を 1 行で出す」構え）。 */
+export type AudioTestState = "idle" | "playing" | "failed";
+
 interface SettingsViewProps {
   onBack: () => void;
   // 033c: VOICEVOX 自動連携 ON/OFF（読み上げトグルは本体コメントビューへ・state は CommentViewerApp が保持）。
@@ -56,6 +70,17 @@ interface SettingsViewProps {
   onSpeakerIdChange: (id: number) => void;
   // 034c: 話者/スタイル選択時にその声のサンプルを試聴する（中断切替は CommentViewerApp が持つ preview プレイヤーが担う）。
   onPreview: (styleId: number) => void;
+  // 058a: 通知音の出力デバイス（②-軽）。列挙と再生は Rust 側（webview では出力先を選べない＝058s 実測）で、
+  // ここは表示と選択の受け渡しのみ（このビューの「表示専用」性質は不変）。
+  // ⚠ `audioOutputDeviceId` の `""`＝未選択は **「既定デバイスで鳴らす」ではなく「鳴らさない」**。
+  // 既定＝仮想オーディオデバイス＝配信に載る側なので、ここを既定へ落とす UI にしないこと（fail-closed）。
+  audioOutputDevices: AudioOutputDevice[];
+  audioOutputListState: AudioOutputListState;
+  audioOutputDeviceId: string;
+  onAudioOutputDeviceIdChange: (deviceId: string) => void;
+  onReloadAudioOutputDevices: () => void;
+  onTestNotificationSound: () => void;
+  audioTestState: AudioTestState;
   // 045b: 表示（開閉）トグルは本体コメントビューのツールバーへ移設したため、この設定ビューは overlayOpen /
   // onOverlayToggle を受け取らない（034d の部分反転）。開閉 state・ハンドラは CommentViewerApp が保持したまま。
   // 034e: オーバーレイの意匠設定（フォント選択・サイト名表示）。値は CommentViewerApp が保持し localStorage 永続。
@@ -93,6 +118,13 @@ export function SettingsView({
   selectedSpeakerId,
   onSpeakerIdChange,
   onPreview,
+  audioOutputDevices,
+  audioOutputListState,
+  audioOutputDeviceId,
+  onAudioOutputDeviceIdChange,
+  onReloadAudioOutputDevices,
+  onTestNotificationSound,
+  audioTestState,
   overlayFont,
   onOverlayFontChange,
   overlayShowSource,
@@ -145,6 +177,23 @@ export function SettingsView({
     speakers.find((sp) =>
       sp.styles.some((st) => st.id === selectedSpeakerId),
     ) ?? speakers[0];
+
+  // 058a: select に出せる値（＝**今の一覧に実在するデバイス**）だけを現在値にする。
+  // 保存済み ID が一覧に無いときは「選択しない」を表示するが、**保存値そのものは消さない**
+  // （ヘッドホンを挿し直せばそのまま復帰する）。ここで消してしまうと、抜くたびに選び直しになる。
+  const selectedAudioOutputDeviceId = audioOutputDevices.some(
+    (device) => device.id === audioOutputDeviceId,
+  )
+    ? audioOutputDeviceId
+    : NO_AUDIO_OUTPUT_DEVICE;
+
+  // 058a: 「選んだはずのデバイスが今は無い」状態。**これを黙って既定デバイスへ落とさない**のが本タスクの
+  // 肝で（②-軽では既定＝仮想オーディオデバイス＝配信に載る側）、代わりに UI で気付かせる。
+  // ⚠ 列挙中（loading）は判定しない——起動直後に一瞬必ず赤くなってしまう。
+  const savedAudioOutputDeviceMissing =
+    audioOutputDeviceId !== NO_AUDIO_OUTPUT_DEVICE &&
+    audioOutputListState === "ready" &&
+    selectedAudioOutputDeviceId === NO_AUDIO_OUTPUT_DEVICE;
 
   return (
     <div className={styles.settingsView}>
@@ -299,6 +348,121 @@ export function SettingsView({
               </button>
             </div>
           )}
+        </div>
+      </div>
+
+      {/* 058a: 音声出力（通知音）カード。読み上げカードの直後に置く＝音まわりを 1 か所にまとめる。
+          ここが担うのは「通知音をどのデバイスから出すか」だけで、通知音の ON/OFF・音量・種類は 059 が
+          それぞれの機能の隣に置く（045b/054 で確立した「操作は使う場所の近くへ」）。
+          書式は 054 の階層規則どおり（項目名＝.fieldLabel / 説明＝.note / 警告＝.errorText）。
+          **既存クラスだけを使い、新しい px / weight を発明しない**（CSS 差分ゼロ）。 */}
+      <div className={styles.card}>
+        <div className={styles.cardHead}>音声出力（通知音）</div>
+        <div className={styles.cardBody}>
+          <label className={styles.speakerField}>
+            <span className={styles.fieldLabel}>通知音の出力先</span>
+            {/* ⚠ 先頭の選択肢は「選択しない」＝**鳴らさない**。「既定デバイス」ではない。
+                ②-軽では OS 既定＝仮想オーディオデバイス＝配信に載る側なので、ここに
+                「既定デバイス」という選択肢を足すと「載せないつもりの音が載る」導線になる。 */}
+            <Select
+              ariaLabel="通知音の出力先"
+              value={selectedAudioOutputDeviceId}
+              onChange={(e) => onAudioOutputDeviceIdChange(e.target.value)}
+            >
+              <option value={NO_AUDIO_OUTPUT_DEVICE}>
+                選択しない（通知音を鳴らさない）
+              </option>
+              {audioOutputDevices.map((device) => (
+                <option key={device.id} value={device.id}>
+                  {device.name}
+                </option>
+              ))}
+            </Select>
+          </label>
+          <div className={styles.voicevoxRow}>
+            {/* テスト再生は 058a の検証手段そのもの。「選んだデバイスから鳴る」と
+                「既定デバイスからは鳴らない」の 2 点は、鳴らしてみないと確かめられない。 */}
+            <button
+              type="button"
+              className={styles.btnGhost}
+              onClick={onTestNotificationSound}
+              disabled={
+                selectedAudioOutputDeviceId === NO_AUDIO_OUTPUT_DEVICE ||
+                audioTestState === "playing"
+              }
+              title="選択中のデバイスからテスト音を鳴らします"
+            >
+              テスト再生 ▶
+            </button>
+            {/* デバイスを挿し直したときに設定を開き直さず済ませるための再列挙。
+                着脱イベントの購読（ホットプラグ監視）は 058a では持たない。 */}
+            <button
+              type="button"
+              className={styles.btnGhost}
+              onClick={onReloadAudioOutputDevices}
+              disabled={audioOutputListState === "loading"}
+              title="接続中の音声出力デバイスを取得し直します"
+            >
+              再読み込み
+            </button>
+          </div>
+
+          {savedAudioOutputDeviceMissing && (
+            // ⚠ §9: デバイス名・デバイス ID を出さない（「以前選んだ」で特定せずに済ませる）。
+            <span className={styles.errorText}>
+              以前選んだ音声出力デバイスが見つかりません。通知音は鳴りません。デバイスを選び直してください。
+            </span>
+          )}
+          {audioOutputListState === "failed" && (
+            <span className={styles.errorText}>
+              音声出力デバイスを取得できませんでした。「再読み込み」をお試しください。
+            </span>
+          )}
+          {audioTestState === "failed" && (
+            <span className={styles.errorText}>
+              テスト音を再生できませんでした。デバイスを選び直してください。
+            </span>
+          )}
+          {audioOutputListState === "ready" &&
+            audioOutputDevices.length === 0 && (
+              <span className={styles.errorText}>
+                使える音声出力デバイスがありません。スピーカーやヘッドホンを接続してから「再読み込み」を押してください。
+              </span>
+            )}
+
+          <span className={styles.note}>
+            ここで選んだデバイスからだけ通知音が鳴ります（配信には載りません）。未選択のあいだは通知音を鳴らしません。
+          </span>
+
+          {/* 058s の申し送り: ②-軽は仮想オーディオデバイスの導入が前提で、**入れていないと
+              「配信に載せない」が機能しない**（読み上げも配信に載らない）。導入自体は自動化しない
+              （案内のみ）ので、ここで前提をはっきり書く。長いので既存の <details> 作法で畳む。 */}
+          {/* ⚠ 段落は <span> ではなく <div> にする（レビュー指摘）。`.note` は font-size/line-height/color
+              だけで display を持たないので、カード直下（`.cardBody` は flex column ＝ フレックスアイテムが
+              blockify される）では改行されるが、この <details> は flex ではないため <span> のままだと
+              3 段落が**空白すら無しに 1 行へ連結**する（JSX は要素間の改行を除去する）。
+              `.errorText` を <div> で使う前例（このファイル内）と同じ扱いで、CSS 差分ゼロのまま解決する。
+              再修正トリガー＝段落間に余白が要ると判断したとき（`.cardBody > * + .note` と同型のルールが要る）。
+              ⚠ `.obsPasswordHelp` は名前こそ OBS 固有だが、CSS 冒頭の書式表が `.note` と並べて
+              「補助説明」役割として定義しているクラスで、汎用 <details> への流用は書式規則どおり。
+              再修正トリガー＝3 箇所目の流用が出たら `.helpDetails` へ改名する。 */}
+          <details className={styles.obsPasswordHelp}>
+            <summary>読み上げを配信に載せて、通知音は載せない設定にするには</summary>
+            <div className={styles.note}>
+              OS の既定の出力先を<strong>仮想オーディオデバイス</strong>
+              にして、OBS の「音声入力キャプチャ」でそのデバイスを選んでください（macOS は BlackHole、Windows
+              は VB-CABLE などが一般的です）。読み上げは OS
+              の既定へ出るので配信に載り、通知音はここで選んだデバイスへ出るので載りません。
+            </div>
+            <div className={styles.note}>
+              仮想オーディオデバイスを導入していない場合、この設定をしても「配信に載せない」は機能しません（読み上げも配信に載りません）。
+            </div>
+            <div className={styles.note}>
+              OBS 側は「デスクトップ音声」や「アプリケーション音声キャプチャ」ではなく、
+              <strong>仮想デバイスを指定した「音声入力キャプチャ」</strong>
+              を使ってください。アプリ単位のキャプチャは出力先の指定を無視してアプリの音を全部拾うため、読み上げと通知音を分けられません。
+            </div>
+          </details>
         </div>
       </div>
 

@@ -1,5 +1,6 @@
 mod app_logs;
 mod app_update;
+mod audio;
 mod comment_sidecar;
 mod comment_viewer;
 mod error;
@@ -607,6 +608,8 @@ pub fn run() {
             app_update::commands::check_app_update,
             app_update::commands::install_app_update,
             app_update::commands::restart_app,
+            audio::commands::list_audio_output_devices,
+            audio::commands::play_notification_sound,
         ])
         // 032c-b: RunEvent::Exit フックを追加するため .run() を .build()+.run(closure) に分割した
         //（従来は lib.rs に exit フックが無かった）。no-orphan 3 段 kill の②。

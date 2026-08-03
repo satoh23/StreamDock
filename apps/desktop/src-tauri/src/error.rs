@@ -27,6 +27,8 @@ pub enum ErrorCode {
     DuplicateToolInPreset,
     UpdateCheckFailed,
     UpdateInstallFailed,
+    AudioDeviceUnavailable,
+    AudioPlaybackFailed,
 }
 
 impl ErrorCode {
@@ -58,6 +60,8 @@ impl ErrorCode {
             ErrorCode::DuplicateToolInPreset => "このツールは既にプリセットに追加されています。",
             ErrorCode::UpdateCheckFailed => "更新の確認に失敗しました。",
             ErrorCode::UpdateInstallFailed => "更新のインストールに失敗しました。",
+            ErrorCode::AudioDeviceUnavailable => "音声出力デバイスを利用できません。",
+            ErrorCode::AudioPlaybackFailed => "音声の再生に失敗しました。",
         }
     }
 }
@@ -187,6 +191,42 @@ impl AppError {
         )
     }
 
+    /// 058a: 指定された音声出力デバイスを使えない（**保存済み ID が現在の出力デバイス一覧に無い** /
+    /// デバイスを抜かれた / 列挙そのものに失敗した / 出力デバイスが 0 件 を**すべてここに寄せる**）。
+    ///
+    /// **引数を取らない**のは `update_check_failed()` と同じ理由で、呼び出し側が生エラーを
+    /// 載せられないようにするため。⚠ cpal の `DevicesError` / `DeviceNameError` は backend 固有の
+    /// 文字列（CoreAudio の OSStatus・WASAPI の HRESULT）を含みうるし、何より
+    /// **デバイス名・デバイス ID を frontend にも log にも出さない**のが 058a の方針である
+    /// （docs/security.md §9）。呼び出し側は必ず `map_err(|_| AppError::audio_device_unavailable())`
+    /// の形にし、エラー値を束縛しないこと。
+    ///
+    /// ⚠⚠ **これを既定デバイスへのフォールバックに置き換えないこと。** 058a はデバイスが見つからないとき
+    /// **fail-closed（鳴らさない）**にする。②-軽の運用では OS 既定＝仮想オーディオデバイス＝**配信に載る側**
+    /// なので、既定へ落とすと「載せないつもりの通知音が配信に載る」＝この機能の存在理由そのものが壊れる。
+    /// （旧 058a の「音が鳴らないより意図と違うデバイスから鳴るほうがマシ」は**読み上げ**の理屈で、
+    /// 通知音では逆転する。）この不変条件は `audio::service` の契約テストが機械的に守っている。
+    pub fn audio_device_unavailable() -> Self {
+        Self::new(
+            ErrorCode::AudioDeviceUnavailable,
+            "選択された音声出力デバイスを利用できません。デバイスを選び直してください。",
+        )
+    }
+
+    /// 058a: デバイスは見つかったが再生できなかった（OS 出力ストリームを開けない /
+    /// 対応する設定が無い / 再生開始に失敗した）。
+    ///
+    /// **引数を取らない**理由は `audio_device_unavailable()` と同じ（§9）。
+    /// `AudioDeviceUnavailable` と分けたのは、ユーザーが取れる行動が違うため——前者は
+    /// 「デバイスを選び直す」、後者は「そのデバイスは今使えない（他アプリが占有している等）」。
+    /// これ以上は分けない（cpal の失敗種別そのものが環境情報になる・§9）。
+    pub fn audio_playback_failed() -> Self {
+        Self::new(
+            ErrorCode::AudioPlaybackFailed,
+            "音声を再生できませんでした。デバイスを選び直してください。",
+        )
+    }
+
     /// UI 表示可の補足情報を付与する（ファイル名のみ等。フルパス・環境情報は入れない）。
     pub fn with_details(mut self, details: impl Into<String>) -> Self {
         self.details = Some(details.into());
@@ -268,10 +308,12 @@ mod tests {
             ErrorCode::DuplicateToolInPreset => "DUPLICATE_TOOL_IN_PRESET",
             ErrorCode::UpdateCheckFailed => "UPDATE_CHECK_FAILED",
             ErrorCode::UpdateInstallFailed => "UPDATE_INSTALL_FAILED",
+            ErrorCode::AudioDeviceUnavailable => "AUDIO_DEVICE_UNAVAILABLE",
+            ErrorCode::AudioPlaybackFailed => "AUDIO_PLAYBACK_FAILED",
         }
     }
 
-    const ALL: [ErrorCode; 17] = [
+    const ALL: [ErrorCode; 19] = [
         ErrorCode::ValidationError,
         ErrorCode::NotFound,
         ErrorCode::UnsupportedFileType,
@@ -289,6 +331,8 @@ mod tests {
         ErrorCode::DuplicateToolInPreset,
         ErrorCode::UpdateCheckFailed,
         ErrorCode::UpdateInstallFailed,
+        ErrorCode::AudioDeviceUnavailable,
+        ErrorCode::AudioPlaybackFailed,
     ];
 
     #[test]
@@ -391,6 +435,54 @@ mod tests {
                 );
             }
             // wire 形式そのもの（055c / 055d がこの code 文字列で分岐しうる）。
+            assert!(json.contains(&format!("\"code\":\"{}\"", wire_name(code))));
+        }
+    }
+
+    #[test]
+    fn audio_failures_carry_only_fixed_messages_without_device_identity() {
+        // 058a / §9: **デバイス名・デバイス ID を frontend にも log にも出さない**。
+        // 引数を取らない設計なので構造的に載せられないが、「将来 message に何か足された」退行を
+        // ここで止める。updater 側と同じ構えで、JSON と log_message の**両方**を検査する。
+        for (code, error) in [
+            (
+                ErrorCode::AudioDeviceUnavailable,
+                AppError::audio_device_unavailable(),
+            ),
+            (
+                ErrorCode::AudioPlaybackFailed,
+                AppError::audio_playback_failed(),
+            ),
+        ] {
+            assert_eq!(error.code, code);
+            // 付帯情報の経路からも漏らさない。
+            assert_eq!(error.details, None);
+            assert_eq!(error.operation, None);
+
+            let json = serde_json::to_string(&error).expect("AppError は直列化できる");
+            let log = code.log_message();
+            // cpal が返しうるデバイス識別子・backend 名・OS のエラー表現の語彙。
+            // `DeviceId` は `"<HostId>:<device>"` 形式なので、host 名が出ていたら ID を載せている疑い。
+            for leak in [
+                "CoreAudio",
+                "WASAPI",
+                "ALSA",
+                "BlackHole",
+                "Speaker",
+                "Headphone",
+                "OSStatus",
+                "HRESULT",
+                "0x",
+            ] {
+                assert!(
+                    !json.contains(leak),
+                    "{code:?} の JSON に {leak:?} が含まれている（§9: デバイス名/ID を frontend へ出さない）"
+                );
+                assert!(
+                    !log.contains(leak),
+                    "{code:?} のログ文言に {leak:?} が含まれている（§9: デバイス名/ID を log へ出さない）"
+                );
+            }
             assert!(json.contains(&format!("\"code\":\"{}\"", wire_name(code))));
         }
     }

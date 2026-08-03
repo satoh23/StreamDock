@@ -177,6 +177,16 @@ vi.mock("../../features/platform/useHostOs", () => ({
   useHostOs: () => "macos",
 }));
 
+// 058a: 通知音の出力デバイス列挙・再生（invoke）。本ファイルは設定ビューへ移動するケースを持つため、
+// 塞がないと**実 invoke が走る**（jsdom には Tauri が居ないので reject → 実装の .catch が握って
+// 「取得できませんでした」表示になり、テストは通ってしまう）。上記の「マウント時に走る外部境界を
+// 全てモックして隔離する」方針に合わせてここでも封鎖する。デバイス 0 件で固定＝このファイルの
+// 検証対象（OBS 表示トグル）には影響しない。058a 自体の検証は CommentViewerApp.audio.test.tsx が担う。
+vi.mock("../../features/comment-viewer/audioOutputApi", () => ({
+  listAudioOutputDevices: vi.fn(async () => []),
+  playNotificationSound: vi.fn(async () => {}),
+}));
+
 const OVERLAY_TOGGLE = "コメントをOBSに表示";
 // 045c: 「いつ反映されるのか」が読み取れる条件付き label（鉤括弧内は上の表示トグルと同一文字列）。
 const AUTO_ADD_TOGGLE = "「コメントをOBSに表示」ON時、OBSに自動で反映する";
