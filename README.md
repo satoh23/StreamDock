@@ -3,7 +3,7 @@ const ctx=new AC();let r="ok";try{await ctx.resume()}catch(e){r=e.name}
 const o=ctx.createOscillator(),g=ctx.createGain();o.frequency.value=440;g.gain.value=0.2;o.connect(g);g.connect(ctx.destination);o.start();
 console.log("SD058S-DIAG "+JSON.stringify({state:ctx.state,resume:r,sampleRate:ctx.sampleRate,secure:isSecureContext,proto:location.protocol}));
 setTimeout(async()=>{try{o.stop()}catch{};await ctx.close();console.log("SD058S-DIAG stopped")},10000)})()
-
+Warning: Don’t paste code into the DevTools Console that you don’t understand or haven’t reviewed yourself. This could allow attackers to steal your identity or take control of your computer. Please type “allow pasting” below and press Enter to allow pasting.
 
 # stream-dock
 
