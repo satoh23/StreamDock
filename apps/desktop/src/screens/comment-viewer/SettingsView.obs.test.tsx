@@ -50,8 +50,7 @@ function baseProps(over: Partial<Props> = {}): Props {
     audioOutputDeviceId: "",
     onAudioOutputDeviceIdChange: vi.fn(),
     onReloadAudioOutputDevices: vi.fn(),
-    onTestNotificationSound: vi.fn(),
-    audioTestState: "idle",
+    // ⚠ 059c: `onTestNotificationSound` / `audioTestState` は props ごと削除された（テスト再生の廃止）。
     // 059a / 059b: 通知音（このファイルの検証対象ではないので既定＝両方 OFF を渡すだけ）。
     // 検証は SettingsView.audio.test.tsx が担う。
     soundCommentEnabled: false,
@@ -244,7 +243,13 @@ describe("SettingsView OBS 連携", () => {
 });
 
 /**
- * 046b: 固定コメント専用オーバーレイ（label `pinned-overlay`）の設定カード。
+ * 046b: 固定コメント専用オーバーレイ（label `pinned-overlay`）の設定。
+ *
+ * ⚠⚠ **059c(2)（本人指示）で独立カードをやめ、「OBSに表示」カードへ統合した。** 046b の
+ * 「上の OBS カードの隣に別カードで置く」という配置は失効している。**要素の順序・内容は変えていない**
+ * ので、下記のアサートはカード統合の前後で同じものが通る（＝この describe は「カードが 1 枚か 2 枚か」
+ * ではなく「設定が描画され配線されているか」を見ている）。
+ *
  * あるべき挙動（docs/tasks/046b-pinned-overlay-window.md / 親 046）:
  * - 「固定コメントをOBSに表示」トグルを描画し、操作で `onPinnedOverlayToggle` を呼ぶ（窓の開閉は親が担う）。
  * - 手動キャプチャ注記の窓名は **Rust の窓タイトルと同一文字列**、かつ 044a が窓を探すときの
@@ -254,13 +259,14 @@ describe("SettingsView OBS 連携", () => {
  *   旧文言へ戻る退行を `not.toContain` で防いでいる）。
  * - 既存の OBS カード（044a）は不変＝自動反映トグルと窓名注記が従来どおり出る。
  */
-describe("SettingsView 046b 固定コメントオーバーレイのカード", () => {
+describe("SettingsView 046b 固定コメントオーバーレイの設定", () => {
   const PINNED_TOGGLE = "固定コメントをOBSに表示";
 
   it("トグルを描画し、操作で onPinnedOverlayToggle を呼ぶ", () => {
     const props = baseProps();
     render(<SettingsView {...props} />);
-    // カード見出しと同一文字列なので role="switch" で絞る（044a のカードと同じ作法）。
+    // ⚠ 059c(2) でカード見出しとの同一文字列衝突は解消したが、`role="switch"` 絞りは**残す**
+    // （外すと、見出しやツールバー側の label と再び衝突したときに気付けない）。
     const toggle = screen.getByRole("switch", { name: PINNED_TOGGLE });
     expect(toggle).toHaveAttribute("aria-checked", "false");
     fireEvent.click(toggle);
@@ -309,5 +315,28 @@ describe("SettingsView 046b 固定コメントオーバーレイのカード", (
         name: "「コメントをOBSに表示」ON時、OBSに自動で反映する",
       }),
     ).toBeInTheDocument();
+  });
+
+  it("⚠ 059c(2): 固定コメントの設定は独立カードではなく「OBSに表示」カードの中にある", () => {
+    // 本人指示によるカード統合の固定。⚠ **見出しの数**まで見るのは、「カード枠だけ残して見出しを
+    // 消す」中途半端な状態（＝視覚的には統合されているが DOM は 2 枚）を弾くため。
+    render(<SettingsView {...baseProps()} />);
+
+    // 統合後の見出しは「OBSに表示」1 つだけ（旧「コメントをOBSに表示」「固定コメントをOBSに表示」は無い）。
+    const heads = Array.from(
+      document.querySelectorAll<HTMLElement>('[class*="cardHead"]'),
+    ).map((el) => el.textContent);
+    expect(heads).toContain("OBSに表示");
+    expect(heads).not.toContain("コメントをOBSに表示");
+    expect(heads).not.toContain("固定コメントをOBSに表示");
+
+    // 固定トグルと自動反映トグルが**同じカード**に入っていること。
+    const pinned = screen.getByRole("switch", { name: PINNED_TOGGLE });
+    const autoAdd = screen.getByRole("switch", {
+      name: "「コメントをOBSに表示」ON時、OBSに自動で反映する",
+    });
+    const card = pinned.closest('[class*="card"]');
+    expect(card).not.toBeNull();
+    expect(card).toContainElement(autoAdd);
   });
 });

@@ -102,7 +102,6 @@ import { CommentList } from "./CommentList";
 import {
   SettingsView,
   type AudioOutputListState,
-  type AudioTestState,
   type SoundPreviewState,
 } from "./SettingsView";
 import { ViewersView } from "./ViewersView";
@@ -523,9 +522,7 @@ export function CommentViewerApp() {
   //   「載せないつもりの通知音が配信に載る」＝機能の存在理由が壊れる。fail-closed）。
   // - audioOutputDevices / audioOutputListState: Rust の列挙結果とその状態。
   //   **デバイス名は state に置くだけで保存しない**（古い名前を残さない・§9）。
-  // - audioTestState: テスト再生の状態。obsState と同じ「操作の結果を 1 行で出す」構え。
-  //   ここは string ではなく union にする（受け口が sidecar 由来の `(state: string)` である
-  //   obsState と違い、この state の書き手はこのファイルだけ＝union を守り切れるため）。
+  // ⚠ 059c: `audioTestState`（058a のテスト再生の状態）は**削除した**——ボタン自体が無くなったため。
   const [audioOutputDeviceId, setAudioOutputDeviceId] = useState(() =>
     loadAudioOutputDeviceId(),
   );
@@ -534,16 +531,14 @@ export function CommentViewerApp() {
   >([]);
   const [audioOutputListState, setAudioOutputListState] =
     useState<AudioOutputListState>("loading");
-  const [audioTestState, setAudioTestState] = useState<AudioTestState>("idle");
 
   // 059a / 059b: 通知音（コメント音・投げ銭音）。
   // - soundCommentEnabled / soundMonetaryEnabled: ON/OFF の永続状態（非機密・localStorage）。
   //   **どちらも既定 OFF**（アップデート直後にユーザー操作ゼロで音が鳴り始めるのを避ける。
   //   理由は soundPrefs.ts の JSDoc）。⚠ **2 つは独立**（片方 OFF でもう片方は鳴る）。
-  // - soundPreviewState: 設定画面の「試聴」の状態。
-  //   ⚠ audioTestState と**共有しない**（058a のテスト再生は出力先の検証、こちらは音の確認。
-  //   共有すると片方の失敗がもう片方のカードに赤字を出す）。
-  //   ⚠ 一方で **059b の投げ銭試聴とは共有する**（同じカード・同じデバイス・同じ復旧手順で、
+  // - soundPreviewState: 設定画面の「試聴」の状態（⚠ 059c: 058a のテスト再生が消えたので、
+  //   通知音まわりの再生 state はこれ 1 本になった）。
+  //   ⚠ **059b の投げ銭試聴とは共有する**（同じカード・同じデバイス・同じ復旧手順で、
   //   分ける理由が無い。むしろ共有だと「片方の再生中はもう片方も押せない」＝Rust の同時再生 1 本と
   //   一致する disabled になる。詳細は SettingsView の SoundPreviewState の JSDoc）。
   // - notificationSoundFailed: **配信中に鳴らせなかったこと**の継続表示フラグ（下のツールバー indicator）。
@@ -625,38 +620,24 @@ export function CommentViewerApp() {
 
   // 058a: 設定ビューを開くたびに列挙し直す（＝デバイスを挿し直したら開き直せば直る）。
   // ホットプラグ監視（デバイス着脱イベントの購読）は 058a では入れない——設定を開いた時点の突き合わせと
-  // 「再読み込み」ボタンとテスト再生の失敗表示の 3 段で、「黙って載る側に倒れる」は防げる。
+  // 「再読み込み」ボタンと試聴の失敗表示の 3 段で、「黙って載る側に倒れる」は防げる
+  //（⚠ 059c 以前は 3 段目が「テスト再生の失敗表示」だった。ボタン削除に伴い試聴が引き継いでいる）。
   useEffect(() => {
     if (view !== "settings") return;
     refreshAudioOutputDevices();
   }, [view, refreshAudioOutputDevices]);
 
-  // 058a: 選んだデバイスでテスト音を鳴らす。
-  // 「選んだデバイスから鳴る」と「既定デバイスからは鳴らない」の 2 点を耳で確かめるための唯一の手段で、
-  // これが無いと 058s の合格基準を 058a 単体で測れない（034c の話者試聴ボタンと同じ考え方）。
-  const handleTestNotificationSound = useCallback(() => {
-    if (audioOutputDeviceId === NO_AUDIO_OUTPUT_DEVICE) return;
-    setAudioTestState("playing");
-    playNotificationSound(audioOutputDeviceId, "test")
-      .then(() => {
-        setAudioTestState("idle");
-        // 059a（レビュー Q-2）: **テスト再生で鳴った＝いま鳴らせる状態**なので、試聴と同じく継続表示も畳む。
-        // ⚠ 「同じデバイスを抜いて挿し直した」場合は選択が変わらないので handleAudioOutputDeviceIdChange が
-        // 発火せず、赤字を見たユーザーが最初に押すのは（案内で名指ししている）**このボタン**になる。
-        // ここで畳まないと「一番踏まれやすい導線だけが効かない」配置になる。
-        // ⚠ 鳴らす経路には触れない（表示 state を畳むだけ）ので fail-closed には影響しない。
-        setNotificationSoundFailed(false);
-      })
-      // 失敗＝そのデバイスでは鳴らせない。**既定デバイスで鳴らし直さない**（fail-closed）。
-      .catch(() => setAudioTestState("failed"));
-  }, [audioOutputDeviceId]);
-
-  // 059a: コメント通知音を試聴する（設定画面の「試聴」ボタン）。
+  // 059a: コメント通知音を試聴する（設定画面の「通知音を試聴」ボタン・上段）。
   //
   // ⚠ **notificationSound.ts のクールダウンを通さない。** ユーザーの明示操作にレート制限をかけると
   // 「押したのに鳴らない」＝壊れて見える（034c の話者試聴と同じ考え方）。連打は再生中 disabled で抑える。
-  // ⚠ 058a の handleTestNotificationSound とは**鳴らす音も state も別**（あちらは出力先の検証で `"test"`、
-  // こちらは音の確認で `"comment"`）。共有すると片方の失敗がもう片方のカードに赤字を出す。
+  //
+  // ⚠⚠ **059c で 058a の `handleTestNotificationSound`（テスト再生・`"test"` 音）は削除した**（本人指示）。
+  // 058a はこれを「『選んだデバイスから鳴る』と『既定デバイスからは鳴らない』を耳で確かめる唯一の手段」と
+  // 位置づけていたが、**この試聴が同じ `audioOutputDeviceId` へ同じ経路で実音を鳴らす**ので合格基準は測れる。
+  // ＝赤字を見たユーザーが押す復旧導線もこのボタンに一本化された（下の `setNotificationSoundFailed(false)`）。
+  // ⚠ Rust の `NotificationSound::Test` は**残してある**（enum から消すと docs/security.md の
+  // レビュー必須条件「音声デバイスの列挙・音声の再生」に該当し security-review のやり直しになるため）。
   const handlePreviewCommentSound = useCallback(() => {
     if (audioOutputDeviceId === NO_AUDIO_OUTPUT_DEVICE) return;
     setSoundPreviewState("playing");
@@ -671,13 +652,12 @@ export function CommentViewerApp() {
       .catch(() => setSoundPreviewState("failed"));
   }, [audioOutputDeviceId]);
 
-  // 059b: 投げ銭通知音を試聴する（設定画面の「投げ銭音を試聴」ボタン）。
+  // 059b: 投げ銭通知音を試聴する（設定画面の「通知音を試聴」ボタン・下段）。
   //
   // ⚠ コメント試聴と**同じ state（soundPreviewState）を共有する**。分けない理由:
   // ①同じカード・同じデバイス・同じ復旧手順なので、失敗の案内文が音種で変わらない
   // ②共有だと「片方の再生中はもう片方も disabled」になり、**Rust の同時再生 1 本と一致する**
-  //  （分けると再生中にもう片方を押せてしまい、Rust に黙って捨てられる＝押したのに鳴らない）
-  // ③`AudioTestState` との取り違えを殺す配線テストが 3 すくみにならずに済む。
+  //  （分けると再生中にもう片方を押せてしまい、Rust に黙って捨てられる＝押したのに鳴らない）。
   // ⚠ 059a と同じく **notificationSound.ts のクールダウンを通さない**（明示操作にレート制限をかけない）。
   const handlePreviewMonetarySound = useCallback(() => {
     if (audioOutputDeviceId === NO_AUDIO_OUTPUT_DEVICE) return;
@@ -698,7 +678,6 @@ export function CommentViewerApp() {
   // **時間経過では消さない**（気付かせるのが目的なので、放っておいて消えては意味がない）。
   const handleAudioOutputDeviceIdChange = useCallback((deviceId: string) => {
     setAudioOutputDeviceId(deviceId);
-    setAudioTestState("idle");
     setSoundPreviewState("idle");
     setNotificationSoundFailed(false);
   }, []);
@@ -1567,8 +1546,6 @@ export function CommentViewerApp() {
           audioOutputDeviceId={audioOutputDeviceId}
           onAudioOutputDeviceIdChange={handleAudioOutputDeviceIdChange}
           onReloadAudioOutputDevices={refreshAudioOutputDevices}
-          onTestNotificationSound={handleTestNotificationSound}
-          audioTestState={audioTestState}
           soundCommentEnabled={soundCommentEnabled}
           onSoundCommentEnabledChange={setSoundCommentEnabled}
           onPreviewCommentSound={handlePreviewCommentSound}
@@ -1785,8 +1762,9 @@ export function CommentViewerApp() {
                   ⚠ 059b: ゲートは **2 音の OR**（どちらか一方でも ON なら出す）。片方だけ ON の状態で
                   デバイスを抜いたときに黙って鳴らなくなるのを防ぐ＝この indicator の存在理由そのもの。
                   失敗の中身（どちらの音か）で文言は変えない——ユーザーが取る行動が同じだから。
-                  ⚠ 消えるのは①次の再生が成功したとき②デバイスを選び直したとき③試聴が成功したとき
-                  ④058a のテスト再生が成功したとき⑤OFF にしたとき（この式で自動）。
+                  ⚠ 消えるのは①次の再生が成功したとき②デバイスを選び直したとき③どちらかの試聴が
+                  成功したとき④OFF にしたとき（この式で自動）。⚠ 059c 以前はここに「⑤058a のテスト再生が
+                  成功したとき」があったが、テスト再生ボタンの削除に伴い③が唯一の能動的な復旧導線になった。
                   **時間経過では消さない**（気付かせるのが目的なので、放っておいて消えたら意味がない）。
                   ⚠ §9: デバイス名・デバイス ID・例外の中身を出さない（文言は固定文字列のみ）。
                   ⚠ title で**原因を断定しない**（レビュー S-2）。失敗は AUDIO_DEVICE_UNAVAILABLE だけでなく
@@ -1802,7 +1780,7 @@ export function CommentViewerApp() {
                   <span
                     className={styles.toolbarError}
                     role="status"
-                    title="通知音を鳴らせませんでした。設定の「音声出力（通知音）」でデバイスを選び直すか、再読み込みしてください。"
+                    title="通知音を鳴らせませんでした。設定の「通知音」でデバイスを選び直すか、再読み込みしてください。"
                   >
                     通知音を再生できません
                   </span>

@@ -227,16 +227,54 @@ function setUpSounds(opts: { comment: boolean; monetary: boolean }) {
   localStorage.setItem(AUDIO_OUTPUT_DEVICE_KEY, DEVICE_ID);
 }
 
-/** 設定ビューを開き、出力先セレクトが列挙し終わるまで待つ（058a の audio テストと同型）。 */
-async function openSettings() {
+/**
+ * 設定ビューを開く（出力先セクションの有無に依らない版）。
+ *
+ * ⚠ 059c: 出力先セクションは「どちらかの音が ON のときだけ」描画されるので、**両方 OFF から
+ * トグルを ON にする**テストはこちらを使う（`openSettings()` はセレクトを待つので永久に待つ）。
+ * 待つ対象は常に存在するトグル。
+ */
+async function openSettingsView() {
   fireEvent.click(screen.getByRole("button", { name: "設定" }));
+  await screen.findByRole("switch", { name: "コメント通知音" });
+}
+
+/**
+ * 設定ビューを開き、出力先セレクトが列挙し終わるまで待つ（058a の audio テストと同型）。
+ *
+ * ⚠⚠ **059c: 出力先セクションは「どちらかの音が ON のときだけ」描画される。** よって
+ * このヘルパは**どちらかの音を ON にして起動したケースでしか使えない**（両方 OFF だと永久に待つ）。
+ * 両方 OFF から始めるテストは上の `openSettingsView()` を使うこと。
+ */
+async function openSettings() {
+  await openSettingsView();
   const select = (await screen.findByRole("combobox", {
     name: "通知音の出力先",
   })) as HTMLSelectElement;
-  await waitFor(() =>
-    expect(select.options).toHaveLength(DEVICES.length + 1),
-  );
+  await waitFor(() => expect(select.options).toHaveLength(DEVICES.length + 1));
   return select;
+}
+
+/**
+ * 059c: 試聴ボタン（[コメント音, 投げ銭音]）。
+ *
+ * ⚠ 2 つは**表示名もアクセシブル名も同一**（「通知音を試聴 ▶」）なので並び順で引く。取り違えを
+ * 黙って見逃さないよう `title` で並び順を明示検証する（`SettingsView.audio.test.tsx` と同型）。
+ */
+function previewButtons(): [HTMLButtonElement, HTMLButtonElement] {
+  const buttons = screen.getAllByRole("button", {
+    name: "通知音を試聴 ▶",
+  }) as HTMLButtonElement[];
+  expect(buttons).toHaveLength(2);
+  expect(buttons[0]).toHaveAttribute(
+    "title",
+    "コメント通知音を選択中のデバイスで鳴らします",
+  );
+  expect(buttons[1]).toHaveAttribute(
+    "title",
+    "投げ銭通知音を選択中のデバイスで鳴らします",
+  );
+  return [buttons[0], buttons[1]];
 }
 
 /** 設定ビューからコメント画面へ戻る（ツールバーが戻るまで待つ）。 */
@@ -741,7 +779,8 @@ describe("059a 設定変更の反映（ref 同期と「窓内 WS 1 本」）", (
     localStorage.setItem(AUDIO_OUTPUT_DEVICE_KEY, DEVICE_ID);
     render(<CommentViewerApp />);
 
-    await openSettings();
+    // ⚠ 059c: 両方 OFF で開くので出力先セクションはまだ無い（`openSettings()` は使えない）。
+    await openSettingsView();
     fireEvent.click(screen.getByRole("switch", { name: "コメント通知音" }));
     await backToComments();
 
@@ -773,7 +812,8 @@ describe("059a 設定変更の反映（ref 同期と「窓内 WS 1 本」）", (
     localStorage.setItem(AUDIO_OUTPUT_DEVICE_KEY, DEVICE_ID);
     const { unmount } = render(<CommentViewerApp />);
 
-    await openSettings();
+    // ⚠ 059c: 両方 OFF で開くので出力先セクションはまだ無い（`openSettings()` は使えない）。
+    await openSettingsView();
     fireEvent.click(screen.getByRole("switch", { name: "コメント通知音" }));
     await waitFor(() =>
       expect(localStorage.getItem(SOUND_COMMENT_ENABLED_KEY)).toBe("true"),
@@ -781,7 +821,7 @@ describe("059a 設定変更の反映（ref 同期と「窓内 WS 1 本」）", (
     unmount();
 
     render(<CommentViewerApp />);
-    await openSettings();
+    await openSettingsView();
     expect(screen.getByRole("switch", { name: "コメント通知音" })).toBeChecked();
   });
 
@@ -920,75 +960,36 @@ describe("059a 通知音が鳴らせないことの継続表示（058a からの
     expect(screen.getByText("通知音を再生できません")).toBeInTheDocument();
   });
 
-  it("⚠ 058a の「テスト再生」が成功しても消える（同じデバイスを挿し直した導線）", async () => {
-    // 059a レビュー Q-2 で追加。**選択を変えずにデバイスを挿し直した**場合は
-    // handleAudioOutputDeviceIdChange が発火しないので、赤字を見たユーザーが最初に押すのは
-    // （赤字の title が名指ししている）058a の「テスト再生」になる。ここで畳まないと
-    // 「一番踏まれやすい導線だけが効かない」配置になる。
-    setUpEnabled();
-    mocks.playNotificationSound.mockRejectedValue({
-      code: "AUDIO_DEVICE_UNAVAILABLE",
-    });
-    render(<CommentViewerApp />);
+  // ⚠⚠ **059c で 2 本削除した**（本人指示の UI 再編に伴い、仕様そのものが無くなったため）:
+  // ①「058a の『テスト再生』が成功しても消える」…テスト再生ボタンが削除された。**この導線
+  //   （選択を変えずにデバイスを挿し直したときの復旧）は下の「『試聴』が成功しても消える」が
+  //   そのまま担う**ので、担保は減っていない（赤字の title も「設定の『通知音』で」へ更新済み）。
+  // ②「試聴の失敗が 058a のカードへ漏れない」…カードが 1 枚に統合され `AudioTestState` も
+  //   削除されたので、**取り違える相手が存在しない**（059a レビュー Q-9 が branded type の代わりに
+  //   置いていた配線テストで、役目を終えた）。
 
-    receive([comment()]);
-    await screen.findByText("通知音を再生できません");
-
-    // 挿し直した＝いまは鳴る状態。設定を開いてテスト再生を押す。
-    // ⚠ 設定を開くと列挙が走る（非同期）。**enabled になるまで待たずに click すると無反応で空振りする。**
-    fireEvent.click(screen.getByRole("button", { name: "設定" }));
-    const testButton = await screen.findByRole("button", {
-      name: "テスト再生 ▶",
-    });
-    await waitFor(() => expect(testButton).toBeEnabled());
-
-    mocks.playNotificationSound.mockResolvedValue(undefined);
-    mocks.playNotificationSound.mockClear();
-    fireEvent.click(testButton);
-    await waitFor(() =>
-      expect(mocks.playNotificationSound).toHaveBeenCalledWith(
-        DEVICE_ID,
-        "test",
-      ),
-    );
-    fireEvent.click(screen.getByRole("button", { name: "コメントに戻る" }));
-
-    // ⚠ 必ずコメント画面へ戻ってから確認する（設定ビューはツールバーごと差し替わるため）。
-    await screen.findByRole("button", { name: "設定" });
-    expect(
-      screen.queryByText("通知音を再生できません"),
-    ).not.toBeInTheDocument();
-  });
-
-  it("⚠ 試聴の失敗は 058a の「音声出力（通知音）」カードへ漏れない（state を共有していない）", async () => {
-    // 059a レビュー Q-9 で追加。`SoundPreviewState` と `AudioTestState` は構造的に同一なので、
-    // CommentViewerApp → SettingsView の props を取り違えても typecheck は通ってしまう。
-    // branded type の代わりに、取り違えそのものをここで殺す。
+  it("⚠ 試聴の失敗を出す（§9: デバイス名・ID・例外の中身を出さない）", async () => {
+    // 上の②の代わりに、**試聴の失敗が正しく自分の場所に出ること**だけを残す。
     setUpEnabled();
     render(<CommentViewerApp />);
 
-    fireEvent.click(screen.getByRole("button", { name: "設定" }));
+    await openSettings();
     // ⚠ 列挙（非同期）が終わるまで disabled なので、enabled を待ってから押す。
-    const previewButton = await screen.findByRole("button", { name: "コメント音を試聴 ▶" });
-    await waitFor(() => expect(previewButton).toBeEnabled());
+    const [commentPreview] = previewButtons();
+    await waitFor(() => expect(commentPreview).toBeEnabled());
 
-    mocks.playNotificationSound.mockRejectedValue({
-      code: "AUDIO_PLAYBACK_FAILED",
-    });
-    fireEvent.click(previewButton);
+    mocks.playNotificationSound.mockRejectedValue(
+      new Error("CoreAudio OSStatus -10851 on Zz-PrivateHeadset-9f3a"),
+    );
+    fireEvent.click(commentPreview);
 
-    // 通知音カードには出る。
-    expect(
-      await screen.findByText(
-        "通知音を再生できませんでした。デバイスを選び直してください。",
-      ),
-    ).toBeInTheDocument();
-    // 058a のカード（テスト再生の失敗）には出ない。
-    expect(
-      screen.queryByText(
-        "テスト音を再生できませんでした。デバイスを選び直してください。",
-      ),
-    ).not.toBeInTheDocument();
+    const message = await screen.findByText(
+      "通知音を再生できませんでした。デバイスを選び直してください。",
+    );
+    expect(message).toBeInTheDocument();
+    for (const leak of ["OSStatus", "-10851", "Zz-PrivateHeadset-9f3a"]) {
+      expect(message.textContent).not.toContain(leak);
+    }
   });
 
   it("⚠ 「試聴」が成功しても消える（次のコメントを待たずに赤字を消せる導線）", async () => {
@@ -1004,7 +1005,7 @@ describe("059a 通知音が鳴らせないことの継続表示（058a からの
     await openSettings();
     mocks.playNotificationSound.mockResolvedValue(undefined);
     mocks.playNotificationSound.mockClear();
-    fireEvent.click(screen.getByRole("button", { name: "コメント音を試聴 ▶" }));
+    fireEvent.click(previewButtons()[0]);
     await waitFor(() =>
       expect(mocks.playNotificationSound).toHaveBeenCalledWith(
         DEVICE_ID,
@@ -1167,7 +1168,7 @@ describe("059a 通知音が鳴らせないことの継続表示（058a からの
     ).not.toBeInTheDocument();
   });
 
-  it("⚠ 「投げ銭音を試聴」が成功しても消える（059a の試聴と同じ導線・059b）", async () => {
+  it("⚠ 投げ銭音の試聴が成功しても消える（059a の試聴と同じ導線・059b）", async () => {
     setUpSounds({ comment: true, monetary: true });
     mocks.playNotificationSound.mockRejectedValue({
       code: "AUDIO_DEVICE_UNAVAILABLE",
@@ -1180,7 +1181,7 @@ describe("059a 通知音が鳴らせないことの継続表示（058a からの
     await openSettings();
     mocks.playNotificationSound.mockResolvedValue(undefined);
     mocks.playNotificationSound.mockClear();
-    fireEvent.click(screen.getByRole("button", { name: "投げ銭音を試聴 ▶" }));
+    fireEvent.click(previewButtons()[1]);
     await waitFor(() =>
       expect(mocks.playNotificationSound).toHaveBeenCalledWith(
         DEVICE_ID,
@@ -1205,7 +1206,8 @@ describe("059b 投げ銭音の設定反映（ref 同期と「窓内 WS 1 本」�
     localStorage.setItem(AUDIO_OUTPUT_DEVICE_KEY, DEVICE_ID);
     render(<CommentViewerApp />);
 
-    await openSettings();
+    // ⚠ 059c: 両方 OFF で開くので出力先セクションはまだ無い（`openSettings()` は使えない）。
+    await openSettingsView();
     fireEvent.click(screen.getByRole("switch", { name: "投げ銭通知音" }));
     await backToComments();
 
@@ -1222,7 +1224,8 @@ describe("059b 投げ銭音の設定反映（ref 同期と「窓内 WS 1 本」�
     localStorage.setItem(AUDIO_OUTPUT_DEVICE_KEY, DEVICE_ID);
     const { unmount } = render(<CommentViewerApp />);
 
-    await openSettings();
+    // ⚠ 059c: 両方 OFF で開くので出力先セクションはまだ無い（`openSettings()` は使えない）。
+    await openSettingsView();
     fireEvent.click(screen.getByRole("switch", { name: "投げ銭通知音" }));
     await waitFor(() =>
       expect(localStorage.getItem(SOUND_MONETARY_ENABLED_KEY)).toBe("true"),
@@ -1230,7 +1233,7 @@ describe("059b 投げ銭音の設定反映（ref 同期と「窓内 WS 1 本」�
     unmount();
 
     render(<CommentViewerApp />);
-    await openSettings();
+    await openSettingsView();
     expect(screen.getByRole("switch", { name: "投げ銭通知音" })).toBeChecked();
   });
 

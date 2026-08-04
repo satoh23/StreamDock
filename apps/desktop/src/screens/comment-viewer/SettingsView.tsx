@@ -44,28 +44,19 @@ import styles from "./CommentViewerApp.module.css";
  */
 export type AudioOutputListState = "loading" | "ready" | "failed";
 
-/** 058a: テスト再生の状態（`obsState` と同じ「操作の結果を 1 行で出す」構え）。 */
-export type AudioTestState = "idle" | "playing" | "failed";
-
 /**
  * 059a: 通知音の試聴の状態。
  *
- * ⚠ **`AudioTestState` と型は同じだが state は共有しない。** 058a の「テスト再生」は
- * **出力先の検証**（このデバイスから鳴るか／既定からは鳴らないか）で、こちらは**その音の確認**。
- * 共有すると「通知音カードで試聴に失敗したのに、音声出力カードに赤字が出る」ことになる。
- *
- * ⚠ **一方で 059b の投げ銭音試聴とは「共有する」**（2 つの試聴ボタンで 1 つの state）。
- * 上の「分ける」理由は**別カードだから**であって、こちらは同じカード・同じデバイス・同じ復旧手順＝
- * 失敗の案内文が音種で変わらないので、分ける理由が無い。むしろ共有だと
+ * ⚠ **059b の投げ銭音試聴とは「共有する」**（2 つの試聴ボタンで 1 つの state）。同じカード・
+ * 同じデバイス・同じ復旧手順＝失敗の案内文が音種で変わらないので、分ける理由が無い。むしろ共有だと
  * **片方の再生中はもう片方も disabled** になり、**Rust の同時再生 1 本（058a）と一致する**
  * （分けると再生中にもう片方を押せてしまい、Rust に黙って捨てられて「押したのに鳴らない」になる）。
  *
- * ⚠ **branded type にはしない**（レビュー Q-9・意図どおり）。構造的型付けなので取り違えを型は止めないが、
- * brand はこのリポジトリに前例が無く、両者の状態集合は今後も一致し続ける公算が高い（＝書式コストだけ払って
- * 意味が増えない）。実在するリスクは型ではなく**呼び出し側で `audioTestState` と入れ替える**ことなので、
- * そちらは `CommentViewerApp.notificationSound.test.tsx` の「試聴の失敗が 058a のカードに漏れない」
- * 配線テストで直接殺している（brand より安く、取り違えそのものを検出できる）。
- * **再修正トリガー＝どちらかの状態集合が増減して意味がずれたとき**（例: 通知音側に `"cooling"` が加わる等）。
+ * ⚠ **059c で `AudioTestState`（058a の「テスト再生」の状態）は削除した**——テスト再生ボタン自体が
+ * 無くなったため（本人指示）。副産物として「構造的に同一な 2 つの state を取り違える」リスクが消え、
+ * 059a のレビュー Q-9 が branded type の代わりに置いていた配線テスト（試聴の失敗が 058a のカードへ
+ * 漏れないこと）も、カード統合と同時に役目を終えた。
+ * **再修正トリガー＝再び通知音以外の再生 state が増えたとき**（そのときは取り違えを殺す配線テストを戻す）。
  */
 export type SoundPreviewState = "idle" | "playing" | "failed";
 
@@ -101,8 +92,8 @@ interface SettingsViewProps {
   audioOutputDeviceId: string;
   onAudioOutputDeviceIdChange: (deviceId: string) => void;
   onReloadAudioOutputDevices: () => void;
-  onTestNotificationSound: () => void;
-  audioTestState: AudioTestState;
+  // ⚠ 059c: `onTestNotificationSound` / `audioTestState`（058a の「テスト再生」）は**削除した**（本人指示）。
+  // 出力先の検証は下の「通知音を試聴」が同じデバイスで実音を鳴らすことで果たせる。
   // 059a / 059b: 通知音（コメント音・投げ銭音）の ON/OFF と試聴。state/永続化（soundPrefs）は
   // CommentViewerApp が保持し、ここは表示とユーザー操作の受け渡しのみ（「表示専用」性質は不変）。
   // ⚠ **音量は受け取らない**（振幅は Rust の PEAK_AMPLITUDE 固定。理由と再修正トリガーは soundPrefs.ts）。
@@ -158,8 +149,6 @@ export function SettingsView({
   audioOutputDeviceId,
   onAudioOutputDeviceIdChange,
   onReloadAudioOutputDevices,
-  onTestNotificationSound,
-  audioTestState,
   soundCommentEnabled,
   onSoundCommentEnabledChange,
   onPreviewCommentSound,
@@ -393,200 +382,52 @@ export function SettingsView({
         </div>
       </div>
 
-      {/* 058a: 音声出力（通知音）カード。読み上げカードの直後に置く＝音まわりを 1 か所にまとめる。
-          ここが担うのは「通知音をどのデバイスから出すか」だけで、通知音の ON/OFF・音量・種類は 059 が
-          それぞれの機能の隣に置く（045b/054 で確立した「操作は使う場所の近くへ」）。
-          書式は 054 の階層規則どおり（項目名＝.fieldLabel / 説明＝.note / 警告＝.errorText）。
-          **既存クラスだけを使い、新しい px / weight を発明しない**（CSS 差分ゼロ）。 */}
-      <div className={styles.card}>
-        <div className={styles.cardHead}>音声出力（通知音）</div>
-        <div className={styles.cardBody}>
-          <label className={styles.speakerField}>
-            <span className={styles.fieldLabel}>通知音の出力先</span>
-            {/* ⚠ 先頭の選択肢は「選択しない」＝**鳴らさない**。「既定デバイス」ではない。
-                ②-軽では OS 既定＝仮想オーディオデバイス＝配信に載る側なので、ここに
-                「既定デバイス」という選択肢を足すと「載せないつもりの音が載る」導線になる。 */}
-            <Select
-              ariaLabel="通知音の出力先"
-              value={selectedAudioOutputDeviceId}
-              onChange={(e) => onAudioOutputDeviceIdChange(e.target.value)}
-            >
-              <option value={NO_AUDIO_OUTPUT_DEVICE}>
-                選択しない（通知音を鳴らさない）
-              </option>
-              {audioOutputDevices.map((device) => (
-                <option key={device.id} value={device.id}>
-                  {device.name}
-                </option>
-              ))}
-            </Select>
-          </label>
-          <div className={styles.voicevoxRow}>
-            {/* テスト再生は 058a の検証手段そのもの。「選んだデバイスから鳴る」と
-                「既定デバイスからは鳴らない」の 2 点は、鳴らしてみないと確かめられない。 */}
-            <button
-              type="button"
-              className={styles.btnGhost}
-              onClick={onTestNotificationSound}
-              disabled={
-                selectedAudioOutputDeviceId === NO_AUDIO_OUTPUT_DEVICE ||
-                audioTestState === "playing"
-              }
-              title="選択中のデバイスからテスト音を鳴らします"
-            >
-              テスト再生 ▶
-            </button>
-            {/* デバイスを挿し直したときに設定を開き直さず済ませるための再列挙。
-                着脱イベントの購読（ホットプラグ監視）は 058a では持たない。 */}
-            <button
-              type="button"
-              className={styles.btnGhost}
-              onClick={onReloadAudioOutputDevices}
-              disabled={audioOutputListState === "loading"}
-              title="接続中の音声出力デバイスを取得し直します"
-            >
-              再読み込み
-            </button>
-          </div>
+      {/* 059c（2026-08-04・本人指示による UI 再編）: 058a の「音声出力（通知音）」カードと
+          059a/059b の「通知音」カードを **1 枚に統合**した。読み上げカードの直後に置く＝音まわりを 1 か所へ。
+          ⚠⚠ **058a / 059a のタスクファイルにある「カードを分ける」決定は、この再編で失効している**
+          （058a のカードが「ここが担うのは出力先だけで、ON/OFF・種類は 059 がそれぞれの機能の隣に置く」と
+          宣言していたが、実際には 2 枚とも通知音の設定で、ユーザーからは 1 つの機能に見える）。
+          経緯と失効した記述の一覧は docs/progress.md の 059c 節。
 
-          {savedAudioOutputDeviceMissing && (
-            // ⚠ §9: デバイス名・デバイス ID を出さない（「以前選んだ」で特定せずに済ませる）。
-            <span className={styles.errorText}>
-              以前選んだ音声出力デバイスが見つかりません。通知音は鳴りません。デバイスを選び直してください。
-            </span>
-          )}
-          {audioOutputListState === "failed" && (
-            <span className={styles.errorText}>
-              音声出力デバイスを取得できませんでした。「再読み込み」をお試しください。
-            </span>
-          )}
-          {audioTestState === "failed" && (
-            <span className={styles.errorText}>
-              テスト音を再生できませんでした。デバイスを選び直してください。
-            </span>
-          )}
-          {audioOutputListState === "ready" &&
-            audioOutputDevices.length === 0 && (
-              <span className={styles.errorText}>
-                使える音声出力デバイスがありません。スピーカーやヘッドホンを接続してから「再読み込み」を押してください。
-              </span>
-            )}
+          構成の順序は「**何を鳴らすか** → **どこへ出すか**」。出力先を後ろに置いたのは、
+          ⚠ **どちらかの音が ON のときだけ出力先を出す**ため——両方 OFF なら鳴らないので出力先を選ぶ意味が無く、
+          先頭に置くと「使わないかもしれない設定」から読ませることになる。
+          ⚠ 列挙（`listAudioOutputDevices`）は **設定ビューを開いた時点**で走る（CommentViewerApp の effect）ので、
+          この条件表示によって列挙のタイミングは変わらない＝ON にした瞬間に一覧は揃っている。
 
-          {/* ⚠ 「配信には載りません」と**断定しない**（059a レビュー Q-7）。載らないのは
-              「配信に流していないデバイス（PC のスピーカー／ヘッドホン）を選んだ場合」だけで、
-              ここで仮想オーディオデバイスを選べば載る。断定すると、下の <details> が案内している
-              仮想デバイスをここで選んでしまったユーザーに嘘をつくことになる。条件付きで書き、
-              かつ「何を選べばよいか」を同時に伝える。⚠ 059a の「通知音」カードの .note も同じ言い回しに揃える。 */}
-          <span className={styles.note}>
-            ここで選んだデバイスからだけ通知音が鳴ります。配信に流していないデバイス（PCのスピーカーやヘッドホン）を選べば、通知音は配信に載りません。未選択のあいだは通知音を鳴らしません。
-          </span>
-
-          {/* 058s の申し送り: ②-軽は仮想オーディオデバイスの導入が前提で、**入れていないと
-              「配信に載せない」が機能しない**（読み上げも配信に載らない）。導入自体は自動化しない
-              （案内のみ）ので、ここで前提をはっきり書く。長いので既存の <details> 作法で畳む。 */}
-          {/* ⚠ 段落は <span> ではなく <div> にする（レビュー指摘）。`.note` は font-size/line-height/color
-              だけで display を持たないので、カード直下（`.cardBody` は flex column ＝ フレックスアイテムが
-              blockify される）では改行されるが、この <details> は flex ではないため <span> のままだと
-              3 段落が**空白すら無しに 1 行へ連結**する（JSX は要素間の改行を除去する）。
-              `.errorText` を <div> で使う前例（このファイル内）と同じ扱いで、CSS 差分ゼロのまま解決する。
-              再修正トリガー＝段落間に余白が要ると判断したとき（`.cardBody > * + .note` と同型のルールが要る）。
-              ⚠ `.obsPasswordHelp` は名前こそ OBS 固有だが、CSS 冒頭の書式表が `.note` と並べて
-              「補助説明」役割として定義しているクラスで、汎用 <details> への流用は書式規則どおり。
-              再修正トリガー＝3 箇所目の流用が出たら `.helpDetails` へ改名する。 */}
-          <details className={styles.obsPasswordHelp}>
-            <summary>読み上げを配信に載せて、通知音は載せない設定にするには</summary>
-            <div className={styles.note}>
-              OS の既定の出力先を<strong>仮想オーディオデバイス</strong>
-              にして、OBS の「音声入力キャプチャ」でそのデバイスを選んでください（macOS は BlackHole、Windows
-              は VB-CABLE などが一般的です）。読み上げは OS
-              の既定へ出るので配信に載り、通知音はここで選んだデバイスへ出るので載りません。
-            </div>
-            <div className={styles.note}>
-              仮想オーディオデバイスを導入していない場合、この設定をしても「配信に載せない」は機能しません（読み上げも配信に載りません）。
-            </div>
-            <div className={styles.note}>
-              OBS 側は「デスクトップ音声」や「アプリケーション音声キャプチャ」ではなく、
-              <strong>仮想デバイスを指定した「音声入力キャプチャ」</strong>
-              を使ってください。アプリ単位のキャプチャは出力先の指定を無視してアプリの音を全部拾うため、読み上げと通知音を分けられません。
-            </div>
-          </details>
-        </div>
-      </div>
-
-      {/* 059a/059b: 通知音カード。「音声出力（通知音）」カードの**直後**に置く＝「どこへ出すか」→「何を鳴らすか」の順。
-          カードを分けるのは 058a のカード自身が「ここが担うのは出力先だけで、通知音の ON/OFF・種類は 059 が
-          それぞれの機能の隣に置く」と宣言しているため。059b でこのカードに投げ銭音の ON/OFF と試聴を 1 組足した。
-          書式は 054 の階層規則どおり（項目名＝ToggleSwitch の .toggleLabel / 説明＝.note / 警告＝.errorText）。
+          書式は 054 の階層規則どおり（項目名＝ToggleSwitch の .toggleLabel / .fieldLabel、説明＝.note、警告＝.errorText）。
           **既存クラスだけを使い、新しい px / weight を発明しない**（CSS 差分ゼロ）。
           ⚠ **音量スライダーは無い。** 振幅は Rust の PEAK_AMPLITUDE 固定で、②-軽では通知音だけが専用の実デバイスへ
           出るため OS のデバイス別音量が独立に効く（詳細と再修正トリガーは soundPrefs.ts の docstring）。
           ⚠ ON/OFF をツールバーへ置かないのは、通知音が「一度 ON にしたらそのまま」寄りの設定だから
-          （045b がツールバーへ移したのは配信中に頻繁に切り替える操作）。右クラスタは既にトグル 2＋ボタン 2 で、
-          059b の 2 音をそこへ出すと 4 トグルになり狭窓で崩れる。再修正トリガー＝実機で「配信中に頻繁に切りたい」と感じたとき。 */}
+          （045b がツールバーへ移したのは配信中に頻繁に切り替える操作）。 */}
       <div className={styles.card}>
         <div className={styles.cardHead}>通知音</div>
         <div className={styles.cardBody}>
+          {/* ⚠ 059c: 説明文から「（既定は OFF）」を落とした（本人指示）。トグルを見れば分かる情報を
+              文章で繰り返さない。「配信に載る/載らない」の説明も落として**下の出力先セクションの .note に
+              一本化**した（カード統合前は「上の『音声出力（通知音）』で〜」と別カードを指しており、
+              統合後はその参照自体が成立しない）。 */}
           <ToggleSwitch
             label="コメント通知音"
             checked={soundCommentEnabled}
             onChange={onSoundCommentEnabledChange}
           />
-          {/* ⚠ 上のカードの .note と同じ理由で「配信には載りません」と断定しない（059a レビュー Q-7）。 */}
           <span className={styles.note}>
-            コメントが届いたときに短い通知音を鳴らします（既定は
-            OFF）。上の「音声出力（通知音）」で選んだデバイスからだけ鳴るので、配信に流していないデバイスを選んでおけば配信には載りません。連投しても鳴りっぱなしにならないよう間隔をあけて鳴らします。
+            コメントが届いたときに短い通知音を鳴らします。連投しても鳴りっぱなしにならないよう間隔をあけて鳴らします。
           </span>
-
-          {/* 059b: 投げ銭通知音。⚠ **ON/OFF はコメント音と独立**（片方だけ ON にできる）。
-              ⚠ 「コメント音とは同時に鳴りません」を必ず書く——排他は親 059 の決定だが、**書かないと
-              「スパチャのときは 2 つ鳴る」と誤解される**（実際には投げ銭音だけが鳴る）。
-              ⚠⚠ **「OFF のときは無音」も必ず書く**（レビュー Q-3）。排他は ON/OFF より先に効くので、
-              このトグルが OFF だと**投げ銭のときはコメント通知音も鳴らない**。この 1 文が無いと
-              「スパチャのときだけ音が消える」という、ユーザーが自力で原因にたどり着けない挙動になる
-              （挙動そのものは意図どおり＝「投げ銭音を OFF にしたのにスパチャでコメント音が鳴る」を避けるため）。 */}
-          <ToggleSwitch
-            label="投げ銭通知音"
-            checked={soundMonetaryEnabled}
-            onChange={onSoundMonetaryEnabledChange}
-          />
-          <span className={styles.note}>
-            スーパーチャット・ビッツ・サブスク・メンバーシップ・ギフト・ドネーション・ジュエルを受け取ったときに、コメント通知音とは別の音を鳴らします（既定は
-            OFF）。コメント通知音とは同時に鳴りません（投げ銭のときは投げ銭通知音だけが鳴ります）。この通知音を
-            OFF にすると、投げ銭のときはコメント通知音も鳴りません（無音になります）。
-          </span>
-
-          {/* ⚠ 出力先が未選択でも**トグルを disabled にしない**（レビュー観点として明示しておく）。
-              既存の disabled 先例（ttsEnabled=false で source トグルを無効化）は「同一カード内の上位トグル」
-              という直接的な関係だが、ここは**別カードの状態に依存**するので押せない理由が画面から読めない。
-              「先に ON にしてから出力先を選ぶ」順序を禁止する理由も無い。代わりに ON かつ未選択のときだけ
-              下の .errorText で理由を文章で伝える（OFF のときは出さない＝鳴らないのが正常な状態で赤字を出さない）。
-              ⚠ 判定に使うのは `selectedAudioOutputDeviceId`（一覧と突き合わせた後）ではなく
-              **生の `audioOutputDeviceId`**。「選んだデバイスが今は見つからない」場合はここではなく
-              058a のカードが「以前選んだ音声出力デバイスが見つかりません」を出す担当で、両方出すと
-              **同じ状態を 2 つの違う言葉で二重に叱る**ことになる（かつ「未選択」は事実として誤り）。
-              列挙中（loading）に一瞬赤くならないのも、生の値を見ているおかげで自動的に成立する。
-              ⚠ 059b: ゲートは **2 音の OR**。⚠⚠ **音ごとに 2 本出さない**——出力先は 1 つで理由も対処も
-              同じなので、2 本出すと「同じ状態を 2 つの言葉で二重に叱る」ことになる（058a のカードと
-              重複させなかったのと同じ判断）。文言も音種を名指ししていないのでそのまま使える。 */}
-          {(soundCommentEnabled || soundMonetaryEnabled) &&
-            audioOutputDeviceId === NO_AUDIO_OUTPUT_DEVICE && (
-              // ⚠ §9: デバイス名・デバイス ID を出さない（カード名は固定文字列なので問題ない）。
-              <span className={styles.errorText}>
-                通知音の出力先が未選択です。上の「音声出力（通知音）」でデバイスを選ぶまで鳴りません。
-              </span>
-            )}
-
+          {/* 034c の話者試聴と同じ考え方＝「ON にしても次のコメントが来るまで音が確認できない」を避ける。
+              ⚠ ユーザーの明示操作なので **notificationSound.ts のクールダウンを通さない**
+              （押したのに鳴らないのは壊れて見える）。連打は再生中 disabled で抑える。
+              ⚠⚠ **059c: 2 つの試聴ボタンは表示名もアクセシブル名も「通知音を試聴 ▶」で完全に同一**（本人決定）。
+              どちらの音かは**直上のトグルとの位置関係**で示し、`aria-label` では区別しない。
+              帰結として ①スクリーンリーダーでは 2 つを区別できない ②テストは `getAllByRole` の並び順で引く
+              ことになる（`SettingsView.audio.test.tsx` は取り違えを防ぐため、引いた直後に `title` を
+              assert して並び順の前提を明示検証している）。**再修正トリガー＝押し間違いが実際に起きたとき**
+              （そのときは表示名を変えずに `aria-label` で区別する＝可視ラベルを含むので WCAG 2.5.3 も満たす）。
+              ⚠ 2 つのボタンは `soundPreviewState` を共有するので**片方の再生中は両方 disabled** になる。
+              これは意図どおりで、Rust の同時再生 1 本（058a）と一致する（詳細は SoundPreviewState の JSDoc）。 */}
           <div className={styles.voicevoxRow}>
-            {/* 034c の話者試聴と同じ考え方＝「ON にしても次のコメントが来るまで音が確認できない」を避ける。
-                ⚠ 058a の「テスト再生」とは**目的が違うので重複ではない**——あちらは出力先の検証（Test 音）、
-                こちらはその音の確認（Comment / Monetary 音）。だから鳴る音も別にしてある（Rust の tone_spec）。
-                ⚠ ユーザーの明示操作なので **notificationSound.ts のクールダウンを通さない**
-                （押したのに鳴らないのは壊れて見える）。連打は再生中 disabled で抑える＝058a と同じ形。
-                ⚠ 059b で**両方のボタン名を音種入りに改名した**（旧「試聴 ▶」）。3 つ目のボタンを足す前に
-                改名したのは、①どちらの音の試聴か画面から読めなくなる ②**034c の話者試聴ボタンも
-                「試聴 ▶」で、実機では同じアクセシブル名が並んでいた**（既存の取り違えもここで解消する）。
-                ⚠ 2 つのボタンは `soundPreviewState` を共有するので**片方の再生中は両方 disabled** になる。
-                これは意図どおりで、Rust の同時再生 1 本（058a）と一致する（詳細は SoundPreviewState の JSDoc）。 */}
             <button
               type="button"
               className={styles.btnGhost}
@@ -597,8 +438,28 @@ export function SettingsView({
               }
               title="コメント通知音を選択中のデバイスで鳴らします"
             >
-              コメント音を試聴 ▶
+              通知音を試聴 ▶
             </button>
+          </div>
+
+          {/* 059b: 投げ銭通知音。⚠ **ON/OFF はコメント音と独立**（片方だけ ON にできる）。
+              ⚠⚠ **059c: 説明文から「コメント通知音とは同時に鳴りません」と「OFF のときは無音になります」を
+              落とした**（本人指示）。⚠ **後者はレビュー Q-3 で「必須」として足したもので、これを消すと
+              「投げ銭通知音 OFF ＋ コメント通知音 ON」でスパチャが来たときに完全に無音になる理由が
+              画面のどこからも読めなくなる**（排他は ON/OFF より先に効くため）。挙動そのものは意図どおりで
+              変えていない（「投げ銭音を OFF にしたのにスパチャでコメント音が鳴る」を避ける決定）。
+              **再修正トリガー＝実機で「スパチャのときだけ鳴らない」と混乱したとき**——そのときは説明文を
+              戻すか、排他より ON/OFF を先に見る（＝投げ銭音 OFF ならコメント音へフォールバックする）へ
+              仕様変更するかのどちらかを選ぶこと。 */}
+          <ToggleSwitch
+            label="投げ銭通知音"
+            checked={soundMonetaryEnabled}
+            onChange={onSoundMonetaryEnabledChange}
+          />
+          <span className={styles.note}>
+            スーパーチャット・ビッツ・サブスク・メンバーシップ・ギフト・ドネーション・ジュエルを受け取ったときに、コメント通知音とは別の音を鳴らします。
+          </span>
+          <div className={styles.voicevoxRow}>
             <button
               type="button"
               className={styles.btnGhost}
@@ -609,7 +470,7 @@ export function SettingsView({
               }
               title="投げ銭通知音を選択中のデバイスで鳴らします"
             >
-              投げ銭音を試聴 ▶
+              通知音を試聴 ▶
             </button>
           </div>
 
@@ -617,6 +478,125 @@ export function SettingsView({
             <span className={styles.errorText}>
               通知音を再生できませんでした。デバイスを選び直してください。
             </span>
+          )}
+
+          {/* ⚠ 059c: 出力先は**どちらかの音が ON のときだけ**出す（本人指示）。両方 OFF なら通知音は
+              鳴らないので、出力先を選ぶ意味が無い。⚠ トグル自体は出力先が未選択でも disabled にしない
+              （「先に ON にしてから出力先を選ぶ」順序を禁止する理由が無い。むしろこの条件表示は
+              その順序を前提にしている）。 */}
+          {(soundCommentEnabled || soundMonetaryEnabled) && (
+            <>
+              <label className={styles.speakerField}>
+                <span className={styles.fieldLabel}>通知音の出力先</span>
+                {/* ⚠ 先頭の選択肢は「選択しない」＝**鳴らさない**。「既定デバイス」ではない。
+                    ②-軽では OS 既定＝仮想オーディオデバイス＝配信に載る側なので、ここに
+                    「既定デバイス」という選択肢を足すと「載せないつもりの音が載る」導線になる。 */}
+                <Select
+                  ariaLabel="通知音の出力先"
+                  value={selectedAudioOutputDeviceId}
+                  onChange={(e) => onAudioOutputDeviceIdChange(e.target.value)}
+                >
+                  <option value={NO_AUDIO_OUTPUT_DEVICE}>
+                    選択しない（通知音を鳴らさない）
+                  </option>
+                  {audioOutputDevices.map((device) => (
+                    <option key={device.id} value={device.id}>
+                      {device.name}
+                    </option>
+                  ))}
+                </Select>
+              </label>
+              <div className={styles.voicevoxRow}>
+                {/* デバイスを挿し直したときに設定を開き直さず済ませるための再列挙。
+                    着脱イベントの購読（ホットプラグ監視）は持たない。
+                    ⚠ 059c: 隣にあった「テスト再生 ▶」は削除した（本人指示）。出力先の検証は
+                    上の「通知音を試聴 ▶」が同じデバイスで実音を鳴らすことで果たせるため、
+                    ボタンが 1 つ減っても 058a の合格基準（選んだデバイスから鳴る／既定からは鳴らない）は
+                    耳で確かめられる。⚠ Rust の `NotificationSound::Test` は**残してある**
+                    （enum から消すと docs/security.md のレビュー必須条件に該当するため）。 */}
+                <button
+                  type="button"
+                  className={styles.btnGhost}
+                  onClick={onReloadAudioOutputDevices}
+                  disabled={audioOutputListState === "loading"}
+                  title="接続中の音声出力デバイスを取得し直します"
+                >
+                  再読み込み
+                </button>
+              </div>
+
+              {/* ⚠ 判定に使うのは `selectedAudioOutputDeviceId`（一覧と突き合わせた後）ではなく
+                  **生の `audioOutputDeviceId`**。「選んだデバイスが今は見つからない」場合は次の
+                  `savedAudioOutputDeviceMissing` が担当で、両方出すと**同じ状態を 2 つの違う言葉で
+                  二重に叱る**ことになる（かつ「未選択」は事実として誤り）。列挙中（loading）に
+                  一瞬赤くならないのも、生の値を見ているおかげで自動的に成立する。
+                  ⚠ 059c: 旧文言は「上の『音声出力（通知音）』でデバイスを選ぶまで鳴りません」だったが、
+                  カード統合で参照先が消えたので**位置参照を落とした**。 */}
+              {audioOutputDeviceId === NO_AUDIO_OUTPUT_DEVICE && (
+                // ⚠ §9: デバイス名・デバイス ID を出さない。
+                <span className={styles.errorText}>
+                  通知音の出力先が未選択です。デバイスを選ぶまで鳴りません。
+                </span>
+              )}
+              {savedAudioOutputDeviceMissing && (
+                // ⚠ §9: デバイス名・デバイス ID を出さない（「以前選んだ」で特定せずに済ませる）。
+                <span className={styles.errorText}>
+                  以前選んだ音声出力デバイスが見つかりません。通知音は鳴りません。デバイスを選び直してください。
+                </span>
+              )}
+              {audioOutputListState === "failed" && (
+                <span className={styles.errorText}>
+                  音声出力デバイスを取得できませんでした。「再読み込み」をお試しください。
+                </span>
+              )}
+              {audioOutputListState === "ready" &&
+                audioOutputDevices.length === 0 && (
+                  <span className={styles.errorText}>
+                    使える音声出力デバイスがありません。スピーカーやヘッドホンを接続してから「再読み込み」を押してください。
+                  </span>
+                )}
+
+              {/* ⚠ 「配信には載りません」と**断定しない**（059a レビュー Q-7）。載らないのは
+                  「配信に流していないデバイス（PC のスピーカー／ヘッドホン）を選んだ場合」だけで、
+                  ここで仮想オーディオデバイスを選べば載る。断定すると、下の <details> が案内している
+                  仮想デバイスをここで選んでしまったユーザーに嘘をつくことになる。条件付きで書き、
+                  かつ「何を選べばよいか」を同時に伝える。
+                  ⚠ 059c: 各トグルの .note から「配信に載る/載らない」の説明を落とした結果、
+                  **この 1 本がその説明の唯一の置き場所**になった。消さないこと。 */}
+              <span className={styles.note}>
+                ここで選んだデバイスからだけ通知音が鳴ります。配信に流していないデバイス（PCのスピーカーやヘッドホン）を選べば、通知音は配信に載りません。未選択のあいだは通知音を鳴らしません。
+              </span>
+
+              {/* 058s の申し送り: ②-軽は仮想オーディオデバイスの導入が前提で、**入れていないと
+                  「配信に載せない」が機能しない**（読み上げも配信に載らない）。導入自体は自動化しない
+                  （案内のみ）ので、ここで前提をはっきり書く。長いので既存の <details> 作法で畳む。 */}
+              {/* ⚠ 段落は <span> ではなく <div> にする（レビュー指摘）。`.note` は font-size/line-height/color
+                  だけで display を持たないので、カード直下（`.cardBody` は flex column ＝ フレックスアイテムが
+                  blockify される）では改行されるが、この <details> は flex ではないため <span> のままだと
+                  3 段落が**空白すら無しに 1 行へ連結**する（JSX は要素間の改行を除去する）。
+                  `.errorText` を <div> で使う前例（このファイル内）と同じ扱いで、CSS 差分ゼロのまま解決する。
+                  再修正トリガー＝段落間に余白が要ると判断したとき（`.cardBody > * + .note` と同型のルールが要る）。
+                  ⚠ `.obsPasswordHelp` は名前こそ OBS 固有だが、CSS 冒頭の書式表が `.note` と並べて
+                  「補助説明」役割として定義しているクラスで、汎用 <details> への流用は書式規則どおり。
+                  再修正トリガー＝3 箇所目の流用が出たら `.helpDetails` へ改名する。 */}
+              <details className={styles.obsPasswordHelp}>
+                <summary>読み上げを配信に載せて、通知音は載せない設定にするには</summary>
+                <div className={styles.note}>
+                  OS の既定の出力先を<strong>仮想オーディオデバイス</strong>
+                  にして、OBS の「音声入力キャプチャ」でそのデバイスを選んでください（macOS は BlackHole、Windows
+                  は VB-CABLE などが一般的です）。読み上げは OS
+                  の既定へ出るので配信に載り、通知音はここで選んだデバイスへ出るので載りません。
+                </div>
+                <div className={styles.note}>
+                  仮想オーディオデバイスを導入していない場合、この設定をしても「配信に載せない」は機能しません（読み上げも配信に載りません）。
+                </div>
+                <div className={styles.note}>
+                  OBS 側は「デスクトップ音声」や「アプリケーション音声キャプチャ」ではなく、
+                  <strong>仮想デバイスを指定した「音声入力キャプチャ」</strong>
+                  を使ってください。アプリ単位のキャプチャは出力先の指定を無視してアプリの音を全部拾うため、読み上げと通知音を分けられません。
+                </div>
+              </details>
+            </>
           )}
         </div>
       </div>
@@ -637,14 +617,19 @@ export function SettingsView({
           054 追補(E2E): この**実窓名を UI に出していた手動キャプチャ注記は削除した**ので、窓名の一致は
           lib.rs の `.title` と sidecar の `OBS_SOURCE_NAME` の 2 者間だけの契約になった（UI 側の目視担保は無い）。
           窓名を変えるときはこの 2 つを必ず同時に直すこと。
-          レビュー（見出しと中身のずれ / 今回は修正不要）: 045b でトグルが出ていったので、見出し
-          「コメントをOBSに表示」は**このカードに無いコントロール名**を指している（設定を探しに来た人が見出しで
-          見つけたと思い、中では「上部へ行け」と言われる導線）。改名は 045a の領分（可視文言リネーム）で、
-          CLAUDE.md「1 回 1 機能」に沿って移設タスクに混ぜない。再修正トリガー＝次に文言タスクを起票するとき。
-          そのとき「OBSへの反映（セットアップ）」等へ改め、見出し・導線注記・移設先ラベルの同一文字列衝突
-          （CommentViewerApp.toolbar.test.tsx が role="switch" で絞って回避している）も併せて解消する。 */}
+          ⚠⚠ **059c(2)（2026-08-04・本人指示）で 046b の「固定コメントをOBSに表示」カードを吸収し、
+          見出しを「コメントをOBSに表示」→「OBSに表示」へ改めた。** 経緯と失効した記述は docs/progress.md の
+          059c 節を正とする。
+          - **見出しの改名は「見出しと中身のずれ」の解消でもある**（旧レビューが「修正不要・再修正トリガー＝
+            次に文言タスクを起票するとき」として残していた既知問題）。045b でトグルが出ていって以降、見出し
+            「コメントをOBSに表示」は**このカードに無いコントロール名**を指しており、さらに固定コメントを
+            吸収すると中身の一部しか表さなくなるため、ここで解消した。
+          - 副産物として、**見出しとツールバーのトグル label の同一文字列衝突も消えた**。
+            ⚠ ただし `CommentViewerApp.toolbar.test.tsx` の `role="switch"` 絞り込みは**残す**
+            （外すと衝突が再発したときに気付けない）。
+          - 045a の「可視文言から『オーバーレイ』を消す」方針とも整合する（「OBSオーバーレイ」は採らない）。 */}
       <div className={styles.card}>
-        <div className={styles.cardHead}>コメントをOBSに表示</div>
+        <div className={styles.cardHead}>OBSに表示</div>
         <div className={styles.cardBody}>
           {/* 054 追補(E2E): ここにあった注記 2 本を**依頼者の指示で削除**した。
               (a) 045b の移設先導線「表示の ON/OFF は、コメント画面の上部にある『コメントをOBSに表示』で切り替えます。」
@@ -805,31 +790,28 @@ export function SettingsView({
             ON にすると、OBSに表示する各コメントに配信サービス名（Twitch /
             YouTube）を小さく表示します。
           </span>
-        </div>
-      </div>
 
-      {/* 046b: 固定コメント（右クリック→「上部に固定」）を OBS へ出す専用オーバーレイ窓のカード。
-          上の OBS カードとは**別ウィンドウ**（label `pinned-overlay`）で、OBS では別ソースとして取り込む。
-          置き場所を設定ビューにした理由（親 045 の線引きに照らした判断・依頼者の決定）: 表示（開閉）を
-          ツールバーへ移した 045b の基準は「配信中に頻繁に切り替えるか」だが、固定オーバーレイの出し入れは
-          **固定/固定解除（右クリックメニュー）側の仕事**で、窓そのものは開けっぱなしにする＝
-          「OBS にウィンドウキャプチャを仕込む」一度きりのセットアップに当たる。上の OBS カード（同じ
-          セットアップ系）の隣に置くのが導線として自然。
-          046b 実装時は「手動キャプチャの手順注記と同じカードに置く」ことを理由にしていたが、その注記は
-          054 追補(E2E) で上のカードから削除された。置き場所の判断（セットアップ系をまとめる）は不変。
-          ⚠ このカードの手動手順（「OFFのときは…手動で追加してください」）は 054 追補の指示範囲外で**据え置き**＝
-          コメント用カードには手動手順が無く固定用には在る、という**非対称**が残っている（承知の上）。
-          再修正トリガー＝2 カードの案内粒度を揃える文言タスクを起票するとき。
-          上の OBS カードの見出し・自動反映トグル・状態表示・パスワード欄は 046b 時点から不変。 */}
-      <div className={styles.card}>
-        {/* 046b レビュー（修正不要・既知の重複）: 見出しとトグル label が同一文字列で、テストが
-            `role="switch"` 絞りを強いられる点は 045b レビューの既知問題と同じ。上の OBS カードと
-            同じ作法に揃える方を優先して据え置く（片方だけ言い回しを変えると 2 カードが非対称になる）。
-            再修正トリガー＝045b 指摘の一般解として「見出しとコントロール名の重複」をまとめて直すとき。 */}
-        <div className={styles.cardHead}>固定コメントをOBSに表示</div>
-        <div className={styles.cardBody}>
+          {/* 046b: 固定コメント（右クリック→「上部に固定」）を OBS へ出す専用オーバーレイ窓の設定。
+              上の「コメントをOBSに表示」とは**別ウィンドウ**（label `pinned-overlay`）で、OBS では別ソースとして取り込む。
+              設定ビューに置く理由（親 045 の線引きに照らした判断・依頼者の決定）: 表示（開閉）を
+              ツールバーへ移した 045b の基準は「配信中に頻繁に切り替えるか」だが、固定オーバーレイの出し入れは
+              **固定/固定解除（右クリックメニュー）側の仕事**で、窓そのものは開けっぱなしにする＝
+              「OBS にウィンドウキャプチャを仕込む」一度きりのセットアップに当たる。
+
+              ⚠⚠ **059c(2)（2026-08-04・本人指示）で、独立していた「固定コメントをOBSに表示」カードを
+              このカードへ統合した。** 046b が「上の OBS カードの隣に別カードで置く」と決めていた配置は失効している。
+              - **要素の順序・内容は 1 つも変えていない**（`.card` / `.cardHead` の枠を外して中身をここへ移しただけ）。
+                そのおかげで下の注記が指す「上の『OBSに自動で反映する』」「上のコメント用」「上の設定」は
+                **すべて参照が成立したまま**＝文言の書き換えはゼロ。⚠ この 3 本より前に要素を挿入するときは、
+                「上の」が指す先が変わらないか必ず確認すること。
+              - ⚠ 手動手順（「OFFのときは…手動で追加してください」）は固定側にだけ在り、コメント側には無い
+                （054 追補で削除された）＝**案内粒度の非対称は統合後も残っている**（承知の上）。
+                再修正トリガー＝2 つの案内粒度を揃える文言タスクを起票するとき。 */}
           {/* ON で専用ウィンドウが開く（固定が 0 件のときは完全に透明で何も映らない）。固定/固定解除では
-              窓は開閉せず中身が入れ替わるだけ＝OBS のソースが途切れない。 */}
+              窓は開閉せず中身が入れ替わるだけ＝OBS のソースが途切れない。
+              ⚠ 059c(2) 以前は**カード見出しとこの label が同一文字列**で、テストが `role="switch"` 絞りを
+              強いられていた（046b レビューの既知問題）。見出しが「OBSに表示」になったので衝突は解消したが、
+              テスト側の絞り込みは**残してある**（外すと再発時に気付けない）。 */}
           <ToggleSwitch
             label="固定コメントをOBSに表示"
             checked={pinnedOverlayEnabled}
@@ -861,7 +843,9 @@ export function SettingsView({
               以降）」と「透過を許可」の設定がこのソースにも必要です。
             </span>
           )}
-          {/* フォント・サイト名表示は上のカードの設定を共有する（同じ OBS 画面に 2 つ並ぶため）。 */}
+          {/* フォント・サイト名表示は 2 つのオーバーレイ窓で共有する（同じ OBS 画面に 2 つ並ぶため）。
+              ⚠ 059c(2) 以前は「上の**カード**の設定を共有する」と書いていたが、統合で同一カード内になった。
+              可視文言の「上の設定」は**同じカードの上方**を指すのでそのまま成立している。 */}
           <span className={styles.note}>
             フォントとサイト名表示は、上の設定がこのウィンドウにも適用されます。
           </span>

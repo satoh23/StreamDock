@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { CommentViewerApp } from "./CommentViewerApp";
 import { AUDIO_OUTPUT_DEVICE_KEY } from "../../features/comment-viewer/audioOutputPrefs";
+import { SOUND_COMMENT_ENABLED_KEY } from "../../features/comment-viewer/soundPrefs";
 import type { AudioOutputDevice } from "../../features/comment-viewer/audioOutputApi";
 
 /**
@@ -14,10 +15,14 @@ import type { AudioOutputDevice } from "../../features/comment-viewer/audioOutpu
  * - 選んだデバイスは localStorage に永続し、開き直し・再起動で復元される。
  * - ⚠⚠ **保存済み ID が今の一覧に無くても、保存値は消さない**（挿し直せばそのまま復帰する）。
  *   消すと、ヘッドホンを抜くたびに選び直しになる。
- * - テスト再生は**選択中のデバイス ID と `"test"`** で `play_notification_sound` を呼ぶ。
+ * - 試聴は**選択中のデバイス ID**で `play_notification_sound` を呼ぶ
+ *   （⚠ 059c: 「テスト再生」ボタンが削除されたので、この配線は試聴が引き継いだ）。
  * - ⚠⚠ **失敗しても既定デバイスで鳴らし直さない（fail-closed）。** ②-軽では OS 既定＝仮想オーディオ
  *   デバイス＝**配信に載る側**なので、落とすと「載せないつもりの通知音が配信に載る」。
  * - 選び直したら直前の失敗表示を消す（古い赤字を残さない）。
+ *
+ * ⚠⚠ **059c: 出力先セクションは「どちらかの音が ON のときだけ」描画される。** そのため下記
+ * `openSettings()` はコメント通知音を ON にしてから render する（両方 OFF だとセレクトが存在しない）。
  *
  * ⚠ SettingsView 側の見た目（選択肢の並び・警告文・disabled）は `SettingsView.audio.test.tsx` が担う。
  * ここは**アプリが command をどう呼ぶか / 何を保存するか**だけを見る。
@@ -138,11 +143,38 @@ beforeEach(() => {
   mocks.playNotificationSound.mockResolvedValue(undefined);
 });
 
-/** 設定ビューを開き、出力先セレクトが出るまで待つ。 */
+/**
+ * 設定ビューを開き、出力先セレクトが出るまで待つ。
+ *
+ * ⚠⚠ **059c: コメント通知音を ON にしてから render する。** 出力先セクションは
+ * 「どちらかの音が ON のときだけ」描画されるようになったため、両方 OFF（＝本番の既定）のままだと
+ * セレクトも「再読み込み」も存在せず、このヘルパが永久に待つ。
+ * ⚠ ON/OFF は `useState` の初期化で localStorage から読むので、**render より前**に立てること。
+ */
 async function openSettings() {
+  localStorage.setItem(SOUND_COMMENT_ENABLED_KEY, "true");
   render(<CommentViewerApp />);
   fireEvent.click(screen.getByRole("button", { name: "設定" }));
   return await screen.findByRole("combobox", { name: "通知音の出力先" });
+}
+
+/**
+ * 059c: コメント通知音の試聴ボタン（上段）。
+ *
+ * ⚠ 2 つの試聴ボタンは**表示名もアクセシブル名も同一**（「通知音を試聴 ▶」）なので並び順で引く。
+ * 取り違えを黙って見逃さないよう、`title` で「1 番目＝コメント音」を明示検証する
+ *（詳細は `SettingsView.audio.test.tsx` の `previewButtons()`）。
+ */
+function previewCommentButton(): HTMLButtonElement {
+  const buttons = screen.getAllByRole("button", {
+    name: "通知音を試聴 ▶",
+  }) as HTMLButtonElement[];
+  expect(buttons).toHaveLength(2);
+  expect(buttons[0]).toHaveAttribute(
+    "title",
+    "コメント通知音を選択中のデバイスで鳴らします",
+  );
+  return buttons[0];
 }
 
 describe("058a 通知音の出力デバイス（CommentViewerApp の配線）", () => {
@@ -190,6 +222,8 @@ describe("058a 通知音の出力デバイス（CommentViewerApp の配線）", 
     mocks.listAudioOutputDevices.mockRejectedValue(
       new Error("CoreAudio OSStatus -10851 on Zz-PrivateHeadset-9f3a"),
     );
+    // ⚠ 059c: 列挙失敗の案内は出力先セクションの中にあるので、音を ON にしないと描画されない。
+    localStorage.setItem(SOUND_COMMENT_ENABLED_KEY, "true");
     const { container } = render(<CommentViewerApp />);
     fireEvent.click(screen.getByRole("button", { name: "設定" }));
     await screen.findByText(/音声出力デバイスを取得できませんでした/);
@@ -237,37 +271,32 @@ describe("058a 通知音の出力デバイス（CommentViewerApp の配線）", 
     expect(localStorage.getItem(AUDIO_OUTPUT_DEVICE_KEY)).toBe(MISSING_ID);
   });
 
-  it("テスト再生は選択中のデバイス ID と \"test\" で play_notification_sound を呼ぶ", async () => {
-    localStorage.setItem(AUDIO_OUTPUT_DEVICE_KEY, "CoreAudio:BlackHole2ch_UID");
-    await openSettings();
-    const button = await screen.findByRole("button", { name: "テスト再生 ▶" });
-    await waitFor(() => expect(button).toBeEnabled());
+  // ⚠⚠ **059c: 「テスト再生」ボタン（`"test"` 音）は削除された**（本人指示）。058a はこれを
+  // 「選んだデバイスから鳴る／既定からは鳴らない を耳で確かめる唯一の手段」と位置づけていたが、
+  // **試聴が同じ `audioOutputDeviceId` へ同じ経路で実音を鳴らす**ので、下記 3 本は試聴経由へ移した
+  //（＝「鳴らす音が `"test"` である」という配線だけが消え、**fail-closed の担保は 1 本も減っていない**）。
 
-    fireEvent.click(button);
-    await waitFor(() =>
-      expect(mocks.playNotificationSound).toHaveBeenCalledWith(
-        "CoreAudio:BlackHole2ch_UID",
-        "test",
-      ),
-    );
-  });
-
-  it("⚠⚠ テスト再生に失敗しても既定デバイスで鳴らし直さない（fail-closed）", async () => {
+  it("⚠⚠ 試聴に失敗しても既定デバイスで鳴らし直さない（fail-closed）", async () => {
     localStorage.setItem(AUDIO_OUTPUT_DEVICE_KEY, "CoreAudio:BlackHole2ch_UID");
     mocks.playNotificationSound.mockRejectedValue({
       code: "AUDIO_DEVICE_UNAVAILABLE",
     });
     await openSettings();
-    const button = await screen.findByRole("button", { name: "テスト再生 ▶" });
+    const button = previewCommentButton();
     await waitFor(() => expect(button).toBeEnabled());
 
     fireEvent.click(button);
     expect(
-      await screen.findByText(/テスト音を再生できませんでした/),
+      await screen.findByText(/通知音を再生できませんでした/),
     ).toBeInTheDocument();
     // 既定デバイスへのリトライが無いこと＝2 回目の invoke が飛んでいない。
     // ②-軽では既定＝仮想オーディオデバイス＝配信に載る側なので、これは「載せないつもりの音が載る」経路。
     expect(mocks.playNotificationSound).toHaveBeenCalledTimes(1);
+    // 鳴らそうとしたのは**選択中のデバイス**（既定へすり替わっていない）。
+    expect(mocks.playNotificationSound).toHaveBeenCalledWith(
+      "CoreAudio:BlackHole2ch_UID",
+      "comment",
+    );
   });
 
   it("デバイスを選び直すと直前の失敗表示が消える（古い赤字を残さない）", async () => {
@@ -276,18 +305,18 @@ describe("058a 通知音の出力デバイス（CommentViewerApp の配線）", 
       code: "AUDIO_PLAYBACK_FAILED",
     });
     const select = await openSettings();
-    const button = await screen.findByRole("button", { name: "テスト再生 ▶" });
+    const button = previewCommentButton();
     await waitFor(() => expect(button).toBeEnabled());
 
     fireEvent.click(button);
-    await screen.findByText(/テスト音を再生できませんでした/);
+    await screen.findByText(/通知音を再生できませんでした/);
 
     fireEvent.change(select, {
       target: { value: "CoreAudio:BuiltInSpeakerDevice" },
     });
     await waitFor(() =>
       expect(
-        screen.queryByText(/テスト音を再生できませんでした/),
+        screen.queryByText(/通知音を再生できませんでした/),
       ).not.toBeInTheDocument(),
     );
   });
@@ -299,8 +328,12 @@ describe("058a 通知音の出力デバイス（CommentViewerApp の配線）", 
     );
     expect((select as HTMLSelectElement).value).toBe("");
 
-    // 未選択ではテスト再生を押せない（UI 側の遮断）。
-    expect(screen.getByRole("button", { name: "テスト再生 ▶" })).toBeDisabled();
+    // 未選択では試聴を押せない（UI 側の遮断）。⚠ 059c: 2 本とも押せないこと。
+    for (const button of screen.getAllByRole("button", {
+      name: "通知音を試聴 ▶",
+    })) {
+      expect(button).toBeDisabled();
+    }
     // 列挙・再読み込み・表示のどの経路からも再生は起きない（配線側の遮断）。
     fireEvent.click(screen.getByRole("button", { name: "再読み込み" }));
     await waitFor(() =>
