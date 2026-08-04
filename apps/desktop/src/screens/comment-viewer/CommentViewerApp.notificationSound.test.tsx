@@ -9,10 +9,14 @@ import {
 } from "@testing-library/react";
 import { CommentViewerApp } from "./CommentViewerApp";
 import { AUDIO_OUTPUT_DEVICE_KEY } from "../../features/comment-viewer/audioOutputPrefs";
-import { SOUND_COMMENT_ENABLED_KEY } from "../../features/comment-viewer/soundPrefs";
-import { resetNotificationSoundCooldownForTest } from "../../features/comment-viewer/notificationSound";
+import {
+  SOUND_COMMENT_ENABLED_KEY,
+  SOUND_MONETARY_ENABLED_KEY,
+} from "../../features/comment-viewer/soundPrefs";
+import { resetNotificationSoundStateForTest } from "../../features/comment-viewer/notificationSound";
 import type { AudioOutputDevice } from "../../features/comment-viewer/audioOutputApi";
 import type { CommentViewDto } from "../../features/comment-viewer/types";
+import type { CommentEventType } from "../../features/comment-viewer/bindings/CommentEventType";
 
 /**
  * 059a: コメント通知音の**配線**（`CommentViewerApp` が受信バッチをどう音へ変換するか）の仕様テスト。
@@ -170,7 +174,7 @@ const comment = (over: Partial<CommentViewDto> = {}): CommentViewDto => ({
 
 beforeEach(() => {
   localStorage.clear();
-  resetNotificationSoundCooldownForTest();
+  resetNotificationSoundStateForTest();
   mocks.listAudioOutputDevices.mockReset();
   mocks.listAudioOutputDevices.mockResolvedValue(DEVICES);
   mocks.playNotificationSound.mockReset();
@@ -192,11 +196,34 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  // 059b: 一部のテストが `Date.now` を差し替えるので必ず戻す（`mocks.*` は beforeEach が組み直す）。
+  vi.restoreAllMocks();
 });
 
-/** 通知音 ON ＋ 出力先選択済みの状態で起動する（既定は両方とも未設定）。 */
+/** テスト用の課金コメント 1 件（既定はスパチャ）。⚠ 課金判定は**生の eventType**で行われる。 */
+const monetaryComment = (over: Partial<CommentViewDto> = {}): CommentViewDto =>
+  comment({
+    id: "m1",
+    eventType: "superchat",
+    text: "応援してます！",
+    monetaryAmount: "1,000 JPY",
+    monetary: { amount: 1000, currency: "JPY" },
+    ...over,
+  });
+
+/** コメント通知音 ON ＋ 出力先選択済みの状態で起動する（既定は両方とも未設定）。 */
 function setUpEnabled() {
   localStorage.setItem(SOUND_COMMENT_ENABLED_KEY, "true");
+  localStorage.setItem(AUDIO_OUTPUT_DEVICE_KEY, DEVICE_ID);
+}
+
+/**
+ * 059b: 2 音の ON/OFF を明示して起動する（出力先は選択済み）。
+ * ⚠ **既定は両方 ON ではない**——「片方 OFF でもう片方は鳴る」を書きやすくするため、毎回明示する。
+ */
+function setUpSounds(opts: { comment: boolean; monetary: boolean }) {
+  localStorage.setItem(SOUND_COMMENT_ENABLED_KEY, String(opts.comment));
+  localStorage.setItem(SOUND_MONETARY_ENABLED_KEY, String(opts.monetary));
   localStorage.setItem(AUDIO_OUTPUT_DEVICE_KEY, DEVICE_ID);
 }
 
@@ -264,29 +291,11 @@ describe("059a コメント通知音（CommentViewerApp の配線）", () => {
     );
   });
 
-  it("⚠ updated（043e の Jewels combo 更新）では鳴らさない", () => {
-    setUpEnabled();
-    render(<CommentViewerApp />);
-
-    const jewels = comment({
-      id: "g1",
-      eventType: "jewels",
-      text: "",
-      monetaryAmount: "30 JEWELS",
-      monetary: { amount: 30, currency: "JEWELS" },
-      comboCount: 1,
-    });
-    // 初報は新着なので鳴る。
-    receive([jewels]);
-    expect(mocks.requestNotificationSound).toHaveBeenCalledTimes(1);
-    mocks.requestNotificationSound.mockClear();
-    // クールダウンで潰れて「鳴らない」のではなく、**そもそも要求されない**ことを見たいので消す。
-    resetNotificationSoundCooldownForTest();
-
-    // 同一 id の combo 更新＝ updated バケット。新しいコメントではないので鳴らさない。
-    receive([{ ...jewels, monetaryAmount: "60 JEWELS", comboCount: 2 }]);
-    expect(mocks.requestNotificationSound).not.toHaveBeenCalled();
-  });
+  // ⚠ **`updated`（043e の Jewels combo 更新）で鳴らさないことの固定は 059b の describe へ移した。**
+  // combo 再送を起こす種別は jewels だけで、jewels は課金＝059b 以降は**投げ銭音の経路**になるため、
+  // ここに置いたままだと「投げ銭音が既定 OFF だから鳴らなかった」で緑になる空振りテストになる
+  // （実際に 059b の実装中にそうなった）。移設先は「⚠ updated（Jewels combo 更新）ではどちらの音も
+  // 鳴らない」で、**両方の音を ON にしたうえで**初報が鳴り combo 更新が鳴らないことを見ている。
 
   it("OFF のときは鳴らさない（既定 OFF）", () => {
     localStorage.setItem(AUDIO_OUTPUT_DEVICE_KEY, DEVICE_ID);
@@ -305,6 +314,10 @@ describe("059a コメント通知音（CommentViewerApp の配線）", () => {
     // ②-軽では OS 既定＝仮想オーディオデバイス＝配信に載る側。ここで既定へ落とすと
     // 「載せないつもりの通知音が配信に載る」＝この機能の存在理由が壊れる。
     expect(mocks.playNotificationSound).not.toHaveBeenCalled();
+    // ⚠ **アプリ層のガードも固定する**（レビュー Q-2）。invoke 回数だけを見ると、
+    // `playBatchNotification` の未選択ガードを削除しても下流（notificationSound）の同じガードが
+    // "skipped" を返すので**緑のまま通る**（実測済み）。fail-closed は多層防御なので層ごとに固定する。
+    expect(mocks.requestNotificationSound).not.toHaveBeenCalled();
   });
 
   it("連投してもクールダウンで間引かれる（1 秒に何度も鳴らさない）", () => {
@@ -355,10 +368,337 @@ describe("059a コメント通知音（CommentViewerApp の配線）", () => {
     const batch = [comment({ id: "c1" })];
     receive(batch);
     mocks.requestNotificationSound.mockClear();
-    resetNotificationSoundCooldownForTest();
+    resetNotificationSoundStateForTest();
 
     receive(batch);
     expect(mocks.requestNotificationSound).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * 059b: **投げ銭通知音とコメント音の排他**（`playBatchNotification` の分岐）。
+ *
+ * あるべき挙動（docs/tasks/059b-monetary-notification-sound.md 完了条件）:
+ * - ⚠⚠ **排他。** 課金が 1 件でも含まれるバッチでは**投げ銭音だけ** 1 回。両方鳴らさない。
+ * - ⚠⚠ **課金判定は `isMonetaryEvent(c.eventType)`。** `isMonetaryEvent(displayEventType(c))` と書くと
+ *   **ビッツ（superchat + currency:"BITS"）が落ちる**（`displayEventType` が `"bits"` へ振り替えるが
+ *   `"bits"` は `MONETARY_EVENT_TYPES` に無い）。`displayEventType(c) !== "chat"` も採らない
+ *   （未知の種別に対して「投げ銭が来た」と嘘をつく）。**この 3 択がこのタスク最大の罠**。
+ * - ⚠ **排他は ON/OFF より先に効く。** 代表音を先に決め、その音の ON/OFF だけを見る
+ *   ＝投げ銭音 OFF の混在バッチはコメント音へフォールバックせず**無音**。
+ * - ⚠ `updated`（043e の Jewels combo）ではどちらも鳴らない。
+ *
+ * ⚠ モックの位置は 059a と同じ（`notificationSound` を**記録専用 spy**にして、
+ * **クールダウンより手前**で数える）。下流の invoke 回数だけを見ると、排他を「両方鳴らす」に
+ * 書き換えてもクールダウンや同時再生上限に隠れて緑のまま通りうる。
+ */
+describe("059b 投げ銭通知音の排他（CommentViewerApp の配線）", () => {
+  it("⚠⚠ 課金バッチでは投げ銭音だけが 1 回鳴る（コメント音は鳴らない）", () => {
+    setUpSounds({ comment: true, monetary: true });
+    render(<CommentViewerApp />);
+
+    receive([monetaryComment()]);
+
+    expect(mocks.requestNotificationSound).toHaveBeenCalledTimes(1);
+    expect(mocks.requestNotificationSound).toHaveBeenCalledWith(
+      "monetary",
+      DEVICE_ID,
+    );
+    expect(mocks.requestNotificationSound).not.toHaveBeenCalledWith(
+      "comment",
+      DEVICE_ID,
+    );
+  });
+
+  it("非課金バッチではコメント音だけが 1 回鳴る", () => {
+    setUpSounds({ comment: true, monetary: true });
+    render(<CommentViewerApp />);
+
+    receive([comment()]);
+
+    expect(mocks.requestNotificationSound).toHaveBeenCalledTimes(1);
+    expect(mocks.requestNotificationSound).toHaveBeenCalledWith(
+      "comment",
+      DEVICE_ID,
+    );
+  });
+
+  it("⚠⚠ 混在バッチ（課金 1 件＋通常 5 件）でも投げ銭音のみ 1 回", () => {
+    setUpSounds({ comment: true, monetary: true });
+    render(<CommentViewerApp />);
+
+    receive([
+      comment({ id: "c1" }),
+      comment({ id: "c2" }),
+      monetaryComment({ id: "m1" }),
+      comment({ id: "c3" }),
+      comment({ id: "c4" }),
+      comment({ id: "c5" }),
+    ]);
+
+    expect(mocks.requestNotificationSound).toHaveBeenCalledTimes(1);
+    expect(mocks.requestNotificationSound).toHaveBeenCalledWith(
+      "monetary",
+      DEVICE_ID,
+    );
+  });
+
+  it("⚠⚠ ビッツ（eventType:'superchat' ＋ currency:'BITS'）でも投げ銭音が鳴る", () => {
+    // ①の罠の固定。`isMonetaryEvent(displayEventType(c))` に書き換えると**ここだけ**が落ちる
+    //（`displayEventType` が "bits" を返し、"bits" は MONETARY_EVENT_TYPES に無いため）。
+    setUpSounds({ comment: true, monetary: true });
+    render(<CommentViewerApp />);
+
+    receive([
+      monetaryComment({
+        id: "b1",
+        text: "Power-up 🎉",
+        monetaryAmount: "500 bits",
+        monetary: { amount: 500, currency: "BITS" },
+      }),
+    ]);
+
+    expect(mocks.requestNotificationSound).toHaveBeenCalledWith(
+      "monetary",
+      DEVICE_ID,
+    );
+  });
+
+  it.each([
+    ["サブスク", "subscription"],
+    ["メンバーシップ", "membership"],
+    ["ギフト", "gift"],
+    ["ドネーション", "donation"],
+    ["ジュエル", "jewels"],
+  ] as [string, CommentEventType][])(
+    "金額を持たない課金種別（%s）でも投げ銭音が鳴る",
+    (_label, eventType) => {
+      // MONETARY_EVENT_TYPES の全種別を通す＝上流で種別が増えたとき「表示は課金なのに音はコメント音」
+      // という分裂が起きないことの担保（判定を 2 実装に分裂させない、という申し送りの本体）。
+      setUpSounds({ comment: true, monetary: true });
+      render(<CommentViewerApp />);
+
+      receive([comment({ id: `x-${eventType}`, eventType, text: "" })]);
+
+      expect(mocks.requestNotificationSound).toHaveBeenCalledWith(
+        "monetary",
+        DEVICE_ID,
+      );
+    },
+  );
+
+  it("⚠ 未知の種別は課金扱いにしない（コメント音が鳴る）", () => {
+    // `displayEventType(c) !== "chat"` で判定すると**ここが落ちる**。オーバーレイのカード分岐は
+    // それでよい（見た目が違うだけ）が、音で同じことをすると「投げ銭が来た」と嘘をつくことになる。
+    // ⚠ キャストしているのは、`CommentEventType` が**今の**wire 契約（ts-rs 生成）だから。
+    // 上流（sidecar / 配信サービス）が新しい種別を送ってくる状況＝型が知らない値の到来を再現している。
+    // `isMonetaryEvent` の引数が `string` なのも同じ理由（未知の値が来うる前提の述語）。
+    setUpSounds({ comment: true, monetary: true });
+    render(<CommentViewerApp />);
+
+    receive([
+      comment({ id: "u1", eventType: "raid" as CommentEventType, text: "" }),
+    ]);
+
+    expect(mocks.requestNotificationSound).toHaveBeenCalledWith(
+      "comment",
+      DEVICE_ID,
+    );
+    expect(mocks.requestNotificationSound).not.toHaveBeenCalledWith(
+      "monetary",
+      DEVICE_ID,
+    );
+  });
+
+  it("⚠ updated（Jewels combo 更新）ではどちらの音も鳴らない", () => {
+    setUpSounds({ comment: true, monetary: true });
+    render(<CommentViewerApp />);
+
+    const jewels = comment({
+      id: "g1",
+      eventType: "jewels",
+      text: "",
+      monetaryAmount: "30 JEWELS",
+      monetary: { amount: 30, currency: "JEWELS" },
+      comboCount: 1,
+    });
+    receive([jewels]); // 初報は新着なので投げ銭音が鳴る。
+    expect(mocks.requestNotificationSound).toHaveBeenCalledWith(
+      "monetary",
+      DEVICE_ID,
+    );
+    mocks.requestNotificationSound.mockClear();
+    // クールダウンで潰れて「鳴らない」のではなく、**そもそも要求されない**ことを見たいので消す。
+    resetNotificationSoundStateForTest();
+
+    receive([{ ...jewels, monetaryAmount: "60 JEWELS", comboCount: 2 }]);
+    expect(mocks.requestNotificationSound).not.toHaveBeenCalled();
+  });
+
+  it("⚠⚠ 排他は ON/OFF より先に効く（投げ銭 OFF の混在バッチは無音）", () => {
+    // 本人決定（2026-08-04）。バッチの代表音を先に決め、**その音の ON/OFF だけ**を見る。
+    // コメント音へフォールバックすると「投げ銭音を OFF にしたのにスパチャでコメント音が鳴る」になる。
+    setUpSounds({ comment: true, monetary: false });
+    render(<CommentViewerApp />);
+
+    receive([comment({ id: "c1" }), monetaryComment({ id: "m1" })]);
+
+    expect(mocks.requestNotificationSound).not.toHaveBeenCalled();
+    expect(mocks.playNotificationSound).not.toHaveBeenCalled();
+  });
+
+  it("ON/OFF は音ごとに独立（コメント音 OFF でも投げ銭音は鳴る）", () => {
+    setUpSounds({ comment: false, monetary: true });
+    render(<CommentViewerApp />);
+
+    receive([comment({ id: "c1" })]);
+    expect(mocks.requestNotificationSound).not.toHaveBeenCalled();
+
+    receive([monetaryComment({ id: "m1" })]);
+    expect(mocks.requestNotificationSound).toHaveBeenCalledWith(
+      "monetary",
+      DEVICE_ID,
+    );
+  });
+
+  it("ON/OFF は音ごとに独立（投げ銭音 OFF でもコメント音は鳴る）", () => {
+    setUpSounds({ comment: true, monetary: false });
+    render(<CommentViewerApp />);
+
+    receive([monetaryComment({ id: "m1" })]);
+    expect(mocks.requestNotificationSound).not.toHaveBeenCalled();
+
+    receive([comment({ id: "c1" })]);
+    expect(mocks.requestNotificationSound).toHaveBeenCalledWith(
+      "comment",
+      DEVICE_ID,
+    );
+  });
+
+  it("⚠⚠ 出力先が未選択なら投げ銭音でも invoke しない（fail-closed は 2 音とも）", () => {
+    localStorage.setItem(SOUND_MONETARY_ENABLED_KEY, "true");
+    render(<CommentViewerApp />);
+
+    receive([monetaryComment()]);
+    // ②-軽では OS 既定＝仮想オーディオデバイス＝配信に載る側。落とすと「載せないつもりの音が載る」。
+    expect(mocks.playNotificationSound).not.toHaveBeenCalled();
+    // ⚠ アプリ層のガードも固定する（レビュー Q-2・理由は 059a 側の同名テストの注記）。
+    expect(mocks.requestNotificationSound).not.toHaveBeenCalled();
+  });
+
+  it("⚠⚠ StrictMode で updater が 2 回走っても投げ銭音の invoke は 1 回", async () => {
+    // レビュー Q-5。059a 側には同型のテストがあるが投げ銭音には無かった。
+    // 冪等化を担っているのは**クールダウン**で、その判定は `requestNotificationSound` の
+    // **先頭で同期的に**走る（連結より手前）——だから 059b で invoke が 1 マイクロタスク遅れても
+    // 冪等性は保たれる。⚠ **クールダウン判定を await の後ろへ動かすと投げ銭音だけ 2 回鳴る**ので、
+    // その退行をここで止める。
+    setUpSounds({ comment: true, monetary: true });
+    render(
+      <React.StrictMode>
+        <CommentViewerApp />
+      </React.StrictMode>,
+    );
+
+    receive([monetaryComment()]);
+
+    // updater が 2 回走ったこと自体を先に確かめる（ここが 1 だと以下の assert が空振りになる）。
+    expect(mocks.requestNotificationSound).toHaveBeenCalledTimes(2);
+    await waitFor(() =>
+      expect(mocks.playNotificationSound).toHaveBeenCalledTimes(1),
+    );
+    // 2 回目はクールダウンが同期的に潰しているので、待っても増えない。
+    await Promise.resolve();
+    expect(mocks.playNotificationSound).toHaveBeenCalledTimes(1);
+    expect(mocks.playNotificationSound).toHaveBeenCalledWith(
+      DEVICE_ID,
+      "monetary",
+    );
+  });
+
+  it("鳴らす音は 'monetary'（コメント音でもテスト音でもない）", async () => {
+    setUpSounds({ comment: true, monetary: true });
+    render(<CommentViewerApp />);
+
+    receive([monetaryComment()]);
+
+    // ⚠ 投げ銭音は「Rust の同時再生 1 本に譲る」ため invoke が 1 マイクロタスク遅れる（notificationSound.ts）。
+    await waitFor(() =>
+      expect(mocks.playNotificationSound).toHaveBeenCalledWith(
+        DEVICE_ID,
+        "monetary",
+      ),
+    );
+  });
+});
+
+/**
+ * 059b: **クールダウンが音源 ID ごとに独立していること**を、アプリの配線を通して固定する。
+ *
+ * ⚠⚠ **ここが本タスクで一番壊れやすい。** 共有カウンタにすると「コメントが流れている最中に来た
+ * スパチャの音がコメント音のクールダウンで消える」＝一番気づいてほしい音が鳴らない、になる。
+ * `notificationSound.test.ts` にも単体の固定はあるが、**配線側でも見る**——`playBatchNotification` が
+ * 音源 ID を渡し違えると（例: 常に "comment" を渡す）単体テストは緑のまま配線だけ壊れるため。
+ */
+describe("059b クールダウンの独立（配線経由）", () => {
+  it("⚠⚠ コメント音の直後に来たスパチャでも投げ銭音が鳴る", async () => {
+    setUpSounds({ comment: true, monetary: true });
+    render(<CommentViewerApp />);
+
+    receive([comment({ id: "c1" })]);
+    await waitFor(() =>
+      expect(mocks.playNotificationSound).toHaveBeenCalledWith(
+        DEVICE_ID,
+        "comment",
+      ),
+    );
+
+    // ⚠ クールダウンを消さない（消すと「独立しているから鳴った」のか「クールダウンが無いから
+    // 鳴った」のか区別できず、共有カウンタへのミューテーションを検出できなくなる）。
+    receive([monetaryComment({ id: "m1" })]);
+    await waitFor(() =>
+      expect(mocks.playNotificationSound).toHaveBeenCalledWith(
+        DEVICE_ID,
+        "monetary",
+      ),
+    );
+    expect(mocks.playNotificationSound).toHaveBeenCalledTimes(2);
+  });
+
+  it("⚠ Twitch のコミュニティギフト（N+1 件）はクールダウンで 1 回に潰れる", async () => {
+    // 043a から残る既存課題（community_sub_gift(total=N) と個別 sub_gift×N の**両方**が届き、
+    // gift 行が N+1 個生成される）。059b は**解消せずクールダウンで凌ぐ**——その依存をここで固定する。
+    //
+    // ⚠⚠ **到着の広がりを Date.now で再現するのが肝**（レビュー観点として明示）。素朴に 6 バッチを
+    // 連続して `receive` すると全部が同一 tick に入り、**クールダウンが 1ms でも 1 回に潰れて緑になる**
+    // ＝「クールダウンに依存している」ことを何も固定していない空振りテストになる
+    //（059b の実装中にミューテーション④で実測した：`monetary` を 300ms に縮めても緑のままだった）。
+    // ⚠ 1 件あたり 250ms（6 件で 1250ms）は「1500ms のクールダウンにぎりぎり収まる広がり」で、
+    // **値を縮めると必ず落ちる**ように選んである（600ms なら 2 回・300ms なら 3 回鳴る）。
+    const ARRIVAL_INTERVAL_MS = 250;
+    let now = Date.parse("2026-08-04T12:00:00Z");
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+
+    setUpSounds({ comment: true, monetary: true });
+    render(<CommentViewerApp />);
+
+    // 束（total=5）＋個別 5 件が、sidecar から 1 件ずつ別バッチで届く。
+    receive([
+      comment({ id: "gift-bundle", eventType: "gift", text: "", giftCount: 5 }),
+    ]);
+    for (let i = 0; i < 5; i++) {
+      now += ARRIVAL_INTERVAL_MS;
+      receive([comment({ id: `gift-${i}`, eventType: "gift", text: "" })]);
+    }
+
+    // 排他の分岐は 6 回通る（バッチが 6 つなので正しい）が、実際に鳴るのは 1 回だけ。
+    expect(mocks.requestNotificationSound).toHaveBeenCalledTimes(6);
+    await waitFor(() =>
+      expect(mocks.playNotificationSound).toHaveBeenCalledTimes(1),
+    );
+    expect(mocks.playNotificationSound).toHaveBeenCalledWith(
+      DEVICE_ID,
+      "monetary",
+    );
   });
 });
 
@@ -513,7 +853,7 @@ describe("059a 通知音が鳴らせないことの継続表示（058a からの
 
     // デバイスを挿し直した状況＝次のコメントでは鳴る。
     mocks.playNotificationSound.mockResolvedValue(undefined);
-    resetNotificationSoundCooldownForTest();
+    resetNotificationSoundStateForTest();
     receive([comment({ id: "c2" })]);
 
     await waitFor(() =>
@@ -629,7 +969,7 @@ describe("059a 通知音が鳴らせないことの継続表示（058a からの
 
     fireEvent.click(screen.getByRole("button", { name: "設定" }));
     // ⚠ 列挙（非同期）が終わるまで disabled なので、enabled を待ってから押す。
-    const previewButton = await screen.findByRole("button", { name: "試聴 ▶" });
+    const previewButton = await screen.findByRole("button", { name: "コメント音を試聴 ▶" });
     await waitFor(() => expect(previewButton).toBeEnabled());
 
     mocks.playNotificationSound.mockRejectedValue({
@@ -664,7 +1004,7 @@ describe("059a 通知音が鳴らせないことの継続表示（058a からの
     await openSettings();
     mocks.playNotificationSound.mockResolvedValue(undefined);
     mocks.playNotificationSound.mockClear();
-    fireEvent.click(screen.getByRole("button", { name: "試聴 ▶" }));
+    fireEvent.click(screen.getByRole("button", { name: "コメント音を試聴 ▶" }));
     await waitFor(() =>
       expect(mocks.playNotificationSound).toHaveBeenCalledWith(
         DEVICE_ID,
@@ -745,5 +1085,195 @@ describe("059a 通知音が鳴らせないことの継続表示（058a からの
     expect(
       screen.queryByText("通知音を再生できません"),
     ).not.toBeInTheDocument();
+  });
+
+  it("⚠⚠ コメント音 OFF ＋投げ銭音 ON でも継続表示が出る（ゲートは 2 音の OR・059b）", async () => {
+    // ゲートを `soundCommentEnabled &&` のままにすると**ここだけ**が落ちる。
+    // 「投げ銭音だけ ON で配信していてデバイスを抜いた」が、まさに黙って鳴らなくなる状況。
+    setUpSounds({ comment: false, monetary: true });
+    mocks.playNotificationSound.mockRejectedValue({
+      code: "AUDIO_DEVICE_UNAVAILABLE",
+    });
+    render(<CommentViewerApp />);
+
+    receive([monetaryComment()]);
+    expect(
+      await screen.findByText("通知音を再生できません"),
+    ).toBeInTheDocument();
+  });
+
+  it("§9: 投げ銭で失敗しても継続表示に金額・投稿者名・本文・例外の中身を出さない（059b）", async () => {
+    // docs/security.md §9 追補（058a のデバイス名／046a の第三者データ）。⚠ **059b で「金額」という
+    // 新しい機微が経路に入った**ので、コメント音側（既存テスト）とは別に明示的に見る。
+    // ⚠ コメント本体は画面に出るのが正しい（表示が仕事）ので、**container 全体ではなく
+    // indicator の文言と title だけ**を対象にする＝「警告文に出さない」が仕様。
+    setUpSounds({ comment: false, monetary: true });
+    mocks.playNotificationSound.mockRejectedValue(
+      new Error("CoreAudio OSStatus -10851 on Zz-PrivateHeadset-9f3a"),
+    );
+    render(<CommentViewerApp />);
+
+    receive([
+      monetaryComment({
+        text: "Zz-秘密のスパチャ本文-9f3a",
+        author: { id: "u9", name: "Zz-投げ銭した人-9f3a" },
+        monetaryAmount: "Zz-99999-JPY-9f3a",
+        monetary: { amount: 99999, currency: "JPY" },
+      }),
+    ]);
+
+    const indicator = await screen.findByText("通知音を再生できません");
+    // 文言は固定文字列（音種でも失敗理由でも変わらない）。
+    expect(indicator.textContent).toBe("通知音を再生できません");
+    const shown = `${indicator.textContent ?? ""}\n${indicator.getAttribute("title") ?? ""}`;
+    for (const leak of [
+      "Zz-秘密のスパチャ本文-9f3a",
+      "Zz-投げ銭した人-9f3a",
+      "Zz-99999-JPY-9f3a",
+      "99999",
+      "OSStatus",
+      "-10851",
+      "Zz-PrivateHeadset-9f3a",
+      "内蔵スピーカー",
+      DEVICE_ID,
+    ]) {
+      expect(shown).not.toContain(leak);
+    }
+  });
+
+  it("両方 OFF にすると消える（鳴らないのが正常な状態で赤字を残さない）", async () => {
+    setUpSounds({ comment: true, monetary: true });
+    mocks.playNotificationSound.mockRejectedValue({
+      code: "AUDIO_DEVICE_UNAVAILABLE",
+    });
+    render(<CommentViewerApp />);
+
+    receive([comment()]);
+    await screen.findByText("通知音を再生できません");
+
+    // ⚠ 片方 OFF にしただけでは消えない（OR ゲート）ことも同時に見る。
+    fireEvent.click(screen.getByRole("button", { name: "設定" }));
+    fireEvent.click(screen.getByRole("switch", { name: "コメント通知音" }));
+    fireEvent.click(screen.getByRole("button", { name: "コメントに戻る" }));
+    await screen.findByRole("button", { name: "設定" });
+    expect(screen.getByText("通知音を再生できません")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "設定" }));
+    fireEvent.click(screen.getByRole("switch", { name: "投げ銭通知音" }));
+    fireEvent.click(screen.getByRole("button", { name: "コメントに戻る" }));
+    await screen.findByRole("button", { name: "設定" });
+    expect(
+      screen.queryByText("通知音を再生できません"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("⚠ 「投げ銭音を試聴」が成功しても消える（059a の試聴と同じ導線・059b）", async () => {
+    setUpSounds({ comment: true, monetary: true });
+    mocks.playNotificationSound.mockRejectedValue({
+      code: "AUDIO_DEVICE_UNAVAILABLE",
+    });
+    render(<CommentViewerApp />);
+
+    receive([comment()]);
+    await screen.findByText("通知音を再生できません");
+
+    await openSettings();
+    mocks.playNotificationSound.mockResolvedValue(undefined);
+    mocks.playNotificationSound.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "投げ銭音を試聴 ▶" }));
+    await waitFor(() =>
+      expect(mocks.playNotificationSound).toHaveBeenCalledWith(
+        DEVICE_ID,
+        "monetary",
+      ),
+    );
+    await backToComments();
+
+    expect(
+      screen.queryByText("通知音を再生できません"),
+    ).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * 059b: 投げ銭音の設定が受信経路へ届くこと（059a の ref 同期テストと同型）。
+ * ⚠ **「窓内 WS 1 本」を壊していないこと**を、トグルが 2 つになった状態でもう一度固定する。
+ */
+describe("059b 投げ銭音の設定反映（ref 同期と「窓内 WS 1 本」）", () => {
+  it("⚠ OFF で起動しても、設定で ON にすれば次のスパチャから鳴る", async () => {
+    // 既定 OFF なので、この経路が壊れていると**機能そのものが使えない**。
+    localStorage.setItem(AUDIO_OUTPUT_DEVICE_KEY, DEVICE_ID);
+    render(<CommentViewerApp />);
+
+    await openSettings();
+    fireEvent.click(screen.getByRole("switch", { name: "投げ銭通知音" }));
+    await backToComments();
+
+    receive([monetaryComment()]);
+    await waitFor(() =>
+      expect(mocks.playNotificationSound).toHaveBeenCalledWith(
+        DEVICE_ID,
+        "monetary",
+      ),
+    );
+  });
+
+  it("ON/OFF は localStorage に永続し、開き直しで復元する", async () => {
+    localStorage.setItem(AUDIO_OUTPUT_DEVICE_KEY, DEVICE_ID);
+    const { unmount } = render(<CommentViewerApp />);
+
+    await openSettings();
+    fireEvent.click(screen.getByRole("switch", { name: "投げ銭通知音" }));
+    await waitFor(() =>
+      expect(localStorage.getItem(SOUND_MONETARY_ENABLED_KEY)).toBe("true"),
+    );
+    unmount();
+
+    render(<CommentViewerApp />);
+    await openSettings();
+    expect(screen.getByRole("switch", { name: "投げ銭通知音" })).toBeChecked();
+  });
+
+  it("⚠⚠ 投げ銭音のトグルを触ってもコメント接続は張り直さない（窓内 WS 1 本）", async () => {
+    setUpSounds({ comment: true, monetary: true });
+    render(<CommentViewerApp />);
+    expect(mocks.connectCommentStream).toHaveBeenCalledTimes(1);
+
+    await openSettings();
+    fireEvent.click(screen.getByRole("switch", { name: "投げ銭通知音" }));
+    await backToComments();
+
+    // ⚠ soundMonetaryEnabled を useCallback の依存に入れると、ここが 2 回以上になる
+    // ＝設定を触っただけで配信中のコメント取得が切れて繋ぎ直る。
+    expect(mocks.connectCommentStream).toHaveBeenCalledTimes(1);
+  });
+
+  it("§9 追補(046a): 投げ銭を受信しても金額・投稿者名・本文を保存しない", () => {
+    // 通知音が保存してよいのは**ユーザー自身の UI 設定値**だけ（bool 2 つ）。
+    // ⚠ 投げ銭は金額という新しい機微を持つので、コメント音のときより明示的に見る。
+    setUpSounds({ comment: true, monetary: true });
+    render(<CommentViewerApp />);
+
+    receive([
+      monetaryComment({
+        text: "Zz-秘密のスパチャ本文-9f3a",
+        author: { id: "u9", name: "Zz-投げ銭した人-9f3a" },
+        monetaryAmount: "Zz-99999-JPY-9f3a",
+        monetary: { amount: 99999, currency: "JPY" },
+      }),
+    ]);
+
+    const stored = Object.keys(localStorage).map((key) =>
+      String(localStorage.getItem(key)),
+    );
+    for (const leak of [
+      "Zz-秘密のスパチャ本文-9f3a",
+      "Zz-投げ銭した人-9f3a",
+      "Zz-99999-JPY-9f3a",
+      "99999",
+      "内蔵スピーカー",
+    ]) {
+      expect(stored.join("\n")).not.toContain(leak);
+    }
   });
 });

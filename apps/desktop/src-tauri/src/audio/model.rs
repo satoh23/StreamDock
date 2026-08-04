@@ -33,14 +33,14 @@ pub struct AudioOutputDevice {
 /// `play_notification_sound` はこの enum しか受け取らないので、frontend からパスや任意のバイト列を
 /// 渡す経路が型レベルで塞がっている。**ここを `String` や `PathBuf` に変えないこと。**
 ///
-/// 059b が `Monetary` を足す想定。音の波形は
-/// `service::samples_for` の `match` に 1 アームを足すだけで増やせる（decoder は要らない）。
+/// 音の波形は `service::samples_for` の `match` に 1 アームを足すだけで増やせる（decoder は要らない）。
 ///
 /// ⚠ **variant は「ペイロードなし」のまま増やすこと。** `Comment { volume: f32 }` のように
 /// ペイロードを持たせる変更は、docs/security.md の「レビュー必須条件」が
 /// **「enum 以外で指定できるようにする変更」に含む**と名指ししており security-review 必須になる
 /// （契約テストの `PathBuf` needle では捕まらないため、条文側で止めている）。
-/// 059a がペイロードなしの `Comment` 追加に留めたのはこの線を越えないため（判断根拠は progress.md 059a）。
+/// 059a / 059b がペイロードなしの variant 追加に留めたのはこの線を越えないため
+/// （判断根拠は progress.md 059a / 059b）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "lowercase")]
 #[ts(export, export_to = "../../src/features/comment-viewer/bindings/")]
@@ -57,4 +57,15 @@ pub enum NotificationSound {
     /// 「テスト再生」（出力先の検証・`Test`）と「試聴」（この音の確認・`Comment`）の 2 つのボタンが
     /// 並ぶので、同じ音だと**どちらを押したのか分からず、テスト再生の診断価値が落ちる**。
     Comment,
+    /// 059b: 課金チャット（スパチャ・ビッツ・サブスク・メンシプ・ギフト・ドネーション・ジュエル）を
+    /// 検知したときに鳴らす音。
+    ///
+    /// ⚠ **`Comment` と同時には鳴らない**（親 059 の決定＝排他）。課金コメントが来たバッチでは
+    /// 投げ銭音だけを鳴らす。両方鳴ると「別の音にした」意味が消える。判定と排他は frontend
+    /// （`CommentViewerApp` の `playBatchNotification`）の責務で、Rust は音を持つだけ。
+    ///
+    /// ⚠ **`Test` / `Comment` と 3 音続けて鳴らしても聞き分けられる値にしてある**
+    /// （`service::tone_spec` で音高・長さ・余韻の 3 軸すべてを離した）。
+    /// 「聞き分けられる」こと自体はテストで担保できないので、実機確認の項目にしている。
+    Monetary,
 }

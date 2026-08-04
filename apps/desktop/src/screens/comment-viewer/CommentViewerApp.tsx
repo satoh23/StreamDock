@@ -77,12 +77,15 @@ import {
   saveAudioOutputDeviceId,
   NO_AUDIO_OUTPUT_DEVICE,
 } from "../../features/comment-viewer/audioOutputPrefs";
-// 059a: コメント通知音。鳴らすかどうか（クールダウン・未選択ガード）は notificationSound が持ち、
-// ここは「いつ呼ぶか（受信バッチごとに 1 回）」と「失敗をどう見せるか」だけを決める。
+// 059a / 059b: 通知音。鳴らすかどうか（クールダウン・未選択ガード・Rust の同時再生 1 本への譲り）は
+// notificationSound が持ち、ここは「いつ・どちらの音を呼ぶか（受信バッチごとに 1 回・**排他**）」と
+// 「失敗をどう見せるか」だけを決める。
 import { requestNotificationSound } from "../../features/comment-viewer/notificationSound";
 import {
   loadSoundCommentEnabled,
   saveSoundCommentEnabled,
+  loadSoundMonetaryEnabled,
+  saveSoundMonetaryEnabled,
 } from "../../features/comment-viewer/soundPrefs";
 import { mergeComments } from "../../features/comment-viewer/mergeComments";
 import { recordComments } from "../../features/viewer-memory/viewerMemoryApi";
@@ -533,25 +536,34 @@ export function CommentViewerApp() {
     useState<AudioOutputListState>("loading");
   const [audioTestState, setAudioTestState] = useState<AudioTestState>("idle");
 
-  // 059a: コメント通知音。
-  // - soundCommentEnabled: ON/OFF の永続状態（非機密・localStorage）。**既定 OFF**（アップデート直後に
-  //   ユーザー操作ゼロで音が鳴り始めるのを避ける。理由は soundPrefs.ts の JSDoc）。
-  // - soundPreviewState: 設定画面の「試聴」の状態。⚠ audioTestState と**共有しない**（058a の
-  //   テスト再生は出力先の検証、こちらは音の確認。共有すると片方の失敗がもう片方のカードに赤字を出す）。
+  // 059a / 059b: 通知音（コメント音・投げ銭音）。
+  // - soundCommentEnabled / soundMonetaryEnabled: ON/OFF の永続状態（非機密・localStorage）。
+  //   **どちらも既定 OFF**（アップデート直後にユーザー操作ゼロで音が鳴り始めるのを避ける。
+  //   理由は soundPrefs.ts の JSDoc）。⚠ **2 つは独立**（片方 OFF でもう片方は鳴る）。
+  // - soundPreviewState: 設定画面の「試聴」の状態。
+  //   ⚠ audioTestState と**共有しない**（058a のテスト再生は出力先の検証、こちらは音の確認。
+  //   共有すると片方の失敗がもう片方のカードに赤字を出す）。
+  //   ⚠ 一方で **059b の投げ銭試聴とは共有する**（同じカード・同じデバイス・同じ復旧手順で、
+  //   分ける理由が無い。むしろ共有だと「片方の再生中はもう片方も押せない」＝Rust の同時再生 1 本と
+  //   一致する disabled になる。詳細は SettingsView の SoundPreviewState の JSDoc）。
   // - notificationSoundFailed: **配信中に鳴らせなかったこと**の継続表示フラグ（下のツールバー indicator）。
   //   ⚠⚠ これが 058a から 059 へ渡された宿題そのもの——058a は fail-closed かつホットプラグ監視を持たない
   //   ので、失敗を無言で捨てると「配信中にデバイスを抜いたら通知音が鳴らなくなった」ことに気付く手段がゼロになる。
   const [soundCommentEnabled, setSoundCommentEnabled] = useState(() =>
     loadSoundCommentEnabled(),
   );
+  const [soundMonetaryEnabled, setSoundMonetaryEnabled] = useState(() =>
+    loadSoundMonetaryEnabled(),
+  );
   const [soundPreviewState, setSoundPreviewState] =
     useState<SoundPreviewState>("idle");
   const [notificationSoundFailed, setNotificationSoundFailed] = useState(false);
 
-  // 059a: 受信 effect から通知音を鳴らすための ref 2 本。**state を直接 useCallback の依存に入れない**
-  // ——playCommentNotification が作り直されると、それを依存に持つ WS 接続 effect が張り直されて
+  // 059a / 059b: 受信 effect から通知音を鳴らすための ref 3 本。**state を直接 useCallback の依存に
+  // 入れない**——playBatchNotification が作り直されると、それを依存に持つ WS 接続 effect が張り直されて
   // 「窓内 WS 1 本」の原則に反する（ttsEnabledRef / speakTwitchRef と同じ理由）。同期は下の effect 群で行う。
   const soundCommentEnabledRef = useRef(soundCommentEnabled);
+  const soundMonetaryEnabledRef = useRef(soundMonetaryEnabled);
   const audioOutputDeviceIdRef = useRef(audioOutputDeviceId);
 
   useEffect(() => {
@@ -566,15 +578,21 @@ export function CommentViewerApp() {
     saveAudioOutputDeviceId(audioOutputDeviceId);
   }, [audioOutputDeviceId]);
 
-  // 059a: コメント通知音の ON/OFF を永続化する（058a のデバイス選択と同じ扱い）。
+  // 059a / 059b: 通知音の ON/OFF を永続化する（058a のデバイス選択と同じ扱い）。
   useEffect(() => {
     saveSoundCommentEnabled(soundCommentEnabled);
   }, [soundCommentEnabled]);
+  useEffect(() => {
+    saveSoundMonetaryEnabled(soundMonetaryEnabled);
+  }, [soundMonetaryEnabled]);
 
-  // 059a: 受信 effect（安定コールバック）から最新値を読むための ref 同期。
+  // 059a / 059b: 受信 effect（安定コールバック）から最新値を読むための ref 同期。
   useEffect(() => {
     soundCommentEnabledRef.current = soundCommentEnabled;
   }, [soundCommentEnabled]);
+  useEffect(() => {
+    soundMonetaryEnabledRef.current = soundMonetaryEnabled;
+  }, [soundMonetaryEnabled]);
   useEffect(() => {
     audioOutputDeviceIdRef.current = audioOutputDeviceId;
   }, [audioOutputDeviceId]);
@@ -647,6 +665,27 @@ export function CommentViewerApp() {
         setSoundPreviewState("idle");
         // 試聴で鳴った＝いま鳴らせる状態なので、配信中に立った継続表示も畳んでよい
         //（デバイスを挿し直したユーザーが、次のコメントを待たずに赤字を消せる導線になる）。
+        setNotificationSoundFailed(false);
+      })
+      // 失敗＝そのデバイスでは鳴らせない。**既定デバイスで鳴らし直さない**（fail-closed）。
+      .catch(() => setSoundPreviewState("failed"));
+  }, [audioOutputDeviceId]);
+
+  // 059b: 投げ銭通知音を試聴する（設定画面の「投げ銭音を試聴」ボタン）。
+  //
+  // ⚠ コメント試聴と**同じ state（soundPreviewState）を共有する**。分けない理由:
+  // ①同じカード・同じデバイス・同じ復旧手順なので、失敗の案内文が音種で変わらない
+  // ②共有だと「片方の再生中はもう片方も disabled」になり、**Rust の同時再生 1 本と一致する**
+  //  （分けると再生中にもう片方を押せてしまい、Rust に黙って捨てられる＝押したのに鳴らない）
+  // ③`AudioTestState` との取り違えを殺す配線テストが 3 すくみにならずに済む。
+  // ⚠ 059a と同じく **notificationSound.ts のクールダウンを通さない**（明示操作にレート制限をかけない）。
+  const handlePreviewMonetarySound = useCallback(() => {
+    if (audioOutputDeviceId === NO_AUDIO_OUTPUT_DEVICE) return;
+    setSoundPreviewState("playing");
+    playNotificationSound(audioOutputDeviceId, "monetary")
+      .then(() => {
+        setSoundPreviewState("idle");
+        // 試聴で鳴った＝いま鳴らせる状態なので、配信中に立った継続表示も畳んでよい（059a と同じ導線）。
         setNotificationSoundFailed(false);
       })
       // 失敗＝そのデバイスでは鳴らせない。**既定デバイスで鳴らし直さない**（fail-closed）。
@@ -892,7 +931,32 @@ export function CommentViewerApp() {
     });
   }, []);
 
-  // 059a: 受信バッチに新着があれば通知音を鳴らす安定コールバック（useCallback []・enqueueForSpeech と同型）。
+  // 059a / 059b: 受信バッチに新着があれば通知音を **1 回だけ** 鳴らす安定コールバック
+  // （useCallback []・enqueueForSpeech と同型）。
+  //
+  // ⚠⚠ **排他の実装点はここ**（親 059 の決定）。課金コメントが 1 件でも含まれるバッチでは
+  // **投げ銭音だけ**を鳴らし、コメント音は鳴らさない。両方鳴ると「別の音にした」意味が消える。
+  // 059b で `playCommentNotification` から改名した——2 音のどちらを鳴らすかを決める関数になったので、
+  // 旧名だと「コメント音を鳴らす関数」に読め、**この関数の一番大事な責務（排他）が名前から消える**。
+  //
+  // ⚠⚠ **課金判定は `isMonetaryEvent(c.eventType)`。`displayEventType` を通さないこと。**
+  // 059b のタスクファイルと task-board の申し送りは「表示側と同じ `displayEventType` を使うこと」と
+  // 書いていたが、**そのとおりに `isMonetaryEvent(displayEventType(c))` と書くとビッツで鳴らない**——
+  // `displayEventType` は superchat + currency:"BITS" を `"bits"` へ振り替えるが、`"bits"` は
+  // `MONETARY_EVENT_TYPES` に入っていないため（あの Set は「ビッツは superchat に含まれる」という
+  // 前提で作られていて、**生の eventType に適用する述語**である）。
+  // `displayEventType(c) !== "chat"` も採らない——`CommentList` のオーバーレイ側はそれで分岐しているが、
+  // あれは「chat 以外は課金カードで描く」＝見た目が違うだけの安全な劣化で、**音で同じことをすると
+  // 未知の種別に対して「投げ銭が来た」と嘘をつく**ことになり劣化の向きが逆になる。
+  // 採った式は `CommentList` の本体一覧・047 のティッカー・049 の読み上げ優先キュー・固定帯と**同一**で、
+  // 「判定を 2 実装に分裂させない」という申し送りの意図はこちらで満たしている
+  //（`MONETARY_EVENT_TYPES` に種別が増えたとき自動で追従するのもこの式だけ）。
+  //
+  // ⚠ **排他は ON/OFF より先に効く**（本人決定・2026-08-04）。バッチの代表音を先に決め、
+  // **その音の ON/OFF だけ**を見る。＝課金 1 件＋通常 5 件のバッチで投げ銭音が OFF なら、
+  // コメント音へフォールバックせず**そのバッチは無音**。「投げ銭音を OFF にしたのにスパチャで
+  // コメント音が鳴る」を避けるため。sidecar は comments.append を 1 件ずつ送るので混在バッチ自体が稀。
+  // **再修正トリガー＝実機で「スパチャのときだけ無音になるのが不便」と感じたとき。**
   //
   // ⚠⚠ **1 バッチ 1 回。** `added.forEach` にしないこと——バッチで 20 件届いても鳴らすのは 1 回で、
   // これは「クールダウンが潰してくれるから結果的に 1 回」ではなく**意図としてここで 1 回に決めている**。
@@ -913,7 +977,8 @@ export function CommentViewerApp() {
   //   CommentViewerApp.notificationSound.test.tsx の <React.StrictMode> 下のケース）。
   // ⚠ **これは時間ベースの冪等化＝構造的な冪等化ではない**（レビュー指摘・受容した弱点）。
   // クールダウンを 0 にすると dev で 2 回鳴る、という結合が残っている。現状維持にしたのは、
-  // 実機で調整しうる値は 600ms だけで 0 にする理由が無く、上記 2 本のテストが結合を可視化しているため。
+  // 実機で調整しうるのは comment(600ms) / monetary(1500ms) の 2 値だけで 0 にする理由が無く、
+  // 上記 2 本のテストが結合を可視化しているため（059b で音が増えても結論は変わらない）。
   // **再修正トリガー＝クールダウンを 250ms 未満まで下げたくなったとき／この副作用呼び出しを
   // updater の外へ出すとき**。そのときは `lastNotifiedIdRef` に最後の要素の id を持たせて
   // 同一 id なら鳴らさない形（ref 1 本）にすれば、クールダウンの値と完全に独立した冪等性になる。
@@ -922,20 +987,34 @@ export function CommentViewerApp() {
   // MAX_COMMENTS のクランプで表示から落ちた jewels 行に後から combo 更新が届くと `added` に載る。
   // 059a では実害なし——通知音は「そのコメントを喋る」のではなく「新着があれば 1 回鳴る」だけで、
   // 表示から消えた行の再出現を新着として扱うのはむしろ自然だから。
-  // ⚠ **059b（投げ銭音）では意味が変わる**：排他判定を `added` の中身で行うので、このケースで
-  // 「200 件前のスパチャの投げ銭音が鳴り直す」ことになる。読み上げ側の `ttsQueue.seenIds` に相当する
-  // 最終防波堤が通知音側には無いことも含めて、059b で判断すること（task-board.md の申し送りに記載）。
-  const playCommentNotification = useCallback((added: CommentViewDto[]) => {
-    if (!soundCommentEnabledRef.current) return;
+  // ⚠ **059b では排他判定を `added` の中身で行うので意味が増える**（このケースで「200 件前のスパチャの
+  // 投げ銭音が鳴り直す」）。**受容した**（本人決定・2026-08-04）。理由:
+  // ①**鳴っても嘘ではない**——combo 更新は実際に追加のジュエルが贈られたイベントで、「200 件前」なのは
+  //  表示行の話であって金銭の発生は今である。
+  // ②発生条件は「jewels の初報と combo 更新の間に 200 件流れる」で、043e が「combo 更新は数秒以内に届く
+  //  ため実運用では稀」と実測済み。
+  // ③`ttsQueue.seenIds` 相当の Set を通知音のためだけに持つと、**無限に増える集合**を抱えるうえ、
+  //  059a の冪等化（クールダウン）と防波堤が 2 系統になって「どちらが効いたか」が読めなくなる。
+  // **再修正トリガー＝`MAX_COMMENTS` を大幅に下げる／combo 更新が数十秒後に届く実データを観測したとき。**
+  const playBatchNotification = useCallback((added: CommentViewDto[]) => {
     if (added.length === 0) return;
+    // 排他: 課金が 1 件でもあれば投げ銭音、無ければコメント音。**どちらか 1 つだけ**を 1 回鳴らす。
+    const sound = added.some((c) => isMonetaryEvent(c.eventType))
+      ? ("monetary" as const)
+      : ("comment" as const);
+    const enabled =
+      sound === "monetary"
+        ? soundMonetaryEnabledRef.current
+        : soundCommentEnabledRef.current;
+    if (!enabled) return;
     const deviceId = audioOutputDeviceIdRef.current;
     if (deviceId === NO_AUDIO_OUTPUT_DEVICE) return;
-    void requestNotificationSound("comment", deviceId).then((outcome) => {
+    void requestNotificationSound(sound, deviceId).then((outcome) => {
       // ⚠ "skipped"（クールダウン）では触らない。鳴らさなかっただけで、故障ではない。
       // ⚠ **飛行中の要求が「対処済み」を上書きしうる**（レビュー Q-6・受容した挙動）。デバイスを選び直した／
       // 試聴が成功した直後に、それ以前に投げた要求が reject すると、古いデバイスの失敗でこの赤字が戻る。
       // 世代カウンタ（requestGenerationRef）で古い解決を捨てる手はあるが、次の成功・次の選び直し・次の試聴の
-      // どれでも消えるうえ再生要求は 600ms に 1 回しか飛ばないので、複雑さに見合わないと判断した。
+      // どれでも消えるうえ再生要求は最短でも 600ms に 1 回しか飛ばないので、複雑さに見合わないと判断した。
       // **再修正トリガー＝クールダウンを大幅に短くする／再生完了までの時間が数秒規模に伸びるとき**
       // （飛行中の要求が積み上がるようになると、この上書きが目に見える頻度になる）。
       if (outcome === "played") setNotificationSoundFailed(false);
@@ -1008,9 +1087,10 @@ export function CommentViewerApp() {
           //   なく enqueueForSpeech 内の ttsQueue.seenIds（同 id は no-op）＝最終防波堤。詳細は
           //   mergeComments.ts の docstring。
           enqueueForSpeech(added);
-          // 059a: 通知音も added に相乗りする（新しい差分検出を発明しない）。⚠ **1 バッチ 1 回**で、
-          // updated（Jewels combo 更新）には渡さない。判断はすべて playCommentNotification 側。
-          playCommentNotification(added);
+          // 059a / 059b: 通知音も added に相乗りする（新しい差分検出を発明しない）。⚠ **1 バッチ 1 回**で、
+          // updated（Jewels combo 更新）には渡さない。どちらの音を鳴らすか（排他）・ON/OFF・未選択ガードの
+          // 判断はすべて playBatchNotification 側。
+          playBatchNotification(added);
           // 038a: 受信済みコメント（新規分）を Rust の視聴者メモリへ記録する（端末内 SQLite のみ・
           // 端末外へ出さない）。added は comment.id で dedup 済み、Rust 側も INSERT OR IGNORE で冪等なので
           // StrictMode の updater 二重実行でも集計は重複しない（enqueueForSpeech と同じ論拠）。fire-and-forget。
@@ -1077,11 +1157,12 @@ export function CommentViewerApp() {
       handle.disconnect();
       streamRef.current = null;
     };
-    // enqueueForSpeech / handleRecordResult / playCommentNotification はいずれも useCallback([]) で安定
+    // enqueueForSpeech / handleRecordResult / playBatchNotification はいずれも useCallback([]) で安定
     // ＝この effect は実質マウント専用のまま（窓内 WS 1 本の原則を守る。deps に載せても再接続しない）。
-    // ⚠ 059a: playCommentNotification が state を依存に持つと**ここが張り直されて WS が繋ぎ直る**ので、
-    // 通知音の ON/OFF とデバイス ID は ref 経由で読んでいる（soundCommentEnabledRef / audioOutputDeviceIdRef）。
-  }, [enqueueForSpeech, handleRecordResult, playCommentNotification]);
+    // ⚠ 059a/059b: playBatchNotification が state を依存に持つと**ここが張り直されて WS が繋ぎ直る**ので、
+    // 通知音の ON/OFF 2 つとデバイス ID は ref 経由で読んでいる
+    //（soundCommentEnabledRef / soundMonetaryEnabledRef / audioOutputDeviceIdRef）。
+  }, [enqueueForSpeech, handleRecordResult, playBatchNotification]);
 
   // ユーザー明示操作でのみ発火する（§1 の「ユーザーが明示接続した時のみ」）。
   const handleTwitchConnect = () => {
@@ -1491,6 +1572,9 @@ export function CommentViewerApp() {
           soundCommentEnabled={soundCommentEnabled}
           onSoundCommentEnabledChange={setSoundCommentEnabled}
           onPreviewCommentSound={handlePreviewCommentSound}
+          soundMonetaryEnabled={soundMonetaryEnabled}
+          onSoundMonetaryEnabledChange={setSoundMonetaryEnabled}
+          onPreviewMonetarySound={handlePreviewMonetarySound}
           soundPreviewState={soundPreviewState}
           overlayFont={overlayFont}
           onOverlayFontChange={setOverlayFont}
@@ -1696,8 +1780,11 @@ export function CommentViewerApp() {
                   置き場所とクラスは 045c の OBS エラーと**同じ**にした。性質が同じ（ユーザー操作なしに起きた
                   失敗を配信中の画面へ出す）ためで、設定カード内の .errorText（＝押したボタンの結果）とは別物。
                   同時に 2 つ並びうるが .toolbarActions は flex-wrap: wrap なので折り返して収まる（CSS 差分ゼロ）。
-                  ⚠ ゲートに soundCommentEnabled を噛ませるのは 045c の `obsAutoAdd &&` と同じ考え方
+                  ⚠ ゲートに ON/OFF を噛ませるのは 045c の `obsAutoAdd &&` と同じ考え方
                   ——OFF のときは鳴らないのが正常なので赤字を出さない。
+                  ⚠ 059b: ゲートは **2 音の OR**（どちらか一方でも ON なら出す）。片方だけ ON の状態で
+                  デバイスを抜いたときに黙って鳴らなくなるのを防ぐ＝この indicator の存在理由そのもの。
+                  失敗の中身（どちらの音か）で文言は変えない——ユーザーが取る行動が同じだから。
                   ⚠ 消えるのは①次の再生が成功したとき②デバイスを選び直したとき③試聴が成功したとき
                   ④058a のテスト再生が成功したとき⑤OFF にしたとき（この式で自動）。
                   **時間経過では消さない**（気付かせるのが目的なので、放っておいて消えたら意味がない）。
@@ -1710,15 +1797,16 @@ export function CommentViewerApp() {
                   差し替わる）。045c の OBS エラーと同じ割り切りで、設定を開いている間は「試聴」で能動的に
                   確認できるため許容している。**再修正トリガー＝「設定を開いたまま配信していて気付けなかった」
                   が実際に起きたとき**（そのときは indicator をビュー共通の場所へ出す設計に変える）。 */}
-              {soundCommentEnabled && notificationSoundFailed && (
-                <span
-                  className={styles.toolbarError}
-                  role="status"
-                  title="通知音を鳴らせませんでした。設定の「音声出力（通知音）」でデバイスを選び直すか、再読み込みしてください。"
-                >
-                  通知音を再生できません
-                </span>
-              )}
+              {(soundCommentEnabled || soundMonetaryEnabled) &&
+                notificationSoundFailed && (
+                  <span
+                    className={styles.toolbarError}
+                    role="status"
+                    title="通知音を鳴らせませんでした。設定の「音声出力（通知音）」でデバイスを選び直すか、再読み込みしてください。"
+                  >
+                    通知音を再生できません
+                  </span>
+                )}
               <ToggleSwitch
                 label="コメントをOBSに表示"
                 checked={overlayOpen}

@@ -96,8 +96,8 @@ struct ToneSpec {
 
 /// 音の種類ごとの波形パラメータ。
 ///
-/// 059b で音を増やすときは、`NotificationSound` に variant を足してここに 1 アーム足すだけでよい
-/// （**デコーダも同梱ファイルも要らない**）。
+/// 音を増やすときは、`NotificationSound` に variant を足してここに 1 アーム足すだけでよい
+/// （**デコーダも同梱ファイルも要らない**）。059a / 059b はどちらもこの手順だけで済んでいる。
 ///
 /// ⚠ **同じ (周波数, 長さ) の音を 2 つ作らない**（`every_sound_has_a_distinct_tone` が固定している）。
 /// 鳴らし分ける意味が消えるうえ、コピペで増やしたときに気付けない。
@@ -126,6 +126,28 @@ fn tone_spec(sound: NotificationSound) -> ToneSpec {
             frequency_hz: 660.0,
             duration: Duration::from_millis(140),
             decay_tau: Duration::from_millis(23),
+        },
+        // 059b: 投げ銭通知音。A4（440Hz）を 300ms・減衰 90ms。
+        // **3 音（Test / Comment / Monetary）を続けて鳴らしても聞き分けられる**ことが唯一の設計目標で、
+        // そのために音高・長さ・余韻の **3 軸すべて**で離した:
+        //   ・音高: A5(880) / E5(660) / **A4(440)**。Test のちょうど 1 オクターブ下・Comment の完全 5 度下＝
+        //     3 音が別のレジスタに並ぶ。低いほうへ外したのは「軽い通知」ではなく「重み」として聞こえるため。
+        //   ・長さ: 180 / 140 / **300**ms。Comment の 2.1 倍で、「短い打点」対「長く伸びる 1 音」として
+        //     音高を聞き取れなくても時間軸だけで判別できる。
+        //   ・余韻: 60 / 23 / **90**ms。Comment が「ポッ」ならこちらは「ポーン」と残る。
+        // ⚠ **倍音を足していない**（重みの和を 1 以下にすれば `every_sound_never_clips` は保てるが、
+        //   `every_sound_decays_with_its_declared_time_constant` が「1 周期窓の最大値 ≒ 包絡」という前提で
+        //   下限 0.90 を切っているので、**倍音の位相干渉で下振れしてレッドになりうる**。1 音足すために
+        //   契約テストの許容帯を緩めるのは順序が逆）。
+        //   **再修正トリガー＝実機で「区別はつくが安っぽい」と感じたとき**。そのときは倍音とテスト側の
+        //   前提（包絡の推定方法）をセットで見直すこと。
+        // ⚠ この 300ms は frontend のクールダウン下限にも効く。Rust の `PLAYING` は 300ms ＋
+        //   `PLAYBACK_TAIL`(80ms) ＋ デバイス再列挙 ＋ stream open で概ね 400〜550ms 立つので、
+        //   `notificationSound.ts` の `COOLDOWN_MS.monetary` はそれを下回らないこと（理由は同ファイル）。
+        NotificationSound::Monetary => ToneSpec {
+            frequency_hz: 440.0,
+            duration: Duration::from_millis(300),
+            decay_tau: Duration::from_millis(90),
         },
     }
 }
@@ -350,14 +372,18 @@ mod tests {
     /// 波形の不変条件（クリップしない・無音から始まって無音で終わる・宣言した長さと一致する）は
     /// **どの音についても成立しなければならない**——058a の申し送りが「音を増やすのは
     /// `samples_for` の `match` に 1 アーム足すだけ」と書いている以上、増えた音が自動で検査される必要がある。
-    const ALL_SOUNDS: [NotificationSound; 2] =
-        [NotificationSound::Test, NotificationSound::Comment];
+    const ALL_SOUNDS: [NotificationSound; 3] = [
+        NotificationSound::Test,
+        NotificationSound::Comment,
+        NotificationSound::Monetary,
+    ];
 
     /// 失敗メッセージ用のラベル。**exhaustive な `match`** であることが上記の担保。
     fn sound_label(sound: NotificationSound) -> &'static str {
         match sound {
             NotificationSound::Test => "Test",
             NotificationSound::Comment => "Comment",
+            NotificationSound::Monetary => "Monetary",
         }
     }
 
@@ -667,6 +693,41 @@ mod tests {
                  鳴らし分ける意味が消えるので、どちらかの値を変えること"
             );
             seen.push((key.0, key.1, label));
+        }
+    }
+
+    #[test]
+    fn every_pair_of_sounds_differs_on_all_three_axes() {
+        // 059b の仕様: 「**3 音を続けて鳴らしても聞き分けられる**ことが唯一の設計目標で、そのために
+        // 音高・長さ・余韻の **3 軸すべて**で離した」（`model.rs` の `Monetary` の doc と `tone_spec`）。
+        //
+        // ⚠ `every_sound_has_a_distinct_tone` は **(周波数, 長さ) のタプル一致**しか見ないので、
+        // 「音高だけ Comment と同じ 660Hz にする」ような変更は**長さが違えば通ってしまう**。
+        // 3 軸のどれか 1 つでも被ると、その軸で区別しているユーザー（音高で聞き分ける人／
+        // 時間軸で聞き分ける人）にとって 2 音が同じ音になるので、軸ごとに固定する。
+        //
+        // ⚠ これも「実機で聞き分けられる」ことの証明ではない（それは実機確認の項目）。
+        // ここが止めるのは「設計目標として離すと決めた軸が、値の変更で静かに縮む」ことだけ。
+        for (i, a) in ALL_SOUNDS.iter().enumerate() {
+            for b in ALL_SOUNDS.iter().skip(i + 1) {
+                let (label_a, label_b) = (sound_label(*a), sound_label(*b));
+                let (spec_a, spec_b) = (tone_spec(*a), tone_spec(*b));
+
+                // 周波数は `to_bits()` で比べる（浮動小数の等値比較を避ける・上のテストと同じ idiom）。
+                assert_ne!(
+                    spec_a.frequency_hz.to_bits(),
+                    spec_b.frequency_hz.to_bits(),
+                    "{label_a} と {label_b} の音高が同じ（音高で聞き分けられなくなる）"
+                );
+                assert_ne!(
+                    spec_a.duration, spec_b.duration,
+                    "{label_a} と {label_b} の長さが同じ（時間軸で聞き分けられなくなる）"
+                );
+                assert_ne!(
+                    spec_a.decay_tau, spec_b.decay_tau,
+                    "{label_a} と {label_b} の余韻が同じ（「ポッ」と「ポーン」の差が消える）"
+                );
+            }
         }
     }
 

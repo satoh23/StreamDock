@@ -7,13 +7,13 @@
  * `play_notification_sound` はこの enum しか受け取らないので、frontend からパスや任意のバイト列を
  * 渡す経路が型レベルで塞がっている。**ここを `String` や `PathBuf` に変えないこと。**
  *
- * 059b が `Monetary` を足す想定。音の波形は
- * `service::samples_for` の `match` に 1 アームを足すだけで増やせる（decoder は要らない）。
+ * 音の波形は `service::samples_for` の `match` に 1 アームを足すだけで増やせる（decoder は要らない）。
  *
  * ⚠ **variant は「ペイロードなし」のまま増やすこと。** `Comment { volume: f32 }` のように
  * ペイロードを持たせる変更は、docs/security.md の「レビュー必須条件」が
  * **「enum 以外で指定できるようにする変更」に含む**と名指ししており security-review 必須になる
  * （契約テストの `PathBuf` needle では捕まらないため、条文側で止めている）。
- * 059a がペイロードなしの `Comment` 追加に留めたのはこの線を越えないため（判断根拠は progress.md 059a）。
+ * 059a / 059b がペイロードなしの variant 追加に留めたのはこの線を越えないため
+ * （判断根拠は progress.md 059a / 059b）。
  */
-export type NotificationSound = "test" | "comment";
+export type NotificationSound = "test" | "comment" | "monetary";

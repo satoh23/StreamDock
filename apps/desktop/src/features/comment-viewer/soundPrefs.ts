@@ -1,5 +1,5 @@
 /**
- * 059a: 通知音（コメント／投げ銭）の ON/OFF を localStorage に保持する。
+ * 059a / 059b: 通知音（コメント／投げ銭）の ON/OFF を localStorage に保持する。
  *
  * ⚠ **`ttsPrefs.ts` に足さない。** あちらは「読み上げ（VOICEVOX）の設定」というまとまりで、
  * 通知音は別概念（再生層すら違う——読み上げは Web Audio、通知音は Rust の `rodio`）。
@@ -27,6 +27,10 @@
  * 「デバイスや配信ごとに変えたい」となったら**別タスクとして切り出す**——そのときに必要なのは
  * 「Rust の引数追加＋§8 のクランプ（NaN / Inf / 範囲外）＋`every_sound_never_clips` の書き換え
  * ＋security-review」のセットで、いずれも 059a のスコープではない。
+ *
+ * ⚠ **059b でも音量キーは作らなかった**（2 音になっても判断は変わらない）。059b の旧タスクファイルは
+ * 「音量は 059a の `sound-volume` を共有する」と書いていたが、**共有すべき `sound-volume` が存在しない**
+ * ＝この記述はもともと失効している。「投げ銭音だけ大きくしたい」となったら上記の別タスクへ。
  *
  * ### ここに「配信に載せる」キーが無い理由
  *
@@ -63,5 +67,39 @@ export function saveSoundCommentEnabled(enabled: boolean): void {
     localStorage.setItem(SOUND_COMMENT_ENABLED_KEY, String(enabled));
   } catch {
     // プライベートモード等で書けない場合は黙って無視する（コメント表示・読み上げは継続できる）。
+  }
+}
+
+/**
+ * 059b: 投げ銭通知音の ON/OFF 保存キー（**既定 OFF**）。テストから参照するため export する。
+ *
+ * ⚠ **コメント音とは独立したキーにする**（1 つのキーに詰め込まない）。ON/OFF は音ごとに独立で、
+ * 「コメント音は要らないが投げ銭だけは気づきたい」が実際に一番ありそうな使い方だから。
+ * ⚠ **既定 OFF の理由は `SOUND_COMMENT_ENABLED_KEY` と同じ**——アップデート直後に
+ * ユーザー操作ゼロで音が鳴り始めるのを避ける。
+ * ⚠ ここに保存するのも**真偽値 1 つだけ**。投げ銭の**金額・投稿者名・本文は保存しない**
+ * （鳴らすのに要らない。§9 追補 046a の対象へ踏み込まない）。
+ */
+export const SOUND_MONETARY_ENABLED_KEY =
+  "stream-dock.comment-viewer.sound-monetary-enabled";
+
+/**
+ * 059b: 保存済みの投げ銭通知音 ON/OFF を読み込む。
+ * 未保存・不正値・例外はすべて **false（OFF）** にフォールバックする（059a と同じ劣化の向き）。
+ */
+export function loadSoundMonetaryEnabled(): boolean {
+  try {
+    return localStorage.getItem(SOUND_MONETARY_ENABLED_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+/** 059b: 投げ銭通知音の ON/OFF を保存する（ローカルのみ・外部送信しない）。 */
+export function saveSoundMonetaryEnabled(enabled: boolean): void {
+  try {
+    localStorage.setItem(SOUND_MONETARY_ENABLED_KEY, String(enabled));
+  } catch {
+    // プライベートモード等で書けない場合は黙って無視する（059a と同じ）。
   }
 }

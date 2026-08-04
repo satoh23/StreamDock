@@ -48,11 +48,17 @@ export type AudioOutputListState = "loading" | "ready" | "failed";
 export type AudioTestState = "idle" | "playing" | "failed";
 
 /**
- * 059a: コメント通知音の試聴の状態。
+ * 059a: 通知音の試聴の状態。
  *
  * ⚠ **`AudioTestState` と型は同じだが state は共有しない。** 058a の「テスト再生」は
  * **出力先の検証**（このデバイスから鳴るか／既定からは鳴らないか）で、こちらは**その音の確認**。
  * 共有すると「通知音カードで試聴に失敗したのに、音声出力カードに赤字が出る」ことになる。
+ *
+ * ⚠ **一方で 059b の投げ銭音試聴とは「共有する」**（2 つの試聴ボタンで 1 つの state）。
+ * 上の「分ける」理由は**別カードだから**であって、こちらは同じカード・同じデバイス・同じ復旧手順＝
+ * 失敗の案内文が音種で変わらないので、分ける理由が無い。むしろ共有だと
+ * **片方の再生中はもう片方も disabled** になり、**Rust の同時再生 1 本（058a）と一致する**
+ * （分けると再生中にもう片方を押せてしまい、Rust に黙って捨てられて「押したのに鳴らない」になる）。
  *
  * ⚠ **branded type にはしない**（レビュー Q-9・意図どおり）。構造的型付けなので取り違えを型は止めないが、
  * brand はこのリポジトリに前例が無く、両者の状態集合は今後も一致し続ける公算が高い（＝書式コストだけ払って
@@ -97,13 +103,18 @@ interface SettingsViewProps {
   onReloadAudioOutputDevices: () => void;
   onTestNotificationSound: () => void;
   audioTestState: AudioTestState;
-  // 059a: コメント通知音の ON/OFF と試聴。state/永続化（soundPrefs）は CommentViewerApp が保持し、
-  // ここは表示とユーザー操作の受け渡しのみ（このビューの「表示専用」性質は不変）。
+  // 059a / 059b: 通知音（コメント音・投げ銭音）の ON/OFF と試聴。state/永続化（soundPrefs）は
+  // CommentViewerApp が保持し、ここは表示とユーザー操作の受け渡しのみ（「表示専用」性質は不変）。
   // ⚠ **音量は受け取らない**（振幅は Rust の PEAK_AMPLITUDE 固定。理由と再修正トリガーは soundPrefs.ts）。
   // ⚠ 出力先が未選択のとき**トグルを disabled にしない**（判断は下記カードのコメント）。
+  // ⚠ **ON/OFF は音ごとに独立**（片方 OFF でもう片方は鳴る）。一方 `soundPreviewState` は
+  // **2 つの試聴で共有する**（理由は同型の JSDoc）。
   soundCommentEnabled: boolean;
   onSoundCommentEnabledChange: (value: boolean) => void;
   onPreviewCommentSound: () => void;
+  soundMonetaryEnabled: boolean;
+  onSoundMonetaryEnabledChange: (value: boolean) => void;
+  onPreviewMonetarySound: () => void;
   soundPreviewState: SoundPreviewState;
   // 045b: 表示（開閉）トグルは本体コメントビューのツールバーへ移設したため、この設定ビューは overlayOpen /
   // onOverlayToggle を受け取らない（034d の部分反転）。開閉 state・ハンドラは CommentViewerApp が保持したまま。
@@ -152,6 +163,9 @@ export function SettingsView({
   soundCommentEnabled,
   onSoundCommentEnabledChange,
   onPreviewCommentSound,
+  soundMonetaryEnabled,
+  onSoundMonetaryEnabledChange,
+  onPreviewMonetarySound,
   soundPreviewState,
   overlayFont,
   onOverlayFontChange,
@@ -499,17 +513,16 @@ export function SettingsView({
         </div>
       </div>
 
-      {/* 059a: 通知音カード。「音声出力（通知音）」カードの**直後**に置く＝「どこへ出すか」→「何を鳴らすか」の順。
+      {/* 059a/059b: 通知音カード。「音声出力（通知音）」カードの**直後**に置く＝「どこへ出すか」→「何を鳴らすか」の順。
           カードを分けるのは 058a のカード自身が「ここが担うのは出力先だけで、通知音の ON/OFF・種類は 059 が
-          それぞれの機能の隣に置く」と宣言しているため。059b はこのカードに投げ銭音の ON/OFF と試聴を 1 組足す
-          （1 枚に混ぜると 059b の時点で 4 コントロールが並んで読めなくなる）。
+          それぞれの機能の隣に置く」と宣言しているため。059b でこのカードに投げ銭音の ON/OFF と試聴を 1 組足した。
           書式は 054 の階層規則どおり（項目名＝ToggleSwitch の .toggleLabel / 説明＝.note / 警告＝.errorText）。
           **既存クラスだけを使い、新しい px / weight を発明しない**（CSS 差分ゼロ）。
           ⚠ **音量スライダーは無い。** 振幅は Rust の PEAK_AMPLITUDE 固定で、②-軽では通知音だけが専用の実デバイスへ
           出るため OS のデバイス別音量が独立に効く（詳細と再修正トリガーは soundPrefs.ts の docstring）。
           ⚠ ON/OFF をツールバーへ置かないのは、通知音が「一度 ON にしたらそのまま」寄りの設定だから
           （045b がツールバーへ移したのは配信中に頻繁に切り替える操作）。右クラスタは既にトグル 2＋ボタン 2 で、
-          059b が来ると 4 トグルになり狭窓で崩れる。再修正トリガー＝実機で「配信中に頻繁に切りたい」と感じたとき。 */}
+          059b の 2 音をそこへ出すと 4 トグルになり狭窓で崩れる。再修正トリガー＝実機で「配信中に頻繁に切りたい」と感じたとき。 */}
       <div className={styles.card}>
         <div className={styles.cardHead}>通知音</div>
         <div className={styles.cardBody}>
@@ -524,6 +537,24 @@ export function SettingsView({
             OFF）。上の「音声出力（通知音）」で選んだデバイスからだけ鳴るので、配信に流していないデバイスを選んでおけば配信には載りません。連投しても鳴りっぱなしにならないよう間隔をあけて鳴らします。
           </span>
 
+          {/* 059b: 投げ銭通知音。⚠ **ON/OFF はコメント音と独立**（片方だけ ON にできる）。
+              ⚠ 「コメント音とは同時に鳴りません」を必ず書く——排他は親 059 の決定だが、**書かないと
+              「スパチャのときは 2 つ鳴る」と誤解される**（実際には投げ銭音だけが鳴る）。
+              ⚠⚠ **「OFF のときは無音」も必ず書く**（レビュー Q-3）。排他は ON/OFF より先に効くので、
+              このトグルが OFF だと**投げ銭のときはコメント通知音も鳴らない**。この 1 文が無いと
+              「スパチャのときだけ音が消える」という、ユーザーが自力で原因にたどり着けない挙動になる
+              （挙動そのものは意図どおり＝「投げ銭音を OFF にしたのにスパチャでコメント音が鳴る」を避けるため）。 */}
+          <ToggleSwitch
+            label="投げ銭通知音"
+            checked={soundMonetaryEnabled}
+            onChange={onSoundMonetaryEnabledChange}
+          />
+          <span className={styles.note}>
+            スーパーチャット・ビッツ・サブスク・メンバーシップ・ギフト・ドネーション・ジュエルを受け取ったときに、コメント通知音とは別の音を鳴らします（既定は
+            OFF）。コメント通知音とは同時に鳴りません（投げ銭のときは投げ銭通知音だけが鳴ります）。この通知音を
+            OFF にすると、投げ銭のときはコメント通知音も鳴りません（無音になります）。
+          </span>
+
           {/* ⚠ 出力先が未選択でも**トグルを disabled にしない**（レビュー観点として明示しておく）。
               既存の disabled 先例（ttsEnabled=false で source トグルを無効化）は「同一カード内の上位トグル」
               という直接的な関係だが、ここは**別カードの状態に依存**するので押せない理由が画面から読めない。
@@ -533,8 +564,11 @@ export function SettingsView({
               **生の `audioOutputDeviceId`**。「選んだデバイスが今は見つからない」場合はここではなく
               058a のカードが「以前選んだ音声出力デバイスが見つかりません」を出す担当で、両方出すと
               **同じ状態を 2 つの違う言葉で二重に叱る**ことになる（かつ「未選択」は事実として誤り）。
-              列挙中（loading）に一瞬赤くならないのも、生の値を見ているおかげで自動的に成立する。 */}
-          {soundCommentEnabled &&
+              列挙中（loading）に一瞬赤くならないのも、生の値を見ているおかげで自動的に成立する。
+              ⚠ 059b: ゲートは **2 音の OR**。⚠⚠ **音ごとに 2 本出さない**——出力先は 1 つで理由も対処も
+              同じなので、2 本出すと「同じ状態を 2 つの言葉で二重に叱る」ことになる（058a のカードと
+              重複させなかったのと同じ判断）。文言も音種を名指ししていないのでそのまま使える。 */}
+          {(soundCommentEnabled || soundMonetaryEnabled) &&
             audioOutputDeviceId === NO_AUDIO_OUTPUT_DEVICE && (
               // ⚠ §9: デバイス名・デバイス ID を出さない（カード名は固定文字列なので問題ない）。
               <span className={styles.errorText}>
@@ -545,9 +579,14 @@ export function SettingsView({
           <div className={styles.voicevoxRow}>
             {/* 034c の話者試聴と同じ考え方＝「ON にしても次のコメントが来るまで音が確認できない」を避ける。
                 ⚠ 058a の「テスト再生」とは**目的が違うので重複ではない**——あちらは出力先の検証（Test 音）、
-                こちらはその音の確認（Comment 音）。だから鳴る音も別にしてある（Rust の tone_spec）。
+                こちらはその音の確認（Comment / Monetary 音）。だから鳴る音も別にしてある（Rust の tone_spec）。
                 ⚠ ユーザーの明示操作なので **notificationSound.ts のクールダウンを通さない**
-                （押したのに鳴らないのは壊れて見える）。連打は再生中 disabled で抑える＝058a と同じ形。 */}
+                （押したのに鳴らないのは壊れて見える）。連打は再生中 disabled で抑える＝058a と同じ形。
+                ⚠ 059b で**両方のボタン名を音種入りに改名した**（旧「試聴 ▶」）。3 つ目のボタンを足す前に
+                改名したのは、①どちらの音の試聴か画面から読めなくなる ②**034c の話者試聴ボタンも
+                「試聴 ▶」で、実機では同じアクセシブル名が並んでいた**（既存の取り違えもここで解消する）。
+                ⚠ 2 つのボタンは `soundPreviewState` を共有するので**片方の再生中は両方 disabled** になる。
+                これは意図どおりで、Rust の同時再生 1 本（058a）と一致する（詳細は SoundPreviewState の JSDoc）。 */}
             <button
               type="button"
               className={styles.btnGhost}
@@ -558,7 +597,19 @@ export function SettingsView({
               }
               title="コメント通知音を選択中のデバイスで鳴らします"
             >
-              試聴 ▶
+              コメント音を試聴 ▶
+            </button>
+            <button
+              type="button"
+              className={styles.btnGhost}
+              onClick={onPreviewMonetarySound}
+              disabled={
+                selectedAudioOutputDeviceId === NO_AUDIO_OUTPUT_DEVICE ||
+                soundPreviewState === "playing"
+              }
+              title="投げ銭通知音を選択中のデバイスで鳴らします"
+            >
+              投げ銭音を試聴 ▶
             </button>
           </div>
 

@@ -398,8 +398,8 @@ OSAKit（`osakit` crate・055b で入った推移依存）で実行する。**�
 - **コマンドは単一目的の 2 本に限定**（§3）: `list_audio_output_devices()`（read-only）と
   `play_notification_sound(deviceId, sound)`。`run_command` 的な汎用は作らない。
 - **frontend から任意のファイルパスを受け取らない。** 鳴らす音は
-  **`NotificationSound` enum に列挙されたアプリ内合成音だけ**で（058a の「テスト音」＋059a の「コメント音」。
-  059a も**ペイロードなしの unit variant** を足しただけで、指定経路は enum のまま）、
+  **`NotificationSound` enum に列挙されたアプリ内合成音だけ**で（058a の「テスト音」＋059a の「コメント音」
+  ＋059b の「投げ銭音」。3 つとも**ペイロードなしの unit variant** を足しただけで、指定経路は enum のまま）、
   同梱音源ファイルすら存在しない＝**パスという概念が経路上に無い**。
   ⚠ この enum を `String` / `PathBuf` に変えると「任意ファイル再生コマンド」に化ける。変えないこと。
   契約テスト（`accepts_no_file_path_from_the_frontend`）が `PathBuf` / `include_bytes!` / `std::fs` の

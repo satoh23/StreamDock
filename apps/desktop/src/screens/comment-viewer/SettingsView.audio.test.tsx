@@ -42,6 +42,11 @@ const DEVICES: AudioOutputDevice[] = [
 // （obs 側は `audioOutputDevices: []` を注記付きで書いていて、それ自体が意図の表明になっている）。
 // 再修正トリガー＝この形の baseProps を持つファイルが 3 つ以上になるか、props 追加のたびに全ファイルを
 // 触る手間が実際に負担になったとき。そのときは「必須 props の最小セット」だけを共有ヘルパへ出す。
+//
+// ⚠ **059b でトリガーに到達したかを判定した結果＝まだ出さない**（task-board の申し送りが「3 組目を足すのが
+// 潮時」と書いていたので、明示的に評価した）。059b が増やすのは**同一ファイル内の describe** で、
+// この形の baseProps を持つ**ファイル数は 2 のまま**。いま共有化すると、上の①（片方の既定値変更が
+// もう片方を巻き添えにする）を先に払うことになる。props 追加も 3 個で、負担が実測で問題になっていない。
 function baseProps(over: Partial<Props> = {}): Props {
   return {
     onBack: vi.fn(),
@@ -65,10 +70,13 @@ function baseProps(over: Partial<Props> = {}): Props {
     onReloadAudioOutputDevices: vi.fn(),
     onTestNotificationSound: vi.fn(),
     audioTestState: "idle",
-    // 059a: コメント通知音（既定 OFF）。下の describe("SettingsView 通知音") が検証対象にする。
+    // 059a / 059b: 通知音（どちらも既定 OFF）。下の describe("SettingsView 通知音") が検証対象にする。
     soundCommentEnabled: false,
     onSoundCommentEnabledChange: vi.fn(),
     onPreviewCommentSound: vi.fn(),
+    soundMonetaryEnabled: false,
+    onSoundMonetaryEnabledChange: vi.fn(),
+    onPreviewMonetarySound: vi.fn(),
     soundPreviewState: "idle",
     overlayFont: DEFAULT_OVERLAY_FONT,
     onOverlayFontChange: vi.fn(),
@@ -338,7 +346,14 @@ describe("SettingsView 音声出力（通知音）", () => {
 });
 
 /**
- * 059a: 設定ビューの「通知音」カードの仕様テスト。
+ * 059a / 059b: 設定ビューの「通知音」カードの仕様テスト。
+ *
+ * 059b の追加分:
+ * - 投げ銭通知音のトグル（**既定 OFF**）と試聴ボタン。**ON/OFF は 2 音で独立**。
+ * - ⚠ 試聴ボタンは 2 つだが **`soundPreviewState` は共有**＝片方の再生中は両方 disabled
+ *   （Rust の同時再生 1 本と一致させる）。
+ * - ⚠ 未選択の赤字は **2 音の OR で 1 本だけ**（同じ状態を 2 つの言葉で二重に叱らない）。
+ * - ⚠ ボタン名は「コメント音を試聴 ▶」「投げ銭音を試聴 ▶」（旧「試聴 ▶」は 034c の話者試聴と同名だった）。
  *
  * ⚠ **ファイルを分けず、この 058a のファイルに同居させている**（レビュー観点として明示）。
  * 理由＝冒頭 `baseProps` のコメントが「この形の baseProps を持つファイルが 3 つ以上になったら
@@ -359,7 +374,16 @@ describe("SettingsView 音声出力（通知音）", () => {
 describe("SettingsView 通知音", () => {
   /** 059a の試聴ボタン（058a の「テスト再生 ▶」とは別物）。 */
   function previewButton(): HTMLButtonElement {
-    return screen.getByRole("button", { name: "試聴 ▶" }) as HTMLButtonElement;
+    return screen.getByRole("button", {
+      name: "コメント音を試聴 ▶",
+    }) as HTMLButtonElement;
+  }
+
+  /** 059b の試聴ボタン。 */
+  function monetaryPreviewButton(): HTMLButtonElement {
+    return screen.getByRole("button", {
+      name: "投げ銭音を試聴 ▶",
+    }) as HTMLButtonElement;
   }
 
   it("コメント通知音のトグルがあり、既定は OFF", () => {
@@ -410,6 +434,122 @@ describe("SettingsView 通知音", () => {
     expect(previewButton()).toBeDisabled();
   });
 
+  it("投げ銭通知音のトグルがあり、既定は OFF（059b）", () => {
+    render(<SettingsView {...baseProps()} />);
+    expect(
+      screen.getByRole("switch", { name: "投げ銭通知音" }),
+    ).not.toBeChecked();
+  });
+
+  it("⚠⚠ 投げ銭音 OFF のときスパチャが無音になることを説明文で伝える（059b・レビュー Q-3）", () => {
+    // 排他は ON/OFF より先に効くので、このトグルが OFF だと**投げ銭のときはコメント音も鳴らない**。
+    // 挙動は意図どおりだが、説明が無いと「スパチャのときだけ音が消える」原因にたどり着けない。
+    // ⚠ 文言そのものではなく「無音になることに触れているか」を見る（言い回しの調整で落とさない）。
+    render(<SettingsView {...baseProps()} />);
+    expect(
+      screen.getByText(/OFF にすると、投げ銭のときはコメント通知音も鳴りません/),
+    ).toBeInTheDocument();
+  });
+
+  it("投げ銭トグルを操作すると onSoundMonetaryEnabledChange が呼ばれる（059b）", () => {
+    const onSoundMonetaryEnabledChange = vi.fn();
+    render(<SettingsView {...baseProps({ onSoundMonetaryEnabledChange })} />);
+    fireEvent.click(screen.getByRole("switch", { name: "投げ銭通知音" }));
+    expect(onSoundMonetaryEnabledChange).toHaveBeenCalledWith(true);
+  });
+
+  it("⚠ 2 つのトグルは独立している（片方を押してももう片方のハンドラは呼ばれない）", () => {
+    const onSoundCommentEnabledChange = vi.fn();
+    const onSoundMonetaryEnabledChange = vi.fn();
+    render(
+      <SettingsView
+        {...baseProps({
+          onSoundCommentEnabledChange,
+          onSoundMonetaryEnabledChange,
+        })}
+      />,
+    );
+    fireEvent.click(screen.getByRole("switch", { name: "投げ銭通知音" }));
+    expect(onSoundMonetaryEnabledChange).toHaveBeenCalledTimes(1);
+    expect(onSoundCommentEnabledChange).not.toHaveBeenCalled();
+  });
+
+  it("⚠ 2 つの試聴ボタンは別のハンドラを呼ぶ（配線の取り違えを殺す・059b）", () => {
+    // props が同型（`() => void` 2 本）なので、渡し間違えても typecheck は通ってしまう。
+    // 059a レビュー Q-9 と同じ考え方で、取り違えそのものをここで検出する。
+    const onPreviewCommentSound = vi.fn();
+    const onPreviewMonetarySound = vi.fn();
+    render(
+      <SettingsView
+        {...baseProps({
+          audioOutputDeviceId: "CoreAudio:BuiltInSpeakerDevice",
+          onPreviewCommentSound,
+          onPreviewMonetarySound,
+        })}
+      />,
+    );
+
+    fireEvent.click(previewButton());
+    expect(onPreviewCommentSound).toHaveBeenCalledTimes(1);
+    expect(onPreviewMonetarySound).not.toHaveBeenCalled();
+
+    fireEvent.click(monetaryPreviewButton());
+    expect(onPreviewMonetarySound).toHaveBeenCalledTimes(1);
+    expect(onPreviewCommentSound).toHaveBeenCalledTimes(1);
+  });
+
+  it("⚠ 出力先が未選択のとき投げ銭試聴も押せない（fail-closed を UI でも守る）", () => {
+    render(<SettingsView {...baseProps({ audioOutputDeviceId: "" })} />);
+    expect(monetaryPreviewButton()).toBeDisabled();
+  });
+
+  it("⚠ 再生中は 2 つの試聴が両方 disabled（Rust の同時再生 1 本と一致させる）", () => {
+    // state を共有している帰結。分けると「再生中にもう片方を押せる」→ Rust に黙って捨てられる＝
+    // 押したのに鳴らない、になる。
+    render(
+      <SettingsView
+        {...baseProps({
+          audioOutputDeviceId: "CoreAudio:BuiltInSpeakerDevice",
+          soundPreviewState: "playing",
+        })}
+      />,
+    );
+    expect(previewButton()).toBeDisabled();
+    expect(monetaryPreviewButton()).toBeDisabled();
+  });
+
+  it("⚠ 投げ銭音だけ ON でも未選択の理由を伝える（059b・ゲートは 2 音の OR）", () => {
+    render(
+      <SettingsView
+        {...baseProps({
+          soundCommentEnabled: false,
+          soundMonetaryEnabled: true,
+          audioOutputDeviceId: "",
+        })}
+      />,
+    );
+    expect(
+      screen.getByText(
+        "通知音の出力先が未選択です。上の「音声出力（通知音）」でデバイスを選ぶまで鳴りません。",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("⚠⚠ 両方 ON でも未選択の赤字は 1 本だけ（同じ状態を二重に叱らない）", () => {
+    render(
+      <SettingsView
+        {...baseProps({
+          soundCommentEnabled: true,
+          soundMonetaryEnabled: true,
+          audioOutputDeviceId: "",
+        })}
+      />,
+    );
+    expect(
+      screen.getAllByText(/通知音の出力先が未選択です/),
+    ).toHaveLength(1);
+  });
+
   it("⚠ ON かつ出力先が未選択のとき、鳴らない理由を文章で伝える（トグルは無効化しない）", () => {
     render(
       <SettingsView
@@ -426,10 +566,14 @@ describe("SettingsView 通知音", () => {
     expect(screen.getByRole("switch", { name: "コメント通知音" })).toBeEnabled();
   });
 
-  it("OFF のあいだは未選択でも赤字を出さない（鳴らないのが正常な状態）", () => {
+  it("両方 OFF のあいだは未選択でも赤字を出さない（鳴らないのが正常な状態）", () => {
     render(
       <SettingsView
-        {...baseProps({ soundCommentEnabled: false, audioOutputDeviceId: "" })}
+        {...baseProps({
+          soundCommentEnabled: false,
+          soundMonetaryEnabled: false,
+          audioOutputDeviceId: "",
+        })}
       />,
     );
     expect(
