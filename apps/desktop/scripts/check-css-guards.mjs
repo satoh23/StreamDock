@@ -54,6 +54,11 @@ const VIEWER_CSS = "src/screens/comment-viewer/CommentViewerApp.module.css";
 const OVERLAY_CSS = "src/screens/comment-viewer/OverlayComment.module.css";
 const TONE_TS = "src/screens/comment-viewer/monetaryTone.ts";
 const SETTINGS_TSX = "src/screens/comment-viewer/SettingsView.tsx";
+// 060a: オーバーレイの「セレクタ契約」（安定クラス・CSS 変数）を持つ 4 本。
+const COMMENT_LIST_TSX = "src/screens/comment-viewer/CommentList.tsx";
+const OVERLAY_APP_TSX = "src/screens/comment-viewer/OverlayApp.tsx";
+const PINNED_OVERLAY_TSX = "src/screens/comment-viewer/PinnedOverlayApp.tsx";
+const CSS_COMPAT_TS = "src/features/comment-viewer/cssCompat.ts";
 // 055c: 本チェッカー初のメインウィンドウ側 CSS（それまでは comment-viewer 配下 4 本のみが対象だった）。
 const HEADER_CSS = "src/components/Header.module.css";
 const UPDATE_CSS = "src/screens/app-update/UpdateScreen.module.css";
@@ -699,6 +704,235 @@ for (const rel of [VIEWER_CSS, OVERLAY_CSS]) {
         `max-height / overflow-y が当たらないまま検査だけが通り、` +
         `長い notes が右下のアップデートボタンを画面外へ押し出します。`,
     );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// (10) 060a の不変条件: オーバーレイの**セレクタ契約**——安定クラス（`sd-*`）・窓を分ける `sd-overlay`・
+//      CSS 変数（`--sd-*`）・セレクタ変換表。
+//
+//      ⚠ **なぜここなのか（ランタイムのテストとの役割分担）**。(9) 冒頭が確立した分担と同じ:
+//        - **ランタイムのテスト**（`CommentList.test.tsx`）… 「実際に DOM に付くこと」を殺す。安定クラスは
+//          CSS モジュールではなく**素の文字列**なので `querySelector(".sd-comment")` が実効的に効く
+//          ＝(5)(6) のような「テストでは原理的に守れない」状況ではない。**消さないこと。**
+//        - **本ガード (10)** … ①**3 ファイルにまたがる対応表の整合**（契約一覧 ⇔ DOM ⇔ 変換表。(4) の
+//          tone 表と同型）②**jsdom が一切解決しない CSS の実値**（フォールバック値＝現行意匠）。
+//
+//      ⚠ **安定クラスはユーザーの CSS との契約**であって StreamDock の内部名ではない。リネームすると
+//      StreamDock 側はテストを一緒に書き換えれば緑のまま通るが、**ユーザーのテーマは全部壊れる**。
+//      契約の一覧を下に置いてあるのは、変更が必ず**このファイルの diff に現れる**ようにするため
+//      （(6-b) の FAINT_ALLOWED と同じ「例外・契約は機械にも読める形で残す」作法）。
+// ---------------------------------------------------------------------------
+{
+  /** 060a の安定クラス契約（docs/tasks/060a-overlay-selector-contract.md が正）。 */
+  const STABLE_CLASSES = [
+    ["sd-comment", "コメント 1 件（chat / 課金 共通の <li>）"],
+    ["sd-comment-tip", "課金カードであること"],
+    ["sd-comment-name", "投稿者名（chat の .name と課金の .cardName）"],
+    ["sd-comment-source", "サイト名バッジ"],
+    ["sd-comment-icon", "アイコン"],
+    ["sd-comment-body", "吹き出し／カード本体（.bubble と .cardBody）"],
+    ["sd-comment-text", "本文テキスト（.text と .cardText）"],
+    ["sd-comment-amount", "金額バッジ"],
+    ["sd-comment-event", "種別の要約文"],
+  ];
+
+  const listTsx = stripTsComments(readRaw(COMMENT_LIST_TSX));
+  const overlayAppTsx = stripTsComments(readRaw(OVERLAY_APP_TSX));
+  const pinnedTsx = stripTsComments(readRaw(PINNED_OVERLAY_TSX));
+  const compatTs = stripTsComments(readRaw(CSS_COMPAT_TS));
+
+  // (10-a) 契約の安定クラスが実際に DOM を組む側へ付いていること。
+  //   ⚠ 照合前に `stripTsComments` を通すのが必須——`CommentList.tsx` の 060a 注記は説明のために
+  //   クラス名を**本文に書いている**ので、剥がさないと「連結を外してもコメントが残っているので通る」
+  //   ＝常に緑の検査になる（本チェッカー初版が踏んだ失敗と同型）。
+  //   ⚠ 境界に `\b` を使ってはいけない——`-` は非単語文字なので `\bsd-comment\b` は
+  //   **`sd-comment-tip` の中にも一致する**（実測: 素の `sd-comment` だけを外す変異が生存した）。
+  //   `cssCompat.ts` の置換と同じく、識別子文字を否定する lookaround で挟む。
+  const classToken = (cls) =>
+    new RegExp(`(?<![A-Za-z0-9_-])${cls}(?![A-Za-z0-9_-])`);
+  for (const [cls, role] of STABLE_CLASSES) {
+    if (!classToken(cls).test(listTsx)) {
+      fail(
+        `${COMMENT_LIST_TSX}: 安定クラス \`${cls}\`（${role}）がありません（060a）。` +
+          `これはユーザーのカスタム CSS との**契約**で、消す/リネームすると StreamDock 側は` +
+          `テストを一緒に書き換えれば緑のまま通る一方、**ユーザーのテーマが全部壊れます**。` +
+          `契約を変えるなら本スクリプトの STABLE_CLASSES と ${CSS_COMPAT_TS} の変換表も一緒に更新してください。`,
+      );
+    }
+  }
+
+  // (10-b) 変換表の**変換先が実在する安定クラスであること**（(4) の tone 表と同型の突き合わせ）。
+  //   cssCompat.ts は「純関数の置換表」なので、右辺を打ち間違えても typecheck も vitest も通る
+  //   （ただの文字列）。ユーザーの CSS が黙って効かなくなるだけなので、ここで突き合わせる。
+  const declared = new Set(STABLE_CLASSES.map(([c]) => c));
+  const toValues = [...compatTs.matchAll(/\bto:\s*"([^"]+)"/g)].map((m) => m[1]);
+  if (toValues.length === 0) {
+    fail(
+      `${CSS_COMPAT_TS}: 変換表の \`to:\` を 1 つも抽出できませんでした（060a）。` +
+        `表の形（\`{ from, to, why }\` のオブジェクト配列）を変えたなら、本ガードの抽出も一緒に直してください` +
+        `（黙って検査が無効になるのを防ぐため fail します）。`,
+    );
+  }
+  for (const to of toValues) {
+    for (const m of to.matchAll(/\.([A-Za-z0-9_-]+)/g)) {
+      if (!declared.has(m[1])) {
+        fail(
+          `${CSS_COMPAT_TS}: 変換先 \`${to}\` のクラス \`${m[1]}\` が 060a の安定クラス契約にありません。` +
+            `変換表の右辺は**必ず実 DOM に存在する安定クラス**である必要があります` +
+            `（存在しないクラスへ変換すると、ユーザーの CSS は「変換されたのに効かない」という最悪の状態になります）。`,
+        );
+      }
+    }
+  }
+
+  // (10-c) 変換表の**元セレクタに sd 語彙を書かない**＝変換が冪等であることの構造的な担保。
+  //   060b の決定により変換は**注入のたびに毎回**走る（保存するのは変換前の CSS）。自分の出力に
+  //   当たる表を書くと 2 周目で結果が変わり、テーマの見え方が注入回数に依存して壊れる。
+  const fromValues = [...compatTs.matchAll(/\bfrom:\s*"([^"]+)"/g)].map((m) => m[1]);
+  if (fromValues.length === 0) {
+    fail(`${CSS_COMPAT_TS}: 変換表の \`from:\` を 1 つも抽出できませんでした（060a）。`);
+  }
+  for (const from of fromValues) {
+    if (from.includes("sd-")) {
+      fail(
+        `${CSS_COMPAT_TS}: 変換表の元セレクタ \`${from}\` に sd 語彙が入っています（060a）。` +
+          `変換は注入のたびに毎回走る（060b の決定）ので、自分の出力に当たる表を書くと**冪等性が壊れます**。`,
+      );
+    }
+  }
+
+  // (10-d) 窓ルートの安定クラスは **comment-overlay 窓にだけ**付く。
+  //   060d は「CSS の注入先は `comment-overlay` のみ・固定コメントは別タスク」と決めており、
+  //   窓の区別をこのクラスの有無で表している。加えて `PinnedOverlayApp` は 046c の `applyFitScale` が
+  //   `.root` の transform / width / height を**排他所有**しているので、そこをユーザー CSS に
+  //   触らせる的を作ってはいけない（縮小フィットが壊れる）。
+  if (!classToken("sd-overlay").test(overlayAppTsx)) {
+    fail(
+      `${OVERLAY_APP_TSX}: 窓ルートの安定クラス \`sd-overlay\` がありません（060a）。` +
+        `ユーザーが CSS 変数（--sd-*）を上書きする器がこれです。無いと変数が 1 つも効きません。`,
+    );
+  }
+  if (classToken("sd-overlay").test(pinnedTsx)) {
+    fail(
+      `${PINNED_OVERLAY_TSX}: 固定コメント窓に \`sd-overlay\` が付いています（060a / 060d）。` +
+        `060d の注入先は \`comment-overlay\` のみで、窓の区別をこのクラスの有無で表しています。` +
+        `また 046c の applyFitScale がこの窓の .root の transform / width / height を排他所有しているため、` +
+        `ユーザー CSS がそこを触れると縮小フィットが壊れます。` +
+        `固定窓へ広げるのは別タスク（046d と同じ広げ方）として、本ガードも併せて更新してください。`,
+    );
+  }
+
+  // (10-e) **CSS 変数が実際に読まれていて、フォールバック＝現行意匠の実値のままであること。**
+  //   これが「既存の意匠を 1px も変えない」と「定義したが誰も読んでいない変数を作らない」を
+  //   同時に守る唯一の手段。どちらも jsdom では解決されない（色も余白も角丸も）ので、
+  //   コンポーネントのテストでは**変数参照を直値へ戻す変異も、フォールバック値をずらす変異も生存する**。
+  //
+  //   ⚠ **フォールバック値が当て先ごとに違うのは意図どおり**（.bubble=14px / .card=12px）。だからこそ
+  //   `.root` 側に既定値を「定義」してはならず、ここで**当て先ごとに**固定する。
+  //
+  //   ⚠ 取り出しは「セレクタで始まる**すべての**ルール」を見て 1 つでも一致すればよい形にする。
+  //   `.bubble::after` は「`.bubble::before, .bubble::after { … }` の束ね」と「単独ルール」の 2 つに
+  //   分かれており、先頭の 1 つだけを見る `ruleBody` では束ねのほうを掴んで**正しい CSS で落ちる**
+  //   （(5-b) が戒めた失敗と同型）。
+  const ruleBodies = (css, selector) => {
+    const re = new RegExp(
+      `^\\s*${selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\{`,
+      "gm",
+    );
+    const out = [];
+    for (const m of css.matchAll(re)) {
+      const start = css.indexOf("{", m.index);
+      const end = css.indexOf("}", start);
+      if (end !== -1) out.push(css.slice(start + 1, end));
+    }
+    return out;
+  };
+
+  const overlayCss = read(OVERLAY_CSS);
+  const SD_VAR_DECLS = [
+    [".item", "--icon-size", "var(--sd-icon-size, 44px)"],
+    [".item", "--icon-gap", "var(--sd-icon-gap, 28px)"],
+    [".item", "margin-block", "var(--sd-comment-gap, 0px)"],
+    [".name", "color", "var(--sd-name-fg, var(--overlay-name-fg))"],
+    [".bubble", "background", "var(--sd-comment-bg, var(--overlay-bubble-bg))"],
+    [
+      ".bubble",
+      "border",
+      "2.5px solid var(--sd-comment-border, var(--overlay-bubble-border))",
+    ],
+    [".bubble", "border-radius", "var(--sd-comment-radius, 14px)"],
+    [
+      ".bubble::before",
+      "border-right-color",
+      "var(--sd-comment-border, var(--overlay-bubble-border))",
+    ],
+    [
+      ".bubble::after",
+      "border-right-color",
+      "var(--sd-comment-bg, var(--overlay-bubble-bg))",
+    ],
+    [".text", "color", "var(--sd-comment-fg, var(--overlay-body-fg))"],
+    [".card", "border-radius", "var(--sd-comment-radius, 12px)"],
+    [".cardBody", "color", "var(--sd-comment-fg, var(--overlay-body-fg))"],
+  ];
+  for (const [sel, prop, expected] of SD_VAR_DECLS) {
+    const bodies = ruleBodies(overlayCss, sel);
+    if (bodies.length === 0) {
+      fail(
+        `${OVERLAY_CSS}: \`${sel}\` のルールを取り出せません（060a）。` +
+          `削除したか、セレクタを別の形（先頭がカンマ束ね等）に変えた可能性があります。` +
+          `黙って検査が無効になるのを防ぐため fail します。`,
+      );
+      continue;
+    }
+    if (!bodies.some((b) => declValue(b, prop) === expected)) {
+      const actual = bodies.map((b) => declValue(b, prop)).find((v) => v !== null);
+      fail(
+        `${OVERLAY_CSS}: \`${sel}\` の ${prop}（${actual ?? "宣言なし"}）が ` +
+          `\`${expected}\` ではありません（060a）。` +
+          `**フォールバック側の値が現行の意匠そのもの**なので、ここを動かすと「既存意匠を 1px も変えない」が` +
+          `破れます。逆に var() を外して直値へ戻すと、公開した --sd-* 変数を誰も読まなくなり` +
+          `「定義したが効かない API」になります（どちらも色・余白・角丸なので jsdom では検出できません）。` +
+          `変数を増減・改名するなら本ガードの SD_VAR_DECLS も一緒に更新してください。`,
+      );
+    }
+  }
+
+  // (10-f) 名前の縁取り（多重 text-shadow）は 5 箇所すべてが同じ変数を読むこと。
+  //   1 箇所でも直値/別トークンに戻ると、ユーザーが縁取り色を変えたときに**その 1 層だけ元の白が残る**。
+  //   値そのものの突き合わせは長すぎて壊れやすいので、出現回数で押さえる。
+  const nameBody = ruleBodies(overlayCss, ".name")[0] ?? "";
+  const outlineRefs = (nameBody.match(/var\(--sd-name-outline\b/g) ?? []).length;
+  if (outlineRefs !== 5) {
+    fail(
+      `${OVERLAY_CSS}: \`.name\` の text-shadow が \`var(--sd-name-outline, …)\` を ${outlineRefs} 箇所しか` +
+        `参照していません（060a・5 箇所必要）。多重 text-shadow の一部だけ直値に戻ると、` +
+        `ユーザーが縁取り色を変えたときにその層だけ元の色で残ります（透過映像上の可読性はこの縁取りが握っています）。`,
+    );
+  }
+
+  // (10-g) オーバーレイの DOM に **id を持たせない**（060a レビュー Q-1 の前提）。
+  //   `cssCompat.ts` の `FOREIGN_ID_NAMES` は「注入された CSS に出てくる裸の id は
+  //   **証明可能に死んでいる**」を根拠に、`#message` / `#img` 等を**警告専用**で拾っている。
+  //   その根拠は「オーバーレイに存在する id は index.html の `#root` ただ 1 つ」という事実だけ。
+  //   ここに id を 1 つ足すと、その名前が FOREIGN_ID_NAMES と衝突した瞬間に
+  //   **「効くセレクタを効きませんと警告する」誤検知**へ転ぶ（警告の信頼が落ちると誰も読まなくなる）。
+  //   ⚠ 意匠でも通信でもないので (10-e) のような値の検査では捕まらず、テストでも落ちない。
+  //   id が必要になったら: FOREIGN_ID_NAMES にその名前が無いことを確認し、本検査を更新すること。
+  for (const [rel, src] of [
+    [COMMENT_LIST_TSX, listTsx],
+    [OVERLAY_APP_TSX, overlayAppTsx],
+    [PINNED_OVERLAY_TSX, pinnedTsx],
+  ]) {
+    if (/\sid\s*=/.test(src)) {
+      fail(
+        `${rel}: オーバーレイの DOM に id 属性が付いています（060a / レビュー Q-1）。` +
+          `${CSS_COMPAT_TS} の FOREIGN_ID_NAMES は「注入された CSS の裸 id は当たらない」ことを根拠に` +
+          `\`#message\` 等を**警告専用**で拾っています。id を足すなら、その名前が FOREIGN_ID_NAMES と` +
+          `衝突していないことを確認し（衝突すると効くセレクタを誤警告します）、本検査も更新してください。`,
+      );
+    }
   }
 }
 

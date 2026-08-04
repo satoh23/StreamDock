@@ -1,6 +1,63 @@
 # 060a オーバーレイのセレクタ契約＋セレクタ変換表
 
-> 状態: **未着手（実装サブタスク）**。分割・線引きは親 [060](060-overlay-custom-css.md) を正とする。
+> 状態: **実装済み（2026-08-04）**。⚠ **実装後の実際の姿は [`docs/progress.md`](../progress.md) の 060a 節が正**
+> （本ファイルは着手前の設計メモで、下記「実装で判明した前提と訂正」以外は当時のまま残してある）。
+> 分割・線引きは親 [060](060-overlay-custom-css.md) を正とする。
+
+## ⚠ 実装で判明した前提と訂正（2026-08-04）
+
+着手時の調査で、本ファイルが前提にしていなかった事実が 5 点見つかった。**行番号は書かない**（特定はシンボル名で）。
+
+1. ⚠⚠ **`rewriteSelectors()` を呼ぶのは 060b ではなく 060d（注入時に毎回）。**
+   下の「## 目的」の括弧書き「（[060b] が取り込み時に適用する）」と親 060 (2) の「取り込み時に」は**古い記述**。
+   [060b](060b-custom-css-import-backend.md) が「**セレクタ変換はここでは行わない／保存するのは変換前の CSS／
+   変換は注入時に frontend が毎回行う**」（変換表の更新が取り込み済みテーマにも効くようにするため）と決めており、
+   [060d](060d-css-theme-management-ui.md) と task-board もそちらで揃っている。
+   → **帰結**: 注入とプレビュー表示のたびに毎回走るので、**決定性と冪等性が機能要件**になる
+   （本ファイルには書かれていなかった要件。テストと静的ガード (10-c) の両方で固定した）。
+2. **固定コメントオーバーレイ窓（046b の `PinnedOverlayApp`）が同じ描画を共有している。**
+   `CommentList variant="overlay"` と `OverlayApp.module.css` の `.root` をそのまま使っているため、
+   `renderOverlayItem` への追加は**固定窓の DOM にも自動的に出る**。
+   → 安定クラスと data 属性は**出す**（注入経路が無い限り無害）。窓ルートの `sd-overlay` は
+   **`OverlayApp.tsx` にだけ**付けて窓を分けた（060d の「注入先は `comment-overlay` のみ」と構造で一致）。
+   ⚠ 046c の `applyFitScale` が固定窓の `.root` の `transform`/`width`/`height` を**排他所有**しているので、
+   そこをユーザー CSS に触らせる的を作らない、という理由もある。静的ガード (10-d) が両方向を固定している。
+3. **`.item` はローカル CSS 変数 `--icon-size` / `--icon-gap` を自分で宣言している。**
+   祖先に `--sd-icon-size` を書いても自分の宣言が勝つので、**既定値の側**を
+   `--icon-size: var(--sd-icon-size, 44px)` と読み替える形にした（`--icon-gap` も対で公開）。
+4. **一覧の `<ol>`（`.list`）は `CommentViewerApp.module.css`＝本体コメビュと共有。**
+   `--sd-comment-gap` を `.list` の `gap` で表現すると本体 UI に波及する。かつ `.card` が `.item` の
+   `padding`/`gap` を打ち消すため padding 側でも非対称になる。→ **`.item` の `margin-block`（新設・既定 0px）**
+   に載せた（chat と課金の両方に対称に効き、意匠は 1px も動かない）。
+5. **CSS 変数を `.root` に「定義」してはいけない。**
+   `--sd-comment-radius` の当て先は `.bubble`（14px）と `.card`（12px）で**既定値が違う**ため、
+   1 箇所に定義すると片方の実値が動く＝下記「既存の意匠は 1px も変えない」に反する。
+   → 既定値はすべて**参照側のフォールバック** `var(--sd-X, 現行値)` に置いた。
+   副産物として 060d のプレビュー（`.sd-preview` 配下＝`.root` の外）でも意匠が保たれ、
+   `OverlayApp.module.css` は差分ゼロになった。
+
+**設計の変更点（本文の記述からの差分）**
+
+- **`data-sd-tone` は課金分岐のみ**に付けた（本文は `sd-comment` 全件に付ける読みだった）。
+  `monetaryTone()` は chat を `"t0"` へ無害劣化させるので、付けると `[data-sd-tone="t0"]` で
+  「最低額スパチャだけ光らせる」と書いたユーザー CSS が**全 chat にも当たる**。
+- **CSS 変数は 6 個 → 9 個**（`--sd-comment-border` / `--sd-name-outline` / `--sd-icon-gap` を追加）。
+  いずれも「複数箇所が連動しないと壊れる値」で、クラス指定では擬似要素や 5 層の text-shadow が取り残される。
+- **変換表から単独の `#img` / `#message` / `#author-name` を外した**（ユーザー自身の id を壊しうるため
+  祖先付きの形だけ入れた）。`unmatched` の判定にも裸の id は入れない（誤検知が警告を殺す）。
+- **`unmatched` は「セレクタの種類数」**（ルール数ではない）。`rewritten` はルール単位。
+
+**実サンプル CSS での検証（2026-08-04 受領・完了）**
+
+- YouTube / Twitch とも **`rewritten=1` / `unmatched=[]` / 冪等**で変換成功。逐語で `cssCompat.test.ts` の
+  フィクスチャにした（⚠ 意匠の実体である第三者資産＝ruri.info の CSS は**コピーしていない**・URL のみ）。
+- `:root { --txtcolor }` は無改変かつ**警告に載らない**——`unmatched` を「sd 語彙でない全セレクタ」ではなく
+  **接頭辞ベース**にした判断が、実サンプルの時点で裏付けられた（前者だと 1 本目から警告がノイズになっていた）。
+- ⚠⚠ **実サンプルには意匠がほとんど無い。** 中身は外部 `@import` 1 行＋書体指定＋`--txtcolor` だけで、
+  吹き出しのデザインは**丸ごと外部 CSS の中**。→ **060b＋060d まで作っても「書体しか変わらない」**、
+  [060c](060c-external-css-snapshot.md) で初めて意匠が出る＝**060c はこの依頼者にとって payload そのもの**。
+  「セレクタ契約が実用に足るか」という 060 の中心的な問いも、外部 CSS の中身を見るまで答えが出ない。
+  詳細と 060d への追加の申し送り（`scopeSelectors` が `:root` を素通しできない件）は progress.md 060a 節。
 >
 > **必読前提**: 親 [060](060-overlay-custom-css.md)、
 > オーバーレイ描画 [`CommentList.tsx`](../../apps/desktop/src/screens/comment-viewer/CommentList.tsx)（`renderOverlayItem`）と

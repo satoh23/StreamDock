@@ -1424,6 +1424,18 @@ distill（vendor）したもので、keyring・`open`・hono/zod・dotenv・goog
   - **保存先は問わない**＝Rust の SQLite だけでなく、**webview の localStorage へ第三者のコメント本文・表示名・
     投げ銭金額を永続化する変更も本項に該当する**（046a の固定コメント＝§9 追補 046a）。ユーザー自身の UI 設定値
     （テーマ・フォント・トグル・チャンネル名等）を localStorage に置く変更は従来どおり本項に該当しない。
+- **オーバーレイへのユーザー CSS の注入**（060d／`<style>` 生成・`insertRule`・`adoptedStyleSheets` 等）
+  - ⚠⚠ **060b の `url()` / `@import` 除去が実装済みであることを前提条件として確認する**（060a レビュー S-2 で追加・2026-08-05）。
+    060a のセレクタ契約（`.sd-comment-icon` 等の安定クラス）は、ユーザー CSS が
+    `background-image: url(…)` / `@font-face src` / `image-set()` / `cursor: url()` / `list-style-image` で
+    **webview から実 egress を成立させる的**でもある。**060a 時点では注入経路がゼロなので実害は無い**が、
+    注入を実装した瞬間にこの経路が開く。＝**060b より先に 060d を実装してはならない**。
+  - ⚠ `csp: null` のままなので **webview 側に構造的な歯止めは無い**（Tauri v2 の `csp` はアプリ全体に 1 つで、
+    `comment-viewer` 窓は Twitch / YouTube / VOICEVOX / OBS への `connect-src` を要するため、
+    オーバーレイ窓だけに効かせることはできない）。＝**060b のサニタイザが唯一の壁**であり、
+    fail-closed かつ迂回（CSS エスケープ・コメント挿入・大文字・`\0075`）のテスト付きで実装すること。
+  - 060a 自体（安定クラスと CSS 変数を DOM/CSS に足すだけ・新規通信ゼロ・新規権限ゼロ）は本項に該当せず、
+    **軽レビューで妥当**だった（060a レビュー S-5）。本項が対象にするのは**注入する側**である。
 
 ### 011 ログイン項目（autostart, 019 時点）
 

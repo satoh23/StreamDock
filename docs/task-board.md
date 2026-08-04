@@ -317,15 +317,31 @@
   - ⚠⚠ **依頼者のサンプル CSS はそのままでは 1 行も効かない**。`yt-live-chat-text-message-renderer #message` / `.chat-line__no-background` は**YouTube/Twitch 純正チャットの DOM 向け**で、StreamDock のオーバーレイは独自 DOM ＋ CSS Modules（クラス名ハッシュ化）。**「差分を吸収」の実体はプラットフォーム間の差ではなく「純正チャット DOM と StreamDock の DOM の差」**（YouTube/Twitch の値の差は `CommentViewDto` で既に正規化済み）
   - ⚠ **本人決定＝互換エイリアス＋独自契約**。DOM を純正チャットの形に寄せるのではなく、**取り込んだ CSS のセレクタを sd 語彙へ機械的に書き換える**（DOM がきれいなまま・対応表が古くなっても StreamDock 側は壊れない）
   - ⚠ **本人決定＝外部 `@import` は取り込み時に 1 回だけ取得してスナップショット化**。実行時は完全オフライン。**§1「CDN からの css 読み込み禁止」／CSP 方針「外部 style を読み込まない」に正面から当たる**ので §1 に例外節を新設する
-  - 060a セレクタ契約＋変換表（[docs/tasks/060a-overlay-selector-contract.md](tasks/060a-overlay-selector-contract.md)／安定クラス `sd-*`・`data-sd-source`/`data-sd-event`/`data-sd-tone`・CSS 変数・`cssCompat.ts`〔純関数〕・**既存意匠は 1px も変えない**・`check-css-guards.mjs` にクラス名の存在検査を追加・**軽レビュー**）
-    - ⚠ **CSS 変数は「定義しただけで実値が直値のまま」にしない**（誰も読んでいない変数は最悪の API）
+  - ✅ **060a セレクタ契約＋変換表 実装済み（2026-08-04）**（[docs/tasks/060a-overlay-selector-contract.md](tasks/060a-overlay-selector-contract.md)／安定クラス `sd-*` 10 個・`data-sd-source`/`data-sd-event`/`data-sd-tone`・CSS 変数 9 個・`cssCompat.ts`〔純関数〕・**既存意匠は 1px も変えない**・`check-css-guards.mjs` に (10-a)〜(10-f) を追加・**軽レビュー済み＝修正必須 0 件**。詳細は progress.md 060a 節）
+    - ✅ **security-review＋品質レビュー実施済み（2026-08-05・厚い版）**。総合判定 **問題なし・修正必須 0 件**。敵対的入力 約60 本（`@import` 引用符なし／URL 内の `{}`／`@layer a,b;` と `@layer a{}`／`@supports>@media`／CSS Nesting／波括弧入りカスタムプロパティ／文字列の不正終端／閉じないコメント／BOM・NUL・制御文字／5000 段ネスト）で **`url()` が全ケースでバイト一致保存**・throw ゼロ・ハングゼロを実測。**ReDoS なし**（248KB の現実的入力 12.3ms・空白 10 万文字 4.9ms）。036a ガード無傷・ゼロ拡大・注入経路ゼロもコマンドで確認。**レビュー対応: Q-1（裸 id を警告専用パスへ追加・(10-g) 新設）／Q-2（ガード参照の (10-c)(10-b)(10-e) ずれ修正）／Q-3（`--sd-comment-gap` が 2 倍効く旨を明記）を適用済み**
+    - ⚠ **CSS 変数は `.root` に「定義」せず、参照側の `var(--sd-X, 現行値)` フォールバックに既定値を置いた**。`--sd-comment-radius` の当て先が `.bubble`=14px / `.card`=12px と**既定値が違う**ため、1 箇所に定義すると片方の実値が動く。副産物として **060d のプレビュー（`.sd-preview` 配下＝`.root` の外）でも意匠が保たれる**
+    - ⚠ **060b / 060d への申し送り①**: `rewriteSelectors()` を呼ぶのは **060d（注入時に毎回）**。060a のタスクファイル本文にあった「060b が取り込み時に適用する」は**古い記述で訂正済み**。**冪等**（2 回通しても同じ）が機能要件で、変換表の `from` に sd 語彙を書かないことがその担保（ガード (10-c) が検査）
+    - ⚠ **060b / 060d への申し送り②**: **`unmatched` は「セレクタの種類数」であってルール数ではない**。UI 文言は「**K 種類のセレクタは変換できませんでした**」にすること（`rewritten` のほうはルール単位なので「M 個のルール」でよい）
+    - ⚠ **060d への申し送り③**: `scopeSelectors(css, ".sd-preview")` は **`cssCompat.ts` とは別ファイル**に置くこと。同ファイルに `.sd-preview` を書くとガード (10-b)（変換表の右辺 ⊆ 実在する安定クラス）が**正しいコードで誤検知**する。⚠ さらに **`:root` / `html` / `body` は前置ではなくラッパ自身へ読み替える**こと——実サンプルが `:root { --txtcolor }` を含んでおり、素朴に前置すると `.sd-preview :root` になって**絶対に当たらない**（プレビューでだけ色が反映されない、原因の分かりにくい不一致になる）
+    - ⚠ **060d への申し送り④**: 固定コメント窓（`pinned-overlay`）には安定クラスと data 属性は**出るが `sd-overlay` は付かない**（窓の区別はこのクラスの有無で表す）。ガード (10-d) が両方向を固定しているので、固定窓へ広げるときは**ガードも一緒に更新**すること
+    - ⚠ **060d への申し送り⑤**: `.empty`（「コメントはまだありません」）は本体と共有の CSS モジュール由来で**安定クラスが付かない**＝ユーザー CSS からは隠せない
+    - ⚠ **060b とセットで完成させること**: 060a 時点で **CSS を注入する経路は存在しない**（実測済み）が、**契約を作った側**なので `.sd-comment-icon { background-image: url(…) }` の的は既にある。塞ぐのは 060b の `url()` 除去。**060b より先に 060d を実装してはならない**
+    - ✅ **実サンプル CSS で検証済み**（2026-08-04 受領・逐語でフィクスチャ化）。YouTube / Twitch とも **`rewritten=1` / `unmatched=[]` / 冪等**で変換成功。`:root { --txtcolor }` は無改変かつ**警告に載らない**（`unmatched` を接頭辞ベースにした判断が実サンプルで裏付けられた）。⚠ 第三者資産（ruri.info の CSS）は**コピーしていない**（URL のみ）
+    - ⚠⚠ **実サンプルが暴いた事実＝ 060c は「あれば嬉しい」ではなく payload そのもの**。実サンプル 2 本には**意匠がほとんど無く**、中身は外部 `@import` 1 行＋書体指定＋`--txtcolor` だけ。吹き出しのデザインは丸ごと外部 CSS の中にある。→ **060b＋060d まで作っても「書体しか変わらない」**、060c で初めて意匠が出る。**060c を実装しない判断を選ぶと、この依頼者の手持ち CSS は事実上使えない**（親 060 の「060d の実機の手応えを見てから 060c を判断する」の手応えが、今の時点で『書体だけ』と分かっている）
+    - ⚠ **「セレクタ契約が実用に足るか」はまだ答えが出ていない**。実サンプルは通ったが、意匠を作っている本体のセレクタ（外部 CSS の中身）を見ていないため。変換表の十分性は 060c で取り込んだ時点で `unmatched` により再評価する
+    - ⚠ 実サンプルの外部 URL は `midashi1Comment.css` / `twmidashi1Comment.css` で、**060c が例示する `fukidashiComment.css` とは別ファイル**（同一サイト）。依頼者は複数の意匠を持ちうる＝**060c の「宛先を allow-list で固定できない」前提はいっそう確か**
   - 060b CSS 取り込み基盤（[docs/tasks/060b-custom-css-import-backend.md](tasks/060b-custom-css-import-backend.md)／`app_data_dir/themes/`＋`overlay_themes` テーブル＋Rust 検証＋**外部 URL 除去**＋`comment-viewer.json` に `dialog:allow-open` を 1 件追加・**039 の確定方針をなぞる**・**security-review 必須**）
     - ⚠ **保存するのは変換前の CSS**（変換は注入時に frontend が毎回行う＝変換表の更新が既存テーマにも効く）
     - ⚠ **CSS エスケープ・コメント挿入による除去の迂回**をテストで具体的に潰すこと
+    - ⚠⚠ **§1 の例外節を書くとき、060a が作った「的」の存在に必ず触れること**（060a レビュー S-3）。安定クラス契約によりユーザー CSS はオーバーレイの全要素を**文書化された名前で確定的に狙える**＝**`url()` 除去は多層防御の 1 枚ではなく唯一の壁**。これを書かないと将来の読者が「念のための処理」と読んで緩める。加えて `.sd-comment-icon` は **036a の「webview が踏むのは data URI のみ」を背負っている要素そのもの**で、除去に穴があると 036a の不変条件がその要素の上で破れる
+    - ⚠ **CSP は安い代替にならない**（060a レビュー S-4）。`img-src 'self' data:` を効かせれば構造的に塞げるが、**Tauri v2 の `csp` はアプリ全体に 1 つ**で `comment-viewer` 窓は Twitch / YouTube / VOICEVOX / OBS への `connect-src` を要する＝オーバーレイ窓だけに効かせられない。**サニタイザが load-bearing** であることを前提に組むこと
+    - ⚠ **順序制約は `docs/security.md` の「レビュー必須条件」にも記載済み**（060a レビュー S-2 で追加）。task-board / progress.md だけでなくそちらが正
   - 060d テーマ管理 UI＋注入（[docs/tasks/060d-css-theme-management-ui.md](tasks/060d-css-theme-management-ui.md)／名前・一覧・切替・削除・プレビュー・`storage` 伝播・**軽レビュー**）
     - ⚠ **注入は `<style>` の `textContent` のみ**（`innerHTML` だと `</style>` で DOM が壊れる／`dangerouslySetInnerHTML` 使用ゼロという事実を壊さない）
     - ⚠ **「既定のデザインに戻す」を必ず置く**（`.sd-comment { display:none }` を入れると配信画面が空になり、表示専用のオーバーレイ窓からは復帰できない）
     - ⚠ **プレビューの CSS が窓全体へ漏れる**（`<style>` はスコープを持たない）→ `scopeSelectors` で `.sd-preview` を前置する
+    - ⚠⚠ **`unmatched` を画面に出す前に clamp すること**（060a レビュー S-1・実測）。ユーザー CSS 由来の**未署名文字列**で、**要素数**（相異なる `.chat-*` 2 万個 → 2 万件）も**1 要素の長さ**（引用符なしの属性値は `]` まで無制限＝5 万文字の 1 トークン・改行と制御文字を含む）も入力次第で無制限。React が escape するので XSS は無いが、**件数と 1 件あたりの長さの両方**に上限が要る（055b review S-5 と同型）
+    - ⚠ **`rewritten` を単独で「成功件数」として見せないこと**（060a レビュー Q-1）。複合セレクタの一部だけが変換され残りが純正チャットのままなら、そのルールは `rewritten` に数えられたうえで**当たらない**（`…renderer #timestamp` → `.sd-comment #timestamp`）。裸 id ぶんは `unmatched` が拾うようにしたので、**両方を並べて出す**こと
   - 060c 外部 `@import` のスナップショット（[docs/tasks/060c-external-css-snapshot.md](tasks/060c-external-css-snapshot.md)／sidecar が 1 回だけ GET →インライン化→保存・**§1 に例外節を新設**・**security-review 必須**・**実装しない判断も最後まで残る**）
     - ⚠⚠ **宛先が allow-list で固定できない**（ユーザーの CSS に書かれた URL）＝既存 7 例外との決定的な違い。代わりに**毎回の明示同意**＋**取得できる形を極端に狭める**（https のみ／443 のみ／`.css` のみ／リダイレクト禁止／サイズ・タイムアウト上限）で担保する
     - ⚠⚠ **SSRF が本タスク最大のリスク**。`assertAllowedThemeImportUrl` は **loopback / プライベート IP / `169.254.169.254` / `.local` / IP リテラルを拒否**する。⚠ **`assertAllowedObsUrl` は loopback を許可する逆向きのガード**なので絶対に流用しない

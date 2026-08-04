@@ -295,3 +295,62 @@ describe("PinnedOverlayApp 046c 長文の自動縮小フィット", () => {
     expect(fitTarget(container).style.transform).toMatch(/^scale\(/);
   });
 });
+
+/**
+ * 060a: 固定コメント窓における**セレクタ契約の出方**の仕様テスト。
+ *
+ * 仕様（docs/tasks/060a-overlay-selector-contract.md の「実装で判明した前提と訂正」2 ／
+ * docs/progress.md 060a 節が正）:
+ * - `renderOverlayItem` は `CommentList variant="overlay"` として**この窓とも共有**なので、
+ *   安定クラス（`sd-*`）と data 属性は**この窓の DOM にも出る**。注入経路が無い限り無害で、
+ *   将来 046d のように広げるときに DOM 側が用意済みになる、というのが採用理由。
+ * - ⚠⚠ **窓ルートの `sd-overlay` だけは付けない。** 理由は 2 つ:
+ *   ①060d の「CSS の注入先は `comment-overlay` のみ」を**構造で**表す（窓の区別がこのクラスの有無）
+ *   ②046c の `applyFitScale` がこの窓の `.root` の `transform`/`width`/`height` を**排他所有**しており、
+ *     そこをユーザー CSS に触らせる的を作ると縮小フィットが壊れる。
+ *
+ * ⚠ ガード (10-d) は `PinnedOverlayApp.tsx` の**ソース文字列**に `sd-overlay` が無いことしか見ない。
+ * 「実際に DOM へ出る／出ない」はここが唯一の担保（(10) 冒頭が定めた役割分担のとおり）。
+ * 固定窓へ広げるときは**このテストとガード (10-d) を必ず一緒に**更新すること。
+ */
+describe("PinnedOverlayApp 060a セレクタ契約の出方", () => {
+  it("安定クラスと data 属性は固定窓の DOM にも出る（共有コンポーネント経由）", () => {
+    savePinned([makePinned({ text: "固定した本文" })]);
+    const { container } = render(<PinnedOverlayApp />);
+
+    const item = container.querySelector<HTMLElement>(".sd-comment");
+    expect(item).toBeTruthy();
+    expect(item?.dataset.sdSource).toBe("twitch");
+    expect(item?.dataset.sdEvent).toBe("chat");
+    expect(container.querySelector(".sd-comment-name")?.textContent).toBe("Alice");
+    expect(container.querySelector(".sd-comment-text")?.textContent).toBe("固定した本文");
+    expect(container.querySelector(".sd-comment-icon")).toBeTruthy();
+    expect(container.querySelector(".sd-comment-body")).toBeTruthy();
+    // chat には data-sd-tone を付けない（comment-overlay 窓と同じ判断）。
+    expect(item?.dataset.sdTone).toBeUndefined();
+  });
+
+  it("⚠ 窓ルートに sd-overlay は付かない（060d の注入先は comment-overlay のみ）", () => {
+    savePinned([makePinned()]);
+    const { container } = render(<PinnedOverlayApp />);
+    expect(container.querySelector(".sd-overlay")).toBeNull();
+    // 046c が transform を書き込む .root 自身にも付いていないこと（排他所有を守る）。
+    expect((container.firstChild as HTMLElement).className).not.toContain("sd-overlay");
+  });
+
+  it("課金の固定コメントでも契約が出る（sd-comment-tip と data-sd-tone）", () => {
+    savePinned([
+      makePinned({
+        eventType: "superchat",
+        text: "応援してます",
+        monetaryAmount: "10,000 JPY",
+        monetary: { amount: 10000, currency: "JPY" },
+      }),
+    ]);
+    const { container } = render(<PinnedOverlayApp />);
+    const item = container.querySelector<HTMLElement>(".sd-comment");
+    expect(item?.className).toContain("sd-comment-tip");
+    expect(item?.dataset.sdTone).toBe("t6");
+    expect(container.querySelector(".sd-comment-amount")?.textContent).toBe("10,000 JPY");
+  });
+});

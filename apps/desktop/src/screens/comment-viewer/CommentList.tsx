@@ -302,6 +302,18 @@ export function CommentList({
   // 034e: OBS オーバーレイ用チャット意匠（LINE 風）。上段＝名前＋サイト名ピルバッジ（別の行）／下段＝アイコン｜吹き出し
   // （同じ行の 2 列）。吹き出し左辺のしっぽがアイコン方向へ向く。showSource=true のときだけサイト名ピルを名前の横に
   // 添える（受信済み source の表示のみ・新規取得はしない）。
+  //
+  // 060a: ユーザーが持ち込むカスタム CSS が狙える的として、**ハッシュ化されない安定クラス（`sd-*`）と
+  // data 属性**を CSS Modules のクラスに**併記**する。意匠は 1px も変えない（クラスと属性が増えるだけ）。
+  //   ⚠ **chat と課金で「同じ役割」には同じ安定クラスを当てる**（`text` と `cardText` はどちらも
+  //   `sd-comment-text`／`bubble` と `cardBody` はどちらも `sd-comment-body`）。ユーザーは「本文の色を
+  //   変えたい」としか思っておらず、StreamDock 内部の分岐を知らない。**既存の CSS Modules クラス名を
+  //   そのまま sd- にした写像にはしないこと。**
+  //   ⚠ この関数は **`PinnedOverlayApp`（固定コメント窓）とも共有**なので、ここで足したクラス・属性は
+  //   あちらの DOM にも出る。それでよい（060d の注入先は `comment-overlay` のみで、固定窓に降りる CSS は
+  //   無い＝クラスは付くだけの無害な文字列。将来 046d のように広げるとき DOM 側は用意済みになる）。
+  //   窓の区別が要るときは `OverlayApp` のルートにだけ付く `sd-overlay` を使う。
+  //   契約の正は docs/tasks/060a-overlay-selector-contract.md。変換表は `features/comment-viewer/cssCompat.ts`。
   const renderOverlayItem = (c: CommentViewDto) => {
     // 036a: 描画シンクで「webview が踏むのは data URI のみ」（親 036・§CSP の不変条件）を強制する。avatar を
     // background-image に差すのは値が data: 始まりのときだけとし、それ以外（036b にバグで raw URL が漏れた等）は
@@ -313,7 +325,7 @@ export function CommentList({
     // 036a のガードを両分岐（chat 吹き出し／043c 投げ銭カード）で共有する 1 枚のアイコン要素。
     const icon = (
       <div
-        className={overlayStyles.icon}
+        className={`${overlayStyles.icon} sd-comment-icon`}
         style={avatar ? { backgroundImage: `url("${avatar}")` } : undefined}
         aria-hidden="true"
       >
@@ -329,12 +341,23 @@ export function CommentList({
     const dtype = displayEventType(c);
     if (dtype === "chat") {
       return (
-        <li key={c.id} className={overlayStyles.item}>
+        // 060a: chat には `data-sd-tone` を**付けない**。`monetaryTone()` は chat を "t0" へ無害劣化
+        // させる（viewerFormat.ts の docstring）ので、付けると `[data-sd-tone="t0"]` で「最低額スパチャ
+        // だけ光らせる」と書いたユーザーの CSS が**全部の chat にも当たる**。chat と課金の区別は
+        // `data-sd-event` と `.sd-comment-tip` の両方で既に付いている。
+        <li
+          key={c.id}
+          className={`${overlayStyles.item} sd-comment`}
+          data-sd-source={c.source}
+          data-sd-event={dtype}
+        >
           <div className={overlayStyles.header}>
-            <span className={overlayStyles.name}>{c.author.name}</span>
+            <span className={`${overlayStyles.name} sd-comment-name`}>
+              {c.author.name}
+            </span>
             {showSource && (
               <span
-                className={`${overlayStyles.source} ${OVERLAY_SOURCE_CLASS[c.source]}`}
+                className={`${overlayStyles.source} ${OVERLAY_SOURCE_CLASS[c.source]} sd-comment-source`}
               >
                 {SOURCE_LABEL[c.source]}
               </span>
@@ -342,8 +365,8 @@ export function CommentList({
           </div>
           <div className={overlayStyles.row}>
             {icon}
-            <div className={overlayStyles.bubble}>
-              <p className={overlayStyles.text}>{c.text}</p>
+            <div className={`${overlayStyles.bubble} sd-comment-body`}>
+              <p className={`${overlayStyles.text} sd-comment-text`}>{c.text}</p>
             </div>
           </div>
         </li>
@@ -355,35 +378,51 @@ export function CommentList({
     //   【レビュー対応・修正不要】donation/jewels は実金銭だが意図的に種別単色（ティアは YT 同様スパチャ専用）。
     //   金額は amountBadge に verbatim 表示されるため見逃さない。再修正トリガー: これらもティア配色したくなったら
     //   `monetaryTone` の分岐条件を拡げる（本体側の一覧カード/ティッカーにも同時に効く）。
-    const cardClass = OVERLAY_TONE_CLASS[monetaryTone(c)];
+    // 060a: 配色キーは `data-sd-tone` にも出すので、クラスを引くのと同じ値を 1 回だけ評価して共有する
+    // （ユーザーが「高額スパチャだけ光らせる」を書けるようにするフック。既に配色で引いている値をそのまま出すだけ）。
+    const tone = monetaryTone(c);
+    const cardClass = OVERLAY_TONE_CLASS[tone];
     // 金額を持たない種別（サブスク/メンシプ/ギフト）は「〇〇さんが…しました」の要約をボディ主表示にする（本体 043b と同じ）。
     const eventMessage = composeEventMessage(c);
     return (
       <li
         key={c.id}
-        className={`${overlayStyles.item} ${overlayStyles.card} ${cardClass}`}
+        className={`${overlayStyles.item} ${overlayStyles.card} ${cardClass} sd-comment sd-comment-tip`}
+        data-sd-source={c.source}
+        data-sd-event={dtype}
+        data-sd-tone={tone}
       >
         <div className={overlayStyles.cardHeader}>
           {icon}
-          <span className={overlayStyles.cardName}>{c.author.name}</span>
+          <span className={`${overlayStyles.cardName} sd-comment-name`}>
+            {c.author.name}
+          </span>
           {showSource && (
             <span
-              className={`${overlayStyles.source} ${OVERLAY_SOURCE_CLASS[c.source]}`}
+              className={`${overlayStyles.source} ${OVERLAY_SOURCE_CLASS[c.source]} sd-comment-source`}
             >
               {SOURCE_LABEL[c.source]}
             </span>
           )}
           {/* 金額はヘッダ右端の pill。監視済み monetaryAmount をそのまま表示（例 "1,000 JPY" / "100 bits"）。 */}
           {c.monetaryAmount && (
-            <span className={overlayStyles.amountBadge}>{c.monetaryAmount}</span>
+            <span className={`${overlayStyles.amountBadge} sd-comment-amount`}>
+              {c.monetaryAmount}
+            </span>
           )}
         </div>
         {(eventMessage || c.text) && (
-          <div className={overlayStyles.cardBody}>
+          <div className={`${overlayStyles.cardBody} sd-comment-body`}>
             {eventMessage && (
-              <p className={overlayStyles.eventMessage}>{eventMessage}</p>
+              <p className={`${overlayStyles.eventMessage} sd-comment-event`}>
+                {eventMessage}
+              </p>
             )}
-            {c.text && <p className={overlayStyles.cardText}>{c.text}</p>}
+            {c.text && (
+              <p className={`${overlayStyles.cardText} sd-comment-text`}>
+                {c.text}
+              </p>
+            )}
           </div>
         )}
       </li>

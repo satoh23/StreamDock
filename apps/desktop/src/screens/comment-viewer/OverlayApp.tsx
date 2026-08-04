@@ -87,8 +87,16 @@ export function OverlayApp() {
   return (
     // 034e: フォント選択はモジュール CSS ではなく .root への inline font-family で当て、子孫（名前/本文）が継承する
     // （font スタック文字列は overlaySettings.ts に置く＝色ではないので生 hex 規約の対象外）。
+    //
+    // 060a: ユーザーのカスタム CSS 向けに、ハッシュ化されない安定クラス `sd-overlay` を併記する
+    // （CSS 変数 `--sd-*` を上書きする器＝`.sd-overlay { --sd-comment-bg: … }` と書ける）。
+    //   ⚠ **この窓（`comment-overlay`）にだけ付ける。** 同じ `.root` と `CommentList variant="overlay"` を
+    //   使う `PinnedOverlayApp`（固定コメント窓）には**付けない**。理由は 2 つ:
+    //   ①060d の注入先は `comment-overlay` のみと決まっており、窓の区別をこのクラスの有無で表す
+    //   ②`PinnedOverlayApp` は 046c の `applyFitScale` が `.root` の transform / width / height を
+    //     **排他所有**しているので、そこをユーザー CSS に触らせる的を作らない（縮小フィットが壊れる）。
     <div
-      className={styles.root}
+      className={`${styles.root} sd-overlay`}
       style={{ fontFamily: resolveOverlayFontStack(font) }}
     >
       {/* 033f 追修正: OBS 用オーバーレイはコメントだけ映す（コメント合計「N 件」は出さない）。 */}

@@ -7,15 +7,31 @@
    043c: chat 以外（投げ銭）は末尾の YouTube スパチャ風カード（.card 一式）で描く。カードも不透明色（--tip-*）
    なので窓透過は不変。カード用の色トークンも生 hex/rgba を残さず --tip-* 経由で参照する。
    047b: このカード配色は本体 UI（コメント一覧の課金カード／上部の課金ティッカー）と**共有**になったため、
-   トークンの接頭辞が --overlay-tip-* から --tip-* へ変わっている（OBS 専用の --overlay-name-* 等はそのまま）。 */
+   トークンの接頭辞が --overlay-tip-* から --tip-* へ変わっている（OBS 専用の --overlay-name-* 等はそのまま）。
+
+   060a: ユーザーのカスタム CSS 向けに **`--sd-*` 変数**を公開する。契約は docs/tasks/060a-…md が正。
+   ⚠ **`.root`（OverlayApp.module.css）側で既定値を「定義」しない**——この 2 点が理由:
+     ① 同じ変数の当て先で**既定値が違う**ものがある（`--sd-comment-radius` は .bubble=14px / .card=12px）。
+        `.root` に 1 つの既定値を置くと、片方の実値が動く＝「既存意匠を 1px も変えない」に反する。
+     ② 060d のプレビューは `.sd-preview` ラッパの中にダミーコメントを描く＝**`.root` の外**なので、
+        `.root` の定義に依存すると var() が未定義になりプレビューの意匠が壊れる。
+   → **既定値は必ず `var(--sd-X, 現行値)` のフォールバック側に置く**（フォールバックが唯一の真実）。
+   ⚠ 変数を増やす／当て先を変えるときは `scripts/check-css-guards.mjs` の (10-e)（フォールバック値の
+   厳密一致）と (10-f)（.name の text-shadow 5 箇所）を必ず一緒に更新すること
+   （フォールバック値をそこで厳密一致で固定してあり、値を動かすと落ちる＝意匠が動いたことの検知）。 */
 
 /* 1 コメント＝名前行（上）とアイコン｜吹き出し行（下）の縦積み。
    レイアウト用ローカル変数（色トークンではなく寸法）: --icon-size=アイコン径 / --icon-gap=アイコン⇔吹き出しの間隔。
    間隔はしっぽの突き出し（≒20px）より広くしてアイコンと被らないようにする。名前行のインデントもこの 2 値から算出する
-   ので、間隔を変えても名前が吹き出し左辺に揃ったままになる。 */
+   ので、間隔を変えても名前が吹き出し左辺に揃ったままになる。
+   060a: この 2 つのローカル変数は**この .item 自身が宣言している**ため、ユーザーが祖先（.sd-overlay）へ
+   --sd-icon-size を書いても、そのままでは自分の宣言が勝って**何も起きない**。そこで既定値の側を
+   `var(--sd-icon-size, 44px)` にして「ユーザー指定があればそれ、無ければ現行値」に読み替える。
+   ⚠ アイコン径と間隔を**対で**公開するのが要点——片方だけだと、アイコンを小さくしたときに 28px の
+   間隔が過大なまま調整できない。どちらを動かしても .header のインデント（下の calc）が追随する。 */
 .item {
-  --icon-size: 44px;
-  --icon-gap: 28px;
+  --icon-size: var(--sd-icon-size, 44px);
+  --icon-gap: var(--sd-icon-gap, 28px);
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -29,6 +45,19 @@
   /* 035b(本人フィードバック): コメントが詰まって見えたので縦余白を広げる（共有の .list gap は default 本体にも
      波及するため触らず、overlay 専用の .item 縦 padding を 2px→6px に増やして 1 コメントの上下に余白を足す）。 */
   padding: 6px 4px;
+  /* 060a: 「コメント間の余白」をユーザーへ公開する枠。**既定 0px＝現行の見た目は 1px も変わらない**
+     （li の UA 既定 margin は 0。theme.css にも li/ul の margin リセットは無く、.list は flex なので
+     margin 相殺も起きない＝0px は真に no-op であることを確認済み）。
+     ⚠ **指定値は 2 倍効く**（060a レビュー Q-3）。margin-block は上下**両方**に効き、flex アイテム同士の
+     margin は相殺されないため、コメント間の実距離は `6px（.list の gap）＋ 2 × --sd-comment-gap`。
+     先頭の上・末尾の下にも 1 つぶん付く。＝`--sd-comment-gap: 10px` は 10px ではなく **26px** になる。
+     060d でこの変数を UI から触らせるなら、ラベルは「間隔」ではなく「上下の余白」にするか、
+     UI 側で半分の値を書き込むこと。
+     ⚠ padding / gap ではなく **margin** に載せるのが要点——下の .card が `padding: 0; gap: 0` で .item を
+     打ち消すため、padding 側に載せると **chat だけ効いて投げ銭カードには効かない**（非対称で説明できない）。
+     margin は打ち消されないので chat と課金の両方に同じだけ効く。
+     ⚠ 共有 .list（CommentViewerApp.module.css）の gap には**触らない**（035b と同じ理由＝本体へ波及する）。 */
+  margin-block: var(--sd-comment-gap, 0px);
 }
 
 /* 名前行：ユーザー名＋サイト名ピルバッジを横並び。吹き出しの上に来るよう、アイコン幅（44）＋行 gap（8）ぶん
@@ -42,7 +71,12 @@
 }
 
 /* ユーザー名：太めの黒＋白い縁取り（透過映像の上に出るので縁取りで可読性を確保）。狭いカラムではなくなったので
-   折り返さず 1 行で流し、長すぎる場合だけ ellipsis で切る（旧レイアウトの折りたたみ問題を解消）。 */
+   折り返さず 1 行で流し、長すぎる場合だけ ellipsis で切る（旧レイアウトの折りたたみ問題を解消）。
+   060a: --sd-name-fg / --sd-name-outline で上書きできる。⚠ 縁取りを**変数にしないと**ユーザーは
+   多重 text-shadow の 5 箇所を自力で書き直すことになる（透過映像上の可読性はこの縁取りが握っている）。
+   ⚠ 課金カードのヘッダ名（.cardName）には --sd-name-fg を当てない——あちらは `color: inherit` で
+   ティア帯の --tone-fg（明るいティアは暗文字）を継いでおり、上書きするとティアによって名前が読めなくなる。
+   課金側の名前色を触りたいユーザーは `.sd-comment-tip .sd-comment-name { … }` で狙える。 */
 .name {
   min-width: 0;
   overflow: hidden;
@@ -51,13 +85,13 @@
   font-size: 13px;
   font-weight: 800;
   line-height: 1.3;
-  color: var(--overlay-name-fg);
+  color: var(--sd-name-fg, var(--overlay-name-fg));
   text-shadow:
-    -1px -1px 0 var(--overlay-outline),
-    1px -1px 0 var(--overlay-outline),
-    -1px 1px 0 var(--overlay-outline),
-    1px 1px 0 var(--overlay-outline),
-    0 0 3px var(--overlay-outline);
+    -1px -1px 0 var(--sd-name-outline, var(--overlay-outline)),
+    1px -1px 0 var(--sd-name-outline, var(--overlay-outline)),
+    -1px 1px 0 var(--sd-name-outline, var(--overlay-outline)),
+    1px 1px 0 var(--sd-name-outline, var(--overlay-outline)),
+    0 0 3px var(--sd-name-outline, var(--overlay-outline));
 }
 
 /* サイト名：名前の横に置く色付きの丸枠（ピル型）バッジ。ソリッドな色なので透過映像の上でも視認しやすい。
@@ -116,14 +150,21 @@
   user-select: none;
 }
 
-/* 吹き出し：ほぼ純白の不透明カード＋太めの枠＋ソフト影。position:relative は下のしっぽ（::before/::after）の基準。 */
+/* 吹き出し：ほぼ純白の不透明カード＋太めの枠＋ソフト影。position:relative は下のしっぽ（::before/::after）の基準。
+   060a: --sd-comment-bg（塗り）/ --sd-comment-border（枠）/ --sd-comment-radius（角丸）で上書きできる。
+   ⚠ **塗りと枠を変数にしないと、しっぽ（::before/::after）だけ元の色で取り残される**——ユーザーが
+   `.sd-comment-body { background: … }` とクラスで書いても擬似要素には当たらないため。この 2 つは
+   「複数箇所が連動しないと壊れる値」であり、変数にする第一の理由がそれ。
+   ⚠ --sd-comment-bg は **chat の吹き出しにだけ**当てる。投げ銭カードの背景（--tone-bg / --tone-body）へも
+   当てると**ティア 13 色が 1 変数で同色に潰れて金額の情報が消える**（043c/047b の情報設計）。
+   ティアごとに変えたいユーザーは `.sd-comment[data-sd-tone="t6"] .sd-comment-body { … }` で狙える。 */
 .bubble {
   position: relative;
   flex: 1;
   min-width: 0;
-  background: var(--overlay-bubble-bg);
-  border: 2.5px solid var(--overlay-bubble-border);
-  border-radius: 14px;
+  background: var(--sd-comment-bg, var(--overlay-bubble-bg));
+  border: 2.5px solid var(--sd-comment-border, var(--overlay-bubble-border));
+  border-radius: var(--sd-comment-radius, 14px);
   padding: 8px 12px;
   filter: drop-shadow(0 1px 3px var(--overlay-bubble-shadow));
 }
@@ -143,33 +184,40 @@
   border-left-width: 0;
 }
 
-/* 外側＝枠色の三角（やや大きく頂点が最も左）。 */
+/* 外側＝枠色の三角（やや大きく頂点が最も左）。
+   060a: 枠色は .bubble の border と**同じ変数**を読む（片方だけ変わるとしっぽの縁が浮く）。 */
 .bubble::before {
   top: 12px;
   left: -20px;
   border-top-width: 12px;
   border-bottom-width: 12px;
   border-right-width: 20px;
-  border-right-color: var(--overlay-bubble-border);
+  border-right-color: var(--sd-comment-border, var(--overlay-bubble-border));
 }
 
-/* 内側＝塗り色の三角（枠ぶん内側・本体へ +2px 重ねて join を隠す。上下は外側より 2px 小さく枠を覗かせる）。 */
+/* 内側＝塗り色の三角（枠ぶん内側・本体へ +2px 重ねて join を隠す。上下は外側より 2px 小さく枠を覗かせる）。
+   060a: 塗り色は .bubble の background と**同じ変数**を読む（片方だけ変わるとしっぽだけ元の色で残る）。
+   ⚠ しっぽの位置・大きさは --sd-comment-radius に**追随しない**（角丸を大きくすると継ぎ目がずれる）。
+   これは既知の制限で、変数を増やしてまで追随させるだけの需要が現時点で無いため据え置く。
+   再修正トリガー: 角丸を大きくしたテーマで実機の見た目が破綻したら、しっぽの位置も変数化する。 */
 .bubble::after {
   top: 14px;
   left: -16px;
   border-top-width: 10px;
   border-bottom-width: 10px;
   border-right-width: 18px;
-  border-right-color: var(--overlay-bubble-bg);
+  border-right-color: var(--sd-comment-bg, var(--overlay-bubble-bg));
 }
 
-/* 本文：名前より少し薄い黒。大きめ（OBS で読めるサイズ）。ほぼ純白の吹き出し上なので白縁取りは付けない。 */
+/* 本文：名前より少し薄い黒。大きめ（OBS で読めるサイズ）。ほぼ純白の吹き出し上なので白縁取りは付けない。
+   060a: --sd-comment-fg で上書きできる（下の .cardBody と**同じ変数**＝「本文の文字色」は chat / 課金で
+   1 つの役割。ユーザーは内部の分岐を知らないので、2 変数に割らない）。 */
 .text {
   margin: 0;
   font-size: 19px;
   font-weight: 700;
   line-height: 1.5;
-  color: var(--overlay-body-fg);
+  color: var(--sd-comment-fg, var(--overlay-body-fg));
   word-break: break-word;
 }
 
@@ -180,7 +228,11 @@
    差し替え、.cardHeader/.cardBody/.amountBadge がそれを参照する。px は tauri dev で微調整前提の初期値。 */
 .card {
   overflow: hidden; /* ヘッダ/ボディの角をカード角丸でクリップ */
-  border-radius: 12px; /* 043c 追修正(本人フィードバック): 課金カードの角を少し丸く。18px は丸すぎたため 12px に減らす（chat 吹き出し 14px よりわずかに控えめ） */
+  /* 043c 追修正(本人フィードバック): 課金カードの角を少し丸く。18px は丸すぎたため 12px に減らす（chat 吹き出し 14px よりわずかに控えめ）
+     060a: ⚠ **フォールバックが .bubble（14px）と違う 12px なのは意図どおり**——上の意匠差をそのまま
+     保つため。だからこそ `.root` 側に --sd-comment-radius の既定値を「定義」してはいけない
+     （1 つの既定値を置くと片方の実値が動く＝意匠が変わる）。ユーザーが指定したときだけ両方が同じ値になる。 */
+  border-radius: var(--sd-comment-radius, 12px);
   filter: drop-shadow(0 1px 3px var(--overlay-bubble-shadow)); /* 映像上で輪郭を出す（吹き出しと同じ影トークン） */
   /* 043c 追修正(本人フィードバック): .item の gap:2px/padding:6px 4px を打ち消し、色付きヘッダ/ボディをカード縁まで広げて
      border-radius(overflow:hidden) を実際に効かせる。gap:0 はヘッダ⇔ボディ間の透明スリット（黒い線に見える）も同時に消す。
@@ -233,14 +285,17 @@
   background: color-mix(in srgb, currentColor 20%, transparent);
 }
 
-/* ボディ：ヘッダと同系色の淡色・暗文字。種別文言（.eventMessage）と本文（.cardText）を縦に積む。 */
+/* ボディ：ヘッダと同系色の淡色・暗文字。種別文言（.eventMessage）と本文（.cardText）を縦に積む。
+   060a: 文字色は chat の .text と**同じ --sd-comment-fg**（.eventMessage / .cardText が継承する）。
+   ⚠ 背景（--tone-body）は変数化しない——ティア配色は「額が色で分かる」という情報設計そのもので、
+   1 変数で潰させない。ティアごとに変えたいユーザーは `[data-sd-tone="…"]` で狙う。 */
 .cardBody {
   display: flex;
   flex-direction: column;
   gap: 3px;
   padding: 8px 12px;
   background: var(--tone-body);
-  color: var(--overlay-body-fg);
+  color: var(--sd-comment-fg, var(--overlay-body-fg));
 }
 
 /* 金額を持たない課金種別（サブスク/メンシプ/ギフト）の組み立て文言。本文より少し強めに出して何が起きたか一目で分かるように。 */
