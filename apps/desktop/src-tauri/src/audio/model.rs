@@ -33,8 +33,14 @@ pub struct AudioOutputDevice {
 /// `play_notification_sound` はこの enum しか受け取らないので、frontend からパスや任意のバイト列を
 /// 渡す経路が型レベルで塞がっている。**ここを `String` や `PathBuf` に変えないこと。**
 ///
-/// 059a が `Comment`、059b が `Monetary` を足す想定。音の波形は
+/// 059b が `Monetary` を足す想定。音の波形は
 /// `service::samples_for` の `match` に 1 アームを足すだけで増やせる（decoder は要らない）。
+///
+/// ⚠ **variant は「ペイロードなし」のまま増やすこと。** `Comment { volume: f32 }` のように
+/// ペイロードを持たせる変更は、docs/security.md の「レビュー必須条件」が
+/// **「enum 以外で指定できるようにする変更」に含む**と名指ししており security-review 必須になる
+/// （契約テストの `PathBuf` needle では捕まらないため、条文側で止めている）。
+/// 059a がペイロードなしの `Comment` 追加に留めたのはこの線を越えないため（判断根拠は progress.md 059a）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "lowercase")]
 #[ts(export, export_to = "../../src/features/comment-viewer/bindings/")]
@@ -45,4 +51,10 @@ pub enum NotificationSound {
     /// 059 の領分だから。とはいえ 058s の合格基準は「選んだデバイスで鳴る」＋「既定デバイスでは
     /// 鳴らない」の 2 点セットで、鳴らせる音が 1 つも無いと 058a 単体でそれを測れない。
     Test,
+    /// 059a: コメントが届いたときに鳴らす「ポン」。
+    ///
+    /// ⚠ **`Test` と同じ波形にしない**（`service::tone_spec` で別の値にしてある）。設定画面には
+    /// 「テスト再生」（出力先の検証・`Test`）と「試聴」（この音の確認・`Comment`）の 2 つのボタンが
+    /// 並ぶので、同じ音だと**どちらを押したのか分からず、テスト再生の診断価値が落ちる**。
+    Comment,
 }

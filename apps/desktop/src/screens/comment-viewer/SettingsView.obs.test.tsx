@@ -52,6 +52,12 @@ function baseProps(over: Partial<Props> = {}): Props {
     onReloadAudioOutputDevices: vi.fn(),
     onTestNotificationSound: vi.fn(),
     audioTestState: "idle",
+    // 059a: コメント通知音（このファイルの検証対象ではないので既定＝OFF を渡すだけ）。
+    // 検証は SettingsView.audio.test.tsx が担う。
+    soundCommentEnabled: false,
+    onSoundCommentEnabledChange: vi.fn(),
+    onPreviewCommentSound: vi.fn(),
+    soundPreviewState: "idle",
     // 045b: 表示（開閉）トグルは本体ツールバーへ移設したため、SettingsViewProps に overlayOpen /
     // onOverlayToggle は無い（余剰プロパティ検査で typecheck が落ちるので残さない）。移設先の検証は
     // CommentViewerApp.toolbar.test.tsx が担う。このファイルの検証対象（044a の OBS 連携 UI）は不変。

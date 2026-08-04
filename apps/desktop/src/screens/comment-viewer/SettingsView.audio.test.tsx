@@ -65,6 +65,11 @@ function baseProps(over: Partial<Props> = {}): Props {
     onReloadAudioOutputDevices: vi.fn(),
     onTestNotificationSound: vi.fn(),
     audioTestState: "idle",
+    // 059a: コメント通知音（既定 OFF）。下の describe("SettingsView 通知音") が検証対象にする。
+    soundCommentEnabled: false,
+    onSoundCommentEnabledChange: vi.fn(),
+    onPreviewCommentSound: vi.fn(),
+    soundPreviewState: "idle",
     overlayFont: DEFAULT_OVERLAY_FONT,
     onOverlayFontChange: vi.fn(),
     overlayShowSource: false,
@@ -329,5 +334,147 @@ describe("SettingsView 音声出力（通知音）", () => {
         /仮想オーディオデバイスを導入していない場合、この設定をしても「配信に載せない」は機能しません/,
       ),
     ).toBeInTheDocument();
+  });
+});
+
+/**
+ * 059a: 設定ビューの「通知音」カードの仕様テスト。
+ *
+ * ⚠ **ファイルを分けず、この 058a のファイルに同居させている**（レビュー観点として明示）。
+ * 理由＝冒頭 `baseProps` のコメントが「この形の baseProps を持つファイルが 3 つ以上になったら
+ * 共有ヘルパへ出す」と再修正トリガーを定めており、3 本目を作るとそこに抵触する。両カードとも
+ * 「音まわり」で props も同じ一式を要るので、describe を分けるだけで意図の分離は足りる。
+ *
+ * あるべき挙動（docs/tasks/059a-comment-notification-sound.md）:
+ * - ⚠ **既定は OFF**（アップデート直後に無操作で鳴り始めない）。
+ * - 試聴ボタンがある（ON にしても次のコメントが来るまで音を確認できない、を避ける）。
+ *   ⚠ 058a の「テスト再生」とは**目的が違うので重複ではない**——あちらは出力先の検証、こちらは音の確認。
+ * - ⚠ 出力先が未選択でも**トグルを disabled にしない**（別カードの状態に依存する disabled は理由が読めない）。
+ *   代わりに **ON かつ未選択のときだけ**理由を文章で出し、試聴は押せなくする。
+ * - ⚠ 「以前選んだデバイスが見つからない」ときは**このカードでは何も言わない**（058a のカードの担当。
+ *   両方出すと同じ状態を 2 つの違う言葉で二重に叱ることになり、かつ「未選択」は事実として誤り）。
+ * - ⚠ 音量スライダーは**無い**（振幅は Rust 固定・OS のデバイス別音量が独立に効く）。
+ * - §9: 警告文にデバイス名・デバイス ID を出さない。
+ */
+describe("SettingsView 通知音", () => {
+  /** 059a の試聴ボタン（058a の「テスト再生 ▶」とは別物）。 */
+  function previewButton(): HTMLButtonElement {
+    return screen.getByRole("button", { name: "試聴 ▶" }) as HTMLButtonElement;
+  }
+
+  it("コメント通知音のトグルがあり、既定は OFF", () => {
+    render(<SettingsView {...baseProps()} />);
+    expect(
+      screen.getByRole("switch", { name: "コメント通知音" }),
+    ).not.toBeChecked();
+  });
+
+  it("トグルを操作すると onSoundCommentEnabledChange が呼ばれる", () => {
+    const onSoundCommentEnabledChange = vi.fn();
+    render(
+      <SettingsView {...baseProps({ onSoundCommentEnabledChange })} />,
+    );
+    fireEvent.click(screen.getByRole("switch", { name: "コメント通知音" }));
+    expect(onSoundCommentEnabledChange).toHaveBeenCalledWith(true);
+  });
+
+  it("デバイス選択済みなら試聴が押せて onPreviewCommentSound を呼ぶ", () => {
+    const onPreviewCommentSound = vi.fn();
+    render(
+      <SettingsView
+        {...baseProps({
+          audioOutputDeviceId: "CoreAudio:BuiltInSpeakerDevice",
+          onPreviewCommentSound,
+        })}
+      />,
+    );
+    expect(previewButton()).toBeEnabled();
+    fireEvent.click(previewButton());
+    expect(onPreviewCommentSound).toHaveBeenCalledTimes(1);
+  });
+
+  it("⚠ 出力先が未選択のとき試聴は押せない（押しても何も起きないボタンにしない）", () => {
+    render(<SettingsView {...baseProps({ audioOutputDeviceId: "" })} />);
+    expect(previewButton()).toBeDisabled();
+  });
+
+  it("再生中は試聴を押せない（連打で Rust の同時再生上限に当てない）", () => {
+    render(
+      <SettingsView
+        {...baseProps({
+          audioOutputDeviceId: "CoreAudio:BuiltInSpeakerDevice",
+          soundPreviewState: "playing",
+        })}
+      />,
+    );
+    expect(previewButton()).toBeDisabled();
+  });
+
+  it("⚠ ON かつ出力先が未選択のとき、鳴らない理由を文章で伝える（トグルは無効化しない）", () => {
+    render(
+      <SettingsView
+        {...baseProps({ soundCommentEnabled: true, audioOutputDeviceId: "" })}
+      />,
+    );
+    expect(
+      screen.getByText(
+        "通知音の出力先が未選択です。上の「音声出力（通知音）」でデバイスを選ぶまで鳴りません。",
+      ),
+    ).toBeInTheDocument();
+    // ⚠ 別カードの状態に依存する disabled は理由が読めないので、トグルは押せるままにする
+    //（「先に ON にしてから出力先を選ぶ」順序を禁止しない）。
+    expect(screen.getByRole("switch", { name: "コメント通知音" })).toBeEnabled();
+  });
+
+  it("OFF のあいだは未選択でも赤字を出さない（鳴らないのが正常な状態）", () => {
+    render(
+      <SettingsView
+        {...baseProps({ soundCommentEnabled: false, audioOutputDeviceId: "" })}
+      />,
+    );
+    expect(
+      screen.queryByText(/通知音の出力先が未選択です/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("⚠ 保存済みデバイスが一覧に無いときは 058a のカードだけが言う（二重に叱らない）", () => {
+    render(
+      <SettingsView
+        {...baseProps({
+          soundCommentEnabled: true,
+          // 一覧（DEVICES）に無い ID ＝「未選択」ではなく「見つからない」。
+          audioOutputDeviceId: "CoreAudio:UnpluggedHeadphones",
+        })}
+      />,
+    );
+    expect(
+      screen.getByText(/以前選んだ音声出力デバイスが見つかりません/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/通知音の出力先が未選択です/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("試聴に失敗したら案内する（§9: デバイス名・ID を出さない）", () => {
+    const { container } = render(
+      <SettingsView
+        {...baseProps({
+          audioOutputDeviceId: "CoreAudio:BuiltInSpeakerDevice",
+          soundPreviewState: "failed",
+        })}
+      />,
+    );
+    expect(
+      screen.getByText(
+        "通知音を再生できませんでした。デバイスを選び直してください。",
+      ),
+    ).toBeInTheDocument();
+    // 選択中デバイスの ID が画面に出ていないこと（名前は Select の option に出るが ID は出さない）。
+    expect(container.textContent).not.toContain("CoreAudio:");
+  });
+
+  it("⚠ 音量スライダーを持たない（振幅は Rust 固定・OS のデバイス別音量が独立に効く）", () => {
+    const { container } = render(<SettingsView {...baseProps()} />);
+    expect(container.querySelector('input[type="range"]')).toBeNull();
   });
 });

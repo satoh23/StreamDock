@@ -86,19 +86,46 @@ const PLAYBACK_TAIL: Duration = Duration::from_millis(80);
 struct ToneSpec {
     frequency_hz: f32,
     duration: Duration,
+    /// 指数減衰の時定数。**大きいほど余韻が長い**（`exp(-t / decay_tau)`）。
+    ///
+    /// 059a で追加した。058a は `duration / 3` 固定だったが、それだと**長さを変えないと余韻を変えられない**
+    /// ＝「短くて余韻の速い『ポン』」が作れない。音の性格は長さと減衰の 2 軸で決まるので、spec 側に出した。
+    /// ⚠ 0 にすると `samples_for` の除算が壊れる（`f32::EPSILON` で下限を切ってあるが、意味のある音にならない）。
+    decay_tau: Duration,
 }
 
 /// 音の種類ごとの波形パラメータ。
 ///
-/// 059a / 059b で音を増やすときは、`NotificationSound` に variant を足してここに 1 アーム足すだけでよい
+/// 059b で音を増やすときは、`NotificationSound` に variant を足してここに 1 アーム足すだけでよい
 /// （**デコーダも同梱ファイルも要らない**）。
+///
+/// ⚠ **同じ (周波数, 長さ) の音を 2 つ作らない**（`every_sound_has_a_distinct_tone` が固定している）。
+/// 鳴らし分ける意味が消えるうえ、コピペで増やしたときに気付けない。
 fn tone_spec(sound: NotificationSound) -> ToneSpec {
     match sound {
         // A5（880Hz）を 180ms。短く高めにすると「通知らしく」聞こえ、
         // 読み上げ（人の声の帯域）とも被りにくい。
+        // decay_tau の 60ms は 058a の固定式（長さの 1/3）と**同じ狙いの値**で、テスト音の性格は変えていない。
+        // ⚠ ただし **f32 のビット単位では一致しない**（実測: `0.18f32 / 3.0` = 0.060000002 に対し
+        // `Duration::from_millis(60).as_secs_f32()` = 0.059999999 で**最下位ビット 1 つ分**ずれる）。
+        // 相対誤差 6e-8＝サンプル値の丸め幅より小さく可聴差は無いので受容する。完全一致にこだわって
+        // `duration / N` の形に戻すと**長さと余韻を独立に決められなくなる**——それが 059a で decay_tau を
+        // spec 側へ出した理由そのものなので、そちらは採らない。
         NotificationSound::Test => ToneSpec {
             frequency_hz: 880.0,
             duration: Duration::from_millis(180),
+            decay_tau: Duration::from_millis(60),
+        },
+        // 059a: コメント通知音の「ポン」。E5（660Hz）を 140ms・減衰 23ms。
+        // Test（A5・180ms・減衰 60ms）から**完全 4 度低く・短く・余韻を速く**した。
+        // 正弦波でも減衰を速くすると「ピーッ」ではなく打点のある「ポッ／ポン」寄りに聞こえる。
+        // ⚠ 純正弦波なので木琴のような「ポン」そのものにはならない。**再修正トリガー＝実機で
+        // 「ポンに聞こえない」と感じたとき**。そのとき初めて倍音（オクターブ上を低振幅で加算）を
+        // 検討する（重みの和を 1 以下にすれば `every_sound_never_clips` の不変条件は保たれる）。
+        NotificationSound::Comment => ToneSpec {
+            frequency_hz: 660.0,
+            duration: Duration::from_millis(140),
+            decay_tau: Duration::from_millis(23),
         },
     }
 }
@@ -120,8 +147,9 @@ pub fn samples_for(sound: NotificationSound) -> Vec<f32> {
     // 0 除算を作らないため、各区間は最低 1 サンプル。
     let attack = ((rate * ATTACK.as_secs_f64()).round() as usize).max(1);
     let release = ((rate * RELEASE.as_secs_f64()).round() as usize).max(1);
-    // 指数減衰の時定数。音の長さの 1/3 にすると終わりごろには十分小さくなる。
-    let decay_tau = (spec.duration.as_secs_f32() / 3.0).max(f32::EPSILON);
+    // 指数減衰の時定数は音ごとに `tone_spec` が持つ（059a で固定式から spec 側へ出した）。
+    // 0 除算を作らないための下限だけここで切る。
+    let decay_tau = spec.decay_tau.as_secs_f32().max(f32::EPSILON);
 
     (0..total)
         .map(|index| {
@@ -322,12 +350,14 @@ mod tests {
     /// 波形の不変条件（クリップしない・無音から始まって無音で終わる・宣言した長さと一致する）は
     /// **どの音についても成立しなければならない**——058a の申し送りが「音を増やすのは
     /// `samples_for` の `match` に 1 アーム足すだけ」と書いている以上、増えた音が自動で検査される必要がある。
-    const ALL_SOUNDS: [NotificationSound; 1] = [NotificationSound::Test];
+    const ALL_SOUNDS: [NotificationSound; 2] =
+        [NotificationSound::Test, NotificationSound::Comment];
 
     /// 失敗メッセージ用のラベル。**exhaustive な `match`** であることが上記の担保。
     fn sound_label(sound: NotificationSound) -> &'static str {
         match sound {
             NotificationSound::Test => "Test",
+            NotificationSound::Comment => "Comment",
         }
     }
 
@@ -609,6 +639,83 @@ mod tests {
             assert!(
                 last.abs() <= peak * 0.01,
                 "{label}: 末尾が無音へ落ちていない（クリックノイズ）: last={last} peak={peak}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_sound_has_a_distinct_tone() {
+        // 059a: 音を増やす手順が「`tone_spec` に 1 アーム足すだけ」である以上、**直前のアームを
+        // コピペして値を変え忘れる**のが一番ありうる事故で、しかも耳で聞くまで気付けない。
+        //
+        // ⚠ これは「**実機で聞き分けられる**」の証明ではない（それはテストで担保できないので
+        // 059a / 059b の実機確認項目にしてある）。ここが止めるのは「値がまるごと同一」だけ。
+        // 周波数は `to_bits()` で比べる＝浮動小数の等値比較を避けつつ「同じリテラルを書いた」を検出する。
+        let mut seen: Vec<(u32, Duration, &'static str)> = Vec::new();
+        for sound in ALL_SOUNDS {
+            let label = sound_label(sound);
+            let spec = tone_spec(sound);
+            let key = (spec.frequency_hz.to_bits(), spec.duration);
+            let clashes: Vec<&str> = seen
+                .iter()
+                .filter(|(frequency, duration, _)| (*frequency, *duration) == key)
+                .map(|(_, _, other)| *other)
+                .collect();
+            assert!(
+                clashes.is_empty(),
+                "{label} と {clashes:?} の (周波数, 長さ) が同一。\
+                 鳴らし分ける意味が消えるので、どちらかの値を変えること"
+            );
+            seen.push((key.0, key.1, label));
+        }
+    }
+
+    #[test]
+    fn every_sound_decays_with_its_declared_time_constant() {
+        // 059a: `decay_tau` を `ToneSpec` へ出した目的は「**長さと余韻を独立に決められる**」ことなので、
+        // **spec に書いた値が実際に波形へ効いていること**を固定する。
+        //
+        // ⚠ これが無いと `samples_for` の tau 導出を 058a の固定式（`duration / 3`）へ戻す退行を
+        // 誰も検出できない——`every_sound_has_a_distinct_tone` は (周波数, 長さ) しか見ず、
+        // クリップ／無音始まり終わり／宣言長の 3 本も固定式のままで全部通ってしまう（実測）。
+        //
+        // 検査するのは**指数減衰の定義そのもの**＝「`t = decay_tau` で包絡がピークの 1/e になる」。
+        // 実装の式ではなく仕様を見ているので、合成方法を変えても意味が保たれる。
+        // 正弦波なので個々のサンプルは包絡を下回る。**1 周期ぶんの窓の最大値**を取れば
+        // `|sin|` はほぼ 1 に達するので、その最大値を包絡の推定値として使える。
+        for sound in ALL_SOUNDS {
+            let label = sound_label(sound);
+            let spec = tone_spec(sound);
+            let samples = samples_for(sound);
+            let rate = f64::from(SAMPLE_RATE.get());
+
+            // ATTACK(4ms) より後・RELEASE(12ms) より前でないと、他の gain が混ざって
+            // 「減衰だけを見ている」と言えなくなる。前提が崩れたらここで気付けるようにする。
+            assert!(
+                spec.decay_tau > ATTACK && spec.decay_tau + RELEASE < spec.duration,
+                "{label}: decay_tau({:?}) が ATTACK/RELEASE と重なっていて、\
+                 このテストは減衰以外の gain も一緒に測ってしまう。音の設計を見直すこと",
+                spec.decay_tau
+            );
+
+            let period = (rate / f64::from(spec.frequency_hz)).ceil() as usize;
+            let window_max = |start: usize| {
+                samples[start..(start + period).min(samples.len())]
+                    .iter()
+                    .fold(0.0_f32, |acc, s| acc.max(s.abs()))
+            };
+
+            let tau_index = (rate * spec.decay_tau.as_secs_f64()).round() as usize;
+            let measured = window_max(tau_index);
+            // 期待値＝ピーク振幅の 1/e。窓の中でも減衰は進むので**下振れ方向にだけ**余裕を見る
+            //（上振れは「減衰が遅すぎる」＝検出したい退行そのものなので許さない）。
+            let expected = PEAK_AMPLITUDE * (-1.0_f32).exp();
+            assert!(
+                measured <= expected * 1.02 && measured >= expected * 0.90,
+                "{label}: decay_tau({:?}) の時点の振幅が {measured}。\
+                 指数減衰なら概ね {expected}（ピークの 1/e）になるはずで、外れているなら\
+                 `samples_for` が spec の decay_tau を使っていない疑いがある",
+                spec.decay_tau
             );
         }
     }

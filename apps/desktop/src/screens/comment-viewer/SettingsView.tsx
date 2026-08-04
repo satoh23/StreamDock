@@ -47,6 +47,22 @@ export type AudioOutputListState = "loading" | "ready" | "failed";
 /** 058a: テスト再生の状態（`obsState` と同じ「操作の結果を 1 行で出す」構え）。 */
 export type AudioTestState = "idle" | "playing" | "failed";
 
+/**
+ * 059a: コメント通知音の試聴の状態。
+ *
+ * ⚠ **`AudioTestState` と型は同じだが state は共有しない。** 058a の「テスト再生」は
+ * **出力先の検証**（このデバイスから鳴るか／既定からは鳴らないか）で、こちらは**その音の確認**。
+ * 共有すると「通知音カードで試聴に失敗したのに、音声出力カードに赤字が出る」ことになる。
+ *
+ * ⚠ **branded type にはしない**（レビュー Q-9・意図どおり）。構造的型付けなので取り違えを型は止めないが、
+ * brand はこのリポジトリに前例が無く、両者の状態集合は今後も一致し続ける公算が高い（＝書式コストだけ払って
+ * 意味が増えない）。実在するリスクは型ではなく**呼び出し側で `audioTestState` と入れ替える**ことなので、
+ * そちらは `CommentViewerApp.notificationSound.test.tsx` の「試聴の失敗が 058a のカードに漏れない」
+ * 配線テストで直接殺している（brand より安く、取り違えそのものを検出できる）。
+ * **再修正トリガー＝どちらかの状態集合が増減して意味がずれたとき**（例: 通知音側に `"cooling"` が加わる等）。
+ */
+export type SoundPreviewState = "idle" | "playing" | "failed";
+
 interface SettingsViewProps {
   onBack: () => void;
   // 033c: VOICEVOX 自動連携 ON/OFF（読み上げトグルは本体コメントビューへ・state は CommentViewerApp が保持）。
@@ -81,6 +97,14 @@ interface SettingsViewProps {
   onReloadAudioOutputDevices: () => void;
   onTestNotificationSound: () => void;
   audioTestState: AudioTestState;
+  // 059a: コメント通知音の ON/OFF と試聴。state/永続化（soundPrefs）は CommentViewerApp が保持し、
+  // ここは表示とユーザー操作の受け渡しのみ（このビューの「表示専用」性質は不変）。
+  // ⚠ **音量は受け取らない**（振幅は Rust の PEAK_AMPLITUDE 固定。理由と再修正トリガーは soundPrefs.ts）。
+  // ⚠ 出力先が未選択のとき**トグルを disabled にしない**（判断は下記カードのコメント）。
+  soundCommentEnabled: boolean;
+  onSoundCommentEnabledChange: (value: boolean) => void;
+  onPreviewCommentSound: () => void;
+  soundPreviewState: SoundPreviewState;
   // 045b: 表示（開閉）トグルは本体コメントビューのツールバーへ移設したため、この設定ビューは overlayOpen /
   // onOverlayToggle を受け取らない（034d の部分反転）。開閉 state・ハンドラは CommentViewerApp が保持したまま。
   // 034e: オーバーレイの意匠設定（フォント選択・サイト名表示）。値は CommentViewerApp が保持し localStorage 永続。
@@ -125,6 +149,10 @@ export function SettingsView({
   onReloadAudioOutputDevices,
   onTestNotificationSound,
   audioTestState,
+  soundCommentEnabled,
+  onSoundCommentEnabledChange,
+  onPreviewCommentSound,
+  soundPreviewState,
   overlayFont,
   onOverlayFontChange,
   overlayShowSource,
@@ -430,8 +458,13 @@ export function SettingsView({
               </span>
             )}
 
+          {/* ⚠ 「配信には載りません」と**断定しない**（059a レビュー Q-7）。載らないのは
+              「配信に流していないデバイス（PC のスピーカー／ヘッドホン）を選んだ場合」だけで、
+              ここで仮想オーディオデバイスを選べば載る。断定すると、下の <details> が案内している
+              仮想デバイスをここで選んでしまったユーザーに嘘をつくことになる。条件付きで書き、
+              かつ「何を選べばよいか」を同時に伝える。⚠ 059a の「通知音」カードの .note も同じ言い回しに揃える。 */}
           <span className={styles.note}>
-            ここで選んだデバイスからだけ通知音が鳴ります（配信には載りません）。未選択のあいだは通知音を鳴らしません。
+            ここで選んだデバイスからだけ通知音が鳴ります。配信に流していないデバイス（PCのスピーカーやヘッドホン）を選べば、通知音は配信に載りません。未選択のあいだは通知音を鳴らしません。
           </span>
 
           {/* 058s の申し送り: ②-軽は仮想オーディオデバイスの導入が前提で、**入れていないと
@@ -463,6 +496,77 @@ export function SettingsView({
               を使ってください。アプリ単位のキャプチャは出力先の指定を無視してアプリの音を全部拾うため、読み上げと通知音を分けられません。
             </div>
           </details>
+        </div>
+      </div>
+
+      {/* 059a: 通知音カード。「音声出力（通知音）」カードの**直後**に置く＝「どこへ出すか」→「何を鳴らすか」の順。
+          カードを分けるのは 058a のカード自身が「ここが担うのは出力先だけで、通知音の ON/OFF・種類は 059 が
+          それぞれの機能の隣に置く」と宣言しているため。059b はこのカードに投げ銭音の ON/OFF と試聴を 1 組足す
+          （1 枚に混ぜると 059b の時点で 4 コントロールが並んで読めなくなる）。
+          書式は 054 の階層規則どおり（項目名＝ToggleSwitch の .toggleLabel / 説明＝.note / 警告＝.errorText）。
+          **既存クラスだけを使い、新しい px / weight を発明しない**（CSS 差分ゼロ）。
+          ⚠ **音量スライダーは無い。** 振幅は Rust の PEAK_AMPLITUDE 固定で、②-軽では通知音だけが専用の実デバイスへ
+          出るため OS のデバイス別音量が独立に効く（詳細と再修正トリガーは soundPrefs.ts の docstring）。
+          ⚠ ON/OFF をツールバーへ置かないのは、通知音が「一度 ON にしたらそのまま」寄りの設定だから
+          （045b がツールバーへ移したのは配信中に頻繁に切り替える操作）。右クラスタは既にトグル 2＋ボタン 2 で、
+          059b が来ると 4 トグルになり狭窓で崩れる。再修正トリガー＝実機で「配信中に頻繁に切りたい」と感じたとき。 */}
+      <div className={styles.card}>
+        <div className={styles.cardHead}>通知音</div>
+        <div className={styles.cardBody}>
+          <ToggleSwitch
+            label="コメント通知音"
+            checked={soundCommentEnabled}
+            onChange={onSoundCommentEnabledChange}
+          />
+          {/* ⚠ 上のカードの .note と同じ理由で「配信には載りません」と断定しない（059a レビュー Q-7）。 */}
+          <span className={styles.note}>
+            コメントが届いたときに短い通知音を鳴らします（既定は
+            OFF）。上の「音声出力（通知音）」で選んだデバイスからだけ鳴るので、配信に流していないデバイスを選んでおけば配信には載りません。連投しても鳴りっぱなしにならないよう間隔をあけて鳴らします。
+          </span>
+
+          {/* ⚠ 出力先が未選択でも**トグルを disabled にしない**（レビュー観点として明示しておく）。
+              既存の disabled 先例（ttsEnabled=false で source トグルを無効化）は「同一カード内の上位トグル」
+              という直接的な関係だが、ここは**別カードの状態に依存**するので押せない理由が画面から読めない。
+              「先に ON にしてから出力先を選ぶ」順序を禁止する理由も無い。代わりに ON かつ未選択のときだけ
+              下の .errorText で理由を文章で伝える（OFF のときは出さない＝鳴らないのが正常な状態で赤字を出さない）。
+              ⚠ 判定に使うのは `selectedAudioOutputDeviceId`（一覧と突き合わせた後）ではなく
+              **生の `audioOutputDeviceId`**。「選んだデバイスが今は見つからない」場合はここではなく
+              058a のカードが「以前選んだ音声出力デバイスが見つかりません」を出す担当で、両方出すと
+              **同じ状態を 2 つの違う言葉で二重に叱る**ことになる（かつ「未選択」は事実として誤り）。
+              列挙中（loading）に一瞬赤くならないのも、生の値を見ているおかげで自動的に成立する。 */}
+          {soundCommentEnabled &&
+            audioOutputDeviceId === NO_AUDIO_OUTPUT_DEVICE && (
+              // ⚠ §9: デバイス名・デバイス ID を出さない（カード名は固定文字列なので問題ない）。
+              <span className={styles.errorText}>
+                通知音の出力先が未選択です。上の「音声出力（通知音）」でデバイスを選ぶまで鳴りません。
+              </span>
+            )}
+
+          <div className={styles.voicevoxRow}>
+            {/* 034c の話者試聴と同じ考え方＝「ON にしても次のコメントが来るまで音が確認できない」を避ける。
+                ⚠ 058a の「テスト再生」とは**目的が違うので重複ではない**——あちらは出力先の検証（Test 音）、
+                こちらはその音の確認（Comment 音）。だから鳴る音も別にしてある（Rust の tone_spec）。
+                ⚠ ユーザーの明示操作なので **notificationSound.ts のクールダウンを通さない**
+                （押したのに鳴らないのは壊れて見える）。連打は再生中 disabled で抑える＝058a と同じ形。 */}
+            <button
+              type="button"
+              className={styles.btnGhost}
+              onClick={onPreviewCommentSound}
+              disabled={
+                selectedAudioOutputDeviceId === NO_AUDIO_OUTPUT_DEVICE ||
+                soundPreviewState === "playing"
+              }
+              title="コメント通知音を選択中のデバイスで鳴らします"
+            >
+              試聴 ▶
+            </button>
+          </div>
+
+          {soundPreviewState === "failed" && (
+            <span className={styles.errorText}>
+              通知音を再生できませんでした。デバイスを選び直してください。
+            </span>
+          )}
         </div>
       </div>
 

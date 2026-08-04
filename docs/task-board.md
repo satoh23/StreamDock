@@ -284,12 +284,26 @@
   - ⚠⚠ **058s の結論（②-軽）で再生層が変わった**: 通知音は **Rust（`rodio`）で鳴らし出力デバイスを指定する**。~~音を鳴らすだけなら 058s の前でも着手できる（Web Audio で足りる）~~ は**無効**——Web Audio では出力先を選べず「**配信に載せない**」が原理的に作れないため、先行実装すると必ず作り直しになる。**058a を先に済ませること**
   - ⚠ **通知音の実装は 0 件**（`public/` はフォントのみで音源アセットなし）。課金判定（`isMonetaryEvent`）は既存を流用する（⚠ **再生プリミティブ `playWav` の流用は不可**＝Rust 側再生になったため）
   - ⚠ **レート制限が必須**（10 連投で 10 回鳴らさない）。⚠ **音源のライセンス確認**を必ず行い progress.md に記録する（配布バイナリに入る）
-  - 059a 通知音の基盤＋コメント通知音（[docs/tasks/059a-comment-notification-sound.md](tasks/059a-comment-notification-sound.md)／`notificationSound.ts`＋`soundPrefs.ts` 新設・**専用 `AudioContext`**〔`ttsQueue` の `dispose` で死なせない〕・クールダウン・音量・**試聴ボタン必須**・既定 OFF・**軽レビュー**）
-    - ⚠ **2026-08-03: 上記の「専用 `AudioContext`」前提は差し替え**（058s ②-軽＝Rust 再生）。`resume()` 配線・autoplay 制限・`ttsQueue` の `dispose` との干渉といった **Web Audio 由来の罠は丸ごと消える**代わりに、**出力デバイス選択と Rust 側の再生管理**が新しい論点になる
+  - ✅ 059a 通知音の基盤＋コメント通知音（[docs/tasks/059a-comment-notification-sound.md](tasks/059a-comment-notification-sound.md)／**実装済み・2026-08-04**。②-軽版へ全面的に書き直したうえで実装。`notificationSound.ts`＋`soundPrefs.ts` 新設・**音源 ID ごとに独立したクールダウン**・試聴ボタン・既定 OFF・~~軽レビュー~~ → **security-review 実施済み**〔修正必須 0 件〕＋品質レビュー〔要修正 4 件を反映〕）
+    - ⚠⚠ **レビュー区分の判定を誤った（是正済み・再発防止を条文へ）**: 「レビュー必須条件の 5 つの下位条件がすべて非該当だから軽レビュー」と判定したが、**下位条件は「該当する例」の列挙であってスコープの定義ではない**。親項目「音声デバイスの列挙・音声の再生」は広く、`src/audio/` の本番コードに差分が出る以上そのまま該当する。**046a と同型の誤り**。docs/security.md のレビュー必須条件に「**`src-tauri/src/audio/` の本番コードに差分が出る変更は下位条件に当たらなくても該当する**」を追記した
+    - ⚠ **2026-08-03: 旧記述の「専用 `AudioContext`」前提は差し替え済み**（058s ②-軽＝Rust 再生）。`resume()` 配線・autoplay 制限・`ttsQueue` の `dispose` との干渉といった **Web Audio 由来の罠は丸ごと消えた**代わりに、**出力デバイスが消えたときの扱い**が新しい論点になった
     - ~~⚠ **`resume()` の配線を忘れると macOS で「ON なのに一度も鳴らない」**（ログにも出ない）~~
-    - ⚠ **1 バッチ 1 回**（`added.length` の回数だけ鳴らさない）／**`updated`〔043e の Jewels combo〕では鳴らさない**
-  - 059b 投げ銭通知音（[docs/tasks/059b-monetary-notification-sound.md](tasks/059b-monetary-notification-sound.md)／別音・コメント音と**排他**・**クールダウンは音源ごとに独立**〔共有するとコメント連投中のスパチャ音が消える＝一番気づいてほしい音が鳴らない〕・**軽レビュー**）
+    - ~~音量スライダーは出す~~ → ⚠ **出さないことにした**（本人決定）。旧根拠「読み上げと同じ出力先へ出るのでアプリ内の相対音量調整が要る」は **Web Audio 前提で失効**——②-軽では通知音だけが専用の実デバイスへ出るので **OS のデバイス別音量が独立に効く**。振幅は Rust の `PEAK_AMPLITUDE` 固定で、キーだけ作っても効かない。⚠ **再修正トリガー＝まず `PEAK_AMPLITUDE` を調整。それでも足りなければ別タスク**（Rust の引数追加＋§8 クランプ＋`every_sound_never_clips` 書き換え＋**security-review** がセット）
+    - **音は道①＝Rust でトーン合成**（`Comment` = 660Hz / 140ms / 減衰 23ms。`Test` = 880Hz / 180ms / 60ms と**別の音**にした＝設定画面に試聴ボタンが 2 つ並ぶため）。⚠ **第三者素材ではないので 059 が親から引き継いでいた「音源のライセンス確認」の宿題は消滅した**（既製音源を使いたくなったら道③＝依存追加＋ライセンス確認が復活する）
+    - ⚠ **1 バッチ 1 回**（`added.length` の回数だけ鳴らさない）／**`updated`〔043e の Jewels combo〕では鳴らさない**。⚠⚠ これを守れるかは**テストのモック位置で決まる**——`audioOutputApi` だけをモックすると `added.forEach` へ書き換えても**クールダウンが下流で 1 回に潰して緑のまま通る**。`notificationSound` を**素通しの spy** にしてクールダウンより手前を数えること（`beforeEach` は `mockClear()`。`mockReset()` だと実装ごと消える）
+    - **鳴らせなかったら継続表示**（045c の OBS エラーと同じ `.toolbarError`・ツールバー）。058a が投げた宿題への回答で、これが無いと**配信中にデバイスを抜いたとき黙って鳴らなくなる**。⚠ 時間経過でも `"skipped"` でも消さない／⚠ エラーコードで分岐しない（§9 の面を増やさない）
+    - ⚠ **StrictMode の updater 二重実行では、クールダウンが冪等化も担っている**（通知音は構造的には冪等でない）。偶然ではなく設計なのでテストで固定済み
+  - 059b 投げ銭通知音（[docs/tasks/059b-monetary-notification-sound.md](tasks/059b-monetary-notification-sound.md)／別音・コメント音と**排他**・**クールダウンは音源ごとに独立**〔共有するとコメント連投中のスパチャ音が消える＝一番気づいてほしい音が鳴らない〕・~~軽レビュー~~ → ⚠ **security-review 必須**〔`NotificationSound::Monetary` の追加＝`src/audio/` の再生系に差分が出るため。059a のレビューでこの判定基準が是正された〕）
     - ⚠ **Twitch コミュニティギフトの N+1**（043a の既存課題）はクールダウンで凌ぐ。**依存していることをテストで固定する**
+    - **059a から渡ってきたもの（059b はこれを使う側）**:
+      - 音源 ID の形は `requestNotificationSound(sound, deviceId)`（`notificationSound.ts`）。**戻り値は `"played" | "skipped" | "failed"` で reject しない**（失敗は継続表示 indicator へ）
+      - **独立クールダウンは `COOLDOWN_MS` に `monetary` の行を足すだけ**（`Record<NotificationSound, number>` なので、Rust に variant を足すと**ここが型エラーになる**＝追加漏れ不能）。値はコメント音（600ms）より短くてよい
+      - **排他の実装点は `CommentViewerApp` の `playCommentNotification`**。ここで `added` を課金／非課金に分け、課金があれば投げ銭音だけ・無ければコメント音だけを 1 回鳴らす。⚠ 判定は表示側と同じ `displayEventType`（`viewerFormat.ts`）を使うこと（`c.eventType` 直読みだと表示と音がずれる）
+      - Rust は `NotificationSound::Monetary` を足し `tone_spec` に 1 アーム。⚠ **ペイロードなしの unit variant のままにする**（ペイロードを持たせると security-review 必須＝レビュー必須条件が名指し）。`ALL_SOUNDS` / `sound_label` / `every_sound_has_a_distinct_tone` がコンパイルエラーとレッドで追加漏れを止める
+      - 設定は「通知音」カードに ON/OFF ＋試聴を 1 組追加（`sound-monetary-enabled`・既定 OFF を `soundPrefs.ts` へ）。音量キーは**無い**（上記）
+      - ⚠ **テストのモック位置は 059a と同じにすること**（`notificationSound` を素通しの spy にして排他の分岐を上流で数える。下流の invoke カウントだけだとクールダウンに隠れて排他の退行を検出できない）。⚠ **spy は「記録専用」にして実装は毎回 `actual` を直接呼ぶ形**にすること（059a レビュー Q-3 で堅牢化済み。`mockImplementation` に実装を載せると `mockReset()` で実装ごと消えて「undefined に .then」で落ちる）
+      - ⚠⚠ **`added` は「新規コメント」ではなく「`prev` に無い id」**（`mergeComments` の既知性質 Q-1）。`MAX_COMMENTS` のクランプで表示から落ちた jewels 行に後から combo 更新が届くと `added` に載るので、**排他判定を `added` の中身で行う 059b では「200 件前のスパチャの投げ銭音が鳴り直す」**ことになる。読み上げ側の `ttsQueue.seenIds` に相当する最終防波堤が通知音側には無いことも含めて 059b で判断すること
+      - ⚠ **`SettingsView.audio.test.tsx` に 3 組目（投げ銭音）を足すのが、`baseProps` を共有ヘルパへ出す潮時**（同ファイル冒頭の再修正トリガー「3 つ以上になったら」に、テスト数の面で実質到達するため）
 
 - 060 オーバーレイ カスタム CSS テーマ（親設計 [docs/tasks/060-overlay-custom-css.md](tasks/060-overlay-custom-css.md)／要望③・ユーザーの CSS を import して名前を付け、配信画面からデザインを切り替える・**037 を supersede**）
   - 実装順: 060a → 060b → 060d → 060c（**060d を 060c より先**＝ローカル CSS で通しで動く状態を見てから、リスクの高い外部取得を判断する）
