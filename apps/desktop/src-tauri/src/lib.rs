@@ -5,6 +5,7 @@ mod comment_sidecar;
 mod comment_viewer;
 mod error;
 mod obs_config;
+mod overlay_theme;
 mod preset_items;
 mod presets;
 mod process;
@@ -489,6 +490,11 @@ pub fn run() {
             app_logs::repository::init(&conn)?;
             // 038a: 視聴者メモリ（viewers / viewer_comments）。保存は端末内 SQLite のみ。
             viewer_memory::repository::init(&conn)?;
+            // 060b: オーバーレイのカスタム CSS テーマ（overlay_themes）。CSS 実体は
+            // app_data_dir/themes/<id>.css で、そのディレクトリは取り込み時に作る
+            //（overlay_theme::service の保存ヘルパが冪等に create_dir_all する＝
+            //  実行中にディレクトリを消されても復旧できる）。
+            overlay_theme::repository::init(&conn)?;
             app.manage(Mutex::new(conn));
             // stream-dock がこのセッション中に起動したプロセスを保持する runtime process registry。
             // 009 の停止は raw PID ではなくここに保持した Child ハンドル経由で行う。
@@ -610,6 +616,11 @@ pub fn run() {
             app_update::commands::restart_app,
             audio::commands::list_audio_output_devices,
             audio::commands::play_notification_sound,
+            overlay_theme::commands::import_overlay_theme,
+            overlay_theme::commands::list_overlay_themes,
+            overlay_theme::commands::get_overlay_theme_css,
+            overlay_theme::commands::rename_overlay_theme,
+            overlay_theme::commands::delete_overlay_theme,
         ])
         // 032c-b: RunEvent::Exit フックを追加するため .run() を .build()+.run(closure) に分割した
         //（従来は lib.rs に exit フックが無かった）。no-orphan 3 段 kill の②。

