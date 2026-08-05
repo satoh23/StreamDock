@@ -286,13 +286,49 @@ pub fn import_local_source(
     )
 }
 
+/// 060e: **貼り付けられた CSS テキスト**を取り込む（ファイルを一切経由しない）。
+///
+/// ⚠ `import_local_source` と同じく [`store_sanitized_css`] へ委譲するだけ——**検証を別実装にしない**
+/// （060b からの申し送りの核心。`exactly_one_place_sanitizes_and_exactly_one_place_writes` が
+/// 「サニタイズは 1 か所・書き込みは 1 か所」を出現回数で固定している）。
+/// したがって貼り付け経路でも、名前検証・**256KB 上限**・制御文字・**200 件上限**・外部参照の除去・
+/// uuid 採番・書き込み → INSERT の順序・失敗時の掃除が**そのまま**効く。
+///
+/// ⚠ 出自は **`Local`**。`Snapshot` は「外部 `@import` を取得してインライン化したもの」（060c）専用で、
+/// 貼り付けた CSS は**端末外へ 1 バイトも出ていない**＝出自としてはローカルと同じである。
+/// ⚠⚠ **`origin` をここで定数として渡すのが要点**。`commands.rs` 側に `origin` の文字が現れると
+/// `the_theme_origin_is_never_settable_from_the_frontend` が落ちる（＝ frontend から出自を騙れなくする仕組み）。
+/// **060c が text 版を足すときも同じ形にすること**（コマンド引数に `origin` を生やさない）。
+pub fn import_pasted_text(
+    dir: &Path,
+    conn: &Connection,
+    raw_css: &str,
+    raw_name: &str,
+) -> AppResult<OverlayThemeImportResult> {
+    store_sanitized_css(dir, conn, raw_css, raw_name, OverlayThemeOrigin::Local)
+}
+
 /// **検証・サニタイズ・保存の共通コア。**
 ///
-/// ⚠ **060c への申し送り**: 060c は「取得した外部 CSS を前置して保存し直す」ためにテキストから
-/// 取り込むコマンドを 1 本足すが、その実体は**この関数を呼ぶだけ**にすること。
-/// 検証を別実装に分けると、片方だけ緩んだときに気づけない（060b で最も避けたかった形）。
-/// 060b でコマンドを生やさなかったのは、**呼び手のいないコマンドを全 4 窓へ露出しない**ため
-/// （060c は実装しない判断も最後まで残る）。
+/// ⚠ **どの取り込み経路もこの関数を呼ぶだけにすること。** 検証を別実装に分けると、片方だけ緩んだときに
+/// 気づけない（060b で最も避けたかった形。`exactly_one_place_sanitizes_and_exactly_one_place_writes`
+/// が「サニタイズ 1 か所・書き込み 1 か所」を出現回数で固定している）。
+///
+/// ⚠⚠ **060c への申し送り（2026-08-05 に内容を更新した）**:
+/// - **テキストから取り込むコマンドは 060e が既に足した**（`import_overlay_theme_text` → [`import_pasted_text`]）。
+///   ⚠ 「060c が 10 行のコマンドを足すだけ」という 060b 期の申し送りは**もう成り立たない**。
+/// - 060c が要るのは **`origin = Snapshot`** の経路なので、`Local` 固定の [`import_pasted_text`] は
+///   再利用できず、**2 本目のコマンド**になる。＝ `takes_no_arbitrary_path_or_content_from_the_frontend`
+///   の「`css: String` は 1 本だけ」が**設計どおり落ちる**。
+///   ⚠⚠ **そのとき数字だけ 2 へ書き換えて通さないこと。** §3 の再評価と security-review が要る
+///   （落ちること自体がレビューを呼ぶための仕掛けである）。
+/// - `origin` は**必ず Rust 側の定数**で渡すこと（`commands.rs` に `origin` の文字が現れると
+///   `the_theme_origin_is_never_settable_from_the_frontend` が落ちる）。
+///
+/// ⚠ **060c は実装必須である**（2026-08-05 依頼者決定）。以前ここに書かれていた
+/// 「060c は実装しない判断も最後まで残る」は**撤回済み**——依頼者のサンプル CSS は意匠の実体が
+/// 丸ごと外部 `@import` の中にあり、060c が payload そのものだから。詳細は
+/// `docs/tasks/060c-external-css-snapshot.md`。
 pub fn store_sanitized_css(
     dir: &Path,
     conn: &Connection,
@@ -730,6 +766,115 @@ mod tests {
         let listed = list(&conn).unwrap_or_default();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, result.theme.id);
+    }
+
+    /// 060e: 貼り付け経路でも、ファイル経路と**同じ担保がそのまま効く**ことを固定する。
+    ///
+    /// ⚠ ここが緑であることの意味は「貼り付け版が独自の検証を持っている」ではなく、
+    /// 「**共通コア（`store_sanitized_css`）へ委譲しているので検証が 1 セットしかない**」である
+    /// （`exactly_one_place_sanitizes_and_exactly_one_place_writes` が構造側を固定している）。
+    #[test]
+    fn pasted_text_is_stored_exactly_like_a_file_import() {
+        let dir = TempDir::new();
+        let conn = conn();
+
+        let result = import_pasted_text(
+            dir.path(),
+            &conn,
+            "@import url(\"https://evil.example/a.css\");\n.sd-comment{color:red}",
+            "貼り付けたデザイン",
+        )
+        .expect("貼り付けた CSS は取り込めるはず");
+
+        // ①ファイル名は **id 由来**（貼り付けにはそもそも元ファイル名が無い）。
+        assert_eq!(dir.entries(), vec![format!("{}.css", result.theme.id)]);
+        // ②外部参照は**保存されない**（ファイル版と同じサニタイザを通っている）。
+        let saved = std::fs::read_to_string(dir.path().join(format!("{}.css", result.theme.id)))
+            .expect("保存したファイルを読めるはず");
+        // ⚠ 除去するのは**文そのものだけ**で、周りの空白は動かさない（ファイル版と同じ・
+        // `css_without_any_reference_is_returned_byte_for_byte` と同じ「原文を保つ」方針）。
+        assert_eq!(saved, "\n.sd-comment{color:red}");
+        assert!(!saved.contains("evil.example"));
+        assert_eq!(result.theme.stripped_count, 1);
+        assert_eq!(
+            result.stripped_import_urls,
+            vec!["https://evil.example/a.css".to_string()]
+        );
+        // ③出自は Local（端末外へ出ていないので Snapshot ではない）。
+        assert_eq!(result.theme.origin, OverlayThemeOrigin::Local);
+        // ④DB にも 1 行だけ入る。
+        assert_eq!(list(&conn).expect("一覧を取れるはず").len(), 1);
+    }
+
+    /// ⚠ 上限・検証は**貼り付け経路でも同じ**。ここが落ちたら委譲が外れている。
+    #[test]
+    fn pasted_text_is_bounded_and_validated_like_a_file_import() {
+        let dir = TempDir::new();
+        let conn = conn();
+
+        // 名前: 空・81 文字・制御文字はファイル版と同じく拒否。
+        for bad_name in ["", "   ", "a\u{7}b"] {
+            let err = import_pasted_text(dir.path(), &conn, ".a{color:red}", bad_name)
+                .expect_err("不正な名前は拒否されるはず");
+            assert_eq!(err.code, ErrorCode::ValidationError);
+        }
+        let too_long: String = "あ".repeat(MAX_NAME_CHARS + 1);
+        assert!(import_pasted_text(dir.path(), &conn, ".a{color:red}", &too_long).is_err());
+
+        // 本文: 256KB 超は拒否（⚠ **バイト長**で見る＝ frontend も TextEncoder で数えること）。
+        let too_big = format!(
+            ".a{{content:\"{}\"}}",
+            "x".repeat(MAX_CSS_BYTES as usize)
+        );
+        let err = import_pasted_text(dir.path(), &conn, &too_big, "でかい")
+            .expect_err("256KB 超は拒否されるはず");
+        assert_eq!(err.code, ErrorCode::ValidationError);
+
+        // 本文: 取り除けない参照を含むプレリュードは fail-closed（ファイル版と同じ文言）。
+        assert!(import_pasted_text(
+            dir.path(),
+            &conn,
+            "@media (min-width: calc(1px + url(https://evil.example/x))){.a{color:red}}",
+            "だめ",
+        )
+        .is_err());
+
+        // ⚠ 拒否されたものは**ファイルも DB 行も残さない**。
+        assert!(dir.entries().is_empty());
+        assert_eq!(list(&conn).expect("一覧を取れるはず").len(), 0);
+    }
+
+    /// ⚠ エラーに **CSS 本文を載せない**（§9）。貼り付けは本文が丸ごと frontend にある経路なので、
+    /// 「返ってきたエラーをそのまま画面に出す」実装と組み合わさると本文が露出しうる。
+    #[test]
+    fn pasted_text_errors_never_carry_the_css_body_back_to_the_caller() {
+        let dir = TempDir::new();
+        let conn = conn();
+        let secret = "SECRET-MARKER-9f2b";
+        let css = format!(
+            "@media (min-width: calc(1px + url(https://evil.example/{secret}))){{.a{{color:red}}}}"
+        );
+
+        let err = import_pasted_text(dir.path(), &conn, &css, "だめ")
+            .expect_err("取り除けない参照は拒否されるはず");
+        assert!(!err.message.contains(secret));
+        assert!(!format!("{err:?}").contains(secret));
+    }
+
+    /// ⚠ 件数上限（200 件）も貼り付け経路で効く＝**無制限にディスクが増える経路にならない**。
+    /// アプリ定義コマンドは ACL 対象外＝全 4 窓から呼べるので、この歯止めは構造側で要る。
+    #[test]
+    fn pasted_text_respects_the_theme_count_cap() {
+        let dir = TempDir::new();
+        let conn = conn();
+        for i in 0..MAX_THEMES {
+            import_pasted_text(dir.path(), &conn, ".a{color:red}", &format!("t{i}"))
+                .expect("上限までは取り込めるはず");
+        }
+        let err = import_pasted_text(dir.path(), &conn, ".a{color:red}", "over")
+            .expect_err("上限を超えたら拒否されるはず");
+        assert_eq!(err.code, ErrorCode::ValidationError);
+        assert_eq!(dir.entries().len(), MAX_THEMES as usize);
     }
 
     #[test]
@@ -1170,13 +1315,17 @@ mod tests {
     }
 
     #[test]
-    fn exposes_exactly_five_single_purpose_commands() {
+    fn exposes_exactly_six_single_purpose_commands() {
         // §3: 汎用の読み書きコマンドを作らない。⚠ アプリ定義コマンドは ACL 対象外＝**全 4 窓から呼べる**。
+        // ⚠ 060e で **6 本目（`import_overlay_theme_text`）を意図的に足した**ので、関数名も 5 → 6 へ
+        // 改名した（security-review②・品質 #7。テスト名は git の追跡単位ではないので改名コストは無く、
+        // **名前と assert が食い違うテスト**のほうが「どちらが正か」を毎回確かめさせる負債になる）。
+        // 守っているのは数そのものではなく「**単一目的のコマンドしか無い・増やすときは必ずここが落ちる**」。
         let code = production_source("commands.rs");
         assert_eq!(
             code.matches(&format!("#[tauri::{}]", "command")).count(),
-            5,
-            "overlay_theme のコマンド数が 5 でない（増やすなら §3 の再評価と security-review が要る）"
+            6,
+            "overlay_theme のコマンド数が 6 でない（増やすなら §3 の再評価と security-review が要る）"
         );
         // ⚠ ユーザーが選ぶファイルはネットワークボリューム上にありうる。同期コマンドはメインスレッドで
         // 走るので、取り込みだけは非同期にして UI を止めない（`audio` の同型の判断）。
@@ -1197,7 +1346,23 @@ mod tests {
             1,
             "パスを受け取るコマンドは import 1 本だけであること"
         );
-        for banned in ["content", "css", "bytes", "data"] {
+        // ⚠⚠ **060e で `css: String` を 1 本だけ解禁した**（貼り付け取り込み）。
+        // 禁止を消さず**出現回数の固定へ変えている**のが要点——2 本目が増えた瞬間にここが落ちる。
+        // 解禁してよい理由は「本文を渡せても**書ける場所が変わらない**」こと:
+        // 保存先は `app_data_dir/themes/<uuid v4>.css` の固定形だけで、その組み立てにユーザー入力は
+        // 1 バイトも入らない（すぐ下の `the_storage_path_is_built_only_from_the_app_data_dir` が固定）。
+        // ＝ §3 が禁じている `write_file(path, content)` 型（**書ける場所を呼び出し側が決める**）には当たらない。
+        // ⚠ `content` / `bytes` / `data` は**引き続き全面禁止**（「汎用の書き込み」に見える命名を残さない）。
+        // ⚠⚠ **060c はここを必ず落とす**（`origin = Snapshot` の 2 本目が要るため・security-review②）。
+        // そのとき**数字だけ 2 へ書き換えて通さないこと**。落ちること自体が §3 の再評価と
+        // security-review を呼ぶための仕掛けである（`store_sanitized_css` の申し送りを読むこと）。
+        assert_eq!(
+            code.matches(&format!("{}: String", "css")).count(),
+            1,
+            "CSS 本文を受け取るコマンドは貼り付け取り込みの 1 本だけであること\
+             （2 本目を足すなら §3 の再評価と security-review が要る）"
+        );
+        for banned in ["content", "bytes", "data"] {
             assert!(
                 !code.contains(&format!("{banned}: String")),
                 "commands.rs が {banned}: String を受け取っている（汎用の書き込み経路になる）"

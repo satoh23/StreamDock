@@ -1127,6 +1127,92 @@
   cursor: pointer;
 }
 
+/* 060d: 「コメントのデザイン」カードのテーマ一覧。テーマは 200 件まで登録できるので、カードごと伸ばさず
+   ここでスクロールさせる（.card は flex-shrink:0 なので、伸ばすと設定ビュー全体が縦に膨らむ）。
+   書式は 054 の 3 段規則どおり（項目名＝.fieldLabel／説明＝.note／faint は無効状態専用）で、
+   ここは**箱のレイアウトだけ**を持ち文字の書式は持たない（.speakerField と同じ役割分担）。 */
+.themeList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 220px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  border-radius: 8px;
+  background: var(--control-bg);
+  border: 1px solid var(--border-soft);
+}
+
+.themeRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 4px;
+}
+
+/* ラジオ＋名前を 1 つの <label> にまとめ、行の残り幅を占めさせる（ボタンは右端に寄る）。 */
+.themeRowMain {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+}
+
+/* テーマ名は Rust 側で 80 文字・制御文字なしに制限済み。長い名前は行を折り返さず省略する。
+   ⚠ 13px/700 は .fieldLabel（設定項目名）と**同値だが別役割**（こちらは一覧の行の見出し）。
+   054 の 3 段規則のうち「項目名」の書式を意図的に借りている＝新しい px/weight を発明していない。
+   ガード (6-a) の対象外なので機械では守られない。
+   再修正トリガー＝ .fieldLabel の 13px/700 を動かすときは、ここを連動させるか意図的に分けるかを決めること
+   （黙って乖離すると一覧だけ書式が古くなる）。 */
+.themeName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+/* 060d: プレビューの枠。⚠ 中身のラッパ（.sd-preview）は**素の文字列クラス**で、そこから内側は
+   ユーザー CSS が当たる領域なので、この枠には意匠を持たせない（枠が乗っ取られても外へ影響しない）。
+   .list（コメント一覧）が flex:1 + overflow-y:auto なので、高さはこの枠が決める。
+
+   ⚠⚠ **`contain: paint` は意匠ではなく安全装置**（security-review S-2・2026-08-05）。
+   `overflow: hidden` だけでは **`position: fixed` / `absolute` の子孫を止められない**——包含ブロックが
+   ビューポート（fixed）／初期包含ブロック（absolute）になり、包含ブロック連鎖に無いこの枠の
+   クリップは効かないため。実測で `.themePreview` / `.cardBody` / `.card` / `.settingsView` / `.root` の
+   どれにも transform / filter / perspective / contain / will-change が無く、
+   **`.sd-preview .sd-comment{position:fixed;inset:0;z-index:2147483647}` の 1 本で窓全体を覆えた**。
+   コメビュ窓には「既定のデザインに戻す」（＝壊れたテーマからの唯一の脱出路）・OBS のパスワード入力・
+   視聴者メモリの削除導線があるので、覆えること自体が UI 偽装／クリックジャッキングになる。
+   `contain: paint` は ①この要素を fixed/absolute の包含ブロックにし ②はみ出しをクリップし
+   ③スタッキングコンテキストを作る（巨大 z-index が枠外へ浮上しない）——3 つを 1 行で満たす。
+   ⚠ `overflow: hidden` は**残す**（contain: paint が無い環境でも通常フローのはみ出しは切る）。
+   ⚠ **消さないこと。** これが無いと `scopeSelectors`（＝どの要素に当たるか）が正しくても枠外へ描ける。
+   再修正トリガー＝プレビューを shadow root / iframe へ移すとき（構造で閉じるので不要になる）。 */
+.themePreview {
+  display: flex;
+  height: 200px;
+  overflow: hidden;
+  contain: paint;
+  border-radius: 8px;
+  background: var(--bg);
+  border: 1px solid var(--border-soft);
+}
+
+.themePreview > * {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
 /* 危険色ボタン（個別削除・一括削除の実行）。.btn:disabled と同じく非活性アフォーダンスを持たせる。 */
 .dangerBtn {
   padding: 6px 12px;
@@ -1781,4 +1867,27 @@
 .toneJewels {
   --tone-bg: var(--tip-jewels-bg);
   --tone-fg: var(--tip-jewels-fg);
+}
+
+/* 060e: 「CSSを貼り付けて取り込む」の入力欄。⚠ **ユーザーに .css ファイルを作らせない**ための主導線なので、
+   数十行を貼っても縦に暴れないよう固定高さ＋スクロールにする（.themeList と同じ考え方）。
+   等幅は既存の 2 か所（.diagnostics / .releaseNotes 系）と同じトークン列で、新しい書体を発明していない。
+   ⚠ 貼られた本文は **state → invoke の 1 経路だけ**を通る（画面にもログにも出さない・§9）。 */
+.themeCssInput {
+  height: 120px;
+  padding: 8px 10px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+}
+
+/* フォーカス表現は既存 3 か所（.searchInput / .connPill / .selectCustom）と同じトークンで揃える。 */
+.themeCssInput:focus-visible {
+  outline: 2px solid var(--primary-soft-border);
+  outline-offset: 1px;
 }

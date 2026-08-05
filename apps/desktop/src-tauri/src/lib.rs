@@ -617,6 +617,7 @@ pub fn run() {
             audio::commands::list_audio_output_devices,
             audio::commands::play_notification_sound,
             overlay_theme::commands::import_overlay_theme,
+            overlay_theme::commands::import_overlay_theme_text,
             overlay_theme::commands::list_overlay_themes,
             overlay_theme::commands::get_overlay_theme_css,
             overlay_theme::commands::rename_overlay_theme,

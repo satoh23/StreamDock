@@ -5,10 +5,14 @@ import { mergeComments } from "../../features/comment-viewer/mergeComments";
 import {
   loadOverlayFont,
   loadOverlayShowSource,
+  loadOverlayTheme,
   resolveOverlayFontStack,
   OVERLAY_FONT_KEY,
   OVERLAY_SHOW_SOURCE_KEY,
+  OVERLAY_THEME_KEY,
 } from "../../features/comment-viewer/overlaySettings";
+import { rewriteSelectors } from "../../features/comment-viewer/cssCompat";
+import { getOverlayThemeCss } from "../../features/comment-viewer/overlayThemeApi";
 import { CommentList } from "./CommentList";
 import styles from "./OverlayApp.module.css";
 
@@ -36,6 +40,9 @@ export function OverlayApp() {
   // ままで、新規外部通信・宛先・依存は増やさない（localStorage の非機密 UI 設定を読むだけ）。
   const [font, setFont] = useState(() => loadOverlayFont());
   const [showSource, setShowSource] = useState(() => loadOverlayShowSource());
+  // 060d: 選択中のカスタム CSS テーマ id（null = 既定意匠）。フォント／サイト名表示と**同じ二段構え**で、
+  // ここが保証ベースラインの read-on-mount、下の storage 購読が即時反映（ベストエフォート）。
+  const [themeId, setThemeId] = useState(() => loadOverlayTheme());
 
   // この窓の document にだけ背景透明化の目印を立てる（main/comment-viewer 窓には波及しない）。
   useEffect(() => {
@@ -65,12 +72,60 @@ export function OverlayApp() {
       if (e.key === OVERLAY_SHOW_SOURCE_KEY || e.key === null) {
         setShowSource(loadOverlayShowSource());
       }
+      if (e.key === OVERLAY_THEME_KEY || e.key === null) {
+        setThemeId(loadOverlayTheme());
+      }
     };
     window.addEventListener("storage", onStorage);
     return () => {
       window.removeEventListener("storage", onStorage);
     };
   }, []);
+
+  // 060d: 選択中テーマの CSS をこの窓へ注入する。**ここが 060 の最後の 1 本**（060a が契約を作り、
+  // 060b が外部参照を除去して保存し、ここで初めて実際に効く）。
+  //
+  // ⚠⚠ **注入は `<style>` の `textContent` のみ。`innerHTML` / `dangerouslySetInnerHTML` を使わない。**
+  //   `get_overlay_theme_css` が返す CSS には `</style>` が**そのまま含まれうる**（正当な CSS なので 060b は
+  //   除去しない）。`innerHTML` に入れると要素が閉じて**その後ろが HTML として解釈される**。
+  //   `textContent` は HTML として解釈されないので、何が入っていても DOM を壊せない。
+  //   docs/security.md「レビュー必須条件」がこの経路を名指ししており、静的ガード (10-i) と
+  //   `OverlayApp.test.tsx` の両方で固定してある。
+  // ⚠ **変換（rewriteSelectors）は注入のたびに毎回行う**（060b の決定）。保存されているのは変換前の CSS で、
+  //   変換表を更新すると取り込み済みテーマにも自動で効く。だから決定性と冪等性が機能要件になっている。
+  // ⚠ **`scopeSelectors` は使わない**——あれはプレビュー（コメビュ窓の中に同居する）専用で、
+  //   この窓はオーバーレイ専用なので前置する相手がいない（前置すると逆に何も当たらなくなる）。
+  // ⚠ 取得に失敗したら（テーマが消えた・読めない）**既定意匠へ倒す**。オーバーレイ窓は表示専用・非フォーカスで
+  //   ここからは何も操作できないため、**localStorage は書き換えない**（気付かせるのはコメビュ窓の設定側の責務）。
+  //   ⚠ CSS 本文もエラー詳細もログに出さない（§9）。
+  // ⚠ cleanup で必ず取り除く＝**`<style>` は常に 0 個か 1 個**（テーマを何回切り替えても積み上がらない）。
+  //   切替時は「先に外してから取りに行く」ので一瞬既定へ戻るが、取得に失敗したときに前のテーマが
+  //   残らない（表示と選択状態が食い違わない）ほうを採る。
+  useEffect(() => {
+    if (themeId === null) return;
+    let cancelled = false;
+    let el: HTMLStyleElement | null = null;
+
+    getOverlayThemeCss(themeId)
+      .then((css) => {
+        if (cancelled) return;
+        el = document.createElement("style");
+        // 目印（`data-sd-overlay-theme`）。テストと DevTools が引くためだけの属性で、意匠には関与しない。
+        el.dataset.sdOverlayTheme = "";
+        el.textContent = rewriteSelectors(css).css;
+        // `<head>` の末尾へ足す＝CSS Modules（Vite が起動時に入れる）より後になるので、
+        // 同じ詳細度ならユーザー CSS が勝つ。これが「テーマで上書きできる」の実体。
+        document.head.appendChild(el);
+      })
+      .catch(() => {
+        // 既定意匠のまま（<style> を作らない）。詳細は出さない（§9）。
+      });
+
+    return () => {
+      cancelled = true;
+      el?.remove();
+    };
+  }, [themeId]);
 
   // コメビュ本体と同じ loopback WS へ読み取り専用接続する（onComments のみ・制御フレームは送らない）。
   // sidecar 未起動時は connectCommentStream が接続待ち（ポート未確定で再試行）になり、0 件表示になるだけ。

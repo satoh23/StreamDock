@@ -13731,3 +13731,609 @@ review② の反映後に「**docs が仕様として主張しているのに、
 - **CSS の構文チェック**（壊れた CSS はブラウザが無視するだけ）。
 - **汎用のファイル読み書きコマンド**・`fs` plugin・asset protocol。
 - **`origin='snapshot'` の生成**（060c だけが作る。コマンド引数には現れない）。
+
+## 060d テーマ管理 UI ＋ オーバーレイへの注入・切替（2026-08-05）
+
+060 の 3 本目。060a が作った契約と 060b が保存した CSS を、**実際にオーバーレイへ注入して切り替えられる**
+ようにした。これで「ローカル CSS を入れて配信画面のデザインを変える」が**通しで動く**。
+frontend のみ・**新規依存ゼロ**・**新規 capability ゼロ**・`csp: null` 不変・**Rust / sidecar は差分ゼロ**。
+
+### ⚠⚠ 着手前の調査で崩れた前提 —— frontend は取り込み前のファイルサイズを知らない
+
+タスクファイルの完了条件は「**取り込み前後のサイズ比が極端なら警告する**」で、`overlay_theme/model.rs` の
+doc コメントも「取り込み前のファイルサイズは 060d 側が知っているので Rust に足すものは無い」と書いていた。
+**これは事実誤認だった**（実コードで確認）:
+
+| 確認項目 | 実測 |
+| --- | --- |
+| `@tauri-apps/plugin-dialog@2.7.1` の `open()` 戻り型 | `OpenDialogReturn<T>` ＝ `multiple:false` なら **`string \| null`**（パス文字列のみ） |
+| `apps/desktop/package.json` の依存 | `@tauri-apps/api` / `plugin-dialog` / `plugin-opener` / react / react-dom。**`plugin-fs` なし** |
+| `capabilities/comment-viewer.json` | `core:default` ＋ `dialog:allow-open` のみ。**asset protocol なし** |
+
+→ **frontend は選ばれたファイルを 1 バイトも読めない**＝比率そのものが計算できない。
+⚠ **`model.rs` の当該 doc コメントは誤りのまま残っている**（本タスクは Rust 差分ゼロのため触っていない）。
+**再修正トリガー＝次に `overlay_theme` を触るとき（060c）にコメントを訂正すること。**
+
+### ①（本人決定）サイズ比 → **構造シグナル（閉じ忘れたブロックの検出）** へ置換
+
+**採用は (b′)**。案は (a) Rust に `sourceBytes`/`savedBytes` を足す ／ (b′) 保存後 CSS の構造を見る ／
+(c) 完了条件から外す、の 3 つ。**(b′) は「安いから」ではなく「精度が高いから」選んだ**:
+
+- 病的ケースは構造で一意に見分けられる。対応の取れていない `(` があると、そこから EOF までが 1 宣言として
+  除去され、**囲んでいた `}` も一緒に消える**。実測（`model.rs` の注記）: `.a{width:calc(100% - 10px;}` ＋以降
+  → 保存されるのは `.a{` だけ。⚠ **末尾が `{` とは限らない**（`.a{color:red;width:calc(1px;}` → `.a{color:red;`）
+  ので、末尾 1 文字ではなく**ブロックの深さ**を見る（`unclosedBlockDepth`）。
+- ⚠⚠ **比率は正常系と病的ケースを区別できない。** 依頼者の実サンプル（全 6 行のうち 1 行が `@import`）は
+  比率で 2〜3 割減るし、`url()` を多数持つ普通のテーマも宣言ごと除去されて数割減る。
+  閾値を下げれば誤報、上げれば取り逃す。**誤報する警告は読まれなくなる**ので、これは実質的な劣化。
+- ⚠ **実装中に自分の補助案を 1 つ捨てた**。当初は「`strippedCount > 0` かつ保存後 CSS が 64 文字未満」も
+  併用する設計だったが、**テストが誤報を実証した**（`.sd-comment{color:red;font-size:20px}` ＋除去 1 件で発火）。
+  小さいが健全な CSS を叱ることになるので削除し、代わりに**誤報しないことを固定するテストを 3 ケース**足した。
+
+### ⚠ レビュー区分（本人決定）—— 免除ではなく別チャットへ
+
+`docs/security.md`「レビュー必須条件」には 060a レビュー S-2 で
+**「オーバーレイへのユーザー CSS の注入（060d／`<style>` 生成・`insertRule`・`adoptedStyleSheets` 等）」**が
+既に追加されており、その節は「**本項が対象にするのは注入する側である**」と明記している。**060d は注入する側そのもの。**
+タスクファイルと task-board の「軽レビュー」は、この項目が追加される**前**の記述である。
+
+→ **本セッションは軽レビューのみ**（本人判断）。**security-review は別チャットで実施する。**
+⚠⚠ **これは要件の免除ではない**（059a の「下位条件の当てはめで自分を免除した」と同じ形にしないこと）。
+**security-review が完了するまで 060d は「レビュー未了」**として task-board に残してある。
+
+### (1) `features/comment-viewer/overlayThemeApi.ts`（新規・invoke ラッパ）
+
+060b の 5 コマンドを包む薄いラッパ。型は `bindings/` の 3 本を再 export（**新しい bindings 先を作らない**）。
+`themeNameError()` を同居させたのは、これが**コマンドの契約そのもの**だから。
+
+⚠ **Rust の `validate_theme_name` と厳密に等価にした**（申し送り①「Rust と同じか狭く」）:
+
+| 規則 | Rust | JS |
+| --- | --- | --- |
+| 制御文字 | `char::is_control`（**C0 ＋ DEL ＋ U+0080..=U+009F**） | **`/\p{Cc}/u`** |
+| 長さ | `chars().count() > 80` | **`[...name].length > 80`** |
+
+⚠ よくある `/[\x00-\x1F\x7F]/` では **C1 が漏れる**（frontend が通して Rust が弾く＝「入力できるのに保存できない」）。
+⚠ `name.length` は UTF-16 単位なので**絵文字入りの名前で食い違う**。
+
+### (2) `overlaySettings.ts` に `OVERLAY_THEME_KEY` / `loadOverlayTheme` / `saveOverlayTheme`
+
+- 既存 4 キーと同じ作法（非機密の UI 設定値・例外は握りつぶし）。⚠ **CSS 本文は置かない**（Rust が持つ）。
+- **不正の定義＝ uuid v4 形式でない**。Rust の `Uuid::new_v4()` と `is_managed_file_name()`（`<uuid v4>.css`）と
+  対になっており、細工された localStorage 値がコマンドまで届かない。**再修正トリガー＝ id 採番方式を変えるとき。**
+- `saveOverlayTheme(null)` は **`removeItem`**（「未保存＝既定」と「既定を選んだ」を同じ状態に潰す）。
+
+### (3) `features/comment-viewer/cssScope.ts`（新規・純関数 2 本）
+
+**`cssCompat.ts` とは別ファイル**（申し送り③）。⚠ ただし**理由は訂正した**——
+
+> **A-1 訂正**: ガード (10-b) は `cssCompat.ts` から **`/\bto:\s*"([^"]+)"/g`** で抽出した文字列だけを
+> 突き合わせている（(10-c) も `from:` のみ）。つまり `const X = ".sd-preview"` のような**素の定数を
+> 同ファイルに書いても (10-b) は落ちない**。落ちるのは `to: ".sd-preview"` と書いた場合だけ。
+> → 分離の理由は「誤検知回避」ではなく **060a の資産を凍結して差分ゼロを担保するため**（`scanPreludes` を
+> `export` して借りることもしない）。この構造は新設した **(10-h)** が固定する。
+
+**`scopeSelectors(css, scope)` の仕様**
+
+| 入力 | 出力 | 理由 |
+| --- | --- | --- |
+| `.foo{}` | `.sd-preview .foo{}` | 通常の前置 |
+| `.a,.b{}` | `.sd-preview .a,.sd-preview .b{}` | **トップレベルのカンマで分割**（`:is()` で束ねると下の読み替えが効かない） |
+| `:root{}` / `html{}` / `body{}` | **`.sd-preview{}`** | ⚠ 前置すると絶対に当たらない（実サンプルの `:root{--txtcolor}`） |
+| `:root .foo` / `body .foo` | `.sd-preview .foo` | 前置だと `.sd-preview body .foo` で当たらない |
+| `html.dark .foo` | `.sd-preview.dark .foo` | **先頭のトークンだけ**置換し複合の残りを保つ |
+| `html > body .foo` | `.sd-preview .foo` | 続けて並ぶ root 相当も取り除く |
+| **`.sd-overlay{…}`** | **`.sd-preview{…}`** | ⚠ **本タスクで追加した判断**。実配信の窓ルート＝プレビューのラッパ。読み替えないと `.sd-overlay{--sd-comment-bg:…}`（CSS 変数を上書きする唯一の器）が**プレビューでだけ効かない** |
+| `.a:not(.b,.c)` / `[t="a,b"]` / コメント内のカンマ | 分割しない | `(` `[`・文字列・コメントを見る |
+| `@media`/`@supports`/`@container`/`@layer x{}` | プレリュード**無改変**・中のルールだけ前置 | |
+| **`@keyframes x{from{} 50%{} to{}}`** | **無改変** | ⚠ 中身は宣言扱い＝前置するとアニメーションが壊れる |
+| `@font-face` / `@page` / `@property` / 文形アットルール | 無改変 | セレクタが無い |
+| CSS Nesting（`&`） | 無改変 | `cssCompat` と同じ既知の非対応 |
+| 壊れた CSS | throw せず処理できた範囲だけ | 無害に劣化 |
+
+- ⚠ **大小の扱いを分けた**: `html` / `body` / `:root` は CSS 上大小無視なので `i` 付き、
+  **`.sd-overlay` はクラス名＝大小区別**なので `i` なし（`.SD-OVERLAY` は別のクラス）。
+- ⚠ **冪等ではない**（2 回通すと `.sd-preview` が 2 段になる）。呼ぶのはプレビューの注入 1 か所だけ。
+- ⚠ **走査器は `cssCompat.ts` の `scanPreludes` と同型の複製**。意図的だが、**両者は同じ「どこがセレクタか」の
+  定義を共有していなければならない**（ずれると「変換されたがスコープされない＝窓へ漏れる」規則が生まれる）。
+  `cssScope.test.ts` が **`cssCompat.test.ts` と同じ実サンプル 2 本**を通して一致を実測で固定した。
+  **再修正トリガー＝`scanPreludes` を変更したら必ずこちらも見ること。**
+
+**スコープしきれないもの（既知の限界）**
+
+- `@font-face` の `font-family` 名と `@keyframes` の名前は**文書グローバル**。既存名を再定義するテーマだと
+  プレビュー中だけコメビュ窓の他所へ波及しうる。→ **プレビューは開いている間だけ `<style>` を置く**（露出を限る）。
+- カスタムプロパティは `.sd-preview` に落ちる＝**配下にしか継承しない**（正しく閉じている）。
+- `@media` の評価対象はコメビュ窓のサイズであって OBS の出力サイズではない（「だいたいの見え方」と UI に明記）。
+
+`unclosedBlockDepth(css)` は同じ走査器のスタック長を返すだけ（3 つ目の複製を作らないため同居させた）。
+
+### (4) `OverlayApp.tsx` への注入（本機能の芯）
+
+```
+if (themeId === null) return;                    // 既定 = <style> を作らない
+getOverlayThemeCss(themeId).then((css) => {
+  el = document.createElement("style");
+  el.dataset.sdOverlayTheme = "";
+  el.textContent = rewriteSelectors(css).css;    // ⚠ textContent のみ
+  document.head.appendChild(el);                 // CSS Modules より後 = 同詳細度ならユーザー CSS が勝つ
+}).catch(() => {});                              // 既定へ倒す・ログに出さない
+return () => { cancelled = true; el?.remove(); } // 切替/アンマウントで必ず外す = 常に 0 or 1 個
+```
+
+- **保証ベースライン＝read-on-mount**（lazy `useState`）＋ **即時反映＝`storage` 購読**（ベストエフォート）の二段構え。
+- ⚠ **`scopeSelectors` は使わない**（窓ごと分かれているので前置する相手がいない）。
+- ⚠ **固定コメント窓（`PinnedOverlayApp`）は差分ゼロ**（ガード (10-d) が両方向を固定したまま）。
+- ⚠ 切替時は**先に古い `<style>` を外してから**取りに行く。一瞬既定へ戻るが、
+  **取得に失敗したときに前のテーマが残らない**（表示と選択状態が食い違わない）ほうを採った。
+- ⚠ 取得失敗時に **localStorage を書き換えない**。オーバーレイ窓は表示専用・非フォーカスで、
+  設定を書き換える側にしない（気付かせるのはコメビュ窓の責務）。
+
+### (5) `OverlayThemeCard.tsx`（新規）＋ `SettingsView` へ 1 行
+
+- **配置は「OBSに表示」カードの直後（末尾）**。⚠ あのカードには「上の『OBSに自動で反映する』」
+  「上のコメント用」「上の設定」という**位置参照の注記が 3 本**あり、途中挿入だと指す先が変わる。
+  末尾なら 1 つも壊れない（`SettingsView.tsx` のコメントが警告している既知の制約に従った）。
+- **一覧はラジオ**（Select だと**削除・改名のために一度選択する必要があり、選択＝配信画面へ即適用**になる）。
+  200 件まで登録できるのでスクロール箱（`.themeList` に `max-height`）に入れた。
+- ⚠ **state をこのコンポーネントが持つ**（`SettingsView` は表示専用・state は親、からの意図的な逸脱）。
+  理由 ①`SettingsViewProps` は既に 30 個超 ②選択中 id の**消費者はオーバーレイ窓だけ**（経路は localStorage）
+  ③`CommentViewerApp.tsx` は 1900 行超 ④`ViewersView` / `ViewerDetailPanel` の先例。
+  `SettingsView` から渡すのは**プレビューの体裁に要る 2 つだけ**。
+- **取り込みはカード内インラインフォーム**（`ConfirmDialog` に入力欄が無い／新規部品を増やさない）。
+  ファイル名から初期値を作り、**同じフォームを改名でも使い回す**。⚠ **パスは画面に出さない**（basename のみ・§9）。
+- **プレビューは `CommentList variant="overlay"` を再利用**（ダミー 2 件＝chat ＋ スーパーチャット）。
+  060a が CSS 変数の既定値を「参照側の `var(--sd-X, 現行値)` フォールバック」に置いたおかげで、
+  **`.root` の外（`.sd-preview` 配下）でも意匠が保たれる**——060a が予告していた副産物が実際に効いた。
+
+**⚠ 復帰導線（壊れたテーマからの脱出）**
+
+- 「既定のデザインに戻す」は**常時表示・常時有効**。⚠ **一覧の取得に失敗していても押せる**ことをテストで固定した
+  （ここが唯一の脱出路なので、一覧の状態に依存させない）。
+- 選択中を削除したら `saveOverlayTheme(null)`。
+- 保存済み id が一覧に無いときは**黙って既定へ倒さず警告する**（058a の「以前選んだデバイスが見つかりません」と同型・
+  ⚠ 読み込み中は判定しない＝起動直後に一瞬赤くならない）。
+
+### ⑨ 取り込み結果の文言と根拠の対応
+
+| 文言 | 根拠 | 条件 |
+| --- | --- | --- |
+| 「『{name}』を取り込みました。」 | `theme.name` | 常時 |
+| 「**取り込めない参照**を N 件除去しました（外部サイトの画像やフォント、相対パスの指定などを含みます）。」 | `theme.strippedCount` | `>0`。⚠ 「外部参照を」は不正確（申し送り③） |
+| 「うち N 件は**外部サイトの CSS の読み込み（@import）**です。StreamDock は外部サイトへ接続しないため、その中に書かれたデザインは反映されません。」 | `strippedImportUrls.length` | `>0`。⚠⚠ **「書体しか効かない」の説明はこの 1 本**。無いと仕様どおりの挙動がバグに見える |
+| 「M 個のルールを StreamDock 用に変換しました。」 | `rewriteSelectors().rewritten` | `>0` |
+| 「変換できたルールでも、指定の一部が StreamDock に無い要素を指していると反映されないことがあります。」 | レビュー Q-1 | `rewritten>0` のとき**必ず併記**（`rewritten` 単独を成功件数に見せない） |
+| 「**K 種類**のセレクタは変換できませんでした（この指定は反映されません）: …」 | `rewriteSelectors().unmatched` | `>0`・**clamp 後**。⚠ 「種類」であってルール数ではない（申し送り②） |
+| 「CSS の大部分が取り込めていない可能性があります。括弧（ ( と ) ）の対応が取れているか確認してください。」 | `unclosedBlockDepth(css) > 0` | ①の判定 |
+| 「同じ名前のデザインが既にあります。」 | 一覧との突き合わせ | ⚠ **ブロックしない**（申し送り②）。入力中にも出す |
+| `@media` プレリュード拒否 等 | **Rust の `AppError.message` をそのまま表示** | ⚠ **frontend で文言を書き直さない**（分裂させない） |
+
+**clamp（060a レビュー S-1）**: 件数 **10 件**まで（以降「ほか N 件」）／1 件 **60 文字**（コードポイント単位で切る）／
+表示前に `/\p{Cc}/gu` を除去し `/\s+/g` を空白 1 個へ正規化。
+⚠ **`name` に追加の clamp は不要**（Rust が 80 文字・制御文字なしを保証済み）。代わりに入力フォーム側で同じ規則を先に当てる。
+
+### ⑧ `strippedImportUrls` の扱い（060c の受け皿）
+
+- **URL 本体は画面に出さない。件数だけ**。⚠ 060c が要求する「ホストを別行で強調」（userinfo 付き URL の
+  表示偽装対策・060b review② S-6）が無いまま素の URL を出すと、**060c の同意画面より弱い形で同じ文字列を
+  先に見せる**ことになる。ログにも出さない（§9・テストで `ruri.info` が DOM に出ないことを固定）。
+- **受け皿＝`runImport()` という単一の async ハンドラ ＋ `lastImport` 相当の state（`outcome`）に
+  `OverlayThemeImportResult` を丸ごと保持**。
+  ⚠⚠ **060c は `await importOverlayTheme(...)` の直後・`setOutcome` の前に同意ダイアログと取得を挟むだけでよい。**
+  `strippedImportUrls` は DB に無い＝**この 1 回しか手に入らない**ので、他の場所からは後付けできない。
+
+### 静的ガード (10-h) / (10-i) を新設
+
+| 検査 | 内容 |
+| --- | --- |
+| **(10-h)** | `PREVIEW_SCOPE_CLASS = "sd-preview"` の定義が `cssScope.ts` に**ちょうど 1 か所**／ラッパが `className={PREVIEW_SCOPE_CLASS}` である／`cssCompat.ts` には `sd-preview` が**現れない** |
+| **(10-i)** | `OverlayApp.tsx` / `OverlayThemeCard.tsx` / `cssScope.ts` に **`innerHTML` / `dangerouslySetInnerHTML` / `insertRule` / `adoptedStyleSheets` が現れない** |
+
+### テスト（**+109 件 → 979 passed / 43 files**）
+
+- **`cssScope.test.ts`（57 件）**: 仕様表の全ケース（`:root` / `html` / `body` / `.sd-overlay` の読み替え・
+  `@keyframes` 不介入・`@media` プレリュード不介入・カンマ分割の構文判定・壊れた CSS で throw しない）／
+  **実サンプル 2 本**を `rewriteSelectors` → `scopeSelectors` の順で通し**出力全文を厳密一致で固定**／
+  `unclosedBlockDepth` を実測形（`.a{` / `.a{color:red;`）で固定。
+- **`overlaySettings.theme.test.ts`（13 件）**: 未保存 / 6 種の不正値 / 例外 → `null`、`null` はキー削除、
+  **CSS 本文がこのキーに載らない**こと。
+- **`OverlayApp.test.tsx`（10 件・新規ファイル）**: `<style>` が 1 つだけ／5 回切り替えても 1 つのまま／
+  `null` で 0 個／`</style>` を含む CSS で `textContent` 一致／`storage` で切替／`clear()`（key=null）でも既定へ／
+  アンマウントで除去／**取得失敗で既定へ倒し localStorage を書き換えない**／不正 id ならコマンドを呼ばない。
+- **`OverlayThemeCard.test.tsx`（29 件）**: 一覧・選択・**「既定に戻す」（一覧取得失敗時も押せる）**・
+  削除確認・選択中削除で既定へ・`selectedMissing` 警告・取り込みフロー（初期値・パス非表示・空/81 文字の拒否）・
+  **同名でもブロックしない**・Rust の固定文言の透過・結果文言 8 種・**clamp（2 万件／5 万文字）**・
+  ①の警告と**誤報しないこと 3 ケース**・プレビューのスコープ化と `<style>` の出し入れ。
+
+### ミューテーション（8 種）—— ⚠ **jsdom では殺せない 1 件が見つかった**
+
+| 変異 | ランタイムテスト | 静的ガード |
+| --- | --- | --- |
+| `<style>` の removal（cleanup）を外す | **レッド 4 件** | — |
+| `scopeSelectors` の root 読み替えを素朴な前置へ戻す | **レッド 15 件** | — |
+| 「既定のデザインに戻す」を無効化 | **レッド 2 件** | — |
+| **注入を `innerHTML` にする** | ⚠ **緑（殺せない）** | **レッド (10-i)** |
+| `unmatched` の clamp を外す | **レッド 2 件** | — |
+| `unclosedBlockDepth` を常に 0 にする | **レッド 2 件** | — |
+| プレビューのスコープ化を外す | **レッド 1 件** | — |
+| ラッパを CSS モジュールのクラスへ差し替える | **レッド 1 件**（テスト追加後） | **レッド (10-h)** |
+
+⚠⚠ **`innerHTML` への退行はランタイムテストでは原理的に殺せない**（実測 2026-08-05）。
+jsdom は `<style>.innerHTML` に **RAWTEXT のフラグメント解析を実装しておらず**、`textContent` 経路と
+**完全に同じ結果**になる（`textContent` / `childNodes` / `sheet.cssRules` が一致し、逃げ出す `<img>` も 0 件）。
+実ブラウザ（WKWebView / WebView2）では `</style>` で要素が閉じるので挙動が分かれるが、jsdom では観測できない。
+→ **この不変条件を実際に殺しているのは (10-i) だけ。ガードを消さないこと。**
+テスト側は「何が正しい形か」を仕様として残し、実ブラウザでの退行を捕まえる役割で維持する
+（(10-a) と `CommentList.test.tsx` の役割分担と**主従が逆**）。
+
+⚠ ラッパのクラス差し替えも当初はテストで殺せなかった（プレビューが**黙って無反映**になるだけ）。
+`.sd-preview` の存在を assert するテストを足して、ガードと二重に固定した。
+
+### ⚠ 敵対的入力でのスコープ脱出テスト（2026-08-05 実測・**脱出ゼロ**）
+
+⚠⚠ **プレビューはオーバーレイ窓ではなく「コメビュ窓の中」で第三者の CSS を走らせる**（この窓には設定 UI がある）。
+スコープ化が破れると窓全体が乗っ取られるので、走査器を desync させて「ラッパの外に出るルール」を作れないかを
+**23 パターン**で実測した。**脱出はゼロ。**
+
+- 通した形: 宣言中の文字列の `}` ／ 未終端の文字列 ／ コメント中の `{` ／ 未終端コメント ／ `url()` 中の `}` ／
+  余分な `}` ／ `@media` を閉じた直後 ／ `@media` 未閉鎖 ／ `@keyframes`・`@font-face` の直後 ／ `@import` 文の直後 ／
+  `;;;` ／ CSS Nesting から祖先を狙う形 ／ **`html:has(…)` / `*:has(…)` で祖先を狙う形** ／ 先頭・末尾カンマ ／
+  `\7d` エスケープ ／ `@scope` ／ `@layer` の文形と block 形 ／ CDO/CDC ／ BOM ／ root 相当の連鎖の直後。
+- ⚠ **`:has()` による祖先狙いは前置で無力化される**（`html:has(.sd-preview) .escaped` → `.sd-preview:has(…) .escaped`）。
+- **既知の限界 2 件（いずれも安全側＝「プレビューで効かなくなる」方向にしか外れない）**:
+  ①未終端コメントの中身はルールにならない（ブラウザと同じ挙動なので前置しない）
+  ②**CDO/CDC（`<!--` / `-->`）を含むと前置でセレクタが不正になりルールごと落ちる**（本来は最上位で無視される
+  トークンなので `.escaped` が効くはず＝**過剰制限**）。実例が出たら対応する。
+- 14 パターンを `cssScope.test.ts` に回帰テストとして固定した。
+
+**性能（実測・256KB 級の病的入力でもハングしない）**
+
+| 入力 | 実測 |
+| --- | --- |
+| 先頭 root 相当を 5 万回反復（244KB・`scopePart` のループが毎回 slice する形） | **6.6ms** |
+| 現実的な 178KB（4000 ルール）で `rewriteSelectors` → `scopeSelectors` | **15.0ms** |
+| `unclosedBlockDepth`（同上） | **0.7ms** |
+| カンマ 2 万個 / `@media` 5000 段ネスト | **3.6ms / 2.2ms** |
+
+⚠ `scopePart` の「続けて並ぶ root 相当を取り除く」ループは理屈上 O(n²) に見えるが、V8 の sliced string により
+実測は線形（上表）。**再修正トリガー＝走査器を index ベースから文字列コピーへ書き換えるとき。**
+
+### 変更ファイル
+
+**新規**: `features/comment-viewer/overlayThemeApi.ts` ／ `features/comment-viewer/cssScope.ts` ／
+`screens/comment-viewer/OverlayThemeCard.tsx` ＋ テスト 4 本
+（`cssScope.test.ts` / `overlaySettings.theme.test.ts` / `OverlayApp.test.tsx` / `OverlayThemeCard.test.tsx`）。
+**変更**: `features/comment-viewer/overlaySettings.ts` ／ `screens/comment-viewer/OverlayApp.tsx` ／
+`screens/comment-viewer/SettingsView.tsx`（1 行）／`screens/comment-viewer/CommentViewerApp.module.css`（新規 5 クラス）／
+`scripts/check-css-guards.mjs`（(10-h)/(10-i)）。
+
+⚠ **CSS 差分ゼロは達成していない**（一覧の行とプレビュー枠に箱が要る）。足したのは
+`.themeList` / `.themeRow` / `.themeRowMain` / `.themeName` / `.themePreview` の 5 つで、
+**役割トークンのみ・`--text-faint` 不使用・054 の 3 段規則どおり**（項目名 13px/700 は既存値と同値）。
+
+### ゼロ拡大の実測（すべて差分ゼロを確認）
+
+`apps/desktop/src-tauri/` ／ `apps/comment-sidecar/` ／ `.github/` ／
+`package.json`・`pnpm-lock.yaml`（**新規依存ゼロ**）／
+**`cssCompat.ts`（060a の資産に無改変）** ／ `CommentList.tsx` ／ `PinnedOverlayApp.tsx`。
+`grep -rn "dangerouslySetInnerHTML\|innerHTML" apps/desktop/src` の本番コードのヒットは**コメントのみ**。
+
+### 検証
+
+`typecheck` ✅ ／ `lint` ✅ ／ `test` ✅ **979 passed / 43 files**（＋CSS guard OK ／ Version sync OK）。
+
+### 軽レビュー（2026-08-05・修正必須 0 件）
+
+必須 3 点をすべて確認した:
+
+1. **注入経路は `<style>` の `textContent` のみ** —— `createElement("style")` は 2 か所（注入・プレビュー）で
+   どちらも `textContent`。本番コードに `innerHTML` / `dangerouslySetInnerHTML` / `insertRule` /
+   `adoptedStyleSheets` はゼロ（ガード (10-i) が恒久化）。
+2. **プレビューの CSS が窓全体へ漏れない** —— `scopeSelectors` 適用済み。生成される CSS 文字列を厳密一致で固定し、
+   スコープ化を外す変異／ラッパのクラスを差し替える変異の**両方**がレッドになることを実測。
+3. **「既定に戻す」で必ず復帰できる** —— 常時表示・常時有効。一覧取得失敗時も押せることをテストで固定。
+
+そのほか: §9（パス・CSS 本文・除去 URL を画面にもログにも出さない。`with_filename_detail` は
+**ファイル名のみを `details` に載せる**ので `toErrorMessage` が読む `message` にパスは入らない）／
+frontend から shell 実行なし・OS 操作は Rust 側のまま／DB スキーマ変更なし（型は ts-rs 生成の再 export）／
+タスク範囲外の変更なし。
+
+### テストの追い足し（security-review 対応・2026-08-05）—— **979 → 1004 passed / 43 files**
+
+| 追加先 | 件数 | 何を仕様として固定したか |
+| --- | --- | --- |
+| `cssScope.test.ts` | **+14**（57→71） | S-1 の 2 軸（無引用 `url(` トークン／文字列の外の CSS エスケープ）／`\75 rl(` の綴り隠し／引用形 `url("…")` は不透明にしない／root 相当のトークン境界（`\` と非 ASCII）／未終端でも無限ループしない。⚠ **`unclosedBlockDepth` の既知の見落とし**（Q-1）も「見落とす」ことを明示テストで固定＝**060c で `truncated_to_eof` を足したら書き換える印**にした |
+| `OverlayThemeCard.test.tsx` | **+11**（29→40） | S-6（ファイル名の clamp と bidi 除去）／Q-6（`analyze` 失敗を黙らせない）／Q-8（「うち少なくとも N 件」）／⚠ **プレビュー `<style>` のライフサイクル 6 経路**（切替で 0 or 1 個・アンマウント・削除・取得失敗・`selectedMissing`・`</style>` 入り CSS でも `textContent` のみ）／Q-5（**取り込み中でも「既定のデザインに戻す」が押せる**） |
+| `check-css-guards.mjs` | **(10-i) を反転 ＋ (10-j) 新設** | (10-i): `src/` 全体で生 HTML/CSSOM 注入を禁止（**書き込みのみ**。`innerHTML` の読み取りは既存テストの assert なので対象外）＋ `<style>`/`<link>` 生成箇所の allow-list ＝ **4 つ目の注入先が増えたら落ちる**。(10-j): `.themePreview` の **`contain: paint`** と `overflow: hidden` の存在（⚠ jsdom はレイアウトを持たないので、S-2 の機械的な受け皿はここだけ） |
+
+**ミューテーション（全 5 種レッドを実測）**: `url` トークンの不透明扱いを外す → 6 件赤／ident 読みを外す → 8 件赤／
+`splitTopLevelCommas` のエスケープを外す → 1 件赤／`textContent` を `innerHTML` へ → **(10-i) が赤**／
+`contain: paint` を消す → **(10-j) が赤**／`<style>` 生成を 3 ファイル目に足す → **(10-i) が赤**。
+
+⚠ **Rust 側は無変更・`cargo test overlay_theme` は 78 passed**。実機確認 2〜6 に相当する検証
+（`<uuid>.css` だけが増える／`../evil` がディレクトリを脱出しない／削除と二重削除／`.txt`・256KB 超・
+バイナリの拒否／`@media` プレリュードの拒否）は**すべて Rust の単体テストで機械的に固定済み**なので、
+実機ではその**配線**（ダイアログ →コマンド→ ディスク）だけを見ればよい。
+
+### ⚠ 実機確認は未実施（本人の手番）—— **060b から移管した 1〜4・6・7 を含む**
+
+1. **[060b-1]** 実サンプル CSS を取り込む → 名前を付けて一覧に出る／件数が表示される。
+   ⚠⚠ **「書体しか効かない」のが仕様どおり**（意匠の実体が除去した `@import` の中にある）。
+   ⑨の「うち N 件は外部サイトの CSS の読み込み（@import）です」でそう読めるかを確認する。
+2. **[060b-2]** `~/Library/Application Support/<bundle-id>/themes/` に `<uuid>.css` **だけ**が増える。
+3. **[060b-3]** テーマ名に `../evil` を入れても管理ディレクトリ外にファイルが出ない。
+4. **[060b-4]** 削除でファイル実体も消える／二重削除でも落ちない（`NotFound` になるだけ）。
+5. **[060b-6]** `.txt` ／ 256KB 超 ／ `.css` にリネームした PNG が拒否される。
+6. **[060b-7]** `@media (min-width: calc(1px + url(https://x))){…}` が拒否され、Rust の固定文言が出る。
+7. 選択 → オーバーレイの見た目が変わる（開いたまま／ダメでも開き直して）。
+8. `.sd-comment{display:none}` だけのテーマで配信画面が空になる → **「既定のデザインに戻す」で復帰**。
+9. 5 回切り替えて DevTools の `<head>` に `<style data-sd-overlay-theme>` が **1 つだけ**。
+10. プレビュー表示中にコメビュ窓の他の部分が壊れない。⚠ **security-review Q-14 で 3 ケースに具体化した**
+    （jsdom はレイアウトも実フォントも再現しないので、ここは実機でしか見られない）:
+    - (a) `:root` を含むサンプル（従来どおり）
+    - (b) **`position:fixed` を含むテーマ** ——
+      `.sd-comment{position:fixed;inset:0;z-index:2147483647;background:#000}` を入れ、
+      **プレビュー枠の中に収まり、「既定のデザインに戻す」ボタンが覆われない**こと（S-2 の `contain: paint`）。
+    - (c) **既存フォント名を再定義するテーマ** ——
+      `@font-face{font-family:"Segoe UI";src:local("Comic Sans MS")}` を入れ、
+      **コメビュ窓の他の文字が変わらないか**を見る（S-3・変わるなら shadow root 移行の判断材料）。
+11. 対応の取れていない `(` を含む CSS → ①の警告が出る。
+    ⚠ 併せて **`@import url(https://…` の `)` 忘れでは警告が出ない**ことも確認する（Q-1 の既知の見落とし・
+    「後半が黙って消えるのに警告なし」が実機でどう見えるかを 060c の判断材料にする）。
+12. `lsof -i` で外部 ESTABLISHED が増えない。
+13. ⚠⚠ **[060b-S-5] フラグメント無し SVG data URI が `filter:` でリソース文書として fetch されるか**
+    （security-review S-4 で**実機確認リストへ格上げ**）。060a / 060b の時点では注入経路がゼロだったので
+    実害が無かったが、**060d が経路を開いたので今日から現実のリスク**である。手順は
+    `overlay_theme/sanitize.rs` の module doc（アプリ不要・5 分）:
+    `python3 -m http.server 8000` を上げ、`filter:url("data:image/svg+xml,…feImage href='http://127.0.0.1:8000/HIT.png'…")`
+    を素の HTML で **Safari（WKWebView 相当）と Edge（WebView2 相当）**で開き、アクセスログに `HIT` が出るか。
+    出たら → `data:` の MIME 許可リスト（`image/svg+xml` を除外）へ踏み込む。
+    **出なくても実測した事実をここに残すこと。** ⚠ **060c の着手前提とする。**
+
+### ⚠⚠ security-review（別チャット・2026-08-05）—— **判定「修正必須」・対応済み**
+
+上記「レビュー区分」で別チャットへ送った security-review を実施し、**プレビューのスコープ化が実際に破れた**。
+`docs/security.md` の「## CSP方針」に **060d 節**を新設し、「レビュー必須条件」の 060d 項に下位条件を 2 本足した。
+
+| # | 指摘 | 対応 |
+| --- | --- | --- |
+| **S-1** | ⚠⚠ **`scopeSelectors` の走査器が実 CSS パーサと desync し、スコープを脱出できた**（PoC 8 系統・oracle は独立実装の CSS パーサ）。原因は ①**無引用 `url(` トークンを不透明に扱っていない**（`url(data:text/css,/*)` が「コメント開始」に見え EOF まで飲む） ②**CSS エスケープ `\` を扱っていない**（`--x:\{` / `.a\{b` でブロック深さがずれる・`.a\(b,.c` でカンマ分割が壊れる）。⚠ **いずれも 060b のサニタイザを `stripped_count=0`・無改変で通過する**（Rust の `sanitize_css` を直接叩いて実測）＝サニタイザは壁にならない | **修正**。`cssScope.ts` の `scan()` に ident / url トークンの読み分けを追加（16 進エスケープも復元＝`\75 rl(` を `url(` として扱う）、`splitTopLevelCommas` にエスケープ処理を追加、root 相当の否定先読みに `\` と非 ASCII を追加。回帰 12 件・ミューテーション 3 種すべてレッド |
+| **S-2** | ⚠ **スコープが効いていてもプレビュー枠の外を覆える**。`overflow:hidden` は `position:fixed` / `absolute` を止めない（祖先に包含ブロックを作る性質が 1 つも無いことを実測）。「既定のデザインに戻す」・OBS パスワード欄を覆えた | **修正**。`.themePreview` に **`contain: paint`**（包含ブロック化＋クリップ＋スタッキングコンテキストを 1 行で） |
+| **S-3** | ⚠ **`@font-face` の名前空間汚染は `local()` だけでなく `url(data:font/…)` でも成立する**（実測 `stripped_count=0`）＝任意のグリフを持つフォントでアプリ UI のフォント名を乗っ取れる（表示文字列の偽装）。申し送り 6 の見積もりが狭かった | **受容＋記録**。名前の書き換えは `var()` 経由で破れるので中途半端になる。恒久策は **shadow root / iframe への移行**（設計変更につき別タスク）。範囲を `cssScope.ts` / `OverlayThemeCard.tsx` / `security.md` に明記し、実機確認 10-(c) を追加 |
+| **S-4** | 060b の未解決 S-5 は「060d が経路を開いたので今から現実のリスク」 | **実機確認 13 へ格上げ・060c の着手前提に** |
+| **S-5** | ガード **(10-i)** がファイル列挙型で、**4 つ目の注入先が増えても落ちない** | **修正**。`src/` 全体の禁止（書き込みのみ・`innerHTML` の**読み取り**は既存テストの assert なので対象外）＋ `<style>` / `<link>` 生成箇所の allow-list（2 ファイル）へ反転。両方向のミューテーションでレッドを確認 |
+| **S-6** | `form.fileName` だけ clamp が無い（`unmatched` と非対称）。bidi（`\p{Cf}`）は `\p{Cc}` では落ちない | **修正**。`displayFileName()` を追加（`Cc`＋`Cf` 除去・60 コードポイントで切る） |
+| **S-7** | `security.md` に 060d の記録が無い | **修正**（上記） |
+
+**良かった点として確認されたもの**: 新規 egress ゼロ／`console.*` ゼロ／パスと除去 URL を出さない／
+`with_filename_detail` は `details` にしか載らないので `toErrorMessage` が読む `message` にパスは入らない／
+`OVERLAY_THEME_ID_RE` は Rust の `is_theme_id`（36 文字・`is_ascii_hexdigit`・位置指定の `-`）と**厳密に等価**／
+`themeNameError` は `char::is_control` ＝ `\p{Cc}` で厳密に等価／ゼロ拡大は全項目実測どおり。
+
+**品質側の対応**: Q-1（`unclosedBlockDepth` の見落とし＝**修正不要・060c 送り**）／Q-2（切り詰め警告の文言を
+「括弧やクォート」へ）／Q-3・Q-4（回帰テストと片方向ドリフトの明文化）／Q-5・Q-7・Q-9・Q-16（**コメントのみ**）／
+Q-6（`analyze` 失敗を 1 行出す）／Q-8（「うち**少なくとも** N 件」）／Q-13（060c へ申し送り）／Q-14（実機 10 を 3 ケースへ）。
+Q-10・Q-11・Q-12・Q-15 は**指摘なし（現状維持が妥当）**と確認された。
+
+⚠ **Q-1（`unclosedBlockDepth` の見落とし）は未解決のまま 060c へ送った。** 実測:
+`@import url(https://…` の `)` 忘れは、除去が EOF まで達しても**深さが 0 のまま**で警告が出ない
+（壊れた `(` がトップレベルにあると閉じ忘れが残らないため）。frontend だけでは原理的に埋まらないので、
+**060c で `SanitizeOutcome` に `truncated_to_eof: bool` を足す**こと（詳細は `cssScope.ts` の当該注記）。
+
+### ⚠⚠ 「060c をやるか」の判断材料 —— **【決着・2026-08-05】060c は必須と決定**
+
+> ⚠⚠ **本節は判断が付く前の記述で、答えは出た。依頼者が「060c は必須」と決定した（2026-08-05）。**
+> 下の「判断の軸は依頼者が自分で CSS を書き直す気があるか」は**もう選択肢ではない**——
+> ユーザーに CSS を書き直させる／外部 CSS をコピペさせるのは、060 の目的
+> （**ユーザーが持っている CSS がそのまま使える**）から外れるため。以下は経緯として残す。
+
+**060b＋060d で機能は通しで動くようになったが、依頼者の手持ちの CSS では「書体しか変わらない」**——
+これは 060a の実サンプル検証（2026-08-04）で既に分かっていたとおりで、**バグではなく仕様**。
+実サンプル 2 本の中身は ①外部 `@import` 1 行 ②書体の指定 ③その外部 CSS が読む `--txtcolor` の 3 つだけで、
+**吹き出しの意匠は丸ごと外部 CSS の中**にある。今回の UI はその事実を
+「うち N 件は外部サイトの CSS の読み込み（@import）です。StreamDock は外部サイトへ接続しないため、
+その中に書かれたデザインは反映されません」という 1 文で説明するが、**説明できても意匠は出ない**。
+一方で、自分で sd 語彙（`.sd-comment` / `--sd-comment-bg` / `data-sd-tone`）を使って CSS を書く人にとっては
+**060d 時点で完全に実用になっている**（変換も注入も切替もプレビューも動く）。
+→ **判断の軸は「依頼者が自分で CSS を書き直す気があるか」**。書き直さないなら 060c が payload そのもので、
+それ無しでは手持ちの資産が事実上使えない。書き直すなら 060c は不要（そして §1 の例外を新設せずに済む）。
+⚠ 併せて「セレクタ契約が実用に足るか」という 060 の中心的な問いは、**外部 CSS の中身を見るまで答えが出ない**
+（060c で取り込めば注入時の変換が走るので、`unmatched` が観測手段として効く）。
+
+## 060e CSS を貼り付けて取り込む（2026-08-05）
+
+**ユーザーに `.css` ファイルを作らせない**ための導線を足した。手元の CSS をフォームへ貼って
+「取り込む」を押すだけで保存できる。⚠ **security-review 未了**。
+
+### ⚠⚠ 何が「新しい権限」で、何がそうでないか
+
+- **新しいのは「frontend から本文を渡せるコマンドが 1 本増えた」ことだけ。**
+  保存先・ファイル名・検証・サニタイズ・上限は**ファイル版とまったく同じ共通コア**
+  （`service::store_sanitized_css`）が受け持つ＝ **検証は 1 セットしか存在しない**。
+- **書ける場所は 1 バイトも動かない。** `app_data_dir()` → `join("themes")` → `join("<uuid v4>.css")` の
+  3 手が各 1 か所に固定されており（契約テスト `the_storage_path_is_built_only_from_the_app_data_dir`）、
+  ユーザー入力はそのどこにも入らない。
+- ⚠ **攻撃面はファイル版より狭い**——`path` を取らないので、UNC / ネットワークパス経由の egress も、
+  「拡張子 `.css` に限定された任意ファイル読み取り」の合成（060b review② の受容事項）も**増えない**。
+- **新規 egress ゼロ・新規依存ゼロ・新規 capability ゼロ・`csp: null` 不変。**
+
+### ⚠⚠ 契約テストを「全面禁止」から「出現回数の固定」へ緩めた（意図的）
+
+`takes_no_arbitrary_path_or_content_from_the_frontend` は §3 の
+「汎用の `write_file(path, content)` 型を作らない」を機械で守る番人で、**`css: String` を全面禁止**していた。
+本タスクは**その番人を意図的に緩める作業**である。
+
+| 変更前 | 変更後 |
+| --- | --- |
+| `css` / `content` / `bytes` / `data` を **全面禁止** | **`css: String` の出現回数を 1 に固定**（2 本目で落ちる）／`content` / `bytes` / `data` は**引き続き全面禁止** |
+| `#[tauri::command]` は **5 個** | **6 個** |
+
+⚠ **禁止を消していない**のが要点——「増やすときに必ず気づく」構造は保たれている。
+⚠ 緩めてよいと判断した根拠は「§3 が禁じているのは**書ける場所を呼び出し側が決める**形であって、
+本文を渡せること自体ではない」。この判断は `docs/security.md` §5 例外（060b）と
+`docs/tasks/060e-paste-css-import.md` に記録した。
+
+### 実装
+
+| 層 | 内容 |
+| --- | --- |
+| Rust | `commands::import_overlay_theme_text(css, name)`（**同期**）→ `service::import_pasted_text` → **既存の `store_sanitized_css`**。⚠ `origin` は service 側で `Local` を定数として渡す（`commands.rs` に `origin` の文字が現れると `the_theme_origin_is_never_settable_from_the_frontend` が落ちる） |
+| frontend | `overlayThemeApi.ts` に `importOverlayThemeText` / `themeCssError` / `cssByteLength`。`OverlayThemeCard` の**既定フォームを貼り付けにした**（`{ kind: "paste" }`）。名前は空なら「デザイン N」（既存と重複しない番号）。ファイル選択は**副導線として残す** |
+| CSS | `.themeCssInput` 1 クラス（固定高さ＋等幅・054 の書式規則どおり・フォーカス表現は既存 3 か所と同トークン） |
+
+⚠⚠ **サイズは UTF-8 バイト長で数える**（`new TextEncoder().encode(css).length`）。Rust は `css.len()`
+＝バイト長で 256KB を見るので、`css.length`（UTF-16 単位）だと**日本語コメント入り CSS で 3 倍近く食い違い**、
+「入力できるのに保存できない」になる。⚠ 060d の `THEME_NAME_MAX_CHARS` は**コードポイント単位**
+（Rust が名前は `chars().count()` で見るため）＝**単位が違うので片方に揃えないこと**。
+
+### §9
+
+- CSS 本文は **state → invoke の 1 経路だけ**。`console.*` はゼロのまま。失敗時は **Rust の固定文言**をそのまま出す。
+- ⚠ **入力欄（textarea）の中身は §9 の対象外**（ユーザー自身が貼ったもの。パスワード欄に打った文字が
+  見えるのと同じ）。テストの判定も「**入力欄の外**に出ていないこと」にしてある
+  （最初に書いた「body の textContent に出ない」は誤りで、実測で落ちたので直した）。
+
+### テスト（**1004 → 1013 passed / 43 files**・Rust **78 → 82 passed**）
+
+| 追加先 | 何を固定したか |
+| --- | --- |
+| `overlay_theme/service.rs` +4 | 貼り付け経路でも ①uuid 名のファイルが 1 つだけ増える ②外部参照が保存されない ③名前・**256KB**・プレリュード拒否が効く ④拒否時はファイルも DB 行も残さない ⑤**エラーに CSS 本文が載らない** ⑥**200 件上限**が効く |
+| `OverlayThemeCard.test.tsx` +9（40→49） | 開いた時点で貼り付け欄が出ている／**貼って押すだけで `import_overlay_theme_text` を正しい引数で呼ぶ**／既定名が重複しない／名前を打てばそれが使われる／空では押せない／⚠ **256KB を「あ」×90K（文字数では 256K 未満・バイトでは超過）で判定**／Rust の固定文言をそのまま出し**本文は入力欄の外に出ない**／成功後に欄が空に戻る／ファイル選択からキャンセルで貼り付け欄へ戻る |
+
+⚠ 既存テストのヘルパ（`startImport`）は、**貼り付け欄が常時表示になったことで
+「切り替わる前の入力欄を掴む」ようになっていた**ので、見出し（「…に名前を付ける」）で
+切り替わりを待つ形へ直した（アサーションは 1 つも緩めていない）。
+
+### ⚠⚠ 060c の代替ではない（誤った記述を取り消した）
+
+本節には一時「外部 `@import` の中身はブラウザで開いてコピペできるので **060c を実装せずに済む可能性が高い**」と
+書いていたが、**依頼者の指摘により誤りとして取り消した**（2026-08-05）。**060c は必須。**
+
+- 依頼者のサンプル CSS は**意匠の実体が丸ごと外部 `@import` の中**にある＝ **060c が payload そのもの**。
+  それを「ユーザーが毎回ブラウザで URL を開いて view-source してコピペする」に置き換えるのは、
+  手間の問題ではなく**機能として成立していない**。060 の目的（ユーザーが持っている CSS がそのまま使える）から外れる。
+- ⚠⚠ **そもそもスコープの取り下げ判断は実装者がしてよい種類のものではなかった。**
+  実装の副産物を根拠に完了条件を縮める提案を docs へ書き込んだのが誤り。
+
+**060e の位置づけ**: 「CSS の文字列は持っているがファイルにはしていない」人のための入口で、
+**060c と直交する**（どちらか一方で足りる関係ではない）。
+
+### 検証
+
+`typecheck` ✅ ／ `lint` ✅ ／ `test` ✅ **1013 passed / 43 files**（＋CSS guard OK ／ Version sync OK）／
+`cargo test overlay_theme` ✅ **82 passed** ／ `cargo check` ✅。
+
+### ⚠ 実機確認は未実施（本人の手番）
+
+1. 設定 →「コメントのデザイン」を開いた時点で**貼り付け欄が出ている**。
+2. 適当な CSS を貼って「取り込む」→ 一覧に「デザイン 1」が出る。**ファイルは作っていない**。
+3. `~/Library/Application Support/<bundle-id>/themes/` に `<uuid>.css` が **1 つだけ**増える。
+4. 外部 `@import` を含む CSS を貼る → 「うち少なくとも N 件は外部サイトの CSS の読み込み」が出る。
+5. 巨大な CSS（日本語コメント多め・270KB 相当）を貼る → **押せず**に「256KB 以内に」が出る。
+6. `@media (min-width: calc(1px + url(https://x))){…}` を貼る → Rust の固定文言が出て、**本文は画面に出ない**。
+7. 取り込んだテーマを選択 → オーバーレイの見た目が変わる。
+8. ファイル選択（副導線）が従来どおり動く。
+9. ⚠ **貼りかけの CSS が消えないこと**（貼る →「名前を変更」→「キャンセル」→ 貼った内容が残っている）。
+   security-review② で修正したデータロスの実機確認。
+10. ⚠ **巨大貼り付けの体感**（256KB 相当を textarea へ貼って、名前欄のタイプが引っかからないこと）。
+    ⚠ `themeCssError` の計算コストは実測済み（0.14ms/回）だが、**React の再レンダーそのもの**は未実測。
+
+### ⚠⚠ security-review②（第三者・別チャット・2026-08-05）—— **判定「修正必須」・対応済み**
+
+⚠⚠ **修正必須は 060e 本体ではなく、同じ working tree に入っていた [B]（060d の自己レビュー→自己修正ぶん）
+で出た。**＝ **「見つけた人・直した人・直ったと判断した人が同一」だと閉じきれない**ことの実例が 2 回続いた。
+
+| # | 指摘 | 対応 |
+|---|---|---|
+| **S-1a** | ⚠⚠ **`\` ＋改行を ident に飲み込んでいた**（css-syntax-3 §4.3.7 では valid escape ではなく **delim トークン**）。そのため**直後の `url(` が url トークンとして認識されず**、中の `{` を実ブロック開始と誤認して以降ずっと深さがずれ、**後続の規則が素のまま出力された**。⚠ サニタイザは `stripped_count=0`・無改変で通し、末尾に `}` を 1 つ足すと `unclosedBlockDepth` も 0 ＝ **警告も出ない** | `isIdentStart(c, next)` / `readIdent` で `\`＋改行を valid escape から除外 |
+| **S-1b** | ⚠⚠ **at-keyword の名前のエスケープを復元していなかった**（`/^@([A-Za-z-]+)/`）。`@med\69 a` は**ブラウザにとって `@media` そのもの**（at-keyword トークンの値はエスケープ復元後の ident）なのに `"med"` に化けてグループ規則と認識されず、**中の規則に前置されなかった**。`@suppo\72 ts` / `@lay\65 r` / `@containe\72` / `@scop\65` も同型 | `atRuleName` を **`readIdent` で読む**形へ（エスケープ復元済み・小文字化済み） |
+| **Q-1** | `@starting-style` が `GROUP_AT_RULES` から漏れていた（規則リストを持つのに中身に前置されない） | 追加＋「新しいグループ規則が実装されたら足す」トリガーを明記 |
+| **Q-2** | 静的ガード **(10-i)** が `insertAdjacentHTML` / `setHTMLUnsafe` / `parseHTMLUnsafe` / `createContextualFragment` を禁止していなかった（**`createElement` を経由しない**ので allow-list 側も素通りする） | 4 つを禁止リストへ追加（現状 0 件なので無コスト） |
+| **Q-4** | `docs/security.md` §5 の「②は①より攻撃面が狭い」が**片側だけ正確**だった | 軸を分けて記述（`path` 由来は増えない／**本文の内容支配＝任意バイト列の永続化**は増える＝受容） |
+| **Q-5** | 文書グローバルな名前空間を `@font-face` / `@keyframes` の 2 種として記録していた | **`@property` / `@counter-style` を追加**（計 4 種）。受容範囲の記述を更新 |
+| **Q-6** | `contain: paint` のサポート下限が未記載 | **Safari 15.4+（macOS 12.3+）/ Chromium 52+** を明記。実機確認で OS バージョンを記録する |
+| **Q-3** | `stripTsComments` が文脈なしで `//` を消すので、文字列中の `//` 以降を行ごと見落とす | 既知の限界としてコメント化（厳密化するなら既存 devDependency の `typescript` で読む） |
+
+**追認された点**（＝そのままでよいと確認できたもの）:
+
+- ✅ **§3 の緩め方（`css: String` の全面禁止 → 出現回数 1）は妥当。** 本文経由で保存先・ファイル名・件数・
+  サイズを動かす**反例は構成できなかった**。契約テストも骨抜きになっていない（`production_sources()` が
+  `//` 始まりの行を落とすので、doc コメントに書いた `` `css: String` `` はカウントされない）。
+  ⚠ 残る穴＝ `text:` / `body:` / `source: String` は依然素通り（060e 以前からの穴。**専用 newtype**なら型で固定できる）。
+- ✅ **`contain: paint` に CSS だけで抜ける経路は見つからなかった**（`::backdrop` / `popover` / `dialog` /
+  `view-transition` はいずれも top layer へ入るのに **JS か属性**が要る）。
+- ✅ **§9 は清潔**（`log_command_err` はコード由来の固定文言のみ／`toErrorMessage` は `message` だけ参照／
+  `with_filename_detail` はファイル名を `details` にしか置かない）。
+- ✅ **ゼロ拡大・凍結資産の無改変・`csp: null` 不変**をすべて実測で確認。
+- ✅ **ミューテーション 5 種のうち 4 種が既存テストで死んだ**（url トークン不透明化／`splitTopLevelCommas` の
+  エスケープ／ident トークン読み／`IDENT_TAIL`）。**生存 1 件＝直前文字ガード**（`2url(` を url と誤認しない）
+  なので回帰を追加した。
+- ✅ **実測で確定した判断**: `cssError` の `useMemo` は**不要**（256KB＝261,142 バイトで `trim()`＋
+  `TextEncoder.encode()` が **0.14ms/回**）／`import_overlay_theme_text` の**同期化は妥当**
+  （256KB の敵対的入力で `sanitize_css` が **2〜3ms**）。
+
+**品質の指摘と対応**:
+
+- ⚠⚠ **データロス（申し送り 2 の既知欠陥）を修正**。`cancelForm()` が無条件に `setCssInput("")` を
+  呼んでいたため、貼りかけの CSS が **①キャンセル ②改名の成功 ③ファイル取り込みの成功**の
+  **3 経路すべて**で消えていた（レビュー前は①だけの想定だった）。
+  `backToPasteForm()`（本文を残す）＋ `runImport(_, clearPastedCss)` に分離し、**貼り付けが保存できたときだけ**
+  空へ戻す形へ。回帰 3 件を追加。
+- `NameForm` の `| null` を型から除去（`setForm(null)` はどこからも呼ばれておらず、
+  `form !== null` の恒真ガードが 6 か所残って**状態機械が実際より複雑に読めていた**）。
+- `textarea` に `disabled={busy}`／`nextPastedName` に終了条件／`clampUnmatched` に `\p{Cf}`
+  （`displayFileName` と揃える）／Rust の契約テストを `exposes_exactly_six_single_purpose_commands` へ改名。
+- §9 テストの判定を「葉要素だけ集める」から **「body を複製して入力欄を取り除いて全テキストを見る」**へ
+  （旧判定は子要素を持つ容器の直下テキストを見落とす）。
+- ⚠ **プレビューは「選択中」のテーマだけを映す**（＝貼った直後のものを試すには一度選択＝配信へ反映が要る）。
+  枠を「本番の見本」として一意に保つための意図なので**現状維持**とし、意図・理由・再修正トリガーをコメント化。
+- ⚠ `OverlayThemeCard.tsx` の 800 行超は**現状維持**（テストがコンポーネント境界で書かれているため）。
+  分割の境界と「060c の同意ダイアログを足して 1000 行を超えたら」というトリガーをコメント化。
+
+**060c への追加申し送り（重要）**:
+
+⚠⚠ **060b 期の「テキスト版コマンドは未実装。060c は 10 行のコマンドを足すだけ」は無効になった。**
+060e が `import_overlay_theme_text`（`origin=Local` 固定）を実装済みで、**060c が要るのは `Snapshot` 経路**
+なので `import_pasted_text` は再利用できず、**2 本目の `css: String` コマンド**になる
+＝ 契約テストが**設計どおり落ちる**。⚠ **数字だけ 2 へ書き換えて通さないこと**
+（落ちること自体が §3 の再評価と security-review を呼ぶ仕掛け）。
+
+**テストが無い領域（明示）**: ①実ブラウザでのレイアウト（`contain: paint` の実効性・jsdom はレイアウトを持たない）
+②実フォント（`@font-face` 名前空間汚染の実害）③巨大貼り付けの体感 ④窓間の `storage` 伝播
+⑤`innerHTML` / `insertRule` / `adoptedStyleSheets` の不在（原理的に静的ガードのみ）。
+①②⑤は**テストでは守れない**ので (10-i) / (10-j) と実機確認が唯一の受け皿である。
+
+### 検証（security-review② 対応後）
+
+`typecheck` ✅ ／ `lint` ✅ ／ `test` ✅ **1029 passed / 43 files**（cssScope 71→84 ／ OverlayThemeCard 49→52。
+＋CSS guard OK ／ Version sync OK）／ `cargo test overlay_theme` ✅ **82 passed** ／ `cargo check` ✅。
+
+### ⚠⚠ 実機確認リストの棚卸し（2026-08-05）—— **機械で見られる分をテストへ落とし、手動を絞った**
+
+060d（13 項目）／060e（10 項目）を「**ユニットテストで見られるか**」で仕分けた。
+⚠ **判断基準は「jsdom / Rust のテストで観測できる事実か」**であって、重要度ではない。
+レイアウト・実フォント・実 webview・OS ダイアログ・実ネットワークは**原理的にテストで見られない**ので手動に残す。
+
+**テストへ落としたもの（+28 件 → 1029 → 1057 passed / 44 files）**:
+
+| 追加 | 何を仕様として固定したか | 対応する実機確認 |
+|---|---|---|
+| **`overlayThemeApi.test.ts`（新規 22 件）** | ⚠⚠ **数え方の非対称**（名前＝コードポイント／本文＝ UTF-8 バイト長）。**絵文字 80 個の名前は通る**（`name.length` で数える退行を殺す）／**256KB ちょうどは通り 1 バイト超で止まる**（境界の内側が未検証だった）／**C1 制御文字（U+0080..U+009F）も拒否**（`/[\x00-\x1F\x7F]/` では漏れる）／⚠ **`origin` も `path` も渡さない**（出自を騙れない・保存先を frontend が決めない）／reject を握り潰さない | 060e-5 の境界側 |
+| `OverlayThemeCard.test.tsx` +5 | ⚠⚠ **実サンプル（意匠が外部 `@import` の中）で「書体しか効かない」理由の 4 本が同時に出る**（除去件数／うち少なくとも N 件は外部 CSS／変換したルール数／それでも当たらないことがある）＋ URL 自体は出さない。**プレビューに窓を覆う攻撃形（`position:fixed;inset:0;z-index:2147483647` / `*` / `html,body` / `:has()`）を入れても、注入される CSS のセレクタが全部 `.sd-preview` 配下に閉じる** | 060d-1／10-(b) の**①どの要素に当たるか** |
+| `OverlayApp.test.tsx` +1 | ⚠⚠ **`display:none` のテーマでも、既定へ戻せば `<style>` が外れて復帰する**（配信中に詰まない唯一の経路の機構） | 060d-8 |
+
+**⚠ テストへ落とせない（手動に残す）もの**と、その理由:
+
+- **描画位置**（`contain: paint` が効くか）… jsdom はレイアウトを計算しない。**(10-j) は宣言の存在しか見ない。**
+- **実フォント**（`@font-face` の名前空間汚染が UI 文字を変えるか）… jsdom はフォントを持たない。
+- **実 webview**（`</style>` を含む CSS を `innerHTML` に入れたときの破壊）… jsdom は RAWTEXT 解析を実装していないので**退行を再現できない**（守っているのは静的ガード (10-i) だけ）。
+- **OS ダイアログ**（`plugin-dialog` の `open()`）と**実ファイルシステム**（`app_data_dir` の実パス）。
+- **実ネットワーク**（`lsof` で ESTABLISHED が増えないこと／SVG data URI の fetch 可否）。
+- **窓間の実伝播**（`storage` イベントは jsdom で撃てるが、**別 webview 間で本当に飛ぶか**はプラットフォーム依存）。
+- **体感**（256KB を貼ったときの入力の引っかかり）。
+
+⚠ したがって **060b-2 / 3 / 4 / 6 / 7 は Rust のユニットテストが実質を担保済み**
+（`importing_writes_exactly_one_uuid_named_file_and_registers_it` / `a_traversal_shaped_name_never_escapes_the_managed_directory` /
+`deleting_removes_both_the_row_and_the_file_and_repeats_safely` / `source_paths_must_be_existing_css_files_within_the_size_limit` /
+`binary_files_named_css_are_refused` / `a_refused_css_leaves_no_file_and_no_row_behind`）であり、
+**手動で見る意味が残るのは「実 OS のパス解決」と「実ダイアログが返すパスを Rust が受けるか」だけ**である。

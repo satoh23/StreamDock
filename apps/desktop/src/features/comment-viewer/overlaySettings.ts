@@ -32,6 +32,19 @@ export const OBS_AUTO_ADD_KEY = "stream-dock.comment-viewer.obs-auto-add";
  */
 export const PINNED_OVERLAY_ENABLED_KEY =
   "stream-dock.comment-viewer.pinned-overlay-enabled";
+/**
+ * 060d: 選択中のカスタム CSS テーマ（`overlay_themes` の id）の保存キー。**未保存＝`null`＝既定意匠**。
+ *
+ * ⚠ **CSS 本文はここに置かない**（Rust が `app_data_dir/themes/<id>.css` に持ち、
+ * `get_overlay_theme_css` が文字列で返す）。localStorage に置くのは**id 1 個だけ**で、
+ * これは「フォント」「サイト名表示」と同じ**ユーザー自身の UI 設定値**＝ §9 追補（046a）が対象とする
+ * 第三者の個人データ（コメント本文・表示名・金額）ではない。
+ *
+ * ⚠⚠ **`null`（既定）へ必ず戻せることが安全装置**。ユーザー CSS は `.sd-comment { display:none }` の
+ * 一行でオーバーレイを完全に不可視にでき、オーバーレイ窓は表示専用・非フォーカスなので**そこからは
+ * 何も操作できない**。設定ビューの「既定のデザインに戻す」だけが脱出路になる（060d のテストが固定）。
+ */
+export const OVERLAY_THEME_KEY = "stream-dock.comment-viewer.overlay-theme";
 
 /**
  * オーバーレイのフォント候補（すべて OS 標準・日本語表示可・外部フォント無し）。`id` を localStorage に保存し、
@@ -156,5 +169,47 @@ export function savePinnedOverlayEnabled(enabled: boolean): void {
     localStorage.setItem(PINNED_OVERLAY_ENABLED_KEY, String(enabled));
   } catch {
     // プライベートモード等で書けない場合は黙って無視する。
+  }
+}
+
+/**
+ * 060d: テーマ id として受け入れる形（uuid v4）。
+ *
+ * ⚠ **Rust 側と対になっている**——id を採番するのは `overlay_theme::service` の `Uuid::new_v4()` だけで、
+ * 保存先を組み立てる `is_managed_file_name()` も `<uuid v4>.css` の完全一致を要求している。
+ * ここで形を検査しておくと、細工された localStorage 値がそもそもコマンドまで届かない
+ * （届いても Rust が `NotFound` を返すだけなので多層防御の 1 枚目という位置づけ）。
+ * ⚠ **再修正トリガー＝ Rust の id 採番方式を変えるとき**（変えるとテーマが黙って適用されなくなる）。
+ */
+const OVERLAY_THEME_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * 060d: 選択中テーマ id を読み込む。**未保存・不正な形・例外はすべて `null`（＝既定意匠）**へ倒す。
+ *
+ * ⚠ 失敗を `null` に倒すのは fail-safe。id が読めないときに「前のテーマを当て続ける」経路が無いので、
+ * 壊れた状態からは必ず StreamDock の既定意匠に戻る。
+ */
+export function loadOverlayTheme(): string | null {
+  try {
+    const raw = localStorage.getItem(OVERLAY_THEME_KEY);
+    return raw !== null && OVERLAY_THEME_ID_RE.test(raw) ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 060d: 選択中テーマ id を保存する（ローカルのみ・外部送信しない）。**`null` はキーごと削除**。
+ *
+ * ⚠ 削除にしているのは「未保存＝既定」と「既定を選んだ」を同じ状態に潰すため（分岐を増やさない）。
+ * 他窓（オーバーレイ窓）には `removeItem` でも `storage` イベントが飛ぶので、即時反映の経路は同じ。
+ */
+export function saveOverlayTheme(id: string | null): void {
+  try {
+    if (id === null) localStorage.removeItem(OVERLAY_THEME_KEY);
+    else localStorage.setItem(OVERLAY_THEME_KEY, id);
+  } catch {
+    // プライベートモード等で書けない場合は黙って無視する（表示は継続できる）。
   }
 }

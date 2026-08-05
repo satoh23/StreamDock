@@ -12,6 +12,9 @@
 //!   `app_data_dir/themes/<uuid>.css` だけで、**パスは frontend から受け取らない**。
 //! - `path` を受け取るのは `import_overlay_theme` の 1 本だけ。しかも用途は
 //!   「`.css` を 1 つ読む」に限定され、読んだ内容は返さない（サニタイズして保存するだけ）。
+//! - **`css` を受け取るのは `import_overlay_theme_text` の 1 本だけ**（060e）。⚠ 本文を渡せても
+//!   **書ける場所は変わらない**（保存先の組み立てにユーザー入力が 1 バイトも入らない）ので、
+//!   §3 が禁じている「汎用の書き込み経路」にはならない。出現回数は契約テストが固定している。
 //! - `get_overlay_theme_css` は read-only で、返すのは**ユーザー自身が取り込み、サニタイザを通った CSS**。
 //!   id で DB を引き、DB の `file_name` を検証してから読むので、**任意ファイル読み取りにはならない**。
 //!   そもそも注入先のオーバーレイ窓・プレビューを出すコメビュ窓の 2 つが実際に必要とする。
@@ -60,6 +63,45 @@ pub async fn import_overlay_theme(
         &conn,
         LogCategory::Storage,
         "import_overlay_theme",
+        &result,
+    );
+    result
+}
+
+/// 060e: **貼り付けられた CSS テキスト**を `app_data_dir/themes/` へ取り込み、レジストリへ登録する。
+///
+/// ユーザーに `.css` ファイルを作らせずに済ませるための経路。保存先・ファイル名・サニタイズは
+/// ファイル版とまったく同じ共通コア（`service::store_sanitized_css`）が受け持つ。
+///
+/// ⚠⚠ **`css: String` を受け取るコマンドはこの 1 本だけ**（契約テストが**出現回数**で固定している）。
+/// docs/security.md §3 の禁止例（`write_file(path, content)` 型）に**当たらない**理由:
+/// - 書き込み先は `app_data_dir/themes/<uuid v4>.css` の固定形だけで、**パスは frontend から受け取らない**
+///   （`app_data_dir()` → `join("themes")` → `join("<uuid>.css")` の 3 手が各 1 か所に固定され、
+///   結合直前に `is_managed_file_name()` を通す）。＝ **書ける場所をユーザー入力で動かせない。**
+/// - 中身は**必ず `sanitize::sanitize_css` を通る**（外部参照を保存できない・取り除けない形は fail-closed）。
+/// - 上限（**256KB** / **200 件**）と制御文字の検査も同じ共通コアが持っている
+///   ＝ 無制限にディスクを増やす経路にならない。
+///
+/// ⚠ ファイル版（`import_overlay_theme`）より**攻撃面はむしろ狭い**——`path` を取らないので、
+/// UNC / ネットワークパス経由の egress も、「拡張子 `.css` に限定された任意ファイル読み取り」の合成
+/// （060b review② の受容事項）も**増えない**。
+/// ⚠ **同期でよい**。触るのは `app_data_dir`（常にローカル）だけで、ネットワークボリュームを読まない
+/// （非同期にしているのは、ユーザーが選ぶファイルを読むファイル版だけ）。
+/// ⚠ CSS 本文はログにも戻り値にも出さない（§9）。
+#[tauri::command]
+pub fn import_overlay_theme_text(
+    app: AppHandle,
+    db: State<'_, DbState>,
+    css: String,
+    name: String,
+) -> AppResult<OverlayThemeImportResult> {
+    let dir = service::themes_dir(&app)?;
+    let conn = db.lock().expect("db mutex poisoned");
+    let result = service::import_pasted_text(&dir, &conn, &css, &name);
+    app_logs::service::log_command_err(
+        &conn,
+        LogCategory::Storage,
+        "import_overlay_theme_text",
         &result,
     );
     result

@@ -45,10 +45,40 @@ const readRaw = (rel) => readFileSync(join(root, rel), "utf8");
  * 問題も同時に消える。
  */
 const stripCssComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, "");
+/**
+ * ⚠ **既知の限界**（security-review②・Q-3）: `//` を文脈なしで消すので、
+ * **文字列リテラルの中の `//`（`"http://…"`）以降がその行ごと消える**。
+ * ＝ 同じ行の後半に書かれた禁止 API（(10-i) の `.innerHTML =` 等）を見落としうる。
+ * 実害の確率は低い（本チェッカーが見るのは「無いこと」で、退行は普通そんな行に書かれない）が、
+ * **(10-i) は「守っているのはこの検査だけ」と自称している**ので限界は明示しておく。
+ * 再修正トリガー＝ここを厳密にする必要が出たら、正規表現ではなく素の TS パーサ
+ * （`typescript` は既に devDependency にある）で読むこと。**新規依存は要らない。**
+ */
 const stripTsComments = (s) =>
   s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
 
 const read = (rel) => stripCssComments(readRaw(rel));
+
+/**
+ * 060d(security-review S-5): `src/` 配下の `.ts` / `.tsx` を**コメントを剥がして**すべて読む。
+ *
+ * (10-i) が「注入するファイルの列挙」から「**リポジトリ全体の禁止 ＋ 生成箇所の allow-list**」へ
+ * 変わったため、ファイル名を数える代わりに木を歩く。⚠ テストファイルも含める——本番だけ検査すると
+ * 「テストが `innerHTML` で書かれているので本番の不在が意味を失う」形の抜けが残る。
+ */
+function collectTsSources(relDir) {
+  const out = [];
+  const walk = (rel) => {
+    for (const entry of readdirSync(join(root, rel), { withFileTypes: true })) {
+      const child = `${rel}/${entry.name}`;
+      if (entry.isDirectory()) walk(child);
+      else if (/\.tsx?$/.test(entry.name))
+        out.push([child, stripTsComments(readRaw(child))]);
+    }
+  };
+  walk(relDir);
+  return out;
+}
 
 const VIEWER_CSS = "src/screens/comment-viewer/CommentViewerApp.module.css";
 const OVERLAY_CSS = "src/screens/comment-viewer/OverlayComment.module.css";
@@ -59,6 +89,9 @@ const COMMENT_LIST_TSX = "src/screens/comment-viewer/CommentList.tsx";
 const OVERLAY_APP_TSX = "src/screens/comment-viewer/OverlayApp.tsx";
 const PINNED_OVERLAY_TSX = "src/screens/comment-viewer/PinnedOverlayApp.tsx";
 const CSS_COMPAT_TS = "src/features/comment-viewer/cssCompat.ts";
+// 060d: ユーザー CSS を実際に注入する側の 3 本（(10-h) / (10-i)）。
+const CSS_SCOPE_TS = "src/features/comment-viewer/cssScope.ts";
+const THEME_CARD_TSX = "src/screens/comment-viewer/OverlayThemeCard.tsx";
 // 055c: 本チェッカー初のメインウィンドウ側 CSS（それまでは comment-viewer 配下 4 本のみが対象だった）。
 const HEADER_CSS = "src/components/Header.module.css";
 const UPDATE_CSS = "src/screens/app-update/UpdateScreen.module.css";
@@ -933,6 +966,150 @@ for (const rel of [VIEWER_CSS, OVERLAY_CSS]) {
           `衝突していないことを確認し（衝突すると効くセレクタを誤警告します）、本検査も更新してください。`,
       );
     }
+  }
+
+  const scopeTs = stripTsComments(readRaw(CSS_SCOPE_TS));
+  const themeCardTsx = stripTsComments(readRaw(THEME_CARD_TSX));
+
+  // (10-h) プレビューのスコープ用クラス `sd-preview` の**定義元と使われ方**を固定する。
+  //   ラッパに付けるクラスと `scopeSelectors` が前置する文字列がずれると、プレビューの CSS が
+  //   **ラッパ配下に閉じず窓全体へ漏れる**（＝コメビュ窓が第三者の CSS に乗っ取られる）。
+  //   リネームしても typecheck も vitest も通る——どちらもただの文字列で、漏れたことを jsdom は
+  //   再現しないため。**定義を 1 か所（cssScope.ts）に置き、ラッパはそれを import する**形を強制する。
+  //   ⚠ `cssCompat.ts` には**書かない**。あちらの変換表の右辺は (10-b) が「実在する安定クラス」で
+  //   縛っており、`sd-preview` は実 DOM の安定クラス契約には無い（プレビューのラッパ専用）ため。
+  //   060a からの申し送り③（`scopeSelectors` は cssCompat.ts と別ファイルに置くこと）を構造で固定する。
+  if (!/PREVIEW_SCOPE_CLASS\s*=\s*"sd-preview"/.test(scopeTs)) {
+    fail(
+      `${CSS_SCOPE_TS}: \`PREVIEW_SCOPE_CLASS = "sd-preview"\` の定義がありません（060d）。` +
+        `ラッパのクラス名とスコープ化に使うセレクタは**ここ 1 か所**で定義してください` +
+        `（別々に書くと片方のリネームで、プレビューの CSS がコメビュ窓全体へ漏れます）。`,
+    );
+  }
+  if (!/className=\{PREVIEW_SCOPE_CLASS\}/.test(themeCardTsx)) {
+    fail(
+      `${THEME_CARD_TSX}: プレビューのラッパが \`className={PREVIEW_SCOPE_CLASS}\` になっていません（060d）。` +
+        `CSS モジュール経由のクラス（ハッシュ名）にすると ${CSS_SCOPE_TS} が前置する文字列と一致せず、` +
+        `スコープ化が**黙って無効**になります（\`sd-overlay\` と同じく素の文字列クラスである必要があります）。`,
+    );
+  }
+  if (classToken("sd-preview").test(compatTs)) {
+    fail(
+      `${CSS_COMPAT_TS}: \`sd-preview\` が 060a の変換表側に書かれています（060d・申し送り③）。` +
+        `\`sd-preview\` はプレビューのラッパ専用で**実 DOM の安定クラス契約には無い**ため、` +
+        `(10-b)（変換先 ⊆ 安定クラス契約）と衝突します。スコープ化は ${CSS_SCOPE_TS} に置いてください。`,
+    );
+  }
+
+  // (10-i) **ユーザー CSS の注入経路を `<style>` の textContent だけに固定する。**
+  //   `get_overlay_theme_css` が返す CSS には `</style>` が**そのまま含まれうる**（正当な CSS なので
+  //   060b は除去しない）。`innerHTML` に入れると要素が閉じて**その後ろが HTML として解釈される**。
+  //   ⚠ docs/security.md の「レビュー必須条件」がこの経路（`<style>` 生成 / insertRule /
+  //   adoptedStyleSheets）を名指ししている。**ランタイムのテストでは殺せない**（jsdom は
+  //   `<style>.innerHTML` に RAWTEXT のフラグメント解析を実装しておらず `textContent` と同じ結果になる）
+  //   ので、この不変条件を実際に守っているのは**この検査だけ**である。
+  //
+  //   ⚠⚠ **向きを反転させた**（security-review S-5・2026-08-05）。旧実装は「注入する 3 ファイルに
+  //   禁止語が無いこと」だけを見ており、**4 つ目の注入先が別ファイルに増えたら何も落ちなかった**。
+  //   ＝「ここが落ちたら経路を増やす前にレビュー区分を確認すること」という当初の狙いを満たしていない。
+  //   いまは **`src/` 全体**を見る 2 本立てにしてある:
+  //     (i-1) 生 HTML / CSSOM 経由の注入 API を**リポジトリ全体で禁止**（現状 0 件なのでそのまま入る）
+  //     (i-2) `<style>` / `<link>` 要素の**生成箇所を allow-list で固定**（＝ 4 つ目が増えたら落ちる）
+  const injectionSources = collectTsSources("src");
+
+  // (i-1) 生 HTML / CSSOM 経由の注入 API は**どこにも書かない**。
+  //   ⚠ `document.write` / `CSSStyleSheet` / `replaceSync` も同じ理由で禁止（どれも `<style>` の
+  //   textContent を経ずにスタイルを注入でき、(i-2) の allow-list を素通りする）。
+  //   ⚠ 見るのは**書き込み**だけ（`innerHTML =` / `dangerouslySetInnerHTML=`）。`innerHTML` の**読み取り**は
+  //   既存テストが「外部 URL が DOM に出ていないこと」を assert するのに使っており、そちらは禁止対象ではない
+  //   （`CommentList.test.tsx` / `MonetaryTicker.test.tsx`）。読みまで禁止すると、その assert を
+  //   弱い形へ書き換えさせることになって逆效果になる。
+  //   ⚠⚠ **生 HTML を解釈する API は `innerHTML` だけではない**（security-review②・Q-2）。
+  //   `insertAdjacentHTML` / `setHTMLUnsafe` / `parseHTMLUnsafe` / `createContextualFragment` は
+  //   いずれも **`createElement` を経由しない**ので (i-2) の allow-list も素通りする
+  //   （例: `head.insertAdjacentHTML("beforeend", "<style>" + css + "</style>")`）。
+  //   現状の使用箇所は 0 件なので、**いま禁止に入れておくのが最も安い**。
+  //   再修正トリガー＝新しい「文字列を HTML として解釈する」DOM API が増えたらここへ足すこと。
+  const FORBIDDEN_INJECTION = [
+    [/dangerouslySetInnerHTML\s*=/, "dangerouslySetInnerHTML="],
+    [/\.(?:inner|outer)HTML\s*\+?=[^=]/, ".innerHTML / .outerHTML への代入"],
+    [/\.insertAdjacentHTML\s*\(/, "insertAdjacentHTML()"],
+    [/\.setHTMLUnsafe\s*\(/, "setHTMLUnsafe()"],
+    [/\.parseHTMLUnsafe\s*\(/, "parseHTMLUnsafe()"],
+    [/\.createContextualFragment\s*\(/, "createContextualFragment()"],
+    [/\.insertRule\s*\(/, "insertRule()"],
+    [/adoptedStyleSheets\s*(?:=[^=]|\.push\()/, "adoptedStyleSheets への代入"],
+    [/document\s*\.\s*write\s*\(/, "document.write()"],
+    [/new\s+CSSStyleSheet\s*\(/, "new CSSStyleSheet()"],
+    [/\.replaceSync\s*\(/, "replaceSync()"],
+  ];
+  for (const [rel, src] of injectionSources) {
+    for (const [re, bad] of FORBIDDEN_INJECTION) {
+      if (re.test(src)) {
+        fail(
+          `${rel}: 生 HTML / CSSOM 経由の注入 API \`${bad}\` が使われています（060d・(10-i)）。` +
+            `ユーザー CSS の注入は **\`document.createElement("style")\` ＋ \`textContent\` への代入だけ**に` +
+            `してください（取り込んだ CSS には \`</style>\` がそのまま含まれうるため、生 HTML 経路だと` +
+            `DOM を閉じられます）。docs/security.md の「レビュー必須条件」がこの経路を名指ししています。` +
+            `⚠ jsdom ではこの退行をテストで殺せないので、本検査を消さないでください。`,
+        );
+      }
+    }
+  }
+
+  // (i-2) `<style>` / `<link>` の**生成箇所**を allow-list で固定する。
+  //   ⚠ ここが本検査の要点——注入先が増えたこと自体を検出する。新しい注入先を足すときは、
+  //   **先に docs/security.md「レビュー必須条件」の 060d 項を読み**、レビュー区分を確認してから
+  //   この allow-list を更新すること（＝黙って 4 本目が入らないようにする）。
+  const STYLE_ELEMENT_CREATORS = new Set([OVERLAY_APP_TSX, THEME_CARD_TSX]);
+  for (const [rel, src] of injectionSources) {
+    const creates =
+      /createElement\(\s*"(?:style|link)"/.test(src) ||
+      /createElement\(\s*'(?:style|link)'/.test(src);
+    if (creates && !STYLE_ELEMENT_CREATORS.has(rel)) {
+      fail(
+        `${rel}: \`<style>\` / \`<link>\` を生成しています（060d・(10-i)）。` +
+          `ユーザー CSS の注入先は現在 ${[...STYLE_ELEMENT_CREATORS].join(" / ")} の 2 か所だけです。` +
+          `新しい注入先を足すなら、docs/security.md の「レビュー必須条件」（オーバーレイへのユーザー CSS の注入）` +
+          `に該当するかを先に確認し、そのうえで本検査の allow-list を更新してください。`,
+      );
+    }
+  }
+  for (const rel of STYLE_ELEMENT_CREATORS) {
+    const src = injectionSources.find(([r]) => r === rel)?.[1] ?? "";
+    if (!/createElement\(\s*"style"/.test(src)) {
+      fail(
+        `${rel}: \`createElement("style")\` が見つかりません（060d・(10-i)）。` +
+          `注入経路を別の方式へ変えたなら、docs/security.md のレビュー必須条件を確認したうえで` +
+          `本検査の allow-list も更新してください（allow-list が古いまま緑になるのを防ぎます）。`,
+      );
+    }
+  }
+
+  // (10-j) **プレビュー枠の封じ込め（`contain: paint`）は意匠ではなく安全装置。**
+  //   `overflow: hidden` だけでは **`position: fixed` / `absolute` の子孫を止められない**
+  //   （包含ブロックがビューポート／初期包含ブロックになり、包含ブロック連鎖に無い枠のクリップは効かない）。
+  //   ⚠ 実測（060d security-review S-2）で `.themePreview` / `.cardBody` / `.card` / `.settingsView` /
+  //   `.root` のどれにも包含ブロックを作る性質（transform / filter / perspective / contain / will-change）が
+  //   無く、`.sd-preview .sd-comment{position:fixed;inset:0;z-index:2147483647}` の 1 本で**窓全体を覆えた**。
+  //   コメビュ窓には「既定のデザインに戻す」（＝壊れたテーマからの唯一の脱出路）・OBS のパスワード入力・
+  //   視聴者メモリの削除導線があるので、覆えること自体が UI 偽装／クリックジャッキングになる。
+  //   ⚠⚠ **jsdom はレイアウトを計算しないので、この不変条件はテストでは守れない**（(10-a) と同じ事情）。
+  //   ここが唯一の機械的な受け皿である。⚠ 実際に効いているかは実機で見ること（progress.md 060d 節の 10-(b)）。
+  const previewBody = ruleBody(read(VIEWER_CSS), ".themePreview");
+  if (!hasDecl(previewBody, "contain", "paint")) {
+    fail(
+      `${VIEWER_CSS}: \`.themePreview\` に \`contain: paint\` がありません（060d・(10-j)）。` +
+        `これは意匠ではなく**安全装置**です——\`overflow: hidden\` だけでは \`position: fixed\` の子孫を` +
+        `止められず、プレビューの中の第三者 CSS が「既定のデザインに戻す」ボタンや OBS のパスワード欄を` +
+        `覆えます（実測済み）。詳細は docs/security.md「## CSP方針」の 060d 節。`,
+    );
+  }
+  if (!hasDecl(previewBody, "overflow", "hidden")) {
+    fail(
+      `${VIEWER_CSS}: \`.themePreview\` の \`overflow: hidden\` が消えています（060d・(10-j)）。` +
+        `\`contain: paint\` と併用してください（通常フローのはみ出しを切る役目はこちらが持っています）。`,
+    );
   }
 }
 

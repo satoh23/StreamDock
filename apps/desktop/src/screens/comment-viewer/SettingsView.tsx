@@ -15,6 +15,7 @@ import {
 } from "../../features/comment-viewer/ttsPrefs";
 import { ToggleSwitch } from "./ToggleSwitch";
 import { Select } from "./Select";
+import { OverlayThemeCard } from "./OverlayThemeCard";
 import { useHostOs } from "../../features/platform/useHostOs";
 import styles from "./CommentViewerApp.module.css";
 
@@ -851,6 +852,19 @@ export function SettingsView({
           </span>
         </div>
       </div>
+
+      {/* 060d: カスタム CSS テーマの取り込み・一覧・切替・プレビュー。
+          ⚠ **このカードは末尾に置くこと。** 上の「OBSに表示」カードには「上の『OBSに自動で反映する』」
+          「上のコメント用」「上の設定」という**位置参照の注記が 3 本**あり、途中へ挿入すると指す先が変わる
+          （同カードのコメントが警告している既知の制約）。末尾なら 1 つも壊れない。
+          ⚠ 「OBSに表示」カードへ混ぜないのは、取り込み・プレビュー・結果表示の分量が大きく、
+          OBS のセットアップ手順（Windows のキャプチャ方式・パスワード・自動反映）が埋もれるため。
+          ⚠ このカードだけ **state を自分で持つ**（理由は OverlayThemeCard.tsx の module doc）。
+          ここから渡すのは**プレビューの体裁に要る 2 つだけ**で、値の所有は CommentViewerApp のまま。 */}
+      <OverlayThemeCard
+        overlayFont={overlayFont}
+        overlayShowSource={overlayShowSource}
+      />
     </div>
   );
 }
