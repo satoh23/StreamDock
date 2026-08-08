@@ -16,17 +16,22 @@ import {
   unclosedBlockDepth,
 } from "../../features/comment-viewer/cssScope";
 import {
+  cssByteLength,
   deleteOverlayTheme,
   getOverlayThemeCss,
   importOverlayTheme,
+  importOverlayThemeSnapshot,
   importOverlayThemeText,
   listOverlayThemes,
   renameOverlayTheme,
   themeCssError,
   themeNameError,
+  THEME_CSS_MAX_BYTES,
+  THEME_MAX_COUNT,
   type OverlayThemeImportResult,
   type OverlayThemeRecord,
 } from "../../features/comment-viewer/overlayThemeApi";
+import type { ThemeImportFetchResult } from "../../features/comment-viewer/commentStream";
 import { toErrorMessage } from "../../features/tools/useTools";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { CommentList } from "./CommentList";
@@ -48,13 +53,22 @@ import styles from "./CommentViewerApp.module.css";
  *
  * ## ⚠ ファイルの長さについて（security-review②・品質 #10）
  *
- * 800 行超あるが**いまは分割しない**。テストが `OverlayThemeCard.test.tsx` 1 本にコンポーネント境界で
- * 書かれており（60 件超）、分割は「テストが通ることの意味」を変えずに行えないため、コストが利益を上回る。
- * ⚠ **分割するときの境界は決まっている**: ①純関数＋定数（`clampUnmatched` / `baseName` /
- * `displayFileName` / `defaultThemeName` / `nextPastedName` / `PREVIEW_COMMENTS`・約 100 行）を
- * `overlayThemeCard.helpers.ts` へ ②取り込みと解析（`analyze` / `runImport` / `ImportOutcome`）を
- * `useThemeImport()` フックへ。これで UI 本体は 500 行台になる。
- * 再修正トリガー＝**060c の同意ダイアログを足して 1000 行を超えたら**、上の順で切ること。
+ * ⚠⚠ **1300 行超（060c 時点）。旧トリガー「060c の同意ダイアログを足して 1000 行を超えたら切る」は
+ * 発火したが、060c では切っていない**（security-review 060c Q-1 で指摘され、明示的に見送った）。
+ *
+ * 見送った理由: ①テストが `OverlayThemeCard.test.tsx` 1 本にコンポーネント境界で書かれており
+ * （100 件超・うち 060c 群が約 20 件）、分割は「テストが通ることの意味」を変えずには行えない
+ * ②060c は **§1 に 8 件目の例外を新設する変更**で、同じコミットに大きな構造変更を混ぜると
+ * security-review の差分が読めなくなる（**レビュー可能性を優先した**）。
+ *
+ * ⚠ **分割するときの境界は決まっている**: ①純関数＋定数（`clampDisplayText` / `clampUnmatched` /
+ * `baseName` / `displayFileName` / `defaultThemeName` / `nextPastedName` / `consentHost` /
+ * `collectFontNames` / `fontAdviceText` / `PREVIEW_COMMENTS`・約 200 行）を
+ * `overlayThemeCard.helpers.ts` へ ②取り込みと解析（`analyze` / `runImport` / `runConsentLoop` /
+ * `ImportOutcome`）を `useThemeImport()` フックへ。これで UI 本体は 600 行台になる。
+ * ⚠⚠ **新しい再修正トリガー＝ 060h（Web フォントの実体取り込み）に着手するとき、実装の前に①②の順で切ること。**
+ * 060h は取得ループとフォント案内の両方に手を入れるので、**切らずに足すと確実に 1600 行を超える**。
+ * ＝ 060h のタスクの第 1 コミットを「分割だけ（振る舞い差分ゼロ）」にすること。
  *
  * ## ⚠ このカードが背負っている安全側の要件
  *
@@ -86,26 +100,36 @@ const UNMATCHED_MAX_CHARS = 60;
 const FILE_NAME_MAX_CHARS = 60;
 
 /**
- * ⚠ ユーザー CSS 由来の未署名文字列を**表示できる形へ潰す**。
+ * ⚠ ユーザー由来の未署名文字列を**表示できる形へ潰す**（このカードで画面に出す文字列の唯一の入口）。
+ *
  * 制御文字を落とし（引用符なしの属性値は `]` まで何でも拾うので改行も制御文字も入りうる）、
  * 空白を 1 個へ正規化し、**コードポイント単位**で切る（`slice` だとサロゲートペアを割る）。
+ * ⚠ **`\p{Cf}`（bidi / format 文字）も落とす**（security-review②）。`\p{Cc}` では落ちないので、
+ * これが無いと `theme<U+202E>ssc.txt` のような**表示偽装**が成立する。
+ *
+ * ⚠⚠ 実装が 3 か所（`clampUnmatched` / `displayFileName` / 060c の同意ダイアログ）に**複製されていた**ので
+ * 1 本に寄せた（security-review 060c Q-4）。**新しい表示箇所を足すときも必ずここを通すこと**——
+ * 片方だけ bidi を落とす、という非対称が過去 2 回起きている（S-6 / 060c）。
  */
+function clampDisplayText(raw: string, maxChars: number): string {
+  const flat = raw
+    .replace(/[\p{Cc}\p{Cf}]/gu, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const chars = [...flat];
+  return chars.length > maxChars
+    ? `${chars.slice(0, maxChars).join("")}…`
+    : flat;
+}
+
+/** `unmatched` の一覧を件数・長さの両方で clamp する（超えた件数は「ほか N 件」へ畳む）。 */
 function clampUnmatched(list: readonly string[]): {
   shown: string[];
   rest: number;
 } {
-  const shown = list.slice(0, UNMATCHED_MAX_ITEMS).map((raw) => {
-    // ⚠ **`\p{Cf}`（bidi / format 文字）も落とす**（security-review②・`displayFileName` と揃えた）。
-    // ファイル名だけ bidi を落として `unmatched` を素で出すのは非対称で、同じ「表示偽装」が成立する。
-    const flat = raw
-      .replace(/[\p{Cc}\p{Cf}]/gu, "")
-      .replace(/\s+/g, " ")
-      .trim();
-    const chars = [...flat];
-    return chars.length > UNMATCHED_MAX_CHARS
-      ? `${chars.slice(0, UNMATCHED_MAX_CHARS).join("")}…`
-      : flat;
-  });
+  const shown = list
+    .slice(0, UNMATCHED_MAX_ITEMS)
+    .map((raw) => clampDisplayText(raw, UNMATCHED_MAX_CHARS));
   return { shown, rest: Math.max(0, list.length - shown.length) };
 }
 
@@ -125,14 +149,7 @@ function baseName(path: string): string {
 
 /** 画面に出すファイル名（制御文字・書式文字を落とし、コードポイント単位で切る）。 */
 function displayFileName(fileName: string): string {
-  const flat = fileName
-    .replace(/[\p{Cc}\p{Cf}]/gu, "")
-    .replace(/\s+/g, " ")
-    .trim();
-  const chars = [...flat];
-  return chars.length > FILE_NAME_MAX_CHARS
-    ? `${chars.slice(0, FILE_NAME_MAX_CHARS).join("")}…`
-    : flat;
+  return clampDisplayText(fileName, FILE_NAME_MAX_CHARS);
 }
 
 /** ファイル名からテーマ名の初期値を作る（Rust の `validate_theme_name` を確実に通る形に丸める）。 */
@@ -179,6 +196,135 @@ interface ImportOutcome {
   result: OverlayThemeImportResult;
   analysis: CssAnalysis | null;
   duplicateName: boolean;
+  /** 060c: 外部 `@import` の取得についてユーザーへ伝えること（同意しなかった／取得できなかった等）。 */
+  snapshotNotes: string[];
+  /** 060c: フォントの案内（060h を待たずに出す）。 */
+  fontNote: string | null;
+}
+
+/**
+ * 060c: 同意ダイアログの 1 件分。
+ *
+ * ⚠⚠ **`url` は Rust が返した文字列そのもの**で、ここから先も**組み立て直さない**。
+ * 画面に出すのも sidecar へ送るのも同じこの 1 変数で、「表示した URL と取得する URL が同一」を
+ * 変数の同一性で担保している（テストで固定）。
+ */
+interface ConsentRequest {
+  url: string;
+  index: number;
+  total: number;
+  resolve: (accepted: boolean) => void;
+}
+
+/** 060c: 同意ダイアログに出す URL の表示上限（コードポイント）。⚠ **送るのは clamp 前の完全な URL**。 */
+const CONSENT_URL_MAX_CHARS = 512;
+
+/** 060c: フォント名の案内に出す上限（件数 / 1 件あたりのコードポイント）。 */
+const FONT_NAME_MAX_ITEMS = 5;
+const FONT_NAME_MAX_CHARS = 40;
+
+/**
+ * 060c: 取得結果を連結するときの区切り。
+ *
+ * ⚠ 改行 1 つで足りるが**予算計算に必ず含める**こと（`\n` を足したぶんで 256KB を 1 バイト超えると、
+ * 同意も取得も済ませたあとに保存だけが落ちる）。
+ */
+const SNAPSHOT_JOINER = "\n";
+
+/**
+ * 060c: 同意ダイアログのホスト行に出す文字列を作る。
+ *
+ * ⚠⚠ **`new URL(url).hostname` を出す**のが要点。`https://ruri.info@evil.example/a.css` は
+ * 正当な URL なので Rust 側では弾いておらず（`record_import_url` の注記）、完全な URL を素で出すと
+ * **先頭に見えるほう（`ruri.info`）を信じられる**。実際の宛先は `hostname` である。
+ * ⚠ IDN は punycode（`xn--…`）で出る——これは**欠点ではなく偽装の検出手段**なのでそのまま見せる。
+ *
+ * ⚠⚠ **既知の限界（受容・security-review 060c S-4）**: ここで使う `new URL()` は **webview の URL パーサ**
+ * （WebKit / Blink）で、sidecar の `assertAllowedThemeImportUrl` は **Node のパーサ**（ada）である。
+ * ＝「表示 URL と送信 URL は同じ 1 変数」は `consent.url` については成立しているが、
+ * **そこから導出したホスト名の同一性は 2 実装の一致に依存している**。
+ * 両方 WHATWG 準拠で IDNA も同じ ICU 系なので乖離は考えにくく、乖離しても**取得できる形は
+ * sidecar 側のガードが決める**（表示だけが甘くなる形）ため受容する。
+ * ⚠ 再修正トリガー＝ホスト名を**同意の可否以外の判断**（allow-list 照合・「以前同意した宛先」の記憶など）に
+ * 使い始めたら、判定を sidecar 側の 1 実装へ寄せること。
+ */
+function consentHost(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    // ⚠ Rust 側が `http(s)` の絶対 URL に限定しているのでここには来ない想定だが、
+    // 来たときに「ホスト不明のまま取得の同意を求める」ことがないよう、分かる形にして出す。
+    return "(アドレスを解釈できません)";
+  }
+}
+
+/**
+ * 060c: 保存された CSS と、除去された `@import` の宛先から**フォント名**を拾う。
+ *
+ * 060h（Web フォントの実体取り込み）を待たずに「なぜ書体だけ変わらないのか」を伝えるための案内なので、
+ * **拾えたら出す・拾えなくても案内は出す**（呼び出し側が判断する）。拾い方は 2 系統:
+ *
+ * 1. **保存済み CSS の `@font-face` の `font-family`** … 060b は `src:url(https://…)` を**宣言ごと**
+ *    落とすが、`@font-face` ブロックと `font-family` 宣言は残るのでここが最も確実。
+ * 2. **`strippedImportUrls` の Google Fonts クエリ** … `…/css2?family=Zen+Kaku+Gothic+Antique:wght@400`
+ *    の `family=`（v1 の `?family=A|B` にも対応）。⚠ 実サンプルはこの形。
+ *
+ * ⚠ **ユーザー入力由来の文字列を画面に出す**ので、件数・長さとも clamp する（060d と同じ作法）。
+ * ⚠ 戻り値は `clampUnmatched` と同じ `{ shown, total }` 形にしてある——**畳んだ後の件数で
+ * 「ほか N 件」を数えると過少申告になる**（12 種あっても「ほか 4 件」と出ていた・security-review 060c Q-10）。
+ */
+function collectFontNames(
+  css: string,
+  strippedImportUrls: readonly string[],
+): { shown: string[]; total: number } {
+  const names: string[] = [];
+  const push = (raw: string) => {
+    const name = clampDisplayText(raw.replace(/^['"]|['"]$/g, ""), FONT_NAME_MAX_CHARS);
+    if (name !== "" && !names.includes(name)) names.push(name);
+  };
+
+  // 1. `@font-face { … font-family: X … }`。⚠ ブロックの中だけを見る（本文の `font-family` は
+  //    「端末にあるフォントの指定」であって、外部から読み込もうとしたものではない）。
+  for (const block of css.matchAll(/@font-face\s*\{([^}]*)\}/gi)) {
+    const decl = /font-family\s*:\s*([^;}]+)/i.exec(block[1]);
+    if (decl) push(decl[1].trim());
+  }
+
+  // 2. Google Fonts の `family=`。⚠ URL は既に Rust 側で clamp・検証済み（http(s) 絶対 URL のみ）。
+  for (const raw of strippedImportUrls) {
+    let url: URL;
+    try {
+      url = new URL(raw);
+    } catch {
+      continue;
+    }
+    for (const value of url.searchParams.getAll("family")) {
+      // v1 は `A|B|C`、v2 は 1 パラメータ 1 ファミリ（`Name:wght@400`）。
+      for (const item of value.split("|")) {
+        const family = item.split(":")[0].replace(/\+/g, " ").trim();
+        if (family !== "") push(family);
+      }
+    }
+  }
+
+  return { shown: names.slice(0, FONT_NAME_MAX_ITEMS), total: names.length };
+}
+
+/**
+ * 060c: フォント案内の文言を作る（拾えなかったときは名前を伏せた汎用文）。
+ *
+ * ⚠ **§1 を一切曲げずにユーザーへ次の行動を示せる**ので、060h の完成を待たずに出す。
+ * ⚠ 件数は **clamp 前の `total`** で数える（画面に出す名前は `shown` の先頭だけ・Q-10）。
+ */
+function fontAdviceText(names: { shown: string[]; total: number }): string {
+  const subject =
+    names.total === 0
+      ? "外部のフォント"
+      : names.total === 1
+        ? names.shown[0]
+        : `${names.shown[0]} ほか ${names.total - 1} 件`;
+  // ⚠ 名前を鉤括弧で括る——`X ほか 2 件` のような集合表現でも日本語として崩れないため。
+  return `このテーマは「${subject}」を指定していますが、StreamDock は外部からフォントを読み込みません。端末にインストールすると反映されます。`;
 }
 
 /**
@@ -222,11 +368,23 @@ interface OverlayThemeCardProps {
   /** プレビューを実配信に近づけるためだけに受け取る（値の所有は `CommentViewerApp` のまま）。 */
   overlayFont: OverlayFontId;
   overlayShowSource: boolean;
+  /**
+   * 060c: 外部 `@import` を sidecar に **1 本だけ**取得させる（スナップショット）。
+   *
+   * ⚠ WS ハンドルを持っているのは `CommentViewerApp` なので、**この 1 本だけ**を流してもらう
+   * （カードが WS を張り直すと接続が二重になる）。⚠ 未指定なら外部取得の導線ごと出さない
+   * （＝取り込みは従来どおり `@import` を除去して成功する＝ fail-closed）。
+   */
+  requestThemeImport?: (
+    url: string,
+    maxBytes: number,
+  ) => Promise<ThemeImportFetchResult>;
 }
 
 export function OverlayThemeCard({
   overlayFont,
   overlayShowSource,
+  requestThemeImport,
 }: OverlayThemeCardProps) {
   const [themes, setThemes] = useState<OverlayThemeRecord[]>([]);
   // ⚠ 「読み込み中」と「読めた（0 件）」と「読めなかった」を分ける。どれも一覧が空に見えるが、
@@ -249,6 +407,8 @@ export function OverlayThemeCard({
   const [pendingDelete, setPendingDelete] = useState<OverlayThemeRecord | null>(
     null,
   );
+  /** 060c: 表示中の同意ダイアログ（1 件ずつ・`null` なら出ていない）。 */
+  const [consent, setConsent] = useState<ConsentRequest | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
 
   const reload = useCallback(async () => {
@@ -270,14 +430,27 @@ export function OverlayThemeCard({
    * ⚠ DB に持たないのは 060b の決定（変換表を更新した瞬間に DB の数字が古くなるため）。
    */
   const analyze = useCallback(
-    async (id: string): Promise<CssAnalysis | null> => {
+    async (
+      id: string,
+      truncatedToEof: boolean,
+    ): Promise<{ css: string; analysis: CssAnalysis } | null> => {
       try {
         const css = await getOverlayThemeCss(id);
         const { rewritten, unmatched } = rewriteSelectors(css);
-        // ⚠ 「取り込み前後のサイズ比」ではなく**閉じ忘れ**で判定する理由は cssScope.ts の
+        // ⚠ 「取り込み前後のサイズ比」ではなく**構造**で判定する理由は cssScope.ts の
         // `unclosedBlockDepth` の注記を参照（比率だと正常系と病的ケースを区別できず、
         // かつ frontend は取り込み前のファイルを読む手段を持たない）。
-        return { rewritten, unmatched, truncated: unclosedBlockDepth(css) > 0 };
+        // ⚠⚠ **2 本の OR で見る**（060c）。`truncatedToEof`（Rust）は「壊れた `(` がトップレベルに
+        // あって除去が EOF まで達した」を、`unclosedBlockDepth`（ここ）は「壊れた `(` がブロックの中に
+        // あって `}` ごと消えた」を見ており、**互いに相手を含まない**。片方だけだと取り逃す。
+        return {
+          css,
+          analysis: {
+            rewritten,
+            unmatched,
+            truncated: truncatedToEof || unclosedBlockDepth(css) > 0,
+          },
+        };
       } catch {
         return null;
       }
@@ -370,14 +543,141 @@ export function OverlayThemeCard({
   };
 
   /**
+   * 060c: 1 件分の同意を求め、ユーザーが押すまで待つ。
+   *
+   * ⚠ `url` は Rust が返した文字列そのものを**そのまま**受け渡す（表示用と取得用で別々に組み立てない）。
+   *
+   * ⚠ **未解決のまま残る経路が 1 つだけある＝ダイアログ表示中のアンマウント**
+   * （security-review 060c Q-8）。`runImport` の `finally` は例外経路しか救わない。
+   * 塞いでいない理由: このカードがアンマウントされるのは**コメビュ窓を閉じるとき**だけで、
+   * そのとき `runImport` の続きが走らなくても失われるものが無い（除去版は保存済み・取得は未実行）。
+   * ⚠ 再修正トリガー＝カードが**窓を閉じずにアンマウントされうる**（タブ化・設定画面の遅延描画など）
+   * ようになったら、`useEffect` のクリーンアップで `settleConsent(false)` を呼ぶこと。
+   */
+  const askConsent = (url: string, index: number, total: number) =>
+    new Promise<boolean>((resolve) => {
+      setConsent({ url, index, total, resolve });
+    });
+
+  /**
+   * 同意ダイアログを 1 件閉じ、待っている `askConsent` を解決する。
+   *
+   * ⚠ **updater の中で `resolve` を呼ぶ（＝純粋でない updater）のは意図的**（security-review 060c Q-7）。
+   * 「いま表示されている 1 件」と「解決すべき Promise」を**同じ 1 つの状態遷移**に縛るためで、
+   * ref に逃がすと state と ref が乖離しうる（キャンセルと承諾が競合したときに二重解決になる）。
+   * ⚠ **なぜ安全か**: React StrictMode（dev）は updater を 2 回呼ぶが、`resolve` は解決済み Promise に
+   * 対して no-op なので**観測できる差が出ない**。1 回目で `null` を返すため 2 回目の `current` も同じ値。
+   * ⚠ 再修正トリガー＝この updater に **`resolve` 以外の副作用**（ログ・別の setState・計測）を足したく
+   * なったら、そこで冪等性が崩れるので resolver を `useRef` へ移し、updater の外で呼ぶこと。
+   */
+  const settleConsent = (accepted: boolean) => {
+    setConsent((current) => {
+      current?.resolve(accepted);
+      return null;
+    });
+  };
+
+  /**
+   * 060c: 除去された外部 `@import` を、**1 本ずつ同意を取って 1 回だけ取得**する。
+   *
+   * ⚠⚠ **同意 N 回・取得 N 回だが、保存は 1 回**。全部の取得結果を順に連結し、除去済み CSS の**前に**
+   * 一括で前置して `Snapshot` として保存し直す（有効な CSS の `@import` は先頭にしか書けないので
+   * 前置＝原位置と等価・060b 申し送り③）。テーマを N 個作らないための設計。
+   *
+   * @returns 取得できた CSS（同意した順）と、ユーザーへ伝えるメモ。
+   */
+  const runConsentLoop = async (
+    urls: readonly string[],
+    savedCssBytes: number,
+    /** ⚠ 呼び出し側で `undefined` を除いてから渡す（ここで非 null 表明をしない）。 */
+    fetchOne: (url: string, maxBytes: number) => Promise<ThemeImportFetchResult>,
+  ): Promise<{ fetched: string[]; notes: string[] }> => {
+    const fetched: string[] = [];
+    const notes: string[] = [];
+    let declined = 0;
+    let failed = 0;
+    let offline = false;
+    // ⚠ レート制限（sidecar 側・同時 1 件／60 秒 8 件）は `failed` と**別に数える**
+    // （security-review 060c S-7）。まとめると「アドレスが変わっている」と案内してしまい、
+    // ユーザーが取る行動が変わってしまう——こちらは**待てば通る**。
+    let rateLimited = 0;
+    // ⚠⚠ **予算は逐次で減らす**。保存上限（256KB）が事実上の合計上限なので、
+    // 「取得に成功してから保存で落ちる」＝帯域も同意も無駄、を作らない（060b 申し送り⑤）。
+    let remaining = THEME_CSS_MAX_BYTES - savedCssBytes;
+
+    for (let i = 0; i < urls.length; i++) {
+      const budget = remaining - SNAPSHOT_JOINER.length;
+      if (budget <= 0) {
+        notes.push(
+          "デザインの合計サイズが上限（256KB）に達したため、残りの外部デザインは取り込みませんでした。",
+        );
+        break;
+      }
+      // ⚠ **同意が先・取得は後**。ここを入れ替えると「同意していないのに通信した」になる。
+      const accepted = await askConsent(urls[i], i + 1, urls.length);
+      if (!accepted) {
+        declined++;
+        continue;
+      }
+      const result = await fetchOne(urls[i], budget);
+      if (result.ok) {
+        fetched.push(result.css);
+        remaining -= cssByteLength(result.css) + SNAPSHOT_JOINER.length;
+      } else if (result.reason === "offline" || result.reason === "busy") {
+        offline = true;
+      } else if (result.reason === "rate") {
+        rateLimited++;
+      } else {
+        failed++;
+      }
+    }
+
+    if (declined > 0) {
+      notes.push(
+        `外部からは取得しませんでした（${declined} 件）。その指定は取り除かれた状態で保存されています。`,
+      );
+    }
+    if (offline) {
+      notes.push(
+        "外部から取り込むための内部接続が準備中のため、取得できませんでした。少し待ってから同じ CSS をもう一度取り込むと反映されることがあります。",
+      );
+    }
+    if (rateLimited > 0) {
+      // ⚠ 「待てば通る」ことが分かる文言にする（下の `failed` は「URL を直す」側で、行動が違う）。
+      notes.push(
+        `外部デザインの取得が短時間に集中したため、${rateLimited} 件は取得を見送りました。1 分ほど待ってから同じ CSS をもう一度取り込むと反映されます。`,
+      );
+    }
+    if (failed > 0) {
+      // ⚠ 理由の詳細（HTTP ステータス・URL・本文）は出さない（§9）。ユーザーが取る行動は同じである。
+      notes.push(
+        `外部デザインを ${failed} 件取得できませんでした（アドレスが変わっている・公開されていない・StreamDock が許可していない形式のいずれかです）。`,
+      );
+    }
+    return { fetched, notes };
+  };
+
+  /**
    * 取り込みを実行する（**貼り付け版とファイル版で後処理を共有する**）。
    *
    * ⚠ 分けているのは `invokeImport`（どのコマンドを呼ぶか）だけ。結果の解析・同名警告・一覧の再取得は
    * 完全に同じで、**取り込み経路が増えても表示の作法が分岐しない**（Rust 側で検証を共通コアに寄せたのと同じ発想）。
    *
-   * ⚠⚠ **060c への申し送り**: 外部 `@import` のスナップショットを実装するときは、
-   * **`await invokeImport()` の直後・`setOutcome` の前**に同意ダイアログと取得を挟むこと。
+   * ## 060c: 外部 `@import` のスナップショット
+   *
+   * 同意と取得は **`await invokeImport()` の直後・`setOutcome` の前**に挟む。
    * `strippedImportUrls` は **DB に持たない＝この 1 回しか手に入らない**ので、他の場所からは後付けできない。
+   *
+   * ⚠⚠ **保存し直しの順序＝「Snapshot を保存 → 成功したら除去版を削除」**（本人決定・案 A）。
+   * 逆順（先に削除）にすると、保存に失敗したときテーマが**丸ごと消える**。この順なら
+   * 保存に失敗しても除去版が残る＝**失われるものが無い**。削除に失敗したら 2 件残るが、
+   * それは可視でユーザーが消せる故障なので受容する（`store_sanitized_css` が
+   * 「孤児ファイルは不可視で無害／孤児 DB 行は可視の故障」と分けているのと同じ思想）。
+   *
+   * ⚠⚠ **同意ループの入力は 1 回目の結果の `strippedImportUrls` だけ**（`urls` に束縛して再代入しない）。
+   * Snapshot 保存の結果にも `strippedImportUrls` が載る（取得した CSS の中の入れ子 `@import`。
+   * 実サンプルでは Google Fonts が 6 本入る）が、**それで同意ループを再起動しない**＝無限ループ防止。
+   * 2 回目の結果はフォント名の抽出にだけ使う。
    */
   const runImport = async (
     invokeImport: () => Promise<OverlayThemeImportResult>,
@@ -393,8 +693,85 @@ export function OverlayThemeCard({
       const result = await invokeImport();
       // ⚠ 同名でもブロックしない（`name` に UNIQUE を張らない 060b の設計・重複警告は UI の責務）。
       const duplicateName = themes.some((t) => t.name === result.theme.name);
-      const analysis = await analyze(result.theme.id);
-      setOutcome({ result, analysis, duplicateName });
+      let loaded = await analyze(result.theme.id, result.truncatedToEof);
+
+      // --- 060c: 外部 `@import` の同意・取得・保存し直し ------------------------------------
+      let finalResult = result;
+      const snapshotNotes: string[] = [];
+      // ⚠ **1 回目の結果だけを束縛する**（無限ループ防止・上の注記）。
+      const urls = result.strippedImportUrls;
+      if (urls.length > 0 && requestThemeImport !== undefined) {
+        if (loaded === null) {
+          // 保存した CSS を読めないと予算も計算できないし、連結する土台も無い。fail-closed。
+          snapshotNotes.push(
+            "保存した CSS を読み取れなかったため、外部デザインの取り込みは行いませんでした。",
+          );
+        } else if (themes.length + 1 >= THEME_MAX_COUNT) {
+          // ⚠⚠ **同意ダイアログを出す前に**上限を見る。取得してから保存で落ちると、
+          // ユーザーには「同意したのに失敗した」としか見えない（帯域も同意も無駄になる）。
+          snapshotNotes.push(
+            "デザインの登録数が上限のため、外部デザインは取り込みませんでした。不要なデザインを削除してから取り込み直してください。",
+          );
+        } else {
+          const { fetched, notes } = await runConsentLoop(
+            urls,
+            cssByteLength(loaded.css),
+            requestThemeImport,
+          );
+          snapshotNotes.push(...notes);
+          if (fetched.length > 0) {
+            // ⚠ 取得 CSS を**前置**する（`@import` は先頭にしか書けない＝原位置と等価）。
+            const composed = [...fetched, loaded.css].join(SNAPSHOT_JOINER);
+            try {
+              const snapshot = await importOverlayThemeSnapshot(
+                composed,
+                result.theme.name, // ⚠ 名前はそのまま引き継ぐ（ユーザーには変わって見えない）。
+              );
+              // 保存できたので、除去版を消す。⚠ **best-effort**——失敗しても throw しない
+              // （2 件見えるのは可視の故障で、ユーザーが消せる）。
+              try {
+                await deleteOverlayTheme(result.theme.id);
+              } catch {
+                snapshotNotes.push(
+                  "取り込み前の状態のデザインが 1 件残りました。不要であれば削除してください。",
+                );
+              }
+              // 選択中が旧 id を指していたら張り替える。
+              // ⚠ **現状この条件は成立しない**（security-review 060c Q-6）——`result.theme.id` は
+              // 採番直後の uuid v4 で、取り込み経路は `selectedId` に触らない（`select` の注記）。
+              // 残しているのは「取り込んだテーマを自動選択する」変更が入った瞬間に、
+              // **削除済み id を選択したままになる**故障を防ぐため。消さないこと。
+              if (selectedId === result.theme.id) select(snapshot.theme.id);
+              finalResult = snapshot;
+              loaded = await analyze(snapshot.theme.id, snapshot.truncatedToEof);
+              snapshotNotes.push(
+                `外部デザインを ${fetched.length} 件取り込みました（以後この通信は行いません）。`,
+              );
+            } catch (e) {
+              // ⚠ 保存に失敗しても**除去版は残っている**＝取り込み自体は成功のまま。
+              snapshotNotes.push(toErrorMessage(e));
+            }
+          }
+        }
+      }
+
+      // --- 060c: フォントの案内（060h を待たずに出す） --------------------------------------
+      const fontNames = collectFontNames(
+        loaded?.css ?? "",
+        finalResult.strippedImportUrls,
+      );
+      const fontNote =
+        fontNames.total > 0 || /@font-face/i.test(loaded?.css ?? "")
+          ? fontAdviceText(fontNames)
+          : null;
+
+      setOutcome({
+        result: finalResult,
+        analysis: loaded?.analysis ?? null,
+        duplicateName,
+        snapshotNotes,
+        fontNote,
+      });
       backToPasteForm();
       if (clearPastedCss) setCssInput("");
       await reload();
@@ -403,6 +780,11 @@ export function OverlayThemeCard({
       setError(toErrorMessage(e));
     } finally {
       setBusy(false);
+      // ⚠ 例外で抜けたときに同意ダイアログが出たままにならないようにする。
+      setConsent((current) => {
+        current?.resolve(false);
+        return null;
+      });
     }
   };
 
@@ -841,6 +1223,20 @@ export function OverlayThemeCard({
                 の大部分が取り込めていない可能性があります。括弧やクォートの対応が取れているか確認してください。
               </span>
             )}
+            {/* 060c: 外部 `@import` の取得についてのメモ（同意しなかった／取得できなかった／取得した件数）。
+                ⚠ URL も理由の詳細もここには出さない（§9）。出すのは「何が起きたか」と「次に何をすればよいか」。 */}
+            {/* ⚠ key は index（本文をキーにすると同文言が 2 件出たとき React が警告する・Q-9）。
+                並びは固定で並べ替えも挿入も起きないので index で問題ない。 */}
+            {outcome.snapshotNotes.map((note, i) => (
+              <span key={i} className={styles.note}>
+                {note}
+              </span>
+            ))}
+            {/* 060c: フォントの案内。⚠ **060h を待たずに出す**——§1 を一切曲げずに
+                「なぜ書体だけ変わらないのか」と「次に何をすればよいか」を伝えられる唯一の手段。 */}
+            {outcome.fontNote !== null && (
+              <span className={styles.note}>{outcome.fontNote}</span>
+            )}
             {outcome.duplicateName && (
               <span className={styles.note}>
                 同じ名前のデザインが既にあります。区別しにくいときは名前を変更してください。
@@ -895,6 +1291,61 @@ export function OverlayThemeCard({
           if (pendingDelete !== null) void runDelete(pendingDelete);
         }}
         onCancel={() => setPendingDelete(null)}
+      />
+
+      {/* --- 060c: 外部 `@import` の取得同意 -----------------------------------------------
+          ⚠⚠ **宛先を allow-list で固定できない**（ユーザーが持ち込んだ CSS に書かれた URL）ので、
+          **毎回の明示同意が唯一の担保**である。したがって:
+          - **「今後確認しない」は作らない**（作った瞬間に担保が消える）
+          - **既定はキャンセル側**（`ConfirmDialog` の autoFocus）
+          - **取得先ホストを別行で強調**する（`https://ruri.info@evil.example/a.css` は正当な URL なので
+            Rust 側では弾いておらず、完全な URL を素で出すと先頭を信じられる・060b review② S-6）
+          - **表示する URL と送信する URL は同じ 1 変数**（`consent.url`）。組み立て直さない。 */}
+      <ConfirmDialog
+        open={consent !== null}
+        title="外部からデザインを取得しますか？"
+        message={
+          consent === null
+            ? ""
+            : "取り込んだ CSS は、次のアドレスにあるデザインを読み込む指定を含んでいます。"
+        }
+        details={
+          consent === null ? null : (
+            <div className={styles.speakerField}>
+              <span className={styles.fieldLabel}>取得先ホスト</span>
+              <strong className={styles.note}>{consentHost(consent.url)}</strong>
+              <span className={styles.fieldLabel}>完全なアドレス</span>
+              {/* ⚠ 表示は clamp する（2048 文字の URL でダイアログを壊さない）。
+                  ⚠⚠ **送信するのは clamp 前の `consent.url`** なので、省略したときはその旨も出す。 */}
+              <span className={styles.note}>
+                {clampDisplayText(consent.url, CONSENT_URL_MAX_CHARS)}
+              </span>
+              {[...consent.url].length > CONSENT_URL_MAX_CHARS && (
+                <span className={styles.note}>
+                  （アドレスが長いため表示を省略しています）
+                </span>
+              )}
+              <span className={styles.note}>
+                StreamDock が<strong>この 1 回だけ</strong>
+                このアドレスから CSS を取得します。取得した内容はデザインに保存され、
+                <strong>以後は通信しません</strong>。
+              </span>
+              <span className={styles.note}>
+                取得しない場合、この指定は取り除かれ、そのぶんのデザインは反映されません。
+              </span>
+              <span className={styles.note}>
+                取得した内容に含まれる外部の画像・フォントは取り込まれません。
+              </span>
+              <span className={styles.note}>
+                （{consent.total} 件中 {consent.index} 件目）
+              </span>
+            </div>
+          )
+        }
+        confirmLabel="取得する"
+        cancelLabel="取得しない"
+        onConfirm={() => settleConsent(true)}
+        onCancel={() => settleConsent(false)}
       />
     </div>
   );

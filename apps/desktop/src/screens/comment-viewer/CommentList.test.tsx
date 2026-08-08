@@ -1143,6 +1143,93 @@ describe("CommentList 060a オーバーレイのセレクタ契約", () => {
   });
 
   /**
+   * ⚠⚠ **060c 追修正(2026-08-09・実機不具合): スクロール容器と「一覧の器」は別要素であること。**
+   *
+   * 1 層だった頃は `<ol>` が両方を兼ねており、安定クラス `sd-comment-list`
+   * （変換表の `yt-live-chat-item-list-renderer #items` の対応先）経由で
+   * **ユーザー CSS がスクロール機能そのものを殺せた**:
+   *
+   * ```text
+   * テーマ: yt-live-chat-item-list-renderer #items { overflow: hidden !important }
+   *   → .sd-comment-list { overflow: hidden !important }
+   *   → プレビューでコメントが見切れてスクロールできない／配信窓の手動スクロールも死ぬ（実機で確認）
+   * ```
+   *
+   * ⚠ YouTube では `#items`（器）と `#item-scroller`（スクロール容器）が**別要素**で、テーマは
+   * 「スクロールバーを消す」意図で両方に書くのが定番。StreamDock で 1 要素だったせいで、その意図が
+   * 「スクロール機能の停止」に化けていた。
+   * ⚠⚠ **ここは「どちらが overflow を持つか」までは見ない**（jsdom はカスケードもレイアウトも
+   * 評価しないので見られない）。CSS 側の不変条件は静的ガード **(10-p)** が持つ。
+   * ここで固定するのは**構造**——`sd-comment-list` が付く要素が、スクロール容器**そのものではない**こと。
+   *
+   * ⚠ 2026-08-09 に一度この 2 層化を撤回して 1 層＋床にしたが、差し戻した（根拠が成立していなかった。
+   * `CommentViewerApp.module.css` の `.scroller` のコメントが正）。
+   */
+  it("⚠⚠ sd-comment-list はスクロール容器ではない（テーマが overflow を潰してもスクロールが死なない）", () => {
+    const { container } = render(
+      <CommentList
+        variant="overlay"
+        comments={[makeComment({ eventType: "chat", text: "hi" })]}
+      />,
+    );
+    const ol = container.querySelector("ol");
+    const scroller = container.querySelector("[data-comment-scroll]");
+    expect(ol).not.toBeNull();
+    expect(scroller).not.toBeNull();
+    // 別要素であること（同一要素へ戻す変異はここで落ちる）。
+    expect(scroller).not.toBe(ol);
+    // 器はスクロール容器の**中**にあること（外側に置くと `.scroller` の高さが決まらない）。
+    expect(scroller?.contains(ol as Node)).toBe(true);
+    // ⚠ `sd-comment-list` は器（`<ol>`）側に付くこと。スクロール容器へ移すと同じ穴が開き直る。
+    expect(ol?.classList.contains("sd-comment-list")).toBe(true);
+    expect(
+      (scroller as HTMLElement).classList.contains("sd-comment-list"),
+    ).toBe(false);
+  });
+
+  /**
+   * ⚠ 060c 追修正: **`<div>` は `<ol>` の外側**（＝リストの意味論を壊さない）。
+   * 内側に入れると `<ol>` の子が `<li>` でなくなり、`role="list"` / `"listitem"` の対応が崩れる。
+   */
+  it("⚠ <ol> の子は <li> だけ（スクロール用の <div> を中に入れていない）", () => {
+    const { container } = render(
+      <CommentList
+        variant="overlay"
+        comments={[
+          makeComment({ id: "a", eventType: "chat", text: "x" }),
+          makeComment({ id: "b", eventType: "chat", text: "y" }),
+        ]}
+      />,
+    );
+    const ol = container.querySelector("ol");
+    expect(ol?.children.length).toBeGreaterThan(0);
+    for (const child of Array.from(ol?.children ?? [])) {
+      expect(child.tagName).toBe("LI");
+    }
+  });
+
+  /**
+   * ⚠⚠ 060a の不変条件「`variant="default"` には安定クラスも data 属性も 1 つも付かない」を
+   * 目印にも適用する（本体コメビュはユーザー CSS の的にならない）。
+   * ⚠ 目印に `sd-` を付けていないのは**ユーザー CSS 契約ではない**ことを名前で示すためだが、
+   * 「default に付けない」の線はそれとは独立に守る。
+   */
+  it("⚠ スクロール容器の目印は overlay のときだけ付く（default には付かない）", () => {
+    const { container: overlay } = render(
+      <CommentList
+        variant="overlay"
+        comments={[makeComment({ eventType: "chat", text: "hi" })]}
+      />,
+    );
+    expect(overlay.querySelectorAll("[data-comment-scroll]")).toHaveLength(1);
+
+    const { container: def } = render(
+      <CommentList comments={[makeComment({ eventType: "chat", text: "hi" })]} />,
+    );
+    expect(def.querySelectorAll("[data-comment-scroll]")).toHaveLength(0);
+  });
+
+  /**
    * 060f 追修正（security-review Q-1・2026-08-06）: ⚠⚠⚠ **目印クラスの契約は「例外を作らない」。**
    *
    * 「chat の `<li>` 自身は `sd-comment-chat`、その**中の要素はすべて** `sd-comment-in-chat`」

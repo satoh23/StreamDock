@@ -6,6 +6,7 @@ import {
   type OverlayFontId,
 } from "../../features/comment-viewer/overlaySettings";
 import type { ObsWsConfig } from "../../features/comment-viewer/obsApi";
+import type { ThemeImportFetchResult } from "../../features/comment-viewer/commentStream";
 import type { AudioOutputDevice } from "../../features/comment-viewer/audioOutputApi";
 import { NO_AUDIO_OUTPUT_DEVICE } from "../../features/comment-viewer/audioOutputPrefs";
 import {
@@ -116,6 +117,16 @@ interface SettingsViewProps {
   onOverlayFontChange: (id: OverlayFontId) => void;
   overlayShowSource: boolean;
   onOverlayShowSourceChange: (value: boolean) => void;
+  /**
+   * 060c: 外部 `@import` を sidecar に 1 本だけ取得させる（`OverlayThemeCard` へ素通しするだけ）。
+   *
+   * ⚠ WS ハンドルを持っているのは `CommentViewerApp` なので、ここは経路を通すだけで**中身を知らない**
+   * （このビューは従来どおり秘密も WS も持たない）。⚠ 未指定なら外部取得の導線は出ない（fail-closed）。
+   */
+  onRequestThemeImport?: (
+    url: string,
+    maxBytes: number,
+  ) => Promise<ThemeImportFetchResult>;
   // 044a: OBS 連携（方式A＝ウィンドウキャプチャ自動追加）。state/ハンドラは CommentViewerApp が保持し、
   // ここは表示とユーザー操作の受け渡しのみ（WS/秘密は持たない・パスワードは onSetObsPassword 経由で Rust へ）。
   obsConfig: ObsWsConfig | null; // OBS WebSocket の read-only 検出結果（null=未検出）
@@ -161,6 +172,7 @@ export function SettingsView({
   onOverlayFontChange,
   overlayShowSource,
   onOverlayShowSourceChange,
+  onRequestThemeImport,
   obsConfig,
   obsAutoAdd,
   onObsAutoAddToggle,
@@ -864,6 +876,7 @@ export function SettingsView({
       <OverlayThemeCard
         overlayFont={overlayFont}
         overlayShowSource={overlayShowSource}
+        requestThemeImport={onRequestThemeImport}
       />
     </div>
   );

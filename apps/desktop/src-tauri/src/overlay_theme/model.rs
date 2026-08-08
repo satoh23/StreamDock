@@ -57,14 +57,24 @@ pub struct OverlayThemeRecord {
     /// `url(#frag)` のように**そもそも外部通信にならないもの**も allow-list により除去され、ここに数えられる
     /// （理由は `sanitize` の注記）。060d の文言はこの事実に合わせること。
     ///
-    /// ⚠⚠ **060d への申し送り（レビュー Q-3）: この数字だけでは「どれだけ失われたか」が分からない。**
+    /// ⚠⚠ **この数字だけでは「どれだけ失われたか」が分からない**（060d レビュー Q-3）。
     /// CSS に対応の取れていない `(` が 1 つあると、そこから EOF までが 1 つの宣言として扱われ
     /// （ブラウザの `calc(` 等の simple block 消費と同じ挙動なので**意味論としては正しい**）、
     /// その範囲に参照が 1 つでもあれば**ファイルの残り全部が消えて `stripped_count` は 1** になる。
     /// 実測: `.a{width:calc(100% - 10px;}` ＋ 以降 → 出力 `.a{` ／ `stripped_count = 1`。
-    /// → 060d は**取り込み前後のサイズ比**を見て、極端に減っていたら
-    /// 「CSS の大部分が取り込めませんでした。括弧の対応を確認してください」と警告すること
-    /// （取り込み前のファイルサイズは 060d 側が知っている＝ Rust に足す必要はない）。
+    ///
+    /// ⚠⚠ **訂正（060c・2026-08-09）**: ここには当初「060d は**取り込み前後のサイズ比**を見て警告すること
+    /// （取り込み前のファイルサイズは 060d 側が知っている＝ Rust に足す必要はない）」と書かれていたが、
+    /// **これは事実誤認だった**。`@tauri-apps/plugin-dialog` の `open()` は**パス文字列しか返さず**、
+    /// `plugin-fs` も asset protocol も無いので、**frontend は取り込み前のファイルを 1 バイトも読めない**
+    /// （実測・`docs/progress.md` の 060d 節）。060d は Rust 差分ゼロを守るためコメントを誤ったまま残し、
+    /// 「060c で `overlay_theme` を触るときに訂正する」を再修正トリガーにしていた。
+    ///
+    /// **サイズ比の代わりに、欠損は次の 2 本で検知する**（どちらも別の失敗モードを見ているので両方要る）:
+    /// 1. [`OverlayThemeImportResult::truncated_to_eof`]（060c で追加）… 除去がファイル末尾まで達したか。
+    ///    壊れた `(` が**トップレベル**（`@import` のプレリュード等）にあるケースを拾う。
+    /// 2. frontend の `unclosedBlockDepth()`（`cssScope.ts`）… 壊れた `(` が**ブロックの中**にあり、
+    ///    囲んでいた `}` ごと消えたケースを拾う。
     pub stripped_count: u32,
     pub created_at: String,
     pub updated_at: String,
@@ -94,4 +104,10 @@ pub struct OverlayThemeImportResult {
     /// 060c の同意ダイアログは**ホストを別行で強調して出すこと**（URL を素で出すと先頭を信じられる）。
     /// ⚠ **ログにも `AppError` にも出さないこと**（§9）。
     pub stripped_import_urls: Vec<String>,
+    /// 060c: 取り込みが**ファイル末尾まで巻き込んで欠損した疑い**があるか。
+    ///
+    /// 詳細と実測例は [`super::sanitize::SanitizeOutcome::truncated_to_eof`]。
+    /// ⚠ frontend は **`truncatedToEof || unclosedBlockDepth(css) > 0`** で警告すること
+    /// （2 つは別々の失敗モードを見ており、互いに相手を含まない）。
+    pub truncated_to_eof: bool,
 }

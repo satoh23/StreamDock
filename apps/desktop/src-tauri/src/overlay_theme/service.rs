@@ -308,27 +308,49 @@ pub fn import_pasted_text(
     store_sanitized_css(dir, conn, raw_css, raw_name, OverlayThemeOrigin::Local)
 }
 
+/// 060c: **外部 `@import` を取得してインライン展開した CSS** を取り込む（スナップショット）。
+///
+/// ⚠ 実体は [`import_pasted_text`] とまったく同じで、違いは **`origin` の定数だけ**——
+/// どちらも [`store_sanitized_css`] へ委譲するので、名前検証・**256KB 上限**・制御文字・**200 件上限**・
+/// 外部参照の除去・uuid 採番・書き込み → INSERT の順序・失敗時の掃除がそのまま効く。
+/// **検証を別実装に分けない**（060b からの申し送りの核心。
+/// `exactly_one_place_sanitizes_and_exactly_one_place_writes` が出現回数で固定している）。
+///
+/// ⚠⚠ **`Snapshot` を立てられるのはこの関数だけ**である。`commands.rs` は `origin` の文字を 1 つも
+/// 持たないので frontend から出自を騙れない（`the_theme_origin_is_never_settable_from_the_frontend`）。
+///
+/// ⚠ **ここは取得を行わない。** 取得は sidecar（`apps/comment-sidecar/src/theme-import.ts`）の責務で、
+/// Rust は最後まで no-internet のままである（`never_reimplements_the_selector_rewrite_or_reaches_the_network`
+/// が `reqwest` / `TcpStream` 等の不在を固定している）。渡ってくるのは
+/// 「**ユーザーが URL を目で見て同意し、専用ガードを通った 1 回の GET の結果**を、除去済み CSS の前に
+/// 前置した文字列」で、**この関数から見れば貼り付けテキストと区別が付かない**——だからこそ検証は同一でよい。
+pub fn import_fetched_snapshot(
+    dir: &Path,
+    conn: &Connection,
+    raw_css: &str,
+    raw_name: &str,
+) -> AppResult<OverlayThemeImportResult> {
+    store_sanitized_css(dir, conn, raw_css, raw_name, OverlayThemeOrigin::Snapshot)
+}
+
 /// **検証・サニタイズ・保存の共通コア。**
 ///
 /// ⚠ **どの取り込み経路もこの関数を呼ぶだけにすること。** 検証を別実装に分けると、片方だけ緩んだときに
 /// 気づけない（060b で最も避けたかった形。`exactly_one_place_sanitizes_and_exactly_one_place_writes`
 /// が「サニタイズ 1 か所・書き込み 1 か所」を出現回数で固定している）。
 ///
-/// ⚠⚠ **060c への申し送り（2026-08-05 に内容を更新した）**:
-/// - **テキストから取り込むコマンドは 060e が既に足した**（`import_overlay_theme_text` → [`import_pasted_text`]）。
-///   ⚠ 「060c が 10 行のコマンドを足すだけ」という 060b 期の申し送りは**もう成り立たない**。
-/// - 060c が要るのは **`origin = Snapshot`** の経路なので、`Local` 固定の [`import_pasted_text`] は
-///   再利用できず、**2 本目のコマンド**になる。＝ `takes_no_arbitrary_path_or_content_from_the_frontend`
-///   の「`css: String` は 1 本だけ」が**設計どおり落ちる**。
-///   ⚠⚠ **そのとき数字だけ 2 へ書き換えて通さないこと。** §3 の再評価と security-review が要る
-///   （落ちること自体がレビューを呼ぶための仕掛けである）。
+/// ⚠⚠ **取り込み経路は 3 本ある**（2026-08-09・060c で 3 本目が入った）。**どれも本関数へ委譲するだけ**:
+/// [`import_local_source`]（ファイル・`Local`）／[`import_pasted_text`]（貼り付け・`Local`）／
+/// [`import_fetched_snapshot`]（外部 `@import` のスナップショット・`Snapshot`）。
+///
 /// - `origin` は**必ず Rust 側の定数**で渡すこと（`commands.rs` に `origin` の文字が現れると
 ///   `the_theme_origin_is_never_settable_from_the_frontend` が落ちる）。
-///
-/// ⚠ **060c は実装必須である**（2026-08-05 依頼者決定）。以前ここに書かれていた
-/// 「060c は実装しない判断も最後まで残る」は**撤回済み**——依頼者のサンプル CSS は意匠の実体が
-/// 丸ごと外部 `@import` の中にあり、060c が payload そのものだから。詳細は
-/// `docs/tasks/060c-external-css-snapshot.md`。
+/// - ⚠⚠ **060c で `takes_no_arbitrary_path_or_content_from_the_frontend` の
+///   「`css: String` は 1 本だけ」が設計どおり落ちた**。**数字だけ 2 へ書き換えて通してはいない**——
+///   §3 の再評価を `docs/security.md` §5 の 060b 例外節へ「③ Snapshot 経路」として書き足し、
+///   security-review の対象にしたうえで 2 本目を解禁している。再評価の要点は
+///   「**増えるのは本文の出所（ネットワーク由来）だけで、書ける場所は 1 バイトも動かない**」こと。
+/// - ⚠ 4 本目を足すときも同じ手順を踏むこと（テストが再び落ちるようにしてある）。
 pub fn store_sanitized_css(
     dir: &Path,
     conn: &Connection,
@@ -379,6 +401,7 @@ pub fn store_sanitized_css(
     Ok(OverlayThemeImportResult {
         theme,
         stripped_import_urls: outcome.stripped_import_urls,
+        truncated_to_eof: outcome.truncated_to_eof,
     })
 }
 
@@ -1315,17 +1338,18 @@ mod tests {
     }
 
     #[test]
-    fn exposes_exactly_six_single_purpose_commands() {
+    fn exposes_exactly_seven_single_purpose_commands() {
         // §3: 汎用の読み書きコマンドを作らない。⚠ アプリ定義コマンドは ACL 対象外＝**全 4 窓から呼べる**。
-        // ⚠ 060e で **6 本目（`import_overlay_theme_text`）を意図的に足した**ので、関数名も 5 → 6 へ
-        // 改名した（security-review②・品質 #7。テスト名は git の追跡単位ではないので改名コストは無く、
+        // ⚠ 060e で 6 本目（`import_overlay_theme_text`）、**060c で 7 本目
+        // （`import_overlay_theme_snapshot`）**を意図的に足したので、関数名も 5 → 6 → 7 へ改名している
+        // （security-review②・品質 #7。テスト名は git の追跡単位ではないので改名コストは無く、
         // **名前と assert が食い違うテスト**のほうが「どちらが正か」を毎回確かめさせる負債になる）。
         // 守っているのは数そのものではなく「**単一目的のコマンドしか無い・増やすときは必ずここが落ちる**」。
         let code = production_source("commands.rs");
         assert_eq!(
             code.matches(&format!("#[tauri::{}]", "command")).count(),
-            6,
-            "overlay_theme のコマンド数が 6 でない（増やすなら §3 の再評価と security-review が要る）"
+            7,
+            "overlay_theme のコマンド数が 7 でない（増やすなら §3 の再評価と security-review が要る）"
         );
         // ⚠ ユーザーが選ぶファイルはネットワークボリューム上にありうる。同期コマンドはメインスレッドで
         // 走るので、取り込みだけは非同期にして UI を止めない（`audio` の同型の判断）。
@@ -1346,22 +1370,38 @@ mod tests {
             1,
             "パスを受け取るコマンドは import 1 本だけであること"
         );
-        // ⚠⚠ **060e で `css: String` を 1 本だけ解禁した**（貼り付け取り込み）。
-        // 禁止を消さず**出現回数の固定へ変えている**のが要点——2 本目が増えた瞬間にここが落ちる。
+        // ⚠⚠ **060e で `css: String` を 1 本だけ解禁し、060c で 2 本目を解禁した。**
+        // 禁止を消さず**出現回数の固定へ変えている**のが要点——3 本目が増えた瞬間にここが落ちる。
         // 解禁してよい理由は「本文を渡せても**書ける場所が変わらない**」こと:
         // 保存先は `app_data_dir/themes/<uuid v4>.css` の固定形だけで、その組み立てにユーザー入力は
         // 1 バイトも入らない（すぐ下の `the_storage_path_is_built_only_from_the_app_data_dir` が固定）。
         // ＝ §3 が禁じている `write_file(path, content)` 型（**書ける場所を呼び出し側が決める**）には当たらない。
         // ⚠ `content` / `bytes` / `data` は**引き続き全面禁止**（「汎用の書き込み」に見える命名を残さない）。
-        // ⚠⚠ **060c はここを必ず落とす**（`origin = Snapshot` の 2 本目が要るため・security-review②）。
-        // そのとき**数字だけ 2 へ書き換えて通さないこと**。落ちること自体が §3 の再評価と
-        // security-review を呼ぶための仕掛けである（`store_sanitized_css` の申し送りを読むこと）。
+        //
+        // ⚠⚠ **060c での再評価の記録（数字だけ書き換えて通していない）**:
+        // このテストは「2 本目が増えたら落ちる」ことで §3 の再評価と security-review を呼ぶ仕掛けだった。
+        // 実際に落ちたので、`docs/security.md` §5 の 060b 例外節へ「③ Snapshot 経路」の軸を追記し、
+        // **増えるもの／増えないもの**を分けて書いたうえで 2 へ上げている:
+        // - 増えない: 保存先の組み立て・サニタイズ・上限（256KB / 200 件）は **`store_sanitized_css` の
+        //   1 セットだけ**。`path` も取らないので UNC 経由の egress も任意ファイル読み取りの合成も増えない。
+        // - 増える: **本文の出所がネットワーク由来になる**（他 2 本はローカル由来）。ただし 3 本とも
+        //   サニタイズ前の本文を信頼していないので扱いは同じで、取得できる形は sidecar 側の
+        //   `assertAllowedThemeImportUrl` で極端に狭めてある（`https:` / 443 / `.css` / SSRF 拒否 /
+        //   リダイレクト禁止 / `text/css` / サイズ・時間上限 / 毎回の明示同意 / チケット認証）。
         assert_eq!(
             code.matches(&format!("{}: String", "css")).count(),
-            1,
-            "CSS 本文を受け取るコマンドは貼り付け取り込みの 1 本だけであること\
-             （2 本目を足すなら §3 の再評価と security-review が要る）"
+            2,
+            "CSS 本文を受け取るコマンドは貼り付け取り込みとスナップショットの 2 本だけであること\
+             （3 本目を足すなら §3 の再評価と security-review が要る）"
         );
+        // ⚠ 上の「2」は**どのコマンドか**までは固定しないので、名前でも押さえる（片方を汎用名の
+        // 別コマンドへ差し替える変異が数字だけでは生き残るため）。
+        for expected in ["import_overlay_theme_text", "import_overlay_theme_snapshot"] {
+            assert!(
+                code.contains(expected),
+                "commands.rs から {expected} が消えた。`css: String` を取ってよいのはこの 2 本だけである"
+            );
+        }
         for banned in ["content", "bytes", "data"] {
             assert!(
                 !code.contains(&format!("{banned}: String")),
@@ -1526,7 +1566,7 @@ mod tests {
             }
         }
         // ⚠ 出現数を定数 5 で固定していたが、それだと**DB ロックを取らないコマンドを 1 本足しただけで
-        // 偽陽性で落ちる**（コマンド数はすぐ上の `exposes_exactly_five_single_purpose_commands` が
+        // 偽陽性で落ちる**（コマンド数はすぐ上の `exposes_exactly_seven_single_purpose_commands` が
         // 別に固定している）。ここで守りたいのは「**このイディオム以外の panic 経路が無い**」ことなので、
         // ①全 `expect` が db mutex のものと一致 ②その数はコマンド数を超えない、の 2 点にする（レビュー Q-8）。
         let commands = production_source("commands.rs");

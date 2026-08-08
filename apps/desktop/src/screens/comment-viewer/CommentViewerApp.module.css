@@ -316,10 +316,38 @@
   color: var(--muted);
 }
 
-.list {
+/* ⚠⚠ 060c 追修正(2026-08-09・実機不具合): **スクロール容器（`.scroller`）と「一覧の器」（`.list` ＝ `<ol>`）を
+   2 層に分けた。** 分割前は `<ol>` が両方を兼ねており、`<ol>` に付く安定クラス `sd-comment-list`
+   （変換表の `yt-live-chat-item-list-renderer #items` の対応先）経由で
+   **ユーザー CSS がスクロール機能そのものを殺せた**:
+
+     テーマ: yt-live-chat-item-list-renderer #items { overflow: hidden !important }
+       → .sd-comment-list { overflow: hidden !important }  ＝ この `<ol>` の overflow-y:auto を潰す
+       → プレビューでコメントが見切れてスクロールできない（実機で確認）／配信窓の手動スクロールも死ぬ
+
+   ⚠ **YouTube では `#items`（内容の器）と `#item-scroller`（スクロール容器）が別要素**で、
+   テーマは「スクロールバーを消す」意図で両方に `overflow:hidden` を書くのが定番である。
+   StreamDock で 2 つの役割が同じ 1 要素だったせいで、その意図が「スクロール機能の停止」に化けていた。
+   ＝ **YouTube と同じ 2 層にすれば、テーマの意図どおり「器の overflow」で止まる。**
+
+   ⚠ 選択肢としては「`.list` の `overflow-y` を `!important` で守る」（＝テーマが越えられない床を作る）も
+   あったが、060f の「テーマは土台を越えられる」方針と衝突するため**構造で解く**側を採った（2026-08-09 本人決定）。
+   ⚠ **`sd-comment-list` は `<ol>`（器）側に残すこと。** `.scroller` へ移すと同じ穴が開く。
+   再修正トリガー＝ここを 1 層へ戻したくなったら、上の実機不具合が必ず再発する。
+
+   ⚠⚠⚠ **2026-08-09 に一度この 2 層化を撤回して「1 層 ＋ 床（無名 `@layer`）」にしたが、差し戻した。**
+   撤回の根拠は「1 層は 060f 追修正⑦が paint 安定と実測した構造だから」だったが、**その根拠は成立していない**
+   ——⑦が測った 7 通りは**テーマ遷移**であって**スクロール**ではなく、当時はテーマがスクロールを殺していたので
+   スクロール由来の描画バグは**観測不能**だった。案 A へ切り替えても**描画バグは直らなかった**（実機で確認）。
+   ⚠ **描画バグ（スクロールで課金カードの見切れていた部分が描かれない・選択すると出る）は未解決のまま。**
+   構造の選択とは無関係の問題なので、**ここを触って直そうとしないこと**（1 層でも 2 層でも出る）。 */
+.scroller {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+}
+
+.list {
   list-style: none;
   margin: 0;
   padding: 8px 12px;
@@ -1236,6 +1264,57 @@
   flex-direction: column;
   flex: 1;
   min-width: 0;
+}
+
+/* ⚠⚠⚠ 060c 追修正④(2026-08-09・実機不具合): **床。テーマはプレビュー枠より背が高くなれない。** 消さないこと。
+
+   症状＝ **「特定のデザインだけ、下側が見切れたまま出てこない。スクロールもできない」**（本人報告）。
+   ⚠ **要素は存在する**（DOM にある）ので描画バグに見えるが、**レイアウトの問題である**。
+
+   原因＝ `scopeSelectors` はテーマの `body` / `html` / `:root` を **`.sd-preview`**（この `> *`）へ
+   読み替える。上の規則は `flex:1` と `align-items:stretch`（既定）で中身を枠の高さに合わせるが、
+   **テーマが高さを書くと stretch を上書きして枠を突き抜ける**。すると:
+     ① 中身が 200px の枠から溢れる（枠は `overflow:hidden` ＋ `contain:paint` で切る）
+     ② `<ol>` も一緒に伸びるので **`scrollHeight === clientHeight`＝「はみ出していない」**
+        ＝ **スクロールが発生しない** ⇒ 切られた下側へ**永久に到達できない**
+   ⚠ 引き金になるのは配布テーマの定型句である。`body{min-height:100vh}` /
+   `yt-live-chat-app{height:100vh}`（変換表で `.sd-overlay` → さらに `.sd-preview` へ）/ `html{height:100vh}` など。
+
+   **実測**（実 WKWebView ＋ **実物の `OverlayThemeCard`**（`apps/desktop/repro/`）＋ 実際の注入経路。
+   フィクスチャ 14 種で `.sd-preview` と `<ol>` の実寸・`scrollTop` の可動域・最下カードの到達可否を測った）:
+     ・床なし … **6/14 が「到達不能」**（`body`/`html`/`:root`/`yt-live-chat-app` に高さがあるもの全部）
+     ・床あり … **14/14 正常**
+     ・長いコメント ＋ `body{min-height:100vh}`: 床なし `<ol>`=460px・可動域 0・**到達 ❌**
+       → 床あり `<ol>`=198px・可動域 87px・**到達 ✅**
+     ・高さ指定の無いテーマ: **床の有無で 1px も変わらない**（過剰拘束していない）
+   手順は docs/progress.md の 060c 節「追修正④」。
+
+   ⚠ **`height` は固定しない**（`min-height` / `max-height` の 2 つだけ）。テーマの `body{margin:6px auto}` /
+   `body{padding:40px}` は**効かせたい**（実テーマの余白設計そのもの）ので、**上限だけ噛ませる**。
+   `height` まで `100%` に固定すると margin のぶんだけ逆に溢れる。
+   ⚠ **`min-height:0` が要る**——CSS では `min-height` が `max-height` に勝つので、
+   `max-height` だけではテーマの `min-height:100vh` を止められない。
+   ⚠⚠ **なぜ「無名 `@layer` ＋ `!important`」でなければならないか。**
+     ① **素の `!important` では負ける**——プレビューは `scopeSelectors` がテーマ側へ `.sd-preview` を
+        前置するので `(0,2,0)` になり、`.themePreview > *`（(0,1,0)）では勝てない。
+        **レイヤー内の `!important` はレイヤー外の `!important` に詳細度に関係なく勝つ**
+        （CSS Cascade 5・important はレイヤー順が反転）——それが唯一の成立条件。
+        ⚠ 同じカスケード規則を、このリポジトリは既に**逆向き**にも使っている
+        （`OverlayComment.module.css` の `@layer sd-default`＝既定意匠を弱くしてテーマに越えさせる）。
+     ② ⚠⚠ **レイヤーに名前を付けないこと。** `@layer` はサニタイザを素通りする（`sanitize.rs` の
+        `css_without_any_reference_is_returned_byte_for_byte` が固定）ので、名前を付けると
+        **テーマが `@layer <その名前>{…}` で同じレイヤーへ合流して床を無効化できる**
+        （同一レイヤー内は詳細度勝負に戻るため）。**実 WKWebView で破れることを確認済み。**
+        無名レイヤーは名前で開き直せないので合流されない。
+   ⚠ 既知の限界: `@layer` は Safari 15.4 / macOS 12.3 未満で丸ごと無視される＝床が消える。
+   ⚠ 静的ガード **(10-p)** がこの床と「レイヤーが無名であること」を機械で固定している。
+   ⚠ 当て先が `.themePreview > *`＝**プレビュー枠の中だけ**。配信窓（`OverlayApp`）には効かない
+   ——あちらで同じことが起きるかは**未計測**（progress.md の残課題）。 */
+@layer {
+  .themePreview > * {
+    min-height: 0 !important;
+    max-height: 100% !important;
+  }
 }
 
 /* 危険色ボタン（個別削除・一括削除の実行）。.btn:disabled と同じく非活性アフォーダンスを持たせる。 */

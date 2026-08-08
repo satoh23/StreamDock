@@ -130,8 +130,24 @@ const IDENT_TAIL = String.raw`(?:[A-Za-z0-9_\-\\]|\P{ASCII})`;
  * 型セレクタと擬似クラスは CSS 上大小無視なので `html` / `body` / `:root` は `i` で拾う。
  * ⚠ 一方 `.sd-overlay` は**クラス名＝大小区別**なので `i` を付けない（`.SD-OVERLAY` は別のクラス）。
  */
+/**
+ * 060c: 配信窓（`comment-overlay`）のルートに付く安定クラス。
+ *
+ * ⚠ **本ファイル内での出所を 1 つにするために定数化した**——下の `ROOT_LIKE_CS`（プレビューで
+ * ラッパへ読み替える対象）と、[`rewriteRootLike`] に渡す読み替え先が食い違うと、
+ * **どこにも当たらないセレクタが黙って生まれる**（プレビューでは効くのに配信窓で効かない、の逆パターン）。
+ * ⚠ `OverlayApp.tsx` 側の `className` は**素の文字列のまま**にしてある——静的ガード **(10-d)** が
+ * 「窓ルートの安定クラスが `OverlayApp.tsx` に literal で在ること」を検査しており、定数化すると落ちる。
+ */
+export const OVERLAY_ROOT_CLASS = "sd-overlay";
+/** 同上のセレクタ形（[`rewriteRootLike`] の読み替え先）。 */
+export const OVERLAY_ROOT_SELECTOR = `.${OVERLAY_ROOT_CLASS}`;
+
 const ROOT_LIKE_CI = new RegExp(`^(?::root|html|body)(?!${IDENT_TAIL})`, "iu");
-const ROOT_LIKE_CS = new RegExp(`^\\.sd-overlay(?!${IDENT_TAIL})`, "u");
+const ROOT_LIKE_CS = new RegExp(
+  `^\\.${OVERLAY_ROOT_CLASS}(?!${IDENT_TAIL})`,
+  "u",
+);
 /** 2 つ目以降の root 相当（`html > body .foo` の ` > body`）。子孫・子結合子だけを許す。 */
 const TRAILING_ROOT_LIKE = new RegExp(
   `^(?:\\s*>\\s*|\\s+)(?::root|html|body)(?!${IDENT_TAIL})`,
@@ -490,6 +506,77 @@ export function scopeSelectors(css: string, scope: string): string {
     out += css.slice(cursor, p.start);
     out += splitTopLevelCommas(css.slice(p.start, p.end))
       .map((part) => scopePart(part, scope))
+      .join(",");
+    cursor = p.end;
+  }
+
+  return out + css.slice(cursor);
+}
+
+/**
+ * 1 つの複合セレクタの**先頭が root 相当なら `scope` へ読み替える**（そうでなければ何もしない）。
+ *
+ * ⚠ [`scopePart`] との違いは**前置しないこと**の 1 点だけ。配信窓ではラッパの配下へ閉じ込める必要が無い
+ * （テーマは窓全体に効いてよい）ので、前置は詳細度を無意味に上げるだけになる。
+ */
+function rewriteRootLikePart(part: string, scope: string): string {
+  const [trivia, body] = splitLeadingTrivia(part);
+  if (body === "") return part;
+
+  const head = ROOT_LIKE_CI.exec(body) ?? ROOT_LIKE_CS.exec(body);
+  if (head === null) return part;
+
+  let rest = body.slice(head[0].length);
+  for (;;) {
+    const more = TRAILING_ROOT_LIKE.exec(rest);
+    if (more === null) break;
+    rest = rest.slice(more[0].length);
+  }
+  return `${trivia}${scope}${rest}`;
+}
+
+/**
+ * 060c: **配信窓へ注入する前に `:root` / `html` / `body` / `.sd-overlay` を窓ルートへ読み替える。**
+ *
+ * ## なぜ要るのか（060f の実機確認で判明した非対称）
+ *
+ * プレビューは [`scopeSelectors`] が `body` を `.sd-preview`（＝プレビューのラッパ）へ読み替えるので
+ * 無害だが、**配信窓はスコープ化しないので本物の `<body>` に効き、全要素へ継承する**。
+ * 外部 CSS には `body{margin:…; letter-spacing:…; line-height:…}` がほぼ必ず入るので、
+ * **プレビューが本番を再現していない**状態になっていた（実測は `docs/progress.md` の 060f 節）。
+ *
+ * 本関数を注入経路に挟むと、プレビュー（`body` → `.sd-preview`）と配信窓（`body` → `.sd-overlay`）が
+ * **同じ形**になる。どちらも「その文脈でのルート要素」へ寄せる、という 1 つの規則で説明できる。
+ *
+ * ## ⚠ 変換表（`cssCompat.ts`）とは別物である
+ *
+ * 060f は「**変換表に `body` を入れる**」案を明確に却下している（窓の透過が壊せる＝静的ガード (10-k) が
+ * `from` に `body` / `html` / `:root` を書くことを禁じている）。本関数は変換表を 1 行も触らず、
+ * `scopeSelectors` と**同じ走査器・同じ正規表現**を使う別経路なので (10-k) には当たらない。
+ *
+ * ## ⚠ 受容している副作用
+ *
+ * `body{background:#fff}` は `.sd-overlay{background:#fff}` になり、**オーバーレイ窓が全面不透明になる**。
+ * これは 060f が `yt-live-chat-app` → `.sd-overlay` を変換表へ入れたときに**既に受容済みの挙動**で
+ * （task-board 060f 節）、脱出路も同じ＝「既定のデザインに戻す」。**新しい能力は増えていない。**
+ *
+ * ## 性質
+ *
+ * ⚠ [`scopeSelectors`] と違って**冪等**である（`.sd-overlay` 自身も root 相当なので不動点になる）。
+ * 前置しないので詳細度も変わらない。
+ *
+ * @param css   注入する CSS（`rewriteSelectors()` を通した後のものを渡す）
+ * @param scope 窓ルートのセレクタ（例 `".sd-overlay"`）
+ */
+export function rewriteRootLike(css: string, scope: string): string {
+  const { preludes } = scan(css);
+  let out = "";
+  let cursor = 0;
+
+  for (const p of preludes) {
+    out += css.slice(cursor, p.start);
+    out += splitTopLevelCommas(css.slice(p.start, p.end))
+      .map((part) => rewriteRootLikePart(part, scope))
       .join(",");
     cursor = p.end;
   }

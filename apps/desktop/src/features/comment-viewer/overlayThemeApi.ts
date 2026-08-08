@@ -17,8 +17,8 @@ import type { OverlayThemeRecord } from "./bindings/OverlayThemeRecord";
  * - **CSS 本文・パス・除去した URL を `console.*` にもエラーにも出さない**（§9）。
  *   このファイルに `console.*` を書かないこと。
  *
- * ⚠⚠ **この 6 本はアプリ定義コマンドなので ACL の対象外＝全 4 窓から呼べる**（046b / 055b と同じ限界。
- * ⚠ 060e で `import_overlay_theme_text` が増えて 5 本 → 6 本になった）。
+ * ⚠⚠ **この 7 本はアプリ定義コマンドなので ACL の対象外＝全 4 窓から呼べる**（046b / 055b と同じ限界。
+ * ⚠ 060e で `import_overlay_theme_text`、060c で `import_overlay_theme_snapshot` が増えて 5 → 7 本になった）。
  * 絞りは Rust 側（コマンド自体を狭く作る）で担保済み。詳細は `overlay_theme/commands.rs` の module doc と
  * docs/security.md「Capabilities 方針」。
  */
@@ -130,6 +130,36 @@ export function importOverlayThemeText(
   name: string,
 ): Promise<OverlayThemeImportResult> {
   return invoke<OverlayThemeImportResult>("import_overlay_theme_text", {
+    css,
+    name,
+  });
+}
+
+/**
+ * 060c: 登録できるテーマの上限（**Rust の `MAX_THEMES` と同値**）。
+ *
+ * ⚠ frontend が持つ理由は 1 つだけ——**同意ダイアログを出す前に上限を検査する**ため。
+ * 外部 `@import` の取り込みは「除去版を保存 → 同意 → 取得 → Snapshot を保存 → 除去版を削除」の順で、
+ * 上限に張り付いていると **2 件目（Snapshot）だけが入らない**。取得してから保存で落ちると
+ * **帯域も同意も無駄**になり、ユーザーには「同意したのに失敗した」としか見えない（060b 申し送り⑤の趣旨）。
+ * ⚠ 判定を frontend に置いても**壁は Rust 側**（`store_sanitized_css` の件数検査）である。
+ */
+export const THEME_MAX_COUNT = 200;
+
+/**
+ * 060c: **外部 `@import` を取得してインライン展開した CSS** を取り込む（スナップショット）。
+ *
+ * ⚠ 呼ぶのは `OverlayThemeCard` の取得ループだけ。渡す `css` は
+ * 「取得した CSS（同意した順）＋ 除去済み CSS」を連結したもので、**保存されるテーマの `origin` は
+ * `snapshot`** になる（⚠ 出自を決めるのは Rust の呼び出し経路で、ここからは指定できない）。
+ * ⚠ 検証・サニタイズ・上限は `importOverlayThemeText` と**同じ共通コア**（`store_sanitized_css`）。
+ * ⚠ **CSS 本文も取得先 URL もログに出さない**（§9）。
+ */
+export function importOverlayThemeSnapshot(
+  css: string,
+  name: string,
+): Promise<OverlayThemeImportResult> {
+  return invoke<OverlayThemeImportResult>("import_overlay_theme_snapshot", {
     css,
     name,
   });

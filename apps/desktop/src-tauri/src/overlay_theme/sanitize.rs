@@ -166,6 +166,31 @@ pub struct SanitizeOutcome {
     /// **bidi / format 文字を含むものは載せない**（同意ダイアログの表示偽装対策）。
     /// いずれも**除去と計数はしている**ので、`stripped_count >= stripped_import_urls.len()` が常に成り立つ。
     pub stripped_import_urls: Vec<String>,
+    /// 060c: **除去が入力の末尾まで達したか**（＝終端記号を持たない文を EOF まで食って消したか）。
+    ///
+    /// ⚠⚠ これは 060d の `unclosedBlockDepth()`（frontend）が**構造上取り逃す失敗モード**を埋めるための値
+    /// （060d review Q-1）。壊れた `(` が**どのブロックにも入っていない位置**——`@import` / `@namespace` /
+    /// グループ規則のプレリュード——にあると、除去が EOF まで届いても**閉じ忘れた `}` が 1 つも残らない**
+    /// ので、深さを見る方式では 0 のままになり警告が出ない。実測:
+    ///
+    /// ```text
+    /// 入力:  @media (min-width:1px){.sd-comment{color:red}}
+    ///        @import url(https://fonts.example/x.css      ← ) が無い
+    ///        .sd-comment{color:blue}
+    ///        .sd-comment-name{color:green}
+    /// 保存:  "@media (min-width:1px){.sd-comment{color:red}}"   ← 後半 2 行が黙って消える
+    /// depth: 0（＝ unclosedBlockDepth では検出できない）
+    /// ```
+    ///
+    /// `@import` の `)` 忘れは現実的な打ち間違いなので、取り逃しの実害がある。
+    /// ⚠ **両方残すこと**——こちらは「トップレベルで壊れた」、`unclosedBlockDepth` は「ブロックの中で
+    /// 壊れて `}` ごと消えた」を見ており、**互いに相手を含まない**。UI は
+    /// `truncatedToEof || unclosedBlockDepth(css) > 0` で警告する。
+    ///
+    /// ⚠ **既知の良性の偽陽性**: 末尾が `@import url(x)`（`;` も改行も無い）で終わるファイルは、
+    /// 文が終端記号を持たないまま EOF に達するので `true` になる。ただし**後続に失われたものは無い**。
+    /// 警告が 1 行余計に出るだけで、判定を安全側（警告する側）に倒した結果として受容する。
+    pub truncated_to_eof: bool,
 }
 
 /// CSS から外部リソース参照を取り除く。取り除ききれない形は `Err`（fail-closed）。
@@ -189,6 +214,7 @@ pub fn sanitize_css(input: &str) -> AppResult<SanitizeOutcome> {
         css,
         stripped_count: scanner.stripped_count,
         stripped_import_urls: scanner.stripped_import_urls,
+        truncated_to_eof: scanner.truncated_to_eof,
     })
 }
 
@@ -348,6 +374,8 @@ struct Scanner<'a> {
     removals: Vec<(usize, usize)>,
     stripped_count: u32,
     stripped_import_urls: Vec<String>,
+    /// 060c: 終端記号を持たない文を EOF まで食って除去したか（[`SanitizeOutcome::truncated_to_eof`]）。
+    truncated_to_eof: bool,
 }
 
 impl<'a> Scanner<'a> {
@@ -358,6 +386,7 @@ impl<'a> Scanner<'a> {
             removals: Vec::new(),
             stripped_count: 0,
             stripped_import_urls: Vec::new(),
+            truncated_to_eof: false,
         }
     }
 
@@ -640,7 +669,16 @@ impl<'a> Scanner<'a> {
                 }
                 Terminator::Eof => {
                     let unit_end = self.i;
+                    // ⚠⚠ 060c: **除去が入力の末尾まで達したか**を記録する（[`SanitizeOutcome::truncated_to_eof`]）。
+                    // 判定を「除去区間の終端 == 入力長」ではなく**終端記号の種類**で行うのが要点——
+                    // 末尾が `@import url(x);` で終わるだけの正常な CSS も終端は入力長に一致するので、
+                    // 位置で見ると誤検知する。`Terminator::Eof` は「`;` も `{` も `}` も見つからないまま
+                    // EOF まで食った」＝ **文が壊れている**ことを意味する。
+                    let removals_before = self.removals.len();
                     self.decide_unit(unit_start, unit_end, &unit);
+                    if self.removals.len() > removals_before {
+                        self.truncated_to_eof = true;
+                    }
                     return Ok(());
                 }
             }
@@ -886,6 +924,81 @@ mod tests {
             "出力に参照が残っている: {:?}",
             outcome.css
         );
+    }
+
+    // --- 060c: 末尾まで巻き込んだ除去の検知（truncated_to_eof） ----------------------------------
+
+    /// ⚠⚠ **060d review Q-1 の実測例をそのままケース化したもの**（`docs/tasks/060c-…` に記載の入力）。
+    /// 壊れた `(` が**トップレベル**（`@import` のプレリュード）にあるので、除去が EOF まで達しても
+    /// **閉じ忘れた `}` が 1 つも残らない**——frontend の `unclosedBlockDepth()` は 0 を返し、
+    /// この失敗モードを構造上検出できない。だから Rust 側の `truncated_to_eof` が要る。
+    #[test]
+    fn a_broken_paren_at_top_level_swallows_the_rest_of_the_file_and_is_reported() {
+        let css = "@media (min-width:1px){.sd-comment{color:red}}\n\
+                   @import url(https://fonts.example/x.css\n\
+                   .sd-comment{color:blue}\n\
+                   .sd-comment-name{color:green}\n";
+        let outcome = run(css);
+
+        // 後半 2 行が黙って消えることの固定（＝この警告が無いとユーザーには何も伝わらない）。
+        // ⚠ 除去区間は直前の `}` の**次**から始まるので、間の改行も一緒に消える（タスクファイルの実測と一致）。
+        assert_eq!(outcome.css, "@media (min-width:1px){.sd-comment{color:red}}");
+        assert!(!outcome.css.contains("color:blue"));
+        assert!(!outcome.css.contains("sd-comment-name"));
+
+        assert!(
+            outcome.truncated_to_eof,
+            "除去がファイル末尾まで達したのに truncated_to_eof が立っていない"
+        );
+        // ⚠ 出力に閉じ忘れが 1 つも無いこと＝ `unclosedBlockDepth` では検出できないことの実証。
+        assert_eq!(
+            outcome.css.matches('{').count(),
+            outcome.css.matches('}').count(),
+            "この入力は波括弧が釣り合う（＝深さ判定では取り逃す）ことが前提のケースである"
+        );
+        assert_clean(&outcome);
+    }
+
+    /// 正常系では立たないこと（警告が常時出ると意味を失う）。
+    #[test]
+    fn a_well_formed_import_at_the_top_does_not_report_truncation() {
+        let outcome = run("@import url(https://fonts.example/x.css);\n.sd-comment{color:red}\n");
+        assert_eq!(outcome.css, "\n.sd-comment{color:red}\n");
+        assert_eq!(outcome.stripped_count, 1);
+        assert!(
+            !outcome.truncated_to_eof,
+            "`;` で正しく終わった @import で切り詰め警告が出ている（誤報）"
+        );
+    }
+
+    /// 除去が 1 件も無ければ当然立たない。
+    #[test]
+    fn a_css_without_any_removal_never_reports_truncation() {
+        let outcome = run(".sd-comment{color:red}");
+        assert_eq!(outcome.stripped_count, 0);
+        assert!(!outcome.truncated_to_eof);
+    }
+
+    /// ⚠ **判定は「除去区間の終端 == 入力長」ではなく終端記号の種類で行う**ことの固定。
+    /// 末尾が `@import …;` で終わる（改行なし）正常な CSS は、除去区間の終端が入力長に一致するので、
+    /// 位置で判定する実装だと**誤報する**。
+    #[test]
+    fn an_import_that_ends_the_file_with_a_semicolon_is_not_truncation() {
+        let outcome = run(".sd-comment{color:red}@import url(https://fonts.example/x.css);");
+        assert_eq!(outcome.css, ".sd-comment{color:red}");
+        assert!(
+            !outcome.truncated_to_eof,
+            "終端記号を持つ @import がファイル末尾にあるだけで切り詰め扱いになっている（位置判定の誤り）"
+        );
+    }
+
+    /// 壊れた `(` が**ブロックの中**にあるケースでも立つ（こちらは `unclosedBlockDepth` でも拾える）。
+    /// ⚠ 2 つの検知は**互いに相手を含まない**ので、UI は両方を OR で見ること。
+    #[test]
+    fn a_broken_paren_inside_a_block_also_reports_truncation() {
+        let outcome = run(".a{width:calc(100% - 10px;background:url(https://evil.example/x.png)}\n.b{color:red}");
+        assert!(outcome.truncated_to_eof);
+        assert!(!outcome.css.contains(".b{color:red}"));
     }
 
     // --- 依頼者の実サンプル ---------------------------------------------------------------------

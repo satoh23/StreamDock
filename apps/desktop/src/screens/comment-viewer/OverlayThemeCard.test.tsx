@@ -8,6 +8,7 @@ import {
   fireEvent,
 } from "@testing-library/react";
 import type { OverlayThemeImportResult } from "../../features/comment-viewer/overlayThemeApi";
+import type { ThemeImportFetchResult } from "../../features/comment-viewer/commentStream";
 import type { OverlayThemeRecord } from "../../features/comment-viewer/bindings/OverlayThemeRecord";
 import { OVERLAY_THEME_KEY } from "../../features/comment-viewer/overlaySettings";
 import { OverlayThemeCard } from "./OverlayThemeCard";
@@ -62,6 +63,11 @@ let themes: OverlayThemeRecord[] = [];
 let cssById: Record<string, string> = {};
 let importResult: OverlayThemeImportResult | null = null;
 let importError: unknown = null;
+/** 060c: `import_overlay_theme_snapshot` の結果（`null` なら「呼ばれてはいけない」）。 */
+let snapshotResult: OverlayThemeImportResult | null = null;
+let snapshotError: unknown = null;
+/** 060c: 実際に呼ばれた `import_overlay_theme_snapshot` の引数（連結順の検証に使う）。 */
+let snapshotCalls: { css: string; name: string }[] = [];
 
 beforeEach(() => {
   localStorage.clear();
@@ -72,6 +78,11 @@ beforeEach(() => {
   };
   importResult = null;
   importError = null;
+  snapshotResult = null;
+  snapshotError = null;
+  snapshotCalls = [];
+  // ⚠ 060c: 既定は**取得の導線ごと無し**。差し込まないテストは 060d までと同じ経路を通る。
+  requestThemeImport = undefined;
 
   mocks.open.mockReset();
   mocks.invoke.mockReset();
@@ -93,6 +104,19 @@ beforeEach(() => {
         if (importResult === null) return Promise.reject(new Error("no fixture"));
         themes = [importResult.theme, ...themes];
         return Promise.resolve(importResult);
+      }
+      // 060c: スナップショット保存。⚠ `origin` は**引数に現れない**（Rust 側の定数）ので、
+      // モックも引数を素通しせず、テストが用意した結果をそのまま返す。
+      case "import_overlay_theme_snapshot": {
+        snapshotCalls.push({
+          css: args?.css ?? "",
+          name: args?.name ?? "",
+        });
+        if (snapshotError !== null) return Promise.reject(snapshotError);
+        if (snapshotResult === null)
+          return Promise.reject(new Error("snapshot must not be called"));
+        themes = [snapshotResult.theme, ...themes];
+        return Promise.resolve(snapshotResult);
       }
       case "rename_overlay_theme": {
         themes = themes.map((t) =>
@@ -116,9 +140,21 @@ afterEach(() => {
   });
 });
 
+/**
+ * 060c: 外部 `@import` の取得依頼（`requestThemeImport`）のモック。
+ * ⚠ 既定は `undefined`＝**取得の導線ごと出ない**（fail-closed）。必要なテストだけが差し込む。
+ */
+let requestThemeImport:
+  | ((url: string, maxBytes: number) => Promise<ThemeImportFetchResult>)
+  | undefined;
+
 function renderCard() {
   return render(
-    <OverlayThemeCard overlayFont="system" overlayShowSource={false} />,
+    <OverlayThemeCard
+      overlayFont="system"
+      overlayShowSource={false}
+      requestThemeImport={requestThemeImport}
+    />,
   );
 }
 
@@ -128,6 +164,9 @@ async function renderLoaded() {
   await screen.findByRole("radio", { name: "ふきだし" });
   return view;
 }
+
+/** 060c: 貼り付け欄（既定フォーム）。⚠ 060e の `pasteBox` と同じものだが、あちらは describe 内に閉じている。 */
+const pasteCssBox = () => screen.getByRole("textbox", { name: "CSS" });
 
 
 /**
@@ -286,6 +325,7 @@ describe("取り込み", () => {
     importResult = {
       theme: makeTheme(NEW_ID, "配信用", 0),
       strippedImportUrls: [],
+      truncatedToEof: false,
     };
     cssById[NEW_ID] = ".sd-comment{color:green}";
     await renderLoaded();
@@ -323,6 +363,7 @@ describe("取り込み", () => {
     importResult = {
       theme: makeTheme(NEW_ID, "ふきだし", 0),
       strippedImportUrls: [],
+      truncatedToEof: false,
     };
     cssById[NEW_ID] = ".sd-comment{color:green}";
     await renderLoaded();
@@ -368,6 +409,7 @@ describe("取り込み結果の表示", () => {
     importResult = {
       theme: makeTheme(NEW_ID, "テーマ", strippedCount),
       strippedImportUrls,
+      truncatedToEof: false,
     };
     cssById[NEW_ID] = css;
     await renderLoaded();
@@ -616,6 +658,7 @@ describe("⚠ security-review（2026-08-05）の回帰", () => {
     importResult = {
       theme: makeTheme(NEW_ID, "テーマ", 2),
       strippedImportUrls: [],
+      truncatedToEof: false,
     };
     // ⚠ `cssById[NEW_ID]` を用意しない＝ `analyze` の `get_overlay_theme_css` が reject する。
     await renderLoaded();
@@ -643,6 +686,7 @@ describe("⚠ security-review（2026-08-05）の回帰", () => {
         { length: 16 },
         (_, i) => `https://example.test/${i}.css`,
       ),
+      truncatedToEof: false,
     };
     cssById[NEW_ID] = ".sd-comment{color:red}";
     await renderLoaded();
@@ -831,6 +875,7 @@ describe("⚠⚠ 060e: CSS を貼り付けて取り込む（ファイルを作�
     importResult = {
       theme: makeTheme(NEW_ID, "デザイン 1", 0),
       strippedImportUrls: [],
+      truncatedToEof: false,
     };
     cssById[NEW_ID] = ".sd-comment{color:red}";
     await renderLoaded();
@@ -859,6 +904,7 @@ describe("⚠⚠ 060e: CSS を貼り付けて取り込む（ファイルを作�
     importResult = {
       theme: makeTheme(NEW_ID, "デザイン 2", 0),
       strippedImportUrls: [],
+      truncatedToEof: false,
     };
     cssById[NEW_ID] = ".a{color:red}";
     render(<OverlayThemeCard overlayFont="system" overlayShowSource={false} />);
@@ -879,6 +925,7 @@ describe("⚠⚠ 060e: CSS を貼り付けて取り込む（ファイルを作�
     importResult = {
       theme: makeTheme(NEW_ID, "配信用", 0),
       strippedImportUrls: [],
+      truncatedToEof: false,
     };
     cssById[NEW_ID] = ".a{color:red}";
     await renderLoaded();
@@ -956,6 +1003,7 @@ describe("⚠⚠ 060e: CSS を貼り付けて取り込む（ファイルを作�
     importResult = {
       theme: makeTheme(NEW_ID, "デザイン 1", 0),
       strippedImportUrls: [],
+      truncatedToEof: false,
     };
     cssById[NEW_ID] = ".a{color:red}";
     await renderLoaded();
@@ -1034,6 +1082,7 @@ font-family: "M PLUS 1p", sans-serif;}
     importResult = {
       theme: makeTheme(NEW_ID, "YouTube サンプル", 1),
       strippedImportUrls: ["https://ruri.info/tool/css/midashi1Comment.css"],
+      truncatedToEof: false,
     };
     cssById[NEW_ID] = savedAfterSanitize;
     await renderLoaded();
@@ -1067,6 +1116,7 @@ font-family: "M PLUS 1p", sans-serif;}
     importResult = {
       theme: makeTheme(NEW_ID, "ファイル由来", 0),
       strippedImportUrls: [],
+      truncatedToEof: false,
     };
     cssById[NEW_ID] = ".a{color:red}";
     await renderLoaded();
@@ -1081,5 +1131,438 @@ font-family: "M PLUS 1p", sans-serif;}
     await screen.findByText(/「ファイル由来」を取り込みました。/);
 
     expect(pasteBox()).toHaveValue(".sd-comment{color:red}");
+  });
+});
+
+/**
+ * 060c: 外部 `@import` の取り込み時スナップショット。
+ *
+ * あるべき挙動（docs/tasks/060c-external-css-snapshot.md）:
+ * - ⚠⚠ **宛先を allow-list で固定できない**ので、**毎回の明示同意が唯一の担保**。
+ *   したがって「今後確認しない」は無く、既定はキャンセル側で、**表示した URL と送る URL は同一**。
+ * - **拒否しても取り込みは成功**（`@import` は除去されたまま）＝ fail-closed。
+ * - 保存し直しは「**Snapshot を保存 → 成功したら除去版を削除**」の順（失われるものを作らない）。
+ * - ⚠⚠ **Snapshot 結果の `strippedImportUrls` で同意ループを再起動しない**（無限ループ防止）。
+ */
+/** 060c: 取得依頼の関数型。⚠ `vi.fn` に渡すと `mock.calls` が `[url, maxBytes]` のタプルで取れる。 */
+type ThemeImportFetch = (
+  url: string,
+  maxBytes: number,
+) => Promise<ThemeImportFetchResult>;
+
+describe("060c: 外部 @import のスナップショット", () => {
+  const SNAP_ID = "77777777-8888-4999-8aaa-bbbbbbbbbbbb";
+  const IMPORT_URL = "https://ruri.info/tool/css/fukidashiComment.css";
+
+  /** 除去済みテーマが 1 件保存され、`@import` が 1 本除去された状態を作る。 */
+  async function importWithOneStrippedImport(
+    savedCss = ".sd-comment{color:red}",
+    urls: string[] = [IMPORT_URL],
+  ) {
+    importResult = {
+      theme: makeTheme(NEW_ID, "テーマ", urls.length),
+      strippedImportUrls: urls,
+      truncatedToEof: false,
+    };
+    cssById[NEW_ID] = savedCss;
+    await renderLoaded();
+    fireEvent.change(pasteCssBox(), { target: { value: ".sd-comment{color:red}" } });
+    fireEvent.click(screen.getByRole("button", { name: "取り込む" }));
+  }
+
+  /** 同意ダイアログが出るまで待つ。 */
+  const findConsent = () =>
+    screen.findByRole("button", { name: "取得する" });
+
+  it("外部 @import があると同意ダイアログを出し、完全な URL とホストを別行で見せる", async () => {
+    requestThemeImport = vi.fn(async () => ({ ok: true as const, css: "" }));
+    await importWithOneStrippedImport();
+    await findConsent();
+
+    const dialog = screen.getByRole("dialog");
+    // ⚠ ホストは別行で強調する（userinfo 付き URL の表示偽装対策・060b review② S-6）。
+    expect(within(dialog).getByText("取得先ホスト")).toBeInTheDocument();
+    expect(within(dialog).getByText("ruri.info")).toBeInTheDocument();
+    // ⚠ 完全な URL を省略せずに出す。
+    expect(within(dialog).getByText(IMPORT_URL)).toBeInTheDocument();
+    expect(within(dialog).getByText(/1 件中 1 件目/)).toBeInTheDocument();
+  });
+
+  it("⚠⚠ userinfo 付き URL では実際の宛先ホストを出す（先頭を信じさせない）", async () => {
+    requestThemeImport = vi.fn(async () => ({ ok: true as const, css: "" }));
+    await importWithOneStrippedImport(".sd-comment{color:red}", [
+      "https://ruri.info@evil.example/a.css",
+    ]);
+    await findConsent();
+
+    const dialog = screen.getByRole("dialog");
+    // 実宛先は `@` の後ろ。ここを取り違えると同意の意味が消える。
+    expect(within(dialog).getByText("evil.example")).toBeInTheDocument();
+    expect(within(dialog).queryByText("ruri.info")).not.toBeInTheDocument();
+  });
+
+  it("⚠ 既定フォーカスはキャンセル（取得しない）側で、「今後確認しない」は存在しない", async () => {
+    requestThemeImport = vi.fn(async () => ({ ok: true as const, css: "" }));
+    await importWithOneStrippedImport();
+    await findConsent();
+
+    const cancel = screen.getByRole("button", { name: "取得しない" });
+    expect(cancel).toHaveFocus();
+    // ⚠ 宛先が固定できない以上、毎回の同意が唯一の担保＝この選択肢を作ってはいけない。
+    expect(screen.queryByText(/今後確認しない/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+  });
+
+  it("⚠⚠ 画面に出した URL と sidecar へ送る URL が同一である", async () => {
+    const fetchMock = vi.fn<ThemeImportFetch>(async () => ({
+      ok: true as const,
+      css: "",
+    }));
+    requestThemeImport = fetchMock;
+    await importWithOneStrippedImport();
+    await findConsent();
+
+    const shown = within(screen.getByRole("dialog")).getByText(IMPORT_URL)
+      .textContent;
+    fireEvent.click(screen.getByRole("button", { name: "取得する" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(fetchMock.mock.calls[0][0]).toBe(shown);
+    expect(fetchMock.mock.calls[0][0]).toBe(IMPORT_URL);
+  });
+
+  it("⚠ 同意する前に取得しない（同意が先・取得が後）", async () => {
+    const fetchMock = vi.fn<ThemeImportFetch>(async () => ({
+      ok: true as const,
+      css: "",
+    }));
+    requestThemeImport = fetchMock;
+    await importWithOneStrippedImport();
+    await findConsent();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("拒否すると取得もスナップショット保存もせず、取り込み自体は成功する", async () => {
+    const fetchMock = vi.fn<ThemeImportFetch>(async () => ({
+      ok: true as const,
+      css: "",
+    }));
+    requestThemeImport = fetchMock;
+    await importWithOneStrippedImport();
+    await findConsent();
+
+    fireEvent.click(screen.getByRole("button", { name: "取得しない" }));
+
+    await screen.findByText(/「テーマ」を取り込みました。/);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(snapshotCalls).toHaveLength(0);
+    expect(
+      screen.getByText(/外部からは取得しませんでした（1 件）。/),
+    ).toBeInTheDocument();
+  });
+
+  it("承諾すると取得 CSS を**前置**して Snapshot 保存し、除去版を削除する", async () => {
+    requestThemeImport = vi.fn(async () => ({
+      ok: true as const,
+      css: ".fetched{color:lime}",
+    }));
+    snapshotResult = {
+      theme: { ...makeTheme(SNAP_ID, "テーマ", 0), origin: "snapshot" },
+      strippedImportUrls: [],
+      truncatedToEof: false,
+    };
+    cssById[SNAP_ID] = ".fetched{color:lime}\n.sd-comment{color:red}";
+    await importWithOneStrippedImport();
+    await findConsent();
+
+    fireEvent.click(screen.getByRole("button", { name: "取得する" }));
+    await screen.findByText(/外部デザインを 1 件取り込みました/);
+
+    // ⚠ 取得 CSS が**先頭**（`@import` は先頭にしか書けない＝原位置と等価）。
+    expect(snapshotCalls).toHaveLength(1);
+    expect(snapshotCalls[0].css).toBe(".fetched{color:lime}\n.sd-comment{color:red}");
+    // ⚠ 名前はそのまま引き継ぐ（ユーザーには変わって見えない）。
+    expect(snapshotCalls[0].name).toBe("テーマ");
+    // ⚠ 除去版は削除される（テーマが 2 件残らない）。
+    expect(mocks.invoke).toHaveBeenCalledWith("delete_overlay_theme", {
+      id: NEW_ID,
+    });
+  });
+
+  it("⚠ 順序は「Snapshot 保存 → 削除」。保存に失敗したら除去版が残る（失われるものを作らない）", async () => {
+    requestThemeImport = vi.fn(async () => ({
+      ok: true as const,
+      css: ".fetched{color:lime}",
+    }));
+    snapshotError = { message: "テーマを保存できませんでした。" };
+    await importWithOneStrippedImport();
+    await findConsent();
+
+    fireEvent.click(screen.getByRole("button", { name: "取得する" }));
+    await screen.findByText(/テーマを保存できませんでした。/);
+
+    // 削除は走らない＝除去版のテーマがそのまま残っている。
+    expect(mocks.invoke).not.toHaveBeenCalledWith("delete_overlay_theme", {
+      id: NEW_ID,
+    });
+    expect(screen.getByText(/「テーマ」を取り込みました。/)).toBeInTheDocument();
+  });
+
+  it("⚠⚠ Snapshot 結果の strippedImportUrls で同意ループを再起動しない（無限ループ防止）", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true as const,
+      css: "@import url(https://fonts.googleapis.com/css2?family=X);",
+    }));
+    requestThemeImport = fetchMock;
+    snapshotResult = {
+      theme: { ...makeTheme(SNAP_ID, "テーマ", 6), origin: "snapshot" },
+      // ⚠ 実サンプルでは Google Fonts が 6 本ここに載る。**これで 2 巡目を始めてはいけない。**
+      strippedImportUrls: Array.from(
+        { length: 6 },
+        (_, i) => `https://fonts.googleapis.com/css2?family=F${i}`,
+      ),
+      truncatedToEof: false,
+    };
+    cssById[SNAP_ID] = "@font-face{font-family:'Zen Kaku Gothic Antique'}";
+    await importWithOneStrippedImport();
+    await findConsent();
+
+    fireEvent.click(screen.getByRole("button", { name: "取得する" }));
+    await screen.findByText(/外部デザインを 1 件取り込みました/);
+
+    // 取得は 1 回きり・保存も 1 回きり・ダイアログは閉じたまま。
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(snapshotCalls).toHaveLength(1);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("@import が 3 本なら 3 回同意を求め、途中でやめても壊れない", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true as const,
+      css: ".a{color:lime}",
+    }));
+    requestThemeImport = fetchMock;
+    snapshotResult = {
+      theme: { ...makeTheme(SNAP_ID, "テーマ", 0), origin: "snapshot" },
+      strippedImportUrls: [],
+      truncatedToEof: false,
+    };
+    cssById[SNAP_ID] = ".a{color:lime}";
+    await importWithOneStrippedImport(".sd-comment{color:red}", [
+      "https://a.example/1.css",
+      "https://b.example/2.css",
+      "https://c.example/3.css",
+    ]);
+
+    await findConsent();
+    expect(screen.getByText(/3 件中 1 件目/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "取得する" }));
+
+    await screen.findByText(/3 件中 2 件目/);
+    fireEvent.click(screen.getByRole("button", { name: "取得しない" }));
+
+    await screen.findByText(/3 件中 3 件目/);
+    fireEvent.click(screen.getByRole("button", { name: "取得しない" }));
+
+    await screen.findByText(/外部デザインを 1 件取り込みました/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(
+      screen.getByText(/外部からは取得しませんでした（2 件）。/),
+    ).toBeInTheDocument();
+  });
+
+  it("⚠ サイズ予算は逐次で減る（既存 CSS 長 ＋ 取得上限 ≤ 256KB を取得前に渡す）", async () => {
+    const fetchMock = vi.fn<ThemeImportFetch>(async () => ({
+      ok: true as const,
+      css: "x".repeat(1000),
+    }));
+    requestThemeImport = fetchMock;
+    snapshotResult = {
+      theme: { ...makeTheme(SNAP_ID, "テーマ", 0), origin: "snapshot" },
+      strippedImportUrls: [],
+      truncatedToEof: false,
+    };
+    cssById[SNAP_ID] = "x";
+    const saved = "y".repeat(500);
+    await importWithOneStrippedImport(saved, [
+      "https://a.example/1.css",
+      "https://b.example/2.css",
+    ]);
+
+    await findConsent();
+    fireEvent.click(screen.getByRole("button", { name: "取得する" }));
+    await screen.findByText(/2 件中 2 件目/);
+    fireEvent.click(screen.getByRole("button", { name: "取得する" }));
+    await screen.findByText(/外部デザインを 2 件取り込みました/);
+
+    const first = fetchMock.mock.calls[0][1];
+    const second = fetchMock.mock.calls[1][1];
+    // 1 本目: 256KB − 保存済み 500 バイト − 区切り 1 バイト
+    expect(first).toBe(256 * 1024 - 500 - 1);
+    // 2 本目: さらに取得した 1000 バイト＋区切りぶんだけ減っている。
+    expect(second).toBe(first - 1000 - 1);
+  });
+
+  it("WS 未接続なら「準備中」と伝え、取り込み自体は成功する（fail-closed）", async () => {
+    requestThemeImport = vi.fn(async () => ({
+      ok: false as const,
+      reason: "offline",
+    }));
+    await importWithOneStrippedImport();
+    await findConsent();
+    fireEvent.click(screen.getByRole("button", { name: "取得する" }));
+
+    await screen.findByText(/内部接続が準備中/);
+    expect(snapshotCalls).toHaveLength(0);
+    expect(screen.getByText(/「テーマ」を取り込みました。/)).toBeInTheDocument();
+  });
+
+  it("取得に失敗しても理由の詳細（URL・ステータス）は出さない（§9）", async () => {
+    requestThemeImport = vi.fn(async () => ({
+      ok: false as const,
+      reason: "redirect",
+    }));
+    await importWithOneStrippedImport();
+    await findConsent();
+    fireEvent.click(screen.getByRole("button", { name: "取得する" }));
+
+    await screen.findByText(/外部デザインを 1 件取得できませんでした/);
+    // ⚠ 結果パネルに URL も内部の理由語も出さない。
+    const panel = screen.getByText(/取り込み結果/).parentElement;
+    expect(panel?.textContent ?? "").not.toContain(IMPORT_URL);
+    expect(panel?.textContent ?? "").not.toContain("redirect");
+  });
+
+  it("⚠ テーマ件数が上限なら同意ダイアログを出さない（帯域も同意も無駄にしない）", async () => {
+    const fetchMock = vi.fn<ThemeImportFetch>(async () => ({
+      ok: true as const,
+      css: "",
+    }));
+    requestThemeImport = fetchMock;
+    // 取り込み前に 199 件 → 取り込み後 200 件 ＝ Snapshot の 1 件が入らない。
+    themes = Array.from({ length: 199 }, (_, i) =>
+      makeTheme(`00000000-0000-4000-8000-${String(i).padStart(12, "0")}`, `t${i}`),
+    );
+    importResult = {
+      theme: makeTheme(NEW_ID, "テーマ", 1),
+      strippedImportUrls: [IMPORT_URL],
+      truncatedToEof: false,
+    };
+    cssById[NEW_ID] = ".sd-comment{color:red}";
+    render(
+      <OverlayThemeCard
+        overlayFont="system"
+        overlayShowSource={false}
+        requestThemeImport={requestThemeImport}
+      />,
+    );
+    await screen.findByRole("radio", { name: "t0" });
+    fireEvent.change(pasteCssBox(), { target: { value: ".sd-comment{color:red}" } });
+    fireEvent.click(screen.getByRole("button", { name: "取り込む" }));
+
+    await screen.findByText(/デザインの登録数が上限のため/);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("⚠ requestThemeImport が無ければ取得の導線ごと出ない（fail-closed）", async () => {
+    requestThemeImport = undefined;
+    await importWithOneStrippedImport();
+    await screen.findByText(/「テーマ」を取り込みました。/);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(snapshotCalls).toHaveLength(0);
+  });
+});
+
+/**
+ * 060c: フォントの案内（060h を待たずに出す）。
+ * ⚠ **§1 を一切曲げずに**「なぜ書体だけ変わらないのか」と「次に何をすればよいか」を伝える唯一の手段。
+ */
+describe("060c: フォントの案内", () => {
+  it("@font-face の font-family から名前を拾って案内する", async () => {
+    importResult = {
+      theme: makeTheme(NEW_ID, "テーマ", 1),
+      strippedImportUrls: [],
+      truncatedToEof: false,
+    };
+    cssById[NEW_ID] = "@font-face{font-family:'Zen Kaku Gothic Antique'}";
+    await renderLoaded();
+    fireEvent.change(pasteCssBox(), { target: { value: ".a{color:red}" } });
+    fireEvent.click(screen.getByRole("button", { name: "取り込む" }));
+
+    await screen.findByText(
+      /このテーマは「Zen Kaku Gothic Antique」を指定していますが、StreamDock は外部からフォントを読み込みません。/,
+    );
+  });
+
+  it("Google Fonts の family= からも拾う（実サンプルの形）", async () => {
+    importResult = {
+      theme: makeTheme(NEW_ID, "テーマ", 2),
+      strippedImportUrls: [
+        "https://fonts.googleapis.com/css2?family=M+PLUS+1p:wght@400",
+        "https://fonts.googleapis.com/css2?family=Hachi+Maru+Pop",
+      ],
+      truncatedToEof: false,
+    };
+    cssById[NEW_ID] = "@font-face{font-family:X}";
+    await renderLoaded();
+    fireEvent.change(pasteCssBox(), { target: { value: ".a{color:red}" } });
+    fireEvent.click(screen.getByRole("button", { name: "取り込む" }));
+
+    await screen.findByText(/このテーマは「X ほか 2 件」を指定していますが/);
+  });
+
+  it("@font-face が無ければ案内を出さない（無関係なテーマに出さない）", async () => {
+    importResult = {
+      theme: makeTheme(NEW_ID, "テーマ", 0),
+      strippedImportUrls: [],
+      truncatedToEof: false,
+    };
+    cssById[NEW_ID] = ".sd-comment{color:red}";
+    await renderLoaded();
+    fireEvent.change(pasteCssBox(), { target: { value: ".a{color:red}" } });
+    fireEvent.click(screen.getByRole("button", { name: "取り込む" }));
+
+    await screen.findByText(/「テーマ」を取り込みました。/);
+    expect(
+      screen.queryByText(/外部からフォントを読み込みません/),
+    ).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * 060c: 切り詰め警告は **`truncatedToEof`（Rust）と `unclosedBlockDepth`（frontend）の OR** で出す。
+ * ⚠ 2 つは別々の失敗モードを見ており、**互いに相手を含まない**（片方だけだと取り逃す）。
+ */
+describe("060c: truncatedToEof と unclosedBlockDepth の両方で警告する", () => {
+  const warning = /CSS\s*の大部分が取り込めていない可能性があります/;
+
+  async function importWith(truncatedToEof: boolean, savedCss: string) {
+    importResult = {
+      theme: makeTheme(NEW_ID, "テーマ", 1),
+      strippedImportUrls: [],
+      truncatedToEof,
+    };
+    cssById[NEW_ID] = savedCss;
+    await renderLoaded();
+    fireEvent.change(pasteCssBox(), { target: { value: ".a{color:red}" } });
+    fireEvent.click(screen.getByRole("button", { name: "取り込む" }));
+    await screen.findByText(/「テーマ」を取り込みました。/);
+  }
+
+  it("⚠⚠ 波括弧が釣り合っていても truncatedToEof なら警告する（060d の穴を塞ぐ分）", async () => {
+    // `@import url(…` の `)` 忘れ。閉じ忘れが 1 つも残らないので深さ判定では検出できない。
+    await importWith(true, "@media (min-width:1px){.sd-comment{color:red}}");
+    expect(screen.getByText(warning)).toBeInTheDocument();
+  });
+
+  it("truncatedToEof が false でも閉じ忘れがあれば警告する（従来の経路は残っている）", async () => {
+    await importWith(false, ".a{color:red}\n.b{");
+    expect(screen.getByText(warning)).toBeInTheDocument();
+  });
+
+  it("どちらでもなければ警告しない", async () => {
+    await importWith(false, ".a{color:red}");
+    expect(screen.queryByText(warning)).not.toBeInTheDocument();
   });
 });

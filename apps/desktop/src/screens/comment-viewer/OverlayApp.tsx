@@ -12,6 +12,10 @@ import {
   OVERLAY_THEME_KEY,
 } from "../../features/comment-viewer/overlaySettings";
 import { rewriteSelectors } from "../../features/comment-viewer/cssCompat";
+import {
+  OVERLAY_ROOT_SELECTOR,
+  rewriteRootLike,
+} from "../../features/comment-viewer/cssScope";
 import { withDecorationReset } from "../../features/comment-viewer/overlayThemeReset";
 import { getOverlayThemeCss } from "../../features/comment-viewer/overlayThemeApi";
 import { CommentList } from "./CommentList";
@@ -96,6 +100,18 @@ export function OverlayApp() {
   //   変換表を更新すると取り込み済みテーマにも自動で効く。だから決定性と冪等性が機能要件になっている。
   // ⚠ **`scopeSelectors` は使わない**——あれはプレビュー（コメビュ窓の中に同居する）専用で、
   //   この窓はオーバーレイ専用なので前置する相手がいない（前置すると逆に何も当たらなくなる）。
+  // ⚠⚠ **代わりに `rewriteRootLike` は通す**（060c）。外部 CSS には `body{margin:…; line-height:…}` が
+  //   ほぼ必ず入るが、プレビューでは `scopeSelectors` が `body` → `.sd-preview` へ読み替えるのに対し、
+  //   ここでスコープ化しないと**本物の `<body>` に効いて全要素へ継承する**＝
+  //   **プレビューが本番を再現していない**状態になっていた（060f の実機確認で判明）。
+  //   `body` / `html` / `:root` / `.sd-overlay` を**窓ルート `.sd-overlay` へ読み替える**ことで、
+  //   「その文脈でのルート要素へ寄せる」という 1 つの規則でプレビューと配信窓が揃う。
+  //   ⚠ 変換表（`cssCompat.ts`）は 1 行も触っていない＝ 060f が却下した案・静的ガード (10-k) には当たらない。
+  //   ⚠⚠ **受容している副作用**: `body{background:#fff}` は `.sd-overlay{background:#fff}` になり
+  //   **窓が全面不透明になる**。能力は 060f が受容済みのもの（`yt-live-chat-app` → `.sd-overlay`）と同一で
+  //   脱出路も同じ（「既定のデザインに戻す」）だが、⚠ **発生頻度は上がる**——060f は YouTube 専用に
+  //   書かれたテーマを要したのに対し `body{background:…}` は外部 CSS にほぼ必ず入る（security-review 060c Q-3）。
+  //   ＝ 実機で不透明になっても実装ミスではない。
   // ⚠ 取得に失敗したら（テーマが消えた・読めない）**既定意匠へ倒す**。オーバーレイ窓は表示専用・非フォーカスで
   //   ここからは何も操作できないため、**localStorage は書き換えない**（気付かせるのはコメビュ窓の設定側の責務）。
   //   ⚠ CSS 本文もエラー詳細もログに出さない（§9）。
@@ -123,7 +139,9 @@ export function OverlayApp() {
         //   ⚠ **必ず `withDecorationReset` を通すこと**（手書きの文字列連結にしない）。プレビュー側
         //   （`OverlayThemeCard`）と 2 か所あり、片方だけ抜けると本番とプレビューで見え方が食い違う。
         //   静的ガード **(10-m)** が「2 か所とも通っていること」を固定している。
-        el.textContent = withDecorationReset(rewriteSelectors(css).css);
+        el.textContent = withDecorationReset(
+          rewriteRootLike(rewriteSelectors(css).css, OVERLAY_ROOT_SELECTOR),
+        );
         // `<head>` の末尾へ足す＝CSS Modules（Vite が起動時に入れる）より後になるので、
         // 同じ詳細度ならユーザー CSS が勝つ。これが「テーマで上書きできる」の実体。
         document.head.appendChild(el);

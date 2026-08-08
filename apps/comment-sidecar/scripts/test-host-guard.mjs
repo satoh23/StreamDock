@@ -10,6 +10,8 @@ const {
   assertAllowedWsUrl,
   assertAllowedGrpcTarget,
   assertAllowedObsUrl,
+  assertAllowedThemeImportUrl,
+  isInternalAddress,
 } = __hostGuardInternals;
 
 let failures = 0;
@@ -113,6 +115,149 @@ ok("obs not-a-url", () => assertAllowedObsUrl("not-a-url"), true);
 // OBS loopback は既存の外部 WSS allow-list とは分離（混ぜない）: OBS assert は外部 WSS を拒否・WSS assert は ws:// を拒否。
 ok("obs wss://eventsub.wss.twitch.tv/ws (external WSS not an OBS target)", () => assertAllowedObsUrl("wss://eventsub.wss.twitch.tv/ws"), true);
 ok("ws ws://127.0.0.1:4455 (loopback not allowed on external WSS guard)", () => assertAllowedWsUrl("ws://127.0.0.1:4455"), true);
+
+// 060c: テーマ取り込みの外部 `@import` 取得ガード（allow-list とは**分離**した専用関数）。
+// ⚠⚠ 宛先を allow-list で固定できない代わりに「取得できる形を極端に狭める」ので、
+// ここが緩むと SSRF がそのまま通る。**本タスク最大の穴**なのでケースを厚くする。
+const themeOk = (label, url, shouldThrow) =>
+  ok(`theme ${label}`, () => assertAllowedThemeImportUrl(url), shouldThrow);
+
+// 正常系（依頼者の実サンプルが指す形）。
+themeOk("https://example.com/a.css", "https://example.com/a.css", false);
+themeOk(
+  "https://ruri.info/tool/css/fukidashiComment.css (real sample shape)",
+  "https://ruri.info/tool/css/fukidashiComment.css",
+  false,
+);
+themeOk("uppercase path .CSS", "https://example.com/A.CSS", false);
+themeOk("explicit :443 is normalized away", "https://example.com:443/a.css", false);
+
+// スキーム: https のみ。
+themeOk("http (MITM can rewrite CSS)", "http://example.com/a.css", true);
+themeOk("file:", "file:///etc/passwd.css", true);
+themeOk("data:", "data:text/css,body{}", true);
+themeOk("javascript:", "javascript:alert(1)//a.css", true);
+themeOk("not-a-url", "a.css", true);
+
+// userinfo: 実宛先は `@` の後ろ。同意ダイアログの表示偽装とセットで効く。
+themeOk(
+  "userinfo (real host is evil.example)",
+  "https://trusted.example@evil.example/a.css",
+  true,
+);
+
+// ⚠⚠ SSRF: loopback / プライベート / link-local / メタデータ / IP リテラル。
+themeOk("loopback 127.0.0.1", "https://127.0.0.1/a.css", true);
+themeOk("loopback localhost", "https://localhost/a.css", true);
+themeOk("loopback [::1]", "https://[::1]/a.css", true);
+themeOk("private 10.x", "https://10.0.0.1/a.css", true);
+themeOk("private 192.168.x", "https://192.168.1.1/a.css", true);
+themeOk("private 172.16.x", "https://172.16.0.1/a.css", true);
+themeOk("private 172.31.x", "https://172.31.255.255/a.css", true);
+themeOk("metadata 169.254.169.254", "https://169.254.169.254/a.css", true);
+themeOk("metadata by name", "https://metadata.google.internal/a.css", true);
+themeOk("public-looking IP literal 93.184.216.34", "https://93.184.216.34/a.css", true);
+// ⚠ WHATWG URL は special scheme で 10 進/16 進の IPv4 を dotted-quad へ正規化する。
+themeOk("decimal IPv4 2130706433 (= 127.0.0.1)", "https://2130706433/a.css", true);
+themeOk("hex IPv4 0x7f.0.0.1 (= 127.0.0.1)", "https://0x7f.0.0.1/a.css", true);
+themeOk("short IPv4 127.1 (= 127.0.0.1)", "https://127.1/a.css", true);
+
+// 内部用サフィックス・単一ラベル・末尾ドット。
+themeOk("mDNS .local", "https://printer.local/a.css", true);
+themeOk(
+  "trailing dot must not evade the .local suffix check",
+  "https://printer.local./a.css",
+  true,
+);
+// ⚠⚠ **ドット 2 個以上でサフィックス判定を逃れる形**（security-review 060c S-1・実測で素通りしていた）。
+// 「末尾ドットを 1 個だけ剥がす」実装はここで落ちる。⚠ 空ラベルはリゾルバ依存で解決されうるので、
+// DNS 事前検査に判定を預けず**形の段階で**落とす。
+themeOk("double trailing dot must not evade .local", "https://printer.local../a.css", true);
+themeOk("triple trailing dot must not evade .local", "https://printer.local.../a.css", true);
+themeOk("double trailing dot must not evade localhost", "https://localhost../a.css", true);
+themeOk(
+  "double trailing dot must not evade the metadata host",
+  "https://metadata.google.internal../a.css",
+  true,
+);
+themeOk("empty label in the middle", "https://ruri..info/a.css", true);
+themeOk("leading empty label", "https://.ruri.info/a.css", true);
+// ⚠ 正当な FQDN 表記（末尾ドット 1 個）は**通ること**（過剰拒否にしない）。
+themeOk("a single trailing dot on a public host is still allowed", "https://ruri.info./a.css", false);
+themeOk("single label (resolved by search domain)", "https://intranet/a.css", true);
+themeOk(".internal", "https://wiki.internal/a.css", true);
+themeOk(".localhost subdomain", "https://api.localhost/a.css", true);
+themeOk(".home.arpa", "https://nas.home.arpa/a.css", true);
+
+// ポート・クエリ・フラグメント・拡張子で形を狭める。
+themeOk("non-443 port", "https://example.com:8443/a.css", true);
+themeOk("port 80", "https://example.com:80/a.css", true);
+themeOk("query string (060h will need to relax this)", "https://example.com/a.css?v=1", true);
+themeOk("fragment", "https://example.com/a.css#x", true);
+themeOk("not .css", "https://example.com/a.txt", true);
+themeOk("no extension", "https://example.com/a", true);
+themeOk("percent-encoded dot does not count as .css", "https://example.com/a%2Ecss", true);
+themeOk("directory ending in .css/", "https://example.com/a.css/", true);
+
+// ⚠⚠ **既存 allow-list と混ざっていないこと**（`assertAllowedObsUrl` とは逆向きのガードである）。
+ok(
+  "theme guard rejects the OBS loopback target (opposite direction of assertAllowedObsUrl)",
+  () => assertAllowedThemeImportUrl("ws://127.0.0.1:4455"),
+  true,
+);
+ok(
+  "OBS guard rejects a theme import URL (the two are not interchangeable)",
+  () => assertAllowedObsUrl("https://example.com/a.css"),
+  true,
+);
+// テーマ取得先を既存 allow-list に足していないこと（足すと Twitch/YouTube 宛先と同じ表で管理され始める）。
+ok(
+  "the shared allow-list still rejects a theme import host",
+  () => assertAllowedHttpUrl("https://example.com/a.css"),
+  true,
+);
+
+// 060c: 解決済みアドレスの判定（DNS 事前検査が使う表）。
+const addrOk = (label, address, family, expected) => {
+  const actual = isInternalAddress(address, family);
+  const pass = actual === expected;
+  if (!pass) failures++;
+  process.stderr.write(
+    `${pass ? "PASS" : "FAIL"} addr ${label} (expected ${expected ? "internal" : "public"})\n`,
+  );
+};
+addrOk("127.0.0.1", "127.0.0.1", 4, true);
+addrOk("10.1.2.3", "10.1.2.3", 4, true);
+addrOk("172.20.0.1", "172.20.0.1", 4, true);
+addrOk("172.15.0.1 (just outside the private range)", "172.15.0.1", 4, false);
+addrOk("172.32.0.1 (just outside the private range)", "172.32.0.1", 4, false);
+addrOk("192.168.0.1", "192.168.0.1", 4, true);
+addrOk("169.254.169.254", "169.254.169.254", 4, true);
+addrOk("100.64.0.1 (CGNAT)", "100.64.0.1", 4, true);
+addrOk("0.0.0.0", "0.0.0.0", 4, true);
+addrOk("93.184.216.34 (public)", "93.184.216.34", 4, false);
+addrOk("8.8.8.8 (public)", "8.8.8.8", 4, false);
+addrOk("::1", "::1", 6, true);
+addrOk("fd00::1 (ULA)", "fd00::1", 6, true);
+addrOk("fe80::1 (link-local)", "fe80::1", 6, true);
+addrOk("::ffff:127.0.0.1 (IPv4-mapped loopback)", "::ffff:127.0.0.1", 6, true);
+addrOk("2606:2800:220:1:248:1893:25c8:1946 (public)", "2606:2800:220:1:248:1893:25c8:1946", 6, false);
+// ⚠⚠ **表記の揺れで素通りしていた分**（security-review 060c S-2・実測で public 判定になっていた）。
+// 先頭グループを文字列の前方一致で取る実装はここで落ちる（`::` の空文字が "0" に化けるため）。
+addrOk("::ffff:7f00:1 (same as ::ffff:127.0.0.1 in hex)", "::ffff:7f00:1", 6, true);
+addrOk("0:0:0:0:0:ffff:127.0.0.1 (uncompressed IPv4-mapped)", "0:0:0:0:0:ffff:127.0.0.1", 6, true);
+addrOk("::127.0.0.1 (IPv4-compatible, deprecated)", "::127.0.0.1", 6, true);
+addrOk("::ffff:10.0.0.1 (IPv4-mapped private)", "::ffff:10.0.0.1", 6, true);
+addrOk("2002:7f00:1::1 (6to4 wrapping 127.0.0.1)", "2002:7f00:1::1", 6, true);
+addrOk("64:ff9b::7f00:1 (NAT64 wrapping 127.0.0.1)", "64:ff9b::7f00:1", 6, true);
+addrOk("2002:5db8:1::1 (6to4 wrapping a public v4)", "2002:5db8:1::1", 6, false);
+addrOk("fe80::1%eth0 (zone id is stripped)", "fe80::1%eth0", 6, true);
+// ⚠ **解釈できない形は拒否側へ倒す**（`isInternalIpv4` と向きを揃えた）。
+addrOk("garbage is refused (fail-closed)", "not-an-address", 6, true);
+addrOk("too many groups is refused (fail-closed)", "1:2:3:4:5:6:7:8:9", 6, true);
+addrOk("two :: is refused (fail-closed)", "1::2::3", 6, true);
+// ⚠ family の申告が 4 でも `:` を含むなら IPv6 として判定する（IPv4 判定へ流さない保険）。
+addrOk("v6 text declared as family 4 is still判定される", "::1", 4, true);
 
 // global fetch のガード置換: allow-list 外は throw（ネットワークを張る前に弾く）
 installHttpHostGuard();

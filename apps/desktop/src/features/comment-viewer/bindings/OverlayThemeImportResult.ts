@@ -24,4 +24,12 @@ export type OverlayThemeImportResult = { theme: OverlayThemeRecord,
  * 060c の同意ダイアログは**ホストを別行で強調して出すこと**（URL を素で出すと先頭を信じられる）。
  * ⚠ **ログにも `AppError` にも出さないこと**（§9）。
  */
-strippedImportUrls: Array<string>, };
+strippedImportUrls: Array<string>, 
+/**
+ * 060c: 取り込みが**ファイル末尾まで巻き込んで欠損した疑い**があるか。
+ *
+ * 詳細と実測例は [`super::sanitize::SanitizeOutcome::truncated_to_eof`]。
+ * ⚠ frontend は **`truncatedToEof || unclosedBlockDepth(css) > 0`** で警告すること
+ * （2 つは別々の失敗モードを見ており、互いに相手を含まない）。
+ */
+truncatedToEof: boolean, };

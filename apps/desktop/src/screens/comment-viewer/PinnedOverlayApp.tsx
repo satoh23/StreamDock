@@ -69,10 +69,11 @@ function applyFitScale(el: HTMLElement, scale: number): void {
  * 更新する事故が起きる）②3 つ目のオーバーレイ窓を作るとき。そのとき `useOverlayPresentation()` に括り出す。
  *
  * 046b レビュー（注意・CSS の共有範囲）: この窓も `data-overlay="1"` を立てるため、`OverlayApp.module.css` の
- * `:global(html[data-overlay="1"] ol)::-webkit-scrollbar`（034b）が**この窓にも効く**。同 CSS のコメントは
- * 「overlay 窓の `<ol>` は一覧の 1 つだけ」と単数前提で書かれているが、この窓の `<ol>` も `CommentList` の
- * 1 つだけなので前提は崩れていない（CSS は無改変）。
- * 再修正トリガー＝この窓に別のスクロール可能な `<ol>` を足すとき（同 CSS のコメントどおり目印属性で絞る）。
+ * `:global(html[data-overlay="1"] [data-comment-scroll])::-webkit-scrollbar`（034b／⚠ 060c 追修正で
+ * `ol` から目印属性へ変更）が**この窓にも効く**。目印は `CommentList` の一覧 1 つだけに付くので
+ * 「overlay 窓のスクロール要素は一覧の 1 つだけ」という前提は崩れていない。
+ * ⚠ 060c 追修正(2026-08-09): この窓も**document をスクロールさせない**（同 CSS の `overflow:hidden`）。
+ * 再修正トリガー＝この窓に別のスクロール可能な一覧を足すとき（目印が 2 つになるので ref prop へ）。
  */
 export function PinnedOverlayApp() {
   // 046a のピンストア（先頭＝最新・最大 PINNED_LIMIT 件）。保存形は上限 N に依らず JSON 配列なので、
@@ -138,11 +139,14 @@ export function PinnedOverlayApp() {
   // 046c: 内容が窓に収まるまで縮小する。窓の高さ（Rust の `open_pinned_overlay_window`）は 290 字の長文が
   // 等倍で収まる値にしてあるので、これは**それを超える長文のための保険**（通常は等倍のまま何も起きない）。
   //
-  // 測定対象を `querySelector("ol")` で取るのは、`CommentList` が共有コンポーネントで ref を受け取らないため。
-  // **既存 CSS が同じ理由で `ol` 要素セレクタを使っている**前例に揃えてある
-  //（`OverlayApp.module.css` の `:global(html[data-overlay="1"] ol)::-webkit-scrollbar` とその注記）。
-  // 再修正トリガー＝この窓に別のスクロール可能な `<ol>` を足すとき。そのときは同 CSS のコメントどおり
-  // 目印属性（`ol[data-…]`）で絞るか、`CommentList` に ref prop を足す。
+  // 測定対象を `querySelector` で取るのは、`CommentList` が共有コンポーネントで ref を受け取らないため。
+  // ⚠⚠ 060c 追修正(2026-08-09): **当て先を `"ol"` から `"[data-comment-scroll]"` へ変えた。**
+  // スクロール要素が `<ol>` から外側の `<div>`（`.scroller`）へ移ったので、`<ol>` を測ると
+  // **`scrollHeight === clientHeight` が常に成立して、この縮小機能が恒久 no-op になる**
+  //（`<ol>` は内容ぶん伸びる器になったため）。⚠ 目印は `variant="overlay"` のときだけ付くので、
+  // この窓（`variant="overlay"`）では必ず取れる。分割の理由は `CommentViewerApp.module.css` の
+  // `.scroller` のコメント、目印の命名理由は `CommentList.tsx` の該当コメントが正。
+  // 再修正トリガー＝この窓に別のスクロール可能な一覧を足すとき（目印が 2 つになるので ref prop へ）。
   //
   // 測定は `scrollHeight` / `clientHeight` に統一する。**`getBoundingClientRect()` は使わない**
   //（transform 適用後の視覚値を返すため、変換前の値と混ぜると二重補正になる）。
@@ -152,7 +156,7 @@ export function PinnedOverlayApp() {
   // 誤判定してこの機能が恒久 no-op になる。
   const applyFit = useCallback(() => {
     const root = rootRef.current;
-    const list = root?.querySelector("ol");
+    const list = root?.querySelector("[data-comment-scroll]");
     if (!root || !list) return;
     // fitScale は k=1 から測り始める＝毎回等倍へリセットされるので、前回の縮小が累積しない
     //（StrictMode の二重実行でも冪等）。return 時点で DOM には確定した scale が当たっている。

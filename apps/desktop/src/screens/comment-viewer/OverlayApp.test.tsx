@@ -110,6 +110,43 @@ describe("OverlayApp: テーマ CSS の注入", () => {
     expect(themeCssOf(themeStyles()[0])).toBe(".sd-comment-chat{color:red}");
   });
 
+  /**
+   * 060c: ⚠⚠ **注入前に `rewriteRootLike` も通す**（`body` の非対称を塞いだ分）。
+   *
+   * 060f の実機確認で判明した欠陥＝「プレビューは `scopeSelectors` が `body` → `.sd-preview` へ
+   * 読み替えるのに、配信窓はスコープ化しないので**本物の `<body>` に効いて全要素へ継承する**」。
+   * 外部 CSS には `body{margin:…; letter-spacing:…}` がほぼ必ず入るので、**プレビューが本番を
+   * 再現していない**状態になっていた。窓ルートへ読み替えることで両者が同じ規則で説明できる。
+   */
+  it("注入前に rewriteRootLike を通す（body / html / :root が窓ルートへ向く）", async () => {
+    mocks.getOverlayThemeCss.mockResolvedValue(
+      "body{margin:6px auto;letter-spacing:.1em}",
+    );
+    saveOverlayTheme(THEME_A);
+    render(<OverlayApp />);
+    await waitFor(() => expect(themeStyles()).toHaveLength(1));
+    expect(themeCssOf(themeStyles()[0])).toBe(
+      ".sd-overlay{margin:6px auto;letter-spacing:.1em}",
+    );
+  });
+
+  it("⚠ 通常のセレクタは前置されない（プレビューの scopeSelectors とはここが違う）", async () => {
+    mocks.getOverlayThemeCss.mockResolvedValue(".sd-comment{color:red}");
+    saveOverlayTheme(THEME_A);
+    render(<OverlayApp />);
+    await waitFor(() => expect(themeStyles()).toHaveLength(1));
+    // 前置すると詳細度が無意味に上がる（配信窓には閉じ込める相手がいない）。
+    expect(themeCssOf(themeStyles()[0])).toBe(".sd-comment{color:red}");
+  });
+
+  it(":root の CSS 変数が窓ルートに載る（実サンプルの --txtcolor が効く）", async () => {
+    mocks.getOverlayThemeCss.mockResolvedValue(":root{--txtcolor:#555}");
+    saveOverlayTheme(THEME_A);
+    render(<OverlayApp />);
+    await waitFor(() => expect(themeStyles()).toHaveLength(1));
+    expect(themeCssOf(themeStyles()[0])).toBe(".sd-overlay{--txtcolor:#555}");
+  });
+
   // ⚠⚠ **既知の限界（実測 2026-08-05）**: このテストは `innerHTML` への退行を**殺せない**。
   //   jsdom は `<style>.innerHTML` に RAWTEXT のフラグメント解析を実装しておらず、
   //   `textContent` 経路と**完全に同じ結果**になる（実測: textContent / childNodes / sheet.cssRules が一致、

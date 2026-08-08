@@ -115,8 +115,11 @@ describe("SELECTOR_TABLE", () => {
  * **chat 用に書かれたテーマが課金カードの意匠を壊す**（2026-08-05 の実測で判明した「論外」の 1 つ目）。
  * 表を `.sd-comment` へ戻す変異はここで落ちる。
  *
- * ⚠ 逆に**限定しすぎ**も壊れる（`yt-img-shadow` / `div#author-info` は chat と課金の共有要素で、
+ * ⚠ 逆に**限定しすぎ**も壊れる（`yt-img-shadow` は chat と課金の共有要素で、
  * 限定すると「絶対に当たらないセレクタ」を生む）。だから据え置き側も個別に固定する。
+ * ⚠⚠ **`div#author-info` は 060c 追修正(2026-08-09)で表から削除した**（初版のこのコメントは
+ * 「chat と課金の共有要素」と書いていたが、**YouTube のテキストコメントに `#author-info` は無い**
+ * ＝あれは課金カードのヘッダで、読み自体が誤っていた）。下に「表に無いこと」を固定するテストがある。
  */
 describe("SELECTOR_TABLE — 060f の向き先（chat 限定 / 据え置き / 新規）", () => {
   const to = (from: string) => SELECTOR_TABLE.find((r) => r.from === from)?.to;
@@ -185,8 +188,23 @@ describe("SELECTOR_TABLE — 060f の向き先（chat 限定 / 据え置き / �
     expect(to("yt-live-chat-item-list-renderer #items")).toBe(
       ".sd-comment-list",
     );
-    // ⚠ 役割としては chat / 課金の両方だが、当たるのは chat の名前行だけ（上と同じ理由）。
-    expect(to("div#author-info")).toBe(".sd-comment-header");
+  });
+
+  /**
+   * ⚠⚠ **060c 追修正(2026-08-09・実機不具合): `div#author-info` を表に戻さないこと。**
+   *
+   * YouTube の `#author-info` は**課金カード（paid renderer）のヘッダ**で、**テキストコメントには無い**。
+   * 実テーマは `#author-info{padding:8px 16px!important}` を書きつつ課金カードごと `display:none` に
+   * するので **YouTube では 1 度も効かない**が、StreamDock では chat の名前行に当たり、
+   * 同じテーマが名前（`.yt-live-chat-author-chip`）を消すため
+   * **中身が空なのに padding だけ残る 16px の帯**が全コメントに挿さっていた（実機で確認）。
+   * ⚠ `.sd-comment-header` は安定クラス契約としては残る（ユーザーは直接書ける）。
+   */
+  it("⚠⚠ div#author-info は変換表に無い（課金カードのヘッダなので chat へ向けない）", () => {
+    expect(to("div#author-info")).toBeUndefined();
+    expect(SELECTOR_TABLE.some((r) => r.from.includes("author-info"))).toBe(
+      false,
+    );
   });
 
   /**
@@ -293,10 +311,15 @@ describe("rewriteSelectors — 課金カードを狙う指定は変換しない�
     ).toBe("yt-live-chat-paid-message-renderer .sd-comment-icon{a:b}");
   });
 
-  it("名前行は chat の名前行に当たる（目印は付けていない）", () => {
-    expect(rewriteSelectors("div#author-info{a:b}").css).toBe(
-      ".sd-comment-header{a:b}",
-    );
+  /**
+   * 060c 追修正: `div#author-info` は**変換されず、`unmatched` に出る**（黙って効かないを作らない）。
+   * ⚠ 警告に出すために `FOREIGN_ID_NAMES` へ `author-info` を足してある。
+   */
+  it("div#author-info は変換されず「効かないセレクタ」として警告に出る", () => {
+    const r = rewriteSelectors("div#author-info{a:b}");
+    expect(r.css).toBe("div#author-info{a:b}");
+    expect(r.rewritten).toBe(0);
+    expect(r.unmatched).toEqual(["#author-info"]);
   });
 
   /**
@@ -356,12 +379,16 @@ yt-live-chat-ticker-renderer { display: none }
 
   it("StreamDock に対応物があるものは全部変換され、残るのは画面部品と課金カードだけ", () => {
     const r = rewriteSelectors(THEME);
-    // 11 ルールが変換される。
+    // 10 ルールが変換される。
     // ⚠ 060f 追修正④: 課金カードの 2 ルール（paid-message / membership）は**変換しない**ので、
     //   変換数が 13 → 11 に減り、`unmatched` に paid-message が 1 件増えた（クラス形の membership は
     //   `.yt-` 接頭辞のため従来どおり `unmatched` にも載らない）。
-    expect(r.rewritten).toBe(11);
+    // ⚠ 060c 追修正(2026-08-09): `div#author-info` を表から削除したので 11 → 10 へ減り、
+    //   代わりに `#author-info` が `unmatched` に出る（`FOREIGN_ID_NAMES` へ足したため。
+    //   ＝ 黙って効かない状態にはしていない）。
+    expect(r.rewritten).toBe(10);
     expect(r.unmatched).toEqual([
+      "#author-info",
       "yt-live-chat-paid-message-renderer",
       "yt-live-chat-header-renderer",
       "yt-live-chat-message-input-renderer",

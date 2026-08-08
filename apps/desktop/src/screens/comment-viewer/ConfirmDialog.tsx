@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import styles from "./CommentViewerApp.module.css";
 
 /**
@@ -14,8 +14,21 @@ interface ConfirmDialogProps {
   open: boolean;
   title: string;
   message: string;
+  /**
+   * 060c: 本文の下に置く追加の要素（省略可）。
+   *
+   * ⚠ 外部 `@import` の同意ダイアログは**取得先ホストを別行で強調**する必要があり（userinfo 付き URL の
+   * 表示偽装対策・060b review② S-6）、`message: string` だけでは表せない。
+   * ⚠ 呼び出し側が渡す文字列は**ユーザー CSS 由来の未署名データ**なので、必ず clamp してから渡すこと。
+   */
+  details?: ReactNode;
   /** 実行ボタンの文言（例「削除」）。 */
   confirmLabel: string;
+  /**
+   * 060c: キャンセルボタンの文言（既定「キャンセル」）。
+   * 同意ダイアログでは「取得しない」＝**何が起きないか**が分かる語にする。
+   */
+  cancelLabel?: string;
   /** true で実行ボタンを危険色にする（破壊的操作向け）。 */
   danger?: boolean;
   /** 実行中は両ボタンを無効化して二重実行・誤キャンセルを防ぐ。 */
@@ -28,7 +41,9 @@ export function ConfirmDialog({
   open,
   title,
   message,
+  details,
   confirmLabel,
+  cancelLabel = "キャンセル",
   danger = false,
   busy = false,
   onConfirm,
@@ -71,14 +86,20 @@ export function ConfirmDialog({
       <div className={styles.confirmBody}>
         <h2 className={styles.confirmTitle}>{title}</h2>
         <p className={styles.confirmMessage}>{message}</p>
+        {details}
         <div className={styles.confirmActions}>
+          {/* ⚠⚠ **既定フォーカスはキャンセル側**（060c）。`<dialog>.showModal()` は autofocus が
+              無ければ「最初のフォーカス可能な要素」を選ぶので DOM 順でも結果は同じだが、
+              **並び順を入れ替えただけで既定が反転する**のは危うい（外部取得の同意ダイアログでは
+              「うっかり Enter で取得してしまう」が実害になる）。明示しておく。 */}
           <button
             type="button"
             className={styles.btnGhost}
             onClick={onCancel}
             disabled={busy}
+            autoFocus
           >
-            キャンセル
+            {cancelLabel}
           </button>
           <button
             type="button"

@@ -126,8 +126,11 @@ export function CommentList({
   onPin,
   pinnedIds,
 }: CommentListProps) {
-  const olRef = useRef<HTMLOListElement>(null);
-  const follow = useFollowScroll(olRef, comments, { mode: followMode });
+  // ⚠ 060c 追修正(2026-08-09): スクロールするのは `<ol>` ではなく**外側の `<div>`**（`.scroller`）。
+  // 理由は `CommentViewerApp.module.css` の `.scroller` のコメント（ユーザー CSS が `<ol>` の
+  // `overflow` を潰せてしまい、スクロール機能ごと死んでいた）。
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const follow = useFollowScroll(scrollRef, comments, { mode: followMode });
 
   // 046a: 右クリックメニューの開閉。null＝閉。開いている間だけ <CommentContextMenu> を描く（閉じている間は
   // DOM に出さない＝表示専用時の「button ロールが 0」という既存仕様を壊さない）。対象コメントは実体で保持するので、
@@ -349,8 +352,15 @@ export function CommentList({
   //      （⚠ **chat と課金カードの両方**——`.icon` を共有しているので chat だけ見ても回帰が出ない）。
   //      ⚠ 課金カードは触らない（`cardBody` はヘッダ帯＋ボディの 2 段構造に必要）。
   //   ③ 器に安定クラスが無かったので `sd-comment-header` / `sd-comment-row` / `sd-comment-list` を足した
-  //      （YouTube の `div#author-info` / `yt-live-chat-item-list-renderer #items` の対応先）。
+  //      （YouTube の `yt-live-chat-item-list-renderer #items` の対応先）。
   //      ⚠⚠ **`sd-comment-list` は `variant === "overlay"` のときだけ**（`<ol>` は本体コメビュと共有）。
+  //      ⚠⚠ 060c 追修正(2026-08-09): **`sd-comment-header` を狙う変換表エントリ（`div#author-info`）は
+  //        削除した**——YouTube の `#author-info` は課金カードのヘッダで、テキストコメントには無いため
+  //        （実機で「空の 16px の帯」が全コメントに出た。詳細は `cssCompat.ts` の当該コメント）。
+  //        安定クラス `sd-comment-header` 自体は契約として残す（ユーザーは直接書ける）。
+  //      ⚠⚠ 060c 追修正: **`sd-comment-list` はスクロール容器ではない**（外側の `.scroller` が持つ）。
+  //        1 層だった頃はテーマの `#items{overflow:hidden!important}` がここに当たって
+  //        **スクロール機能ごと死んでいた**（`CommentViewerApp.module.css` の `.scroller` のコメントが正）。
   //      ⚠ 060f 追修正(2026-08-08): **`sd-comment-row` の意味は「吹き出しの行」に変わった**
   //        （アイコンが `<li>` 直下へ移ったので、この中には吹き出ししか無い）。契約としては残す。
   //
@@ -540,21 +550,36 @@ export function CommentList({
   // 破ってしまう。⚠ overlay 側は固定コメント窓（`PinnedOverlayApp`）とも共有なのでそちらにも出るが、
   // あの窓には注入経路が無いので**付くだけの無害な文字列**（`sd-overlay` が付かないことで窓を区別する）。
   const list = (
-    <ol
-      className={
-        variant === "overlay" ? `${styles.list} sd-comment-list` : styles.list
-      }
-      ref={olRef}
+    // ⚠⚠ 060c 追修正(2026-08-09): **スクロールするのはこの `<div>`、`sd-comment-list` が付くのは中の `<ol>`。**
+    // 1 層だった頃はテーマの `#items{overflow:hidden!important}` が `<ol>` に当たって
+    // **スクロール機能ごと死んでいた**（理由と YouTube 側の 2 層構造は `.scroller` の CSS コメントが正）。
+    // ⚠ `<div>` は `<ol>` の**外側**に置くこと——内側に入れると `<ol>` の子が `<li>` でなくなり、
+    //   リストの意味論（role="list" / "listitem"）が壊れる。
+    // ⚠ `data-comment-scroll` は**意匠 CSS からこの要素を名指しするための目印**で、
+    //   `sd-*` を付けていないのは**ユーザー CSS 契約ではない**ことを名前で示すため
+    //   （安定クラスにすると「スクロールを止められる」穴が別の名前で開き直る）。
+    //   ⚠ `variant === "overlay"` のときだけ付ける＝ 060a の不変条件
+    //   「`variant="default"` には安定クラスも data 属性も 1 つも付かない」を守る。
+    <div
+      className={styles.scroller}
+      data-comment-scroll={variant === "overlay" ? "" : undefined}
+      ref={scrollRef}
       onScroll={follow.onScroll}
     >
-      {comments.length === 0 ? (
-        <li className={styles.empty}>コメントはまだありません</li>
-      ) : (
-        comments.map(
-          variant === "overlay" ? renderOverlayItem : renderDefaultItem,
-        )
-      )}
-    </ol>
+      <ol
+        className={
+          variant === "overlay" ? `${styles.list} sd-comment-list` : styles.list
+        }
+      >
+        {comments.length === 0 ? (
+          <li className={styles.empty}>コメントはまだありません</li>
+        ) : (
+          comments.map(
+            variant === "overlay" ? renderOverlayItem : renderDefaultItem,
+          )
+        )}
+      </ol>
+    </div>
   );
 
   return (

@@ -119,8 +119,9 @@ describe("DEFAULT_DECORATION_RESET", () => {
    * 切り始め、**以下のアサーション全部が「別のものを検査して緑」になる**（silent failure）。
    * ルール数も固定する——ブロックを 1 つ消す変異が、どのテストにも引っかからずに通るのを防ぐため。
    */
-  it("⚠⚠ パーサの前提: ルールは 4 つ・宣言値に `}` を含まない", () => {
-    expect(RESET_RULES).toHaveLength(4);
+  it("⚠⚠ パーサの前提: ルールは 5 つ・宣言値に `}` を含まない", () => {
+    // ⚠ 060c 追修正(2026-08-09): `:where(.sd-comment-chat){padding:0}` を足して 4 → 5 になった。
+    expect(RESET_RULES).toHaveLength(5);
     for (const rule of RESET_RULES) {
       expect(rule.body).not.toContain("}");
       expect(rule.body).not.toContain("{");
@@ -223,12 +224,36 @@ describe("DEFAULT_DECORATION_RESET", () => {
   });
 
   /**
-   * ⚠ 内側の余白を残すのは 2026-08-08 の本人決定。純正チャット向けテーマは
-   * **YouTube 側の余白に依存して書かれている**ので、落とすと背景しか指定していないテーマで
-   * 文字が箱の端に張り付く。
+   * ⚠⚠ **padding の扱いは当て先で正反対**（060c 追修正 2026-08-09 で片側だけ反転した）。
+   *
+   * - **吹き出し（`.sd-comment-body`＝本文の箱）の padding は落とさない**（2026-08-08 本人決定）。
+   *   純正チャット向けテーマは **YouTube 側の余白に依存して書かれている**ので、落とすと
+   *   背景しか指定していないテーマで**文字が箱の端に張り付く**。
+   * - **`<li>`（`.sd-comment-chat`＝コメント 1 件の外枠）の padding は落とす**（060c 追修正）。
+   *   `.item{padding:6px 4px}` は 035b で足した **StreamDock 固有**の余白で、テーマはその存在を
+   *   知らずに自分でも `padding` を書くため**両方が積み上がってコメント間が広がりすぎる**（実機で確認）。
+   *
+   * ⚠ 2 つを取り違えると、どちらかの実機不具合がそのまま戻る。
    */
-  it("⚠ padding は落とさない（背景だけ指定するテーマで文字が端に張り付かない）", () => {
-    expect(ALL_PROPS).not.toContain("padding");
+  it("⚠⚠ padding は <li> からは落とし、吹き出しからは落とさない", () => {
+    const li = RESET_RULES.filter((r) =>
+      r.selectors.every((s) => s === ":where(.sd-comment-chat)"),
+    );
+    const bubble = RESET_RULES.filter((r) =>
+      r.selectors.some((s) => s.includes("sd-comment-body")),
+    );
+    expect(li.length).toBeGreaterThan(0);
+    expect(bubble.length).toBeGreaterThan(0);
+
+    // <li> 側：padding を 0 へ返すルールが在ること。
+    const liPadding = li.find((r) => propsOf(r.body).includes("padding"));
+    expect(liPadding).toBeDefined();
+    expect(liPadding?.body).toContain("0");
+
+    // 吹き出し側：padding を 1 つも宣言していないこと（本文が端に張り付かない）。
+    for (const rule of bubble) {
+      expect(propsOf(rule.body)).not.toContain("padding");
+    }
   });
 
   /**
@@ -263,8 +288,18 @@ describe("DEFAULT_DECORATION_RESET", () => {
     expect(decorating.length).toBeGreaterThan(0);
     for (const rule of decorating) {
       for (const sel of rule.selectors) {
-        expect(sel).toContain("sd-comment-in-chat");
+        // ⚠ 060c 追修正(2026-08-09): 判定を `sd-comment-in-chat` の一点張りから
+        //   「**chat 専用クラスのどちらか**」へ広げた。守っている不変条件（＝課金カードに当たらない）は
+        //   同じで、`.sd-comment-chat` は chat の `<li>` にしか付かない（`CommentList.tsx` の契約・
+        //   `CommentList.selectorContract.test.tsx` が実 DOM で固定）。
+        //   広げた理由＝ `<li>` の padding を返すルール（`:where(.sd-comment-chat){padding:0}`）が
+        //   装飾プロパティを宣言する 2 本目になり、当て先が**器**なので `in-chat` を含まないため。
+        //   ⚠ **`sd-comment` / `sd-comment-body` 単独へ緩めないこと**（それは課金カードにも当たりうる）。
+        expect(
+          sel.includes("sd-comment-chat") || sel.includes("sd-comment-in-chat"),
+        ).toBe(true);
         expect(sel).not.toContain("sd-comment-in-tip");
+        expect(sel).not.toContain("sd-comment-tip");
       }
     }
   });

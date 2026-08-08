@@ -20,6 +20,7 @@ import {
   type CommentStreamHandle,
   type DeviceCodePrompt,
   type ObsOverlayKind,
+  type ThemeImportFetchResult,
 } from "../../features/comment-viewer/commentStream";
 import {
   loadChannel,
@@ -1359,6 +1360,30 @@ export function CommentViewerApp() {
     });
   };
 
+  /**
+   * 060c: 外部 `@import` の取得を sidecar へ依頼する（**1 本だけ**・スナップショット）。
+   *
+   * ⚠ WS ハンドル（`streamRef`）を持っているのはこのコンポーネントだけなので、ここから
+   * `SettingsView` → `OverlayThemeCard` へ**この 1 本だけ**を渡す。カード側が WS を張り直すと
+   * 接続が二重になるため。
+   * ⚠ **未接続なら取得を試みず即座に失敗として返す**（`requestThemeImport` 側も同じ判定をするが、
+   * ハンドルそのものが無い状態はここでしか分からない）。取り込み自体は成功のまま＝ fail-closed。
+   * ⚠ URL も CSS 本文もここではログに出さない（§9）。
+   */
+  const requestThemeImport = useCallback(
+    (url: string, maxBytes: number) => {
+      const stream = streamRef.current;
+      if (!stream) {
+        return Promise.resolve<ThemeImportFetchResult>({
+          ok: false,
+          reason: "offline",
+        });
+      }
+      return stream.requestThemeImport(url, maxBytes);
+    },
+    [],
+  );
+
   // 044a: オーバーレイ表示 OFF 連動。OBS 側ソースを**削除せず非表示**にする（ON で requestObsAutoAdd が再表示）。
   // port は既知の検出値（無ければ既定 4455）を使う。sidecar 側は best-effort（該当なし/未起動は idle）。
   const requestObsHide = (overlay: ObsOverlayKind) => {
@@ -1557,6 +1582,7 @@ export function CommentViewerApp() {
           onOverlayFontChange={setOverlayFont}
           overlayShowSource={overlayShowSource}
           onOverlayShowSourceChange={setOverlayShowSource}
+          onRequestThemeImport={requestThemeImport}
           obsConfig={obsConfig}
           obsAutoAdd={obsAutoAdd}
           onObsAutoAddToggle={handleObsAutoAddToggle}

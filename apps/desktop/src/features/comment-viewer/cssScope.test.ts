@@ -1,7 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
+  OVERLAY_ROOT_SELECTOR,
   PREVIEW_SCOPE_CLASS,
   PREVIEW_SCOPE_SELECTOR,
+  rewriteRootLike,
   scopeSelectors,
   unclosedBlockDepth,
 } from "./cssScope";
@@ -568,5 +570,96 @@ describe("⚠⚠ unclosedBlockDepth の既知の見落とし（security-review Q
   it("宣言の中で壊れた ( のケースは従来どおり検出できる（こちらは塞がっている）", () => {
     // `.b{background:url(https://e/x.png;}` ＋以降 → Rust の保存結果は `.a{color:red}\n.b{`（実測）。
     expect(unclosedBlockDepth(".a{color:red}\n.b{")).toBe(1);
+  });
+});
+
+/**
+ * 060c: 配信窓へ注入する前の root 相当の読み替え（`rewriteRootLike`）。
+ *
+ * ⚠⚠ **これが無いと、プレビューと配信窓で `body` の扱いが非対称になる**（060f の実機確認で判明）。
+ * プレビューは `scopeSelectors` が `body` → `.sd-preview` に読み替えるが、配信窓はスコープ化しないため
+ * **本物の `<body>` に効いて全要素へ継承する**。外部 CSS には `body{…}` がほぼ必ず入る。
+ */
+describe("060c: rewriteRootLike（配信窓の root 相当の読み替え）", () => {
+  it("body / html / :root を窓ルートへ読み替える", () => {
+    expect(rewriteRootLike("body{margin:6px auto}", OVERLAY_ROOT_SELECTOR)).toBe(
+      ".sd-overlay{margin:6px auto}",
+    );
+    expect(rewriteRootLike("html{color:red}", OVERLAY_ROOT_SELECTOR)).toBe(
+      ".sd-overlay{color:red}",
+    );
+    // ⚠ 実サンプルが `:root { --txtcolor }` を含む（060a の実サンプル検証）。
+    expect(rewriteRootLike(":root{--txtcolor:#fff}", OVERLAY_ROOT_SELECTOR)).toBe(
+      ".sd-overlay{--txtcolor:#fff}",
+    );
+  });
+
+  it("複合セレクタの残りを保ち、続けて並ぶ root 相当は取り除く", () => {
+    expect(rewriteRootLike("html.dark .foo{a:b}", OVERLAY_ROOT_SELECTOR)).toBe(
+      ".sd-overlay.dark .foo{a:b}",
+    );
+    expect(rewriteRootLike("html > body .foo{a:b}", OVERLAY_ROOT_SELECTOR)).toBe(
+      ".sd-overlay .foo{a:b}",
+    );
+  });
+
+  it("⚠ scopeSelectors と違って**前置しない**（配信窓には閉じ込める相手がいない）", () => {
+    // ここが 2 本の決定的な違い。前置すると詳細度が無意味に上がる。
+    expect(rewriteRootLike(".sd-comment{color:red}", OVERLAY_ROOT_SELECTOR)).toBe(
+      ".sd-comment{color:red}",
+    );
+    expect(scopeSelectors(".sd-comment{color:red}", PREVIEW_SCOPE_SELECTOR)).toBe(
+      ".sd-preview .sd-comment{color:red}",
+    );
+  });
+
+  it("⚠ 冪等である（scopeSelectors は冪等でないので性質が違う）", () => {
+    const once = rewriteRootLike("body{margin:0}", OVERLAY_ROOT_SELECTOR);
+    expect(rewriteRootLike(once, OVERLAY_ROOT_SELECTOR)).toBe(once);
+    // `.sd-overlay` 自身も root 相当なので不動点になる。
+    expect(
+      rewriteRootLike(".sd-overlay{--sd-comment-bg:#000}", OVERLAY_ROOT_SELECTOR),
+    ).toBe(".sd-overlay{--sd-comment-bg:#000}");
+  });
+
+  it("カンマ区切りの各パートを個別に扱う", () => {
+    expect(
+      rewriteRootLike("body,.sd-comment{color:red}", OVERLAY_ROOT_SELECTOR),
+    ).toBe(".sd-overlay,.sd-comment{color:red}");
+  });
+
+  it("@media の中の規則も読み替える（プレリュードは触らない）", () => {
+    expect(
+      rewriteRootLike("@media (min-width:1px){body{margin:0}}", OVERLAY_ROOT_SELECTOR),
+    ).toBe("@media (min-width:1px){.sd-overlay{margin:0}}");
+  });
+
+  it("⚠ `bodyfoo` のような別の識別子には当たらない（前方境界）", () => {
+    expect(rewriteRootLike("bodyfoo{color:red}", OVERLAY_ROOT_SELECTOR)).toBe(
+      "bodyfoo{color:red}",
+    );
+    expect(rewriteRootLike(".bodyish{color:red}", OVERLAY_ROOT_SELECTOR)).toBe(
+      ".bodyish{color:red}",
+    );
+  });
+
+  it("⚠ `@font-face` / `@keyframes` の中身は壊さない", () => {
+    const css = "@font-face{font-family:'X'}@keyframes k{from{opacity:0}}";
+    expect(rewriteRootLike(css, OVERLAY_ROOT_SELECTOR)).toBe(css);
+  });
+
+  it("プレビューと配信窓で body の当たり先が「その文脈のルート」で揃う", () => {
+    // ⚠ これが 060c で塞いだ非対称そのもの。プレビュー＝ラッパ、配信窓＝窓ルート。
+    expect(scopeSelectors("body{letter-spacing:.1em}", PREVIEW_SCOPE_SELECTOR)).toBe(
+      `${PREVIEW_SCOPE_SELECTOR}{letter-spacing:.1em}`,
+    );
+    expect(rewriteRootLike("body{letter-spacing:.1em}", OVERLAY_ROOT_SELECTOR)).toBe(
+      `${OVERLAY_ROOT_SELECTOR}{letter-spacing:.1em}`,
+    );
+  });
+
+  it("OVERLAY_ROOT_SELECTOR は PREVIEW_SCOPE_CLASS と別物である（取り違え防止）", () => {
+    expect(OVERLAY_ROOT_SELECTOR).toBe(".sd-overlay");
+    expect(PREVIEW_SCOPE_CLASS).toBe("sd-preview");
   });
 });

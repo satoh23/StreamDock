@@ -393,6 +393,23 @@ fn get_comment_stream_port(app: AppHandle) -> Option<u16> {
     comment_sidecar::port(&app)
 }
 
+/// 060c: テーマ取り込み（外部 `@import` のスナップショット）の制御フレームに載せる**チケット**を返す
+/// 読み取り専用コマンド（§3・単一目的・引数ゼロ）。未起動なら `None`。
+///
+/// ⚠⚠ **これは「sidecar の loopback WS が未認証である」ことへの限定的な対処**である。
+/// `theme-import.fetch` は**インターネットへの GET を起こす初めての制御フレーム**で、
+/// 従来フレームの受容根拠（「秘密が流れない・loopback に留まる」）が及ばない。
+/// チケットを要求することで、`ws://127.0.0.1:<port>` へ繋いだだけの外部プロセス／ブラウザのページが
+/// **同意ダイアログを経ずに外部 GET を起こす**経路を塞ぐ（詳細は `comment_sidecar` の
+/// `THEME_TICKET_PREFIX` の注記と `docs/security.md` §1 の 060c 例外節）。
+///
+/// ⚠ アプリ定義コマンドは ACL 対象外＝全 4 窓から呼べるが、**webview の外からは呼べない**——
+/// それがここで効いている性質そのものである。⚠ 値はログにも画面にも出さない（§9）。
+#[tauri::command]
+fn get_theme_import_ticket(app: AppHandle) -> Option<String> {
+    comment_sidecar::theme_import_ticket(&app)
+}
+
 /// 032c-c: コメントビューアの VOICEVOX 読み上げ用に、**ツール管理に登録済みの VOICEVOX** を
 /// 管理付き spawn（resolve→spawn→register）で起動する薄いコマンド。`rakuraku_launch_component` と
 /// 同経路で、frontend は raw なパス/ポートを渡さず、登録済みツールを exe 名一致で解決する
@@ -571,6 +588,7 @@ pub fn run() {
             close_pinned_overlay_window,
             is_pinned_overlay_open,
             get_comment_stream_port,
+            get_theme_import_ticket,
             launch_voicevox_engine,
             obs_config::detect_obs_websocket_config,
             set_obs_websocket_password,
@@ -618,6 +636,7 @@ pub fn run() {
             audio::commands::play_notification_sound,
             overlay_theme::commands::import_overlay_theme,
             overlay_theme::commands::import_overlay_theme_text,
+            overlay_theme::commands::import_overlay_theme_snapshot,
             overlay_theme::commands::list_overlay_themes,
             overlay_theme::commands::get_overlay_theme_css,
             overlay_theme::commands::rename_overlay_theme,

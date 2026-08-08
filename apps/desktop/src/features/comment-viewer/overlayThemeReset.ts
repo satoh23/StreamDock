@@ -160,6 +160,21 @@
  * ⚠ **既知の限界**: `.item` は `display: grid` なので、テーマが `position:absolute` を**書かずに**
  * `::before` を作ると**グリッド項目になって列を 1 つ占める**（絶対配置なら grid item にならない）。
  *
+ * ### 1b. `:where(.sd-comment-chat){padding:0}`（StreamDock 固有の余白を返す）
+ *
+ * ⚠⚠ 060c 追修正(2026-08-09・実機不具合)。`.item` の `padding: 6px 4px` は **035b で「コメントが詰まって
+ * 見える」という本人フィードバックに応えて足した StreamDock 固有の余白**で、純正チャット向けに書かれた
+ * テーマはその存在を知らない。テーマが自前で `padding: 22px 24px` を書くと**両方が積み上がって**
+ * コメント間が広がりすぎる（実機で確認）。テーマ適用中は既定の装飾を引っ込めるという 3・4 と同じ方針で、
+ * ここも返す。
+ *
+ * ⚠ **3 が `padding` を書かない理由（本文が箱の端に張り付く）はここには当てはまらない。**
+ * あちらは `.sd-comment-body` ＝**本文の箱**だが、こちらは `<li>` ＝**コメント 1 件の外枠**で、
+ * 本文の内側余白は 3 の対象（`.bubble` の padding）が別に持っている。
+ * ⚠ **`.list` の `gap: 6px` と `.item` の `row-gap: 2px` は返さない**——前者は本体コメビュと共有の
+ * 宣言（035b の注記どおり触らない）、後者は名前行と吹き出しの間隔でテーマが自分で潰せる。
+ * ⚠ **リセットなので `!important` は付けない**（テーマが `.sd-comment-chat{padding:…}` を書けば勝つ）。
+ *
  * ### 2. `:where(.sd-comment-chat){--sd-icon-gap:8px}`
  *
  * 既定の 28px は「しっぽの突き出し 20px ＋ 素のすき間 8px」なので、しっぽを描かなくなるぶんを返す。
@@ -202,6 +217,7 @@
  */
 export const DEFAULT_DECORATION_RESET =
   ":where(.sd-comment-chat){position:relative}\n" +
+  ":where(.sd-comment-chat){padding:0}\n" +
   ":where(.sd-comment-chat){--sd-icon-gap:8px}\n" +
   ":where(.sd-comment-body.sd-comment-in-chat){background:none;border:0;border-radius:0;filter:none}\n" +
   ":where(.sd-comment-body.sd-comment-in-chat)::before,\n:where(.sd-comment-body.sd-comment-in-chat)::after{all:unset}\n";

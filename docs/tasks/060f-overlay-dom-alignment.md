@@ -232,7 +232,7 @@ YouTube 側に `.sd-comment-body` に相当する要素が**存在しない**。
 | `yt-live-chat-app` | `.sd-overlay` | 窓ルート（全体の背景・フォント） |
 | `yt-live-chat-renderer` | `.sd-overlay` | 同上 |
 | `yt-live-chat-item-list-renderer #items` | `.sd-comment-list` | 一覧の器 |
-| `div#author-info` | `.sd-comment-header` | 名前行。⚠ chat / 課金の両方に現れる役割なので**限定しない** |
+| ~~`div#author-info`~~ | ~~`.sd-comment-header`~~ | ⚠⚠ **060c 追修正(2026-08-09)で削除**。「chat / 課金の両方に現れる役割」という読みが**誤り**だった——YouTube の `#author-info` は**課金カード（paid renderer）のヘッダ**で、テキストコメントには存在しない。実テーマは `#author-info{padding:8px 16px!important}` を書きつつ課金カードごと `display:none` にするので **YouTube では 1 度も効かない**が、StreamDock では chat の名前行に当たり、同じテーマが名前を消すため**空の 16px の帯**が全コメントに挿さっていた（実機で確認）。⚠ 安定クラス `.sd-comment-header` 自体は契約として残る。詳細は `cssCompat.ts` の当該コメント |
 | `.yt-live-chat-membership-item-renderer` | `.sd-comment-tip` | メンバーシップも StreamDock では課金カード |
 | `yt-live-chat-paid-message-renderer #message` | `.sd-comment-tip .sd-comment-text` | ⚠ 対称性のため新設（これが無いと課金本文を狙う CSS が unmatched になる） |
 

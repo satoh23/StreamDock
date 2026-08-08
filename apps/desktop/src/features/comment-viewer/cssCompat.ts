@@ -241,11 +241,23 @@ export const SELECTOR_TABLE: readonly SelectorRule[] = [
     to: ".sd-comment-list",
     why: "一覧の器（`<ol>`）。⚠ `sd-comment-list` は overlay バリアントのときだけ DOM に出る（本体コメビュと `<ol>` を共有しているため）。",
   },
-  {
-    from: "div#author-info",
-    to: ".sd-comment-header",
-    why: "名前行。⚠ 役割としては chat の `.header` と課金の `.cardHeader` の両方だが、060f 追修正④で課金カードから安定クラスが消えたので**実際に当たるのは chat の名前行だけ**。`yt-img-shadow` と同じ理由で目印は付けない。",
-  },
+  // ⚠⚠ **`div#author-info` → `.sd-comment-header` は 060c 追修正(2026-08-09)で削除した。**
+  //
+  // 実機で外部テーマ（吹き出し系）を取り込んだら**全コメントの上に空の 16px の帯**が出た。原因:
+  //   - YouTube の `div#author-info` は**課金カード（paid renderer）のヘッダ**で、
+  //     **テキストコメントには存在しない**。
+  //   - 実テーマは `#author-info{padding:8px 16px!important}` を書きつつ
+  //     `yt-live-chat-paid-message-renderer{display:none}` で課金カードごと消す＝
+  //     **YouTube では 1 度も効かない宣言**だった。
+  //   - StreamDock ではそれが **chat の名前行**に当たり、しかも同じテーマが
+  //     `.yt-live-chat-author-chip{display:none}`（→ `.sd-comment-name`）で名前を消すので、
+  //     **中身が空なのに padding だけ残る帯**が 1 コメントごとに挿さった。
+  //
+  // ＝ 「chat と課金の両方に現れる役割」という 060f の読みが**そもそも誤り**だった（YouTube の
+  // テキストコメントに `#author-info` は無い）。⚠ **戻さないこと。**
+  // ⚠ `.sd-comment-header` は安定クラス契約としては**残す**（ユーザーは StreamDock 語彙で
+  // `.sd-comment-header{…}` と直接書ける）。消したのは「純正語彙からの対応」だけである。
+  // ⚠ 代わりに `#author-info` を [`FOREIGN_ID_NAMES`] へ足して**「効きません」と警告が出る**ようにした。
 
   // --- Twitch 純正チャット --------------------------------------------------
   {
@@ -347,6 +359,14 @@ const GROUP_AT_RULES: ReadonlySet<string> = new Set([
  * ＝ **060f では足さない判断**。`items` はほぼ総称なので、ここへ足すと上の理屈
  * （将来 StreamDock がその id を持つと誤検知に転ぶ）に正面から反する。
  * 上の再修正トリガーと**同じタイミング（060c）でまとめて判断すること**。
+ *
+ * ✅ **060c 追修正(2026-08-09)＝上の再修正トリガーが実サンプルで発火したので `author-info` を足した。**
+ * `div#author-info` の表エントリを削除した（理由は `SELECTOR_TABLE` の当該コメント）ため、
+ * このままだと `#author-info` を書いたテーマが**変換も警告もされない**バケツに落ちる。
+ * ⚠ `author-info` は総称 id ではない（`content` / `card` / `header` とは違う）ので、上の
+ * 「将来 StreamDock がその id を持つと誤検知に転ぶ」懸念には当たらない。
+ * ⚠ **`items` は引き続き足さない**（総称すぎる）。`yt-live-chat-item-list-renderer #items` は
+ * 表に残っているので、祖先付きで書く限り変換される。
  * ⚠ 追修正④で課金系エントリを削除したので、`#card.yt-live-chat-membership-item-renderer` は
  * **完全に未変換**になった（＝ `.yt-` 接頭辞のため `unmatched` にも出ない・従来どおりの取りこぼし）。
  * 課金カードはそもそもユーザー CSS の的ではないので、これは**塞ぐ必要が無い**。
@@ -355,6 +375,8 @@ const FOREIGN_ID_NAMES = [
   "message",
   "author-name",
   "author-photo",
+  // 060c 追修正(2026-08-09): 表から `div#author-info` を削除したぶんをここで警告に回す（上の注記）。
+  "author-info",
   "img",
   "chat-badges",
   "timestamp",

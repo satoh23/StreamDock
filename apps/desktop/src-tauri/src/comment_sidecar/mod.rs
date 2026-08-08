@@ -52,6 +52,21 @@ const CONSENT_ALLOWED_HOST: &str = "accounts.google.com";
 const OBS_PW_PREFIX: &str = "COMMENT_SIDECAR_OBS_PW=";
 /// 044a: OBS パスワード破棄を sidecar に伝える stdin 行の prefix（in-memory を消す）。
 const OBS_PW_CLEAR_PREFIX: &str = "COMMENT_SIDECAR_OBS_PW_CLEAR=";
+/// 060c: **テーマ取り込みチケット**を Rust→sidecar の **stdin** へ渡す行の prefix（親子 private pipe）。
+///
+/// ⚠⚠ **なぜチケットが要るのか（060c で脅威モデルが変わった）**: sidecar の loopback WS は**未認証**で、
+/// `127.0.0.1` に到達できる同一 PC の任意プロセス（およびユーザーがブラウザで開いた悪意あるページ）が
+/// 制御フレームを送れる（`vendor/gateway/.../websocket-comment.output-port.ts` の注記が明示）。
+/// それが受容されてきた根拠は「**秘密が流れない・egress を起こせない**」——`obs-*` は loopback 限定だった。
+/// 060c の `theme-import.fetch` は**インターネットへの GET を起こす初めての制御フレーム**なので、
+/// この根拠が及ばない。チケット無しだと、悪意あるページが `ws://127.0.0.1:<port>` へ繋いで
+/// **同意ダイアログを一切経ずに** `https://tracker.example/<id>.css` を叩かせられる（ビーコン・IP 露出）。
+///
+/// チケットは **StreamDock の窓だけが取れる**（`get_theme_import_ticket` は Tauri コマンドなので、
+/// webview の外からは呼べない）。sidecar は一致しないフレームを**黙って捨てる**（返信もしない）。
+/// ⚠ 値はプロセス起動ごとの使い捨てで、**keychain にも DB にも残さず・ログにも出さない**（§9）。
+/// ⚠ 同一 PC の任意プロセスがアプリのメモリを読める前提なら破れるが、その前提では既に何でもできる。
+const THEME_TICKET_PREFIX: &str = "COMMENT_SIDECAR_THEME_TICKET=";
 
 /// sidecar 起動インスタンスごとに払い出す世代 ID のカウンタ。
 /// 旧 sidecar の stdout 読取スレッドが遅れて `Terminated` を受けても、既に差し替わった
@@ -64,6 +79,11 @@ pub struct CommentSidecar {
     port: Option<u16>,
     /// この起動インスタンスの世代 ID（stale な `Terminated`/ポート書込を弾く識別子）。
     generation: u64,
+    /// 060c: この起動インスタンスのテーマ取り込みチケット（[`THEME_TICKET_PREFIX`] の注記が正）。
+    ///
+    /// ⚠ **ポートと違って sidecar から受け取るのではなく Rust が生成して渡す**（sidecar 側が生成して
+    /// stdout で返す形にすると、stdout を読める者＝実質誰でも手に入ってしまう）。
+    theme_import_ticket: String,
 }
 
 /// app state（singleton）。`None` = 未起動。
@@ -104,11 +124,19 @@ pub fn ensure_started(app: &AppHandle) -> AppResult<()> {
         let _ = child.write(line.as_bytes());
     }
 
+    // 060c: テーマ取り込みチケットを **Rust 側で採番**し、stdin private pipe で sidecar へ渡す。
+    // uuid v4 は 122bit の乱数（`overlay_theme` のファイル名採番と同じ crate・新規依存ゼロ）。
+    // ⚠ **ハイフン無しの hex 文字列**にしておく（sidecar 側は生の文字列比較なので形は問わないが、
+    // stdin の行に空白が入らない形に揃える）。**ログにも keychain にも出さない**（§9）。
+    let theme_import_ticket = uuid::Uuid::new_v4().simple().to_string();
+    let _ = child.write(format!("{THEME_TICKET_PREFIX}{theme_import_ticket}\n").as_bytes());
+
     let generation = SIDECAR_GENERATION.fetch_add(1, Ordering::Relaxed);
     *guard = Some(CommentSidecar {
         child,
         port: None,
         generation,
+        theme_import_ticket,
     });
     // reader スレッド起動前にロックを解放する（スレッド側は独立にロックを取り直す）。
     drop(guard);
@@ -184,6 +212,17 @@ pub fn port(app: &AppHandle) -> Option<u16> {
     let state = app.state::<CommentSidecarState>();
     let guard = state.lock().expect("comment sidecar mutex poisoned");
     guard.as_ref().and_then(|s| s.port)
+}
+
+/// 060c: 稼働中 sidecar のテーマ取り込みチケットを返す（未起動なら `None`）。
+///
+/// viewer はこれを `theme-import.fetch` フレームに載せる。⚠ **返すのは「いま動いている sidecar のもの」**
+/// なので、sidecar が再 spawn されると値が変わる——viewer は取得のたびに取り直すこと
+/// （握ったまま使い回すと再起動後に黙って無視される）。**ログにも画面にも出さない**（§9）。
+pub fn theme_import_ticket(app: &AppHandle) -> Option<String> {
+    let state = app.state::<CommentSidecarState>();
+    let guard = state.lock().expect("comment sidecar mutex poisoned");
+    guard.as_ref().map(|s| s.theme_import_ticket.clone())
 }
 
 /// sidecar を停止する（idempotent）。窓クローズ・アプリ終了フックから呼ぶ。

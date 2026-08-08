@@ -87,6 +87,8 @@ const SETTINGS_TSX = "src/screens/comment-viewer/SettingsView.tsx";
 // 060a: オーバーレイの「セレクタ契約」（安定クラス・CSS 変数）を持つ 4 本。
 const COMMENT_LIST_TSX = "src/screens/comment-viewer/CommentList.tsx";
 const OVERLAY_APP_TSX = "src/screens/comment-viewer/OverlayApp.tsx";
+// 060c 追修正: 配信窓そのものの CSS（document のスクロール抑止・スクロールバー抑止＝ (10-p)）。
+const OVERLAY_APP_CSS = "src/screens/comment-viewer/OverlayApp.module.css";
 const PINNED_OVERLAY_TSX = "src/screens/comment-viewer/PinnedOverlayApp.tsx";
 const CSS_COMPAT_TS = "src/features/comment-viewer/cssCompat.ts";
 // 060d: ユーザー CSS を実際に注入する側の 3 本（(10-h) / (10-i)）。
@@ -1174,6 +1176,13 @@ for (const rel of [VIEWER_CSS, OVERLAY_CSS]) {
   //   `<style>.innerHTML` に RAWTEXT のフラグメント解析を実装しておらず `textContent` と同じ結果になる）
   //   ので、この不変条件を実際に守っているのは**この検査だけ**である。
   //
+  //   ⚠⚠ **これは理屈ではなく実測で裏付けられている**（060c・2026-08-09。詳細は docs/progress.md の
+  //   060c 節「副産物 —— `</` + `style>` 破断による実 egress を偶然観測した」）。S-5 の計測ページ自身が
+  //   2 回 `<style>` を壊し（②は **CSS コメントの中**の生の終了タグ）、壊れた瞬間に残りが HTML として
+  //   解析されて**本物のインライン SVG 要素**になり、`<image href="http://…">` が
+  //   **WebKit / Blink の両方で実際に外部 GET を出した**。＝ この検査を緩めると egress が起きる。
+  //   **消さないこと。**
+  //
   //   ⚠⚠ **向きを反転させた**（security-review S-5・2026-08-05）。旧実装は「注入する 3 ファイルに
   //   禁止語が無いこと」だけを見ており、**4 つ目の注入先が別ファイルに増えたら何も落ちなかった**。
   //   ＝「ここが落ちたら経路を増やす前にレビュー区分を確認すること」という当初の狙いを満たしていない。
@@ -1389,7 +1398,9 @@ for (const rel of [VIEWER_CSS, OVERLAY_CSS]) {
     [".card .icon", "margin-right"],
     [".header", "display,align-items,gap,grid-column"],
     [".row", "grid-column,grid-row,display,align-items"],
-    [".card", "overflow,border-radius,filter,gap,padding,grid-template-columns"],
+    // ⚠ 060c 追修正⑤(2026-08-09): `filter` → `box-shadow` へ**意図的に**差し替えた（WebKit の描画バグの真因）。
+    //   実測 20/20 → 0/12。理由と実測値は `OverlayComment.module.css` の `.card` のコメントが正。
+    [".card", "overflow,border-radius,box-shadow,gap,padding,grid-template-columns"],
   ];
   for (const [sel, expectedCsv] of LAYOUT_DECLS) {
     const bodies = ruleBodies(overlayCss, sel);
@@ -1474,6 +1485,207 @@ for (const rel of [VIEWER_CSS, OVERLAY_CSS]) {
         `⚠⚠ 本検査は **\`translateZ(0)\` という綴りそのもの**を固定しています——` +
         `等価に見える \`translate3d(0,0,0)\` でも落ちます（意図的）。効くことが実測でしか分かっていない` +
         `回避策なので、**綴りを変えるなら実機の WKWebView で測り直してから**本ガードも更新してください。`,
+    );
+  }
+
+}
+
+// ---------------------------------------------------------------------------
+// (10-p) **オーバーレイ窓の「スクロールする器」の不変条件**（060c 追修正・2026-08-09 実機不具合）。
+//   ⚠ ここで守る 3 つは**ランタイムのテストでは殺せない**（jsdom はカスケードもレイアウトも評価しないので、
+//   document がスクロールしても、テーマがコメント一覧の `overflow` を潰しても緑のまま通る）。
+//   実際に 2 件とも実機で初めて見つかっている。
+{
+  const overlayAppCss = read(OVERLAY_APP_CSS);
+  const viewerCss = read(VIEWER_CSS);
+  const listTsx = read(COMMENT_LIST_TSX);
+
+  // ① **配信窓の document をスクロールさせない。**
+  //   060c の `rewriteRootLike` はユーザー CSS の `body`/`html`/`:root` を `.sd-overlay` へ読み替えるので、
+  //   純正チャット向けテーマの定番 `body{margin:6px auto; overflow:hidden}` が
+  //   「`height:100%` の要素に margin が付く（＝はみ出す）＋ ビューポートへの `overflow:hidden` の
+  //   伝播が消える」に化け、**OBS のキャプチャに縦バーが写り込む**（実機で確認）。
+  //   ⚠ ユーザーはこの 3 セレクタに到達できない（`html`/`body` と書いても `.sd-overlay` に化ける）ので、
+  //   ここが**構造的な担保**になっている。
+  if (
+    !/html\[data-overlay="1"\][\s\S]{0,240}?\{[^}]*overflow\s*:\s*hidden/.test(
+      overlayAppCss,
+    )
+  ) {
+    fail(
+      `${OVERLAY_APP_CSS}: \`html[data-overlay="1"]\` 側の \`overflow: hidden\` がありません（060c 追修正・(10-p)）。` +
+        `これが無いと、ユーザー CSS の \`body{margin:…}\`（060c の rewriteRootLike で \`.sd-overlay\` へ化ける）が` +
+        `\`height:100%\` の窓ルートをはみ出させ、**OBS のキャプチャに縦スクロールバーが写り込みます**（2026-08-09 実機）。` +
+        `⚠ 元の \`body{overflow:hidden}\` はビューポートへ伝播してこれを隠していましたが、読み替え後は伝播しません。`,
+    );
+  }
+
+  // ② **スクロール容器と「一覧の器」が別要素であること。**
+  //   1 層だった頃は `<ol>` が両方を兼ねており、安定クラス `sd-comment-list` 経由で
+  //   ユーザー CSS が `overflow:hidden` を当てて**スクロール機能そのものを殺せた**
+  //   （YouTube では `#items` と `#item-scroller` が別要素なので、テーマは両方に書くのが定番）。
+  //   ⚠ 守るのは「`sd-comment-list` が付く要素と、スクロールする要素が別であること」。
+  //
+  //   ⚠⚠ **2026-08-09 に一度この 2 層化を撤回して「1 層 ＋ 床（無名 `@layer` の `!important`）」にしたが、
+  //   差し戻した。** 撤回の根拠は「1 層は 060f 追修正⑦が paint 安定と実測した構造だから」だったが、
+  //   ⑦が測った 7 通りは**テーマ遷移**であって**スクロール**ではなく、根拠が成立していなかった
+  //   （案 A へ切り替えても描画バグは直らないことを実機で確認）。
+  //   ⚠ **描画バグ（スクロールで課金カードの見切れていた部分が描かれない）は構造と無関係**——
+  //   1 層でも 2 層でも出る。ここを触って直そうとしないこと。
+  if (!/\.scroller\s*\{[^}]*overflow-y\s*:\s*auto/.test(viewerCss)) {
+    fail(
+      `${VIEWER_CSS}: \`.scroller { overflow-y: auto }\` がありません（060c 追修正・(10-p)）。` +
+        `スクロール容器と一覧の器（\`<ol>\`＝\`sd-comment-list\`）は**別要素**である必要があります` +
+        `——1 層に戻すと、テーマの \`#items{overflow:hidden!important}\` が` +
+        `**スクロール機能ごと殺します**（2026-08-09 実機・プレビューで見切れてスクロール不能）。`,
+    );
+  }
+  if (/\.list\s*\{[^}]*overflow/.test(viewerCss)) {
+    fail(
+      `${VIEWER_CSS}: \`.list\`（＝\`sd-comment-list\` が付く \`<ol>\`）に \`overflow\` が戻っています（060c 追修正・(10-p)）。` +
+        `ここに overflow があると、その要素はユーザー CSS から \`overflow:hidden\` で潰せる` +
+        `**スクロール容器**になります。スクロールは \`.scroller\` の責務です。`,
+    );
+  }
+
+  // ④ **プレビュー枠の中身は枠より背が高くなれないこと（＝もう 1 つの床）。**
+  //   `scopeSelectors` はテーマの `body`/`html`/`:root` を `.sd-preview`（＝`.themePreview > *`）へ読み替えるので、
+  //   配布テーマの定型句 `body{min-height:100vh}` / `yt-live-chat-app{height:100vh}` が **200px の枠を突き抜ける**。
+  //   このとき `<ol>` も一緒に伸びるので `scrollHeight === clientHeight`＝**スクロールも発生せず**、
+  //   枠が切った下側へ**永久に到達できない**（2026-08-09 実機「特定のデザインだけ見切れたまま出てこない」）。
+  //   ⚠ 実測（フィクスチャ 14 種）: 床なし **6/14 が到達不能** → 床あり **14/14 正常**、
+  //   高さ指定の無いテーマは**床の有無で 1px も変わらない**。
+  //   ⚠ 2 宣言そろって初めて効く——CSS では `min-height` が `max-height` に勝つので、
+  //   `max-height` だけではテーマの `min-height:100vh` を止められない。
+  const previewFloor =
+    /@layer\s*\{\s*\.themePreview\s*>\s*\*\s*\{([^}]*)\}/.exec(viewerCss)?.[1] ?? "";
+  if (
+    !/min-height\s*:\s*0\s*!important/.test(previewFloor) ||
+    !/max-height\s*:\s*100%\s*!important/.test(previewFloor)
+  ) {
+    fail(
+      `${VIEWER_CSS}: プレビュー枠の床（\`@layer { .themePreview > * { min-height: 0 !important; max-height: 100% !important } }\`）が` +
+        `ありません（060c 追修正④・(10-p)）。これが無いと、テーマの \`body{min-height:100vh}\` 等が` +
+        `**プレビュー枠（200px）を突き抜け、\`<ol>\` も一緒に伸びてスクロールが発生しなくなり、` +
+        `枠が切った下側へ永久に到達できません**（2026-08-09 実機・14 種中 6 種で再現）。` +
+        `⚠ \`min-height: 0\` と \`max-height: 100%\` は**両方**必要です（\`min-height\` が \`max-height\` に勝つため）。` +
+        `⚠ \`height\` は固定しないこと——テーマの \`body{margin}\` / \`body{padding}\` は効かせる設計です。`,
+    );
+  }
+  if (
+    /@layer\s+[A-Za-z_-][\w-]*\s*\{[^{}]*\.themePreview\s*>\s*\*\s*\{[^}]*!important/.test(
+      viewerCss,
+    )
+  ) {
+    fail(
+      `${VIEWER_CSS}: プレビュー枠の床のレイヤーに**名前が付いています**（060c 追修正④・(10-p)）。` +
+        `理由は \`.list\` の床と同じ——名前を付けるとテーマが \`@layer <その名前>{…}\` で**同じレイヤーへ合流**でき、` +
+        `同一レイヤー内の詳細度勝負に戻って床が破れます（実測で確認済み）。`,
+    );
+  }
+
+  // 目印（意匠 CSS から名指しするためのフック）が実在すること。⚠ `sd-` を付けない＝ユーザー CSS 契約ではない。
+  //   ⚠⚠ **検査するのは「実際のコード」であって「文字列の出現」ではない**（自ミューテーションで判明・
+  //   素の `includes("data-comment-scroll")` は**注記コメントに当たって生存する**）。属性の形・セレクタの形・
+  //   `querySelector` 呼び出しの形まで含めて見る。
+  const MARKER_USES = [
+    // JSX 属性（値の代入まで見る＝コメントに当たらない）。
+    [COMMENT_LIST_TSX, listTsx, /data-comment-scroll=\{/],
+    // 意匠 CSS のセレクタ（`::-webkit-scrollbar` の当て先）。
+    [
+      OVERLAY_APP_CSS,
+      overlayAppCss,
+      /\[data-comment-scroll\]\)::-webkit-scrollbar/,
+    ],
+    // 縮小計測の引き先（`querySelector`）。
+    [
+      PINNED_OVERLAY_TSX,
+      read(PINNED_OVERLAY_TSX),
+      /querySelector\(\s*["'`]\[data-comment-scroll\]["'`]\s*\)/,
+    ],
+  ];
+  for (const [file, src, re] of MARKER_USES) {
+    if (!re.test(src)) {
+      fail(
+        `${file}: スクロール容器の目印 \`data-comment-scroll\` を実コードで使っていません（060c 追修正・(10-p)）。` +
+          `期待する形: \`${re.source}\`。⚠ \`ol\` 要素セレクタへ戻さないこと——「スクロールする要素」を` +
+          `**役割で**引くための目印です（034b が再修正トリガーとして予告していた形）。` +
+          `目印が切れると、\`OverlayApp.module.css\` はバーを出したままになり、` +
+          `\`PinnedOverlayApp\` の縮小計測は \`scrollHeight === clientHeight\` で**恒久 no-op** になります。`,
+      );
+    }
+  }
+
+  // ③ **目印・ref・onScroll は「スクロールする `<div>`」に付き、安定クラスは中の `<ol>` に付くこと。**
+  //   ⚠ ②は CSS 側しか見ないので、DOM を 1 層へ戻す変更や、目印だけ `<ol>` へ移す変更は落ちない。
+  //   ⚠ 目印が**スクロールしない要素**へ付くと、`PinnedOverlayApp` の縮小計測が
+  //   `scrollHeight === clientHeight` で恒久 no-op になる。
+  const scrollerTag = listTsx.match(/<div\s+className=\{styles\.scroller\}[\s\S]*?>/)?.[0] ?? "";
+  for (const [what, re] of [
+    ["目印", /data-comment-scroll=\{/],
+    ["ref", /ref=\{scrollRef\}/],
+    ["onScroll", /onScroll=\{follow\.onScroll\}/],
+  ]) {
+    if (!re.test(scrollerTag)) {
+      fail(
+        `${COMMENT_LIST_TSX}: スクロール容器の \`<div className={styles.scroller}>\` に ${what} が付いていません（060c 追修正・(10-p)）。` +
+          `期待する形: \`${re.source}\`。⚠ スクロールするのは \`<div>\`（\`.scroller\`）で、` +
+          `\`sd-comment-list\` が付くのは中の \`<ol>\` です（2 層）。`,
+      );
+    }
+  }
+  if (/<ol\s+className=[\s\S]*?>/.test(listTsx)) {
+    const olTag = listTsx.match(/<ol\s+className=[\s\S]*?>/)[0];
+    if (/data-comment-scroll=\{/.test(olTag) || /ref=\{/.test(olTag)) {
+      fail(
+        `${COMMENT_LIST_TSX}: \`<ol>\` に目印か ref が付いています（060c 追修正・(10-p)）。` +
+          `**スクロールするのは外側の \`<div>\`（\`.scroller\`）**で、\`<ol>\` は「一覧の器」です` +
+          `——同じ要素に戻すと、テーマの \`#items{overflow:hidden!important}\` がスクロール機能ごと殺します。`,
+      );
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// (10-q) **課金カードの影は `box-shadow` で描く（`filter` に戻さない）**（060c 追修正⑤・2026-08-09 実測）。
+//   `filter: drop-shadow` が **WebKit の描画バグの真因**だった——プレビューをスクロールすると、見切れていた
+//   課金カードが描かれない（本人報告「選択すると出る」＝レイアウトは正しく描画だけが古い）。
+//   ⚠ 実測（実機・実物のコンポーネント・自己対照差分で判定・同一セッションの参照アームつき）:
+//     `filter` = **20/20 で再現** ／ `filter:none` = 0/12 ／ **`box-shadow` = 0/12**。
+//   ⚠ ここは jsdom では殺せない（カスケードもレイアウトも合成も評価されない）。実機でしか出ない。
+//   ⚠ **`.bubble` は `filter` のまま**でなければならない——あちらは `::before`/`::after` のしっぽを含めた
+//     1 つのシルエットに影を落としており、`box-shadow` にすると**しっぽの影が消える**（当て先が非対称なのは意図）。
+{
+  const overlayCss = read(OVERLAY_CSS);
+  const cardBody = ruleBody(overlayCss, ".card");
+  if (cardBody === null) {
+    fail(`${OVERLAY_CSS}: \`.card\` の規則が見つかりません（060c 追修正⑤・(10-q)）。`);
+  } else {
+    if (/filter\s*:/.test(cardBody)) {
+      fail(
+        `${OVERLAY_CSS}: \`.card\`（課金カード）に \`filter\` が戻っています（060c 追修正⑤・(10-q)）。` +
+          `\`filter: drop-shadow\` は **WebKit の描画バグの真因**で、プレビューをスクロールすると` +
+          `**課金カードが描かれなくなります**（実機で 20/20 再現 → \`box-shadow\` で 0/12）。` +
+          `影は \`box-shadow\` で描いてください——\`.card\` は \`overflow:hidden\` ＋角丸の**不透明矩形**なので` +
+          `\`drop-shadow\` のシルエットとボーダーボックスが一致し、置換できます。` +
+          `⚠ 実測の手順は \`docs/progress.md\` の 060c 節「追修正⑤」、理由は同ファイルの \`.card\` のコメントが正。`,
+      );
+    }
+    if (!/box-shadow\s*:/.test(cardBody)) {
+      fail(
+        `${OVERLAY_CSS}: \`.card\` に \`box-shadow\` がありません（060c 追修正⑤・(10-q)）。` +
+          `映像上でカードの輪郭を出すための影で、\`.bubble\` と同じ色トークンを使います。`,
+      );
+    }
+  }
+  // ⚠ 対の不変条件: `.bubble` は `filter: drop-shadow` のままであること（しっぽの影が消えるため置換不可）。
+  const bubbleBody = ruleBody(overlayCss, ".bubble");
+  if (bubbleBody !== null && !/filter\s*:\s*drop-shadow/.test(bubbleBody)) {
+    fail(
+      `${OVERLAY_CSS}: \`.bubble\` の \`filter: drop-shadow\` が無くなっています（060c 追修正⑤・(10-q)）。` +
+        `⚠ **課金カードと同じ置換をここへ適用しないこと**——\`.bubble\` の影は` +
+        `\`::before\`/\`::after\` の**しっぽを含めた 1 つのシルエット**に落ちており、` +
+        `\`box-shadow\` にすると**しっぽの影だけが消えます**。`,
     );
   }
 }

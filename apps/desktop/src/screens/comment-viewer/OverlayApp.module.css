@@ -10,6 +10,34 @@
   background: transparent;
 }
 
+/* ⚠⚠ 060c 追修正(2026-08-09・実機不具合): **この窓の document を絶対にスクロールさせない。**
+
+   症状＝ OBS のキャプチャに**縦スクロールバーが「サイドバー」として写り込む**（実機で確認）。
+
+   原因＝ 060c の `rewriteRootLike` はユーザー CSS の `body` / `html` / `:root` を **`.sd-overlay`
+   （＝下の `.root`・`height:100%`）へ読み替える**。純正チャット向けテーマの定番である
+
+     body { margin: 6px auto !important; overflow: hidden !important; }
+
+   がこの窓では `.sd-overlay { margin: 6px auto; overflow: hidden }` になり、2 つ同時に壊れていた:
+     ① `height:100%` ＋ 上下 margin ＝ **親（#root）を 12px はみ出す**
+     ② 元の `body{overflow:hidden}` は**ビューポートへ伝播して**バーを消していたが、
+        `.sd-overlay` へ移ると伝播しない ＝ **はみ出しを隠していた蓋が外れる**
+   ⚠ 下の `::-webkit-scrollbar` 抑止は**スクロール要素 1 つ分**にしか効かず、
+   document（ビューポート）のバーは対象外だった。
+
+   → **窓側で document のスクロールを止める。** この窓は表示専用で、スクロールする責務は
+   コメント一覧（`.scroller`）だけが持つ＝ document がスクロールしてよい理由が 1 つも無い。
+   ⚠ **ユーザー CSS はここを剥がせない**——`html` / `body` と書いても `rewriteRootLike` が
+   `.sd-overlay` へ化かすので、この 3 セレクタに到達する手段が無い（構造で担保している）。
+   ⚠ 「テーマが土台を越えられる」（060f）とは衝突しない——ここで止めているのは意匠ではなく
+   **窓そのものの挙動**で、脱出路（「既定のデザインに戻す」）にも影響しない。 */
+:global(html[data-overlay="1"]),
+:global(html[data-overlay="1"] body),
+:global(html[data-overlay="1"] #root) {
+  overflow: hidden;
+}
+
 .root {
   display: flex;
   flex-direction: column;
@@ -26,9 +54,16 @@
    スクロールバーには影響しない。透過合成の見た目維持のためバーは「極細」ではなく完全非表示にする。
    `height:0` は縦バーだけでなく横バーも抑止するが、これは意図どおり（表示専用オーバーレイはバーを一切出さない方が
    完了条件「バーが出ない」と整合。`.list` の子 `.text` は word-break:break-word で横溢れ自体まれ）。
-   再修正トリガー: 将来 overlay 窓に別のスクロール可能な <ol> を足す場合、この type セレクタは全 <ol> に当たるので
-   コメント一覧側 <ol> に目印属性を付けて `ol[data-…]` で絞る（現状は overlay 窓の <ol> が一覧の 1 つだけなので不要）。 */
-:global(html[data-overlay="1"] ol)::-webkit-scrollbar {
+
+   ⚠⚠ 060c 追修正(2026-08-09): **当て先を `ol` から `[data-comment-scroll]` へ変えた。**
+   スクロール要素が `<ol>` から外側の `<div>`（`.scroller`）へ移ったため（理由は
+   `CommentViewerApp.module.css` の `.scroller` のコメント＝ユーザー CSS が `<ol>` の overflow を
+   潰してスクロールを殺せていた）。⚠ これは 034b が「再修正トリガー」として予告していた
+   「目印属性で絞る」形そのものである（`<ol>` は複数になりうるが、目印は一覧の 1 つだけに付く）。
+   ⚠ **当て先を要素型（`ol`）へ戻さないこと**——構造が変わったときに黙ってズレる。
+   ⚠ 目印に `sd-` を付けていないのは**ユーザー CSS 契約ではない**ことを名前で示すため
+   （`CommentList.tsx` の該当コメント）。 */
+:global(html[data-overlay="1"] [data-comment-scroll])::-webkit-scrollbar {
   width: 0;
   height: 0;
 }

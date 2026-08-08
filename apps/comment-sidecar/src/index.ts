@@ -7,6 +7,8 @@
 //  - 取得コメントは正規化して comments.append で送るのみ（端末外へ出さない）。トークン/device_code は非ログ。
 //  - no-orphan 保険（ppid 監視 self-exit）は維持。
 import "reflect-metadata";
+import { timingSafeEqual } from "node:crypto";
+import { WebSocket } from "ws";
 import { installHttpHostGuard } from "./host-guard.js";
 
 // stdout は Rust への実ポート受け渡し（`COMMENT_SIDECAR_PORT=<port>` 1 行）専用にする。
@@ -46,6 +48,10 @@ import { toCanonicalComment } from "./wire.js";
 import { isMockEnabled, createMockCommentSource } from "./dev-mock.js";
 // 044a: OBS 連携（方式A＝ウィンドウキャプチャ自動追加）。obs-websocket は loopback 4455 のみ・OBS 連携有効時のみ接続。
 import { createObsClient, type ObsOverlayKind } from "./obs/obs-client.js";
+import {
+  createThemeImporter,
+  THEME_IMPORT_MAX_BYTES,
+} from "./theme-import.js";
 
 const WS_HOST = "127.0.0.1";
 const PREFERRED_PORT = 17331;
@@ -66,6 +72,18 @@ const RESTORE_STDIN_PREFIX = "COMMENT_SIDECAR_RESTORE=";
 // 044a: OBS WebSocket パスワードを Rust→stdin private pipe で受領する（loopback WS には載せない・非ログ・§9）。
 const OBS_PW_STDIN_PREFIX = "COMMENT_SIDECAR_OBS_PW=";
 const OBS_PW_CLEAR_STDIN_PREFIX = "COMMENT_SIDECAR_OBS_PW_CLEAR=";
+// 060c: テーマ取り込みチケットを Rust→stdin private pipe で受領する（非ログ・§9）。
+// ⚠⚠ **これが無いと `theme-import.fetch` は「同意を経ない egress トリガー」になる**——loopback WS は
+// 未認証で、ブラウザで開いた悪意あるページも `ws://127.0.0.1:<port>` へ繋げるため。
+// 詳細は Rust 側 `comment_sidecar/mod.rs` の `THEME_TICKET_PREFIX` の注記。
+const THEME_TICKET_STDIN_PREFIX = "COMMENT_SIDECAR_THEME_TICKET=";
+/**
+ * 060c: 制御フレームで受け付けるチケット文字列の上限（文字数）。
+ * 実物は uuid v4 の simple 形＝32 文字なので、余裕をみた値。⚠ 上限の理由は `parseControlFrame` の注記。
+ */
+const THEME_TICKET_MAX_CHARS = 128;
+/** 060c: sidecar→要求元クライアントへ返すテーマ取得結果のメッセージ種別。 */
+const THEME_IMPORT_RESULT_FRAME = "theme-import.result";
 // 032c-d: YouTube 同意画面の認可 URL を Rust へ渡す stdout 専用行（親子 private pipe）。Rust が
 // host=accounts.google.com を検証して opener で開く。**URL 全体はログに出さない**（載るのは code_challenge・
 // 非機密で code_verifier は載らない）。token/secret は一切載せない（§9）。
@@ -90,7 +108,16 @@ type ControlFrame =
   | { type: "obs-enable"; port: number; overlay: ObsOverlayKind }
   // 044a: オーバーレイ表示 OFF 連動＝OBS 側ソースを削除せず非表示にする（port は再表示と同じ検出値）。
   | { type: "obs-hide"; port: number; overlay: ObsOverlayKind }
-  | { type: "obs-disable" };
+  | { type: "obs-disable" }
+  // 060c: 外部 `@import` の取り込み時スナップショット。**1 フレーム 1 URL**（バッチ取得しない）。
+  // ⚠ `ticket` は Rust が起動時に採番し stdin private pipe で渡した値。一致しないものは黙って捨てる。
+  | {
+      type: "theme-import.fetch";
+      ticket: string;
+      requestId: number;
+      url: string;
+      maxBytes: number;
+    };
 
 /**
  * 046d: overlay フィールドを `ObsOverlayKind` に正規化する。**allow-list 方式**で、既知の値以外は
@@ -181,6 +208,46 @@ function parseControlFrame(raw: string): ControlFrame | null {
   if (m.type === "obs-disable") {
     return { type: "obs-disable" };
   }
+  if (m.type === "theme-import.fetch") {
+    // 060c: 受理条件を**すべて**満たすときだけフレームを組む（`obs-enable` と同じ作法＝
+    // `msg` をスプレッドせず明示構築するので、未検証フィールドは 1 つも混入しない）。
+    // ⚠ **範囲外の maxBytes はクランプせず拒否する**（誤りを黙って直すと、送り手の想定と
+    // 実際の上限が食い違ったまま動く。クランプは取得本体側の「天井」としてだけ効かせる）。
+    const f = msg as {
+      ticket?: unknown;
+      requestId?: unknown;
+      url?: unknown;
+      maxBytes?: unknown;
+    };
+    if (
+      typeof f.ticket === "string" &&
+      f.ticket.length > 0 &&
+      // ⚠ 長さの上限も見る（security-review 060c S-5）。`url` は 2048、`maxBytes` は範囲検査済みなのに
+      // `ticket` だけ無制限だと、**未認証の loopback クライアント**が巨大文字列を送るだけで
+      // `Buffer.from()` の確保を強いられる。実物は 32 文字の hex（uuid v4 simple）なので余裕をみて 128。
+      f.ticket.length <= THEME_TICKET_MAX_CHARS &&
+      typeof f.requestId === "number" &&
+      Number.isInteger(f.requestId) &&
+      f.requestId >= 0 &&
+      f.requestId < 2 ** 31 &&
+      typeof f.url === "string" &&
+      f.url.length > 0 &&
+      f.url.length <= 2048 &&
+      typeof f.maxBytes === "number" &&
+      Number.isInteger(f.maxBytes) &&
+      f.maxBytes >= 1 &&
+      f.maxBytes <= THEME_IMPORT_MAX_BYTES
+    ) {
+      return {
+        type: "theme-import.fetch",
+        ticket: f.ticket,
+        requestId: f.requestId,
+        url: f.url,
+        maxBytes: f.maxBytes,
+      };
+    }
+    return null;
+  }
   if (m.type === "start-session") {
     const service = parseService(m.service);
     // youtube はチャンネル名不要（mine=true）。twitch は channel 必須。
@@ -193,6 +260,32 @@ function parseControlFrame(raw: string): ControlFrame | null {
     return null;
   }
   return null;
+}
+
+/**
+ * 060c: 秘密（テーマ取り込みチケット）を**定数時間で**比較する。
+ *
+ * ⚠ `timingSafeEqual` は長さが違うと throw するので、長さを先に見る（長さの差は 1 回の比較で漏れるが、
+ * チケットは固定長 32 文字の hex なので情報量はゼロ）。
+ */
+function isSameSecret(a: string, b: string): boolean {
+  const left = Buffer.from(a, "utf8");
+  const right = Buffer.from(b, "utf8");
+  if (left.length !== right.length) return false;
+  return timingSafeEqual(left, right);
+}
+
+/**
+ * 060c: **要求元のクライアント 1 本にだけ**フレームを送る。
+ *
+ * ⚠⚠ `output.broadcastMessage` は全 WS クライアントへ配るので、取得した CSS 本文が
+ * オーバーレイ窓にも届いてしまう（§9「必要のない窓へ配らない」）。制御ハンドラには要求元の
+ * ソケットが渡ってくるので、それを使う。**vendor は 1 行も触っていない。**
+ */
+function sendToClient(client: WebSocket, message: unknown): void {
+  if (client.readyState === WebSocket.OPEN) {
+    client.send(JSON.stringify(message));
+  }
 }
 
 /** Rust から stdin で届く復元 JSON を TokenSetPlain として堅牢にパースする（不正なら null）。 */
@@ -461,9 +554,47 @@ async function main(): Promise<void> {
     logInfo("[comment-sidecar] MOCK MODE enabled (COMMENT_SIDECAR_MOCK=1; no real network egress)");
   }
 
-  output.setControlMessageHandler((raw) => {
+  // 060c: 外部 `@import` の取り込み時スナップショット。
+  // ⚠ 取得の入口はここ 1 か所だけで、実体（ガード → DNS 検査 → 取得）は `theme-import.ts` にある。
+  const fetchThemeCss = createThemeImporter();
+  // 060c: Rust が起動時に stdin private pipe で渡すチケット。**受領するまでは `null`＝どのフレームも通さない**
+  // （fail-closed）。⚠ **ログにも WS にも出さない**（§9）。
+  let themeImportTicket: string | null = null;
+
+  output.setControlMessageHandler((raw, client) => {
     const frame = parseControlFrame(raw);
     if (!frame) return;
+    if (frame.type === "theme-import.fetch") {
+      // ⚠⚠ **この分岐はランタイムテストで殺せない**（本ファイルは top-level で `main()` を呼ぶため
+      // import できず `scripts/test-*.mjs` の対象外＝ミューテーションでも生存する）。
+      // いまは実機確認⑧（チケット無しのフレームで egress ゼロ）だけが担保である。
+      // ⚠ **再修正トリガー＝ 060h に着手するとき**（同じ経路を再利用してフレームが増える）。
+      // そのときは「フレーム 1 件の処理」を純関数
+      // `handleThemeImportFrame({ frame, ticket, send, fetchThemeCss })` として別モジュールへ切り出し、
+      // チケット不一致・unicast・fail-closed をテストで殺せるようにすること（security-review 060c S-3）。
+      // ⚠⚠ **チケットが一致しなければ黙って捨てる**（返信もしない＝存在も漏らさない）。
+      // loopback WS は未認証なので、これが「同意ダイアログを経ない取得」を塞ぐ唯一の壁である。
+      // ⚠ 定数時間比較にする（長さが違えば `timingSafeEqual` は throw するので長さも先に見る）。
+      if (
+        themeImportTicket === null ||
+        !isSameSecret(frame.ticket, themeImportTicket)
+      ) {
+        return;
+      }
+      // ⚠⚠ **要求元のクライアントにだけ返す**（`broadcastMessage` を使わない）。
+      // オーバーレイ窓も同じ WS に読み取り専用で繋がっており、取得した CSS 本文を配る理由が無い（§9）。
+      void fetchThemeCss(frame.url, frame.maxBytes).then((result) => {
+        sendToClient(client, {
+          type: THEME_IMPORT_RESULT_FRAME,
+          payload:
+            result.ok === true
+              ? { requestId: frame.requestId, ok: true, css: result.css }
+              : { requestId: frame.requestId, ok: false, reason: result.reason },
+        });
+      });
+      // ⚠ 取得先 URL も CSS 本文も**ログに出さない**（§9）。件数すら出さない。
+      return;
+    }
     // 044a: OBS 連携はモック/実取得のどちらとも独立。mock 分岐より前で処理して早期 return する
     //（mockSource は OBS フレームを解さないため渡さない）。接続はオンデマンド・失敗は obs.state で通知。
     if (frame.type === "obs-enable") {
@@ -581,6 +712,11 @@ async function main(): Promise<void> {
       } else if (line.startsWith(OBS_PW_STDIN_PREFIX)) {
         // 044a: OBS パスワードを in-memory に設定（loopback WS には出さない・ログにも出さない）。
         obsClient.setPassword(line.slice(OBS_PW_STDIN_PREFIX.length));
+      } else if (line.startsWith(THEME_TICKET_STDIN_PREFIX)) {
+        // 060c: テーマ取り込みチケットを in-memory に設定（loopback WS にも出さない・非ログ・§9）。
+        // ⚠ 空文字は受けない（受けると「長さ 0 のチケット」で誰でも通る形になる）。
+        const value = line.slice(THEME_TICKET_STDIN_PREFIX.length);
+        if (value.length > 0) themeImportTicket = value;
       }
     }
   });

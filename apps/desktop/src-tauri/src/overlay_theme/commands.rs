@@ -1,20 +1,23 @@
-//! 060b: オーバーレイテーマの Tauri コマンド（5 本）。
+//! 060b: オーバーレイテーマの Tauri コマンド（**7 本**。060e で 6 本目、060c で 7 本目が入った）。
 //!
 //! 既存の `tools` / `viewer_memory` と同型で、`db: State<'_, DbState>` を受けて `service` へ委譲するだけ。
 //! 変更系は `app_logs::service::log_command_err` で**失敗のみ**記録する（`ErrorCode` 由来の固定安全文言のみ・
 //! **CSS 本文・フルパス・除去した URL は 1 つもログへ出さない**・docs/security.md §9）。
 //! DB 保存カテゴリは `LogCategory::Storage` を流用する（テーマ専用カテゴリは設けない）。
 //!
-//! ⚠⚠ **アプリ定義コマンドは ACL の対象外なので、この 5 本は全 4 窓
+//! ⚠⚠ **アプリ定義コマンドは ACL の対象外なので、この 7 本は全 4 窓
 //! （main / comment-viewer / comment-overlay / pinned-overlay）から呼べる**（046b / 055b と同じ限界）。
 //! capability で絞れないため、**コマンド自体を狭く作る**ことで担保している:
 //! - 汎用の `write_file(path, content)` 型は作らない（§3）。書けるのは
 //!   `app_data_dir/themes/<uuid>.css` だけで、**パスは frontend から受け取らない**。
 //! - `path` を受け取るのは `import_overlay_theme` の 1 本だけ。しかも用途は
 //!   「`.css` を 1 つ読む」に限定され、読んだ内容は返さない（サニタイズして保存するだけ）。
-//! - **`css` を受け取るのは `import_overlay_theme_text` の 1 本だけ**（060e）。⚠ 本文を渡せても
-//!   **書ける場所は変わらない**（保存先の組み立てにユーザー入力が 1 バイトも入らない）ので、
-//!   §3 が禁じている「汎用の書き込み経路」にはならない。出現回数は契約テストが固定している。
+//! - **`css` を受け取るのは 2 本だけ**＝`import_overlay_theme_text`（060e）と
+//!   `import_overlay_theme_snapshot`（060c）。⚠ 本文を渡せても**書ける場所は変わらない**
+//!   （保存先の組み立てにユーザー入力が 1 バイトも入らない）ので、§3 が禁じている
+//!   「汎用の書き込み経路」にはならない。出現回数は契約テストが固定している。
+//!   ⚠⚠ **3 本目を足すときは、060c と同じく §3 の再評価と security-review を通すこと**
+//!   （契約テストが落ちること自体がその手順を呼ぶ仕掛けである）。
 //! - `get_overlay_theme_css` は read-only で、返すのは**ユーザー自身が取り込み、サニタイザを通った CSS**。
 //!   id で DB を引き、DB の `file_name` を検証してから読むので、**任意ファイル読み取りにはならない**。
 //!   そもそも注入先のオーバーレイ窓・プレビューを出すコメビュ窓の 2 つが実際に必要とする。
@@ -102,6 +105,47 @@ pub fn import_overlay_theme_text(
         &conn,
         LogCategory::Storage,
         "import_overlay_theme_text",
+        &result,
+    );
+    result
+}
+
+/// 060c: **外部 `@import` を取得してインライン展開した CSS** を取り込む（スナップショット）。
+///
+/// 呼び出し側（`OverlayThemeCard`）は「ユーザーが完全な URL とホストを目で見て同意した 1 回の GET の
+/// 結果」を、`import_overlay_theme` / `import_overlay_theme_text` が返した**除去済み CSS の前に前置**して
+/// 渡す（有効な CSS の `@import` は先頭にしか書けないので、前置＝原位置と等価）。
+///
+/// ⚠⚠ **`css: String` を受け取る 2 本目のコマンドである**（1 本目は `import_overlay_theme_text`）。
+/// これは契約テスト `takes_no_arbitrary_path_or_content_from_the_frontend` を**設計どおり落とし**、
+/// §3 の再評価と security-review を呼ぶための仕掛けだった。再評価の結論（`docs/security.md` §5 の
+/// 060b 例外節「③ Snapshot 経路」に記載）:
+/// - **増えない**: 保存先は `app_data_dir/themes/<uuid v4>.css` の固定形のままで、その組み立てに
+///   ユーザー入力は 1 バイトも入らない。検証・サニタイズ・上限（256KB / 200 件）は
+///   **`service::store_sanitized_css` の 1 セットだけ**で、`path` も取らない。
+/// - **増える**: 本文の出所が「ネットワークから来たバイト列」になる（他の 2 本はローカル由来）。
+///   ⚠ ただし **3 本ともサニタイズ前の本文を信頼していない**ので、扱いは変わらない。
+///   取得できる形は sidecar の `assertAllowedThemeImportUrl`（`https:` / 443 / `.css` / SSRF 拒否 /
+///   リダイレクト禁止 / `text/css` / サイズ・時間上限）で極端に狭めてある。
+///
+/// ⚠ **`origin` は引数に現れない**。`Snapshot` を立てるのは `service::import_fetched_snapshot` だけで、
+/// frontend から出自は騙れない（`the_theme_origin_is_never_settable_from_the_frontend`）。
+/// ⚠ **同期でよい**（触るのは `app_data_dir` だけ＝ネットワークボリュームを読まない。text 版と同じ判断）。
+/// ⚠ CSS 本文も取得先 URL もログに出さない（§9）。
+#[tauri::command]
+pub fn import_overlay_theme_snapshot(
+    app: AppHandle,
+    db: State<'_, DbState>,
+    css: String,
+    name: String,
+) -> AppResult<OverlayThemeImportResult> {
+    let dir = service::themes_dir(&app)?;
+    let conn = db.lock().expect("db mutex poisoned");
+    let result = service::import_fetched_snapshot(&dir, &conn, &css, &name);
+    app_logs::service::log_command_err(
+        &conn,
+        LogCategory::Storage,
+        "import_overlay_theme_snapshot",
         &result,
     );
     result

@@ -6,7 +6,7 @@
   "description": "032c-b: Twitch コメント取得 Node sidecar（osareview から distill・単一実行ファイル化して Tauri externalBin として同梱）",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "pnpm build:tsc && node scripts/test-host-guard.mjs && node scripts/test-obs-client.mjs && node scripts/test-youtube-mapper.mjs && node scripts/test-comment-relay.mjs && node scripts/test-dev-mock.mjs",
+    "test": "pnpm build:tsc && node scripts/test-host-guard.mjs && node scripts/test-theme-import.mjs && node scripts/test-obs-client.mjs && node scripts/test-youtube-mapper.mjs && node scripts/test-comment-relay.mjs && node scripts/test-dev-mock.mjs",
     "build:tsc": "tsc",
     "build:bundle": "node scripts/build-sea.mjs --bundle-only",
     "build:sea": "node scripts/build-sea.mjs"
