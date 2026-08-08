@@ -138,9 +138,11 @@
  */
 
 /**
- * テーマ CSS の**手前**に置く固定リセット。4 ブロックそれぞれに別の意図がある。
+ * テーマ CSS の**手前**に置く固定リセット。ブロックごとに別の意図がある
+ * （⚠ **ブロック数は `overlayThemeReset.test.ts` が固定している**——ここに数を書くと必ず陳腐化するので書かない。
+ * 実際 060c 追修正で 4 → 5 になったあとも「4 ブロック」と書き続けていた）。
  *
- * ⚠⚠⚠ **4 ブロックすべてが chat 限定**（060f 追修正④・2026-08-08 本人決定）。
+ * ⚠⚠⚠ **すべてのブロックが chat 限定**（060f 追修正④・2026-08-08 本人決定）。
  * 課金カードには安定クラスを 1 つも付けなくなった（`CommentList.tsx` の課金分岐参照）ので、
  * `.sd-comment` や `.sd-comment-body` だけで書いても実際には chat にしか当たらない。
  * それでも**当て先を chat 専用クラスで明示している**のは、将来カード側にクラスを戻したときに
@@ -174,6 +176,60 @@
  * ⚠ **`.list` の `gap: 6px` と `.item` の `row-gap: 2px` は返さない**——前者は本体コメビュと共有の
  * 宣言（035b の注記どおり触らない）、後者は名前行と吹き出しの間隔でテーマが自分で潰せる。
  * ⚠ **リセットなので `!important` は付けない**（テーマが `.sd-comment-chat{padding:…}` を書けば勝つ）。
+ *
+ * ### ⚠⚠ 1c. `:where(.sd-comment-header.sd-comment-in-chat){padding-left:12px}`（名前行を本文に揃える）
+ *
+ * 060c 追修正⑥(2026-08-09・実機不具合)。**サイト名バッジ（Twitch / YouTube のピル）が、テーマの
+ * 描く左端の縦バーに重なる**。
+ *
+ * ⚠⚠ **プレビューだけの問題ではない**——**配信窓（OBS 出力）でも同じだけ重なる**（下の実測）。
+ *
+ * 起きる条件は 3 つで、**どれも実テーマでは同時に成立するのが普通**:
+ *
+ * ```text
+ * ① テーマがアイコンを消す   yt-img-shadow{display:none} → .sd-comment-icon{display:none}
+ *      → `.item` の 2 列グリッドの 1 列目が 0 幅に畳まれ（060f 追修正①の意図どおり）、
+ *        名前行も吹き出しも**左端へ寄る**
+ * ② テーマが名前を消す       .yt-live-chat-author-chip{display:none} → .sd-comment-name{display:none}
+ *      → 名前行に残るのは **StreamDock 固有のサイト名ピルだけ**になり、それが行の先頭に来る
+ * ③ テーマがコメント枠へ縦バーを絶対配置する
+ *      .yt-live-chat-text-message-renderer::before → .sd-comment-chat::before
+ *      {position:absolute;left:0;top:20%;height:60%;width:6px}   ← 基準は上の 1.
+ * ```
+ *
+ * ⚠⚠ **より本質的なのは「% の基準が違う」こと。** YouTube の `yt-live-chat-text-message-renderer` は
+ * **メッセージ 1 行だけの箱**だが、StreamDock の `<li>` は **名前行＋吹き出し行の 2 段**。
+ * `top:20%` / `height:60%` がその合計に対して解決されるので、バーは**名前行の帯まで伸びてくる**。
+ * ＝ **StreamDock が持つ「名前行」という余分な段が、テーマの装飾帯と同じ場所に居る**のが原因である。
+ *
+ * ⚠ テーマ自身が持っていた逃げ道も落ちている: `…renderer #content{padding-left:8px!important}`
+ * （YouTube 側でバーを避けるためのインデント）は StreamDock に `#content` が無いので**変換も警告もされず
+ * 黙って捨てられる**（`cssCompat.ts` の `FOREIGN_ID_NAMES` が総称 id を意図的に外しているため）。
+ *
+ * **実測**（実物の `CommentList variant="overlay"` を本番と同じ注入経路で描き、`getBoundingClientRect()`。
+ * 手順と器具は `docs/progress.md` の 060c 節「追修正⑥」）:
+ *
+ * ```text
+ * プレビュー   修正前 pill x=16..79.3 / bar x=12..18  → 重なり 2px × 9.61px
+ *              修正後 pill x=28..91.3 / bar x=12..18  → **重なりなし（10px あく）**
+ * 配信窓(OBS)  修正前 pill x=16..79.3 / bar x=12..18  → 重なり 2px × 13.2px
+ * テーマ未適用 pill x=159 / バー無し                  → 元から重なりなし（＝既定意匠は無関係）
+ * ```
+ *
+ * ⚠⚠ **なぜ 12px なのか（恣意的な定数ではない）**: 下の 3. は **`.sd-comment-body` の `padding` を
+ * 意図的に返していない**ので、既定の `.bubble{padding:8px 12px}` が残る＝**本文テキストの開始位置は
+ * 本文箱の左端 ＋ 12px**。この 12px は「**名前行を本文テキストの開始位置に揃える**」の 1 文で説明できる。
+ * ⚠ したがって **`.bubble` の `padding` を変えるならこの値も一緒に見直すこと**（静的ガードが対で見ている）。
+ *
+ * ⚠ **この実測が含んでいない条件**:
+ *   - 計測は **Chrome（Blink）**であって実機の **WKWebView ではない**（本人の実機確認で担保する）。
+ *   - 測ったテーマは実サンプル 1 本（`ruri.info` の見出し系）。**左端から 16px より内側まで装飾を描く
+ *     テーマでは再発しうる**（今回のバーは 6px）。逃げ道はユーザーが `.sd-comment-header{padding-left:…}`
+ *     と書くこと。⚠ `--sd-header-indent` の変数化は**採らない**判断（2026-08-09 本人決定）。
+ *   - **バーの縦位置は直らない**（本文中心より約 10px 上のまま）。直すには変換表の当て先を
+ *     `.sd-comment-row` へ移す必要があり、class 形で書かれた `background` / `padding` が
+ *     **コメント全体ではなく吹き出し行**に当たるようになる＝波及が読めないので今回は採らない。
+ * ⚠ **リセットなので `!important` は付けない**（テーマが `.sd-comment-header{padding-left:0}` と書けば勝つ）。
  *
  * ### 2. `:where(.sd-comment-chat){--sd-icon-gap:8px}`
  *
@@ -218,6 +274,7 @@
 export const DEFAULT_DECORATION_RESET =
   ":where(.sd-comment-chat){position:relative}\n" +
   ":where(.sd-comment-chat){padding:0}\n" +
+  ":where(.sd-comment-header.sd-comment-in-chat){padding-left:12px}\n" +
   ":where(.sd-comment-chat){--sd-icon-gap:8px}\n" +
   ":where(.sd-comment-body.sd-comment-in-chat){background:none;border:0;border-radius:0;filter:none}\n" +
   ":where(.sd-comment-body.sd-comment-in-chat)::before,\n:where(.sd-comment-body.sd-comment-in-chat)::after{all:unset}\n";

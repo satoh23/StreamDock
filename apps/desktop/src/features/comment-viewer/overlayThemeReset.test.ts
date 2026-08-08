@@ -106,6 +106,9 @@ const DECORATION_PROPS = [
   "filter",
   "box-shadow",
   "padding",
+  // ⚠ 060c 追修正⑥(2026-08-09): 名前行のインデント（`padding-left`）。`padding` の longhand は
+  //   別トークンなので、収載しないとこの allow-list を素通りする（上の「収載漏れ」の注記どおり）。
+  "padding-left",
 ];
 
 /** 疑似要素（`::before` / `::after`）を当て先にしているルールか。 */
@@ -119,9 +122,10 @@ describe("DEFAULT_DECORATION_RESET", () => {
    * 切り始め、**以下のアサーション全部が「別のものを検査して緑」になる**（silent failure）。
    * ルール数も固定する——ブロックを 1 つ消す変異が、どのテストにも引っかからずに通るのを防ぐため。
    */
-  it("⚠⚠ パーサの前提: ルールは 5 つ・宣言値に `}` を含まない", () => {
+  it("⚠⚠ パーサの前提: ルールは 6 つ・宣言値に `}` を含まない", () => {
     // ⚠ 060c 追修正(2026-08-09): `:where(.sd-comment-chat){padding:0}` を足して 4 → 5 になった。
-    expect(RESET_RULES).toHaveLength(5);
+    // ⚠ 060c 追修正⑥(2026-08-09): 名前行のインデントを足して 5 → 6 になった。
+    expect(RESET_RULES).toHaveLength(6);
     for (const rule of RESET_RULES) {
       expect(rule.body).not.toContain("}");
       expect(rule.body).not.toContain("{");
@@ -254,6 +258,34 @@ describe("DEFAULT_DECORATION_RESET", () => {
     for (const rule of bubble) {
       expect(propsOf(rule.body)).not.toContain("padding");
     }
+  });
+
+  /**
+   * ⚠⚠ 060c 追修正⑥(2026-08-09・実機不具合): **サイト名バッジがテーマの縦バーに重なる。**
+   *
+   * 実テーマはアイコンと名前を消すので、名前行に残るのは **StreamDock 固有のサイト名ピルだけ**になり、
+   * それが**行の先頭＝コメント枠の左端**に来る。そこはテーマが `.sd-comment-chat::before` で
+   * 縦バーを描く場所と同じなので重なる（実測: プレビュー 2px×9.61px ／ 配信窓 2px×13.2px）。
+   *
+   * ⚠ **12px は `.bubble{padding:8px 12px}` の左と同値**＝「名前行を本文テキストの開始位置に揃える」。
+   * 下の 3.（吹き出しの装飾リセット）が `padding` を**意図的に返していない**ことが根拠なので、
+   * **`.bubble` の padding を変えるならこの値も見直すこと**（対の担保は静的ガード側が持つ）。
+   *
+   * ⚠ jsdom はレイアウトを解決しないので、ここで固定できるのは**文字列としての契約**まで
+   * （幾何は上の実測と実機確認が正）。
+   */
+  it("⚠⚠ 名前行を本文に揃える（サイト名バッジがテーマの左端装飾に重ならない）", () => {
+    const header = RESET_RULES.filter((r) =>
+      r.selectors.some((s) => s.includes("sd-comment-header")),
+    );
+    expect(header).toHaveLength(1);
+    // ⚠ 当て先は **chat 限定**（課金カードには安定クラスが 1 つも無いので当たらないが、字面で閉じておく）。
+    expect(header[0].selectors).toEqual([
+      ":where(.sd-comment-header.sd-comment-in-chat)",
+    ]);
+    // ⚠ 宣言は 1 つだけ（ここに他のプロパティを足すと「名前行の意匠を作り直す」側へ滑る）。
+    expect(propsOf(header[0].body)).toEqual(["padding-left"]);
+    expect(header[0].body).toContain("12px");
   });
 
   /**
