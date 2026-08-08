@@ -178,7 +178,12 @@ const PREVIEW_COMMENTS: CommentViewDto[] = [
     text: "配信たのしみにしてます！",
     publishedAt: "2026-01-01T00:01:00Z",
     eventType: "superchat",
-    monetaryAmount: "￥1,000",
+    // ⚠ 060i(2026-08-09): **本番の表記と同形にすること**（`"1,000 JPY"`）。以前は `"￥1,000"` だったが、
+    //   実データは `wire.ts` が `<桁区切り済み数値> <通貨コード>` で組む（`monetaryAmount` は監視済みの値を
+    //   verbatim 表示する契約）ので、見本だけ円記号にすると**プレビューでヘッダの幅を見積れない**
+    //   ——金額バッジは `white-space: nowrap` でヘッダ右端を占める要素なので、見本の綴りが短いと
+    //   「本番では入らない幅」を「入る」と誤って見せる。
+    monetaryAmount: "1,000 JPY",
     monetary: { amount: 1000, currency: "JPY" },
   },
 ];

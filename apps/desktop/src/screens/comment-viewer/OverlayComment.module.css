@@ -47,8 +47,51 @@
      いるのは `--icon-gap` で、同じ要素のこの宣言のほうが常に勝つため、そちらは狙っても効かない。 */
   --icon-gap: var(--sd-icon-gap, 28px);
   display: grid;
-  /* 1 列目＝アイコン（中身が無ければ 0 幅）／2 列目＝名前行と吹き出し。 */
-  grid-template-columns: auto 1fr;
+  /* 1 列目＝アイコン（中身が無ければ 0 幅）／2 列目＝名前行と吹き出し。
+     ⚠⚠⚠ 060i(2026-08-09・実機不具合): **2 列目は `1fr` ではなく `minmax(0, 1fr)`。素の `1fr` に戻さないこと。**
+     `1fr` は **`minmax(auto, 1fr)` の糖衣**で、min トラックサイジング関数が `auto` の間は、その列を張る
+     グリッドアイテム（`.header` / `.row`）の `min-width: auto` が**自動最小サイズ＝内容ベース最小**として
+     生き続ける。`.name` は `white-space: nowrap` なので min-content ＝**名前の全幅**であり、
+     **名前が長いと列ごと窓幅を超えて広がる**（flex 側の `min-width: 0` / `flex-shrink` は列が広がる前に
+     出番が来ないので効かない）。
+     症状（実機）＝ ① `.name` の `text-overflow: ellipsis` が**一度も発動しない** ② `.item` は
+     `overflow: visible` なので、**`<li>` の幅は変わらないまま 2 列目だけが `<li>` の外へ広がり**、
+     名前行のサイト名ピルと吹き出しの右側が**窓の外へ出て切れる**。
+     ⚠ `<li>` 自身が広がらないのは、flex アイテムの自動最小サイズが**主軸だけ**の規則で、
+     `.list` は縦積み（column）＝ 横は交差軸だから。溢れるのは常に「グリッド列 → `<li>` の外」である。
+     ⚠ しかも `.scroller` は `overflow-y: auto` の副作用で `overflow-x` も `auto` に計算され、横スクロール
+     バーは `OverlayApp.module.css` の `::-webkit-scrollbar { width: 0 }` で消してあるため
+     **溢れていること自体が見えない**（060c で `<ol>` の 2 層化を招いたのと同じ「黙って切れる」型）。
+     ⚠ 実測（Chrome headless・`repro/measure.html?mode=overlay&case=long&w=320`・17 字の名前）:
+       ・素の `1fr`  … `.header` w=290.66（`<li>` は 296 のまま）→ サイト名ピルが x=315〜378.66 ＝
+                        **窓 320 の完全に外**／吹き出しも右 58.66px が外／`scrollWidth 379` vs `clientWidth 320`
+                        ＝ **59px の横スクロールが黙って発生**／名前の ellipsis は未発動
+       ・`minmax(0,1fr)` … `.header` w=216（＝列幅）／名前 146.34px で **ellipsis 発動**／ピルは 240.34〜304 で窓内／
+                        `scrollWidth 320 == clientWidth` ＝ **横スクロールゼロ**／吹き出しの高さが 77 → 105.5
+                        ＝ **本文が折り返されるようになった**（それまでは折り返さず窓の外へ伸びていた）。
+     ⚠ min を 0 にすると自動最小サイズも 0 に解決されるので、既存の `min-width: 0` / `ellipsis` が
+     本来の役目を果たす。⚠ **内容が収まる場合の計算結果は `1fr` と完全に同一＝意匠は 1px も変わらない。**
+     ⚠ 同じ罠が下の `.card` にもある（あちらが本人報告の「金額バッジ見切れ」の直接原因）。
+     ⚠ 静的ガード **(10-s)** が両方の `minmax(0, …)` を機械で固定している（(10-n) は宣言の
+     **プロパティ名**しか見ないので、値の差し戻しは素通りする）。
+
+     ⚠ **テーマ適用時の非退行**（security-review 060i・Q-6・2026-08-09 に追加実測）。この `<li>` には
+     安定クラス `sd-comment-chat` が付く＝**テーマは非レイヤー・後勝ちで `grid-template-columns` を
+     上書きできる**（この宣言は `@layer sd-default` の外）ので、テーマが器を intrinsic 幅にする形
+     8 条件で `1fr` と A/B した: `align-items:flex-start` ／ `display:inline-grid` ／ `float:left` ／
+     `position:absolute` ／ `display:table-cell` ／ `display:inline-flex` ／ `width:fit-content` ／
+     `.sd-comment-icon{display:none}`。**`minmax(0,1fr)` が `1fr` より悪い結果になった条件はゼロ**
+     （`position:absolute` だけ両者同値、他はすべて `minmax` 側だけが窓内に収まる）。
+     ⚠ とくに `.sd-comment-icon{display:none}` は両者とも吹き出し左端 8.0px ＝ **060f 追修正①
+     （アイコンを消すと 1 列目が畳まれてインデントが残らない）の担保は保たれている**。
+     ⚠ 「`minmax(0, …)` は真に不定な max-content 文脈で列が 0 に潰れる」という一般的な懸念は、
+     この器では**起きない**（fit-content 経路が利用可能幅を使うため）。
+
+     ⚠ **上の実測値をここに焼き込んである**（security-review 060i・Q-9）。意匠（フォント・
+     `--sd-icon-size` / `--sd-icon-gap` / padding）を変えると**この数値と `.card` 側の表が同時に陳腐化する**。
+     再修正トリガー＝数値を書き換える必要が出たら、表は `docs/progress.md` の 060i 節 1 か所へ寄せ、
+     ここからはリンクだけにすること（`overlayThemeReset.ts` の docstring が戒めている規律と同じ）。 */
+  grid-template-columns: auto minmax(0, 1fr);
   /* ⚠ 縦だけ。横は .icon の margin-right が持つ（アイコンと一緒に消えるようにするため）。 */
   row-gap: 2px;
   /* アイコンを行の高さいっぱいに引き伸ばさない（既定意匠＝吹き出し上端に揃える）。 */
@@ -388,8 +431,44 @@
   /* ⚠⚠ 060f 追修正(2026-08-08): **必須**。`.item` を 2 列グリッド（アイコン｜本文）にしたので、
      ここで 1 列に戻さないと**ヘッダ帯（.cardHeader）とボディ（.cardBody）が横 2 列に割れてカードが壊れる**。
      ⚠ 課金カードにアイコン列は要らない（アイコンは .cardHeader の中に置いてある）。
-     ⚠ この打ち消しも上のコメントと同じ**ソース順依存**（.card が .item より後）である。 */
-  grid-template-columns: 1fr;
+     ⚠ この打ち消しも上のコメントと同じ**ソース順依存**（.card が .item より後）である。
+
+     ⚠⚠⚠ 060i(2026-08-09・実機不具合): **`minmax(0, 1fr)` であること。素の `1fr` に戻すと金額バッジが切れる。**
+     これが本人報告「ユーザー名が長いと金額が見切れる」の直接原因だった。
+     `1fr` ＝ `minmax(auto, 1fr)` なので、min が `auto` の間は `.cardHeader` の `min-width: auto` が
+     内容ベース最小（＝ min-content）として生き、その min-content は
+     **アイコン 44 ＋ gap 8×3 ＋ `.cardName` の全幅（`white-space: nowrap`）＋ サイト名ピル ＋ 金額ピル ＋ padding 20**。
+     ＝ **名前が長いとヘッダ帯がカードより広い箱になる**。`.cardName` の `flex: 1 / min-width: 0 /
+     text-overflow: ellipsis` は「ヘッダ幅＝カード幅」を前提にしているので**一度も発動できず**、
+     溢れた分はヘッダの右端（＝金額バッジ）側に出て、上の `overflow: hidden` に切られる。
+     ⚠⚠ **課金カードと chat の唯一の差は「溢れたトラックをクリップするかどうか」だけ**
+     （security-review 060i・Q-7 で訂正・2026-08-09）。カード枠が広がらない理由は chat の `<li>` と**同一**で、
+     どちらも `.list`（縦積み flex）の flex アイテムなので `min-width: auto` が**交差軸では 0 に計算される**
+     （flex の自動最小サイズは主軸だけの規則）。＝ 広がるのは常に**グリッド列**のほうで、それを
+     `.card` は上の `overflow: hidden` で切り（→ 金額バッジが見切れる）、chat の `.item` は
+     `overflow: visible` なので切らない（→ 窓の外へ出る）。**同じ原因・違う見え方**はここから来る。
+     ⚠ `.card` が `overflow: hidden` ＝スクロールコンテナであることも自動最小サイズを 0 にするが、
+     それは**上と重複する 2 つ目の理由**であって、chat との差の説明にはならない。
+     ⚠⚠ 実測（Chrome headless・`repro/measure.html?mode=overlay&case=long&w=<窓幅>`・
+     名前 `ぶいちゅーばー推し`（9 字）＋ `20,000 JPY`。**判定の正はこの数値**）:
+       窓幅  素の 1fr の .cardHeader 幅   カード幅   金額バッジの溢れ    minmax(0,1fr)
+       ----  --------------------------  --------  ----------------  -------------------------
+       400   363.67                      376        収まる（余裕 12） 同じ（ellipsis 未発動）
+       360   363.67                      336        **+17.67 切れる**  溢れ 0・ellipsis 発動（28px 分）
+       320   363.67                      296        **+57.67 切れる**  溢れ 0・ellipsis 発動（68px 分）
+       280   363.67                      256        **+97.67 切れる**  溢れ 0・ellipsis 発動（108px 分）
+     ⚠⚠ **素の `1fr` ではヘッダ幅が窓幅に関係なく 363.67px で一定**——これが「min-content に張り付いて
+     いて縮む余地が無い」ことの直接の証拠である（`minmax(0, 1fr)` 側は常にカード幅と一致する）。
+     ⚠ 既定窓 400px でも余裕は 12px しかない。フォント 4 択（034e）で字幅の広いものを選ぶ・名前が
+     1 文字伸びる・窓を少し狭める、のどれか 1 つで溢れる（本人報告はこの帯域で起きている）。
+     ⚠ **窓を 240px（`min_inner_size`）近くまで狭めると `minmax(0, 1fr)` でも金額は切れる**——名前を 0 幅に
+     しても固定要素（アイコン 44 ＋ gap 24 ＋ サイト名ピル ≈ 64 ＋ 金額ピル ≈ 86 ＋ padding 20）だけで
+     約 238px 必要だから。既定 400px では収まるので 060i では受容した（docs/progress.md の 060i 節）。
+     ⚠ **アプリ内コメビュの同型カード（`CommentViewerApp.module.css` の `.item.itemTipCard`）はこのバグを
+     持っていない**——あちらは grid ではなく block なのでヘッダ幅がコンテナ幅に固定され、flex が
+     `.tipName` を正しく縮める。**差分は `display: grid` ＋ `1fr` の一点**だった。
+     ⚠ 静的ガード **(10-s)** が固定している。 */
+  grid-template-columns: minmax(0, 1fr);
 }
 
 /* ヘッダ帯：アバター（既存 .icon 再利用）＋名前＋（サイト名ピル）＋金額バッジ。色付き不透明・文字はティアに応じ白/暗。 */

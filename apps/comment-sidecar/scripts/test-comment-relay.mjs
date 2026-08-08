@@ -14,6 +14,8 @@
 //   B. **境界**: 未設定の付随数値は最後まで undefined のまま（勝手に 0 やキー生成へ劣化しない）。
 //   C. **§9**: 中継後の CanonicalComment に受贈者情報・アバター取得元 URL 等が現れない。
 //   D. **回帰**: eventType の写像と monetaryAmount（文字列＋数値 monetary）の既存変換を壊していない。
+//   E. **060i**: 表示用金額 `monetaryAmount` の数値部に 3 桁区切りが入り、**小数は丸まらない**
+//      （`toLocaleString` の既定 maximumFractionDigits が 3 なので、指定を外すと監視値と違う額を表示する）。
 //
 // dist の JS は `@comment-dock/*` の path alias を保持したまま emit されるため、
 // dist-alias-loader.mjs を resolve フックとして登録する（登録後に動的 import する必要がある）。
@@ -144,6 +146,67 @@ const relay = async (c) => toCanonicalComment(await convertCommentToViewDto(c));
   );
   ok("relay(回帰): BITS の表示文字列", c.monetaryAmount, "100 bits");
   ok("relay(回帰): chat への写像（normal → chat）", c.eventType, "chat");
+}
+
+// ---- E. 060i: 表示用金額の桁区切り ----
+// **仕様**: `monetaryAmount` の数値部は 3 桁区切り。従来は素の数値で **本番だけ `20000 JPY`** になっており、
+//   dev-mock（`"20,000 JPY"` をラベルで直接組む／wire.ts を通らない）と設定プレビューの見本と食い違っていた。
+// ⚠ 上の D 節（"30 JEWELS" / "100 bits"）は 4 桁未満なので**不変**＝単位の綴りを触っていないことの回帰でもある。
+{
+  const c = await relay(
+    comment({ eventType: "super_chat", monetaryAmount: { currency: "JPY", amount: 20000 } }),
+  );
+  ok("relay(060i): JPY に桁区切りが入る", c.monetaryAmount, "20,000 JPY");
+  ok("relay(060i): 数値 monetary は整形しない", c.monetary, { amount: 20000, currency: "JPY" });
+}
+
+{
+  const c = await relay(
+    comment({
+      source: "twitch",
+      eventType: "normal",
+      monetaryAmount: { currency: "BITS", amount: 25000 },
+    }),
+  );
+  ok("relay(060i): BITS も桁区切り＋小文字 bits のまま", c.monetaryAmount, "25,000 bits");
+}
+// ⚠ 上のケースが守っているのは**アプリ内一覧／課金ティッカー／固定コメント帯**の表記である。
+//   bits は `eventType: normal`＝ chat 行なので、**オーバーレイの金額バッジには出ない**
+//   （`CommentList.tsx` の chat 分岐は `monetaryAmount` を描画しない）。
+
+// ⚠⚠ **丸めないこと**の固定。`amount` は `amount_micros / 1_000_000` 由来なので小数がありうる。
+//   `toLocaleString` の既定 maximumFractionDigits は 3 なので、指定を外すと 4 桁目以降が黙って丸まり
+//   「監視した金額と違う値を表示する」ことになる（`monetaryAmount` は監視済みの値をそのまま出す文字列）。
+{
+  const c = await relay(
+    comment({ eventType: "super_chat", monetaryAmount: { currency: "USD", amount: 4.99 } }),
+  );
+  ok("relay(060i): 小数はそのまま", c.monetaryAmount, "4.99 USD");
+}
+
+{
+  const c = await relay(
+    comment({ eventType: "super_chat", monetaryAmount: { currency: "USD", amount: 1234.56789 } }),
+  );
+  ok("relay(060i): 小数 4 桁以上でも丸めない", c.monetaryAmount, "1,234.56789 USD");
+}
+
+// ⚠⚠ security-review 060i(S-1): **極大値で出力が指数表記から桁展開へ変わる**ことの固定。
+//   従来のテンプレートリテラルは `${1e21}` ＝ `"1e+21"`（5 文字）だったが、`toLocaleString` は
+//   **29 文字**に展開する（`1e308` なら 411 文字）。金額バッジは `white-space: nowrap` ＋
+//   `flex-shrink: 0` なので、**異常に長い金額文字列は 060i で直した症状を金額側から再現できる**。
+//   ここは「壊れずに何か出る」ことではなく**表示崩れの起点となる長さの変化**を記録するためのケース。
+//   ⚠ 例外は投げない（`NaN` → `"NaN"` / `±Infinity` → `"∞"` / `"-∞"`）ので配信は止まらない。
+//   再修正トリガー＝実際に極端な金額で表示が壊れたら `.amountBadge` に `max-width` を足す（`wire.ts` の注記）。
+{
+  const c = await relay(
+    comment({ eventType: "super_chat", monetaryAmount: { currency: "JPY", amount: 1e21 } }),
+  );
+  ok(
+    "relay(S-1): 極大値は指数表記ではなく桁展開される（長さが伸びることの記録）",
+    c.monetaryAmount,
+    "1,000,000,000,000,000,000,000 JPY",
+  );
 }
 
 if (failures > 0) {

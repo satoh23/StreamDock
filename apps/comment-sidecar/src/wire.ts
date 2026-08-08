@@ -65,6 +65,51 @@ const EVENT_TYPE_MAP: Record<
   jewels: "jewels",
 };
 
+/**
+ * 060i(2026-08-09): 表示用金額文字列の数値部（桁区切りを入れる）。
+ *
+ * 従来はテンプレートリテラルの素の数値だったため、**本番表示が `20000 JPY`** になっていた。
+ * 一方 dev-mock は `"20,000 JPY"` というカンマ付きラベルを直接組んでおり（wire.ts を通らない）、
+ * 設定プレビューの見本は `"1,000 JPY"` なので、**モック／プレビューと本番で表記が食い違っていた**
+ * ＝「動作確認では正しく見えるのに本番だけ桁が読みにくい」状態。ここを 1 箇所直せば全表示経路
+ * （オーバーレイ課金カード／アプリ内課金カード／課金ティッカー／固定コメント帯／過去コメント）が揃う。
+ *
+ * ⚠⚠ **`maximumFractionDigits: 20` は必須**（既定は 3 桁）。`amount` は YouTube の `amount_micros` を
+ * `/ 1_000_000` した値（`vendor/comment-fetcher/.../youtube/mapper/comment.mapper.ts`）なので理屈上
+ * 小数 6 桁までありうる。既定のままだと**丸めが入って監視した金額と違う値を表示する**——
+ * `monetaryAmount` は「監視済みの値をそのまま出す」文字列（`CommentList.tsx` の注記）なので、
+ * 桁区切りを足すために丸めを持ち込んではならない。
+ * ⚠ 読み上げ（`speechText.ts`）と集計は**この文字列を使わず数値 `monetary.amount` を見る**ので無影響。
+ * ⚠ ロケールは `ja-JP` 固定。sidecar は Node SEA で公式 Node は full-icu 同梱だが、万一 ICU が縮小構成でも
+ *   フォールバック先も 3 桁区切りなので破綻しない（`scripts/test-comment-relay.mjs` が期待値を固定している）。
+ *
+ * ⚠⚠ **desktop 側の `viewerFormat.fmtNumber` と「同じ」なのはロケールだけで、丸めは違う**
+ * （security-review 060i・Q-4・2026-08-09 に明示）。あちらは `maximumFractionDigits` **未指定＝既定 3 桁**。
+ * `viewerFormat.commentAmount()` は `monetaryAmount` が**空のときだけ** `fmtNumber(amount)` へ落ちるので、
+ * 同じ `1234.56789 USD` が経路によって `1,234.56789 USD`（本関数）／`1,234.568 USD`（フォールバック）に
+ * 分かれうる。**意図的な非対称**——本関数は「監視済みの値を verbatim」という `monetaryAmount` の契約側、
+ * `fmtNumber` は視聴者メモリの集計値など「読みやすさ優先」の表示側で、要件が違う。
+ * 実害が小さいのは `monetaryAmount` が通常入っているため（フォールバックは金額欠落時の保険）。
+ * **再修正トリガー**: フォールバック経路で丸め差が実際に報告されたら、`commentAmount()` 側を
+ * `maximumFractionDigits: 20` に揃える（`fmtNumber` 自体は集計表示で共有しているので触らないこと）。
+ *
+ * ⚠ **出力の長さは入力しだいで有界ではない**（security-review 060i・S-1・**受容**）。従来のテンプレート
+ * リテラルは指数表記で短く済んでいた（`${1e308}` → `"1e+308"`＝6 文字）が、`toLocaleString` は
+ * **411 文字**に展開する（`1e21` も 5 → 29 文字）。表示側の金額バッジは `white-space: nowrap` ＋
+ * `flex-shrink: 0`（`OverlayComment.module.css` の `.amountBadge`）なので、**異常値は 060i で直した症状を
+ * 金額側から再現できる**。受容の理由＝ ①`amount` は配信プラットフォーム由来の実額（`amount_micros/1e6`
+ * ／bits）で、この帯域の値は上流が壊れない限り来ない ②金額バッジは課金カードにしか出ず
+ * （chat 行は `monetaryAmount` を描かない＝`CommentList.tsx` の注記）、`.card { overflow: hidden }` が
+ * 切るので**窓の外へは出ない**＝読めなくなるだけで封じ込めは破れない。
+ * ⚠ 例外は投げない（実測: `NaN`→`"NaN"` / `±Infinity`→`"∞"`/`"-∞"` / `-0`→`"-0"`。
+ * `maximumFractionDigits: 20` は ES2023 で上限が 100 へ拡張済みなので `RangeError` の懸念も無い）
+ * ＝ **コメント配信パイプラインが落ちる形の失敗は起きない**。
+ * **再修正トリガー**: 実際に極端な金額で表示が壊れたら、`wire.ts` で値域を弾くのではなく
+ * `.amountBadge` に `max-width` ＋ `overflow: hidden` を足す（chat 側と同じ「縮められる」原則の徹底）。
+ */
+const fmtMonetaryAmount = (amount: number): string =>
+  amount.toLocaleString("ja-JP", { maximumFractionDigits: 20 });
+
 /** osareview CommentViewDto を viewer 表示用の正規化コメントへ変換する。 */
 export function toCanonicalComment(
   dto: OsareviewCommentViewDto,
@@ -90,8 +135,11 @@ export function toCanonicalComment(
   };
   if (dto.monetaryAmount) {
     const { currency, amount } = dto.monetaryAmount;
+    // 060i: 数値部は桁区切り付き（`20000 JPY` → `20,000 JPY`）。⚠ 単位の綴りは変えていない
+    // （BITS だけ小文字 "bits" ＝ 043a からの仕様。`test-comment-relay.mjs` が回帰で固定している）。
+    const shown = fmtMonetaryAmount(amount);
     canonical.monetaryAmount =
-      currency === "BITS" ? `${amount} bits` : `${amount} ${currency}`;
+      currency === "BITS" ? `${shown} bits` : `${shown} ${currency}`;
     // 038a: 数値 {amount, currency} も落とさず通す（視聴者メモリの回数/合計額の正確集計用）。
     canonical.monetary = { amount, currency };
   }

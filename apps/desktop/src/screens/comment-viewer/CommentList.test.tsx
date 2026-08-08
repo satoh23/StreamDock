@@ -1312,8 +1312,11 @@ describe("CommentList 060a オーバーレイのセレクタ契約", () => {
 
   /**
    * 060f 追修正: 課金カードのアイコンは**従来どおり `.sd-comment-header`（ヘッダ帯）の中**。
-   * ⚠ 課金カードはグリッドの 1 列に戻してある（`.card { grid-template-columns: 1fr }`）ので、
+   * ⚠ 課金カードはグリッドの 1 列に戻してある（`.card { grid-template-columns: minmax(0, 1fr) }`）ので、
    * chat 側の列構成を持ち込まないこと。
+   * ⚠ 060i(2026-08-09): 素の `1fr` ではなく **`minmax(0, 1fr)`**（＝縮められる 1 列）。`1fr` は
+   * `minmax(auto, 1fr)` の糖衣なので、名前が長いと列が min-content まで広がって金額バッジが切れる。
+   * 静的ガード (10-s) が固定している（jsdom はレイアウトを解決しないのでここでは検証できない）。
    */
   it("課金カードのアイコンは従来どおりヘッダ帯の中にある", () => {
     const { container } = render(

@@ -7,6 +7,20 @@
  *
  * ⚠ テーマ CSS はリポジトリに置かない（第三者の著作物）。`location.hash` から流し込む。
  *
+ * ## ⚠ 位置づけ（security-review 060i・Q-8・**現状は修正不要**）
+ *
+ * - **製品バンドルには入らない**。`vite.config.ts` に `rollupOptions.input` が無く既定エントリは root の
+ *   `index.html` 1 本、`repro/` は `publicDir`（`public/`）の外。**実測**（2026-08-09・`pnpm build`）:
+ *   `dist/` は `index.html` ＋ `assets/index-*.{css,js}` ＋ `public/` の中身だけで、`measure.html` は無い。
+ *   ⚠ このページは `location.hash` の CSS を**特権窓と同じ形で注入する**ので、ここが崩れると
+ *   「任意 CSS 注入ページが製品に入る」ことになる。**再修正トリガー**: `vite.config.ts` に
+ *   `rollupOptions.input` を足す／`repro/` を `public/` へ移す変更が入ったら、`dist/` を実際に見て確認する。
+ * - **`tsc` の対象外**（`tsconfig.json` の `include` が `["src"]`。`pnpm typecheck` も `pnpm build` の
+ *   `tsc` も見ない。eslint は通る）。意図＝ 本番の型検査に調査用の殻を混ぜない。修正不要の理由＝
+ *   製品に同梱されず、`repro/` 全体の処遇（削除 or `scripts/` へ移設）が 060c の残課題として未決だから。
+ *   **再修正トリガー**: 処遇を「残す」と決めたら `include` へ `"repro"` を足す（`noUnusedLocals` があるので
+ *   多少の手直しが要る）。**先に決めるべきは処遇のほうで、型検査はその後。**
+ *
  * 使い方:
  *   pnpm --filter ./apps/desktop dev
  *   chrome --headless --dump-dom "http://localhost:1420/repro/measure.html#<encodeURIComponent(css)>"
@@ -29,6 +43,8 @@ import { resolveOverlayFontStack } from "../src/features/comment-viewer/overlayS
 import { CommentList } from "../src/screens/comment-viewer/CommentList";
 import styles from "../src/screens/comment-viewer/CommentViewerApp.module.css";
 import overlayRoot from "../src/screens/comment-viewer/OverlayApp.module.css";
+// 060i: 課金カードには安定クラスが 1 つも無い（060f 追修正④）ので、意匠クラス（ハッシュ名）で引くしかない。
+import overlayComment from "../src/screens/comment-viewer/OverlayComment.module.css";
 
 // ⚠ `OverlayThemeCard` の PREVIEW_COMMENTS と同じ 2 件（export されていないので写し）。
 const PREVIEW_COMMENTS: CommentViewDto[] = [
@@ -47,10 +63,45 @@ const PREVIEW_COMMENTS: CommentViewDto[] = [
     text: "配信たのしみにしてます！",
     publishedAt: "2026-01-01T00:01:00Z",
     eventType: "superchat",
-    monetaryAmount: "￥1,000",
+    // 060i: `OverlayThemeCard` の見本と同形（本番 `wire.ts` の綴り＝`<桁区切り数値> <通貨コード>`）。
+    monetaryAmount: "1,000 JPY",
     monetary: { amount: 1000, currency: "JPY" },
   },
 ];
+
+/**
+ * 060i: `?case=long` で **長いユーザー名 ＋ 4 桁以上の金額**に差し替える。
+ *
+ * 既定の 2 件（上の写し）は名前が 6 字と短いので**現象が出ない**——これが「設定プレビューでは
+ * 気付けず、実機の OBS で初めて金額バッジの見切れとして現れた」理由そのものである。
+ * ⚠ dev-mock の該当ケース（`seq % 20 === 1`＝赤スパ）と同じ名前・同じ額にしてある。
+ */
+const LONG_CASE = new URLSearchParams(location.search).get("case") === "long";
+const MEASURE_COMMENTS: CommentViewDto[] = LONG_CASE
+  ? [
+      {
+        ...PREVIEW_COMMENTS[0],
+        source: "youtube",
+        author: { id: "sd-preview-1", name: "ぶいちゅーばー推しのすごく長い名前" },
+      },
+      {
+        ...PREVIEW_COMMENTS[1],
+        author: { id: "sd-preview-2", name: "ぶいちゅーばー推し" },
+        monetaryAmount: "20,000 JPY",
+        monetary: { amount: 20000, currency: "JPY" },
+      },
+    ]
+  : PREVIEW_COMMENTS;
+
+/**
+ * 060i: `?w=400` で **窓幅を明示する**（既定は headless の窓幅そのまま）。
+ *
+ * ⚠ `chrome --headless --window-size=…` は `--dump-dom` 経路では当てにならない（実測で 400 を渡しても
+ * 485px で描かれた）。幅は本検査の**独立変数**（配信窓の既定は 400×720・`min_inner_size` は 240）なので、
+ * ページ側で決め切る。当て先は `#root`＝**本番で `.sd-overlay` の親になる要素**なので、
+ * 「窓を細くした」のと同じ条件になる（`.sd-overlay` 自身に width を書くとユーザー CSS の的を汚す）。
+ */
+const FORCED_WIDTH = new URLSearchParams(location.search).get("w");
 
 /** `?mode=overlay` で配信窓（OBS）側の注入経路を再現する。既定はプレビュー。 */
 const OVERLAY_MODE = new URLSearchParams(location.search).get("mode") === "overlay";
@@ -84,7 +135,7 @@ function Harness() {
         style={{ fontFamily: resolveOverlayFontStack("system") }}
       >
         <CommentList
-          comments={PREVIEW_COMMENTS}
+          comments={MEASURE_COMMENTS}
           showCount={false}
           variant="overlay"
           showSource
@@ -95,7 +146,10 @@ function Harness() {
 }
 
 // ⚠ headless の `--dump-dom` は load 時点で吐くので、**同期でコミット**させる（flushSync）。
-const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement);
+const rootEl = document.getElementById("root") as HTMLElement;
+// 060i: 窓幅の代わり（上の FORCED_WIDTH の注記を参照）。`height` は触らない（縦は本検査の対象外）。
+if (FORCED_WIDTH !== null) rootEl.style.width = `${FORCED_WIDTH}px`;
+const root = ReactDOM.createRoot(rootEl);
 flushSync(() => {
   root.render(<Harness />);
 });
@@ -156,6 +210,49 @@ function report(): string {
       out.push(
         `  ⇒ pill×bar overlap: dx=${r(ox)} dy=${r(oy)} => ${ox > 0 && oy > 0 ? "OVERLAP" : "no overlap"}`,
       );
+    }
+  }
+
+  // ---- 060i: 「縮められない 1fr」の検出 -------------------------------------------------
+  //   判定は**幅の比較 1 本**に尽きる。`1fr`（= `minmax(auto, 1fr)`）だとグリッド列が
+  //   ヘッダの min-content まで広がるので、**ヘッダ帯がカードより広くなる**。
+  //   `minmax(0, 1fr)` なら列＝カード幅に固定され、flex が名前を縮めて ellipsis が出る。
+  const q = <T extends Element>(sel: string) => document.querySelector<T>(sel);
+  const card = q<HTMLElement>(`.${overlayComment.card}`);
+  const cardHeader = q<HTMLElement>(`.${overlayComment.cardHeader}`);
+  const cardName = q<HTMLElement>(`.${overlayComment.cardName}`);
+  const amount = q<HTMLElement>(`.${overlayComment.amountBadge}`);
+  out.push("--- 060i ---");
+  if (card === null || cardHeader === null) {
+    out.push("card: (absent)");
+  } else {
+    const cw = card.clientWidth;
+    const hw = cardHeader.getBoundingClientRect().width;
+    out.push(`card.clientWidth=${r(cw)} header.width=${r(hw)} overflow=${r(hw - cw)}`);
+    out.push(`  ⇒ ヘッダがカードより広い: ${hw - cw > 0.5 ? "YES（列が縮められていない）" : "no"}`);
+    if (amount !== null) {
+      const over = amount.getBoundingClientRect().right - card.getBoundingClientRect().right;
+      out.push(
+        `  金額バッジ right − card right = ${r(over)} ⇒ ${over > 0.5 ? "見切れ（clip される）" : "カード内に収まる"}`,
+      );
+    }
+    if (cardName !== null) {
+      const ell = cardName.scrollWidth - cardName.clientWidth;
+      out.push(
+        `  cardName scrollWidth−clientWidth = ${r(ell)} ⇒ ellipsis ${ell > 0.5 ? "発動" : "未発動"}`,
+      );
+    }
+  }
+  // chat 側（同根・`<li>` ごと横に溢れる形で出る）。
+  const scroller = q<HTMLElement>("[data-comment-scroll]");
+  if (li !== null && scroller !== null) {
+    const over = li.getBoundingClientRect().width - scroller.clientWidth;
+    out.push(`chat li.width − scroller.clientWidth = ${r(over)} ⇒ ${over > 0.5 ? "はみ出し" : "収まる"}`);
+    out.push(`  scroller.scrollWidth=${r(scroller.scrollWidth)} clientWidth=${r(scroller.clientWidth)}`);
+    const name = q<HTMLElement>(".sd-comment-name");
+    if (name !== null) {
+      const ell = name.scrollWidth - name.clientWidth;
+      out.push(`  chat name ellipsis ${ell > 0.5 ? "発動" : "未発動"}（差 ${r(ell)}）`);
     }
   }
   return out.join("\n");
