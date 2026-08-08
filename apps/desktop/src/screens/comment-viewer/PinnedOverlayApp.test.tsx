@@ -338,7 +338,14 @@ describe("PinnedOverlayApp 060a セレクタ契約の出方", () => {
     expect((container.firstChild as HTMLElement).className).not.toContain("sd-overlay");
   });
 
-  it("課金の固定コメントでも契約が出る（sd-comment-tip と data-sd-tone）", () => {
+  /**
+   * ⚠⚠ 060f 追修正④(2026-08-08): **課金の固定コメントには契約（安定クラス・`data-sd-*`）が出ない。**
+   * この窓は `CommentList` を `comment-overlay` 窓と共有しているので、あちらで課金カードを
+   * ユーザー CSS の的から外した結果がそのままここにも出る。⚠ **これは退行ではなく仕様**
+   * （固定窓にはそもそも注入経路が無いので、的の有無は見た目に影響しない）。
+   * 理由の正は `CommentList.tsx` の課金分岐コメントと静的ガード **(10-o)**。
+   */
+  it("⚠ 課金の固定コメントには契約が出ない（060f 追修正④で的を外したため）", () => {
     savePinned([
       makePinned({
         eventType: "superchat",
@@ -348,9 +355,14 @@ describe("PinnedOverlayApp 060a セレクタ契約の出方", () => {
       }),
     ]);
     const { container } = render(<PinnedOverlayApp />);
-    const item = container.querySelector<HTMLElement>(".sd-comment");
-    expect(item?.className).toContain("sd-comment-tip");
-    expect(item?.dataset.sdTone).toBe("t6");
-    expect(container.querySelector(".sd-comment-amount")?.textContent).toBe("10,000 JPY");
+    const item = container.querySelector<HTMLElement>("ol > li");
+    expect(item).toBeTruthy();
+    // 安定クラスも data 属性も 1 つも無い。
+    expect([...item!.classList].filter((c) => c.startsWith("sd-comment"))).toEqual([]);
+    expect(Object.keys(item!.dataset)).toEqual([]);
+    expect(item!.querySelectorAll('[class*="sd-comment"]')).toHaveLength(0);
+    // ⚠ 中身（金額・本文）は従来どおり出ている＝的を外しただけで意匠は動かしていない。
+    expect(item!.textContent).toContain("10,000 JPY");
+    expect(item!.textContent).toContain("応援してます");
   });
 });

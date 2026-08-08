@@ -757,17 +757,51 @@ for (const rel of [VIEWER_CSS, OVERLAY_CSS]) {
 //      （(6-b) の FAINT_ALLOWED と同じ「例外・契約は機械にも読める形で残す」作法）。
 // ---------------------------------------------------------------------------
 {
-  /** 060a の安定クラス契約（docs/tasks/060a-overlay-selector-contract.md が正）。 */
+  /**
+   * 060a/060f の安定クラス契約（docs/tasks/060a-overlay-selector-contract.md ＋
+   * docs/tasks/060f-overlay-dom-alignment.md が正）。**`CommentList.tsx` に在るべきもの**だけを置く。
+   */
   const STABLE_CLASSES = [
-    ["sd-comment", "コメント 1 件（chat / 課金 共通の <li>）"],
-    ["sd-comment-tip", "課金カードであること"],
-    ["sd-comment-name", "投稿者名（chat の .name と課金の .cardName）"],
-    ["sd-comment-source", "サイト名バッジ"],
-    ["sd-comment-icon", "アイコン"],
-    ["sd-comment-body", "吹き出し／カード本体（.bubble と .cardBody）"],
-    ["sd-comment-text", "本文テキスト（.text と .cardText）"],
-    ["sd-comment-amount", "金額バッジ"],
-    ["sd-comment-event", "種別の要約文"],
+    // ⚠⚠⚠ 060f 追修正④(2026-08-08): **この契約は chat だけのもの**になった。
+    //   課金カード（投げ銭カード）には安定クラスも `data-sd-*` も付けない（下の (10-o) が固定）。
+    //   削除したのは `sd-comment-tip` と `sd-comment-in-tip` の 2 つ。理由は `CommentList.tsx` の
+    //   課金分岐のコメント（要点＝配布テーマは課金カードを**名指しで消しにくる**ので限定では防げない）。
+    ["sd-comment", "コメント 1 件（⚠ 追修正④で **chat の <li> 専用**になった）"],
+    ["sd-comment-chat", "chat であること（060f・⚠ <li> にだけ・課金には付けない）"],
+    // 060f 追修正（security-review Q-1）: **`to` を 1 要素の複合セレクタに保つための目印**。
+    // ⚠⚠ これは意匠でも便利クラスでもなく、「合成しても二重前置にならない」を成立させる装置。
+    // 契約は「chat の `<li>` の中の要素は**すべて**持つ」（例外を作らない）。詳細は
+    // `CommentList.tsx` の `renderOverlayItem` 冒頭と `cssCompat.ts` の `SELECTOR_TABLE` docstring。
+    ["sd-comment-in-chat", "chat の <li> の**中**の要素すべて（060f 追修正）"],
+    ["sd-comment-name", "投稿者名（chat の .name）"],
+    ["sd-comment-source", "サイト名バッジ（chat のみ）"],
+    ["sd-comment-icon", "アイコン（chat のみ）"],
+    ["sd-comment-header", "名前行（chat の .header）"],
+    // ⚠ 060f 追修正(2026-08-08): アイコンは `<li>` 直下（グリッド 1 列目）へ移したので、
+    //   この中には吹き出ししか無い。契約としては残す（消すとテーマが黙って壊れる）。
+    ["sd-comment-row", "吹き出しの行（chat の .row・⚠ アイコンはもう中に無い）"],
+    ["sd-comment-body", "吹き出し（chat の <p>）"],
+    ["sd-comment-text", "本文テキスト（chat の <p>）"],
+    // ⚠ 追修正④で `sd-comment-amount`（金額バッジ）と `sd-comment-event`（種別の要約文）を落とした。
+    //   どちらも**課金カードにしか出ない**要素で、課金カードから安定クラスを外した時点で DOM から消える。
+    //   契約に残すと (10-a)（契約が `CommentList.tsx` に実在すること）が落ちる＝**必ず対で消すこと。**
+    ["sd-comment-list", "一覧の器（⚠ variant=\"overlay\" のときだけ付く）"],
+  ];
+
+  /**
+   * 060f: **窓ルートだけは `CommentList.tsx` ではなく `OverlayApp.tsx` に在る**ので、
+   * (10-a)（`CommentList.tsx` に実在すること）の対象からは外し、ここに分けて持つ。
+   *
+   * ⚠ 分ける理由は (10-b)（変換表の右辺 ⊆ 契約）に**必要だから**。060f で
+   * `yt-live-chat-app` / `yt-live-chat-renderer` → `.sd-overlay` を変換表へ入れたため、
+   * ここに無いと「正しいコードなのに (10-b) が落ちる」（実測）。逆に `STABLE_CLASSES` へ
+   * 素朴に足すと今度は (10-a) が「`CommentList.tsx` に `sd-overlay` が無い」で落ちる。
+   * ⚠ この窓ルートが **`OverlayApp.tsx` に実在すること**と**固定コメント窓に付かないこと**は **(10-d)** が
+   * この配列を回して固定している（security-review 2026-08-05 でクラス名のハードコードから変更）。
+   * ＝ ここへ 2 件目を足すと (10-b) の許可と (10-d) の実在検査が**自動で揃う**。片方だけ増やせない。
+   */
+  const ROOT_CLASSES = [
+    ["sd-overlay", "オーバーレイ窓のルート（ユーザーが --sd-* を上書きする器）"],
   ];
 
   const listTsx = stripTsComments(readRaw(COMMENT_LIST_TSX));
@@ -795,10 +829,80 @@ for (const rel of [VIEWER_CSS, OVERLAY_CSS]) {
     }
   }
 
+  // (10-o) **課金カード（投げ銭カード）にはユーザー CSS の的を 1 つも置かない。**（060f 追修正④ 2026-08-08）
+  //   ⚠ 番号が (10-a) の隣で飛んでいるのは追加順のため（どちらも `CommentList.tsx` の契約検査なので位置を揃えた）。
+  //
+  //   ⚠⚠⚠ **これは意匠の話ではなく「課金カードが消える」実害への対策。** OBS 用に配られている
+  //   純正チャットのテーマは、**課金カードを名指しで消す**のが定番である:
+  //     yt-live-chat-paid-message-renderer, yt-live-chat-paid-sticker-renderer { display:none !important }
+  //     .yt-live-chat-membership-item-renderer { display:none !important }
+  //   純正チャットではスパチャが**ティッカー（上部の帯）にも出る**ので「二重に出るからインライン側を消す」
+  //   という意図だが、StreamDock にティッカーは無いので**意図が成立せず、課金カードが丸ごと消える**
+  //   （2026-08-08 実機で発生）。⚠⚠ **目印クラスを足す方向（060f が 3 巡ぶん試した「限定」）では
+  //   原理的に防げない**——テーマが狙っているのは「課金カードそのもの」だから。
+  //   → 課金カードから**安定クラスと `data-sd-*` を全部外した**（2026-08-08 本人決定
+  //   「スパチャのデザインは常に同じで、配信窓に必ず出る」）。ここがその退行を殺す唯一の受け皿。
+  //
+  //   ⚠ 対になる検査＝ `CommentList.selectorContract.test.tsx` の「変換表・リセットのどの当て先も
+  //   課金カードに当たらない」。**両方消さないこと**（こちらは字面、あちらは実 DOM を見ている）。
+  {
+    // ⚠ 課金分岐は「`monetaryTone()` を引くところ」から `renderOverlayItem` の終わりまで。
+    //   目印が見つからないときは**黙って素通りさせず fail する**（リファクタで検査が無効化されるのを防ぐ）。
+    //
+    // ⚠⚠ **正規表現で TSX をスライスする方式の脆さについて**（レビュー指摘 Q-4・2026-08-08・**修正不要と判断**）。
+    //   意図＝ 依存ゼロ（本スクリプトの前提）で「課金分岐の**字面**」だけを見る最小の受け皿。
+    //   脆さは実在する: アンカーと終端 `\n  };` に依存するので、課金分岐を別関数へ切り出す・
+    //   インデントを変える・Prettier 設定を変えると壊れる。AST ではない。
+    //   **修正不要と判断した理由は「壊れ方の向きが正しい」から**——アンカー消失時は黙って通らず
+    //   **fail する**（下の分岐）ので、リファクタで検査が無効化されることはない。実際にミューテーション
+    //   （課金 `<li>` へ `sd-comment` / `data-sd-tone` を戻す）で KILLED を実測済み。
+    //   ⚠ 誤検知の心配も小さい: 意匠クラスは CSS Modules のハッシュ名なので `sd-comment` を含む名前を書けない。
+    //   ⚠ 範囲外になる `renderIcon` の**定義**（アンカーより前）は、引数必須のシグネチャと
+    //   課金側が明示的に `""` を渡す形で守られている（緩めると typecheck が落ちる）。
+    //   再修正トリガー: 課金分岐を別ファイル／別コンポーネントへ切り出すとき（＝そのとき本検査も
+    //   一緒に更新する。AST 化するなら `typescript` は既に devDependency にあるので**新規依存は要らない**）。
+    const TIP_ANCHOR = "const tone = monetaryTone(c);";
+    const start = listTsx.indexOf(TIP_ANCHOR);
+    const end = start === -1 ? -1 : listTsx.indexOf("\n  };", start);
+    if (start === -1 || end === -1) {
+      fail(
+        `${COMMENT_LIST_TSX}: 課金カード分岐の目印（\`${TIP_ANCHOR}\`）が見つかりません（060f 追修正④・(10-o)）。` +
+          `この検査は「課金カードにユーザー CSS の的を置かない」を守る唯一の静的ガードなので、` +
+          `分岐を書き換えるなら**目印と一緒に本検査も更新**してください（黙って無効化させないため fail します）。`,
+      );
+    } else {
+      const tipBranch = listTsx.slice(start, end);
+      for (const [pattern, what] of [
+        [/(?<![A-Za-z0-9_-])sd-comment[A-Za-z0-9_-]*/g, "安定クラス"],
+        [/data-sd-[a-z-]+/g, "`data-sd-*` 属性"],
+      ]) {
+        const hits = [...new Set(tipBranch.match(pattern) ?? [])];
+        if (hits.length > 0) {
+          fail(
+            `${COMMENT_LIST_TSX}: 課金カード分岐に${what}が残っています（060f 追修正④・(10-o)）: ` +
+              `${hits.join(" / ")}。` +
+              `⚠ **課金カードはユーザー CSS の的にしない**（本人決定 2026-08-08「スパチャのデザインは` +
+              `常に同じで、配信窓に必ず出る」）。的を 1 つでも置くと、配布テーマの定番である` +
+              `\`yt-live-chat-paid-message-renderer{display:none!important}\` 系の指定で` +
+              `**課金カードが丸ごと消えます**（実機で発生）。` +
+              `⚠ 意匠は CSS モジュールのハッシュ名（\`.card\` / \`.tierN\`）で当てること——` +
+              `あれはユーザーから名指しできないので的になりません。`,
+          );
+        }
+      }
+    }
+  }
+
   // (10-b) 変換表の**変換先が実在する安定クラスであること**（(4) の tone 表と同型の突き合わせ）。
   //   cssCompat.ts は「純関数の置換表」なので、右辺を打ち間違えても typecheck も vitest も通る
   //   （ただの文字列）。ユーザーの CSS が黙って効かなくなるだけなので、ここで突き合わせる。
-  const declared = new Set(STABLE_CLASSES.map(([c]) => c));
+  //   ⚠ 060f: `to` は**複合セレクタ**（`.sd-comment-chat .sd-comment-text`）を取りうるが、
+  //   `matchAll(/\.([A-Za-z0-9_-]+)/g)` が**全クラストークン**を抜くので検査はそのまま効く（実測）。
+  //   ⚠ 窓ルート（`.sd-overlay`）は `CommentList.tsx` ではなく `OverlayApp.tsx` に在るため、
+  //   (10-a) の対象である `STABLE_CLASSES` ではなく `ROOT_CLASSES` から合流させる。
+  const declared = new Set(
+    [...STABLE_CLASSES, ...ROOT_CLASSES].map(([c]) => c),
+  );
   const toValues = [...compatTs.matchAll(/\bto:\s*"([^"]+)"/g)].map((m) => m[1]);
   if (toValues.length === 0) {
     fail(
@@ -819,6 +923,31 @@ for (const rel of [VIEWER_CSS, OVERLAY_CSS]) {
     }
   }
 
+  // (10-l) 変換表の**変換先に子孫結合子を書かない**＝ `to` は「**1 要素の複合セレクタ**」だけ。
+  //   ⚠ 番号が (10-b) の隣で飛んでいるのは追加順のため（どちらも `to` の検査なので位置を揃えた）。
+  //
+  //   ⚠⚠ **これは作法ではなく安全装置**（security-review Q-1・2026-08-05 → 修正 2026-08-06）。
+  //   `to` を子孫セレクタ（`.sd-comment-chat .sd-comment-text`）にすると、**祖先側のエントリと合成された
+  //   ときに前置が二重に積まれ「絶対に当たらないセレクタ」になる**（`.chat-line__message
+  //   .chat-line__message-body` → `.sd-comment-chat .sd-comment-chat .sd-comment-text` ＝ <li> の中に
+  //   <li> が要る）。トークン単位の置換である以上、表の書き方だけでは防げない。
+  //   ⚠⚠ しかもこの失敗は**黙っている**——`rewritten` は加算され `unmatched` は空なので、060d の UI が
+  //   「M 個のルールを変換しました」と**積極的に誤報する**（＝ (10-b) が言う「変換されたのに効かない＝
+  //   最悪の状態」）。だから静的に禁じる。限定は `sd-comment-in-chat` / `sd-comment-in-tip` で表すこと。
+  //   ⚠ 対になる検査＝ `cssCompat.test.ts` の**全順序対（表の全エントリ × 全エントリ）の総当たり**。**両方消さないこと。**
+  for (const to of toValues) {
+    if (/\s|>/.test(to.trim())) {
+      fail(
+        `${CSS_COMPAT_TS}: 変換先 \`${to}\` に子孫結合子（空白 / \`>\`）が入っています（060f・(10-l)）。` +
+          `\`to\` は**1 要素の複合セレクタ**（例 \`.sd-comment-text.sd-comment-in-chat\`）だけにしてください。` +
+          `子孫セレクタにすると、祖先側のエントリと合成されたときに**前置が二重に積まれて永久に当たらない` +
+          `セレクタ**になり（\`.sd-comment-chat .sd-comment-chat .sd-comment-text\`）、しかも rewritten は` +
+          `加算され unmatched は空なので **060d の UI が「変換しました」と誤報します**。` +
+          `chat / 課金の限定は \`sd-comment-in-chat\` / \`sd-comment-in-tip\` の目印クラスで表してください。`,
+      );
+    }
+  }
+
   // (10-c) 変換表の**元セレクタに sd 語彙を書かない**＝変換が冪等であることの構造的な担保。
   //   060b の決定により変換は**注入のたびに毎回**走る（保存するのは変換前の CSS）。自分の出力に
   //   当たる表を書くと 2 周目で結果が変わり、テーマの見え方が注入回数に依存して壊れる。
@@ -835,25 +964,61 @@ for (const rel of [VIEWER_CSS, OVERLAY_CSS]) {
     }
   }
 
+  // (10-k) 変換表の**元セレクタに窓ルート相当（`body` / `html` / `:root`）を書かない**。
+  //   ⚠ 番号が (10-c) の隣で飛んでいるのは追加順のため（どちらも `from` の検査なので位置を揃えた）。
+  //
+  //   ⚠⚠ **これは意匠ではなく安全装置。** オーバーレイ窓の透過（＝ OBS 合成の前提）は
+  //   `html[data-overlay="1"]` の背景透明化で成立しており、そこを変換の的にすると**窓を塗り潰せる**。
+  //   security-review（2026-08-05）で「この判断を守っているのは `cssCompat.ts` のコメントと
+  //   `cssCompat.test.ts` の describe だけ＝テストを一緒に消せば緑のまま通る」と指摘されたぶん。
+  //   ⚠ **未変換の `body` は `unmatched` にも載らない**（`FOREIGN_SELECTOR_RE` は接頭辞ベースで、
+  //   「sd 語彙でない全セレクタ」を載せる設計ではない）ので、**足してしまっても警告では気付けない**。
+  //   だから静的に禁じる。
+  //   ⚠ トークン単位で見ること——`.chat-line__message-body` は部分文字列に `body` を含むので、
+  //   素朴な `includes("body")` では**正しいコードで落ちる**。
+  const ROOT_LIKE_FROM = ["body", "html", ":root"];
+  for (const from of fromValues) {
+    for (const token of from.trim().split(/\s*>\s*|\s+/)) {
+      if (ROOT_LIKE_FROM.includes(token.toLowerCase())) {
+        fail(
+          `${CSS_COMPAT_TS}: 変換表の元セレクタ \`${from}\` に窓ルート相当 \`${token}\` が入っています（060f）。` +
+            `オーバーレイ窓の透過（OBS 合成の前提）は html[data-overlay="1"] の背景透明化で成立しているため、` +
+            `ここを変換の的にすると**ユーザーの CSS が窓を塗り潰せます**。` +
+            `⚠ 未変換の \`body\` は unmatched にも載らないので、足してしまっても警告では気付けません` +
+            `（だからこの検査があります）。意図的に解禁するなら docs/security.md の` +
+            `「レビュー必須条件＝オーバーレイへのユーザー CSS の注入」を先に読むこと。`,
+        );
+      }
+    }
+  }
+
   // (10-d) 窓ルートの安定クラスは **comment-overlay 窓にだけ**付く。
   //   060d は「CSS の注入先は `comment-overlay` のみ・固定コメントは別タスク」と決めており、
   //   窓の区別をこのクラスの有無で表している。加えて `PinnedOverlayApp` は 046c の `applyFitScale` が
   //   `.root` の transform / width / height を**排他所有**しているので、そこをユーザー CSS に
   //   触らせる的を作ってはいけない（縮小フィットが壊れる）。
-  if (!classToken("sd-overlay").test(overlayAppTsx)) {
-    fail(
-      `${OVERLAY_APP_TSX}: 窓ルートの安定クラス \`sd-overlay\` がありません（060a）。` +
-        `ユーザーが CSS 変数（--sd-*）を上書きする器がこれです。無いと変数が 1 つも効きません。`,
-    );
-  }
-  if (classToken("sd-overlay").test(pinnedTsx)) {
-    fail(
-      `${PINNED_OVERLAY_TSX}: 固定コメント窓に \`sd-overlay\` が付いています（060a / 060d）。` +
-        `060d の注入先は \`comment-overlay\` のみで、窓の区別をこのクラスの有無で表しています。` +
-        `また 046c の applyFitScale がこの窓の .root の transform / width / height を排他所有しているため、` +
-        `ユーザー CSS がそこを触れると縮小フィットが壊れます。` +
-        `固定窓へ広げるのは別タスク（046d と同じ広げ方）として、本ガードも併せて更新してください。`,
-    );
+  //
+  //   ⚠ 060f 後追い（security-review 2026-08-05）: **検査対象を `ROOT_CLASSES` から回す**。
+  //   ここでクラス名を文字列でハードコードしていると、(10-b) は `ROOT_CLASSES` を見て許可する一方
+  //   **2 件目の窓ルート（将来 046d で固定窓へ広げるとき等）は実在性を誰も検査しない**状態になる
+  //   ＝ (10-b) の目的（変換先の打ち間違いを機械で検出する）が静かに穴になる。契約の出所を 1 か所に寄せる。
+  for (const [cls, role] of ROOT_CLASSES) {
+    if (!classToken(cls).test(overlayAppTsx)) {
+      fail(
+        `${OVERLAY_APP_TSX}: 窓ルートの安定クラス \`${cls}\`（${role}）がありません（060a / 060f）。` +
+          `ユーザーが CSS 変数（--sd-*）を上書きする器がこれです。無いと変数が 1 つも効きません。` +
+          `⚠ この名前は本スクリプトの ROOT_CLASSES が正で、(10-b) が変換表の右辺をここへ突き合わせています。`,
+      );
+    }
+    if (classToken(cls).test(pinnedTsx)) {
+      fail(
+        `${PINNED_OVERLAY_TSX}: 固定コメント窓に \`${cls}\` が付いています（060a / 060d）。` +
+          `060d の注入先は \`comment-overlay\` のみで、窓の区別をこのクラスの有無で表しています。` +
+          `また 046c の applyFitScale がこの窓の .root の transform / width / height を排他所有しているため、` +
+          `ユーザー CSS がそこを触れると縮小フィットが壊れます。` +
+          `固定窓へ広げるのは別タスク（046d と同じ広げ方）として、本ガードも併せて更新してください。`,
+      );
+    }
   }
 
   // (10-e) **CSS 変数が実際に読まれていて、フォールバック＝現行意匠の実値のままであること。**
@@ -1086,6 +1251,176 @@ for (const rel of [VIEWER_CSS, OVERLAY_CSS]) {
     }
   }
 
+  // (10-m) **既定意匠のリセットが、注入経路 2 か所の「両方」で前置されていること。**（060f 追修正 2026-08-08）
+  //   ⚠ 番号が (10-i) の隣で飛んでいるのは追加順のため（どちらも注入経路の検査なので位置を揃えた）。
+  //
+  //   既定のしっぽは疑似要素 2 枚（`.bubble::before` / `::after`）で描いているが、**取り込むテーマは
+  //   `::before` 1 枚しか書かないのが普通**で、`::after` が孤児として残り**しっぽが二重に見えていた**（実機で確認）。
+  //   → `overlayThemeReset.ts` の固定リセットを注入 CSS の**手前**に連結して止める。
+  //   ⚠ 追修正②(2026-08-08) でリセットの守備範囲が広がった——しっぽだけでなく**吹き出しの装飾一式**
+  //   （背景・枠・角丸・影）と `--sd-icon-gap` も引っ込める。無いとテーマが既定の吹き出しを部分的にしか
+  //   上書きできず、**吹き出しを持たないデザインが原理的に適用できない**（本人指摘）。
+  //
+  //   ⚠⚠ **片方だけ抜けると本番とプレビューで見え方が食い違う**。しかも jsdom はカスケードも
+  //   `@layer` の優先順位も解決しないので、**この退行はコンポーネントのテストでは殺せない**（(10-a) と同じ事情）。
+  //   ここが唯一の機械的な受け皿である。**消さないこと。**
+  //   ⚠ あわせて `OverlayComment.module.css` 側の `@layer sd-default` も検査する——リセットは
+  //   「非レイヤー > レイヤー」で既定に勝っているので、**レイヤーを外すとリセットが黙って効かなくなる**
+  //   （リセットの詳細度は `:where()` で 0 なので、詳細度では既定に勝てない）。
+  //   ⚠⚠ **`.bubble` 本体がレイヤーの「中」にあることまで見る**——`@layer` の存在だけを見ていると、
+  //   `.bubble` をレイヤーの外へ出す変異（＝装飾リセットだけが黙って効かなくなる）が生き残る。
+  //   ⚠ **呼び出し（`withDecorationReset(`）を見ること。名前の出現だけでは不十分**——
+  //   `import { withDecorationReset } from …` が残っていると、**呼び出しを消しても緑のまま通る**
+  //   （初版がこの穴を持っており、ミューテーションで実測して是正した）。
+  const RESET_HELPER = "withDecorationReset";
+  for (const rel of [OVERLAY_APP_TSX, THEME_CARD_TSX]) {
+    const src = injectionSources.find(([r]) => r === rel)?.[1] ?? "";
+    if (!new RegExp(`\\b${RESET_HELPER}\\s*\\(`).test(src)) {
+      fail(
+        `${rel}: 既定意匠のリセット \`${RESET_HELPER}()\` を通していません（060f 追修正・(10-m)）。` +
+          `注入する CSS の**手前**に \`overlayThemeReset.ts\` のリセットを連結してください。` +
+          `⚠ 無いと、テーマが \`::before\` だけでしっぽを描いたときに既定の \`::after\`（内側の塗り三角）が` +
+          `孤児として残り、**しっぽが二重に見えます**（実機で確認済み）。` +
+          `⚠ 注入経路は配信窓とプレビューの 2 か所で、**片方だけ抜けると本番とプレビューで見え方が食い違います**` +
+          `（jsdom はカスケードを解決しないのでテストでは気付けません）。`,
+      );
+    }
+  }
+  // ⚠ コメントを落としてから見る（このファイルのコメントは説明用に `{ … }` を含む）。
+  const layeredCss = stripCssComments(read(OVERLAY_CSS));
+  const layerOpen = /@layer\s+sd-default\s*\{/.exec(layeredCss);
+  if (layerOpen === null) {
+    fail(
+      `${OVERLAY_CSS}: 既定の吹き出し一式を囲む \`@layer sd-default\` がありません（060f 追修正・(10-m)）。` +
+        `(10-m) のリセットは詳細度 0（\`:where()\`）で、**「非レイヤー > レイヤー」というカスケードの順序だけで** ` +
+        `既定意匠に勝っています。レイヤーを外すとリセットが黙って効かなくなり、` +
+        `しっぽの二重と「テーマが既定の吹き出しを越えられない」状態が同時に再発します。` +
+        `⚠ 逆にリセット側を \`!important\` にして解決しないこと——今度は**ユーザーのテーマに勝ってしまいます**。`,
+    );
+  } else {
+    // レイヤーブロックの範囲（対応する `}` まで）を求める。
+    let depth = 0;
+    let end = -1;
+    for (let i = layerOpen.index + layerOpen[0].length - 1; i < layeredCss.length; i++) {
+      if (layeredCss[i] === "{") depth++;
+      else if (layeredCss[i] === "}" && --depth === 0) {
+        end = i;
+        break;
+      }
+    }
+    // ⚠ `.bubble` 本体まで中に入っていること。ここを見ないと「`.bubble` だけレイヤーの外へ出す」
+    //   変異（＝装飾リセットだけが静かに効かなくなる）が生き残る。
+    //
+    // ⚠⚠⚠ **レビュー指摘 S-1（2026-08-08）で 3 つ目の穴が実測された。** ここは初版から数えて
+    //   3 度、同じ形の間違い（「**条件を満たすものが 1 つ在るか**」を見て「**該当する全部が満たすか**」を
+    //   見ない）をしている:
+    //     ① `src.includes("withDecorationReset")` … import が残っていれば呼び出しを消しても緑
+    //     ② `@layer` の**存在**だけ            … `.bubble` をレイヤー外へ出す変異が生存
+    //     ③ `exec`（＝**最初の 1 件**だけ）      … 単独ルールをレイヤー外へ出す変異が生存
+    //   ③ の実測: `.bubble::before` / `.bubble::after` は**このファイルに 2 回ずつ現れる**
+    //   （「`.bubble::before, .bubble::after {` の束ね」と「しっぽの幾何を持つ単独ルール」）。
+    //   `exec` が拾うのは束ねのほうなので、**単独ルール（`top:12px` / `left:-20px` /
+    //   `border-*-width`）だけをレイヤー外へ出すと check:css も vitest 1119 件も全部緑で通った**。
+    //   それが復活させるのは追修正③が直したまさにその欠陥（テーマが `content:""` で疑似要素を
+    //   復活させた瞬間に既定の幾何が漏れる）である。
+    //   → **`matchAll` で全件を見て、1 件でもレイヤー外なら落とす。**
+    //   ⚠ 同じ罠は (10-e) の `ruleBodies` が既に踏んで是正済み（あちらのコメントが
+    //   「先頭の 1 つだけを見る `ruleBody` では束ねのほうを掴む」と書いている）。**その教訓が
+    //   ここへ伝わっていなかった**——今後この種の検査を足すときは必ず `matchAll` で書くこと。
+    //   ⚠ 先頭を `^[ \t]*` にするのも意図（`^\s*` は `\s` が `\n` を含むため、空行をまたいで
+    //   マッチ開始位置が**前の行へずれる**＝ index の範囲比較が信用できなくなる）。
+    for (const sel of [".bubble", ".bubble::before", ".bubble::after"]) {
+      const re = new RegExp(
+        `^[ \\t]*${sel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[ \\t]*[,{]`,
+        "gm",
+      );
+      const idxs = [...layeredCss.matchAll(re)].map((m) => m.index);
+      const outside = idxs.filter(
+        (i) => end === -1 || i < layerOpen.index || i > end,
+      );
+      if (idxs.length === 0 || outside.length > 0) {
+        fail(
+          `${OVERLAY_CSS}: \`${sel}\` のルール${idxs.length === 0 ? "が見つかりません" : `${idxs.length} 件のうち ${outside.length} 件`}が ` +
+            `\`@layer sd-default\` の中にありません（060f 追修正・(10-m)）。` +
+            `リセット（\`overlayThemeReset.ts\`・詳細度 0）は**レイヤーの外にあること**だけで既定に勝っています。` +
+            `1 ルールでもレイヤーの外に出すと、そのプロパティだけリセットが効かなくなり、` +
+            `**テーマを当てても StreamDock の吹き出しが残ります**（jsdom はカスケードを解決しないので` +
+            `テストでは検出できません）。` +
+            `⚠ \`${sel}\` は**束ねルールと単独ルールの 2 つに分かれている**ので、片方だけ中に在っても不足です。`,
+        );
+      }
+    }
+  }
+
+  // (10-n) **レイアウト器の「宣言インベントリ」**＝ 060f 追修正で失われた担保の置き換え。
+  //   ⚠ 番号が (10-m) の隣で飛んでいるのは追加順のため。
+  //
+  //   ⚠⚠ **背景（レビュー指摘・申し送り 1）**: 060f は「意匠 CSS（`OverlayComment.module.css`）の
+  //   **非コメント差分ゼロ**」を唯一の機械的な担保にしていた（`git diff` で「宣言を 1 つも触っていない」と
+  //   示せる）。追修正①のグリッド化で**その担保を手放した**が、代替として挙げた 2 つはどちらも穴だった:
+  //     - **(10-e)** は `--sd-*` の**フォールバック値の一致**しか見ない＝**新しく足された宣言**
+  //       （`.icon{margin-right}` / `.item{display:grid}` 等）は 1 つも検査対象外。
+  //     - **A/B スクショ**は未実施で、しかも chat 中心のチェックリストだった。
+  //   → 実際にそこを通り抜けた回帰が 1 件出た（レビュー指摘 Q-1）: `.icon{margin-right:var(--icon-gap)}` が
+  //     **課金カードのヘッダにも効いて**アバターと名前の間隔が 8px → 36px に広がっていた。
+  //     vitest 1119 件と (10-a)〜(10-m) の**全部が緑のまま通った**。
+  //
+  //   → **宣言してよいプロパティ名の集合を器ごとに固定する。** 値は見ない（値は (10-e) の担当で、
+  //   ここで二重に持つと正しい調整で落ちる）。**増えても減っても落ちる**のが要点で、
+  //   「意匠を触ったこと自体」を検出して A/B スクショの判断へ回すのがこの検査の役目である。
+  //
+  //   ⚠ **これは change-detector として意図的にきつい。** 意匠を変えるときは落ちるのが正しく、
+  //   そのとき更新するのは**この配列 ＋ 実機の A/B スクショ（chat と課金カードの両方）**。
+  //   ⚠ 対象は「chat と課金でルールを共有している器」だけに絞ってある（`.bubble` / `.text` は
+  //   (10-e) と (10-m) が持っているので入れない）。共有している器こそ Q-1 型の事故が起きる場所。
+  const LAYOUT_DECLS = [
+    // `.item`＝コメント 1 件の `<li>`。⚠ `.card` と**同じ要素**に当たる（`.item.card`）。
+    [
+      ".item",
+      "--icon-size,--icon-gap,display,grid-template-columns,row-gap,align-items,flex-shrink,padding,margin-block",
+    ],
+    // ⚠⚠ `.icon` は **chat の 1 列目と課金カードのヘッダ帯で共有**（`renderIcon` が 1 実装）。
+    //   ここへ余白系を足すと**必ず**課金カードにも効く。足すなら `.card .icon` の打ち消しも対で足すこと。
+    [
+      ".icon",
+      "grid-column,grid-row,margin-right,flex-shrink,width,height,border-radius,background,background-size,background-position,display,align-items,justify-content",
+    ],
+    // ⚠ Q-1 の打ち消し本体。**消すと 36px の回帰がそのまま戻る**ので、ここで存在を固定する。
+    [".card .icon", "margin-right"],
+    [".header", "display,align-items,gap,grid-column"],
+    [".row", "grid-column,grid-row,display,align-items"],
+    [".card", "overflow,border-radius,filter,gap,padding,grid-template-columns"],
+  ];
+  for (const [sel, expectedCsv] of LAYOUT_DECLS) {
+    const bodies = ruleBodies(overlayCss, sel);
+    if (bodies.length === 0) {
+      fail(
+        `${OVERLAY_CSS}: \`${sel}\` のルールを取り出せません（060f 追修正・(10-n)）。` +
+          `削除したか、セレクタの形を変えた可能性があります。黙って検査が無効になるのを防ぐため fail します。`,
+      );
+      continue;
+    }
+    const actual = bodies
+      .flatMap((b) => b.split(";"))
+      .map((d) => d.split(":")[0].trim())
+      .filter((p) => p !== "");
+    const expected = expectedCsv.split(",");
+    const added = actual.filter((p) => !expected.includes(p));
+    const removed = expected.filter((p) => !actual.includes(p));
+    if (added.length > 0 || removed.length > 0) {
+      fail(
+        `${OVERLAY_CSS}: \`${sel}\` の宣言インベントリが変わりました（060f 追修正・(10-n)）。` +
+          `${added.length > 0 ? `増えた: ${added.join(" / ")}。` : ""}` +
+          `${removed.length > 0 ? `減った: ${removed.join(" / ")}。` : ""}` +
+          `⚠ 060f は「意匠 CSS の非コメント差分ゼロ」という担保を追修正で手放しており、` +
+          `**ここが唯一の代替**です（(10-e) は値しか見ないので、宣言の増減は素通りします）。` +
+          `⚠⚠ これらの器は **chat と課金カードでルールを共有している**ので、片方を狙った宣言が` +
+          `もう片方に効きます（実際に \`.icon{margin-right}\` が課金カードのヘッダを 28px 広げる回帰を出しました）。` +
+          `→ 意図した変更なら本配列を更新し、**実機の A/B スクショを chat と課金カードの両方で取り直してください**。`,
+      );
+    }
+  }
+
   // (10-j) **プレビュー枠の封じ込め（`contain: paint`）は意匠ではなく安全装置。**
   //   `overflow: hidden` だけでは **`position: fixed` / `absolute` の子孫を止められない**
   //   （包含ブロックがビューポート／初期包含ブロックになり、包含ブロック連鎖に無い枠のクリップは効かない）。
@@ -1109,6 +1444,36 @@ for (const rel of [VIEWER_CSS, OVERLAY_CSS]) {
     fail(
       `${VIEWER_CSS}: \`.themePreview\` の \`overflow: hidden\` が消えています（060d・(10-j)）。` +
         `\`contain: paint\` と併用してください（通常フローのはみ出しを切る役目はこちらが持っています）。`,
+    );
+  }
+  // (10-j) 追加分（060f 追修正⑦・2026-08-08）: **`transform: translateZ(0)` は意匠ではなく描画バグ回避。**
+  //   これが無いと、テーマの `<style>` を差し替えたときに **WKWebView がプレビューの課金カードの領域を
+  //   再描画しそこね、「要素はあるのに描かれない」**（実機で発生。ドラッグ選択＝強制再描画で出てくる）。
+  //   ⚠ 実測: 修正なしでテーマ遷移 7 通り中 3 通りが再現、これを足すと 7 通りとも正常、正常時の画素差分は 0。
+  //   ⚠ `will-change: transform` / `isolation` / `backface-visibility` では**直らない**（実測）。
+  //   ⚠⚠ `contain: paint` は無関係（`contain: none` でも再発する）。一度そう誤診して差し戻している。
+  //   ⚠ 当て先をユーザー CSS が名指しできる要素（`.sd-preview` / `.sd-comment-list` / `.sd-comment`）へ
+  //   移さないこと——テーマ側から上書きされて回避策が黙って無効化される。
+  //
+  //   ⚠⚠ **本検査は `translateZ(0)` という「綴りそのもの」を固定している**（レビュー指摘 Q-3・2026-08-08）。
+  //   実測: 等価な `transform: translate3d(0, 0, 0)` に書き換えると**落ちる**（＝正しい CSS で fail する）。
+  //   逆に `transform: scale(1) translateZ(0)` のような複数値は `hasDecl` が `:` 直後しか見ないので**すり抜ける**。
+  //   → **緩めない判断**。この回避策が効くこと自体がエンジン固有の実測結果（`will-change` /
+  //   `isolation` / `backface-visibility` は効かず、`translateZ(0)` だけが効いた）なので、
+  //   「等価に見える書き方」が同じ合成レイヤー昇格を起こす保証が無い。**綴りを変える＝測り直す**が正しい。
+  //   ⚠ そのぶん**メッセージ側でその事情を伝える**こと（正しい CSS が落ちたときに理由が読めないのは
+  //   (5-b) が戒めた失敗と同型なので、パターンではなく説明で埋める）。
+  //   再修正トリガー: 実機で `translate3d` 等の別の書き方でも直ることを**画素で**確認できたら、
+  //   値パターンを `translate(?:Z\(0[a-z%]*\)|3d\([^)]*\))` へ広げてよい。
+  if (!hasDecl(previewBody, "transform", "translateZ\\(0\\)")) {
+    fail(
+      `${VIEWER_CSS}: \`.themePreview\` の \`transform: translateZ(0)\` が消えています（060f 追修正⑦・(10-j)）。` +
+        `これは意匠ではなく **WebKit の描画バグ回避**です——無いと、デザインを切り替えたときに` +
+        `プレビューの課金カード（スパチャ）が「要素はあるのに描かれない」状態になります（2026-08-08 実機）。` +
+        `⚠ \`will-change\` / \`isolation\` では代替できません（実測）。詳細は progress.md「差し戻し⑦」。` +
+        `⚠⚠ 本検査は **\`translateZ(0)\` という綴りそのもの**を固定しています——` +
+        `等価に見える \`translate3d(0,0,0)\` でも落ちます（意図的）。効くことが実測でしか分かっていない` +
+        `回避策なので、**綴りを変えるなら実機の WKWebView で測り直してから**本ガードも更新してください。`,
     );
   }
 }

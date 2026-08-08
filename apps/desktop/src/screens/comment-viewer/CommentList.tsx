@@ -314,6 +314,68 @@ export function CommentList({
   //   無い＝クラスは付くだけの無害な文字列。将来 046d のように広げるとき DOM 側は用意済みになる）。
   //   窓の区別が要るときは `OverlayApp` のルートにだけ付く `sd-overlay` を使う。
   //   契約の正は docs/tasks/060a-overlay-selector-contract.md。変換表は `features/comment-viewer/cssCompat.ts`。
+  //
+  // ⚠⚠⚠ 060f 追修正④(2026-08-08・本人決定): **安定クラスと `data-sd-*` は chat にだけ付ける。**
+  //   **課金カード（投げ銭カード）にはどちらも 1 つも付けない**＝ユーザー CSS の的にしない。
+  //   理由と受容したトレードオフは下の課金カード分岐のコメントに書いてある（要点は「配布テーマは
+  //   課金カードを**名指しで消しにくる**ので、目印クラスによる限定では原理的に防げない」）。
+  //   ⚠ 静的ガード **(10-o)** が「課金分岐に `sd-comment*` / `data-sd-*` が無いこと」を機械で固定している。
+  //   ⚠ したがって **`.sd-comment` は chat 専用**になった（従来は chat / 課金 共通の `<li>`）。
+  //
+  // 060f: 実サンプルを通して分かった**構造的なズレ 3 つ**を DOM 側から埋める（契約の拡張は 060f が正）。
+  //   ① ⚠⚠ **`sd-comment-chat` は chat の `<li>` にだけ付ける。** 変換表は YouTube の
+  //      `yt-live-chat-text-message-renderer`（＝テキストコメント**専用**レンダラ）をここへ向けている。
+  //      従来は `.sd-comment`（chat と課金の**両方**に付く）へ向けていたため、**chat 用に書かれた
+  //      テーマが課金カードの意匠を壊していた**。⚠ 追修正④で課金カードから安定クラスが消えたので
+  //      `.sd-comment` と `.sd-comment-chat` は**実質同義**になったが、変換表の `to` が
+  //      `.sd-comment-chat` を指しているため両方残してある（統合は別タスク）。
+  //      ⚠ **なぜ属性（`.sd-comment[data-sd-event="chat"]`）ではなくクラスなのか**（060f ④）:
+  //        (a) **詳細度**——属性形にすると変換先が `(0,2,0)`、子孫を足すと `(0,3,0)` まで上がり、
+  //            既定意匠（CSS Modules の単一クラス＝`(0,1,0)`）との差が開きすぎる。
+  //        (b) **静的ガード (10-b)** は変換表の `to` から `\.([A-Za-z0-9_-]+)` でクラストークンを抜いて
+  //            契約と突き合わせる。属性形は 1 トークンも抜けず、**変換先の打ち間違いを機械で検出できなくなる**。
+  //        (c) **可読性**——ユーザーが書くのは `.sd-comment-chat{…}`。`sd-comment-tip` と対の語彙に揃う。
+  //   ② ⚠⚠ **chat の吹き出しは `<p>` 1 枚**（中間の `<div class="bubble">` を廃した）。YouTube 側に
+  //      `.sd-comment-body` に相当する要素が無く、取り込んだ CSS は `#message`（→ `.sd-comment-text`）に
+  //      吹き出しとしっぽを描くため、器が 2 段あると**吹き出しの内側にもう 1 個吹き出しが描かれる**。
+  //      ⚠ **`sd-comment-body` はこの `<p>` に残す**——契約「chat と課金で同じ役割には同じ安定クラス」を
+  //      保つため（`.sd-comment-body` の意味は「吹き出し／カード本体」のままで、chat ではそれが `<p>` になった）。
+  //      ⚠⚠ **意匠クラスは `bubble` と `text` を両方併記する**（統合した 1 つの規則に書き直さない）。
+  //      2 つの規則に**重複プロパティが 1 つも無い**ことを実測しており、併記なら `.bubble` / `.text` の
+  //      宣言を 1 つも触らずに済む（`check-css-guards.mjs` の (10-e) も現行のまま緑）。
+  //      ⚠⚠ **「`OverlayComment.module.css` を非コメント差分ゼロに保てる」はもう成立しない**
+  //      （レビュー指摘 Q-4 で訂正・2026-08-08）。060f 追修正①のグリッド化で手放しており、
+  //      代替の担保は **(10-n)（レイアウト器の宣言インベントリ）** ＋ 実機の A/B スクショ
+  //      （⚠ **chat と課金カードの両方**——`.icon` を共有しているので chat だけ見ても回帰が出ない）。
+  //      ⚠ 課金カードは触らない（`cardBody` はヘッダ帯＋ボディの 2 段構造に必要）。
+  //   ③ 器に安定クラスが無かったので `sd-comment-header` / `sd-comment-row` / `sd-comment-list` を足した
+  //      （YouTube の `div#author-info` / `yt-live-chat-item-list-renderer #items` の対応先）。
+  //      ⚠⚠ **`sd-comment-list` は `variant === "overlay"` のときだけ**（`<ol>` は本体コメビュと共有）。
+  //      ⚠ 060f 追修正(2026-08-08): **`sd-comment-row` の意味は「吹き出しの行」に変わった**
+  //        （アイコンが `<li>` 直下へ移ったので、この中には吹き出ししか無い）。契約としては残す。
+  //
+  // 060f 追修正（security-review Q-1・2026-08-06）: ⚠⚠⚠ **`sd-comment-in-chat` の契約。**
+  //   **規則は 1 文**——「**chat の `<li>` 自身は `sd-comment-chat`、その中の要素はすべて
+  //   `sd-comment-in-chat` を持つ**」。例外を作らないこと（後述の理由で、
+  //   「まだ変換表が使っていないから付けない」は将来の当たらないセレクタになる）。
+  //   ⚠ 060f 追修正④で**対になっていた `sd-comment-in-tip` は廃止した**（課金カードには安定クラスを
+  //   付けなくなったため）。⚠ 目印が chat 側だけになったぶん `-in-chat` は冗長に見えるが、変換表の `to`
+  //   （`.sd-comment-text.sd-comment-in-chat` 等）が依存しているので**残す**。整理は別タスク。
+  //
+  //   ⚠⚠ **なぜ「子孫セレクタ」ではなく「同一要素の目印」なのか。** 変換表の `to` を
+  //   `.sd-comment-chat .sd-comment-text` のような**子孫セレクタ**にしていたところ、
+  //   ユーザー CSS が `親 子孫` / `span.クラス` の形で書かれていると**前置が二重に積まれて
+  //   永久に当たらなくなる**ことが実測された（`.chat-line__message .chat-line__message-body` →
+  //   `.sd-comment-chat .sd-comment-chat .sd-comment-text` ＝ `<li>` の中に `<li>` が要る）。
+  //   しかも `rewritten` は加算され `unmatched` は空なので、060d の UI が「M 個変換しました」と**誤報する**。
+  //   → `to` を「**1 要素の複合セレクタ**」（`.sd-comment-text.sd-comment-in-chat`）に限れば
+  //   合成しても構造が保存される。**それを機械で守るのが静的ガード (10-l)**（`to` に結合子を禁じる）。
+  //
+  //   ⚠ **`sd-comment-chat` の意味は変えていない**（＝ chat の `<li>` だけ）。ユーザーが
+  //   `.sd-comment-chat{background:red}` と書いたら `<li>` だけが塗られる——`sd-comment-tip` と対称で、
+  //   ユーザーが最初に触る語彙をここで崩さないため。目印を別クラスに分けたのはそのため（2026-08-06 決定）。
+  //   ⚠ 目印を `sd-comment-` 接頭辞にしているのも意図で、「`variant="default"` には安定クラスが
+  //   1 つも付かない」を固定する既存テストが `[class*="sd-comment"]` で拾う＝**漏れが自動で検出される**。
   const renderOverlayItem = (c: CommentViewDto) => {
     // 036a: 描画シンクで「webview が踏むのは data URI のみ」（親 036・§CSP の不変条件）を強制する。avatar を
     // background-image に差すのは値が data: 始まりのときだけとし、それ以外（036b にバグで raw URL が漏れた等）は
@@ -323,9 +385,16 @@ export function CommentList({
     // 同じガードを必要とするため。**2 実装に分裂させると片方だけ緩んで外部 URL を踏む経路が生まれる**）。
     const avatar = avatarDataUri(c.author.avatar);
     // 036a のガードを両分岐（chat 吹き出し／043c 投げ銭カード）で共有する 1 枚のアイコン要素。
-    const icon = (
+    //
+    // ⚠⚠ 060f 追修正④(2026-08-08): **付与する安定クラスを引数で受け取る**（要素そのものを共有しない）。
+    // アイコンは chat と課金の両方に出るので、素の共有要素にすると chat 向けの安定クラスが
+    // **課金カードのアイコンにも付いて**しまう。⚠ **課金側は空文字**＝安定クラスを 1 つも付けない
+    // （下の「課金カードはユーザー CSS の的にしない」を参照）。
+    // ⚠ **036a のガード（`avatarDataUri` を通した data URI のときだけ background-image）は 1 実装のまま**
+    // ——ここを 2 か所へ複製すると片方だけ緩んで外部 URL を踏む経路が生まれる。
+    const renderIcon = (stable: string) => (
       <div
-        className={`${overlayStyles.icon} sd-comment-icon`}
+        className={stable ? `${overlayStyles.icon} ${stable}` : overlayStyles.icon}
         style={avatar ? { backgroundImage: `url("${avatar}")` } : undefined}
         aria-hidden="true"
       >
@@ -343,31 +412,57 @@ export function CommentList({
       return (
         // 060a: chat には `data-sd-tone` を**付けない**。`monetaryTone()` は chat を "t0" へ無害劣化
         // させる（viewerFormat.ts の docstring）ので、付けると `[data-sd-tone="t0"]` で「最低額スパチャ
-        // だけ光らせる」と書いたユーザーの CSS が**全部の chat にも当たる**。chat と課金の区別は
-        // `data-sd-event` と `.sd-comment-tip` の両方で既に付いている。
+        // だけ光らせる」と書いたユーザーの CSS が**全部の chat にも当たる**。
+        // ⚠ 060f 追修正④(2026-08-08): 課金カード側は `data-sd-*` も安定クラスも持たなくなったので、
+        //   **ユーザー CSS から見えるコメントは chat だけ**＝ chat / 課金の区別を CSS で書く必要自体が消えた。
+        //   ここに `data-sd-source` / `data-sd-event` を残すのは「配信元・種別で chat を出し分けたい」
+        //   という 060a の用途がそのまま生きているため（課金カードとの区別のためではない）。
         <li
           key={c.id}
-          className={`${overlayStyles.item} sd-comment`}
+          className={`${overlayStyles.item} sd-comment sd-comment-chat`}
           data-sd-source={c.source}
           data-sd-event={dtype}
         >
-          <div className={overlayStyles.header}>
-            <span className={`${overlayStyles.name} sd-comment-name`}>
+          {/* 060f 追修正(2026-08-08): ⚠⚠ **アイコンは `.row` の中ではなく `<li>` の直下**（グリッド 1 列目）。
+              テーマが `.sd-comment-icon{display:none}` でアイコンを消したとき、`.row` の中に居ると
+              **名前行だけ 72px のインデントが残っていた**（`.header` がハードコードの margin を持っていたため）。
+              ⚠ CSS では「兄弟が display:none か」を検出できないので、インデントを**アイコンの実体**
+              （グリッドの 1 列目）から作る形に変えた＝消えれば列ごと畳まれる。
+              ⚠ 行の割り当ては CSS 側（`.icon` が grid-row:2）。**DOM の順番は見た目に影響しない**が、
+              読み上げ順が「アイコン→名前→本文」になるよう先頭に置いてある（アイコンは aria-hidden）。 */}
+          {renderIcon("sd-comment-icon sd-comment-in-chat")}
+          <div
+            className={`${overlayStyles.header} sd-comment-header sd-comment-in-chat`}
+          >
+            <span
+              className={`${overlayStyles.name} sd-comment-name sd-comment-in-chat`}
+            >
               {c.author.name}
             </span>
             {showSource && (
               <span
-                className={`${overlayStyles.source} ${OVERLAY_SOURCE_CLASS[c.source]} sd-comment-source`}
+                className={`${overlayStyles.source} ${OVERLAY_SOURCE_CLASS[c.source]} sd-comment-source sd-comment-in-chat`}
               >
                 {SOURCE_LABEL[c.source]}
               </span>
             )}
           </div>
-          <div className={overlayStyles.row}>
-            {icon}
-            <div className={`${overlayStyles.bubble} sd-comment-body`}>
-              <p className={`${overlayStyles.text} sd-comment-text`}>{c.text}</p>
-            </div>
+          <div
+            className={`${overlayStyles.row} sd-comment-row sd-comment-in-chat`}
+          >
+            {/* 060f ②: 吹き出しの器と本文を 1 枚の <p> に畳む。`bubble`（箱＝背景/枠/角丸/影/しっぽの基準）と
+                `text`（文字＝サイズ/行間/色/margin:0）は**重複プロパティが無い**ので、併記して同じ要素へ当てる。
+                ⚠ `<p>` の UA 既定 margin は `.text` の `margin: 0` が従来どおり打ち消す（要素は元から `<p>`）。
+                ⚠ しっぽ（`.bubble::before` / `::after`）の基準要素がこの `<p>` になるが、`position: relative` と
+                絶対配置の値は自分自身のパディングボックス基準なので位置は動かない。
+                ⚠ **子にブロック要素を入れないこと**（`<p>` は段落なので `<div>` / `<p>` を子に持てない＝
+                将来スタンプ・絵文字・リンクを差すときは `<span>` に限る。器の div が無くなったぶん、
+                ここで `<div>` を足すと HTML として不正になる）。 */}
+            <p
+              className={`${overlayStyles.bubble} ${overlayStyles.text} sd-comment-body sd-comment-text sd-comment-in-chat`}
+            >
+              {c.text}
+            </p>
           </div>
         </li>
       );
@@ -378,51 +473,58 @@ export function CommentList({
     //   【レビュー対応・修正不要】donation/jewels は実金銭だが意図的に種別単色（ティアは YT 同様スパチャ専用）。
     //   金額は amountBadge に verbatim 表示されるため見逃さない。再修正トリガー: これらもティア配色したくなったら
     //   `monetaryTone` の分岐条件を拡げる（本体側の一覧カード/ティッカーにも同時に効く）。
-    // 060a: 配色キーは `data-sd-tone` にも出すので、クラスを引くのと同じ値を 1 回だけ評価して共有する
-    // （ユーザーが「高額スパチャだけ光らせる」を書けるようにするフック。既に配色で引いている値をそのまま出すだけ）。
     const tone = monetaryTone(c);
     const cardClass = OVERLAY_TONE_CLASS[tone];
     // 金額を持たない種別（サブスク/メンシプ/ギフト）は「〇〇さんが…しました」の要約をボディ主表示にする（本体 043b と同じ）。
     const eventMessage = composeEventMessage(c);
     return (
+      // ⚠⚠⚠ 060f 追修正④(2026-08-08・本人決定): **課金カードはユーザー CSS の的にしない。**
+      //   この `<li>` と配下には**安定クラス（`sd-comment*`）も `data-sd-*` 属性も 1 つも付けない**。
+      //   静的ガード **(10-o)** がこれを機械で固定している。
+      //
+      //   ⚠⚠ **なぜ「限定」ではなく「切り離し」なのか**（060f は 3 巡ぶん「限定」で解こうとして失敗した）:
+      //   OBS 用に配られている純正チャットのテーマは、**課金カードを名指しで消しにくる**のが定番である。
+      //     /* スーパーチャット非表示 */
+      //     yt-live-chat-paid-message-renderer, yt-live-chat-paid-sticker-renderer { display: none !important }
+      //     .yt-live-chat-membership-item-renderer { display: none !important }
+      //   純正チャットではスパチャが**ティッカー（上部の帯）にも出る**ので「二重に出るからインライン側を消す」
+      //   という意図だが、StreamDock にティッカーは無いので**この意図は成立せず、課金カードが丸ごと消える**
+      //   （2026-08-08 実機で発生）。⚠ **`sd-comment-in-tip` のような目印を足す方向では絶対に防げない**
+      //   ——テーマが狙っているのは「課金カードそのもの」だからである。
+      //
+      //   ⚠ **受容したトレードオフ**: 060a が公開していた
+      //   `.sd-comment[data-sd-tone="t6"] .sd-comment-body { … }`（ティア別に課金カードを飾る）は**できなくなる**。
+      //   本人決定「スパチャのデザインは常に同じで、配信窓に必ず出る」の直接の帰結。
+      //   ⚠ **`.sd-comment` の意味も変わった**（「コメント 1 件（chat / 課金 共通）」→「**chat のコメント 1 件**」）。
+      //   契約の正は docs/tasks/060a・060f と progress.md の 060f 節。
+      //
+      //   ⚠ 意匠クラス（`.item` / `.card` / `.tierN`）は CSS モジュールのハッシュ名なので、
+      //   ユーザー CSS からは**名指しできない**（＝ここに残っていても的にはならない）。
       <li
         key={c.id}
-        className={`${overlayStyles.item} ${overlayStyles.card} ${cardClass} sd-comment sd-comment-tip`}
-        data-sd-source={c.source}
-        data-sd-event={dtype}
-        data-sd-tone={tone}
+        className={`${overlayStyles.item} ${overlayStyles.card} ${cardClass}`}
       >
         <div className={overlayStyles.cardHeader}>
-          {icon}
-          <span className={`${overlayStyles.cardName} sd-comment-name`}>
-            {c.author.name}
-          </span>
+          {renderIcon("")}
+          <span className={overlayStyles.cardName}>{c.author.name}</span>
           {showSource && (
             <span
-              className={`${overlayStyles.source} ${OVERLAY_SOURCE_CLASS[c.source]} sd-comment-source`}
+              className={`${overlayStyles.source} ${OVERLAY_SOURCE_CLASS[c.source]}`}
             >
               {SOURCE_LABEL[c.source]}
             </span>
           )}
           {/* 金額はヘッダ右端の pill。監視済み monetaryAmount をそのまま表示（例 "1,000 JPY" / "100 bits"）。 */}
           {c.monetaryAmount && (
-            <span className={`${overlayStyles.amountBadge} sd-comment-amount`}>
-              {c.monetaryAmount}
-            </span>
+            <span className={overlayStyles.amountBadge}>{c.monetaryAmount}</span>
           )}
         </div>
         {(eventMessage || c.text) && (
-          <div className={`${overlayStyles.cardBody} sd-comment-body`}>
+          <div className={overlayStyles.cardBody}>
             {eventMessage && (
-              <p className={`${overlayStyles.eventMessage} sd-comment-event`}>
-                {eventMessage}
-              </p>
+              <p className={overlayStyles.eventMessage}>{eventMessage}</p>
             )}
-            {c.text && (
-              <p className={`${overlayStyles.cardText} sd-comment-text`}>
-                {c.text}
-              </p>
-            )}
+            {c.text && <p className={overlayStyles.cardText}>{c.text}</p>}
           </div>
         )}
       </li>
@@ -430,8 +532,21 @@ export function CommentList({
   };
 
   // 追従有無で共有する一覧本体（map は不変）。ref/onScroll は "off" のとき no-op なので付けても素の挙動のまま。
+  //
+  // 060f ③: 一覧の器にも安定クラスを出す（YouTube の `yt-live-chat-item-list-renderer #items` の対応先）。
+  // ⚠⚠ **`variant === "overlay"` のときだけ**付けること。この `<ol>` の CSS モジュールは
+  // `CommentViewerApp.module.css`＝**本体コメビュと共有**で、060a が置いた不変条件
+  // 「`variant="default"` には安定クラスも data 属性も 1 つも付かない」（`CommentList.test.tsx` が固定）を
+  // 破ってしまう。⚠ overlay 側は固定コメント窓（`PinnedOverlayApp`）とも共有なのでそちらにも出るが、
+  // あの窓には注入経路が無いので**付くだけの無害な文字列**（`sd-overlay` が付かないことで窓を区別する）。
   const list = (
-    <ol className={styles.list} ref={olRef} onScroll={follow.onScroll}>
+    <ol
+      className={
+        variant === "overlay" ? `${styles.list} sd-comment-list` : styles.list
+      }
+      ref={olRef}
+      onScroll={follow.onScroll}
+    >
       {comments.length === 0 ? (
         <li className={styles.empty}>コメントはまだありません</li>
       ) : (

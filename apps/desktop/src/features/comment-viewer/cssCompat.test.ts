@@ -73,12 +73,31 @@ const TWITCH_EXTENDED = `.chat-line__message {
 `;
 
 describe("SELECTOR_TABLE", () => {
-  it("変換先はすべて sd- 語彙のクラスセレクタで、窓ルート（.sd-overlay）は含まない", () => {
+  it("変換先はすべて sd- 語彙のクラスセレクタ（複合セレクタも可）", () => {
     for (const rule of SELECTOR_TABLE) {
       expect(rule.to.startsWith(".sd-")).toBe(true);
-      // 060d のプレビューは全セレクタへ .sd-preview を前置するため、窓ルートは変換先にできない。
-      expect(rule.to).not.toContain("sd-overlay");
+      // 060f: 複合セレクタ（`.sd-comment-text.sd-comment-in-chat`）を許すので、トークン単位でも
+      // sd 語彙だけであることを見る（check-css-guards.mjs (10-b) と同じ抜き方）。
+      for (const m of rule.to.matchAll(/\.([A-Za-z0-9_-]+)/g)) {
+        expect(m[1].startsWith("sd-")).toBe(true);
+      }
     }
+  });
+
+  /**
+   * 060f: **窓ルート（`.sd-overlay`）は意図的に変換先に入っている。**
+   * 060a 時点は「060d のプレビューは全セレクタへ `.sd-preview` を前置するので窓ルートは当たらなくなる」を
+   * 理由に禁じており、ここには `expect(rule.to).not.toContain("sd-overlay")` があった。
+   * ⚠ その前提は **060d が `.sd-overlay` を `.sd-preview` へ読み替える実装（`cssScope.ts` の
+   * `ROOT_LIKE_CS`）を入れた時点で解消済み**で、読み替えが効くことは `cssScope.test.ts` が固定している。
+   * ＝ **禁止を外したのは意図した仕様変更**であって、うっかり緩めたのではない。
+   */
+  it("窓ルート（.sd-overlay）を向くエントリがあり、プレビュー側の読み替えとセットで成立している", () => {
+    const roots = SELECTOR_TABLE.filter((r) => r.to === ".sd-overlay");
+    expect(roots.map((r) => r.from)).toEqual([
+      "yt-live-chat-app",
+      "yt-live-chat-renderer",
+    ]);
   });
 
   it("元セレクタに sd- 語彙を書かない（自分の出力に当たると冪等性が壊れる）", () => {
@@ -88,12 +107,426 @@ describe("SELECTOR_TABLE", () => {
   });
 });
 
+/**
+ * 060f: **変換表の向き先そのもの**を 1 件ずつ固定する。
+ *
+ * ⚠⚠ ここが 060f の芯である。`.sd-comment` は chat と課金の**両方**に付くので、
+ * YouTube / Twitch の「テキストコメント**専用**」セレクタをそこへ向けていると
+ * **chat 用に書かれたテーマが課金カードの意匠を壊す**（2026-08-05 の実測で判明した「論外」の 1 つ目）。
+ * 表を `.sd-comment` へ戻す変異はここで落ちる。
+ *
+ * ⚠ 逆に**限定しすぎ**も壊れる（`yt-img-shadow` / `div#author-info` は chat と課金の共有要素で、
+ * 限定すると「絶対に当たらないセレクタ」を生む）。だから据え置き側も個別に固定する。
+ */
+describe("SELECTOR_TABLE — 060f の向き先（chat 限定 / 据え置き / 新規）", () => {
+  const to = (from: string) => SELECTOR_TABLE.find((r) => r.from === from)?.to;
+
+  it("chat 専用セレクタは 8 件とも chat 専用クラスへ向く", () => {
+    expect(to("yt-live-chat-text-message-renderer")).toBe(".sd-comment-chat");
+    expect(to("yt-live-chat-text-message-renderer #message")).toBe(
+      ".sd-comment-text.sd-comment-in-chat",
+    );
+    expect(to("yt-live-chat-text-message-renderer #author-name")).toBe(
+      ".sd-comment-name.sd-comment-in-chat",
+    );
+    expect(to("yt-live-chat-text-message-renderer #img")).toBe(
+      ".sd-comment-icon.sd-comment-in-chat",
+    );
+    expect(to(".chat-line__message")).toBe(".sd-comment-chat");
+    expect(to(".chat-line__message-body")).toBe(
+      ".sd-comment-text.sd-comment-in-chat",
+    );
+    expect(to(".chat-line__no-background")).toBe(".sd-comment-chat");
+    expect(to(".chat-author__display-name")).toBe(
+      ".sd-comment-name.sd-comment-in-chat",
+    );
+  });
+
+  /**
+   * ⚠⚠⚠ **060f 追修正④(2026-08-08・本人決定): 課金カードを狙うエントリは表に置かない。**
+   *
+   * 削除したのは 3 件（`yt-live-chat-paid-message-renderer` / 同 `#message` /
+   * `.yt-live-chat-membership-item-renderer`）。理由は**課金カードをユーザー CSS の的から外した**こと
+   * （`CommentList.tsx` の課金分岐・静的ガード (10-o)）——変換先が DOM に存在しないので、残すと
+   * `rewritten` だけ加算されて当たらない＝ (10-b) が「最悪」と呼ぶ状態になる。
+   *
+   * ⚠⚠ **戻さないこと。** OBS 用に配られているテーマは
+   * `yt-live-chat-paid-message-renderer{display:none!important}` を書くのが定番で、変換すると
+   * **StreamDock の課金カードが丸ごと消える**（2026-08-08 実機で発生）。
+   */
+  it("⚠⚠⚠ 課金カードを狙うエントリは 1 件も無い（060f 追修正④）", () => {
+    for (const from of [
+      "yt-live-chat-paid-message-renderer",
+      "yt-live-chat-paid-message-renderer #message",
+      ".yt-live-chat-membership-item-renderer",
+    ]) {
+      expect(to(from)).toBeUndefined();
+    }
+    // `to` の側にも課金の語彙が残っていないこと。
+    for (const rule of SELECTOR_TABLE) {
+      expect(rule.to).not.toContain("sd-comment-tip");
+      expect(rule.to).not.toContain("sd-comment-in-tip");
+    }
+  });
+
+  it("⚠ 共有要素は目印を付けない（実際に当たるのは chat だけ）", () => {
+    // ⚠⚠ YouTube では chat と課金の**両方**に出る共有要素。StreamDock 側は課金カードが的でないので
+    //   目印なしでも chat のアイコンにしか当たらない（`CommentList.selectorContract.test.tsx` が実 DOM で固定）。
+    expect(to("yt-img-shadow")).toBe(".sd-comment-icon");
+    expect(to("yt-img-shadow")).not.toContain("sd-comment-in-chat");
+  });
+
+  it("新規エントリが入っている", () => {
+    expect(to(".yt-live-chat-author-chip")).toBe(
+      ".sd-comment-name.sd-comment-in-chat",
+    );
+    expect(to("yt-live-chat-app")).toBe(".sd-overlay");
+    expect(to("yt-live-chat-renderer")).toBe(".sd-overlay");
+    expect(to("yt-live-chat-item-list-renderer #items")).toBe(
+      ".sd-comment-list",
+    );
+    // ⚠ 役割としては chat / 課金の両方だが、当たるのは chat の名前行だけ（上と同じ理由）。
+    expect(to("div#author-info")).toBe(".sd-comment-header");
+  });
+
+  /**
+   * ⚠⚠ 060f 追修正③(2026-08-08): **クラス形のコメント 1 件**。依頼者の実サンプルの**看板デザイン**
+   * （吹き出し左端の縦バー）が `.yt-live-chat-text-message-renderer::before` で書かれており、
+   * **変換も警告もされずに黙って消えていた**（実機で確認）。YouTube の Polymer は同名のクラスを
+   * 子孫にも撒くので、実テーマではこの形が頻出する。
+   */
+  it("⚠⚠ クラス形のコメント 1 件も変換する（実サンプルの縦バー）", () => {
+    expect(to(".yt-live-chat-text-message-renderer")).toBe(".sd-comment-chat");
+    // 実サンプルの書き方そのもの（疑似要素付き）。
+    expect(
+      rewriteSelectors(".yt-live-chat-text-message-renderer::before{content:''}")
+        .css,
+    ).toBe(".sd-comment-chat::before{content:''}");
+    // ⚠ 要素形（別エントリ）も従来どおり。長い順ソートでクラス形が先に当たるので取り違えない。
+    expect(to("yt-live-chat-text-message-renderer")).toBe(".sd-comment-chat");
+    expect(to("yt-live-chat-text-message-renderer #message")).toBe(
+      ".sd-comment-text.sd-comment-in-chat",
+    );
+  });
+
+  /**
+   * ⚠⚠ **要素形とクラス形で別エントリが要る理由の回帰テスト。**
+   * 要素形の前方境界 `(?<![A-Za-z0-9_.#-])` は `.` を弾く。弾かないと `.yt-…` の `.` が残って
+   * **`..sd-comment-chat` という壊れたセレクタ**になる（境界を緩める修正をしたらここが落ちる）。
+   */
+  it("⚠⚠ クラス形を変換しても `..` の壊れたセレクタにならない", () => {
+    const convert = (sel: string) => {
+      const css = rewriteSelectors(`${sel}{a:b}`).css;
+      return css.slice(0, css.indexOf("{"));
+    };
+    for (const from of [
+      ".yt-live-chat-text-message-renderer",
+      ".yt-live-chat-author-chip",
+      ".yt-live-chat-membership-item-renderer",
+    ]) {
+      expect(convert(from)).not.toContain("..");
+    }
+    // 要素形とクラス形が混在した実テーマの形でも壊れない。
+    expect(
+      convert("yt-live-chat-app .yt-live-chat-text-message-renderer::before"),
+    ).toBe(".sd-overlay .sd-comment-chat::before");
+
+    // ⚠ **既知の取りこぼし（060c 送り・欠陥ではない）**: 祖先が**クラス形**だと
+    // `…renderer #message` の**祖先付きエントリのほうが当たらない**（要素形の前方境界が `.` を弾くため）。
+    // 残った裸 `#message` は StreamDock に無いので当たらないが、⚠ **`unmatched` には出る**ので
+    // 「黙って効かない」にはならない（それがこの形を放置してよい理由）。
+    expect(
+      convert(".yt-live-chat-text-message-renderer #message"),
+    ).toBe(".sd-comment-chat #message");
+    expect(
+      rewriteSelectors(".yt-live-chat-text-message-renderer #message{a:b}")
+        .unmatched,
+    ).toEqual(["#message"]);
+  });
+
+  it("⚠⚠ body / html / :root は変換表に無い（窓の透過が壊れる）", () => {
+    for (const rule of SELECTOR_TABLE) {
+      expect(["body", "html", ":root"]).not.toContain(rule.from);
+    }
+  });
+});
+
+/**
+ * 060f 追修正④(2026-08-08): **課金カードを狙う指定は「未変換のまま残って警告に出る」のが正しい姿。**
+ *
+ * 課金カードをユーザー CSS の的から外した（`CommentList.tsx` の課金分岐・(10-o)）ので、
+ * `yt-live-chat-paid-message-renderer` 系は**変換しない**。⚠ 変換して当たらない形にするより、
+ * 未変換で `unmatched` に出したほうが「効きません」とユーザーに見える＝ (10-b) の言う最悪を避けられる。
+ */
+describe("rewriteSelectors — 課金カードを狙う指定は変換しない（未変換のまま警告へ）", () => {
+  it("⚠⚠ 配布テーマの定番『スーパーチャット非表示』が課金カードに届かない", () => {
+    // これが変換されると `.sd-comment-tip{display:none}` になり、**課金カードが丸ごと消える**（実機で発生）。
+    const r = rewriteSelectors(
+      "yt-live-chat-paid-message-renderer,\nyt-live-chat-paid-sticker-renderer{display:none !important}",
+    );
+    expect(r.css).toContain("yt-live-chat-paid-message-renderer");
+    expect(r.css).not.toContain("sd-comment");
+    expect(r.rewritten).toBe(0);
+    // ⚠ 未変換だが**警告には出る**（`yt-` 接頭辞を FOREIGN_SELECTOR_RE が拾う）＝黙って効かないではない。
+    expect(r.unmatched).toContain("yt-live-chat-paid-message-renderer");
+  });
+
+  it("⚠ メンバーシップ非表示（クラス形）も変換しない", () => {
+    const r = rewriteSelectors(
+      ".yt-live-chat-membership-item-renderer{display:none !important}",
+    );
+    expect(r.css).toBe(
+      ".yt-live-chat-membership-item-renderer{display:none !important}",
+    );
+    expect(r.rewritten).toBe(0);
+  });
+
+  it("共有要素は chat の下でだけ当たる形へ変換される", () => {
+    expect(
+      rewriteSelectors("yt-live-chat-text-message-renderer yt-img-shadow{a:b}")
+        .css,
+    ).toBe(".sd-comment-chat .sd-comment-icon{a:b}");
+    // ⚠ 課金側の祖先は未変換のまま残るので、合成されても StreamDock の DOM には当たらない。
+    expect(
+      rewriteSelectors("yt-live-chat-paid-message-renderer yt-img-shadow{a:b}")
+        .css,
+    ).toBe("yt-live-chat-paid-message-renderer .sd-comment-icon{a:b}");
+  });
+
+  it("名前行は chat の名前行に当たる（目印は付けていない）", () => {
+    expect(rewriteSelectors("div#author-info{a:b}").css).toBe(
+      ".sd-comment-header{a:b}",
+    );
+  });
+
+  /**
+   * 060f: **変換先が複合セレクタになっても冪等**（060d は注入とプレビューのたびに毎回呼ぶ）。
+   * 担保しているのは「`from` に sd 語彙を書かない」ことだけで、静的ガード (10-c) が固定している。
+   * ⚠ 長い順ソートも新エントリで効いていること（`…paid-message-renderer #message` が
+   * `…paid-message-renderer` 単体に食われない）を同時に見る。
+   */
+  it("複合セレクタでも冪等で、長い順ソートが新エントリでも効く", () => {
+    const inputs = [
+      "yt-live-chat-text-message-renderer #message{a:b}",
+      "yt-live-chat-item-list-renderer #items{a:b}",
+      ".chat-line__message-body{a:b}",
+      "yt-live-chat-app{a:b}",
+    ];
+    for (const css of inputs) {
+      const once = rewriteSelectors(css);
+      const twice = rewriteSelectors(once.css);
+      expect(once.rewritten).toBe(1);
+      expect(twice.css).toBe(once.css);
+      expect(twice.rewritten).toBe(0);
+      // 祖先だけ変換されて裸 id が残る形になっていないこと（＝食われていない）。
+      expect(once.css).not.toContain("#");
+    }
+  });
+});
+
+/**
+ * 060f の**完了条件そのもの**を 1 本で見るテスト。
+ * 「`unmatched` に残るのは StreamDock に対応物が無いものだけ」を、YouTube 純正チャット向けテーマの
+ * 典型形（吹き出し＋画面部品の非表示）で固定する。
+ *
+ * ⚠ **依頼者の実サンプルそのものではない**——実サンプルの意匠の実体は第三者サイトの外部 CSS の中にあり、
+ * リポジトリへは URL しか持ち込んでいない（060a の判断）。ここにあるのは docs に残る内訳
+ * （変換 10 / 未変換 20・うち 6 が 060f で追加した分・14 は対応物なし）から組んだ**等価な再構成**である。
+ */
+describe("rewriteSelectors — YouTube テーマの典型形で unmatched が「対応物なし」だけになる", () => {
+  const THEME = `yt-live-chat-app { background: transparent }
+yt-live-chat-renderer { font-family: "M PLUS 1p" }
+yt-live-chat-item-list-renderer #items { padding: 4px }
+yt-live-chat-text-message-renderer { margin: 6px 0 }
+yt-live-chat-text-message-renderer #message { background: #fff; border-radius: 14px }
+yt-live-chat-text-message-renderer #message:before { content: "" }
+yt-live-chat-text-message-renderer #author-name { font-weight: 700 }
+yt-live-chat-text-message-renderer #img { border-radius: 50% }
+yt-img-shadow { width: 44px }
+div#author-info { margin-left: 56px }
+.yt-live-chat-author-chip { color: #333 }
+yt-live-chat-paid-message-renderer { border-radius: 12px }
+.yt-live-chat-membership-item-renderer { border-radius: 12px }
+yt-live-chat-header-renderer { display: none }
+yt-live-chat-message-input-renderer { display: none }
+yt-live-chat-ticker-renderer { display: none }
+#chat-badges { display: none }
+#timestamp { display: none }
+`;
+
+  it("StreamDock に対応物があるものは全部変換され、残るのは画面部品と課金カードだけ", () => {
+    const r = rewriteSelectors(THEME);
+    // 11 ルールが変換される。
+    // ⚠ 060f 追修正④: 課金カードの 2 ルール（paid-message / membership）は**変換しない**ので、
+    //   変換数が 13 → 11 に減り、`unmatched` に paid-message が 1 件増えた（クラス形の membership は
+    //   `.yt-` 接頭辞のため従来どおり `unmatched` にも載らない）。
+    expect(r.rewritten).toBe(11);
+    expect(r.unmatched).toEqual([
+      "yt-live-chat-paid-message-renderer",
+      "yt-live-chat-header-renderer",
+      "yt-live-chat-message-input-renderer",
+      "yt-live-chat-ticker-renderer",
+      "#chat-badges",
+      "#timestamp",
+    ]);
+    // ⚠⚠ 060f の芯: chat 用の指定が課金カード（`.sd-comment`）へ落ちていないこと。
+    expect(r.css).toContain(".sd-comment-text.sd-comment-in-chat {");
+    expect(r.css).not.toMatch(/(?<![A-Za-z0-9_-])\.sd-comment(?![A-Za-z0-9_-])/);
+    // ⚠⚠ 060f 追修正④の芯: 課金カードを狙う 2 本が**素通り**していること
+    //   （変換すると `.sd-comment-tip` になり、`display:none` 系のテーマでカードが消える）。
+    expect(r.css).toContain("yt-live-chat-paid-message-renderer {");
+    expect(r.css).toContain(".yt-live-chat-membership-item-renderer {");
+    expect(r.css).not.toContain("sd-comment-tip");
+  });
+
+  it("2 回通しても同じ（注入のたびに毎回走る）", () => {
+    const once = rewriteSelectors(THEME);
+    const twice = rewriteSelectors(once.css);
+    expect(twice.css).toBe(once.css);
+    expect(twice.rewritten).toBe(0);
+    expect(twice.unmatched).toEqual(once.unmatched);
+  });
+});
+
+/**
+ * 060f: ⚠⚠ **`body` は変換もされないし `unmatched` にも載らない。**
+ *
+ * 060f のタスクファイルは当初「`body` が `unmatched` に出ることを期待どおりとして固定する」と
+ * 書いていたが、**実装と食い違っていた**（実測で判明・タスクファイル側を訂正した）。
+ * `FOREIGN_SELECTOR_RE` は**接頭辞ベース**（`ytd?-` / `.chat-` / `.tw-` / `[data-a-target…]` ＋
+ * `FOREIGN_ID_NAMES` の列挙）で、「sd 語彙でない全セレクタ」を載せる設計では**ない**
+ * （載せると `:root` や `body` で警告がノイズに埋もれて誰も読まなくなる——060a の判断）。
+ *
+ * ＝ **「変換表に足さなかったものは警告で気付ける」は成り立たない。** `body` を足さない判断を
+ * 守っているのは `cssCompat.ts` のコメントと本テストだけである。**消さないこと。**
+ */
+describe("rewriteSelectors — body は変換しない（窓の透過を壊さない）", () => {
+  const untouched: [label: string, css: string][] = [
+    ["body 単独", "body{background:#000}"],
+    ["html, body の束ね", "html,body{margin:0}"],
+    [":root", ":root{--txtcolor:#555}"],
+    ["body の子孫", "body .something{color:red}"],
+  ];
+
+  for (const [label, css] of untouched) {
+    it(`${label} — 出力が 1 バイトも変わらず、警告にも載らない`, () => {
+      const r = rewriteSelectors(css);
+      expect(r.css).toBe(css);
+      expect(r.rewritten).toBe(0);
+      // ⚠ ここが「出る」に変わったら、それは FOREIGN_SELECTOR_RE を広げた変更＝
+      // 060a の「警告をノイズにしない」判断を覆している。意図的なら本テストごと書き換えること。
+      expect(r.unmatched).toEqual([]);
+    });
+  }
+});
+
+/**
+ * 060f 追修正（security-review Q-1・2026-08-06）: ⚠⚠⚠ **`to` は「1 要素の複合セレクタ」だけ。**
+ *
+ * 060f の初版は `to` を**子孫セレクタ**（`.sd-comment-chat .sd-comment-text`）にしていたため、
+ * ユーザー CSS が `親 子孫` / `span.クラス` の形で書かれていると**前置が二重に積まれて
+ * 永久に当たらないセレクタ**になっていた（`.sd-comment-chat .sd-comment-chat .sd-comment-text`
+ * ＝ `<li>` の中に `<li>` が要る）。⚠ しかも `rewritten` は**加算され** `unmatched` は**空**なので、
+ * 060d の UI は「M 個のルールを変換しました」と**誤報していた**（3 件は 060f 以前は効いていた＝回帰）。
+ *
+ * → 限定を **`sd-comment-in-chat` / `sd-comment-in-tip` の同一要素の目印**で表す形に変え、
+ * 合成しても構造が保存されるようにした。**ここが直ったことの証拠がこの describe である。**
+ * ⚠ 対になる機械的な担保は `check-css-guards.mjs` の **(10-l)**（`to` に結合子を禁じる）と、
+ * 下の**全順序対の総当たり**。**3 つとも消さないこと。**
+ */
+describe("rewriteSelectors — 合成しても構造が保存される（複合 to の二重前置が起きない）", () => {
+  const out = (sel: string) => rewriteSelectors(`${sel}{a:b}`);
+
+  it("親 子孫 形（Twitch テーマの定型）が当たる形へ変換される", () => {
+    // ⚠ 初版: `.sd-comment-chat .sd-comment-chat .sd-comment-text`（永久に当たらない）。
+    expect(out(".chat-line__message .chat-line__message-body").css).toBe(
+      ".sd-comment-chat .sd-comment-text.sd-comment-in-chat{a:b}",
+    );
+    expect(out(".chat-line__message .chat-author__display-name").css).toBe(
+      ".sd-comment-chat .sd-comment-name.sd-comment-in-chat{a:b}",
+    );
+    // 子結合子でも同じ（`from` は `\s+` と `>` の両方に当たる）。
+    expect(out(".chat-line__message > .chat-line__message-body").css).toBe(
+      ".sd-comment-chat > .sd-comment-text.sd-comment-in-chat{a:b}",
+    );
+  });
+
+  it("型セレクタ + クラスの複合が「1 要素」のまま保たれる", () => {
+    // ⚠ 初版: `span.sd-comment-chat .sd-comment-name`（名前 <span> に当たらなくなっていた）。
+    expect(out("span.chat-author__display-name").css).toBe(
+      "span.sd-comment-name.sd-comment-in-chat{a:b}",
+    );
+    expect(out("#author-name.yt-live-chat-author-chip").css).toBe(
+      "#author-name.sd-comment-name.sd-comment-in-chat{a:b}",
+    );
+  });
+
+  it("⚠ 課金カードの本文は変換しない（060f 追修正④で的から外した）", () => {
+    // 素通り＝ StreamDock の課金カードには当たらない（そもそも安定クラスが無い）。
+    expect(out("yt-live-chat-paid-message-renderer #message").css).toBe(
+      "yt-live-chat-paid-message-renderer #message{a:b}",
+    );
+    // chat 側は従来どおり 1 要素の複合へ畳まれる。
+    expect(out("yt-live-chat-text-message-renderer #message").css).toBe(
+      ".sd-comment-text.sd-comment-in-chat{a:b}",
+    );
+  });
+
+  /**
+   * ⚠⚠ **これが Q-1 の再発防止の本体**（静的ガード (10-l) と対）。
+   *
+   * 見ているのは「**複合セレクタの個数が保存される**」——`to` が 1 要素だけを指しているなら、
+   * 元セレクタの複合が N 個なら変換後も N 個になる。初版の欠陥はここで落ちていた
+   * （`.chat-line__message .chat-line__message-body` は元が 2 個なのに
+   * `.sd-comment-chat .sd-comment-chat .sd-comment-text` ＝ **3 個**になっていた
+   * ＝ `to` が「自分以外の要素（祖先）」を語っていた証拠）。
+   *
+   * ⚠⚠ **「同じクラストークンが重複しないこと」を見てはいけない**（実測で 28 件の誤検出）。
+   * 目印クラス（`sd-comment-in-chat`）は**同じ chat の中の 2 要素なら当然両方に付く**ので、
+   * `#message #author-name` → `.sd-comment-text.sd-comment-in-chat .sd-comment-name.sd-comment-in-chat`
+   * のように重複するのが**正しい**。そもそもこの入力は純正チャット側でも当たらない（`#author-name` は
+   * `#message` の中に無い）ので、変換の問題ではない。**ここを締めすぎると正しいコードで落ちる。**
+   */
+  it("⚠⚠ 全順序対を合成しても、複合セレクタが 1 エントリ 1 個のまま増えない", () => {
+    /** セレクタを結合子で切って複合の個数を数える（`*` や型セレクタも 1 個として数える）。 */
+    const compounds = (sel: string) =>
+      sel
+        .trim()
+        .split(/\s*>\s*|\s+/)
+        .filter((t) => t !== "").length;
+
+    // 単体: `to` は必ず**ちょうど 1 個の複合**（静的ガード (10-l) と同じ不変条件をここでも押さえる）。
+    // ⚠ 初版の子孫 to は 7 件がここで落ちる（実測）。
+    for (const rule of SELECTOR_TABLE) {
+      expect(compounds(rule.to)).toBe(1);
+    }
+
+    // 全順序対: 2 エントリを子孫でつないだら、変換後も**ちょうど 2 個**。
+    // ⚠ 初版の子孫 to では 3 個になっていた（＝祖先が 1 個余分に生える＝ Q-1 の欠陥そのもの）。
+    // ⚠ 元セレクタ側の複合数と比べてはいけない——`renderer #message`（2 個）が 1 要素へ畳まれるのは
+    // **この表の目的そのもの**なので、元と比べる検査は正しいコードで落ちる（実測 145 件）。
+    const broken: string[] = [];
+    for (const a of SELECTOR_TABLE) {
+      for (const b of SELECTOR_TABLE) {
+        const css = rewriteSelectors(`${a.from} ${b.from}{x:y}`).css;
+        const got = css.slice(0, css.indexOf("{"));
+        if (compounds(got) !== 2) {
+          broken.push(`${a.from} ${b.from} -> ${got} (${compounds(got)})`);
+        }
+      }
+    }
+    expect(broken).toEqual([]);
+  });
+});
+
 describe("rewriteSelectors — 依頼者の実サンプル", () => {
   it("YouTube 実サンプルを丸ごと変換する（カンマ束ね・子孫の * ・@import・:root を含む）", () => {
     const r = rewriteSelectors(YOUTUBE_SAMPLE);
+    // ⚠ 060f: 向き先が `.sd-comment-text` から **chat 限定の複合セレクタ**へ変わった
+    // （chat 用に書かれたテーマが課金カードに当たらないようにするため）。
     expect(r.css).toBe(`@import url("https://ruri.info/tool/css/midashi1Comment.css");
-.sd-comment-text,
-.sd-comment-text * {
+.sd-comment-text.sd-comment-in-chat,
+.sd-comment-text.sd-comment-in-chat * {
 font-family: "M PLUS 1p", sans-serif;}
 :root{
 --txtcolor:#555555;
@@ -110,7 +543,7 @@ font-family: "M PLUS 1p", sans-serif;}
     const r = rewriteSelectors(TWITCH_SAMPLE);
     expect(r.css)
       .toBe(`@import url("https://ruri.info/tool/css/twmidashi1Comment.css");
-.sd-comment{
+.sd-comment-chat{
 font-family: "M PLUS 1p", sans-serif;}
 :root{
 --txtcolor:#555555;
@@ -133,23 +566,28 @@ font-family: "M PLUS 1p", sans-serif;}
 });
 
 describe("rewriteSelectors — 変換表の残りのエントリ（想定形）", () => {
-  it("YouTube: 単体 renderer / #author-name / 課金カードを書き換え、未知は残して unmatched に載せる", () => {
+  it("YouTube: 単体 renderer / #author-name を書き換え、課金・未知は残して unmatched に載せる", () => {
     const r = rewriteSelectors(YOUTUBE_EXTENDED);
-    expect(r.css).toContain(".sd-comment {");
-    expect(r.css).toContain(".sd-comment-name {");
-    expect(r.css).toContain(".sd-comment-tip {");
-    // 変換できた 3 ルール。4 本目（paid-sticker）は変換表に無い。
-    expect(r.rewritten).toBe(3);
-    expect(r.unmatched).toEqual(["yt-live-chat-paid-sticker-renderer"]);
+    expect(r.css).toContain(".sd-comment-chat {");
+    expect(r.css).toContain(".sd-comment-name.sd-comment-in-chat {");
+    // ⚠ 060f 追修正④: 課金カードは変換しない＝素通りで `unmatched` に出る。
+    expect(r.css).toContain("yt-live-chat-paid-message-renderer {");
+    expect(r.css).not.toContain("sd-comment-tip");
+    // 変換できた 2 ルール（課金 2 本＝ paid-message / paid-sticker は変換表に無い）。
+    expect(r.rewritten).toBe(2);
+    expect(r.unmatched).toEqual([
+      "yt-live-chat-paid-message-renderer",
+      "yt-live-chat-paid-sticker-renderer",
+    ]);
     // 未知セレクタは**消さずに残す**（消すとユーザーが原因にたどり着けない）。
     expect(r.css).toContain("yt-live-chat-paid-sticker-renderer {");
   });
 
   it("Twitch: message / message-body / display-name を書き換え、未知は残して unmatched に載せる", () => {
     const r = rewriteSelectors(TWITCH_EXTENDED);
-    expect(r.css).toContain(".sd-comment {\n  padding: 8px 12px;");
-    expect(r.css).toContain(".sd-comment-text {");
-    expect(r.css).toContain(".sd-comment-name {");
+    expect(r.css).toContain(".sd-comment-chat {\n  padding: 8px 12px;");
+    expect(r.css).toContain(".sd-comment-text.sd-comment-in-chat {");
+    expect(r.css).toContain(".sd-comment-name.sd-comment-in-chat {");
     expect(r.rewritten).toBe(3);
     expect(r.unmatched).toEqual([".chat-line__timestamp"]);
     expect(r.css).toContain(".chat-line__timestamp {");
@@ -161,7 +599,7 @@ describe("rewriteSelectors — 060b / 060c の責務には触れない", () => {
     const css = `@import url("https://example.test/theme.css");\n.chat-line__message { color: red }`;
     const r = rewriteSelectors(css);
     expect(r.css).toContain(`@import url("https://example.test/theme.css");`);
-    expect(r.css).toContain(".sd-comment { color: red }");
+    expect(r.css).toContain(".sd-comment-chat { color: red }");
     // @import の中の URL は「効かないセレクタ」ではないので警告に載せない。
     expect(r.unmatched).toEqual([]);
   });
@@ -170,7 +608,7 @@ describe("rewriteSelectors — 060b / 060c の責務には触れない", () => {
     const css = `.chat-line__message { background-image: url("https://evil.example/x.png") }`;
     const r = rewriteSelectors(css);
     expect(r.css).toBe(
-      `.sd-comment { background-image: url("https://evil.example/x.png") }`,
+      `.sd-comment-chat { background-image: url("https://evil.example/x.png") }`,
     );
   });
 });
@@ -266,7 +704,7 @@ describe("rewriteSelectors — url() / @import に 1 バイトも触れない（
     expect(r.css).toContain(
       `@import "http://evil.test/b.css" screen and (min-width:1px);`,
     );
-    expect(r.css).toContain(".sd-comment{color:red}");
+    expect(r.css).toContain(".sd-comment-chat{color:red}");
     expect(r.unmatched).toEqual([]);
   });
 });
@@ -389,7 +827,7 @@ yt-live-chat-text-message-renderer #author-name,
     const r = rewriteSelectors(css);
     expect(r.rewritten).toBe(1);
     expect(r.css).toBe(
-      `.sd-comment-text,\n.sd-comment-name,\n.sd-comment-text { color: red }`,
+      `.sd-comment-text.sd-comment-in-chat,\n.sd-comment-name.sd-comment-in-chat,\n.sd-comment-text.sd-comment-in-chat { color: red }`,
     );
   });
 
@@ -406,7 +844,7 @@ describe("rewriteSelectors — 置換の安全性", () => {
     const r = rewriteSelectors(
       "yt-live-chat-text-message-renderer #message { color: red }",
     );
-    expect(r.css).toBe(".sd-comment-text { color: red }");
+    expect(r.css).toBe(".sd-comment-text.sd-comment-in-chat { color: red }");
     expect(r.css).not.toContain("#message");
   });
 
@@ -414,7 +852,7 @@ describe("rewriteSelectors — 置換の安全性", () => {
     const r = rewriteSelectors(
       "yt-live-chat-text-message-renderer > #message { color: red }",
     );
-    expect(r.css).toBe(".sd-comment-text { color: red }");
+    expect(r.css).toBe(".sd-comment-text.sd-comment-in-chat { color: red }");
   });
 
   it("接尾辞違いの別クラスを巻き込まない（単語境界）", () => {
@@ -426,7 +864,7 @@ describe("rewriteSelectors — 置換の安全性", () => {
 
   it("複合セレクタ（.foo.chat-line__message）は当てる／別名の一部（.my-yt-live-chat-x）は当てない", () => {
     expect(rewriteSelectors(".foo.chat-line__message { }").css).toBe(
-      ".foo.sd-comment { }",
+      ".foo.sd-comment-chat { }",
     );
     expect(
       rewriteSelectors(".my-yt-live-chat-text-message-renderer { }").css,
@@ -435,10 +873,10 @@ describe("rewriteSelectors — 置換の安全性", () => {
 
   it("擬似クラス・擬似要素は置換後もそのまま残る", () => {
     expect(rewriteSelectors(".chat-line__message:hover { }").css).toBe(
-      ".sd-comment:hover { }",
+      ".sd-comment-chat:hover { }",
     );
     expect(rewriteSelectors(".chat-line__message-body::first-line { }").css).toBe(
-      ".sd-comment-text::first-line { }",
+      ".sd-comment-text.sd-comment-in-chat::first-line { }",
     );
   });
 
@@ -446,7 +884,7 @@ describe("rewriteSelectors — 置換の安全性", () => {
     const r = rewriteSelectors(
       `.chat-line__message { content: ".chat-line__message"; }`,
     );
-    expect(r.css).toBe(`.sd-comment { content: ".chat-line__message"; }`);
+    expect(r.css).toBe(`.sd-comment-chat { content: ".chat-line__message"; }`);
   });
 
   it("コメントの中を書き換えない／閉じブレースを含むコメントでブロック分割が壊れない", () => {
@@ -454,7 +892,7 @@ describe("rewriteSelectors — 置換の安全性", () => {
       `/* .chat-line__message は残す } */\n.chat-line__message { color: red }`,
     );
     expect(r.css).toBe(
-      `/* .chat-line__message は残す } */\n.sd-comment { color: red }`,
+      `/* .chat-line__message は残す } */\n.sd-comment-chat { color: red }`,
     );
     expect(r.rewritten).toBe(1);
   });
@@ -464,7 +902,7 @@ describe("rewriteSelectors — 置換の安全性", () => {
     const r = rewriteSelectors(
       `.a { content: "}" }\n.chat-line__message { color: red }`,
     );
-    expect(r.css).toBe(`.a { content: "}" }\n.sd-comment { color: red }`);
+    expect(r.css).toBe(`.a { content: "}" }\n.sd-comment-chat { color: red }`);
     expect(r.rewritten).toBe(1);
   });
 });
@@ -475,7 +913,7 @@ describe("rewriteSelectors — アットルールの扱い", () => {
       "@media (max-width: 600px) { .chat-line__message { color: red } }",
     );
     expect(r.css).toBe(
-      "@media (max-width: 600px) { .sd-comment { color: red } }",
+      "@media (max-width: 600px) { .sd-comment-chat { color: red } }",
     );
     expect(r.rewritten).toBe(1);
   });
@@ -516,7 +954,7 @@ describe("rewriteSelectors — unmatched の意味", () => {
       `yt-live-chat-text-message-renderer #timestamp { display: none }`,
     );
     // 祖先は変換される（＝rewritten は加算される）が、#timestamp は StreamDock に存在しない。
-    expect(r.css).toBe(".sd-comment #timestamp { display: none }");
+    expect(r.css).toBe(".sd-comment-chat #timestamp { display: none }");
     expect(r.rewritten).toBe(1);
     // ⚠ ここが空だと「M 個変換しました」とだけ出て、ユーザーは効かない理由に辿り着けない。
     expect(r.unmatched).toEqual(["#timestamp"]);
@@ -596,7 +1034,7 @@ describe("rewriteSelectors — 異常系（壊れず劣化する）", () => {
     });
     expect(rewriteSelectors("color: red;").css).toBe("color: red;");
     expect(rewriteSelectors(".chat-line__message { color: red").css).toBe(
-      ".sd-comment { color: red",
+      ".sd-comment-chat { color: red",
     );
     expect(rewriteSelectors("}}}").css).toBe("}}}");
   });

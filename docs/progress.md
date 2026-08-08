@@ -14337,3 +14337,1434 @@ Q-10・Q-11・Q-12・Q-15 は**指摘なし（現状維持が妥当）**と確�
 `deleting_removes_both_the_row_and_the_file_and_repeats_safely` / `source_paths_must_be_existing_css_files_within_the_size_limit` /
 `binary_files_named_css_are_refused` / `a_refused_css_leaves_no_file_and_no_row_behind`）であり、
 **手動で見る意味が残るのは「実 OS のパス解決」と「実ダイアログが返すパスを Rust が受けるか」だけ**である。
+
+## 060f オーバーレイ DOM の整合（chat 限定・中間 div 廃止・契約 11 クラス・変換表 15 件）（2026-08-05〜08）
+
+タスク: [docs/tasks/060f-overlay-dom-alignment.md](tasks/060f-overlay-dom-alignment.md)。
+frontend のみ・**Rust / sidecar / capabilities / `tauri.conf.json` / 依存は差分ゼロ**・新規通信ゼロ。
+
+### 🧭 いま入っているもの（**この 10 行だけ読めば足りる**・2026-08-08 時点）
+
+> ⚠ 本節は **1400 行超**あり、大半は**入れて外した記録**である。実装に残っているのは以下だけ:
+>
+> | 追修正 | 内容 | 状態 |
+> |---|---|---|
+> | ①②③ | 既定意匠のリセット（`overlayThemeReset.ts`）＋ `.item` のグリッド化＋ chat の `<p>` 1 枚化 | ✅ 入っている |
+> | **④** | **課金カードから安定クラスと `data-sd-*` を全部外した**（ユーザー CSS の的にしない） | ✅ 入っている |
+> | ⑤ | `.themePreview` を `min-height: 200px` へ | ❌ **撤回**（症状が直らず） |
+> | ⑥ | `.themePreview` を `height: 260px` へ ＋ (10-j) 拡張 | ❌ **撤回**（原因診断が誤り） |
+> | **⑦** | **`.themePreview` に `transform: translateZ(0)`**（WebKit の描画バグ回避・1 宣言） | ✅ 入っている |
+>
+> ＝ `.themePreview` の高さは **`height: 200px`（元のまま）**。⑤⑥の節を読んで入れ直さないこと。
+> ⚠ ⑦は**エンジン固有の回避策**で、再現の向きが本人症状と逆（テーマ→既定 で再現／症状はテーマ適用時）。
+> **本人環境での確認が済むまで「真因確定」とは書かないこと**（レビュー指摘 Q-2・2026-08-08）。
+
+### ⚠⚠⚠ 現在の設計（2026-08-08 時点・**これが正**）
+
+> ⚠ **この節より下は時系列の記録**で、差し戻し①②③が順に積まれている。
+> **上から読むと「既に偽になった記述」を 3 つ通過する**（下の「失効した記述」参照）ので、
+> 現在の姿を知りたいときはこのブロックだけを読むこと（レビュー指摘 Q-5・2026-08-08 で新設）。
+
+**0. ⚠⚠⚠ 射程 — ユーザー CSS が届くのは「chat のコメント」だけ**（差し戻し④・2026-08-08 本人決定）
+
+**課金カード（投げ銭カード）には安定クラスも `data-sd-*` も付いていない**＝テーマからもリセットからも
+**名指しできない**。「スパチャのデザインは常に同じで、配信窓に必ず出る」。静的ガード **(10-o)** が固定。
+
+⚠⚠⚠ **「名指しできない」であって「到達不能」ではない**（security-review 2026-08-08・実測）。
+変換表が持つ**器のエントリ**（`yt-live-chat-app` / `yt-live-chat-renderer` → `.sd-overlay`、
+`yt-live-chat-item-list-renderer #items` → `.sd-comment-list`）は課金カードの**祖先**なので、
+テーマが汎用/型セレクタと組み合わせれば届く（`.sd-overlay *` が課金カードの中の **9 要素**、
+`.sd-comment-list > *` と `.sd-overlay li` が **`<li>` 自身**に当たる）。
+⚠ この 2 つの写像は **060f が新規に追加した**＝ 060f は名指しを塞ぐと同時に祖先への経路を 1 つ開けている。
+能力は 060a 時点から `.sd-overlay li{…}` と直接書けたので区分は不変だが、上がったのは**踏む確率**。
+⚠ **実害（配布テーマの `yt-live-chat-paid-message-renderer{display:none!important}` で課金カードが
+丸ごと消える）は解消している**——そちらは未変換のまま。`CommentList.selectorContract.test.tsx` が
+「名指しは届かない」と「祖先＋汎用は届く」を**対で**固定している。
+⚠ **「課金カードは絶対に触れない」を新しい設計の前提に置かないこと。** そこまで保証するなら必要なのは
+目印の除去ではなく**構造の分離**（shadow root / 別の器）である。
+
+**1. 注入するもの** — `overlayThemeReset.ts` の固定文字列 `DEFAULT_DECORATION_RESET`（4 ルール）を
+テーマ CSS の**手前**に連結する。ユーザー由来の文字列は 1 バイトも混ざらない。
+
+```css
+:where(.sd-comment-chat){position:relative}               /* テーマの絶対配置の基準 */
+:where(.sd-comment-chat){--sd-icon-gap:8px}               /* しっぽを描かないぶん 20px 返す */
+:where(.sd-comment-body.sd-comment-in-chat){background:none;border:0;border-radius:0;filter:none}
+:where(.sd-comment-body.sd-comment-in-chat)::before,
+:where(.sd-comment-body.sd-comment-in-chat)::after{all:unset}  /* ⚠ content:none ではない（幾何が漏れる） */
+```
+
+**2. 効く仕組み** — 「**非レイヤー > レイヤー**」の 3 段。`!important` は使わない（テーマに勝ってしまう）。
+
+| 段 | 中身 | 強さ |
+|---|---|---|
+| ① `@layer sd-default` | `.bubble` ／ `.bubble::before,::after`（束ね）／ `.bubble::before` ／ `.bubble::after` の **4 ルール** | 最弱 |
+| ② 非レイヤーのリセット | 上の 4 ルール（`:where()` ＝詳細度 0） | ①に勝つ |
+| ③ 非レイヤーのテーマ | リセットより**後ろ**に連結 | ②に必ず勝つ |
+
+**3. 注入経路（2 か所とも `withDecorationReset` を通す）**
+
+```ts
+// 配信窓 OverlayApp
+el.textContent = withDecorationReset(rewriteSelectors(css).css);
+// 設定画面のプレビュー OverlayThemeCard —— ⚠ 連結は scopeSelectors の「前」
+setPreviewCss(scopeSelectors(withDecorationReset(rewriteSelectors(css).css), PREVIEW_SCOPE_SELECTOR));
+```
+
+**4. 機械的な担保** — (10-e) 値の一致 ／ **(10-m)** リセットの結線と `@layer` の中身（⚠ `matchAll` で全件）／
+**(10-n)** レイアウト器の宣言インベントリ（＝失った「非コメント差分ゼロ」の代替）／
+**(10-o)** 課金カードに `sd-comment*` / `data-sd-*` が無いこと ／
+`overlayThemeReset.test.ts`（形・固定文字列・スコープ化順序・chat 限定）／
+`CommentList.selectorContract.test.tsx`（変換先とリセット当て先が実 DOM に当たる／**課金カードには当たらない**）／
+`cssCompat.test.ts` の全順序対（15×15）。
+⚠ **「リセットが既定に勝ち、テーマには負ける」は自動検証されていない**（jsdom はカスケードを解決しない）。
+
+**5. ⚠⚠ 失効した記述（下の記録に残っているが、もう正しくない）**
+
+| 失効した記述 | 現在 | いつ覆ったか |
+|---|---|---|
+| `@layer sd-tail` | **`@layer sd-default`**（`.bubble` 本体も中） | 差し戻し② |
+| リセットは `content:none` | **`all: unset`** | 差し戻し③ |
+| 意匠 CSS は**非コメント差分ゼロ** | **失われた**（グリッド化で意匠を触った） | 差し戻し① |
+| 安定クラス 4 つ／変換表 17 件 | **契約 11 クラス／変換表 15 件** | Q-1 ＋ 差し戻し③④ |
+| 起票理由①は「chat 専用クラスへ向ける」で解く | **課金カードを的から外して解いた**（限定では防げなかった） | 差し戻し④ |
+| `sd-comment-tip` / `-in-tip` / `-amount` / `-event` | **契約から削除**（課金カードは的ではない） | 差し戻し④ |
+| `.sd-comment` は chat / 課金 共通 | **chat 専用** | 差し戻し④ |
+| 課金カードにも `data-sd-tone` が出る | **どこにも出ない**（ティア別装飾は不可・受容） | 差し戻し④ |
+| 課金カードには**到達できない** | **名指しできないだけ**（祖先＋汎用なら届く） | security-review S-1（08-08） |
+| `.themePreview` は `min-height` / `height:260px` | **`height: 200px`（元のまま）＋ `transform: translateZ(0)`** | 差し戻し⑦ ＋ 追修正⑦ |
+| ⑥の (10-j) 拡張（`min-height` を禁じる） | **実装していない**（(10-j) が見るのは `contain`/`overflow`/`transform`） | 差し戻し⑦ |
+
+### ⚠⚠ 着手条件（060d / 060e の実機確認）を満たさないまま着手した（2026-08-05・本人決定）
+
+060f のタスクファイルと親 060 は「**着手条件＝ 060d / 060e の実機確認が済んでいること**」を
+明示していた。理由は 060f が **034e / 043c で作り込んだ既定意匠を触る**ため、未確認のまま着手すると
+「元から壊れていたのか、060f で壊したのか」が切り分けられなくなること。
+
+**着手時点で 060d / 060e の実機確認は未実施**（task-board の両行が「⚠ 実機確認は未実施」のまま）で、
+実装者はいったん計画のみを提示して確認を依頼したが、**本人が「実機確認は後でよい、先に実装する」と決定**した。
+＝ **切り分けができなくなるリスクを承知のうえで受容した**。⚠ したがって:
+
+- **実機で見た目の異常が出た場合、060f 由来か 060d/060e 以前からのものかは、コードを読んで切り分けるしかない。**
+  切り分けの助けになるよう、意匠 CSS は**非コメント差分ゼロ**（下の①）にしてあり、
+  `git diff -- apps/desktop/src/screens/comment-viewer/OverlayComment.module.css` を見れば
+  「060f は宣言を 1 つも触っていない」ことがその場で確認できる。
+- **実機確認は 060f の完了条件として残っている**（本節末の一覧）。060g / 060c へ進む前に消化すること。
+
+### 決定事項（2026-08-05 本人）
+
+- **方式 A** ＝ 変換表の向き先を chat 専用クラス（`sd-comment-chat`）にする。
+  ⚠ 方式 B（注入時にテーマ CSS 全体を chat 限定へ書き換える走査器を足す）は**不採用**——
+  セキュリティ上の壁ではないのに走査型のコードが 1 本増え、`cssScope.ts` の走査器が
+  **2 回続けて実 CSS パーサと desync した**領域を広げてしまう。方式 A なら**表と DOM だけ**に閉じる。
+- **`sd-comment-body` は chat の `<p>` に残す**（契約「chat と課金で同じ役割には同じ安定クラス」を保つ）。
+- **① CSS の統合方式＝両クラス併記**（下記）／**T-1＝ `ROOT_CLASSES` 別立て**／
+  **T-2＝実装が正・ドキュメントを訂正**／**`unmatched` の穴＝ 060c へ申し送り（060f では塞がない）**。
+
+### ① ⚠⚠ `.bubble` と `.text` を 1 規則へ**統合しなかった**（意匠 CSS は非コメント差分ゼロ）
+
+タスクファイルは「`.bubble` と `.text` を統合し、(10-e) の 5 エントリを統合後の規則名へ書き換える」と
+書いていたが、**統合しない形を採った**。根拠は実測:
+
+| `.bubble` | `.text` |
+|---|---|
+| `position: relative` / `flex: 1` / `min-width: 0` | `margin: 0` |
+| `background` / `border` / `border-radius` / `padding` | `font-size` / `font-weight` / `line-height` |
+| `filter: drop-shadow(…)` | `color` / `word-break` |
+
+＝ **重複プロパティがゼロ**。したがって同じ `<p>` に**両方のクラスを併記**すれば、CSS を 1 行も
+書き換えずに統合と同じ結果になる。得られるもの:
+
+- ⚠⚠ **`OverlayComment.module.css` の非コメント差分がゼロ**＝「既存意匠を 1px も変えない」を
+  **機械で証明できる**（コメントを剥がした前後を突き合わせて一致することを実測済み）。
+  本タスク最大のリスクに対する最も強い防御であり、**着手条件を飛ばした今回はとくに効く**。
+- **(10-e) の `SD_VAR_DECLS` は変更不要**（`.bubble` / `.bubble::before` / `.bubble::after` / `.text` の
+  規則名が不変）。`.bubble::before, .bubble::after` の**束ね＋単独の 2 ルール構成**も不変なので、
+  `ruleBodies` の取り出しがそのまま効く。
+- 詳細度も不変（どちらも `(0,1,0)`）。
+
+⚠ 統合したくなったときは、(10-e) の 5 エントリと上記 2 ルール構成を**一緒に**直すこと（CSS 側にコメント済み）。
+
+### ② 詳細度の実測 —— 上がるが、向きは「意図どおり」
+
+`(a,b,c)` = (id, class/attr/pseudo-class, type/pseudo-element)。
+
+| 詳細度 | セレクタ |
+|---|---|
+| `(0,1,0)` | `.text` / `.bubble`（StreamDock 既定＝ CSS Modules の単一クラス） |
+| `(0,1,1)` | `.bubble::before`（既定のしっぽ） |
+| `(0,1,0)` → **`(0,2,0)`** | 変換先（`.sd-comment-text` → `.sd-comment-chat .sd-comment-text`） |
+| **`(0,2,1)`** | 変換先のしっぽ |
+| `(1,0,0)` | `#message`（YouTube 原文の裸 id・**変換されない**） |
+
+- **帰結 1**: ユーザー CSS は `<head>` 末尾注入で既に順序勝ちだが、`(0,2,0)` > `(0,1,0)` なので
+  **順序に依存せず勝つ**。＝「取り込んだしっぽが StreamDock のしっぽを**置き換える**」が
+  `(0,2,1)` > `(0,1,1)` で確定する（二重吹き出しの解消）。
+  ⚠ ただし置き換えは**宣言単位**。StreamDock の `.bubble::before` が持つ `border-left-width: 0` /
+  `border-color: transparent` / `content` は、取り込んだ CSS が同じプロパティを書かない限り**残る**
+  （＝三角が合成されうる）。**実機確認 3 の見どころ。**
+- **帰結 2（受容した挙動）**: 同じテーマの中で
+  `yt-live-chat-text-message-renderer #message{color:red}`（→ `(0,2,0)`）と
+  `.sd-comment-text{color:blue}`（変換されない `(0,1,0)`）を併記すると、
+  **変換前は後勝ちで blue、変換後は red が勝つ＝逆転する**。YouTube 語彙と StreamDock 語彙を
+  混ぜて書いた人だけが踏む。`cssCompat.ts` の `to` の docstring に記録した。
+- **帰結 3（⚠⚠ 060g への申し送り）**: 060g の表示設定層は `.sd-comment-icon{display:revert!important}`
+  ＝`(0,1,0)` + `!important` で、060g のタスクファイル自身が「**セレクタを 1 クラスに保つこと＝
+  テーマ側が詳細度を上げると勝てなくなる**」と書いている。本タスクで
+  `yt-live-chat-text-message-renderer #img` → `.sd-comment-chat .sd-comment-icon`＝`(0,2,0)` に
+  なったため、**テーマが `!important` を付けていると 060g が負ける**。060g は前提の見直しが要る。
+
+### ③ ⚠⚠ タスクファイルの前提が実測で 2 つ崩れた（どちらもドキュメント側を訂正）
+
+**T-1: (10-b) は「変更不要」ではなかった。**
+
+```
+現行 STABLE_CLASSES:  (10-b) が落ちる件数 = 7（sd-comment-chat ×4 / sd-overlay / sd-comment-list / sd-comment-header）
+4 クラス追加後      :  なお 1 件落ちる    （sd-overlay）
+```
+
+`.sd-overlay` は `CommentList.tsx` ではなく `OverlayApp.tsx` に在るので、`STABLE_CLASSES` へ
+素朴に足すと今度は **(10-a)** が「`CommentList.tsx` に `sd-overlay` が無い」で落ちる。
+→ **`ROOT_CLASSES` を別立て**にし、(10-b) の照合集合だけを両者の和にした。
+(10-a) は従来どおり `STABLE_CLASSES` のみ、**(10-d)（固定コメント窓に付かないこと）は不変**。
+⚠ 複合セレクタ（`.sd-comment-chat .sd-comment-text`）自体は (10-b) がそのまま通す
+（`to.matchAll(/\.([A-Za-z0-9_-]+)/g)` が全クラストークンを抜く形のため）＝ここはタスクファイルの記述どおり。
+
+**T-2: `body` は `unmatched` に出ない。**
+
+```
+body{background:#000}        -> 出力は 1 バイトも変わらず rewritten=0 unmatched=[]
+html,body{margin:0}          -> 同上
+#panel-pages{display:none}   -> 同上
+```
+
+`FOREIGN_SELECTOR_RE` は**接頭辞ベース**（`ytd?-` / `.chat-` / `.tw-` / `[data-a-target…]` ＋
+`FOREIGN_ID_NAMES` の列挙）で、「sd 語彙でない全セレクタ」を載せる設計では**ない**
+（載せると `:root` や `body` で警告がノイズに埋もれる——060a の判断で、実サンプル検証でも裏付け済み）。
+＝ **「変換表に足さなかったものは警告で気付ける」は成り立たない。** `body` を足さない判断を守っているのは
+`cssCompat.ts` のコメントと `cssCompat.test.ts` の describe だけ。**どちらも消さないこと。**
+
+**T-3: (10-e) は①の帰結として変更不要**（タスクファイル (5) の該当行を訂正した）。
+
+### ④ 実装
+
+**DOM（`CommentList.tsx` の `renderOverlayItem` — overlay 分岐のみ）**
+
+```
+【変更前】li.item.sd-comment              > div.header      + div.row > icon + div.bubble.sd-comment-body > p.text.sd-comment-text
+【変更後】li.item.sd-comment.sd-comment-chat > div.header.sd-comment-header + div.row.sd-comment-row > icon + p.bubble.text.sd-comment-body.sd-comment-text
+```
+
+- 課金カードは `div.cardHeader` に **`sd-comment-header` を足しただけ**（`cardBody` は 2 段構造に必要なので不変）。
+- 一覧の `<ol>` は **`variant === "overlay"` のときだけ** `sd-comment-list` を足す
+  （`<ol>` の CSS モジュールは本体コメビュと共有で、060a の「default には 1 つも付かない」を破るため）。
+
+**変換表（`cssCompat.ts`）10 → 17 件**
+
+| 区分 | 内容 |
+|---|---|
+| chat 限定へ向け直し（8 件） | `yt-live-chat-text-message-renderer`（＋ `#message` / `#author-name` / `#img`）／`.chat-line__message` / `.chat-line__message-body` / `.chat-line__no-background` / `.chat-author__display-name` |
+| **据え置き（2 件）** | `yt-live-chat-paid-message-renderer`（元から課金専用）／⚠⚠ `yt-img-shadow`（**chat と課金の共有要素**。限定すると `…paid-message-renderer yt-img-shadow` が `.sd-comment-tip .sd-comment-chat .sd-comment-icon` ＝ **絶対に当たらないセレクタ**になる） |
+| 新規（7 件） | `.yt-live-chat-author-chip` / `yt-live-chat-app` / `yt-live-chat-renderer` / `yt-live-chat-item-list-renderer #items` / `div#author-info`（⚠ 両方に現れる役割なので限定しない）／`.yt-live-chat-membership-item-renderer` / `yt-live-chat-paid-message-renderer #message`（対称性のため） |
+| ⚠⚠ 足さない | **`body` / `html` / `:root`**（窓の透過＝ OBS 合成の前提が壊れる） |
+
+### ⑤ ⚠⚠ `.sd-overlay` を変換表に入れたことの帰結（新しく生まれたリスク）
+
+060a の「`.sd-overlay` は変換表に入れない」という制約は、**060d が `ROOT_LIKE_CS`（`.sd-overlay` を
+`.sd-preview` へ読み替える）を実装した時点で解消済み**だった＝ `cssCompat.ts` のコメントが古かったので訂正した。
+プレビュー側で正しく効くことは注入経路と同じ順序で実測し、`cssScope.test.ts` に固定した:
+
+```
+yt-live-chat-app{background:transparent}                                  -> .sd-preview{background:transparent}
+yt-live-chat-app yt-live-chat-text-message-renderer #message{color:red}   -> .sd-preview .sd-comment-chat .sd-comment-text{color:red}
+yt-live-chat-item-list-renderer #items{padding:0}                         -> .sd-preview .sd-comment-list{padding:0}
+```
+
+⚠⚠ **代わりに新しいリスクが生まれた。** `.sd-overlay` は `OverlayApp` の **`height: 100%` のルート div** なので、
+`yt-live-chat-app { background: #fff }` と書かれたテーマは**オーバーレイ窓を全面不透明にする**
+——`body` を変換表に入れてはいけない理由と**同じ症状**が、こちらの経路では成立する
+（窓自体は `html[data-overlay="1"]` の `:global` で透明のままだが、中の div が全面を塗る）。
+それでも入れているのは `.sd-overlay` が CSS 変数（`--sd-*`）を上書きする**唯一の器**で、的そのものが必要だから。
+**受容**し、脱出路は 060d の「既定のデザインに戻す」に委ねる（`cssCompat.ts` に理由を記載・実機確認に項目追加）。
+
+### ⑥ `unmatched` の実測と、新しく見つかった穴
+
+**新規 7 件が「今まで警告に出ていたか」（実測）**
+
+| 新エントリ | 060f 以前の `unmatched` |
+|---|---|
+| `.yt-live-chat-author-chip` | **`[]`（出ていない）** |
+| `.yt-live-chat-membership-item-renderer` | **`[]`（出ていない）** |
+| `div#author-info` | **`[]`（出ていない）** |
+| `yt-live-chat-app` / `yt-live-chat-renderer` / `yt-live-chat-item-list-renderer #items` | 出ていた |
+| `yt-live-chat-paid-message-renderer #message` | `["#message"]`（`.sd-comment-tip #message` へ部分変換＝当たらない） |
+
+⚠⚠ **7 件中 3 件は警告に出ていなかった。** 原因は `FOREIGN_SELECTOR_RE` の
+`(?<![A-Za-z0-9_.#-])ytd?-…` の lookbehind が **`.` を禁じている**ため（`.yt-live-chat-*` という
+**クラス形**を拾えない）と、`author-info` が `FOREIGN_ID_NAMES` に無いため。
+＝ **「`unmatched` が次の観測手段」という 060 の設計に穴がある。**
+→ **060f では塞がない**（本人決定）。7 件はどのみち変換されるので実害は無く、
+`FOREIGN_SELECTOR_RE` を触るのは「誤検知が増えると警告を誰も読まなくなる」領域なので**060c へ申し送り**。
+
+**YouTube テーマの典型形（18 ルール）での実測**（`cssCompat.test.ts` にフィクスチャとして常設）:
+
+```
+rewritten = 13 / unmatched = 5
+  yt-live-chat-header-renderer / yt-live-chat-message-input-renderer /
+  yt-live-chat-ticker-renderer / #chat-badges / #timestamp
+＝ 残るのは「YouTube の画面部品を隠す指定」だけ＝ StreamDock に対応物が無いもののみ（完了条件を満たす）
+```
+
+⚠ **依頼者の実サンプルそのものはリポジトリに無い**（意匠の実体は第三者サイトの外部 CSS で、
+060a の判断により URL しか持ち込んでいない）。上は docs に残る内訳（変換 10 / 未変換 20・うち 6 が
+060f の追加分・14 は対応物なし）から組んだ**等価な再構成**である。実サンプルへ外挿すると
+**変換 10 → 16 / 未変換 20 → 14**。⚠ **実機確認のときに実物で再測定すること。**
+⚠ また **「未変換 20」は目視の数であって `unmatched.length` ではない**（上の穴のため両者は一致しない）。
+
+### ⑦ `sd-comment-chat` をクラスで表した理由（`data-sd-event="chat"` があるのに）
+
+`CommentList.tsx` と `cssCompat.ts` にコメントで残した:
+① **詳細度**——属性形にすると変換先が `(0,2,0)`、子孫を足すと `(0,3,0)` まで上がる
+② **静的ガード (10-b)** は `to` からクラストークンを抜いて契約と突き合わせるので、
+属性形だと**変換先の打ち間違いを機械で検出できなくなる**
+③ **可読性**——ユーザーが書くのは `.sd-comment-chat{…}` で、`sd-comment-tip` と対の語彙に揃う。
+
+### テスト（**1064 → 1080 passed / 44 files**・+16 件）
+
+- `CommentList.test.tsx`（+5）: `sd-comment-chat` が chat だけ／chat は `sd-comment-body` と
+  `sd-comment-text` が**同一要素**（`toBe` で同一性・親が `.sd-comment-row`）／課金は**別要素**のまま／
+  `sd-comment-header` は両方・`sd-comment-row` は chat だけ／`sd-comment-list` は overlay の `<ol>` だけ。
+  既存の「併記であって置換ではない」テストを**意匠クラスの同一性**で見る形へ強化（下のミューテーション参照）。
+  ⚠ 「`variant="default"` には 1 つも付かない」は**既存テストが `[class*="sd-comment"]` で拾う**ので、
+  新クラスを default へ漏らす変異は書き足さずとも落ちる。
+- `cssCompat.test.ts`（+8）: 向き先を 1 件ずつ固定（chat 限定 8 / 据え置き 2 / 新規 7）／
+  共有要素が課金の下でも**当たる形**になること／`body` は変換もされず警告にも載らないこと／
+  複合 `to` でも冪等＋長い順ソートが新エントリで効くこと／YouTube テーマ典型形の `rewritten` と `unmatched`。
+  実サンプル 2 本ほか**既存の期待値 15 箇所を新しい変換先へ更新**。
+- `cssScope.test.ts`（+3）: 注入経路と同じ順序（`scopeSelectors(rewriteSelectors(css).css, …)`）で
+  `.sd-overlay` がラッパへ読み替わること。実サンプル 2 本の期待値も更新。
+- `OverlayApp.test.tsx`: 注入経路の期待値を `.sd-comment` → `.sd-comment-chat` へ更新。
+
+### ミューテーション（**10 種すべて KILLED**。⚠ うち 1 種はテストを直して初めて殺せた）
+
+| # | 変異 | 結果 |
+|---|---|---|
+| ① | `sd-comment-chat` を課金側にも付ける | KILLED |
+| ② | 変換表を `.sd-comment` へ戻す | KILLED |
+| ③ | `sd-comment-list` を `variant` 無関係に付ける | KILLED |
+| ④ | (10-e) の値を 1px ずらす（`.bubble` の角丸 14px→13px） | KILLED |
+| ⑤ | `<p>` から意匠クラス `text` を落とす（併記→置換） | ⚠ **初回は生存** → 下記 |
+| ⑤' | `<p>` から意匠クラス `bubble` を落とす | KILLED |
+| ⑥ | (10-b) から窓ルートの許可（`ROOT_CLASSES`）を外す | KILLED |
+| ⑦ | chat の中間 div を復活させる（吹き出しが二重になる形） | KILLED |
+| ⑧ | `sd-comment-body` を `<p>` から外す | KILLED |
+| ⑨ | `sd-comment-header` を課金側から外す | KILLED |
+
+⚠⚠ **⑤ が生存した理由と是正**: 当初 `expect(className).toContain("text")` と書いていたが、
+**同じ要素に安定クラス `sd-comment-text` が併記されている**ので、意匠クラス（`overlayStyles.text`）を
+落としてもそちらに一致して緑のまま通った。→ **CSS モジュールを test から import し
+`classList.contains(overlayStyles.text)` で同一性を見る形**へ変更した（ハッシュ名に依存しない）。
+⚠ **この罠は 060a のテストから引き継いだもの**で、`sd-comment-*` と CSS モジュールのキーが
+部分文字列として重なる限りどこでも起こる。以後この種の表明は**部分文字列で書かないこと**。
+
+### 変更ファイル
+
+| ファイル | 内容 |
+|---|---|
+| `src/screens/comment-viewer/CommentList.tsx` | overlay 分岐の DOM（chat の中間 div 廃止・安定クラス 4 つ）＋判断のコメント |
+| `src/features/comment-viewer/cssCompat.ts` | 変換表 10 → 17 件／`to` の docstring 訂正（`.sd-overlay` 解禁・窓不透明化の注意）／`SELECTOR_TABLE` の docstring に chat 限定と `body` を足さない理由 |
+| `scripts/check-css-guards.mjs` | (10-a) の `STABLE_CLASSES` に 4 クラス／**`ROOT_CLASSES` 新設**と (10-b) の照合集合合流 |
+| `src/screens/comment-viewer/OverlayComment.module.css` | ⚠ **コメントのみ**（宣言は 1 つも変えていない・実測で確認済み） |
+| `src/screens/comment-viewer/CommentList.test.tsx` / `src/features/comment-viewer/cssCompat.test.ts` / `cssScope.test.ts` / `src/screens/comment-viewer/OverlayApp.test.tsx` | 上記テスト |
+
+### ゼロ拡大の実測（すべて差分ゼロを確認）
+
+```
+git status --short -- apps/desktop/src-tauri/ apps/comment-sidecar/ .github/    → 空
+git status --short -- apps/desktop/package.json pnpm-lock.yaml package.json     → 空
+git diff --stat -- apps/desktop/src/features/comment-viewer/                    → cssCompat.ts / *.test.ts のみ（走査器は増えていない）
+```
+
+⚠ **意匠 CSS の非コメント差分ゼロ**もスクリプトで実測（コメントを剥がした前後が完全一致）。
+
+### 検証
+
+```
+pnpm --filter ./apps/desktop typecheck   → OK
+pnpm --filter ./apps/desktop lint        → OK
+pnpm --filter ./apps/desktop test        → 1080 passed / 44 files ／ CSS guard check OK ／ Version sync check OK
+```
+
+### ⚠⚠ 未了（この順で消化すること）
+
+1. ~~**security-review（別チャット・必須）**~~ → **実施済み（2026-08-05・下の「security-review の結果」節）**
+2. ~~**【最優先】Q-1: 複合 `to` の二重前置**~~ → **修正済み（2026-08-06・下の「security-review の結果」節）**
+3. **⚠ 実機確認（本人の手番・着手条件を飛ばしたぶんここが唯一の受け皿）**
+   1. **テーマ未適用**で chat 吹き出し（⚠ とくに**しっぽの継ぎ目**・パディング・名前行のインデント）・
+      スパチャ・サブスク・**固定コメント窓**が実装前と同じ
+   2. YouTube 由来のテーマを適用 → **chat だけ変わり、課金カードは変わらない**
+   3. **吹き出しが二重にならない**（⚠ 三角が「置き換え」ではなく「合成」に見えないか＝②帰結 1）
+   4. 取り込み結果の「N 種類のセレクタは変換できませんでした」に残るのが画面部品の非表示だけ
+      （⚠ **実サンプルで再測定**し、上の再構成の数字と突き合わせること）
+   5. プレビューでも 2〜4 と同じ結果／コメビュ窓の他が壊れない
+   6. `.sd-comment{…}` を直接書いたテーマは**従来どおり chat と課金の両方に当たる**（受容した仕様）
+   7. ⚠ `yt-live-chat-app { background: #fff }` を含むテーマで**オーバーレイが全面不透明になる**こと、
+      および「既定のデザインに戻す」で復帰できること（⑤で受容したリスクの実機確認）
+   8. ⚠ **060d / 060e の未実施ぶん**（progress.md の各節）も併せて消化する
+   9. ⚠⚠ **Q-1（下記）の再現**——`.chat-line__message .chat-line__message-body` 形を含むテーマで
+      「変換しました」と出るのに何も変わらないこと（修正前の確認）／修正後は当たること
+
+### security-review の結果（2026-08-05・別チャット）
+
+**総合判定＝セキュリティは「軽微な懸念あり」（修正必須なし）／品質は「修正必須 1 件」。**
+
+セキュリティ側は実測ですべて確認された: ゼロ拡大（Rust / sidecar / CI / capabilities / `tauri.conf.json` /
+依存 / `docs/security.md` すべて差分ゼロ）・注入先は `OverlayApp.tsx` と `OverlayThemeCard.tsx` の 2 か所のまま
+（本番コードに `innerHTML` / `insertRule` / `adoptedStyleSheets` 等が 1 つも無い）・`cssScope.ts` と
+`.themePreview` の `contain: paint` と (10-h) / (10-i) は不変・036a の data URI ガード不変・
+`body` / `html` / `:root` 不在・複合 `to` でも冪等・`variant="default"` へ漏れなし・`clampUnmatched` 不変。
+
+⚠ **`url()` の的は増えていない**という判定が明示された——ユーザー CSS は 060f 以前から `.sd-comment *` /
+`*` でオーバーレイ配下の**全要素に到達できていた**（実サンプル自身が `.sd-comment-text *` を使っている）。
+安定クラス 4 つは「既に到達可能だった要素に名前を付けた」だけで、egress の到達範囲は不変。壁は 060b のまま。
+
+#### ⚠⚠⚠ Q-1【修正必須 → **修正済み（2026-08-06）**】複合 `to` の二重前置で恒久デッドセレクタが生まれていた
+
+**②で受容した「詳細度が上がる」だけが代償ではなかった。** `to` に子孫結合子を書いたことで、
+**祖先側のエントリと合成されると前置が二重に積まれ「絶対に当たらないセレクタ」になる。**
+実装者の自己申告は「複合セレクタ（空白なし）で構造が変わる」ケースだけだったが、
+レビューが HEAD と並べて実測したところ**空白区切りの子孫形でも成立し、そちらは 060f 以前は効いていた**。
+
+| ユーザー CSS | 060f 以前 | 現行 | 判定 |
+|---|---|---|---|
+| `.chat-line__message .chat-line__message-body` | `.sd-comment .sd-comment-text`（効く） | `.sd-comment-chat .sd-comment-chat .sd-comment-text` | **回帰** |
+| `.chat-line__message .chat-author__display-name` | `.sd-comment .sd-comment-name`（効く） | `.sd-comment-chat .sd-comment-chat .sd-comment-name` | **回帰** |
+| `span.chat-author__display-name` | `span.sd-comment-name`（効く） | `span.sd-comment-chat .sd-comment-name` | **回帰** |
+| `yt-live-chat-app yt-live-chat-renderer` | 未変換だが `unmatched` に 2 件＝**警告された** | `.sd-overlay .sd-overlay`（**警告も消えた**） | 観測性の回帰 |
+| `#author-name.yt-live-chat-author-chip`（自己申告分） | 未変換・`#author-name` を警告 | 当たらない・`#author-name` は警告に出る | 悪化なし |
+| `.foo.chat-line__message-body`（自己申告分） | `.foo.sd-comment-text`（当たらない） | 当たらない | 同等 |
+
+⚠⚠ `rewritten` は**加算され** `unmatched` は**空**なので、060d の UI は「M 個のルールを変換しました」と
+**積極的に誤報する**＝ `cssCompat.ts` が「黙って効かないのが最悪」と呼び、(10-b) が「変換されたのに
+効かない＝最悪の状態」と呼んでいる状態を**変換表自身が作っている**。`親 子孫` 形と `span.クラス` 形は
+CSS の定型なので**実テーマでの出現頻度は高く**、060c で外部 CSS を取り込み始めると主流の入力になる。
+
+⚠ **`compileFrom()` の前方境界を厳しくする案は採らなかった**——上の 3 件は空白区切りで境界を満たして
+いるので直らず、加えて `span.chat-author__display-name` のような**正当で頻出の複合指定を未変換に落とす**
+副作用がある。⚠ **受容もしなかった**——「効いていたものが黙って効かなくなる」は本タスクが直そうとした
+「変換されたのに効かない」と同型で、060c でまさにこの形が主流の入力になるため。
+
+### Q-1 の修正（2026-08-06・**方式 B を本人決定**）
+
+**`to` を「1 要素の複合セレクタ」に限り、chat / 課金の限定は「同一要素の目印クラス」で表す。**
+
+⚠⚠ **`sd-comment-chat` の意味は変えなかった**（＝ chat の `<li>` だけ）。案は 2 つあった:
+
+| 案 | `sd-comment-chat` の意味 | `.sd-comment-chat{background:red}` と書いたとき | 契約の増分 |
+|---|---|---|---|
+| A | 「chat 由来の**要素**」（li も中身も） | **chat の全要素が塗られる**（`sd-comment-tip` は `<li>` 専用なので**語彙が非対称**） | なし |
+| **B（採用）** | 「chat の `<li>`」のまま | `<li>` だけが塗られる（`sd-comment-tip` と対称・直感どおり） | 安定クラス **+2** |
+
+**決定理由**＝ `sd-comment-chat` / `sd-comment-tip` は**ユーザーが最初に触る語彙**で、そこの対称性を
+崩す代償のほうが、安定クラス 2 つぶんの契約増より大きい。
+
+**新しい安定クラス（+2）とその契約（例外を作らないこと）**:
+
+```
+<li> 自身          : sd-comment-chat  /  sd-comment-tip   （従来どおり・目印は持たない）
+<li> の中の要素すべて: sd-comment-in-chat / sd-comment-in-tip
+```
+
+⚠ 目印を **`sd-comment-` 接頭辞**にしたのも意図——「`variant="default"` には安定クラスが 1 つも
+付かない」を固定する既存テストが `[class*="sd-comment"]` で拾うので、**漏れが自動で検出される**
+（`sd-in-chat` のような別接頭辞だとこの網から外れる）。
+
+**変換表（`to` を 7 件書き換え。件数は 17 のまま）**:
+
+| from | 修正前 | 修正後 |
+|---|---|---|
+| `…text-message-renderer #message` | `.sd-comment-chat .sd-comment-text` | `.sd-comment-text.sd-comment-in-chat` |
+| `…text-message-renderer #author-name` | `.sd-comment-chat .sd-comment-name` | `.sd-comment-name.sd-comment-in-chat` |
+| `…text-message-renderer #img` | `.sd-comment-chat .sd-comment-icon` | `.sd-comment-icon.sd-comment-in-chat` |
+| `.yt-live-chat-author-chip` | `.sd-comment-chat .sd-comment-name` | `.sd-comment-name.sd-comment-in-chat` |
+| `.chat-line__message-body` | `.sd-comment-chat .sd-comment-text` | `.sd-comment-text.sd-comment-in-chat` |
+| `.chat-author__display-name` | `.sd-comment-chat .sd-comment-name` | `.sd-comment-name.sd-comment-in-chat` |
+| `…paid-message-renderer #message` | `.sd-comment-tip .sd-comment-text` | `.sd-comment-text.sd-comment-in-tip` |
+
+⚠ **課金側の 1 件も同じ欠陥を持っていた**（レビューでは触れられていなかったが、同型なので一緒に直した）。
+⚠ 単一クラスの 10 件（`.sd-comment-chat` / `.sd-comment-tip` / `.sd-comment-icon` / `.sd-overlay` /
+`.sd-comment-list` / `.sd-comment-header`）は**据え置き**——1 要素を指しているので元から問題がない。
+
+**DOM（`CommentList.tsx` の `renderOverlayItem`）**: ⚠⚠ **アイコンは chat / 課金で共有された 1 枚**
+だったので、`const icon = (…)` を **`renderIcon(inMarker)`** に変えて分岐ごとに作り分けた
+（素の共有要素のままだと目印が課金カードへ漏れ、起票理由①の事故に戻る）。
+⚠ **036a のガード（`avatarDataUri` を通した data URI のときだけ `background-image`）は 1 実装のまま**
+——2 か所へ複製すると片方だけ緩んで外部 URL を踏む経路が生まれる。
+
+**再発防止（機械的な担保を 2 本）**:
+
+- **静的ガード (10-l)**（`check-css-guards.mjs`）: `to` に空白 / `>` があれば fail。
+  ＝ 「`to` は 1 要素の複合」が**作法ではなく契約**になった。
+- **全順序対の総当たりテスト**（`cssCompat.test.ts`）: 表の 17×17 = 289 通りを `fromA fromB` で通し、
+  ①各 `to` が**ちょうど 1 複合** ②合成後も**ちょうど 2 複合**であることを見る。
+
+⚠⚠ **総当たりの不変条件を 2 回間違えたので記録しておく**（同じ罠を踏まないため）:
+
+1. 最初は「**同じクラストークンが隣接して重複しないこと**」にした → **28 件の誤検出**。目印クラスは
+   「同じ chat の中の 2 要素」なら**両方に付くのが正しい**（`#message #author-name` →
+   `.sd-comment-text.sd-comment-in-chat .sd-comment-name.sd-comment-in-chat`）。しかもこの入力は
+   純正チャット側でも当たらない（`#author-name` は `#message` の中に無い）ので変換の問題ではない。
+2. 次に「**元セレクタと複合数が一致すること**」にした → **145 件の誤検出**。`renderer #message`（2 複合）が
+   1 要素へ畳まれるのは**この表の目的そのもの**である。
+3. 正解＝「**`to` は 1 複合／2 エントリ合成したら 2 複合**」。＝「`to` が自分以外の要素（祖先）を
+   語っていないか」を見ている。⚠ **ここを締めすぎると正しいコードで落ちる**ので、テスト側に理由を書いた。
+
+**ミューテーション（3 種すべて KILLED・実測）**:
+
+| 変異 | 結果 |
+|---|---|
+| `to` を子孫セレクタへ戻す（Q-1 の欠陥そのもの） | **(10-l) が fail ＋ vitest 8 件 fail** |
+| 課金カードのアイコンへ chat の目印を漏らす | **KILLED**（DOM 契約テスト） |
+| 吹き出しの `<p>` から目印を落とす | **KILLED**（同上） |
+
+**回帰の解消（実測）**:
+
+```
+.chat-line__message .chat-line__message-body   -> .sd-comment-chat .sd-comment-text.sd-comment-in-chat   当たる
+.chat-line__message .chat-author__display-name -> .sd-comment-chat .sd-comment-name.sd-comment-in-chat   当たる
+span.chat-author__display-name                 -> span.sd-comment-name.sd-comment-in-chat                当たる
+#author-name.yt-live-chat-author-chip          -> #author-name.sd-comment-name.sd-comment-in-chat        構造は保存（#author-name が無いので当たらないのは 060f 以前と同じ・警告に出る）
+yt-live-chat-paid-message-renderer yt-img-shadow -> .sd-comment-tip .sd-comment-icon                     当たる（据え置き分は不変）
+```
+
+⚠ **残件（構造上そうなるもの・欠陥ではない）**: `to` が**完全に同じ**2 エントリの合成
+（`yt-live-chat-app yt-live-chat-renderer` → `.sd-overlay .sd-overlay` ／
+`.chat-line__message .chat-line__no-background` → `.sd-comment-chat .sd-comment-chat`）は当たらない。
+StreamDock は「窓ルート 1 枚」「コメント行 1 枚」で**入れ子が存在しない**＝表現しようがない
+（総当たりテストは `to` が同一のペアも 2 複合になるので通る。除外扱いの理由はコード側に記載）。
+
+**検証**: `typecheck` / `lint` OK ／ **1085 passed / 44 files**（1080 → +5）／`CSS guard check OK`。
+⚠ **意匠 CSS は引き続き非コメント差分ゼロ**（Q-1 の修正でも宣言を 1 つも触っていない）。
+
+### ⚠⚠ 追加テスト: 変換表 × 実 DOM の突き合わせ（2026-08-06・**1094 passed / 45 files**）
+
+新規ファイル **`src/screens/comment-viewer/CommentList.selectorContract.test.tsx`**（9 件）。
+
+**なぜ必要だったか**——060a / 060f のテストは分業しすぎていた:
+
+| 既存 | 見ているもの | 見ていないもの |
+|---|---|---|
+| `cssCompat.test.ts` | 変換表が**どんな文字列を出すか** | 実 DOM |
+| `CommentList.test.tsx` | DOM に**どんなクラスが付くか** | 変換表 |
+| 静的ガード (10-b) | `to` のクラストークン ⊆ 契約一覧 | 位置関係 |
+| 静的ガード (10-a) | 契約一覧が `CommentList.tsx` の**ソース文字列**に在る | 実際に描かれるか |
+
+⚠⚠ **この 4 つが全部緑でも「変換されたのに当たらない」は成立する**——実際に 2 回起きた
+（060f 起票理由①と security-review Q-1）。どちらも「クラスが、そのセレクタが要求する**位置関係**で
+実際にレンダリングされるか」を誰も見ていなかったのが原因。
+
+→ **jsdom はレイアウトも色もカスケードも解決しないが、セレクタの照合は本物**（`querySelectorAll` /
+`matches`）。だから「**当たるかどうか**」だけは機械化できる。固定した仕様は 9 件:
+
+1. **全 17 エントリの変換先が、レンダリングした overlay の DOM に 1 つ以上当たる**
+2. **chat 専用は課金カードに当たらない／課金専用は chat に当たらない／共有要素は両方に当たる**
+   （⚠ 分類は `to` の字面から導く＝表を足しても分類の更新漏れが起きない）
+3. 器（`.sd-overlay` / `.sd-comment-list`）は器に当たり、コメント 1 件の中には無い
+4. **実テーマの典型形（`親 子孫` / `型セレクタ+クラス`）が実 DOM に当たる**（Q-1 の回帰テスト・実 DOM 側）
+5. ⚠ **子結合子（`>`）の既知の限界**（下記）
+6. `.sd-comment` を直接書いた CSS は chat と課金の両方に当たる（060f (1) で受容した仕様）
+7. ⚠⚠ **`variant="default"` には変換後のどのセレクタも 1 つも当たらない**
+   （＝「テーマは本体コメビュを 1 要素も触れない」というユーザーから見た保証そのもの）
+8. StreamDock に無い id を含む形は構造は保たれるが当たらない（060c 申し送り・`#card` は `unmatched` にも出ない）
+9. **安定クラス契約の全 15 クラスが実際にレンダリングされる**
+   （⚠ (10-a) は**ソースを grep している**だけなので「クラス名は書かれているが分岐が描かれない」を
+   検出できない。(10-a) 自身の docstring が「実際に DOM に付くことはランタイムのテストが殺す」と
+   役割分担を宣言している＝ここがその受け皿）
+
+**ミューテーション 5 種すべて KILLED**（実測）:
+
+| 変異 | 結果 |
+|---|---|
+| chat 専用を `.sd-comment` へ戻す（起票理由①の再現） | KILLED（1 件 fail） |
+| `to` を子孫セレクタへ戻す（Q-1 の再現） | KILLED（3 件 fail） |
+| 変換先を実在しないクラスへ打ち間違える | KILLED（3 件 fail） |
+| 契約クラスを DOM から落とす（`sd-comment-row`） | KILLED |
+| `variant="default"` へ `sd-comment-list` を漏らす | KILLED |
+
+### ⚠⚠ 実機確認の差し戻し（2026-08-08）—— しっぽの二重／アイコン非表示時のレイアウト
+
+本人がプレビューで STEP2（chat 用のピンク吹き出し）と STEP6（実サンプルの `@import` 展開版）を試したところ、
+**2 つの表示崩れ**が出た。調査の結果、**片方は 060f が作り込んだ欠陥**だった。
+
+#### 症状 1【060f の欠陥・修正済み】しっぽが二重に見える
+
+既定のしっぽは**疑似要素 2 枚**で描いている（`.bubble::before` ＝枠色の三角／`.bubble::after` ＝塗り色の三角・
+本体へ +2px 重ねて継ぎ目を隠す）。ところが**取り込むテーマは `::before` 1 枚しか書かないのが普通**:
+
+```text
+テーマ: …#message::before{border-right:18px solid #ff6fa5}
+  → .sd-comment-text.sd-comment-in-chat::before は置き換わる ✅（060f の狙いどおり）
+  → しかし .bubble::after は誰も上書きしない ＝ 孤児として残る ❌
+  → テーマのピンク三角の上に既定の白い三角が +2px ずれて重なる（＝合成）
+```
+
+⚠⚠ **060f タスクファイルの「二重ではなく置き換えになる」は誤りだった**——`::before` にしか当てはまらない。
+
+**修正**: テーマ CSS の**手前**に固定リセットを連結する（新規 `features/comment-viewer/overlayThemeReset.ts`）。
+
+⚠⚠ **なぜ `@layer` が要るのか（ここが設計の芯）**。リセットは 2 つを同時に満たす必要がある:
+
+| | 要件 | 詳細度だけだと |
+|---|---|---|
+| ① | 既定の `.bubble::before` / `::after`（`(0,1,0)`）に**勝つ** | 勝つには詳細度を上げるか `!important` |
+| ② | ユーザーのテーマには**どんな書き方でも負ける** | ①をやると負けられなくなる |
+
+→ **既定のしっぽ 3 ルールを `@layer sd-tail` に入れ、リセットは非レイヤーで置く**ことで解いた
+（カスケードは「非レイヤー > レイヤー」）。リセット側は `:where()` で**詳細度 0**にしてあるので、
+テーマがどんなに弱いセレクタで書いても必ずテーマが勝つ。⚠ `!important` は使わない（②が壊れる）。
+⚠ **テーマ未適用のときはリセットを注入しない**ので、レイヤーの中身がそのまま効く＝**既定意匠は 1px も動かない**。
+
+⚠ **受容した挙動変更（本人決定 2026-08-08）**: **しっぽを描かないテーマ**（`.sd-comment-text{color:red}` だけ等）を
+選ぶと**既定のしっぽも消える**。「テーマを選んだら StreamDock の既定装飾は引っ込む」という方針。
+
+#### 症状 2【修正済み】アイコンを消すと名前行だけインデントが残る
+
+実サンプルは `yt-img-shadow{display:none!important}` → `.sd-comment-icon{display:none!important}` でアイコンを消す。
+すると `.header { margin-left: calc(var(--icon-size) + var(--icon-gap)) }` が**ハードコードのインデント**なので、
+**名前行（サイト名バッジ）だけ 72px 残る**。しっぽも吹き出しが x=0 に来るぶん左へはみ出して宙に浮いていた。
+
+⚠ **CSS では「兄弟が `display:none` か」を検出できない**（`:has()` でも不可）。
+→ インデントを**アイコンの実体**から作る形へ変えた:
+
+| | 変更 |
+|---|---|
+| DOM | `li > div.header + div.row( div.icon + p )` → **`li > div.icon + div.header + div.row( p )`** |
+| `.item` | flex 縦積み → **2 列グリッド**（`grid-template-columns: auto 1fr`・`align-items: start`） |
+| `.header` | `margin-left: calc(…)` を削除し `grid-column: 2` |
+| `.icon` | `grid-column:1; grid-row:2`（⚠ **行 1 から span させない**——アイコン上端が名前行に揃って意匠が動く）／**列の間隔を `margin-right: var(--icon-gap)` に載せる** |
+| `.row` | `grid-column:2; grid-row:2`。⚠ box は残す（`.sd-comment-row` は契約） |
+| `.card` | **`grid-template-columns: 1fr`（必須）**——無いとヘッダ帯とボディが 2 列に割れてカードが壊れる |
+
+⚠ **列の間隔を `column-gap` ではなく `.icon` の `margin-right` に載せたのが要点。**
+グリッドの gap は**空トラックでも消えない**ので、`column-gap` だとアイコンが消えても隙間だけ残る。
+⚠ `.sd-comment-row` の意味は「アイコン＋吹き出しの行」→「**吹き出しの行**」に変わった（契約としては残す）。
+
+#### 静的ガード **(10-m)** 新設 ＋ ミューテーション **7 種すべて KILLED**
+
+| 変異 | 結果 |
+|---|---|
+| 配信窓だけリセットを外す（**import は残す**） | **(10-m)** |
+| プレビューだけリセットを外す（同上） | **(10-m)** |
+| `@layer sd-tail` を外す（リセットが黙って効かなくなる） | **(10-m)** |
+| `@layer` の中の値をずらす（角丸 14px→13px） | **(10-e)**（レイヤー内でも拾える） |
+| `@layer` の中のしっぽの塗り色変数を外す | **(10-e)** |
+| リセットから `:where()` を外す | vitest 3 件 fail |
+| アイコンを `.row` の中へ戻す | vitest 1 件 fail |
+
+⚠⚠ **(10-m) は初版が穴を持っていた**——`src.includes("withDecorationReset")` で見ていたため、
+**`import` 文が残っていると呼び出しを消しても緑のまま通った**（実測）。`withDecorationReset\s*\(`（呼び出し）を
+見る形へ是正した。**名前の出現ではなく呼び出しを見ること。**
+
+#### ⚠ 失われた担保
+
+**「意匠 CSS の非コメント差分ゼロ」はこの修正で失われた**（060f 本体が持っていた機械的な担保）。
+症状 2 の修正が 034e/043c の意匠コードそのものを触るため。
+→ 代わりの担保は **(10-e)（フォールバック値の厳密一致）** と **⓪ベースラインの A/B スクショ比較**（本人の手番）。
+
+#### 記録のみ（060c へ申し送り・コード変更なし）
+
+1. **`.yt-*` のクラス形が変換も警告もされない** → 実サンプルの**看板デザイン**（吹き出し左端の縦線アクセント
+   `.yt-live-chat-text-message-renderer::before`）が出ない。060c で外部 CSS を取り込むと**主流の入力**になる。
+2. ⚠⚠ **プレビューと配信窓で `body` の扱いが非対称**（実測）——`body{margin:6px auto; letter-spacing:.1em; …}` は
+   変換されないが、プレビューでは `scopeSelectors` が `.sd-preview` へ**読み替える**一方、配信窓では**本物の
+   `<body>` に効く**。＝ **プレビューは本番を再現していない。** 060c で `body` は必ず入ってくるので扱いを決めること。
+3. テーマの `line-height:8px!important` は畳んだ `<p>`＝箱に効くが、YouTube 側でも `#message` はテキスト要素なので
+   **テーマ自身の hack**（既定意匠のバグではない）。複数行で行が重なる点だけ記録。
+
+#### 検証
+
+`typecheck` / `lint` OK ／ **1105 passed / 46 files** ／ `CSS guard check OK`（(10-a)〜(10-m)）。
+
+#### ⚠ このテストで**新たに判明**した既知の限界（060f の回帰では**ない**／060c へ申し送り）
+
+**テーマが「コメント 1 件 → 中身」を子結合子（`>`）で書いていると当たらない。**
+
+```text
+.chat-line__message > .chat-line__message-body   -> .sd-comment-chat > .sd-comment-text.sd-comment-in-chat   0 件
+.chat-line__message > .chat-author__display-name -> .sd-comment-chat > .sd-comment-name.sd-comment-in-chat   0 件
+（同じ指定を空白＝子孫で書けば当たる ＝ 原因は「階層の深さ」だけ）
+```
+
+原因＝ StreamDock の chat は純正チャットに無い**中間要素**（`div.row`＝アイコン＋吹き出しの行／
+`div.header`＝名前行）を挟むため、本文も名前も `<li>` の**直接の子ではない**。
+
+- ⚠ **060f 以前から当たっていない**（実測。当時は `li > div.row > div.bubble > p` でもう 1 段深く、
+  `.sd-comment > .sd-comment-text` も 0 件だった）＝ **060f はむしろ 1 段浅くした。**
+- ⚠ **表の `from` に書かれた `>` は別物**——`from` は `\s+` と `>` の両方に当たる形へコンパイルされるので
+  `yt-live-chat-text-message-renderer > #message` は 1 エントリとして畳まれ、**正しく当たる**。
+  当たらないのは「**独立した 2 エントリの間に書かれた `>`**」だけ。
+- ⚠ 直すなら DOM を平らにする（`div.row` / `div.header` を廃す）しかないが、それは 034e/043c の意匠
+  （アイコンと吹き出しの横並び・名前行のインデント）を作っている器なので **060f では触らない**。
+- ⚠⚠ **`unmatched` には出ない**（変換自体は成功しているので）＝ユーザーには見えない失敗。
+- **再修正トリガー＝ 060c で実サンプルの外部 CSS を取り込んだとき**、`>` で書かれた指定が実際に
+  効かないことが観測されたら、DOM を平らにするか対応を諦めるかを判断する。
+
+#### 反映済み（このレビューで指摘 → 対応した分）
+
+| 指摘 | 対応 |
+|---|---|
+| **S-1** `.sd-overlay` の窓不透明化は**受容妥当**（判定）。ただし「060f が開けた新しい穴」と誤読されうる | `cssCompat.ts` の `to` docstring に「能力は 060a から存在し 060f は**確率**を上げただけ／OBS 用純正テーマは `background:transparent` を書くのが定番で透過を助ける側に多く効く／**消しても窓は守れない**（`--sd-*` の器が消えるだけ）」を追記 |
+| **S-2** `body` / `html` / `:root` を足さない判断を守るのがコメントとテストだけ（テストを一緒に消せば緑） | **静的ガード (10-k) を新設**——`from` のトークンに `body` / `html` / `:root` があれば fail。⚠ `.chat-line__message-body` が部分文字列に `body` を含むのでトークン単位で見る |
+| **S-3** (10-d) がクラス名をハードコードしており、`ROOT_CLASSES` に 2 件目が入ると実在性を誰も検査しない | **(10-d) を `ROOT_CLASSES` のループに変更**（(10-b) の許可と (10-d) の実在検査が自動で揃う） |
+| **Q-2 / Q-4** 060f で裸 id の取りこぼしが 3 件増えた（`#author-info` / `#items` / `#card.…membership-item-renderer`） | **修正しない判断**を `FOREIGN_ID_NAMES` docstring に明記（`card` / `items` は「総称 id は入れない」という 060a の理屈に正面から反するため。060c の再修正トリガーとまとめて判断する） |
+| **Q-5** `:not()` の docstring が stale（自己否定 → 課金カードにだけ当たるへ変わった）＋ 結合子を書けない文脈（`::slotted()` / `::part()`）で**規則全体が無効**になり同じカンマ束ねの無関係なセレクタまで落ちる新モード | docstring を訂正。新モードは Q-1 の修正でまとめて消えるので単独対処しない旨も明記 |
+| **Q-6** `<p>` に畳んだので**ブロック要素を子に持てない**（将来スタンプ・絵文字を差すとき） | `renderOverlayItem` の `<p>` コメントに「子は `<span>` に限る」を追記 |
+| **Q-9** 060g は詳細度競争では上限が無い（テーマがいくらでも上げられる） | 060g タスクファイルに **inline `style` + `!important`** 案（詳細度に依存せず勝てる・新しい `<style>` を作らないので (10-i) の allow-list も増えない）と `@layer` 案の向きを追記 |
+
+**修正不要と判定された観点**（レビューで検算済み・コード変更なし）: DOM 変更の正しさ（しっぽの基準要素・
+`filter: drop-shadow` の掛かり方・`flex: 1` / `min-width: 0` の効き・`<p>` の UA margin はすべて不変）／
+「統合せず併記」の判断とその再修正トリガーの十分性／変換表の長い順ソートと単語境界／
+`unmatched` が安全網にならないことの担保（テストが 4 形で固定＝コメントより強い）／
+部分文字列一致の罠の残存（`toContain("item")` 等は安定クラスと意匠クラスが**別要素**なので現時点では安全）／
+`ROOT_CLASSES` を別立てにした (10-b) の緩め方（目的は弱まっていない）／docs の整合と配置。
+
+---
+
+### ⚠⚠ 実機確認の差し戻し②（2026-08-08）—— 既定の吹き出しが「テーマが越えられない床」になっていた
+
+差し戻し①の修正後も、本人のプレビューで **検証01（ピンク吹き出し）と検証02（黄色＋青）の両方**が
+「まだデザインがおかしい」と差し戻された。あわせて要件が 1 つ追加された:
+
+> そもそも吹き出しが存在しないタイプのデザインも適用できるようにして欲しい。
+> 絶対に吹き出しがあるというのは UX 的にダメ。
+
+#### ⚠ 調査結果: **2 枚とも「コードが壊れていた」のではない**
+
+差し戻し①（しっぽの二重）は**効いていた**——検証01 のしっぽは 1 枚になっており、検証02 に三角が
+無いのもリセットが効いていることの裏返し。原因は別で、しかも **1 つ**だった。
+
+**既定の `.bubble` は「テーマが明示的に書かなかったプロパティ」を全部残す**:
+
+| `.bubble` の宣言 | 検証01（ピンク） | 検証02（黄色） | 吹き出し無しデザイン |
+|---|---|---|---|
+| `background` | テーマが上書き | テーマが上書き | ⚠ **残る** |
+| `border: 2.5px solid` | テーマが上書き | ⚠ **残る** | ⚠ **残る** |
+| `border-radius: 14px` | テーマが上書き | ⚠ **残る** | ⚠ **残る** |
+| `filter: drop-shadow(…)` | ⚠ **残る** | ⚠ **残る** | ⚠ **残る**（`--sd-*` 変数が無く狙う手段が実質無い） |
+| `padding: 8px 12px` | テーマが上書き | ⚠ **残る** | ⚠ **残る** |
+| `--icon-gap: 28px`（`.item`） | ⚠ **残る** | ⚠ **残る** | ⚠ **残る** |
+
+→ **どのテーマも「StreamDock の吹き出し ＋ テーマの一部」というハイブリッド**になる。
+＝「テーマのデザインでも StreamDock のデザインでもない」が**おかしく見える正体**であり、
+同時に**吹き出しを持たないデザインが原理的に適用できない理由**でもある（追加要件と同じ根）。
+
+**検証01 の幾何（実測）**: `--icon-gap: 28px` の内訳は「既定のしっぽの突き出し **20px** ＋ 素のすき間 **8px**」。
+テーマのしっぽ（`left:-18px`・幅 28px ＝ 透明 10px ＋ ピンク 18px）は 3px の枠のぶん内側から測るので
+**外へ出るのは 5px だけ**＝ 20px ぶんのすき間が誰にも使われず残り、**吹き出しがアイコンから浮いて見えていた**。
+
+**検証02 の課金カードが青いのは仕様**。`sd-comment-text` は契約上「本文」で **chat と課金の両方**に付く
+（060a の語彙）。生の `.sd-comment-text{background:blue}` が両方に当たるのが正しい。⚠ **直さない**——
+直すと契約が崩れる。⚠ STEP4 の期待値にこれを書いていなかったのは手順側の不足。
+
+#### 修正（本人決定 2026-08-08）: 装飾だけ自動で落とす／すき間は 8px へ
+
+1. **`.bubble` 本体としっぽ 3 ルールを `@layer sd-default` に入れた**（`@layer sd-tail` から改名・宣言は不変）。
+   ⚠ **囲む範囲を `.bubble` 一式に限ったのは意図**——リセットが上書きしたいのはここだけで、
+   ファイル全体を囲むと差分が全行に散り「意匠を動かしていない」ことを `git diff` で示せなくなる。
+   ⚠ **レイヤー化で既定意匠が動かない根拠**（レイヤーへ落とすと非レイヤー側が相対的に強くなるので確認が要る）:
+   chat の `<p>` に当たる非レイヤー規則は `*{box-sizing}`・`h1..h4,p{margin:0}`（`styles/theme.css`）と
+   同ファイルの `.text` の 3 つだけで、**`.bubble` の宣言と重なるプロパティが 1 つも無い**（実コードで確認）。
+2. **リセットを装飾一式へ拡張**（固定文字列・テーマ適用中だけ注入）:
+   ```css
+   :where(.sd-comment-chat){--sd-icon-gap:8px}
+   :where(.sd-comment-body.sd-comment-in-chat){background:none;border:0;border-radius:0;filter:none}
+   :where(.sd-comment-body)::before,
+   :where(.sd-comment-body)::after{content:none}
+   ```
+3. 「コメントのデザイン」カードに**受容した挙動を説明する 1 行**を追加（下記）。
+
+#### ⚠⚠ リセットで**書いてはいけない**もの（どちらも罠・テストで固定した）
+
+| 書いてはいけない | 理由 |
+|---|---|
+| `position` | `.bubble{position:relative}` は**テーマの `::before`（絶対配置のしっぽ）の基準**。`static` へ戻すと、テーマのしっぽが遠い祖先を基準に飛ぶ＝**リセットが直した崩れをリセット自身が作り直す** |
+| `padding` | 純正チャット向けテーマは**YouTube 側の余白に依存して書かれている**。落とすと背景しか指定していないテーマで**文字が箱の端に張り付く**（本人決定＝余白は残す） |
+| `--icon-gap`（直接） | `.item` が同じ要素で宣言しているので**より高詳細度に負けて効かない**。狙うのは入口の **`--sd-icon-gap`**（どこも宣言していない読み取り専用の変数なので競合が無く、レイヤーも要らない） |
+| 当て先から `sd-comment-in-chat` を外す | `.sd-comment-body` は課金カードのボディにも付くので、**課金カードが平らになる**＝ 060f の起票理由①へ逆戻り |
+| `!important` | 今度は**ユーザーのテーマに勝ってしまう**（リセットの要件は「既定に勝ち、テーマには負ける」の両立） |
+
+#### ⚠ 受容したリスクと脱出路
+
+**背景を指定しないテーマ**（例: `.sd-comment-text{color:red}` だけ）を選ぶと**背景が透明になり、
+映像の上で本文が読みにくくなる**（名前には多重 text-shadow の縁取りがあるが**本文には無い**）。
+→ 脱出路は **「既定のデザインに戻す」**（常時表示・常時有効・テスト固定済み）。
+→ ⚠ **UI に説明を 1 行足した**のはこのため。無いと、色だけ変えるデザインを入れた人には
+「取り込んだら壊れた」としか見えない。
+
+#### 採らなかった選択肢（本人に提示して却下）
+
+| 案 | 却下理由 |
+|---|---|
+| 余白も含めて全部落とす | 背景しか指定していないテーマで文字が箱の端に張り付く |
+| UI トグル「既定の吹き出しを土台に使う」で選ばせる | 設定が 1 つ増え 060g と領域が重なる。⚠ **困ったらここへ戻れる**ので 060g に記録した |
+| 落とさず「レイヤー化して上書き可能にするだけ」 | 吹き出しを消すのに StreamDock 語彙（`.sd-comment-body{…}`）が要る＝要望を半分しか満たさない |
+
+#### ミューテーション **9 種すべて KILLED**
+
+| 変異 | 落ちたもの |
+|---|---|
+| `@layer sd-default` を外す | **(10-m)** |
+| `.bubble` だけレイヤーの外へ出す | **(10-m)**（⚠ 前版の「`@layer` の存在だけ見る」検査では**生存していた**ので、`.bubble` が中にあることまで見る形へ強化した） |
+| 装飾リセットの行を削る | vitest 3 件 |
+| リセットに `position:static` を足す | vitest 1 件 |
+| 装飾リセットの当て先から `.sd-comment-in-chat` を外す | vitest 3 件 |
+| `--sd-icon-gap` の行を消す | vitest 3 件 |
+| 配信窓だけリセットを外す（import は残す） | **(10-m)** |
+| プレビューだけリセットを外す（同上） | **(10-m)** |
+| レイヤー内の角丸 14px→13px ／ しっぽ塗り色を直値へ | **(10-e)**（レイヤー内でも値のドリフトを拾えることを再確認） |
+
+#### 検証
+
+`typecheck` / `lint` OK ／ **1115 passed / 46 files**（1105 → +10）／
+`CSS guard check OK`（(10-a)〜(10-m)）／ `Version sync check OK` ／ `cargo check` Finished（Rust 差分ゼロ）。
+
+#### 本人の実機確認（2 巡目）
+
+| # | 操作 | 期待 |
+|---|---|---|
+| 1 | ⓪ テーマ未適用で A/B | **ピクセル一致**（`.bubble` を囲んだだけ。⚠ 意匠 CSS を触る以上これが唯一の担保） |
+| 2 | 検証01（ピンク） | 吹き出し 1 枚・しっぽ 1 枚・**すき間が詰まる**・**既定の影が消える** |
+| 3 | 検証02（黄色） | **平らな黄色い帯**（枠/角丸/影なし・余白あり）。⚠ 課金カードのボディは**青のままで正しい** |
+| 4 | `.sd-comment-text{color:red}` だけ | ⚠⚠ **吹き出しが消えて素の赤文字**（受容した挙動。困るなら方式を再検討） |
+| 5 | 実サンプル（STEP6） | 名前行のインデント無し・吹き出し無しで出る |
+| 6 | 「既定のデザインに戻す」 | 既定の吹き出しが戻る（1 と一致） |
+| 7 | 課金カード／固定コメント窓 | 1 と変化なし |
+
+---
+
+### ⚠⚠ 実機確認の差し戻し③（2026-08-08）—— しっぽの幾何漏れ ／ 実サンプルが「ただのテキスト」
+
+差し戻し②の修正後、本人から **2 件**の報告。①「しっぽについてズレています。これはもう無理ですか？」
+②「実デザインについて、ただのテキストでデザインが当たっていないが今後対応するのか？」
+
+#### ①-a【StreamDock の本物の欠陥・修正済み】既定のしっぽの**幾何がテーマの疑似要素へ漏れる**
+
+リセットが `content` **しか**止めていなかった。⚠⚠ **テーマが `content:""` で疑似要素を復活させた瞬間、
+テーマが書かなかった残り全部が `@layer sd-default` の値のまま効く**
+（`top:12px` / `left:-20px` / `width:0` / `height:0` / `border-style:solid` / `border-color:transparent` /
+`border-top-width:12px` / `border-bottom-width:12px` / `border-right-width:20px`）。
+
+| テーマのしっぽの描き方 | 起きること |
+|---|---|
+| border 三角を**全部**書く（検証01） | 漏れるのは `width:0;height:0` だけ＝実害なし |
+| **文字**で描く（`content:"◀"`） | ⚠ `top:12px` と 12/12/20px の border が乗り**位置も大きさもズレる** |
+| **回転四角**（`transform:rotate(45deg)`） | ⚠ `width:0;height:0` が乗って消える／border で膨らむ |
+
+→ **`:where(.sd-comment-body)::before/::after{all:unset}`** に変えた（`all` は `content` を含むので
+従来の `content:none` の挙動を**包含する**）。⚠⚠ **吹き出し本体側は `all` にしてはいけない**——
+chat では `.bubble` と `.text` が**同じ 1 枚の `<p>`** なので、本文の書体・色・行間まで消える（テストで固定）。
+
+#### ①-b【私のテスト CSS の算数ミス・製品コードではない】検証01（3 枚目）のズレ
+
+```text
+border: 10px solid transparent; border-right: 18px solid #ff6fa5;  → 三角の実幅は 28px
+left: -18px は .bubble の**パディングボックス**基準（枠 3px のぶん内側）
+  → ピンク部分は [-5, +13] ＝ 突き出し 5px・底辺が吹き出しの中へ 13px 埋まる（スクショの「食い込み」）
+```
+
+⚠ **StreamDock の欠陥ではない**（YouTube の `#message` に枠が無い前提の値）。正しい検証 CSS は下記。
+
+#### ①-c【原理的に残る・直せない】
+
+テーマは YouTube の `#message` の箱を前提に絶対座標を書いている。StreamDock の `<p>` は枠幅も余白も違うので
+**ピクセル一致は原理的に不可能**。逃げ道は ①テーマ側の数値を 1 行直す ②`--sd-*` で調整。
+
+#### ②【実サンプルが「ただのテキスト」になる原因 4 つ】
+
+実サンプル（`sample-inlined.css`）を読んで確定した。
+
+| 出ないもの | 原因 | 対応 |
+|---|---|---|
+| **紫の縦バー**（デザインの看板） | `.yt-live-chat-text-message-renderer::before` は**クラス形**。変換表には**要素形**しか無く、`compileFrom` の前方境界 `(?<![A-Za-z0-9_.#-])` が `.` を弾く。⚠ `FOREIGN_SELECTOR_RE` も同じ理由で弾くので**警告にも出ない** | ✅ **変換表に 1 件追加**（18 件目） |
+| 〃（仮に変換しても出ない） | ⚠⚠ **`.sd-comment` に `position: relative` が無い**ので `position:absolute` の基準が窓（プレビューでは `.themePreview` の `contain:paint`）になり**バーが左上に飛ぶ** | ✅ **リセットに `:where(.sd-comment){position:relative}` を追加**（⚠ 意匠 CSS には触っていない） |
+| **文字色 `--txtcolor`** | ✅ **すでに効いていた**。`:root{--txtcolor:#555555}` はプレビューでは `scopeSelectors` の `ROOT_LIKE_CI` が `.sd-preview` へ読み替え、配信窓では本物の `<html>` に当たる。**1 枚目の濃いグレーがこれ** | 記録のみ |
+| **書体（M PLUS 1p）** | 外部 `@import` を 060b が除去している | ❌ **060h**（実サンプルに残る唯一の差分） |
+| （プレビュー下半分の空白） | `.themePreview { height: 200px }` 固定。**不具合ではない** | — |
+
+⚠ 1 枚目で Twitch バッジだけ残るのは `sd-comment-source` が **StreamDock 固有**で YouTube に対応物が無いため。
+既存の設定「**サイト名を表示する**」を OFF にすれば消える（034e）。
+
+#### ⚠ 変換表にクラス形を足すときの要点
+
+**要素形とクラス形は別エントリが要る。** 要素形の前方境界は `.` を弾く——弾かないと `.yt-…` の `.` が残って
+**`..sd-comment-chat` という壊れたセレクタ**になる（回帰テストで固定）。クラス形のエントリはこれで 3 件目。
+
+⚠ **既知の取りこぼし（060c 送り・欠陥ではない）**: 祖先がクラス形だと `.yt-…renderer #message` →
+`.sd-comment-chat #message` になり**当たらない**（祖先付きエントリの前方境界が `.` を弾くため）。
+⚠ ただし裸 `#message` は **`unmatched` に出る**ので「黙って効かない」にはならない＝放置してよい理由。
+
+#### ミューテーション **7 種すべて KILLED**
+
+| 変異 | 落ちたもの |
+|---|---|
+| 疑似要素リセットを `all:unset` → `content:none` へ戻す | vitest 1 件 |
+| `:where(.sd-comment){position:relative}` を消す | vitest 1 件 |
+| 吹き出し側のリセットを `all:unset` にする（本文の書体が消える変異） | vitest 3 件 |
+| 装飾リセットの当て先から `.sd-comment-in-chat` を外す | vitest 3 件 |
+| `--sd-icon-gap` の行を消す | vitest 3 件 |
+| 変換表からクラス形エントリを消す | vitest 2 件 |
+| `@layer sd-default` を外す | **(10-m)** |
+
+⚠⚠ **1 回目の計測で「`all:unset` → `content:none`」が生存した**が、これは**ミューテーション script の欠陥**
+だった——`perl -0pi` の置換が**先に現れる docstring の同じ文字列**に当たり、実コードを変えていなかった。
+定数側を明示的に狙い直したら 1 件落ちた。**変異が生存したら、まず変異が本当に当たったか diff を見ること。**
+
+#### 検証
+
+`typecheck` / `lint` OK ／ **1119 passed / 46 files**（1115 → +4）／
+`CSS guard check OK`（(10-a)〜(10-m)・**無改修で通る**）／`Version sync OK` ／ `cargo check` Finished。
+⚠ **意匠 CSS（`OverlayComment.module.css`）の変更はゼロ**（`position:relative` もリセット側に置いた）。
+
+#### 本人の実機確認（3 巡目）
+
+| # | 操作 | 期待 |
+|---|---|---|
+| 1 | ⓪ テーマ未適用 | 変化なし（意匠 CSS を 1 行も触っていない） |
+| 2 | **検証01 を修正版に差し替え**（下） | しっぽの底辺が枠にぴったり付き、先端がアイコンの手前で止まる |
+| 3 | 検証04（文字でしっぽ・下） | ⚠ `◀` が素直に出る（①-a の確認。修正前は `top:12px` と border が乗ってズレた） |
+| 4 | 実サンプル（STEP6） | ⚠⚠ **`#555555` の縦バーが本文の左に出る**。書体だけ違う（060h 待ち） |
+| 5 | 「既定のデザインに戻す」 | 既定の吹き出し・しっぽが戻る |
+| 6 | 課金カード／固定コメント窓 | 1 と変化なし |
+
+```css
+/* 検証01（修正版）——しっぽを 8px にして、すき間 8px に収める */
+yt-live-chat-text-message-renderer #message {
+  background: #ffe9f2; border: 3px solid #ff6fa5; border-radius: 18px; padding: 10px 14px;
+}
+yt-live-chat-text-message-renderer #message::before {
+  content: ""; position: absolute; top: 16px;
+  left: -11px;                        /* = -(三角の幅 8px) - (枠 3px) → 底辺が枠にぴったり付く */
+  border-top: 8px solid transparent;
+  border-bottom: 8px solid transparent;
+  border-right: 8px solid #ff6fa5;    /* ⚠ border-left は書かない（書くとその幅ぶん右へずれる） */
+}
+
+/* 検証04（文字でしっぽ・①-a の確認用） */
+yt-live-chat-text-message-renderer #message { background:#e8f4ff; border-radius:12px; padding:8px 12px; }
+yt-live-chat-text-message-renderer #message::before {
+  content: "◀"; position: absolute; left: -12px; color: #e8f4ff; font-size: 18px;
+}
+```
+
+### ⚠⚠ security-review ＋ code-review の結果（2026-08-08・別チャット）と対応
+
+セキュリティ判定は **軽微な懸念あり**（注入経路の増加ゼロ・封じ込めの後退ゼロ・Rust 面ゼロ差分）。
+レビュー側で再検算された事実: `to` の相異なる値は **10 個で 17 件時点から増えていない**（18 件目は
+既存の的への新しい入口）／`..sd-comment-chat` は**元から不正な入力**でしか生まれない／
+`.yt-…renderer #message` は `rewritten=1` かつ `unmatched=["#message"]` で**黙らない**／
+`position:relative` は `fixed` の包含ブロックに**ならない**ので封じ込めの整理は不変。
+
+#### ⚠⚠⚠ 【修正済み】(10-m) の 3 つ目の穴（`exec` ＝最初の 1 件しか見ていなかった）
+
+`.bubble::before` / `.bubble::after` は**このファイルに 2 回ずつ現れる**（束ねルールと、しっぽの幾何を
+持つ単独ルール）。`exec` が拾うのは束ねのほうなので、**単独ルールだけをレイヤー外へ出す変異が
+`check:css` も vitest 1119 件も全部緑のまま生存した**（レビュー側で実測）。
+復活するのは追修正③が直したまさにその欠陥（レイヤー外に出た `.bubble::before` は `(0,1,1)` で
+リセットの `(0,0,1)` に勝つので `top:12px` と透明な 20px border が漏れる）。
+→ `matchAll` で**全件**を見る形へ是正（先頭は `^[ \t]*`——`^\s*` は `\n` をまたいで開始位置がずれる）。
+
+⚠⚠ **これで同じ形の間違いが 3 回**（①`includes` で import に当たる ②`@layer` の存在だけ ③`exec` の 1 件目）。
+共通の原因は「**存在検査**」を書いて「**全称検査**」を意図していたこと。
+⚠ **(10-e) の `ruleBodies` は同じ罠を踏んで既に是正済み**で、そのコメントが「先頭の 1 つだけを見る
+`ruleBody` では束ねのほうを掴む」と書いている——**すぐ上にある教訓が (10-m) へ伝わっていなかった。**
+今後この種の検査を足すときは **必ず `matchAll`**。
+
+#### ⚠⚠⚠ 【修正済み】Q-1: `.icon{margin-right}` が課金カードのヘッダを 28px 広げていた（回帰）
+
+`.icon` は **chat のグリッド 1 列目と課金カードのヘッダ帯で共有**している（`renderIcon` が 1 実装＝
+036a の data URI ガードを 2 か所へ複製しないため）。`--icon-gap: 28px` は `.item`＝`<li>` で宣言され
+**継承で `.cardHeader` の中まで届く**ので、アバターと名前の間隔が `gap:8px` ＋ **28px** ＝ 36px になっていた。
+⚠ リセットの `--sd-icon-gap:8px` は chat 限定なので、**テーマの有無に関係なく崩れる**。
+→ `.card .icon { margin-right: 0 }` を追加（`(0,2,0)` なのでソース順に依存せず勝つ）。
+
+⚠⚠ **これが「非コメント差分ゼロ」を手放した代償の実例である。** vitest 1119 件と
+(10-a)〜(10-m) の**全部が緑のまま通った**。
+
+#### ⚠⚠ 【新設】(10-n) レイアウト器の宣言インベントリ ＝ 失った担保の代替
+
+差し戻し①で手放した「意匠 CSS の非コメント差分ゼロ」の代替として挙げていた 2 つは、どちらも穴だった:
+
+- **(10-e)** は `--sd-*` の**フォールバック値の一致**しか見ない＝**新しく足された宣言**は検査対象外。
+- **A/B スクショ**は未実施で、しかも**チェックリストが chat 中心**（Q-1 は chat をいくら見ても出ない）。
+
+→ `.item` / `.icon` / `.card .icon` / `.header` / `.row` / `.card` の **6 器について「宣言してよい
+プロパティ名の集合」を固定**する。値は見ない（値は (10-e) の担当）。**増えても減っても落ちる**。
+⚠ **change-detector として意図的にきつい**——意匠を触ったら落ちるのが正しく、そのとき更新するのは
+「配列 ＋ 実機の A/B スクショ（**chat と課金カードの両方**）」。
+⚠ 対象は「chat と課金でルールを共有している器」だけ（`.bubble` / `.text` は (10-e) と (10-m) が持つ）。
+
+#### ミューテーション（レビュー指摘の修正後・**3 種すべて KILLED**）
+
+| 変異 | 落ちたもの |
+|---|---|
+| **単独** `.bubble::before` だけを `@layer sd-default` の外へ出す（旧 (10-m) では生存） | **(10-m)** |
+| `.card .icon{margin-right:0}` の打ち消しを消す（Q-1 の回帰） | **(10-n)** |
+| `.icon` へ `margin-bottom` を勝手に足す（Q-1 と同型の新規事故） | **(10-n)** |
+
+⚠⚠ **計測手順の修正（レビュー指摘・申し送り 3）**: progress.md は「変異が生存したら、まず変異が
+本当に当たったか **`git diff`** を見ること」と書いていたが、**`overlayThemeReset.ts` は untracked なので
+`git diff` は常に空**——手順が、事故が起きたファイルでは機能しない。
+→ **「`git diff`、untracked なら**事前バックアップとの `diff`**」**に読み替えること。
+
+#### 【コメントのみ・修正不要と判断】
+
+| 指摘 | 判断とコメントの場所 |
+|---|---|
+| Q-6 テーマ適用中に不透明背景が消える | **受容**（自動フォールバック背景は追修正②が消した「床」を作り直すので入れない）。⚠ ただし「注記 1 本で足りる」は否——**プレビューは設定窓の不透明色 `var(--bg)` の上なので読めてしまい、読めなくなるのは配信中**。→ 再修正トリガー①「`.themePreview` を市松/中間トーンの疑似映像にする」を `overlayThemeReset.ts` に明記。②本文縁取りトグルは 060g |
+| Q-10 コメント密度（実コード 5 行 / 説明 200 行超） | **維持**（4 つの「書くな」は全部実機で踏んだ罠で jsdom では守れない）。⚠ ただし**経緯は progress.md が正**でモジュール側は要約——経緯が 5 か所に複製されたのが Q-4 の陳腐化の原因。トリガー「経緯を足すなら progress.md へ書いてリンクする」を明記 |
+| Q-11 `withDecorationReset` の名前が実態と合わない | **改名しない**（(10-m) の `RESET_HELPER` と docs 6 ファイル以上の同時更新になり、挙動は 1 バイトも変わらないので実機確認 4 巡目前に差分を増やす価値が無い）。トリガー「060f 確定後に `withThemeBaseline` へ。(10-m) の定数を同時更新」を明記 |
+| 申し送り 11 中核が自動検証されていない | **この分業のままにする**（jsdom では原理的に埋まらない）。トリガー「同種の差し戻しがもう 1 度出たら WebKit スモーク 1 本（`getComputedStyle(p).backgroundColor === "rgba(0, 0, 0, 0)"`）を 060c/060g のスコープで検討」を `overlayThemeReset.test.ts` に明記 |
+| Q-9 `.row` の `display:flex` | **残す**が説明を訂正——「no-op」ではなく **`.bubble` の `flex:1; min-width:0` が効く前提**。`block`/`contents` にすると吹き出しが内容幅まで縮む |
+| Q-8 `RESET_RULES` の `split("}")` | **維持**（固定文字列なので現状は正しい）。ただし値に `}` が入ると**以降のアサーション全部が別のものを検査して緑**になるので、前提条件（ルール数 4・値に `}` / `{` を含まない）を表明するテストを追加 |
+
+#### 【陳腐化の訂正（レビュー指摘 S-2 / Q-4）】
+
+- `OverlayApp.tsx` の `@layer sd-tail` → **`sd-default`**（差し戻し②で改名済みだった）
+- `overlayThemeReset.ts` の `content: none` の説明 → **`all: unset`**（差し戻し③で置換済みだった）
+- `docs/security.md` 追修正①段落の `content:none` に「③が現在の正」の注記
+- `OverlayComment.module.css` ／ `CommentList.tsx` の**「非コメント差分ゼロに保てる」を訂正**
+  （⚠ この 2 か所が残っていたせいで「このファイルは宣言を触っていないはず」という前提で
+  差分が読み飛ばされ、**Q-1 がそこを通り抜けた**）
+- progress.md 060f 節タイトル「安定クラス 4 つ・変換表 17 件」→ **6 つ・18 件**
+- Q-3 `overlayThemeReset.test.ts` の**恒真アサーション**を修正——`indexOf("content:none")` が
+  追修正③以降 **常に `-1`** を返し（`-1 < 正の数` は常に真）**何も検証していなかった**
+
+#### ⚠⚠ 実機確認（4 巡目）に足す項目
+
+| # | 操作 | 期待 |
+|---|---|---|
+| A | **⓪ベースラインの A/B スクショに課金カードを必ず含める**（スパチャ＋メンバーシップ） | ⚠ Q-1 は chat をいくら見ても出ない。`.icon` を共有しているので**課金カードを見ないと回帰が見えない** |
+| B | `border-right` でしっぽを描くが `position:absolute` を**書かない**テーマ | ⚠ `all:unset` 後は `position:static` になるので**静的なインラインボックス**になる（受容したトレード＝文字・回転四角・画像のケースを救う代償）。想定内か想定外かをここで切り分ける |
+| C | テーマ適用中の課金カードのアバターと名前の間隔 | ⓪と同じ（`.card .icon` の打ち消しが効いている） |
+
+### ⚠⚠⚠ 実機確認の差し戻し④（2026-08-08）—— スパチャが消える ／ 課金カードを的から外した
+
+本人の実機確認 4 巡目で 3 件。**うち 2 件は同じ根**だった。
+
+| # | 症状 | 原因 |
+|---|---|---|
+| 1 | **スパチャが配信窓に表示されない**（実サンプル） | ✅ 確定（下） |
+| 2 | 検証3 でスパチャカードが**細いオレンジの線**になる | ✅ 1 と同根（下）。⚠ 真因の切り分けは実機観測へ送った |
+| 3 | 実サンプルで**本文の文字色と縦バーが出ない** | ❌ **未解明**（CSS は正しく生成されていることを実測済み・下） |
+
+#### ✅【原因・確定】配布テーマの「スーパーチャット非表示」が StreamDock の課金カードごと消していた
+
+実サンプル（保存済みテーマ `29568358-….css`）は OBS 用 YouTube テーマの定番としてこう書いている:
+
+```css
+/* スーパーチャット非表示 */
+yt-live-chat-paid-message-renderer,
+yt-live-chat-paid-sticker-renderer { display: none !important; }
+/* メンバーシップ入会非表示 */
+.yt-live-chat-membership-item-renderer { display: none !important; }
+```
+
+変換表がこれを **`.sd-comment-tip{display:none!important}`** に変換 → **課金カードが丸ごと消える**。
+
+⚠⚠ **テーマ作者に悪意は無い**——純正チャットではスパチャが**ティッカー（上部の帯）にも出る**ので
+「二重に出るからインライン側を消す」のが定番。**StreamDock にティッカーは無いので意図が成立しない。**
+⚠⚠⚠ **060f が 3 巡ぶん試した「限定」（chat 専用クラス・目印クラス）では原理的に防げない**
+——テーマが狙っているのは「課金カードそのもの」だから。
+
+#### ✅【修正・本人決定 2026-08-08】課金カードをユーザー CSS から**完全遮断**する
+
+決定は**「スパチャのデザインは常に同じで、OBS 用の配信窓に必ず出る」**。遮断範囲は**クラス＋ data 属性**。
+
+| 変更 | 中身 |
+|---|---|
+| `CommentList.tsx` | 課金カードの `<li>` と配下から **`sd-comment*` と `data-sd-*` を全部削除**（意匠クラスだけ残す） |
+| `overlayThemeReset.ts` | 4 ルールすべての当て先を **chat 専用クラス**へ（`:where(.sd-comment-chat)` / `.sd-comment-in-chat`） |
+| `cssCompat.ts` | 変換表から**課金系 3 エントリを削除**（18 → 15 件） |
+| `check-css-guards.mjs` | `STABLE_CLASSES` から 4 つ削除 ＋ **新ガード (10-o)** |
+| `OverlayThemeCard.tsx` | 注記を 1 本追加（「課金コメントは標準の見た目のまま」） |
+
+⚠ 変換表から消したのは `yt-live-chat-paid-message-renderer` ／ 同 `#message` ／
+`.yt-live-chat-membership-item-renderer` の 3 件。**残すと「変換されるのに DOM に無い」＝ (10-b) が
+最悪と呼ぶ状態**になる。消したことで前 2 者は**未変換のまま `unmatched` に出る**＝
+ユーザーには「効きません」と見える（正しい状態）。
+
+⚠ 契約から落ちたのは 4 つ: `sd-comment-tip` / `sd-comment-in-tip` と、**課金カードにしか出ない**
+`sd-comment-amount` / `sd-comment-event`（後者 2 つを残すと (10-a) が「契約が実在しない」で落ちる＝**対で消す**）。
+
+#### ⚠ 受容したトレードオフ
+
+- **`.sd-comment` の意味が変わった**（「コメント 1 件（chat / 課金 共通）」→「**chat のコメント 1 件**」）。
+- **`data-sd-tone` がどこにも出なくなった**＝ 060a が公開していた
+  `.sd-comment[data-sd-tone="t6"] .sd-comment-body{…}`（ティア別に課金カードを飾る）は**できない**。
+- 検証2 の「課金カードのボディが青くなる」は**解消**する（＝ 仕様変更。以前は「仕様」と記録していた）。
+
+#### ✅【解決済み・差し戻し⑤で実測】症状 3（本文の文字色と縦バーが出ない）
+
+⚠ **当時は「未解明・実機観測へ」と書いていたが、それは調査不足だった**（詳細と測り方は下の
+「差し戻し⑤」を参照）。ヘッドレス Chrome に**実物と同じ CSS・同じ DOM・実データのテーマ**を
+食わせて描画した結果、実サンプル適用時の本文 `<p>` の Computed `color` は **`rgb(85,85,85)`
+＝ `#555555`** で、**左の縦バーも描画されている**。＝ **現行コードでは 2 症状とも出ない。**
+本人が見ていたのは修正前のバンドルだったと考えられる（下の「なぜ再現しなかったか」）。
+
+以下は当時の（それ自体は正しい）実測記録:
+
+**推測で直さない**（ここで推測したのが差し戻し 3 巡の直接原因）。保存済みテーマを
+`rewriteSelectors` → `withDecorationReset` → `scopeSelectors` に通して実測した結果、**CSS は正しい**:
+
+- 実サンプル: 入力 4111 字 → 3843 字 ／ `rewritten=18`（当時）／ **brace balance = 0・末尾まで欠落なし**
+- `:root{--txtcolor:#555555}` は配信窓で `:root{…}`、プレビューで `.sd-preview{…}` に**正しく解決**
+- 本文色 `.sd-comment-text.sd-comment-in-chat{color:var(--txtcolor)!important}` も
+  縦バー `.sd-comment-chat::before{…background:var(--txtcolor)…}` も**正しく生成されている**
+
+⇒ 変換・注入の欠陥ではない。**配信窓の DevTools で次の 3 点を観測してから直すこと**:
+
+1. `<style data-sd-overlay-theme>` の `textContent` 全文（＝古いビルドを見ていないか）
+2. 本文 `<p>` の Computed `color` と、Styles でどの宣言が勝っているか
+   （`var(--txtcolor)` が **IACVT で `unset`＝継承の黒**に落ちていないか。落ちていれば縦バーが
+   `background: transparent` になることと**同じ原因で説明が付く**——症状 2 つが 1 つの原因に畳める）
+3. 検証3 適用時の課金カード `<li>` / `.cardHeader` / `.cardBody` の Computed `height`
+   （「潰れている」のか「`--tone-body` がほぼ白なので白い窓と同化して見えないだけ」なのか）
+
+#### ミューテーション **5 種すべて KILLED**
+
+⚠ **手順**: `overlayThemeReset.ts` は untracked で `git diff` が空になるため、
+**事前バックアップとの `diff` で「実コードが変わったか」を確認してから**テストを走らせた（前回の教訓）。
+
+| 変異 | 落ちたもの |
+|---|---|
+| 課金カードの `<li>` に `sd-comment` / `sd-comment-tip` を戻す | **(10-o)** |
+| 課金カードの `<li>` に `data-sd-tone` を戻す | **(10-o)** |
+| 変換表に `yt-live-chat-paid-message-renderer` → `.sd-comment-tip` を戻す | vitest 9 件 |
+| リセットの `position` を `:where(.sd-comment)` へ戻す | vitest 2 件 |
+| 疑似要素リセットの `-in-chat` を外す（課金へ漏らす） | vitest 2 件 |
+
+#### 検証
+
+`typecheck` / `lint` OK ／ **1124 passed / 46 files**（1120 → +4）／`CSS guard check OK`（(10-a)〜(10-o)）／
+`Version sync OK` ／ `cargo check` Finished ／ **Rust・capabilities・`tauri.conf.json`・依存は差分ゼロ**。
+
+---
+
+### ❌ 実機確認の差し戻し⑤（2026-08-08）—— **【撤回済み・誤診】** プレビュー枠の固定高でスパチャが枠外へ落ちていた
+
+> ❌❌❌ **この節の修正は入っていない（差し戻し⑦で撤回した）。以下は当時の記録である。**
+> `.themePreview` の高さは **`height: 200px`（元のまま）**。現行の修正は「追修正⑦」節の
+> `transform: translateZ(0)` 1 宣言だけ。⚠ **この節を読んで `min-height` を入れ直さないこと。**
+> ⚠ ただし**調べ方（ヘッドレス Chrome で実物と同じ条件を描画する）は有効**なので、そこは残す価値がある。
+
+本人報告:「デザイン1・検証2・検証3 でスパチャのデザインが出ていない。**クリックして選択すると出てくる**」。
+
+#### ⚠⚠⚠ この回で変えた「調べ方」——**ヘッドレス Chrome で実物と同じ条件を描画する**
+
+差し戻し③④で「実機で観測してください」と本人へ丸投げしたのは**調査不足**だった。jsdom は
+カスケードもレイアウトも持たないので「当たるかどうか」しか見られないが、**それは道具の限界であって
+調べられない理由ではない**。以下で**実測できる**（3 巡ぶんの推測修正はこれをやれば要らなかった）:
+
+```
+/Applications/Google Chrome.app/Contents/MacOS/Google Chrome \
+  --headless=new --disable-gpu --virtual-time-budget=1200 \
+  --window-size=W,H --screenshot=out.png --dump-dom "file://…/repro.html"
+```
+
+再現ページの作り方（**実物と 1 対 1 に対応させるのが要点**）:
+
+1. **テーマは実データ**を読む（`~/Library/Application Support/com.tetsuya.stream-dock/themes/*.css`
+   ＋ `overlay_themes` テーブルで id → 名前を引く）
+2. **変換も実物**を呼ぶ（`rewriteSelectors` → `withDecorationReset` → `scopeSelectors` を
+   `node --experimental-strip-types` で直接 import する）
+3. **CSS は `theme.css` ＋ 2 つの module CSS** を連結し、**CSS Modules のハッシュ化を prefix で再現**する
+   （`.item` → `.oc_item` 等。詳細度とソース順が保存されるので実物と同じカスケードになる）
+   ⚠ **module CSS のコメントには `{ }` が入っている**ので、括弧を数える前に必ずコメントを落とすこと
+   （これを忘れて 1 回、パーサが壊れて「`.cardHeader` が当たっていない」という誤った結論を出した）
+4. **DOM は `CommentList.tsx` が実際に吐くとおり**に手で書く
+5. `window.load` で `getBoundingClientRect()` / `getComputedStyle()` を集めて `<pre>` に流し込み、
+   `--dump-dom` で読む（＝**Computed 値を機械で取れる**）
+
+#### ✅【原因・確定】プレビュー枠が `height: 200px` 固定で、2 件目の課金カードが枠外に落ちる
+
+`.themePreview`（`CommentViewerApp.module.css`）は高さ固定。ダミーコメントは
+**1 件目＝ chat・2 件目＝課金カード**なので、**上の chat の高さがテーマごとに変わると
+カードが枠の下からはみ出す**。カード自体は**どのテーマでも常に 99px で正しく描かれている**。
+
+| 条件（枠の下端＝212px 基準） | カード下端 | はみ出し |
+|---|---|---|
+| 枠幅 520px・テーマ未適用 | 234px | **+22px** |
+| 枠幅 420px・検証3 | 230px | **+18px** |
+| 枠幅 520px・検証2 / 検証3 | 201px | −11px（ぎりぎり収まる） |
+| 実サンプル | 186px | −26px（chat が 79px→24px に縮むので収まる） |
+
+`.list` は `overflow-y: auto` なので**スクロールすれば見える**が、枠内スクロールには気付けない。
+⚠ **「クリックして選択すると出てくる」の説明もこれ**——テーマを当てるとリセットで吹き出しが消えて
+chat が縮み、カードが枠内に入る。
+
+#### ⚠⚠⚠ この修正は**入れていない（差し戻し⑦で撤回した）**
+
+`min-height`（⑤）も `height: 260px`（⑥）も**本人環境の症状を直さなかった**ので、
+`.themePreview` は **`height: 200px`（元のまま）** に戻してある。⑥で書いた原因
+（「`contain: paint` の切り抜き矩形がリサイズに追随しない」）は**誤診**だった——
+詳細と、そう判断できた実測は下の「差し戻し⑦」を読むこと。以下は当時の記録。
+
+#### ✅【修正】`.themePreview` の `height: 200px` → `min-height: 200px`（1 行）
+
+⚠⚠ **`overflow: hidden` と `contain: paint` は据え置き**（060d security-review S-2 の安全装置）。
+「高さを内容に合わせる」ことと「ユーザー CSS のはみ出しをクリップする」ことは別問題で、
+伸ばしてよいのは **StreamDock 自身が並べたダミー 2 件ぶんだけ**である。静的ガード **(10-j)** は緑のまま。
+
+修正後、**枠幅 700 / 520 / 420px × テーマ 5 種（未適用＋4）＝ 15 通りすべてで枠内に収まる**ことを
+同じ実測で確認した（枠は必要なぶんだけ 200 → 最大 249px へ伸びる）。
+
+#### なぜ本人の環境で「出ない」ままだったか（デザイン1）
+
+修正前の DOM と変換表を同じ手順で再現すると、デザイン1（＝実サンプルと**バイト同一**・MD5 一致）で
+課金カードは **`display:none` / 0×0** になる＝**差し戻し④の症状そのもの**。
+⚠ ソースの最終更新 21:45 に対しアプリが DB に最後に書いたのが 21:47 で、
+**Vite の HMR は別 webview（配信窓）まで確実には届かない**。
+→ **`pnpm tauri dev` を完全に落として起動し直す**こと（実機確認のたびに毎回）。
+
+#### ⚠ 本人の「紫を指定したはず」について
+
+保存済みテーマを全文検索しても**紫の指定は 1 つも無い**（`--txtcolor` は `#555555` ＝グレーのみ）。
+⚠⚠ **取り込みは「そのときの CSS のスナップショット」**で、**元ファイルを後から編集しても反映されない**
+（`import_overlay_theme` が `themes/<id>.css` へ複製し、以後 StreamDock は元ファイルを二度と読まない）。
+色を変えたら**取り込み直す**必要がある。これは 060b の設計どおり（外部パスを持ち続けない）だが、
+**UI のどこにも書かれていない**——`OverlayThemeCard` の注記に 1 本足すことを 060d の申し送りへ入れる。
+
+#### 検証
+
+`typecheck` / `lint` OK ／ **1124 passed / 46 files**（増減なし＝意匠 CSS 1 行の変更）／
+`CSS guard check OK`（(10-a)〜(10-o)・**(10-j) 含む**）／`Version sync OK` ／ `cargo check` Finished ／
+**Rust・capabilities・`tauri.conf.json`・依存は差分ゼロ**。
+
+---
+
+### ❌ 実機確認の差し戻し⑥（2026-08-08）—— **【撤回済み・原因診断が誤り】** 枠が伸びると WebKit が古い切り抜き範囲で描き続ける
+
+> ❌❌❌ **この節の修正（`height: 260px`）も、原因診断（`contain: paint` の切り抜き矩形）も両方とも誤りで、
+> 差し戻し⑦で撤回した。以下は当時の記録である。**
+> 実測で否定された根拠: ①**`contain: none` にしても再発する**＝ `contain: paint` は無関係
+> ②そもそも**画面外に置いた WKWebView 窓で撮ったスナップショットという偽の再現**だった。
+> ⚠⚠ **この節に書かれている (10-j) の拡張仕様（`min-height` / `max-height` があれば落とす・
+> `height` が固定値でなければ落とす）は実装されていない。** 現行の (10-j) が固定しているのは
+> `contain: paint` / `overflow: hidden` / `transform: translateZ(0)` の 3 宣言である。
+> ⚠ **`✅【原因・確定】` という見出しがこの節に残っていたのはレビュー指摘（2026-08-08）で是正した**——
+> 誤診に確定マークが付いていると、次の人が同じ道を辿る。真因は「追修正⑦」節が正。
+
+本人報告:「**全てのスパチャについて、プレビューでデザインが出なくなりました。
+画像のように選択したら表示されます。反転か何かが影響している？**」
+
+#### ⚠⚠ 決め手は本人の観測「選択したら出る」
+
+**ドラッグ選択は強制再描画を起こす操作**である。選択で直る＝**レイアウトは正しく、描画だけが古い**。
+これで「はみ出し」「`display:none`」「カスケードで負けている」を**全部**外して原因を 1 つに絞れた。
+⚠ スクショの読み方も一致していた——オレンジのヘッダ帯が途中で切れ、**その下は枠の背景色のまま**、
+なのに**枠線は伸びた位置にある**＝「枠は伸びたが、中身は古い範囲までしか描かれていない」。
+
+#### ❌【誤診・撤回】`contain: paint` の切り抜き矩形が、WKWebView ではリサイズに追随しない
+
+`.themePreview` の `contain: paint` は 060d security-review S-2 の**安全装置**（子孫の描画を枠で切り抜く）。
+差し戻し⑤で `height: 200px` → `min-height: 200px` にした＝**枠が後から伸びる**ようにしたのが引き金:
+
+1. プレビューを開く → 枠は 200px でレイアウト・**描画**される
+2. テーマ CSS の取得は**非同期**（`OverlayThemeCard` の `getOverlayThemeCss(...).then(...)`）で
+   後から `<style>` が入る
+3. 内容が変わって枠が 200px → 230px 前後へ**伸びる**
+4. 枠自身の枠線・背景は新しいサイズで描かれるのに、**子孫の切り抜きは 200px のまま**
+   → **課金カードの下半分が描かれない**（全テーマ）
+
+⚠ 差し戻し⑤より前（`height` 固定）は**枠が縦に伸びなかったので、この経路自体が無かった**。
+代わりにカードが枠の下からはみ出していた。⚠⚠ **2 つは別の不具合**であり、⑤の修正が誤りだったのではなく
+**「固定高のままで高さを増やす」べきだった**（＝サイズが変わる状態を作らないこと）。
+
+#### ✅【修正・本人決定 2026-08-08】固定高へ戻す（`height: 260px`）
+
+**引き金そのものを消す。** 再描画を強制する回避策（React の `key` で枠を作り直す等）は**採らなかった**:
+ウィンドウ幅の変更など**別経路で同じ症状が再発**するうえ、「なぜこの `key` が要るのか」が読めなくなるため。
+
+260px の根拠（ヘッドレス Chrome の実測＝ダミー 2 件が枠内に収まるのに必要な高さ）:
+
+| 枠幅 | 必要な高さ（テーマ 5 種の最大） | 260px での余裕 |
+|---|---|---|
+| 700px | 207px | 61px |
+| 520px | 230px | 38px |
+| 420px | **236px**（最悪ケース） | **32px** |
+
+⚠ 実機の枠幅は約 890px なので実運用はさらに余裕がある。修正後、**3 幅 × テーマ 5 種＝ 15 通りすべて
+枠内に収まる**ことを `--dump-dom` の Computed 値で確認した。
+
+#### ✅ 静的ガード (10-j) を拡張した
+
+`.themePreview` に **`min-height` / `max-height` があれば落とす**／**`height` が固定値でなければ落とす**。
+⚠ jsdom はレイアウトも描画も持たないので、**この不変条件を守れるのは静的ガードだけ**（(10-j) 本体と同じ事情）。
+既存の `contain: paint` / `overflow: hidden` のチェックはそのまま（3 点で 1 つのガード）。
+
+| 変異 | 落ちたもの |
+|---|---|
+| `height: 260px` → `min-height: 260px` | **(10-j) 拡張**（2 件とも fail） |
+| `contain: paint` を消す | (10-j) 既存 |
+
+#### ⚠ 受容したリスク
+
+**極端に文字を大きくするテーマでは、カードが再び 260px からはみ出しうる**（`.list` は
+`overflow-y: auto` なので枠内スクロールで見える）。差し戻し⑤で直した症状が条件付きで戻るが、
+「枠が伸びる」ほうは**全テーマでカードが描かれない**ので被害が大きい。
+⚠ 再修正トリガー＝実機で 260px に収まらないテーマが出たら、**height の数値を増やす**こと。
+**`min-height` へ戻してはいけない**（この節の症状が全テーマで再発する）。
+
+#### 検証
+
+`typecheck` / `lint` OK ／ **1124 passed / 46 files**（増減なし＝意匠 CSS 1 宣言とガードの変更）／
+`CSS guard check OK`（(10-a)〜(10-o)）／`Version sync OK` ／ `cargo check` Finished ／
+**Rust・capabilities・`tauri.conf.json`・依存は差分ゼロ**。
+
+⚠⚠ **この不具合は WKWebView でしか出ない**（ヘッドレス Chrome では再現しない＝レイアウトは Chrome で
+確認できるが、描画の追随は**実機でしか確認できない**）。実機確認の観点は 060f タスクファイルの「追修正⑥」。
+
+---
+
+### ⚠⚠⚠ 差し戻し⑦（2026-08-08）—— ⑤⑥をどちらも撤回。原因診断が誤りだった
+
+本人報告:「ダメです。戻してください。むしろ悪化しました。ちゃんと調べて欲しいです」。
+
+`.themePreview` は **`height: 200px`（元のまま）** に戻し、⑥で足した (10-j) の拡張も外した。
+**`git status` 上 `CommentViewerApp.module.css` は差分ゼロ**（＝ 060f の変更に `.themePreview` は含まれない）。
+
+#### ⚠⚠⚠ 撤回した理由: ⑥の原因診断は**実測で否定された**
+
+⑥では「`contain: paint` の切り抜き矩形が WKWebView でリサイズに追随しない」と書いたが、**間違い**。
+実機と同じ **WKWebView** で切り分けたところ:
+
+| 条件 | 結果 |
+|---|---|
+| `contain: none` にする（＝ paint 封じ込めを外す） | **直らない**（＝ `contain: paint` は原因ではない） |
+| `isolation: isolate` / `opacity: .999` / `will-change: transform` | 直らない |
+| `transform: translateZ(0)` を足す | 直る |
+| **テーマ未適用（既定）でも同じ症状** | ＝ **ユーザー CSS とも無関係** |
+
+⚠⚠⚠ **そのうえで、この「再現」自体が偽物だった。**
+検証用の WKWebView 窓を**画面外（-3000,-3000）に置いていた**ため描画更新が来ず、
+`takeSnapshot` が古い内容を返していただけである。**窓を画面内に置くと正常に描画された**
+（`WK_ONSCREEN=1` / `afterScreenUpdates` の有無と組み合わせて確認）。
+→ **この経路では本人の症状を再現できていない。⑥の修正はそもそも根拠を失っている。**
+
+#### ⚠ 教訓（次に同じ轍を踏まないために）
+
+- **「症状の説明が付く仮説」と「原因」は違う。** ⑥は本人の観測（選択で直る）とスクショに
+  よく合っていたが、実測で否定された。**合っているだけでは採用しない。**
+- **計測ハーネスの副作用を先に潰す。** 画面外の窓・`afterScreenUpdates: false`・
+  CSS コメント内の `{}` ——いずれも「偽の症状」を作った。**まず対照条件を取ること。**
+- **直す前に再現する。** ⑤⑥はどちらも再現できていない状態で入れた変更で、2 回とも外した。
+
+#### ✅ ここまでで**実測により確定していること**（現行コード）
+
+以下は Chrome(Blink) と **WKWebView（実機と同じ）** の両方、かつ**実データのテーマ**で確認済み:
+
+- 変換表・リセットの**どのルールも課金カードに 1 つも当たらない**（jsdom のセレクタ照合で全数確認）
+- プレビューでも配信窓でも、**課金カードは 813×99px（帯 56px ＋ ボディ 43px）で正しくレイアウトされる**
+- **実物の `OverlayThemeCard` を Vite dev + WKWebView で描画しても、課金カードは正常に描かれる**
+  （`.settingsView` と同じ「div 内スクロール」の中に置き、テーマ選択 → プレビュー ON の順序も再現した）
+- 実サンプル適用時の本文色は **`rgb(85,85,85)`＝`#555555`**、左の縦バーも出る（＝症状 3 は現行コードでは出ない）
+
+⇒ **現行コードでは本人の症状が再現しない。** 残る差は「本人の環境（実際のビルド／Tauri 窓）」だけである。
+
+#### 🔧 調査ハーネス（再利用できるので手順を残す）
+
+1. **`swiftc` で 40 行の WKWebView スナップショットツールを作る**（実機と同じ描画エンジン）。
+   ⚠⚠ **窓は必ず画面内に置くこと**（画面外だと描画更新が来ず**偽の症状**が出る）。
+   ⚠ `WKSnapshotConfiguration.afterScreenUpdates` の値でも結果が変わるので、**両方で撮って一致を見る**。
+2. **実物のコンポーネントを Vite dev サーバで描画する。** Tauri IPC は
+   `window.__TAURI_INTERNALS__`（`invoke` / `metadata.currentWindow.label` / `transformCallback` /
+   `convertFileSrc`）だけスタブすれば動く。`list_overlay_themes` と `get_overlay_theme_css` に
+   **実ファイルの中身**を返させれば、変換もカスケードも本物になる。
+3. 操作（テーマ選択・プレビュー ON・スクロール）はページ内の driver スクリプトで再現し、
+   `getBoundingClientRect` / `getComputedStyle` を `<pre id="PROBE">` に流して機械で読む。
+4. **描かれたかどうかは画素で判定する**（帯＝`rgb(255,179,0)` / ボディ＝`rgb(255,244,219)`）。
+   レイアウトが正しくても描かれていないことがあるので、**矩形の数字だけで判定しない。**
+
+---
+
+### ✅ 追修正⑦（2026-08-08）—— 真因を確定して修正: WKWebView がプレビューの課金カードを再描画しない
+
+⚠ ⑤⑥は**再現できていないまま**入れた変更で、2 回とも外した（上の「差し戻し⑦」）。今回は**再現を先に作った**。
+
+#### ⚠⚠⚠ 決め手になった本人の観測
+
+> 「課金チャット自体は存在しているのに表示されない」
+> 「**右クリック押したままマウスを動かして選択している状態にすると選択部分が表示されるようになる**」
+> 「デザインを変更したらまた消えます」
+
+**ドラッグ選択は強制再描画を起こす操作**なので、これで「レイアウトは正しく、描画だけが古い」と確定した。
+＝ はみ出し・`display:none`・カスケード負けは**全部除外**できる。
+
+#### ✅ 再現のさせ方（ここが今回いちばん重要）
+
+実機と同じ **WKWebView** に、**実物の `OverlayThemeCard`** を Vite dev 経由で描かせ、
+`.settingsView` と同じ **div 内スクロール**に入れ、テーマ遷移を driver スクリプトで再現し、
+**画素で**判定する。⚠⚠ **ここまで全部揃えないと再現しない**（1 つでも欠けると「正常」に見える）:
+
+| 条件 | 外すとどうなるか |
+|---|---|
+| 実物のコンポーネント（自作の静的 HTML では駄目） | 再現しない |
+| `.settingsView` と同じ div 内スクロール | 再現しない |
+| **窓を画面内に置く** | 画面外だと**常に描画されない**＝**偽陽性**（⑥はこれで誤診した） |
+| **`WKSnapshotConfiguration.afterScreenUpdates = false`** | `true` だと撮る前に再描画されて**症状が消える**（＝偽陰性） |
+| **テーマの遷移**（`<style>` の差し替え） | 開くだけでは再現しない |
+
+#### ✅ 原因（実測で確定）
+
+テーマの `<style>` を差し替えるとプレビュー枠の中の高さが変わるが、**WKWebView が課金カードの領域を
+再描画対象にしそこねる**。`.list` は `overflow-y: auto`＝スクロール領域なので、そこの無効化が漏れる。
+
+| 試したこと | 結果 |
+|---|---|
+| 何もしない（現状） | **テーマ遷移 7 通り中 3 通りで課金カードが描かれない**（いずれも「テーマ → 既定」へ戻す向き） |
+| `.themePreview` に **`transform: translateZ(0)`** | **7 通りすべて正常** |
+| `will-change: transform` / `isolation: isolate` / `backface-visibility: hidden` | **効かない** |
+| `contain: none`（＝ paint 封じ込めを外す） | **再発する ⇒ `contain: paint` は無関係** |
+| `.card { filter: none }` | 効かない |
+
+⚠⚠ **⑥で書いた「`contain: paint` の切り抜き矩形が原因」は誤診**だった（`contain: none` でも再発する）。
+
+#### ✅ 修正: `.themePreview { transform: translateZ(0) }`（1 宣言）
+
+- ⚠ **意匠ではなく描画バグ回避**。正常だったケースの**画素差分は 0**（見た目は 1px も変わらない）。
+- ⚠ **当て先がこの枠でなければならない**: `.sd-preview` / `<ol>` / `<li>` でも直るが、そこは
+  **ユーザー CSS が名指しできる**（`scopeSelectors` が `:root` を `.sd-preview` にする／
+  `.sd-comment-list` と `.sd-comment` は 060a の契約クラス）ので、テーマが `transform` を上書きすると
+  **回避策が黙って無効化される**。`.themePreview` は CSS Modules のハッシュ名なので名指しできない。
+- ⚠ `overflow: hidden` / `contain: paint` は**据え置き**（060d の安全装置）。`transform` は
+  包含ブロックとスタッキングコンテキストを作る側なので、封じ込めは**弱くならない**。
+- **静的ガード (10-j) を拡張**して、この宣言が消えたら落ちるようにした（jsdom では守れないため）。
+
+#### ⚠ 配信窓（`OverlayApp`）について
+
+同じ描画バグが起きうるが、**`.root` には触らない**。⚠ 配信窓で同じ症状が出たら、
+**`.root` ではなく専用の内側ラッパを足して**そこへ載せること。まずは実機で症状が出るかを確認する
+（本タスクの実機確認項目）。
+
+⚠⚠ **理由の書き方を訂正した**（レビュー指摘 Q-10・2026-08-08）。当初「046c の `applyFitScale` が
+`.root` の `transform` を**排他所有**しているので足すと縮小フィットが壊れる」と書いていたが、
+**これは不正確**——`applyFitScale` は `el.style.transform = "scale(k)"` ＝ **インラインスタイル**で書くので、
+CSS モジュール側の宣言とは競合しない（**インラインが勝つ**）。足しても縮小フィットは壊れない。
+
+**実際の理由はこちら**:
+- `.root` は `OverlayApp.module.css` にあり、**`PinnedOverlayApp.tsx` が同じクラスを import して共有している**
+  （`import styles from "./OverlayApp.module.css"` → `className={styles.root}`）。
+- 縮小フィットが**効いていないとき**、`applyFitScale` は `el.style.transform = ""` でインラインを消す。
+  そのとき CSS 側の `translateZ(0)` が**固定コメント窓にも効き**、包含ブロックとスタッキングコンテキストが
+  1 つ増える（046c が `getBoundingClientRect` で視覚値を読む箇所にも触れる）。
+- ＝ **配信窓を直すために固定コメント窓へ未検証の副作用を入れることになる**。症状が観測されていない
+  いま、それを払う理由が無い。**内側ラッパなら共有を避けられる**ので、そのときに足せばよい。
+
+⚠ **`transform` を「排他所有」と書いてある他の箇所（060a 節・`sd-overlay` を固定窓に付けない理由）は
+そのままでよい**——あちらは「ユーザー CSS の的を作らない」話で、インライン優先とは別の論点である。
+
+#### 検証
+
+`typecheck` / `lint` OK ／ **1124 passed / 46 files** ／`CSS guard check OK` ／`Version sync OK` ／
+`cargo check` Finished ／ **Rust・capabilities・`tauri.conf.json`・依存は差分ゼロ**。
+ミューテーション: `transform: translateZ(0)` を消す → **(10-j) 拡張が落とす**。

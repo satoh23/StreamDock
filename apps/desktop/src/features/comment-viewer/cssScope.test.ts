@@ -140,6 +140,48 @@ describe("scopeSelectors: root 相当の読み替え（申し送り③）", () =
   });
 });
 
+/**
+ * 060f: ⚠⚠ **`.sd-overlay` は変換表の右辺にもなった**（`yt-live-chat-app` / `yt-live-chat-renderer`）。
+ *
+ * 060a はこの読み替えが無いことを前提に「`.sd-overlay` は変換表に入れない」としていた。
+ * 060d が `ROOT_LIKE_CS` を入れて制約は解消されたが、**「解消されている」の根拠は
+ * `rewriteSelectors` → `scopeSelectors` の**順序**に依存する**（`OverlayThemeCard` の
+ * プレビュー生成が `scopeSelectors(rewriteSelectors(css).css, …)` の 1 か所だけである、という規約）。
+ * ＝ ここで**注入経路と同じ順序で通した結果**を固定しておかないと、
+ * 「変換で生まれた `.sd-overlay` がプレビューで素通しになる」退行に気付けない。
+ * ⚠ 順序を入れ替える／どちらかの呼び出しを増やす変更をしたら、本 describe を必ず見直すこと。
+ */
+describe("060f: 変換で生まれた .sd-overlay もプレビューでラッパへ読み替わる", () => {
+  /** 注入経路（OverlayThemeCard のプレビュー）と同じ順序。 */
+  const pipeline = (css: string) => scopeSelectors(rewriteSelectors(css).css, S);
+
+  it("窓ルートを指す純正チャットのセレクタは .sd-preview になる", () => {
+    expect(pipeline("yt-live-chat-app{background:transparent}")).toBe(
+      ".sd-preview{background:transparent}",
+    );
+    expect(pipeline("yt-live-chat-renderer{font-family:X}")).toBe(
+      ".sd-preview{font-family:X}",
+    );
+  });
+
+  it("窓ルート配下の複合セレクタも、前置ではなく読み替えになる", () => {
+    expect(
+      pipeline(
+        "yt-live-chat-app yt-live-chat-text-message-renderer #message{color:red}",
+      ),
+    ).toBe(".sd-preview .sd-comment-text.sd-comment-in-chat{color:red}");
+  });
+
+  it("060f で足した安定クラスは（窓ルートではないので）従来どおり前置される", () => {
+    expect(pipeline("yt-live-chat-item-list-renderer #items{padding:0}")).toBe(
+      ".sd-preview .sd-comment-list{padding:0}",
+    );
+    expect(pipeline("yt-live-chat-text-message-renderer{margin:0}")).toBe(
+      ".sd-preview .sd-comment-chat{margin:0}",
+    );
+  });
+});
+
 describe("scopeSelectors: カンマの分割は構文を見る", () => {
   it("擬似クラスの引数の中では分割しない", () => {
     expect(scopeSelectors(".a:not(.b, .c){color:red}", S)).toBe(
@@ -295,8 +337,8 @@ describe("scopeSelectors: 実サンプル 2 本（cssCompat と同じ入力で�
   it("YouTube サンプル: 変換後のセレクタが配下へ閉じ、:root はラッパへ読み替わる", () => {
     const scoped = scopeSelectors(rewriteSelectors(YOUTUBE_SAMPLE).css, S);
     expect(scoped).toBe(`@import url("https://ruri.info/tool/css/midashi1Comment.css");
-.sd-preview .sd-comment-text,
-.sd-preview .sd-comment-text * {
+.sd-preview .sd-comment-text.sd-comment-in-chat,
+.sd-preview .sd-comment-text.sd-comment-in-chat * {
 font-family: "M PLUS 1p", sans-serif;}
 .sd-preview{
 --txtcolor:#555555;
@@ -307,7 +349,7 @@ font-family: "M PLUS 1p", sans-serif;}
   it("Twitch サンプル: 同上", () => {
     const scoped = scopeSelectors(rewriteSelectors(TWITCH_SAMPLE).css, S);
     expect(scoped).toBe(`@import url("https://ruri.info/tool/css/twmidashi1Comment.css");
-.sd-preview .sd-comment{
+.sd-preview .sd-comment-chat{
 font-family: "M PLUS 1p", sans-serif;}
 .sd-preview{
 --txtcolor:#555555;

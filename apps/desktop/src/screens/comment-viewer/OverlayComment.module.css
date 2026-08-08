@@ -29,12 +29,30 @@
    `var(--sd-icon-size, 44px)` にして「ユーザー指定があればそれ、無ければ現行値」に読み替える。
    ⚠ アイコン径と間隔を**対で**公開するのが要点——片方だけだと、アイコンを小さくしたときに 28px の
    間隔が過大なまま調整できない。どちらを動かしても .header のインデント（下の calc）が追随する。 */
+/* ⚠⚠ 060f 追修正(2026-08-08): **flex 縦積みから 2 列グリッドへ変えた。** 見た目は変えていない。
+   理由＝ 取り込んだテーマが `.sd-comment-icon{display:none}` でアイコンを消したとき、
+   **名前行だけ 72px のインデントが残っていた**（下の .header が `calc(--icon-size + --icon-gap)` を
+   ハードコードで持っており、アイコンが実際に描かれているかに追随しないため）。
+   ⚠ **CSS では「兄弟が display:none か」を検出できない**（`:has()` でも不可）ので、
+   インデントを**アイコンの実体そのもの**（グリッドの 1 列目）から作る形に変えるしかなかった。
+   → アイコンが消えると 1 列目が 0 幅に畳まれ、名前行も吹き出しも自動で左端へ寄る。
+   ⚠ **列の間隔は `.row` の gap ではなく `.icon` の margin-right に載せてある**（下の .icon 参照）。
+   グリッドの `column-gap` に載せると**アイコンが消えても隙間だけ残る**。
+   ⚠ 課金カード（.card）は 1 列に戻している（下の .card 参照）。外すとヘッダ帯とボディが 2 列に割れる。 */
 .item {
   --icon-size: var(--sd-icon-size, 44px);
+  /* ⚠ **28px の内訳は「既定のしっぽの突き出し 20px ＋ 素のすき間 8px」**（下の .bubble::before 参照）。
+     テーマ適用中は StreamDock のしっぽを描かないので、`overlayThemeReset.ts` が `--sd-icon-gap: 8px` を
+     前置して 20px を返す。⚠ リセット側が上書きするのは**入口の `--sd-icon-gap` のほう**——ここで宣言して
+     いるのは `--icon-gap` で、同じ要素のこの宣言のほうが常に勝つため、そちらは狙っても効かない。 */
   --icon-gap: var(--sd-icon-gap, 28px);
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  display: grid;
+  /* 1 列目＝アイコン（中身が無ければ 0 幅）／2 列目＝名前行と吹き出し。 */
+  grid-template-columns: auto 1fr;
+  /* ⚠ 縦だけ。横は .icon の margin-right が持つ（アイコンと一緒に消えるようにするため）。 */
+  row-gap: 2px;
+  /* アイコンを行の高さいっぱいに引き伸ばさない（既定意匠＝吹き出し上端に揃える）。 */
+  align-items: start;
   /* 043c 追修正(本人フィードバック): 共有 .list は overflow-y:auto かつ flex 縦積みのため、子 .item が既定の
      flex-shrink:1 だとオーバーフロー前に縦圧縮され、overflow:hidden の投げ銭カードが潰れて破綻する。子を縮ませず
      自然高を保たせ、超過分は .list のスクロール（always 追従で最新へ）に回す。共有 .list には触らない（本体波及回避）。
@@ -66,8 +84,12 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  /* 名前の開始 x を吹き出しの左上に合わせる（アイコン幅＋間隔ぶん右へ寄せる）。 */
-  margin-left: calc(var(--icon-size) + var(--icon-gap));
+  /* 名前の開始 x を吹き出しの左上に合わせる。
+     ⚠⚠ 060f 追修正(2026-08-08): `margin-left: calc(var(--icon-size) + var(--icon-gap))` を**やめて**、
+     グリッドの 2 列目に置くことでインデントを作る。ハードコードの margin だと
+     **テーマがアイコンを display:none にしても名前行だけ 72px 残る**（実機で確認）。
+     いまは 1 列目（アイコン）が畳まれれば名前行も自動で左端へ寄る。 */
+  grid-column: 2;
 }
 
 /* ユーザー名：太めの黒＋白い縁取り（透過映像の上に出るので縁取りで可読性を確保）。狭いカラムではなくなったので
@@ -115,18 +137,42 @@
   background: var(--overlay-source-youtube-bg);
 }
 
-/* アイコン｜吹き出しの行（同じ行の 2 列）。アイコンは吹き出しの上端に揃える。間隔はしっぽの突き出しより広くして
-   アイコンと吹き出し（しっぽ）が被らないようにする。 */
+/* 吹き出しの行。
+   ⚠⚠ 060f 追修正(2026-08-08): **アイコンはもうこの中に無い**（`.item` のグリッド 1 列目へ移した＝
+   `CommentList.tsx` の DOM も一緒に変えてある）。したがってこのクラスの意味は
+   「アイコン＋吹き出しの行」→「**吹き出しの行**」に変わった。⚠ 安定クラス `sd-comment-row` は
+   ユーザー CSS との契約なので**残す**（`display: contents` にもしない＝ box が消えると
+   `.sd-comment-row{background:…}` と書いたテーマが黙って効かなくなる）。
+   ⚠⚠ **`display:flex` は no-op ではない**（レビュー指摘 Q-9・2026-08-08 で訂正）。下の `.bubble` が
+   `flex: 1; min-width: 0` を持っており、**それが効くのはこの箱が flex コンテナだからである**。
+   ここを `block` / `contents` にすると `flex:1` が黙って死んで**吹き出しが内容幅まで縮む**。
+   ⚠ `align-items: flex-start` のほうは子 1 枚に対して実質 no-op だが、対で残してある。
+   （`gap` だけは列間隔が `.icon` の margin-right へ移ったので削除した。）
+   再修正トリガー: この箱の display を変えるなら、`.bubble` の `flex:1; min-width:0` を
+   `width:100%` 等へ同時に置き換えること（(10-n) の宣言インベントリが両方の変更を検出する）。 */
 .row {
+  grid-column: 2;
+  grid-row: 2;
   display: flex;
   align-items: flex-start;
-  gap: var(--icon-gap);
 }
 
 /* デフォルトのグレー丸プレースホルダ（外部画像を使わず CSS のみ・枠線は付けない）。
    034f: 実アイコン取得後は、この枠に background-image をインライン指定するか <img> を内側に足すだけで済む
    （サイズ/位置＝枠は確保済み）。background-size/position は差替後にそのまま効くよう先に指定しておく。 */
 .icon {
+  /* ⚠⚠ 060f 追修正(2026-08-08): グリッドの**1 列目・2 行目**（名前行ではなく吹き出しの行）。
+     行 1 から span させると**アイコン上端が名前行に揃ってしまい既定意匠が動く**ので、行 2 に置くこと。 */
+  grid-column: 1;
+  grid-row: 2;
+  /* ⚠⚠ 列の間隔をここに載せるのが要点——`.item` の `column-gap` に載せると
+     **アイコンが display:none になっても隙間だけ残る**（グリッドの gap は空トラックでも消えない）。
+     margin ならアイコンと一緒に消えるので、名前行も吹き出しも左端まで詰まる。
+     ⚠⚠⚠ **この宣言は chat 専用のつもりだが、`.icon` は課金カードのヘッダ帯とも共有している**
+     （`CommentList.tsx` の `renderIcon` が両分岐で同じクラスを当てる）。`--icon-gap` は `.item`＝
+     `<li>` で宣言していて継承で `.cardHeader` の中まで届くので、**打ち消さないと課金カードの
+     アバターと名前の間隔が 8px（.cardHeader の gap）→ 36px に広がる**。下の `.card .icon` が正。 */
+  margin-right: var(--icon-gap);
   flex-shrink: 0;
   width: var(--icon-size);
   height: var(--icon-size);
@@ -140,6 +186,22 @@
   justify-content: center;
 }
 
+/* ⚠⚠ 060f 追修正（レビュー指摘 Q-1・2026-08-08）: **課金カードのアイコンには列の間隔を載せない。**
+   上の `.icon { margin-right: var(--icon-gap) }` は「chat のグリッド 1 列目とのすき間」を意図した宣言だが、
+   `.icon` は `.cardHeader` の中のアバターにも当たる（要素を 1 つに共有しているのは 036a のガード
+   ——`avatarDataUri` を通した data URI のときだけ background-image——を 2 実装へ分裂させないため）。
+   `--icon-gap: 28px` は `<li>`（`.item`）で宣言されており**継承でカードの中まで届く**ので、
+   打ち消さないとアバターと名前の間隔が `.cardHeader` の gap:8px ＋ 28px ＝ **36px** になる。
+   ⚠ 課金カード側は `--sd-icon-gap` のリセット（`overlayThemeReset.ts` は chat 限定）も掛からないので、
+   テーマ適用中も 28px のまま残る＝**テーマの有無に関係なく崩れる**。
+   ⚠ `.card .icon`（0,2,0）は `.icon`（0,1,0）より詳細度が高いので、**ソース順に依存せず勝つ**
+   （上の `.card { gap:0; padding:0 }` の打ち消しとは違い、並べ替えても壊れない）。
+   再修正トリガー: chat と課金でアイコンの意匠自体を分けることになったら、共有をやめて
+   `.icon` / `.cardIcon` に割り、この打ち消しごと消すこと。 */
+.card .icon {
+  margin-right: 0;
+}
+
 /* 036a: avatar（data URI）が無いときのフォールバック頭文字。グレー丸の上に名前の先頭 1 文字を出す。
    色は既存トークン（名前と同じ暗色）を再利用し、生 hex は残さない。 */
 .iconFallback {
@@ -151,6 +213,21 @@
 }
 
 /* 吹き出し：ほぼ純白の不透明カード＋太めの枠＋ソフト影。position:relative は下のしっぽ（::before/::after）の基準。
+   ⚠⚠ 060f: **この .bubble と下の .text は、chat では同じ 1 枚の `<p>` に併記して当てている**
+   （`CommentList.tsx` の `renderOverlayItem`）。中間の `<div class="bubble">` を廃したのは、YouTube 側に
+   `.sd-comment-body` に相当する要素が無く、器が 2 段あると取り込んだテーマの吹き出しが
+   **StreamDock の吹き出しの内側にもう 1 個描かれる**ため。
+   ⚠ **2 つの規則を 1 つに統合しなかったのは意図**——重複プロパティが 1 つも無いことを実測したうえで
+   併記にすれば、`.bubble` / `.text` の宣言を 1 つも触らずに済む（(10-e) の SD_VAR_DECLS も現行のまま緑）。
+   ⚠⚠ **ただし「このファイルの非コメント差分ゼロ」はもう成立しない**（レビュー指摘 Q-4 で訂正・
+   2026-08-08）。060f 追修正①のグリッド化（`.item` / `.header` / `.row` / `.icon` / `.card`）で
+   手放しており、`git diff` で「宣言を 1 つも触っていない」と示せるのは**この 2 規則の範囲だけ**である。
+   ⚠ 失った担保の代替は **(10-n)（レイアウト器の宣言インベントリ）** と、
+   **実機の A/B スクショ（chat と課金カードの両方）**。詳細は progress.md 060f 節「失われた担保」。
+   ⚠ 統合したくなったら、先に (10-e) の 5 エントリ（.bubble ×3 ／ .bubble::before ／ .bubble::after ／
+   .text の color）と、下の「::before / ::after が束ね＋単独の 2 ルールに分かれている」構造を
+   一緒に更新すること（check-css-guards.mjs の ruleBodies がそこに依存している）。
+   ⚠ 課金カードは触っていない（.cardBody はヘッダ帯＋ボディの 2 段構造に必要なので div のまま）。
    060a: --sd-comment-bg（塗り）/ --sd-comment-border（枠）/ --sd-comment-radius（角丸）で上書きできる。
    ⚠ **塗りと枠を変数にしないと、しっぽ（::before/::after）だけ元の色で取り残される**——ユーザーが
    `.sd-comment-body { background: … }` とクラスで書いても擬似要素には当たらないため。この 2 つは
@@ -158,60 +235,103 @@
    ⚠ --sd-comment-bg は **chat の吹き出しにだけ**当てる。投げ銭カードの背景（--tone-bg / --tone-body）へも
    当てると**ティア 13 色が 1 変数で同色に潰れて金額の情報が消える**（043c/047b の情報設計）。
    ティアごとに変えたいユーザーは `.sd-comment[data-sd-tone="t6"] .sd-comment-body { … }` で狙える。 */
-.bubble {
-  position: relative;
-  flex: 1;
-  min-width: 0;
-  background: var(--sd-comment-bg, var(--overlay-bubble-bg));
-  border: 2.5px solid var(--sd-comment-border, var(--overlay-bubble-border));
-  border-radius: var(--sd-comment-radius, 14px);
-  padding: 8px 12px;
-  filter: drop-shadow(0 1px 3px var(--overlay-bubble-shadow));
-}
 
-/* 吹き出しのしっぽ（左辺の上寄り→アイコン方向）。吹き出しが不透明（ほぼ純白）なので、しっぽも同じ不透明色で本体に
-   少しだけ重ねて描くと継ぎ目なく一体化する（半透過時に出ていた「吹き出しの下にしっぽが透ける」問題を解消）。
-   枠付きに見せるため border 三角を 2 枚重ねる（外＝枠色 ::before・大きめ／内＝塗り色 ::after・枠ぶん内側へ寄せて
-   本体に +2px 重ね継ぎ目を隠す）。長さ（≒20px）・位置は tauri dev で微調整する前提の初期値。 */
-.bubble::before,
-.bubble::after {
-  content: "";
-  position: absolute;
-  width: 0;
-  height: 0;
-  border-style: solid;
-  border-color: transparent;
-  border-left-width: 0;
-}
+/* ⚠⚠ 060f 追修正②(2026-08-08): **`.bubble` 一式（本体＋しっぽ 3 ルール）を `@layer sd-default` に入れてある。
+   宣言は 1 つも変えていない。囲んだだけ。**
 
-/* 外側＝枠色の三角（やや大きく頂点が最も左）。
-   060a: 枠色は .bubble の border と**同じ変数**を読む（片方だけ変わるとしっぽの縁が浮く）。 */
-.bubble::before {
-  top: 12px;
-  left: -20px;
-  border-top-width: 12px;
-  border-bottom-width: 12px;
-  border-right-width: 20px;
-  border-right-color: var(--sd-comment-border, var(--overlay-bubble-border));
-}
+   理由＝ **取り込んだテーマが「StreamDock の吹き出しを部分的にしか上書きできない床」になっていた**。
+   テーマが明示的に書かなかったプロパティ（枠・角丸・影・内側の余白）は既定のまま残るので、
+   どのテーマも「StreamDock の吹き出し ＋ テーマの一部」というハイブリッドに見えていた（実機で確認）。
+   ＝ **吹き出しを持たないデザインが原理的に適用できない**（2026-08-08 本人指摘「絶対に吹き出しがあるのは UX 的にダメ」）。
 
-/* 内側＝塗り色の三角（枠ぶん内側・本体へ +2px 重ねて join を隠す。上下は外側より 2px 小さく枠を覗かせる）。
-   060a: 塗り色は .bubble の background と**同じ変数**を読む（片方だけ変わるとしっぽだけ元の色で残る）。
-   ⚠ しっぽの位置・大きさは --sd-comment-radius に**追随しない**（角丸を大きくすると継ぎ目がずれる）。
-   これは既知の制限で、変数を増やしてまで追随させるだけの需要が現時点で無いため据え置く。
-   再修正トリガー: 角丸を大きくしたテーマで実機の見た目が破綻したら、しっぽの位置も変数化する。 */
-.bubble::after {
-  top: 14px;
-  left: -16px;
-  border-top-width: 10px;
-  border-bottom-width: 10px;
-  border-right-width: 18px;
-  border-right-color: var(--sd-comment-bg, var(--overlay-bubble-bg));
+   → 注入時に `overlayThemeReset.ts` の**リセットを前置**して、この装飾を引っ込める。
+   そのリセットは「①既定 `(0,1,0)` に勝つ ②テーマにはどんな書き方でも負ける」を両立する必要があり、
+   **詳細度だけでは不可能**（`!important` を使うとテーマに勝ってしまう）。
+   **非レイヤー > レイヤー**というカスケードの順序でこれを解いているので、
+   ⚠ **この `@layer` を外すとリセットが既定に負けて、テーマが土台を越えられない状態に戻る。**
+
+   ⚠ **囲む範囲を `.bubble` 一式に限っているのは意図。** リセットが上書きしたいのは
+   `background` / `border` / `border-radius` / `filter` としっぽの疑似要素**だけ**で、
+   `.item` / `.header` / `.row` / `.icon` / `.text` / `.card*` は触らない＝レイヤーに入れる必要が無い。
+   ファイル全体を囲むと差分が全行に散り、`git diff` で「意匠を動かしていない」ことを示せなくなる。
+
+   ⚠ **レイヤー化で既定意匠が動かない根拠**（レイヤーへ落とすと非レイヤー側が相対的に強くなるので確認が要る）:
+   chat の `<p>` に当たる非レイヤー規則は `*{box-sizing}`・`h1..h4,p{margin:0}`（styles/theme.css）と
+   同ファイルの `.text` の 3 つだけで、**`.bubble` の宣言と重なるプロパティが 1 つも無い**（実コードで確認済み）。
+
+   ⚠ **テーマ未適用のときはリセットを注入しない**ので、レイヤーの中身がそのまま効く＝**意匠は 1px も動かない**。
+   ⚠ (10-e) はこの中のフォールバック値を厳密一致で見ているが、`^\s*<selector>\s*\{` の `gm` なので
+   インデントされても拾える（実測で確認済み）。 */
+@layer sd-default {
+  .bubble {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+    background: var(--sd-comment-bg, var(--overlay-bubble-bg));
+    border: 2.5px solid var(--sd-comment-border, var(--overlay-bubble-border));
+    border-radius: var(--sd-comment-radius, 14px);
+    padding: 8px 12px;
+    filter: drop-shadow(0 1px 3px var(--overlay-bubble-shadow));
+  }
+
+  /* 吹き出しのしっぽ（左辺の上寄り→アイコン方向）。吹き出しが不透明（ほぼ純白）なので、しっぽも同じ不透明色で本体に
+     少しだけ重ねて描くと継ぎ目なく一体化する（半透過時に出ていた「吹き出しの下にしっぽが透ける」問題を解消）。
+     枠付きに見せるため border 三角を 2 枚重ねる（外＝枠色 ::before・大きめ／内＝塗り色 ::after・枠ぶん内側へ寄せて
+     本体に +2px 重ね継ぎ目を隠す）。長さ（≒20px）・位置は tauri dev で微調整する前提の初期値。
+     ⚠ この突き出し 20px が `.item` の `--icon-gap: 28px` の内訳（20px ＋ 素のすき間 8px）。
+     テーマ適用中は StreamDock のしっぽを描かないので、リセットが 8px へ戻す（`overlayThemeReset.ts`）。
+
+     ⚠⚠ 060f 追修正(2026-08-08): **この 3 ルールが `@layer sd-default`（上）に入っているのが要点。**
+     理由＝ **取り込んだテーマは、しっぽを `::before` 1 枚でしか描かないのが普通**だから。
+     テーマの `#message::before` は `.sd-comment-text.sd-comment-in-chat::before` へ変換されて
+     下の `::before` を置き換えるが、**`::after`（内側の塗り三角）は誰も上書きしない**＝孤児として残り、
+     テーマのしっぽの上に**既定の白い三角が +2px ずれて重なる**（実機で確認）。
+     → 注入時のリセット（`:where(.sd-comment-body)::before/::after{content:none}`）が 2 枚とも止める。
+     ⚠ **レイヤーを外すとリセットが既定に負けて、しっぽの二重が再発する。** */
+  .bubble::before,
+  .bubble::after {
+    content: "";
+    position: absolute;
+    width: 0;
+    height: 0;
+    border-style: solid;
+    border-color: transparent;
+    border-left-width: 0;
+  }
+
+  /* 外側＝枠色の三角（やや大きく頂点が最も左）。
+     060a: 枠色は .bubble の border と**同じ変数**を読む（片方だけ変わるとしっぽの縁が浮く）。 */
+  .bubble::before {
+    top: 12px;
+    left: -20px;
+    border-top-width: 12px;
+    border-bottom-width: 12px;
+    border-right-width: 20px;
+    border-right-color: var(--sd-comment-border, var(--overlay-bubble-border));
+  }
+
+  /* 内側＝塗り色の三角（枠ぶん内側・本体へ +2px 重ねて join を隠す。上下は外側より 2px 小さく枠を覗かせる）。
+     060a: 塗り色は .bubble の background と**同じ変数**を読む（片方だけ変わるとしっぽだけ元の色で残る）。
+     ⚠ しっぽの位置・大きさは --sd-comment-radius に**追随しない**（角丸を大きくすると継ぎ目がずれる）。
+     これは既知の制限で、変数を増やしてまで追随させるだけの需要が現時点で無いため据え置く。
+     再修正トリガー: 角丸を大きくしたテーマで実機の見た目が破綻したら、しっぽの位置も変数化する。 */
+  .bubble::after {
+    top: 14px;
+    left: -16px;
+    border-top-width: 10px;
+    border-bottom-width: 10px;
+    border-right-width: 18px;
+    border-right-color: var(--sd-comment-bg, var(--overlay-bubble-bg));
+  }
 }
 
 /* 本文：名前より少し薄い黒。大きめ（OBS で読めるサイズ）。ほぼ純白の吹き出し上なので白縁取りは付けない。
    060a: --sd-comment-fg で上書きできる（下の .cardBody と**同じ変数**＝「本文の文字色」は chat / 課金で
-   1 つの役割。ユーザーは内部の分岐を知らないので、2 変数に割らない）。 */
+   1 つの役割。ユーザーは内部の分岐を知らないので、2 変数に割らない）。
+   ⚠ 060f: chat ではこの規則が**上の .bubble と同じ `<p>` に併記**される（詳細は .bubble のコメント）。
+   `margin: 0` は `<p>` の UA 既定 margin を打ち消すために**必須**——要素は 060f 以前から `<p>` なので
+   挙動は不変だが、器の div が無くなったぶん、ここを消すと行間ではなく**吹き出しの外側**が崩れる。
+   ⚠ 課金カードの本文は別要素のまま（.cardText）。 */
 .text {
   margin: 0;
   font-size: 19px;
@@ -242,6 +362,11 @@
      `.item.card { padding:0; gap:0 }` の複合セレクタへ変える。 */
   gap: 0;
   padding: 0;
+  /* ⚠⚠ 060f 追修正(2026-08-08): **必須**。`.item` を 2 列グリッド（アイコン｜本文）にしたので、
+     ここで 1 列に戻さないと**ヘッダ帯（.cardHeader）とボディ（.cardBody）が横 2 列に割れてカードが壊れる**。
+     ⚠ 課金カードにアイコン列は要らない（アイコンは .cardHeader の中に置いてある）。
+     ⚠ この打ち消しも上のコメントと同じ**ソース順依存**（.card が .item より後）である。 */
+  grid-template-columns: 1fr;
 }
 
 /* ヘッダ帯：アバター（既存 .icon 再利用）＋名前＋（サイト名ピル）＋金額バッジ。色付き不透明・文字はティアに応じ白/暗。 */

@@ -8,6 +8,7 @@ import {
   saveOverlayTheme,
 } from "../../features/comment-viewer/overlaySettings";
 import { rewriteSelectors } from "../../features/comment-viewer/cssCompat";
+import { withDecorationReset } from "../../features/comment-viewer/overlayThemeReset";
 import {
   PREVIEW_SCOPE_CLASS,
   PREVIEW_SCOPE_SELECTOR,
@@ -490,8 +491,16 @@ export function OverlayThemeCard({
       .then((css) => {
         if (cancelled) return;
         // 注入と同じ変換を通してから、プレビューのラッパ配下へ閉じ込める。
+        // ⚠⚠ 060f 追修正(2026-08-08): 既定意匠のリセット（`withDecorationReset`）を**スコープ化の前**に
+        //   前置する。順序が要点——後に連結すると**リセットだけが `.sd-preview` の外へ漏れて**
+        //   コメビュ窓全体に効いてしまう。前に置けば `scopeSelectors` がこれも配下へ閉じ込める。
+        // ⚠ 配信窓（`OverlayApp`）と**両方**通すこと。片方だけだとプレビューと本番で見え方が食い違い、
+        //   しかも jsdom はカスケードを解決しないのでテストでは気付けない（静的ガード (10-m) が固定）。
         setPreviewCss(
-          scopeSelectors(rewriteSelectors(css).css, PREVIEW_SCOPE_SELECTOR),
+          scopeSelectors(
+            withDecorationReset(rewriteSelectors(css).css),
+            PREVIEW_SCOPE_SELECTOR,
+          ),
         );
       })
       .catch(() => {
@@ -601,8 +610,40 @@ export function OverlayThemeCard({
             既定のデザインに戻す
           </button>
         </div>
+        {/* ⚠⚠ 060f 追修正②(2026-08-08): **「テーマを選ぶと既定の装飾が引っ込む」ことを説明する唯一の場所。**
+            リセット（`overlayThemeReset.ts`）が吹き出しの背景・枠・角丸・影・しっぽを止めるので、
+            色だけ変えるデザインを入れた人には**何も知らないと「取り込んだら壊れた」としか見えない**。
+            ⚠ 「吹き出しが無いデザインも当てられる」ことの告知でもある（本人要望・2026-08-08）。
+            ⚠⚠ **並び順は意図（レビュー指摘 Q-6・2026-08-08）**——この 1 本を脱出路の案内より**前**に置く。
+            ユーザーが頼んでいない挙動変更を告げるのがこれで、脱出路の案内は「何が起きるか」を
+            知った後でなければ意味を持たないため。 */}
+        <span className={styles.note}>
+          デザインを選ぶと、StreamDock
+          標準の吹き出し（背景・枠・しっぽ）は使われません。選んだデザインの指定だけが反映されるので、背景を指定していないデザインでは文字がそのまま映像の上に出ます。
+        </span>
+        {/* ⚠⚠ 060f 追修正④(2026-08-08・本人決定): **「スパチャは変わらない」ことを説明する唯一の場所。**
+            配布テーマの多くは「スーパーチャット非表示」を含んでおり（純正チャットはティッカーにも出るため）、
+            以前はそれが StreamDock の課金カードにも効いて**カードが丸ごと消えていた**。
+            課金カードをユーザー CSS の的から外して直したが、⚠ **黙って直すと今度は
+            「デザインを変えたのにスパチャだけ変わらない＝効いていない」と誤解される**ので明示する。 */}
+        <span className={styles.note}>
+          スーパーチャットなどの課金コメントは、デザインを選んでも
+          StreamDock 標準の見た目のまま表示されます（取り込んだデザインの影響を受けません）。
+        </span>
         <span className={styles.note}>
           コメントが表示されなくなったときは「既定のデザインに戻す」で元に戻せます。
+        </span>
+        {/* ⚠ 060f 追修正③(2026-08-08): アイコンとのすき間はテーマ適用中 8px に詰めている
+            （既定の 28px の内訳＝しっぽの突き出し 20px ＋ 素のすき間 8px のうち、描かなくなる 20px を返す）。
+            しっぽが 8px より長いデザインではアイコンに重なるので、逃げ道をここに書いておく。
+            ⚠ この 1 文が無いと、ユーザーは「重なる」を直す手段（`--sd-icon-gap`）に到達できない。
+            ⚠ レビュー指摘 Q-7(2026-08-08): **`<code>` は使わない**——このアプリで `code` にスタイルが
+            当たるのは `UpdateScreen.module.css` の `.notesBody code` だけ（別スコープ）なので、ここでは
+            UA 既定の等幅フォントが素で出て周囲の `.note` と書体もサイズも食い違う。素の文字列＋「」に揃える
+            （このファイルの他の注記・プレースホルダと同じ作法）。 */}
+        <span className={styles.note}>
+          しっぽ付きのデザインでアイコンと重なるときは、CSS
+          に「.sd-comment {"{"} --sd-icon-gap: 28px; {"}"}」を足すと間隔を広げられます。
         </span>
 
         {/* 034e の「フォント」「サイト名」と同じく、同一 localStorage 経由でオーバーレイ窓へ伝わる。

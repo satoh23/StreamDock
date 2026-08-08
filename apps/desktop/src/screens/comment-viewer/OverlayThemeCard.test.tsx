@@ -11,6 +11,11 @@ import type { OverlayThemeImportResult } from "../../features/comment-viewer/ove
 import type { OverlayThemeRecord } from "../../features/comment-viewer/bindings/OverlayThemeRecord";
 import { OVERLAY_THEME_KEY } from "../../features/comment-viewer/overlaySettings";
 import { OverlayThemeCard } from "./OverlayThemeCard";
+import {
+  PREVIEW_SCOPE_SELECTOR as PREVIEW_SCOPE,
+} from "../../features/comment-viewer/cssScope";
+import { DEFAULT_DECORATION_RESET } from "../../features/comment-viewer/overlayThemeReset";
+import { scopeSelectors } from "../../features/comment-viewer/cssScope";
 
 /**
  * 060d: 設定ビューの「コメントのデザイン」カードの仕様テスト。
@@ -123,6 +128,23 @@ async function renderLoaded() {
   await screen.findByRole("radio", { name: "ふきだし" });
   return view;
 }
+
+
+/**
+ * 060f 追修正(2026-08-08): プレビューに注入された CSS から**既定意匠のリセットを剥がして**返す。
+ *
+ * ⚠⚠ プレビューではリセットも `scopeSelectors` を通る（＝`.sd-preview` 配下へ閉じ込められる）。
+ * **連結はスコープ化の前**でなければならず、後に連結すると**リセットだけが枠の外へ漏れて**
+ * コメビュ窓全体の吹き出し装飾を止めてしまう。ここでその順序を表明している。
+ * ⚠ 「配信窓とプレビューの 2 か所とも通っていること」は静的ガード **(10-m)** が固定している。
+ */
+const SCOPED_RESET = scopeSelectors(DEFAULT_DECORATION_RESET, PREVIEW_SCOPE);
+
+const previewThemeCss = (style: Element): string => {
+  const text = style.textContent ?? "";
+  expect(text.startsWith(SCOPED_RESET)).toBe(true);
+  return text.slice(SCOPED_RESET.length);
+};
 
 describe("一覧と選択", () => {
   it("「既定」＋取り込み済みテーマがラジオで並ぶ", async () => {
@@ -460,7 +482,7 @@ describe("プレビュー", () => {
       const style = document.head.querySelector("style[data-sd-preview-theme]");
       expect(style).not.toBeNull();
       // ⚠ 窓全体へ漏れない＝すべてのセレクタが .sd-preview 配下に閉じている。
-      expect(style!.textContent).toBe(
+      expect(previewThemeCss(style!)).toBe(
         ".sd-preview{--txtcolor:#555}.sd-preview .sd-comment{color:red}",
       );
     });
@@ -547,7 +569,7 @@ describe("プレビュー", () => {
       await waitFor(() => {
         const style = document.head.querySelector("style[data-sd-preview-theme]");
         expect(style).not.toBeNull();
-        expect(style!.textContent).toBe(expected);
+        expect(previewThemeCss(style!)).toBe(expected);
       });
 
       // ⚠⚠ 脱出路は覆われる以前に**存在して押せる**こと（覆われないことは実機確認 10-(b)）。
@@ -670,7 +692,7 @@ describe("⚠⚠ プレビューの <style> ライフサイクル（特権窓に
       fireEvent.click(screen.getByRole("radio", { name }));
       await waitFor(() => {
         expect(styles()).toHaveLength(1);
-        expect(styles()[0].textContent).toBe(
+        expect(previewThemeCss(styles()[0])).toBe(
           `.sd-preview ${cssById[id].slice(0, cssById[id].indexOf("{"))}${cssById[
             id
           ].slice(cssById[id].indexOf("{"))}`,
@@ -726,7 +748,7 @@ describe("⚠⚠ プレビューの <style> ライフサイクル（特権窓に
 
     await waitFor(() => expect(styles()).toHaveLength(1));
     const style = styles()[0];
-    expect(style.textContent).toBe(
+    expect(previewThemeCss(style)).toBe(
       '.sd-preview .sd-comment::after{content:"</style><img src=x>"}',
     );
     // 逃げ出した要素が 1 つも生まれていないこと。

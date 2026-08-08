@@ -5,6 +5,7 @@ import {
   saveOverlayTheme,
 } from "../../features/comment-viewer/overlaySettings";
 import { OverlayApp } from "./OverlayApp";
+import { DEFAULT_DECORATION_RESET } from "../../features/comment-viewer/overlayThemeReset";
 
 /**
  * 060d: OBS 用オーバーレイ（`comment-overlay`）へのカスタム CSS 注入の仕様テスト。
@@ -44,6 +45,21 @@ const THEME_B = "9c858901-8a57-4791-81fe-4c455b099bc9";
 const themeStyles = (): HTMLStyleElement[] =>
   Array.from(document.head.querySelectorAll("style[data-sd-overlay-theme]"));
 
+/**
+ * 060f 追修正(2026-08-08): 注入された CSS から**既定意匠のリセットを剥がして**テーマ由来のぶんを返す。
+ *
+ * ⚠⚠ **剥がす前に「リセットが先頭に在ること」を表明している**のが要点。順序がこの仕組みの全部で、
+ * リセットが**後ろ**に付くとテーマのしっぽを消してしまう（逆にリセットが無いと既定の `::after` が
+ * 孤児として残り、しっぽが二重に見える＝実機で出た崩れ）。
+ * ⚠ 「2 か所とも通っていること」自体は静的ガード **(10-m)** が固定している（jsdom はカスケードも
+ * `@layer` の優先順位も解決しないので、ここでは順序しか見られない）。
+ */
+const themeCssOf = (style: Element): string => {
+  const text = style.textContent ?? "";
+  expect(text.startsWith(DEFAULT_DECORATION_RESET)).toBe(true);
+  return text.slice(DEFAULT_DECORATION_RESET.length);
+};
+
 /** 他窓（設定窓）での localStorage 書換を再現する（自窓の書換では storage は発火しないため手で撃つ）。 */
 function emitStorage(key: string | null): void {
   act(() => {
@@ -79,7 +95,7 @@ describe("OverlayApp: テーマ CSS の注入", () => {
     render(<OverlayApp />);
     await waitFor(() => expect(themeStyles()).toHaveLength(1));
     expect(mocks.getOverlayThemeCss).toHaveBeenCalledWith(THEME_A);
-    expect(themeStyles()[0].textContent).toBe(".sd-comment{color:red}");
+    expect(themeCssOf(themeStyles()[0])).toBe(".sd-comment{color:red}");
   });
 
   it("注入前に rewriteSelectors を通す（純正チャットのセレクタが sd 語彙になる）", async () => {
@@ -89,7 +105,9 @@ describe("OverlayApp: テーマ CSS の注入", () => {
     saveOverlayTheme(THEME_A);
     render(<OverlayApp />);
     await waitFor(() => expect(themeStyles()).toHaveLength(1));
-    expect(themeStyles()[0].textContent).toBe(".sd-comment{color:red}");
+    // ⚠ 060f: 純正チャットの「テキストコメント専用」セレクタは **chat 専用クラス**へ向く
+    // （`.sd-comment` は chat と課金の両方に付くため、そこへ向けると課金カードの意匠が壊れる）。
+    expect(themeCssOf(themeStyles()[0])).toBe(".sd-comment-chat{color:red}");
   });
 
   // ⚠⚠ **既知の限界（実測 2026-08-05）**: このテストは `innerHTML` への退行を**殺せない**。
@@ -111,7 +129,7 @@ describe("OverlayApp: テーマ CSS の注入", () => {
     await waitFor(() => expect(themeStyles()).toHaveLength(1));
     const style = themeStyles()[0];
     // textContent なら CSS が 1 文字も欠けずそのまま入る（innerHTML だと途中で切れる）。
-    expect(style.textContent).toBe(css);
+    expect(themeCssOf(style)).toBe(css);
     // 生 HTML として解釈されていない＝要素の子も、逃げ出した <img> も無い。
     expect(style.childElementCount).toBe(0);
     expect(document.querySelector("img")).toBeNull();
@@ -134,7 +152,7 @@ describe("OverlayApp: テーマ CSS の注入", () => {
       emitStorage(OVERLAY_THEME_KEY);
       await waitFor(() => {
         expect(themeStyles()).toHaveLength(1);
-        expect(themeStyles()[0].textContent).toBe(css);
+        expect(themeCssOf(themeStyles()[0])).toBe(css);
       });
     }
   });
@@ -192,7 +210,7 @@ describe("OverlayApp: テーマ CSS の注入", () => {
     saveOverlayTheme(THEME_A);
     render(<OverlayApp />);
     await waitFor(() => expect(themeStyles()).toHaveLength(1));
-    expect(themeStyles()[0].textContent).toBe(".sd-comment{display:none}");
+    expect(themeCssOf(themeStyles()[0])).toBe(".sd-comment{display:none}");
 
     // 設定窓の「既定のデザインに戻す」＝ キーごと削除して他窓へ storage を飛ばす。
     saveOverlayTheme(null);

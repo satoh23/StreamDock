@@ -5,6 +5,14 @@ import type { RecordResult } from "../../features/viewer-memory/types";
 import { CommentList } from "./CommentList";
 // 047b: ティア配色が実際に当たっているかを、CSS Modules のハッシュ名に依存せず検証するために引く。
 import { TONE_CLASS } from "./monetaryTone";
+/**
+ * 060f: 意匠クラスの**同一性**で表明するために引く（部分文字列一致では不十分だったため）。
+ * ⚠ 実測: 部分文字列で `expect(className).toContain("text")` と書くと、同じ要素に併記された
+ * **安定クラス `sd-comment-text` に一致してしまい**、意匠クラス（`overlayStyles.text`）を
+ * 落とす変異が**生存する**。CSS Modules は vitest 上で `_<key>_<hash>` を返すので、
+ * ここから引いた文字列と `classList.contains()` で突き合わせればハッシュ名に依存せず正確に見られる。
+ */
+import overlayStyles from "./OverlayComment.module.css";
 
 /**
  * 038b フォローアップ: 流れるコメントをクリック→視聴者詳細を開くための onSelect の仕様テスト。
@@ -958,6 +966,294 @@ describe("CommentList 060a オーバーレイのセレクタ契約", () => {
     expect(sd(container, "sd-comment-event")).toBeNull();
   });
 
+  /**
+   * ⚠⚠⚠ **060f 追修正④(2026-08-08・本人決定) の中核テスト。**
+   *
+   * **課金カード（投げ銭カード）にはユーザー CSS の的を 1 つも置かない**——安定クラスも `data-sd-*` も。
+   *
+   * 060f は 3 巡ぶん「chat 専用クラスへ向ける／目印クラスで限定する」方向で解こうとして失敗した。
+   * 理由は、OBS 用に配られている純正チャットのテーマが**課金カードを名指しで消しにくる**から:
+   *   `yt-live-chat-paid-message-renderer, yt-live-chat-paid-sticker-renderer { display:none !important }`
+   *   `.yt-live-chat-membership-item-renderer { display:none !important }`
+   * 純正チャットではスパチャが**ティッカーにも出る**ので「二重に出るからインライン側を消す」意図だが、
+   * StreamDock にティッカーは無いので**意図が成立せず、課金カードが丸ごと消える**（2026-08-08 実機）。
+   * ＝ **目印を足す方向では原理的に防げない**ので、的そのものを外した。
+   *
+   * ⚠ 意匠は CSS モジュールのハッシュ名（`.card` / `.tierN`）で当てる——あれはユーザーから
+   * 名指しできないので的にならない（下の「併記」テストが意匠クラスの実在を固定している）。
+   * ⚠ 対になる検査＝ 静的ガード **(10-o)**（字面）と `CommentList.selectorContract.test.tsx`
+   * （変換表・リセットのどの当て先も課金カードに当たらないこと）。**3 つとも消さないこと。**
+   */
+  it("⚠⚠⚠ 課金カードには安定クラスも data-sd-* も 1 つも付かない（060f 追修正④）", () => {
+    const { container } = render(
+      <CommentList
+        variant="overlay"
+        showSource
+        comments={[
+          makeComment({ id: "c1", eventType: "chat", text: "hi" }),
+          makeComment({
+            id: "s1",
+            eventType: "superchat",
+            text: "sc",
+            monetaryAmount: "1,000 JPY",
+            monetary: { amount: 1000, currency: "JPY" },
+          }),
+          makeComment({ id: "sub1", eventType: "subscription", text: "" }),
+        ]}
+      />,
+    );
+    const items = [...container.querySelectorAll<HTMLElement>("ol > li")];
+    expect(items).toHaveLength(3);
+    const [chat, ...tips] = items;
+
+    // chat 側は従来どおり的を持つ。
+    expect(chat.classList.contains("sd-comment")).toBe(true);
+    expect(chat.classList.contains("sd-comment-chat")).toBe(true);
+
+    // ⚠ 課金カードは `<li>` も配下も、`sd-comment` 接頭辞のクラスと `data-sd-*` を 1 つも持たない。
+    for (const tip of tips) {
+      for (const el of [tip, ...tip.querySelectorAll<HTMLElement>("*")]) {
+        const stable = [...el.classList].filter((c) =>
+          c.startsWith("sd-comment"),
+        );
+        expect({ el: el.tagName, stable }).toEqual({
+          el: el.tagName,
+          stable: [],
+        });
+        expect(Object.keys(el.dataset)).toEqual([]);
+      }
+    }
+    // 一覧全体でも、安定クラスを持つのは chat の 1 件だけ。
+    expect(container.querySelectorAll(".sd-comment").length).toBe(1);
+    expect(container.querySelectorAll(".sd-comment-chat").length).toBe(1);
+    // 廃止した課金側の語彙が復活していないこと。
+    expect(container.querySelectorAll(".sd-comment-tip").length).toBe(0);
+    expect(container.querySelectorAll(".sd-comment-in-tip").length).toBe(0);
+  });
+
+  /**
+   * 060f ②: ⚠⚠ **chat の吹き出しは `<p>` 1 枚**（`li > div.row > p.sd-comment-body.sd-comment-text`）。
+   *
+   * YouTube 側に `.sd-comment-body` に相当する要素が無く、取り込んだ CSS は `#message`
+   * （→ `.sd-comment-text`）に吹き出しと `:before` / `:after` のしっぽを描く。器が 2 段あると
+   * **StreamDock の吹き出しの内側にもう 1 個吹き出しが描かれる**（「論外」の 2 つ目）。
+   * ＝ **`sd-comment-body` と `sd-comment-text` が同一要素であること**が、二重を防ぐ条件そのもの。
+   * ⚠ `sd-comment-body` を消す（`sd-comment-text` だけにする）変異もここで落ちる——契約
+   * 「chat と課金で同じ役割には同じ安定クラス」を保つため、消さずに `<p>` へ残す判断である。
+   */
+  it("chat の吹き出しは p 1 枚で、sd-comment-body と sd-comment-text が同一要素", () => {
+    const { container } = render(
+      <CommentList
+        variant="overlay"
+        comments={[makeComment({ eventType: "chat", text: "こんにちは" })]}
+      />,
+    );
+    const body = sd(container, "sd-comment-body");
+    const text = sd(container, "sd-comment-text");
+    expect(body).not.toBeNull();
+    // ⚠ 同一性（`toBe`）で見る。別要素なら中間の器が残っている＝吹き出しが二重になる。
+    expect(body).toBe(text);
+    expect(body?.tagName).toBe("P");
+    // 親は `.sd-comment-row`（アイコン＋吹き出しの行）で、間に器が挟まっていない。
+    expect(body?.parentElement?.classList.contains("sd-comment-row")).toBe(true);
+  });
+
+  /**
+   * 060f: ⚠ **課金カードの DOM 構造は触っていない**（`cardBody` はヘッダ帯＋ボディの 2 段構造に必要）。
+   * ⚠ 060f 追修正④で課金カードから安定クラスが消えたので、**表明は CSS モジュールのクラスで行う**
+   * （安定クラスで書くと「的が残っている」ことになってしまう＝ (10-o) と矛盾する）。
+   */
+  it("課金カードは従来どおりヘッダ帯＋ボディの 2 段（意匠クラスで表明）", () => {
+    const { container } = render(
+      <CommentList
+        variant="overlay"
+        comments={[
+          makeComment({
+            eventType: "superchat",
+            text: "応援してます",
+            monetaryAmount: "1,000 JPY",
+            monetary: { amount: 1000, currency: "JPY" },
+          }),
+        ]}
+      />,
+    );
+    const header = container.querySelector<HTMLElement>(
+      `.${overlayStyles.cardHeader}`,
+    );
+    const body = container.querySelector<HTMLElement>(
+      `.${overlayStyles.cardBody}`,
+    );
+    const text = container.querySelector<HTMLElement>(
+      `.${overlayStyles.cardText}`,
+    );
+    expect(header?.tagName).toBe("DIV");
+    expect(body?.tagName).toBe("DIV");
+    expect(text?.tagName).toBe("P");
+    // chat のように 1 枚へ畳んでいない（カードは器が 2 段のまま）。
+    expect(body).not.toBe(text);
+    expect(text?.parentElement).toBe(body);
+    expect(text?.textContent).toBe("応援してます");
+  });
+
+  /**
+   * 060f ③: 器の安定クラス（`sd-comment-header` / `sd-comment-row`）。
+   * ⚠ 060f 追修正④で**どちらも chat にしか付かない**（課金カードのヘッダ帯は的ではない）。
+   */
+  it("器の安定クラス（header / row）は chat にだけ付く", () => {
+    const { container } = render(
+      <CommentList
+        variant="overlay"
+        comments={[
+          makeComment({ id: "c1", eventType: "chat", text: "hi" }),
+          makeComment({
+            id: "s1",
+            eventType: "superchat",
+            text: "sc",
+            monetary: { amount: 1000, currency: "JPY" },
+          }),
+        ]}
+      />,
+    );
+    const [chat, tip] = [...container.querySelectorAll<HTMLElement>("ol > li")];
+    expect(chat.querySelector(".sd-comment-header")).not.toBeNull();
+    expect(chat.querySelector(".sd-comment-row")).not.toBeNull();
+    // ⚠ 課金カードのヘッダ帯は DOM としては在るが、安定クラスは持たない。
+    expect(
+      tip.querySelector(`.${overlayStyles.cardHeader}`),
+    ).not.toBeNull();
+    expect(tip.querySelector(".sd-comment-header")).toBeNull();
+    expect(tip.querySelector(".sd-comment-row")).toBeNull();
+  });
+
+  /**
+   * 060f ③: ⚠⚠ **`sd-comment-list` は `variant="overlay"` のときだけ。**
+   * この `<ol>` の CSS モジュールは `CommentViewerApp.module.css`＝**本体コメビュと共有**なので、
+   * 無条件に付けると 060a の不変条件「default には 1 つも付かない」を破る
+   * （下の "variant=default …" テストが `[class*="sd-comment"]` で拾って落ちる）。
+   */
+  it("sd-comment-list は overlay の <ol> にだけ付く", () => {
+    const { container } = render(
+      <CommentList
+        variant="overlay"
+        comments={[makeComment({ eventType: "chat", text: "hi" })]}
+      />,
+    );
+    const ol = container.querySelector("ol");
+    expect(ol?.classList.contains("sd-comment-list")).toBe(true);
+  });
+
+  /**
+   * 060f 追修正（security-review Q-1・2026-08-06）: ⚠⚠⚠ **目印クラスの契約は「例外を作らない」。**
+   *
+   * 「chat の `<li>` 自身は `sd-comment-chat`、その**中の要素はすべて** `sd-comment-in-chat`」
+   * ——これが変換表の `to` を「1 要素の複合セレクタ」に保つための土台で、崩すと `to` が子孫セレクタに
+   * 戻り、**合成時に二重前置されて永久に当たらないセレクタ**が生まれる
+   * （`rewritten` は加算され `unmatched` は空なので UI が誤報する）。
+   * ⚠ **「まだ変換表が使っていないから付けない」をしないこと**——将来その役割へ向けたエントリを
+   * 足した瞬間に、黙って当たらないセレクタになる。だからここで**全要素**を見る。
+   * ⚠ アイコンは chat / 課金で**同じ関数から作る**ので、目印が課金へ漏れる変異はここで落ちる。
+   * ⚠ 見るのは**安定クラスを持つ要素だけ**（契約に載っていない `iconFallback` は対象外＝下の注記）。
+   * ⚠ 060f 追修正④で対の `sd-comment-in-tip` は廃止（課金カードは的ではない＝上のテストが固定）。
+   */
+  it("chat の中の要素はすべて sd-comment-in-chat（<li> 自身は持たない）", () => {
+    const { container } = render(
+      <CommentList
+        variant="overlay"
+        comments={[
+          makeComment({ id: "c1", eventType: "chat", text: "hi" }),
+          makeComment({
+            id: "s1",
+            eventType: "superchat",
+            text: "sc",
+            monetaryAmount: "1,000 JPY",
+            monetary: { amount: 1000, currency: "JPY" },
+          }),
+        ]}
+      />,
+    );
+    const chat = container.querySelector<HTMLElement>(".sd-comment-chat")!;
+
+    // ⚠ `<li>` 自身は目印を持たない（持つのは `sd-comment-chat`）。
+    expect(chat.classList.contains("sd-comment-in-chat")).toBe(false);
+    // ⚠ 対象は「**安定クラスを持つ要素**」＝契約に載っている要素。`iconFallback`（アイコン内の
+    // 頭文字）のように 060a が意図的に**契約へ出していない**要素は目印も持たない（ユーザー CSS の
+    // 的ではないので、目印を付けると契約を黙って広げることになる）。
+    const inner = [
+      ...chat.querySelectorAll<HTMLElement>('[class*="sd-comment"]'),
+    ];
+    expect(inner.length).toBeGreaterThan(0);
+    for (const el of inner) {
+      expect(el.classList.contains("sd-comment-in-chat")).toBe(true);
+    }
+  });
+
+  /**
+   * 060f 追修正(2026-08-08): ⚠⚠ **アイコンは `<li>` の直下**（`.sd-comment-row` の中ではない）。
+   *
+   * 取り込んだテーマが `.sd-comment-icon{display:none}` でアイコンを消すと、
+   * **名前行だけ 72px のインデントが残る**崩れが実機で出た（`.header` が
+   * `margin-left: calc(--icon-size + --icon-gap)` をハードコードで持っており、
+   * アイコンが実際に描かれているかに追随しなかった）。
+   * ⚠ **CSS では「兄弟が display:none か」を検出できない**ので、インデントを**アイコンの実体**
+   * （`.item` のグリッド 1 列目）から作る形に変えた＝アイコンが消えれば列ごと畳まれる。
+   *
+   * ＝ **この DOM の形（アイコンが `<li>` 直下・グリッドの兄弟）がその仕組みの前提**。
+   * ⚠ アイコンを `.row` の中へ戻す変異はここで落ちる。戻すなら `.header` のインデントの作り方も
+   * 一緒に考え直すこと（progress.md 060f 節「実機確認の差し戻し」）。
+   * ⚠ jsdom はレイアウトを持たないので「実際に詰まるか」は見られない＝実機確認の担当。
+   */
+  it("chat のアイコンは <li> の直下（.sd-comment-row の中ではない）", () => {
+    const { container } = render(
+      <CommentList
+        variant="overlay"
+        comments={[makeComment({ eventType: "chat", text: "hi" })]}
+      />,
+    );
+    const li = container.querySelector<HTMLElement>(".sd-comment-chat");
+    const icon = sd(container, "sd-comment-icon");
+    const row = container.querySelector<HTMLElement>(".sd-comment-row");
+    expect(li).not.toBeNull();
+    expect(icon).not.toBeNull();
+    expect(row).not.toBeNull();
+    // アイコンの親は <li> そのもの（間に器が挟まっていない）。
+    expect(icon?.parentElement).toBe(li);
+    // ⚠ 行の中に残っているのは吹き出しだけ。
+    expect(row?.querySelector(".sd-comment-icon")).toBeNull();
+    expect(row?.children.length).toBe(1);
+    expect(row?.firstElementChild).toBe(sd(container, "sd-comment-body"));
+  });
+
+  /**
+   * 060f 追修正: 課金カードのアイコンは**従来どおり `.sd-comment-header`（ヘッダ帯）の中**。
+   * ⚠ 課金カードはグリッドの 1 列に戻してある（`.card { grid-template-columns: 1fr }`）ので、
+   * chat 側の列構成を持ち込まないこと。
+   */
+  it("課金カードのアイコンは従来どおりヘッダ帯の中にある", () => {
+    const { container } = render(
+      <CommentList
+        variant="overlay"
+        comments={[
+          makeComment({
+            eventType: "superchat",
+            text: "sc",
+            monetary: { amount: 1000, currency: "JPY" },
+          }),
+        ]}
+      />,
+    );
+    // ⚠ 060f 追修正④: 課金カード側は安定クラスを持たないので**意匠クラスで引く**。
+    const header = container.querySelector<HTMLElement>(
+      `.${overlayStyles.cardHeader}`,
+    );
+    const icon = container.querySelector<HTMLElement>(
+      `.${overlayStyles.icon}`,
+    );
+    expect(icon?.parentElement).toBe(header);
+    // ⚠ 036a のガードは 1 実装のまま＝課金側のアイコンも同じ関数から作られている
+    //   （`sd-comment-icon` が付いていないだけで、要素としては同じ形）。
+    expect(icon?.classList.contains("sd-comment-icon")).toBe(false);
+  });
+
   it("showSource=false ならサイト名バッジの安定クラスも出ない（DOM ごと無い）", () => {
     const { container } = render(
       <CommentList
@@ -968,7 +1264,12 @@ describe("CommentList 060a オーバーレイのセレクタ契約", () => {
     expect(sd(container, "sd-comment-source")).toBeNull();
   });
 
-  it("課金カードは chat と**同じ役割には同じ安定クラス**を使い、課金専用のクラスを足す", () => {
+  /**
+   * ⚠ 060f 追修正④: 課金カードは**意匠だけを持つ**（的は持たない）。
+   * 中身（名前・金額・本文）が従来どおり出ていることは意匠クラスで固定する
+   * ——ここが緑のまま「カードが空になる」退行を通さないため。
+   */
+  it("課金カードは意匠クラスだけを持ち、中身は従来どおり出る", () => {
     const { container } = render(
       <CommentList
         variant="overlay"
@@ -982,26 +1283,36 @@ describe("CommentList 060a オーバーレイのセレクタ契約", () => {
         ]}
       />,
     );
-    // 役割が同じものは chat と同名（ユーザーは内部の分岐を知らない）。
-    expect(sd(container, "sd-comment")).toBeTruthy();
-    expect(sd(container, "sd-comment-name")?.textContent).toBe("Alice");
-    expect(sd(container, "sd-comment-icon")).toBeTruthy();
-    expect(sd(container, "sd-comment-body")).toBeTruthy();
-    expect(sd(container, "sd-comment-text")?.textContent).toBe("応援してます");
-    // 課金専用。
-    expect(sd(container, "sd-comment-tip")).toBeTruthy();
-    expect(sd(container, "sd-comment-amount")?.textContent).toBe("10,000 JPY");
+    const q = (key: string) =>
+      container.querySelector<HTMLElement>(`.${overlayStyles[key]}`);
+    expect(q("card")).toBeTruthy();
+    expect(q("cardName")?.textContent).toBe("Alice");
+    expect(q("icon")).toBeTruthy();
+    expect(q("cardBody")).toBeTruthy();
+    expect(q("cardText")?.textContent).toBe("応援してます");
+    expect(q("amountBadge")?.textContent).toBe("10,000 JPY");
+    // ⚠ 課金カードの中にユーザー CSS の的は 1 つも無い。
+    //   （`<ol>` の `sd-comment-list` は器なので対象外＝`<li>` の中だけを見る。）
+    const li = container.querySelector<HTMLElement>("ol > li")!;
+    expect(li.querySelectorAll('[class*="sd-comment"]')).toHaveLength(0);
+    expect([...li.classList].filter((c) => c.startsWith("sd-comment"))).toEqual(
+      [],
+    );
   });
 
-  it("要約文を出す課金種別（サブスク）には sd-comment-event が付く", () => {
+  it("要約文を出す課金種別（サブスク）は従来どおり出る（安定クラスは付かない）", () => {
     const { container } = render(
       <CommentList
         variant="overlay"
         comments={[makeComment({ eventType: "subscription", text: "" })]}
       />,
     );
-    expect(sd(container, "sd-comment-event")?.textContent).toContain("サブスク");
-    expect(sd(container, "sd-comment-tip")).toBeTruthy();
+    expect(
+      container.querySelector<HTMLElement>(`.${overlayStyles.eventMessage}`)
+        ?.textContent,
+    ).toContain("サブスク");
+    const li = container.querySelector<HTMLElement>("ol > li")!;
+    expect(li.querySelectorAll('[class*="sd-comment"]')).toHaveLength(0);
   });
 
   it("data-sd-source は配信元をそのまま出す", () => {
@@ -1020,18 +1331,17 @@ describe("CommentList 060a オーバーレイのセレクタ契約", () => {
     expect(items[1].dataset.sdSource).toBe("youtube");
   });
 
-  it("data-sd-event は displayEventType と同じ判定＝**ビッツは bits** になる", () => {
+  /**
+   * ⚠ 060f 追修正④: `data-sd-event` が付くのは **chat だけ**になった（課金カードは的ではない）。
+   * `displayEventType()` と同じ判定であることは chat 側でも表明できる（chat は常に "chat"）。
+   * ⚠ 「ビッツは bits」という判定そのものは `displayEventType` の単体テストが持っている。
+   */
+  it("data-sd-event は chat にだけ付き、displayEventType と同じ値になる", () => {
     const { container } = render(
       <CommentList
         variant="overlay"
         comments={[
           makeComment({ id: "c1", eventType: "chat", text: "hi" }),
-          makeComment({
-            id: "s1",
-            eventType: "superchat",
-            text: "sc",
-            monetary: { amount: 1000, currency: "JPY" },
-          }),
           makeComment({
             id: "b1",
             eventType: "superchat",
@@ -1041,14 +1351,21 @@ describe("CommentList 060a オーバーレイのセレクタ契約", () => {
         ]}
       />,
     );
-    const items = container.querySelectorAll<HTMLElement>(".sd-comment");
+    const items = [...container.querySelectorAll<HTMLElement>("ol > li")];
     expect(items[0].dataset.sdEvent).toBe("chat");
-    expect(items[1].dataset.sdEvent).toBe("superchat");
-    // ⚠ ビッツは eventType="superchat" + currency="BITS" で届く。CSS 契約は**表示分岐と一致**させる。
-    expect(items[2].dataset.sdEvent).toBe("bits");
+    // ⚠ ビッツ（eventType="superchat" + currency="BITS"）は課金カード＝属性を持たない。
+    expect(items[1].dataset.sdEvent).toBeUndefined();
   });
 
-  it("data-sd-tone は課金にだけ付き、chat には属性そのものが無い", () => {
+  /**
+   * ⚠⚠ 060f 追修正④: **`data-sd-tone` はどこにも出なくなった。**
+   * 出していたのは課金カードだけで、そこを的から外したため。
+   * ＝ 060a が公開していた `.sd-comment[data-sd-tone="t6"] .sd-comment-body{…}`（ティア別に課金カードを
+   * 飾る）は**できなくなった**。本人決定「スパチャのデザインは常に同じ」の直接の帰結で、受容済み。
+   * ⚠ chat に付けない理由は従来どおり（`monetaryTone()` は chat を "t0" へ無害劣化させるので、
+   * 付けると「最低額スパチャだけ光らせる」CSS が全 chat にも当たる）。
+   */
+  it("⚠ data-sd-tone はもうどこにも出ない（課金カードを的から外したため）", () => {
     const { container } = render(
       <CommentList
         variant="overlay"
@@ -1064,12 +1381,7 @@ describe("CommentList 060a オーバーレイのセレクタ契約", () => {
         ]}
       />,
     );
-    const items = container.querySelectorAll<HTMLElement>(".sd-comment");
-    // ⚠ monetaryTone() は chat を "t0" へ無害劣化させる。付けると「最低額スパチャだけ光らせる」CSS が
-    // 全 chat にも当たるので、属性ごと出さない。
-    expect(items[0].dataset.sdTone).toBeUndefined();
-    expect(items[1].dataset.sdTone).toBe("t6");
-    expect(items[2].dataset.sdTone).toBe("subscription");
+    expect(container.querySelectorAll("[data-sd-tone]")).toHaveLength(0);
   });
 
   /**
@@ -1099,27 +1411,45 @@ describe("CommentList 060a オーバーレイのセレクタ契約", () => {
         ]}
       />,
     );
-    const [chat, tip] = [...container.querySelectorAll<HTMLElement>(".sd-comment")];
+    const [chat, tip] = [...container.querySelectorAll<HTMLElement>("ol > li")];
 
     // chat: 行・名前・吹き出し・本文・アイコン・サイト名バッジ
     expect(chat.className).toContain("item");
     expect(sd(container, "sd-comment-name")?.className).toContain("name");
-    expect(sd(container, "sd-comment-body")?.className).toContain("bubble");
-    expect(sd(container, "sd-comment-text")?.className).toContain("text");
     expect(sd(container, "sd-comment-icon")?.className).toContain("icon");
     expect(sd(container, "sd-comment-source")?.className).toContain("source");
+    // ⚠⚠ 060f: 吹き出しと本文は 1 枚の `<p>` に畳んだので、**意匠クラスが 2 つとも載っている**
+    // ことを見る。`.bubble`（背景/枠/角丸/影/しっぽの基準）と `.text`（サイズ/行間/色/margin:0）は
+    // 重複プロパティが無いので併記で当てており、**片方でも落ちると意匠が半分消える**
+    // （`OverlayComment.module.css` を非コメント差分ゼロに保つための構成なので、
+    //   1 規則へ統合する変更をするならこの表明も一緒に書き換えること）。
+    // ⚠ **部分文字列一致では書かないこと**（実測でこの変異が生存した）——同じ要素に安定クラス
+    // `sd-comment-text` が併記されているので `toContain("text")` はそちらに一致してしまう。
+    const chatBubble = sd(container, "sd-comment-body");
+    expect(chatBubble?.classList.contains(overlayStyles.bubble)).toBe(true);
+    expect(chatBubble?.classList.contains(overlayStyles.text)).toBe(true);
+    // 行・名前行の器も CSS モジュールのクラスを保っている（安定クラスで置換していない）。
+    expect(chat.querySelector(".sd-comment-row")?.className).toContain("row");
+    expect(chat.querySelector(".sd-comment-header")?.className).toContain(
+      "header",
+    );
 
     // 課金カード: .item と .card とティア配色クラスが全部残っていること（意匠の本体）。
     // ⚠ OBS 側のティアクラスは 043c 由来の `.tier6`（本体 UI の `.toneT6` とは別名・monetaryTone.ts 参照）。
+    // ⚠⚠ 060f 追修正④: 課金カードは安定クラスを持たないので、ここは**意匠クラスだけ**で表明する。
+    //   「安定クラスを外したついでに意匠クラスまで消える」退行を殺すのがこの 4 行の役目。
     expect(tip.className).toContain("item");
     expect(tip.className).toContain("card");
     expect(tip.className).toContain("tier6");
     expect(
-      tip.querySelector<HTMLElement>(".sd-comment-amount")?.className,
-    ).toContain("amountBadge");
+      tip.querySelector<HTMLElement>(`.${overlayStyles.amountBadge}`),
+    ).not.toBeNull();
     expect(
-      tip.querySelector<HTMLElement>(".sd-comment-body")?.className,
-    ).toContain("cardBody");
+      tip.querySelector<HTMLElement>(`.${overlayStyles.cardBody}`),
+    ).not.toBeNull();
+    expect(
+      tip.querySelector<HTMLElement>(`.${overlayStyles.cardHeader}`),
+    ).not.toBeNull();
   });
 
   it("variant=default（コメビュ本体）には安定クラスも data 属性も付かない", () => {

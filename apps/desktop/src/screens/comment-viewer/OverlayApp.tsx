@@ -12,6 +12,7 @@ import {
   OVERLAY_THEME_KEY,
 } from "../../features/comment-viewer/overlaySettings";
 import { rewriteSelectors } from "../../features/comment-viewer/cssCompat";
+import { withDecorationReset } from "../../features/comment-viewer/overlayThemeReset";
 import { getOverlayThemeCss } from "../../features/comment-viewer/overlayThemeApi";
 import { CommentList } from "./CommentList";
 import styles from "./OverlayApp.module.css";
@@ -112,7 +113,17 @@ export function OverlayApp() {
         el = document.createElement("style");
         // 目印（`data-sd-overlay-theme`）。テストと DevTools が引くためだけの属性で、意匠には関与しない。
         el.dataset.sdOverlayTheme = "";
-        el.textContent = rewriteSelectors(css).css;
+        // ⚠⚠ 060f 追修正(2026-08-08): **既定意匠のリセットを前置する**（`withDecorationReset`）。
+        //   既定のしっぽは疑似要素 2 枚（`.bubble::before` / `::after`）で描いているが、テーマは
+        //   `::before` 1 枚しか書かないのが普通で、`::after` が孤児として残って**しっぽが二重に見えていた**。
+        //   ⚠ 追修正②以降は守備範囲が広がっており、しっぽだけでなく**吹き出しの装飾一式**
+        //   （背景・枠・角丸・影・`--sd-icon-gap`）と疑似要素の `all:unset` まで前置する。
+        //   ⚠ 効く仕組みは「非レイヤー > レイヤー」——既定側は **`@layer sd-default`** に入れてある
+        //   （レビュー指摘 S-2: ここは追修正②で `sd-tail` から改名済み。旧名で書いてあった）。
+        //   ⚠ **必ず `withDecorationReset` を通すこと**（手書きの文字列連結にしない）。プレビュー側
+        //   （`OverlayThemeCard`）と 2 か所あり、片方だけ抜けると本番とプレビューで見え方が食い違う。
+        //   静的ガード **(10-m)** が「2 か所とも通っていること」を固定している。
+        el.textContent = withDecorationReset(rewriteSelectors(css).css);
         // `<head>` の末尾へ足す＝CSS Modules（Vite が起動時に入れる）より後になるので、
         // 同じ詳細度ならユーザー CSS が勝つ。これが「テーマで上書きできる」の実体。
         document.head.appendChild(el);

@@ -47,8 +47,36 @@ export interface SelectorRule {
    * 変換先。⚠ **必ず実 DOM に存在する安定クラス**であること
    * （契約一覧との突き合わせを check-css-guards.mjs **(10-b)** が、その契約が `CommentList.tsx` に
    * 実在することを **(10-a)** が行う）。
-   * ⚠ `.sd-overlay` は入れない: 060d のプレビューは全セレクタへ `.sd-preview` を前置するため、
-   * 窓ルートを指すセレクタはプレビュー側で当たらなくなる。
+   *
+   * ⚠⚠ **書けるのは「1 要素の複合セレクタ」だけ**（`.sd-comment-text.sd-comment-in-chat`）。
+   * **子孫結合子（空白 / `>`）を書いてはいけない**——合成したときに前置が二重に積まれて
+   * 「絶対に当たらないセレクタ」になる（理由と実測は `SELECTOR_TABLE` の docstring）。
+   * これは静的ガード **(10-l)** が機械で禁じている。(10-b) は `to` から**全クラストークン**を抜いて
+   * 契約と突き合わせる形なので、複合でも検査は効く。
+   * ⚠ 詳細度が `(0,1,0)` → `(0,2,0)` へ上がる点に注意——既定意匠（CSS Modules の単一クラス）には
+   * 順序に依存せず勝つようになる代わりに、**同じテーマの中で後から `.sd-comment-text{…}` と
+   * 書いた指定に勝ってしまう**（変換前は後勝ちだった）。060f で受容した既知の挙動。
+   *
+   * ⚠ `.sd-overlay`（窓ルート）は **060f で解禁した**。060a 時点は「060d のプレビューは全セレクタへ
+   * `.sd-preview` を前置するので、窓ルートを指すセレクタはプレビュー側で当たらなくなる」を理由に
+   * 禁じていたが、**060d は `.sd-overlay` を `.sd-preview` へ読み替える実装になった**
+   * （`cssScope.ts` の `ROOT_LIKE_CS`）ため、この制約は既に解消されている
+   * （実測: `.sd-overlay{…}` → `.sd-preview{…}` ／ `.sd-overlay.dark …` → `.sd-preview.dark …`）。
+   * ⚠⚠ 代わりに別の注意が要る——`.sd-overlay` は `OverlayApp` の `height: 100%` のルート div なので、
+   * そこに不透明な `background` を書いたテーマは **OBS の透過合成を実質的に壊す**
+   * （窓自体は `html[data-overlay="1"]` の `:global` で透明なままだが、中の div が全面を塗る）。
+   * ＝ **`body` を変換表に入れてはいけない理由と同じ症状**が、こちらの経路では成立する。
+   * それでも入れているのは、`.sd-overlay` が CSS 変数（`--sd-*`）を上書きする**唯一の器**で
+   * 的そのものが必要だから。脱出路は 060d の「既定のデザインに戻す」に委ねる。
+   * ⚠ **ただしこれは「060f が開けた新しい穴」ではない**（security-review 2026-08-05 で受容妥当と判定）。
+   * `.sd-overlay` は 060a が公開した契約クラスで、ユーザーは 060a 時点から `.sd-overlay{background:#fff}`
+   * と**直接書けた**。060f が変えたのは能力ではなく**踏む確率**（StreamDock 語彙を知らない人が
+   * 純正チャット向けテーマを貼るだけで踏める）だけである。しかも OBS 用に配られている純正テーマは
+   * `yt-live-chat-app{background:transparent}` を書くのが定番なので、この変換は**透過を助ける**側に多く効く。
+   * ＝ **ここから `.sd-overlay` を消しても窓は守れない**（消えるのは `--sd-*` の器だけで CSS 変数が全滅する）。
+   * 「危なそうだから外す」判断をしないこと。
+   * ⚠ `.sd-overlay` は `CommentList.tsx` ではなく `OverlayApp.tsx` に在るので、(10-b) 側は
+   * `STABLE_CLASSES` とは別の `ROOT_CLASSES` として持っている（(10-a) の対象には入れない）。
    */
   readonly to: string;
   /** なぜこの対応なのか（表を読む人向け）。 */
@@ -70,60 +98,175 @@ export interface SelectorRule {
  * ⚠ **だからこの表は意図的に「長さ順に並べていない」**（総論のエントリを各論より先に置いてある）。
  * 定義順が既に長さ順だと、`COMPILED` のソートを外す変異が**テストで殺せなくなる**（実測で生存した）。
  * 表を並べ替えるときも、長さ順には**しないこと**——ソートが効いていることの証拠がこの並びである。
+ *
+ * ## ⚠⚠⚠ 060f 追修正④(2026-08-08): この表の射程は **chat だけ**
+ *
+ * **課金カード（投げ銭カード）には安定クラスも `data-sd-*` も付いていない**（`CommentList.tsx` の
+ * 課金分岐・静的ガード **(10-o)**）。したがって:
+ *
+ * - **課金カードを狙う `from` をここに書いてはいけない**（変換先が DOM に無い＝
+ *   `rewritten` だけ加算されて当たらない＝ (10-b) が「最悪」と呼ぶ状態）。
+ * - `yt-img-shadow` → `.sd-comment-icon` のような**共有要素の対応も、実際には chat にしか当たらない**。
+ *
+ * ⚠⚠⚠ **ただし「課金カードには到達できない」ではない**（security-review 2026-08-08 で実測・
+ * **絶対表現を書かないこと**）。狭まったのは「**名指しできるか**」であって「到達できるか」ではない——
+ * この表が持つ**器のエントリ**（`yt-live-chat-app` / `yt-live-chat-renderer` → `.sd-overlay`、
+ * `yt-live-chat-item-list-renderer #items` → `.sd-comment-list`）は課金カードの**祖先**なので、
+ * テーマが汎用/型セレクタと組み合わせれば届く（実測: `.sd-overlay *` が課金カードの中の **9 要素**に、
+ * `.sd-comment-list > *` と `.sd-overlay li` が **`<li>` 自身**に当たる）。
+ * ＝ 060f は「課金カードの名指し」を塞ぐと同時に「純正語彙 → 祖先」の経路を 1 つ開けている。
+ * ⚠ **能力そのものは 060a 時点から `.sd-overlay li{…}` と直接書けた**ので区分は変わらないが、
+ * 上がったのは**踏む確率**である（`.sd-overlay` を表に入れた判断と同じトレードオフ・`to` の docstring 参照）。
+ * ⚠ 起票理由である `yt-live-chat-paid-message-renderer{display:none!important}` は**未変換のまま**なので
+ * 実害は解消している。塞げていないのは「祖先＋汎用」だけで、そこまで保証したくなったら必要なのは
+ * 目印の除去ではなく**構造の分離**（課金カードを shadow root か別の器へ出す）である。
+ * ⚠ 既知の限界として `CommentList.selectorContract.test.tsx` が「当たるのが現状」を固定している。
+ *
+ * ⚠⚠ **なぜ「限定」ではなく「切り離し」になったのか**（060f は 3 巡ぶん限定で解こうとして失敗した）:
+ * 060f 当初は「chat 専用のセレクタは chat 専用クラス（`.sd-comment-chat`）へ向け、共有要素は限定しない」
+ * という設計だった。しかし配布テーマは
+ * `yt-live-chat-paid-message-renderer{display:none!important}` のように**課金カードを名指しで消しにくる**
+ * （純正チャットではスパチャがティッカーにも出るので「インライン側を消す」のが定番。StreamDock に
+ * ティッカーは無いのでこの意図は成立しない）。＝ **目印クラスをどれだけ足しても防げない**ので、
+ * 課金カードそのものをユーザー CSS の的から外した（2026-08-08 本人決定）。
+ *
+ * ⚠ `.sd-comment` / `.sd-comment-chat` は**どちらも chat の `<li>` だけ**を指すようになった。
+ * ⚠ **限定の表し方は「同一要素の目印クラス」で、子孫セレクタにはしない**（次の節が理由）。
+ *
+ * ## ⚠⚠⚠ `to` は「1 要素の複合セレクタ」だけ —— 子孫結合子を書いてはいけない
+ *
+ * 060f の初版は `to` を**子孫セレクタ**（`.sd-comment-chat .sd-comment-text`）にしていたが、
+ * security-review（2026-08-05）で **祖先側のエントリと合成されると前置が二重に積まれ、
+ * 「絶対に当たらないセレクタ」になる**ことが実測された。トークン単位の置換である以上、表だけでは防げない。
+ *
+ * ```text
+ * .chat-line__message .chat-line__message-body
+ *   060f 初版: .sd-comment-chat .sd-comment-chat .sd-comment-text  → <li> の中に <li> が要る＝永久に当たらない
+ *   現行     : .sd-comment-chat .sd-comment-text.sd-comment-in-chat → 当たる
+ * span.chat-author__display-name
+ *   060f 初版: span.sd-comment-chat .sd-comment-name               → 当たらない
+ *   現行     : span.sd-comment-name.sd-comment-in-chat             → 当たる（名前は <span>）
+ * ```
+ *
+ * ⚠⚠ この失敗は**黙っている**——`rewritten` は**加算され** `unmatched` は**空**なので、060d の UI が
+ * 「M 個のルールを変換しました」と**積極的に誤報する**。この module の docstring が「黙って効かないのが
+ * 最悪」と呼び、(10-b) が「変換されたのに効かない＝最悪の状態」と呼んでいる状態そのものだった
+ * （しかも 3 件は 060f 以前に**効いていた**ものの回帰だった）。
+ *
+ * → **解決＝ `to` を「1 要素の複合セレクタ」に限り、限定は `sd-comment-in-chat` の
+ * 目印クラスで表す**（2026-08-06）。合成しても構造が保存されるので、上のような二重前置が起きない。
+ * ⚠ 対になっていた `sd-comment-in-tip` は 060f 追修正④で廃止（課金カードに安定クラスを付けなくなった）。
+ * ⚠ **これは作法ではなく機械で守られている契約**——静的ガード **(10-l)** が `to` の空白 / `>` を禁じ、
+ * `cssCompat.test.ts` の**全順序対（表の全エントリ × 全エントリ）の総当たりテスト**が「合成しても同じクラストークンが隣接して
+ * 二重に現れない」ことを固定している。**どちらも消さないこと**（初版の欠陥はこの 2 つがあれば自動検出できた）。
+ * ⚠ `compileFrom()` の**前方境界を厳しくする案は採らなかった**——上の失敗は空白区切りでも起きるので直らず、
+ * かつ `span.chat-author__display-name` のような**正当で頻出の複合指定を未変換に落とす**副作用がある。
+ * ⚠ 目印を `sd-comment-chat` 自身に兼ねさせなかったのも意図（`CommentList.tsx` の契約コメント参照）。
+ *
+ * ⚠ **残件（構造上そうなるもの・欠陥ではない）**: `to` が**完全に同じ**2 エントリを合成した形
+ * （`yt-live-chat-app yt-live-chat-renderer` → `.sd-overlay .sd-overlay` ／
+ * `.chat-line__message .chat-line__no-background` → `.sd-comment-chat .sd-comment-chat`）は当たらない。
+ * StreamDock 側は「窓ルートが 1 枚」「コメント行が 1 枚」なので**入れ子が存在しない**＝表現しようがない。
+ * 総当たりテストはこの「`to` が同一」のペアだけを除外している（除外理由はテスト側に書いてある）。
+ *
+ * ⚠⚠ **`body` / `html` / `:root` は絶対に入れない。** オーバーレイ窓の透過（OBS 合成の前提）は
+ * `html[data-overlay="1"]` の背景透明化で成立しており、そこを的にすると窓が塗り潰せる。
+ * ⚠ ただし**未変換の `body` は `unmatched` にも載らない**（`FOREIGN_SELECTOR_RE` は接頭辞ベースで、
+ * 「sd 語彙でない全セレクタ」を載せる設計ではないため。実測済み・`cssCompat.test.ts` が固定）。
+ * ＝ **「未変換だから警告で気付ける」とは限らない**ので、ここに足さない判断はコメントで守るしかない。
  */
 export const SELECTOR_TABLE: readonly SelectorRule[] = [
   // --- YouTube 純正チャット -------------------------------------------------
   {
     from: "yt-live-chat-text-message-renderer",
-    to: ".sd-comment",
-    why: "コメント 1 件。⚠ 下の祖先付きエントリ（#message 等）より**後**に当たる（長い順ソート）。",
+    to: ".sd-comment-chat",
+    why: "コメント 1 件（**テキストコメント専用**）。⚠ 060f で `.sd-comment`（chat と課金の両方に付く）から chat 専用クラスへ向け直した。⚠ 下の祖先付きエントリ（#message 等）より**後**に当たる（長い順ソート）。",
   },
   {
     from: "yt-live-chat-text-message-renderer #message",
-    to: ".sd-comment-text",
-    why: "コメント本文。chat の吹き出しと課金カードの本文の両方に付く安定クラス。",
+    to: ".sd-comment-text.sd-comment-in-chat",
+    why: "chat の本文。⚠⚠ 060f で DOM を `li > .row > p.sd-comment-body.sd-comment-text.sd-comment-in-chat` の 1 枚に畳んだので、取り込んだ CSS の吹き出しと `:before` / `:after` のしっぽが **StreamDock のしっぽと同じ要素・同じ疑似要素**に当たる（二重ではなく置き換えになる）。",
   },
   {
     from: "yt-live-chat-text-message-renderer #author-name",
-    to: ".sd-comment-name",
-    why: "投稿者名。chat の名前と課金カードのヘッダ名の両方に付く。",
+    to: ".sd-comment-name.sd-comment-in-chat",
+    why: "chat の投稿者名。課金カードのヘッダ名（同じ `.sd-comment-name`）には当てない。",
   },
   {
     from: "yt-live-chat-text-message-renderer #img",
-    to: ".sd-comment-icon",
-    why: "投稿者アイコン。祖先付きの形だけを変換する（単独 #img はユーザー自身の id を壊しうる）。",
+    to: ".sd-comment-icon.sd-comment-in-chat",
+    why: "chat の投稿者アイコン。祖先付きの形だけを変換する（単独 #img はユーザー自身の id を壊しうる）。",
   },
-  {
-    from: "yt-live-chat-paid-message-renderer",
-    to: ".sd-comment-tip",
-    why: "スーパーチャット（課金カード）。StreamDock では chat 以外の課金コメント全般に付く。",
-  },
+  // ⚠⚠⚠ 060f 追修正④(2026-08-08・本人決定): **課金系のエントリはここに置かない。**
+  //   削除したのは 3 件——`yt-live-chat-paid-message-renderer` → `.sd-comment-tip` ／
+  //   `yt-live-chat-paid-message-renderer #message` → `.sd-comment-text.sd-comment-in-tip` ／
+  //   `.yt-live-chat-membership-item-renderer` → `.sd-comment-tip`。
+  //
+  //   理由＝ **課金カードをユーザー CSS の的から外した**（`CommentList.tsx` の課金分岐が安定クラスも
+  //   `data-sd-*` も持たなくなった）ため、変換先が **DOM に存在しない**。残すと `rewritten` だけが
+  //   加算されて当たらない＝ (10-b) が「最悪」と呼ぶ「**変換されたのに効かない**」状態になる。
+  //
+  //   ⚠⚠ **戻さないこと。** 配布テーマは `yt-live-chat-paid-message-renderer{display:none!important}`
+  //   （純正チャットではスパチャがティッカーにも出るので「インライン側を消す」定番）を書くのが普通で、
+  //   これを変換すると **StreamDock の課金カードが丸ごと消える**（2026-08-08 実機で発生）。
+  //   ⚠ 削除後、これらのセレクタは未変換のまま残り **`unmatched` に出る**（`FOREIGN_SELECTOR_RE` が
+  //   `yt-` 接頭辞を拾う）＝ ユーザーには「効きません」と見える。**それが正しい状態。**
   {
     from: "yt-img-shadow",
     to: ".sd-comment-icon",
-    why: "アイコンの枠。yt- 接頭辞があるので単独でも他と衝突しない。",
+    why: "アイコンの枠。yt- 接頭辞があるので単独でも他と衝突しない。⚠ **目印を付けない（＝ `.sd-comment-icon` のまま）**——060f 追修正④で課金カードから安定クラスが消えたので、目印なしでも**実際に当たるのは chat のアイコンだけ**。`-in-chat` を足しても意味が変わらないぶん、`from` が chat 専用ではない（YouTube では課金側にも出る要素）ことを字面に残しておく。",
+  },
+  {
+    from: ".yt-live-chat-text-message-renderer",
+    to: ".sd-comment-chat",
+    why: "コメント 1 件（**クラス形**）。⚠⚠ 060f 追修正③（2026-08-08）で追加——依頼者の実サンプルの**看板デザイン**（吹き出し左端の縦バー）が `.yt-live-chat-text-message-renderer::before` で書かれており、**変換も警告もされず黙って消えていた**（実機で確認）。YouTube の Polymer は同名のクラスを子孫にも撒くので、実テーマではこちらの形が頻出する。⚠ **要素形（上）とは別エントリが必要**——要素形の前方境界 `(?<![A-Za-z0-9_.#-])` は `.` を弾く（弾かないと `.yt-…` が `..sd-comment-chat` に壊れる）。⚠ この `to` へ絶対配置で装飾を描くテーマのために、`overlayThemeReset.ts` が `.sd-comment` へ `position: relative` を与えている（無いと窓の左上へ飛ぶ）。",
+  },
+  {
+    from: ".yt-live-chat-author-chip",
+    to: ".sd-comment-name.sd-comment-in-chat",
+    why: "投稿者名チップ（060f で追加。実サンプルで未変換だった）。⚠ クラス形なので `unmatched` にも載っていなかった（FOREIGN_SELECTOR_RE の lookbehind が `.yt-` を弾く）。",
+  },
+  {
+    from: "yt-live-chat-app",
+    to: ".sd-overlay",
+    why: "窓ルート（全体の背景・書体）。⚠⚠ `.sd-overlay` は OverlayApp の height:100% のルート div なので、不透明な background を書かれると OBS の透過合成が実質的に壊れる（`to` の docstring を参照）。的として必要なので受容し、脱出路は「既定のデザインに戻す」。",
+  },
+  {
+    from: "yt-live-chat-renderer",
+    to: ".sd-overlay",
+    why: "窓ルート（同上）。⚠ `yt-live-chat-item-list-renderer` とは別トークンなので巻き込まない（単語境界付き）。",
+  },
+  {
+    from: "yt-live-chat-item-list-renderer #items",
+    to: ".sd-comment-list",
+    why: "一覧の器（`<ol>`）。⚠ `sd-comment-list` は overlay バリアントのときだけ DOM に出る（本体コメビュと `<ol>` を共有しているため）。",
+  },
+  {
+    from: "div#author-info",
+    to: ".sd-comment-header",
+    why: "名前行。⚠ 役割としては chat の `.header` と課金の `.cardHeader` の両方だが、060f 追修正④で課金カードから安定クラスが消えたので**実際に当たるのは chat の名前行だけ**。`yt-img-shadow` と同じ理由で目印は付けない。",
   },
 
   // --- Twitch 純正チャット --------------------------------------------------
   {
     from: ".chat-line__message",
-    to: ".sd-comment",
-    why: "コメント 1 件。",
+    to: ".sd-comment-chat",
+    why: "コメント 1 件（chat 専用）。⚠ 060f で chat 限定へ。",
   },
   {
     from: ".chat-line__message-body",
-    to: ".sd-comment-text",
-    why: "コメント本文。⚠ .chat-line__message より先に当たる（長い順ソート）。単語境界でも守られている。",
+    to: ".sd-comment-text.sd-comment-in-chat",
+    why: "chat の本文。⚠ .chat-line__message より先に当たる（長い順ソート）。単語境界でも守られている。",
   },
   {
     from: ".chat-line__no-background",
-    to: ".sd-comment",
-    why: "コメント 1 件（背景なし行）。",
+    to: ".sd-comment-chat",
+    why: "コメント 1 件（背景なし行・chat 専用）。⚠ 060f で chat 限定へ。",
   },
   {
     from: ".chat-author__display-name",
-    to: ".sd-comment-name",
-    why: "投稿者名。",
+    to: ".sd-comment-name.sd-comment-in-chat",
+    why: "chat の投稿者名。⚠ 060f で chat 限定へ。",
   },
 ];
 
@@ -197,6 +340,16 @@ const GROUP_AT_RULES: ReadonlySet<string> = new Set([
  * ここへ差し戻す）。＝これらは「変換されないのに警告も出ない」バケツに残る**既知の取りこぼし**。
  * 再修正トリガー: 060c で実サンプルの外部 CSS を取り込んだとき、`unmatched` に出ないまま
  * 効いていないセレクタが観測されたら、その id をここへ足す（allow-list 方式へ広げてもよい）。
+ *
+ * ⚠ **060f で変換表を足したぶん、この取りこぼしが増えた**（security-review 2026-08-05・実測）:
+ *   - `#author-info` / `#items` … 表にあるのは**祖先付き**の `div#author-info` /
+ *     `yt-live-chat-item-list-renderer #items` だけなので、祖先を省いた形は変換も警告もされない。
+ * ＝ **060f では足さない判断**。`items` はほぼ総称なので、ここへ足すと上の理屈
+ * （将来 StreamDock がその id を持つと誤検知に転ぶ）に正面から反する。
+ * 上の再修正トリガーと**同じタイミング（060c）でまとめて判断すること**。
+ * ⚠ 追修正④で課金系エントリを削除したので、`#card.yt-live-chat-membership-item-renderer` は
+ * **完全に未変換**になった（＝ `.yt-` 接頭辞のため `unmatched` にも出ない・従来どおりの取りこぼし）。
+ * 課金カードはそもそもユーザー CSS の的ではないので、これは**塞ぐ必要が無い**。
  */
 const FOREIGN_ID_NAMES = [
   "message",
@@ -415,10 +568,18 @@ function rewriteSegment(text: string): { out: string; hit: boolean } {
  * - `@import` / `url()` / 宣言部 / 文字列 / コメントの中身は**一切変更しない**。
  * - 壊れた CSS（`{` が閉じない等）でも throw せず、変換できた範囲だけ返す（無害に劣化する）。
  *
- * ⚠ **否定の中では意味が反転しうる**（060a レビュー Q-4）。`.sd-comment:not(.chat-line__message)` は
- * `.sd-comment:not(.sd-comment)`＝**何にも当たらない自己否定**になる（`:is()` のほうは
- * `:is(.sd-comment,.sd-comment)` と重複するだけで無害）。トークン単位の置換である以上、
- * 「効かなくする」ではなく「壊す」唯一のケースがここ。実例は考えにくいので据え置く。
+ * ⚠ **否定の中では意味が反転しうる**（060a レビュー Q-4）。トークン単位の置換である以上、
+ * 「効かなくする」ではなく「壊す」ケースがここ。実例は考えにくいので据え置く。
+ * ⚠ **060f で挙動が変わった**（security-review 2026-08-05 で指摘）——
+ * `.sd-comment:not(.chat-line__message)` は 060a 時点は `.sd-comment:not(.sd-comment)`＝
+ * **何にも当たらない自己否定**だったが、いまは `.sd-comment:not(.sd-comment-chat)`＝
+ * **課金カードにだけ当たる**（`:is()` のほうは重複するだけで無害）。挙動としては改善側。
+ * ⚠ **060f 初版では別の失敗モードが 1 つ増えていたが、解消済み**（レビュー指摘 Q-6・2026-08-08 で
+ * 陳腐化を訂正）。当時は `to` が**子孫結合子**を持っていたため、結合子を書けない文脈
+ * （`::slotted()` / `::part()` の引数）へ入ると**セレクタ全体が無効**になり、カンマで束ねられた
+ * 無関係なセレクタまで一緒に落ちた。→ **`to` を「1 要素の複合セレクタ」に限る修正（2026-08-06）で
+ * まとめて消えている**（現在の 15 エントリはすべて結合子なし・静的ガード **(10-l)** が機械で禁じている）。
+ * ＝ **これは未対処の課題ではない。** (10-l) を外すと復活するので、外さないこと。
  * 再修正トリガー: ユーザーの CSS で `:not()` に純正チャットのセレクタを書く例が出たら、
  * `:not(…)` の中は置換対象から外す（プレリュード内の擬似クラス引数を別 segment に切る）。
  */

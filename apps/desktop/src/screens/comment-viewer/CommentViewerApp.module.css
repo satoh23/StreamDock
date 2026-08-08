@@ -1195,12 +1195,37 @@
    ③スタッキングコンテキストを作る（巨大 z-index が枠外へ浮上しない）——3 つを 1 行で満たす。
    ⚠ `overflow: hidden` は**残す**（contain: paint が無い環境でも通常フローのはみ出しは切る）。
    ⚠ **消さないこと。** これが無いと `scopeSelectors`（＝どの要素に当たるか）が正しくても枠外へ描ける。
-   再修正トリガー＝プレビューを shadow root / iframe へ移すとき（構造で閉じるので不要になる）。 */
+   再修正トリガー＝プレビューを shadow root / iframe へ移すとき（構造で閉じるので不要になる）。
+
+   ⚠⚠⚠ 060f 追修正⑦(2026-08-08): **`transform: translateZ(0)` は意匠ではなく WebKit の描画バグ回避。消さないこと。**
+
+   症状＝ **プレビューの課金カード（スパチャ）が「要素はあるのに描かれない」**（2026-08-08 本人報告）。
+   ⚠ 本人の観測が決定打だった——「**ドラッグして選択状態にすると、選択した部分だけ出てくる**」
+   ＝ 選択は強制再描画を起こす操作なので、**レイアウトは正しく描画だけが古い**と確定した。
+
+   原因＝ テーマの `<style>` を差し替えるとこの枠の中の高さが変わるが、**WKWebView が
+   課金カードの領域を再描画対象にしそこねる**ことがある。`.list` は `overflow-y: auto` なので
+   枠内はスクロール領域で、そこの無効化が漏れるとこの見え方になる。
+   ⚠⚠ **`contain: paint` は無関係**（`contain: none` にしても再発することを実測で確認済み。
+   2026-08-08 に一度「`contain: paint` が原因」と誤診して差し戻している——同じ間違いをしないこと）。
+
+   実測（実機と同じ WKWebView で、実物の `OverlayThemeCard` を描画し、テーマ遷移 7 通りを撮って
+   **画素で**判定した。手順は progress.md の「差し戻し⑦」節）:
+     ・修正なし … **7 通り中 3 通りで課金カードが描かれない**（いずれも「テーマ → 既定」へ戻す向き）
+     ・`transform: translateZ(0)` を足す … **7 通りすべて正常**
+     ・`will-change: transform` / `isolation: isolate` / `backface-visibility: hidden` … **効かない**
+     ・正常だったケースの画素差分は **0**（＝見た目は 1px も変わらない）
+   ⚠ **当て先がこの枠でなければならない理由**: `.sd-preview` / `<ol>` / `<li>` へ当てても直るが、
+   そこは**ユーザー CSS が名指しできる**（`scopeSelectors` が `:root` を `.sd-preview` にする・
+   `.sd-comment-list` / `.sd-comment` は契約クラス）ので、テーマ側が `transform` を上書きすると
+   回避策が黙って無効化される。`.themePreview` は CSS Modules のハッシュ名なので**名指しできない**。
+   再修正トリガー＝プレビューを shadow root / iframe へ移すとき（構造が変わるので測り直すこと）。 */
 .themePreview {
   display: flex;
   height: 200px;
   overflow: hidden;
   contain: paint;
+  transform: translateZ(0);
   border-radius: 8px;
   background: var(--bg);
   border: 1px solid var(--border-soft);
