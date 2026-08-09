@@ -1539,6 +1539,95 @@ Rust の `app.updater_builder()` から行い IPC を通らないため、**4 �
   （2026-08-05 実施・判定「軽微な懸念あり」・指摘 3 件を反映 → **同日 security-review②（外部レビュー）実施・
   判定「修正必須」・指摘 8 件を反映済み**。詳細は `docs/progress.md` の 060b 節）。
 
+**061a（エフェクト専用オーバーレイ窓＝5 つ目のウィンドウ・2026-08-09）**: 061 のエフェクト（061b の
+組み込み投げ銭エフェクト、061c/061d のテンプレート）を配信へ載せるため、既存 2 オーバーレイとは
+**独立した新ウィンドウ** `effect-overlay` を追加した。046b（`pinned-overlay`）と同型。
+
+- **新 capability は `capabilities/effect-overlay.json` の 1 枚のみ**（`pinned-overlay.json` と同型・
+  `windows:["effect-overlay"]`・`permissions:["core:default"]`）。**既存 4 枚（`default.json` /
+  `comment-viewer.json` / `comment-overlay.json` / `pinned-overlay.json`）は差分ゼロ**。
+  `windows` は**ラベル完全一致**なので、`default.json` が持つ広い permission（`dialog:*` / `autostart:*` /
+  `core:window:*`）はこの窓へ**継承されない**。`csp: null`・`macOSPrivateApi`・`tauri.conf.json` 不変。
+  `core:default` の実体（窓/webview 面はすべて読み取り系）は 046b 節の調査が正で、061a で変わっていない。
+- ⚠⚠ **「capability だけを見て『この窓は無害』と判断しない」の適用対象が 1 窓増えて 5 窓になった。**
+  Tauri v2 では**アプリ定義コマンドは ACL の対象外**なので、この窓の webview も `invoke_handler` に
+  登録された全コマンド（`open_comment_viewer_window`＝sidecar 起動、`launch_tool`、`clear_viewers`、
+  `install_app_update`、`import_overlay_theme` 等）を呼べる。これは既存 4 窓と同じ構造で 061a が
+  広げたものではなく、この窓が読み込むのはローカルバンドルのみ・**外部コンテンツを踏む経路ゼロ**
+  （061a 時点では data URI すら踏まない＝表示するのは静的なセットアップ用ガイドだけ）のため実害は無い。
+  ⚠⚠ **この受容根拠には失効条件がある**（061a レビュー S-3 で明示化）——**061c/061d でこの窓が
+  第三者テンプレートのアセット（画像/GIF/APNG/WebM/音源）を読み込んだ時点で、「外部コンテンツを踏む
+  経路ゼロ」は真でなくなる。** 親 061 の決定（HTML/CSS/JS は実行しない）によりコード実行にはならないが、
+  「ACL 対象外＝全コマンドを呼べる窓に、第三者由来のデータを持ち込む」変更であることに変わりはないので、
+  **061c の security-review でこの節を必ず再評価すること**（再評価せずに通したら、それ自体が指摘対象）。
+- **新 command は単一目的の 3 つのみ**（§3）: `open_effect_overlay_window` /
+  `close_effect_overlay_window` / `is_effect_overlay_open`。いずれも**引数は `AppHandle` のみ＝
+  frontend から値を受け取らない**（ラベルは Rust 内のリテラル）。任意ラベル・任意オプションの汎用窓生成は
+  露出しない。ユーザー入力が OS 操作へ渡る経路は無い（§8）。
+- **表示専用・通信面ゼロ**: この窓の frontend（`EffectOverlayApp`）は **WS へ接続しない**
+  （`connectCommentStream` を呼ばない）。import は React と CSS 2 枚だけで、**新規の外部通信・宛先・
+  Rust emit・依存はゼロ**。061b もこの性質を維持する（コメビュ窓が localStorage へ書いた `EffectRequest` を
+  `storage` 購読で受ける設計）。**061a の時点ではコメント本文・投稿者名・金額・アバターを一切描かない。**
+- **sidecar に触れない＝no-orphan kill 契機は不変**: `comment-overlay` / `pinned-overlay` と同じく
+  window イベント（sidecar 連動）を**登録しない**ので、この窓を閉じても sidecar は落ちない。
+  `close_effect_overlay_window` は自アプリのウィンドウを閉じるだけで、**PID kill・プロセス名 kill は行わない**。
+- **窓タイトルは `StreamDock エフェクト`**。044a/046d の自動ソース追加は窓名の `includes` 一致で対象窓を
+  探すため、**3 つの窓名が互いに部分文字列にならない**ことが**機能要件**（壊れると `ensureOverlaySource` の
+  M2 フォールバックで `"reused"`＝成功として返り、UI は成功表示・OBS は真っ黒という静かな失敗になる）。
+  `lib.rs` の `#[cfg(test)] mod overlay_window_contract`（**046d の `pinned_overlay_contract` から改名**）が
+  **総当たりループ**で固定している＝窓を増やしても組み合わせを取りこぼさない。
+- **`ObsOverlayKind` は固定 union のまま**（`"comments" | "pinned" | "effects"`）。viewer からは識別子しか
+  渡せず、実ソース名／窓名は sidecar 内の `OBS_OVERLAYS` に閉じている（§3/§8）。
+  ⚠ 046d の `parseOverlayKind`（未検証 JSON を固定 union へ落とす allow-list＝**実質的な唯一の
+  セキュリティ制御**。loopback WS は未認証なので同一 PC の任意プロセスが制御フレームを送れる）は
+  `index.ts` から `obs/obs-client.ts` へ移し、**`OBS_OVERLAYS` から導出する形**にした。
+  これにより「表を増やしたのに検証側を更新し忘れる」が構造的に起きない。
+  ⚠⚠ 照合は **`Object.keys` の配列に対する `includes`** でなければならない——`v in OBS_OVERLAYS` や
+  `OBS_OVERLAYS[v] !== undefined` にすると `"__proto__"` / `"constructor"` / `"toString"` が
+  **プロトタイプ経由で真になり fail-open する**。`scripts/test-obs-client.mjs` がこの 3 つを名指しで固定済み
+  （046d 時点は `index.ts` にあり import 不能＝**検証ゼロ**だった）。
+  ⚠ `obs/obs-helpers.ts` と `host-guard.ts`（fail-closed 層）は**差分ゼロ**。
+- **新規宛先ゼロ**（§1）。OBS は既存の loopback（`ws://127.0.0.1:<port>`）で `assertAllowedObsUrl` を通る
+  経路のまま。`enable` / `hide` / `disable` / `ensureOverlaySource` のロジックは 1 行も変えていない。
+- **新規 localStorage キー 2 本**（`...effect-overlay-enabled` / `...effect-obs-auto-add`）はいずれも
+  トグルの ON/OFF（boolean）＝**ユーザー自身の UI 設定値**で、`obs-auto-add` /
+  `pinned-overlay-enabled` と同種。§9 追補（046a）が対象とする第三者の個人データではないため、
+  下記「レビュー必須条件」の localStorage 追補には**該当しない**。
+- ⚠ **構造上の制約と、そこから来る 2 つの新しい経路**（軽 security-review 2026-08-09 で記録）:
+  - `obs-enable` を送れるのは WS ハンドルを持つ**コメビュ窓だけ**で、sidecar のライフサイクルも
+    コメビュ窓に紐づく。一方エフェクト画面は main 窓（親 061 の決定）。よって **main 窓は設定を
+    localStorage に書くだけ**で、送出はコメビュ窓が 046b と同じ二段構え（マウント時 reconcile ＋
+    `storage` 購読）で代行する。**main 窓から sidecar WS へ繋ぐ案は採らなかった**——
+    `connectCommentStream` は `onComments` 必須なので**第三者のコメント本文が main 窓へ流れ込む**（§9 の後退）、
+    かつ `get_comment_stream_port` が null の間**毎秒 invoke が永久ループ**するため。
+  - **(1) main 窓に「コメントビューアを開く」導線を足した**（`windowApi.openCommentViewerWindow`＝
+    既存 `open_comment_viewer_window` の薄いラッパ・新規 Rust ゼロ）。main 窓が sidecar を起動できること
+    自体は既存の構造（`MainScreen` が `launchTool` 経由で同じことをしており、アプリ定義コマンドは
+    ACL 対象外）で、061a は**明示的な UI 導線を 1 本足しただけ**。
+  - **(2) アプリ起動時（`MainWindowApp` のマウント）に、永続設定が ON なら窓を開き直す。**
+    046b で指摘された「ユーザー操作なしに窓が開く経路が 1 本増える」に該当する。許容根拠は 046b より
+    明確に強い: ①起点は明示的な永続設定（**既定 OFF**）②開く窓は **061a 時点では完全に空**
+    （第三者の個人データを 1 バイトも描かない）③新規通信・OBS 接続・sidecar 起動をいずれも伴わない。
+    ⚠ **061b でこの窓が投稿者名と金額を描くようになるが**、061b の設計は「届かなかったら諦める・
+    マウント時に過去のエフェクトを再生しない」なので、**起動時に前回配信の第三者データが出る経路は
+    生まれない**（046b が踏んだ S-1 とはここが決定的に違う）。**061b のレビューでこの前提を再確認すること。**
+    ⚠⚠ **061a レビュー S-1**: この前提は 061a 側の 3 箇所（本節 / task-board / 061a タスクファイル）に
+    書かれていた一方、**061b の仕様書には「保証ベースライン＝エフェクト窓のマウント時に読む」という
+    逆を指示する箇条書きが残っていた**（同ファイル内で矛盾していた）。字面どおり実装されると S-1 が
+    そのまま再発するため、**061b 側の記述を「`storage` 購読の一段だけ」に修正済み**
+    （[`docs/tasks/061b-monetary-effect-builtin.md`](tasks/061b-monetary-effect-builtin.md) の「(2) 窓間伝達」）。
+- **新規ウィンドウ＋新規 capability＋新規 command のため security-review 実施**
+  （2026-08-09・**外部レビュー**・判定「**軽微な懸念あり**」・修正必須 2 件〔いずれもドキュメント・対応済み〕・
+  後回し可 2 件、あわせて品質指摘 10 件〔要修正 4・コメントのみ 6〕。044a / 046d と同型のため軽め）。
+  - 修正必須 **S-1**（上記）＝061b 仕様書の矛盾行。**対応済み**（061b を「`storage` 一段のみ」に修正）。
+  - 修正必須 **S-2** ＝ security.md / progress.md / task-board / 061a タスクファイルの 4 箇所が、
+    **レビュー実施前に「判定『問題なし』・修正必須 0 件」を確定事項として記録していた**。
+    セキュリティ記録に未実施のレビュー結果が入ると「レビュー済みだから見なくてよい」の材料になるため、
+    本行を含む 4 箇所を実際の結果へ差し替えた。**以後、実施前に書く場合は「実施予定」と明記すること。**
+  - 後回し可 S-3（上記の失効条件・追記済み）／ S-4（loopback WS 未認証。061a で姿勢は不変・記録のみ）。
+  - ⚠ コード上のセキュリティ欠陥は **0 件**（新規宛先ゼロ・fail-closed 層の差分ゼロ・capability 最小・
+    `parseOverlayKind` の allow-list が fail-closed・§9 該当なしを、いずれも実差分で確認済み）。
+
 ## CSP方針
 
 MVPでは外部リソースを読み込まない。

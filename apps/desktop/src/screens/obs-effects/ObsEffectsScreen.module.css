@@ -1,0 +1,77 @@
+/* 061a: main 窓の「OBSエフェクト」画面。
+   ⚠ 骨格（見出し・パネル・パネル見出し/本文）は `screens/formLayout.module.css` を使い、
+   トグルは `screens/comment-viewer/ToggleSwitch` を再利用する。**このファイルは前提ステータスの
+   並びだけ**を持つ＝新しい px / weight を発明しない（061a の要件）。
+   ⚠ 生 hex を書かない（`theme.css` のトークンのみ・docs/security.md の規約）。 */
+
+.stack {
+  display: grid;
+  gap: 18px;
+  align-items: start;
+}
+
+/* トグル直下の注記。`formLayout` の `.fieldHelp` と同じ役割・同じ値に揃える
+   （あちらは `.field input` の子孫前提のクラスなので、ここでは同値のものを置く）。 */
+.note {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+/* 前提ステータス（エフェクト窓 / コメントビューア / OBS WebSocket）の 3 行。 */
+.statusList {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.statusRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+}
+
+.statusLabel {
+  color: var(--muted);
+}
+
+.statusValue {
+  color: var(--text);
+  font-weight: 800;
+}
+
+/* 前提が満たされていない行（＝ユーザーの対処が要る）。⚠ 色だけで伝えない——
+   文言そのものが「閉じています／未検出」なので、色は補助にとどめる（a11y）。
+   ⚠ 061a レビュー（Q-8）: 旧実装は `--muted`＝**OK 状態（--text）より薄く、ラベルと同色**で、
+   「対処が要る行ほど目立たない」という逆向きだった。`--warn` 系のトークンが `theme.css` に無いので、
+   色は `--text` のまま据え置き、**下線で注意を足す**（色覚に依存しない差分＝a11y の観点でも色より強い）。
+   再修正トリガー＝`theme.css` に警告色トークンが入ったら、そちらへ差し替える。 */
+.statusValue.blocked {
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 3px;
+}
+
+/* 「コメントビューアが閉じている」ときだけ出る案内＋導線。 */
+.prerequisite {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border-soft);
+}
+
+.prerequisiteText {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}

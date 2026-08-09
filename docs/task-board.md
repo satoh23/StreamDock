@@ -515,10 +515,36 @@
 - 061 OBS エフェクト基盤＋投げ銭エフェクト（親設計 [docs/tasks/061-obs-effects.md](tasks/061-obs-effects.md)／要望④の視覚部分・**ヘッダーの「OBSエフェクト」は `implemented: false` の導線だけ既に存在**〔`ComingSoonScreen`〕・061 がこれを実体化する）
   - 実装順: 061a → 061b → 061c → 061d（**061a+061b で「組み込みエフェクトが配信に出る」まで通しで動く**）
   - ⚠ **本人決定＝テンプレートは「アセット＋宣言的レイアウト」**（画像/GIF/APNG/WebM(alpha)/音源＋`manifest.json`）。**HTML/CSS/JS は実行しない**＝たぬえさ3 の `forOBS3.html` 互換は捨てる。理由＝第三者の任意コード実行になり、`csp: null` ＋**アプリ定義コマンドが ACL 対象外**（046b）なので**注入された JS が Tauri コマンドを全部呼べる**
-  - 061a エフェクト窓＋OBS ソース自動追加＋画面の枠（[docs/tasks/061a-effect-overlay-window.md](tasks/061a-effect-overlay-window.md)／`effect-overlay` 窓〔`open_pinned_overlay_window` の完全踏襲〕＋`ObsOverlayKind` の**3 本目**〔046d の一般化の続き〕＋capability 1 枚追加〔`core:default` のみ〕・**軽 security-review**）
-    - ⚠ **窓名「StreamDock エフェクト」の 2 者間契約**（Rust `.title` ↔ sidecar `windowTitle` のバイト一致・**3 つが互いに部分文字列でないこと**）を `pinned_overlay_contract` 相当のテストで固定する。⚠ **壊れると M2 フォールバックで `"reused"`＝成功として返り、UI は成功表示・OBS は真っ黒**になる
-    - ⚠ 045c の規律を踏襲（自動反映は設定を立てるだけ／反映の契機は表示 ON／**猶予タイマーの取り消し**）
-  - 061b 組み込み投げ銭エフェクト＋発火層（[docs/tasks/061b-monetary-effect-builtin.md](tasks/061b-monetary-effect-builtin.md)／「〇〇さんが ¥1,000」・`effectTrigger.ts`＋`effectQueue.ts`〔localStorage＋`storage`・新規 WS/Tauri イベントを増やさない〕・**軽レビュー**）
+  - ✅ **061a 実装済み（2026-08-09）** エフェクト窓＋OBS ソース自動追加＋画面の枠（[docs/tasks/061a-effect-overlay-window.md](tasks/061a-effect-overlay-window.md)／`effect-overlay` 窓〔`open_pinned_overlay_window` の完全踏襲〕＋`ObsOverlayKind` の**3 本目**＋capability 1 枚追加〔`core:default` のみ〕・**security-review 実施〔外部〕＝判定「軽微な懸念あり」・修正必須 2 件〔いずれもドキュメント・対応済み〕／品質指摘 10 件〔要修正 4・コメントのみ 6〕・対応済み**。判断の根拠と指摘一覧は [docs/progress.md](progress.md) の 061a 節が正）
+    - ⚠ **窓名の 2 者間契約は `overlay_window_contract`（`pinned_overlay_contract` から改名）で固定済み**。**`OVERLAY_TITLES` を回す総当たりループ**にしたので、4 本目を足すときは**配列に 1 行足すだけ**でよい
+    - 045c の規律を踏襲済み（自動反映は設定を立てるだけ／反映の契機は表示 ON／**猶予タイマーの取り消し**）。⚠ タイマーは `Map<ObsOverlayKind, number>` へ一般化した（cleanup がループ 1 本＝種別を増やしても取り消し漏れが起きない）
+    - ✅ **実機確認実施済み（2026-08-09・依頼者）＝「問題ありませんでした」**。⚠ 個別 9 項目の内訳は未共有なので、
+      **⑦ `storage` の窓跨ぎ伝播**（061b の着手条件）と **⑨ Windows での 5 窓生成**は次セッション冒頭で明示確認すること
+    - ⚠⚠ **未完了の宿題（依頼者の判断で最後にまとめて対応）**: **OBS 連携の結果が観測できない** 3 点——
+      (A) `ObsEffectsScreen` の案内文「結果は画面上部に表示されます」が**事実と違う**（ツールバーは失敗の赤字だけ・
+      成功は出ない。全状態は ⚙設定 →「OBSに表示」カード）／(B) その赤字が `obsAutoAdd`（**コメント側のトグル**）で
+      絞られており、「コメント側 OFF ／ エフェクト側 ON」だと**エフェクトの失敗が出ない**／
+      (C) 成功文言が「OBSにコメントを表示しました。」でエフェクトでも同じ文が出る。
+      ⚠ (B)(C) は Q-2（`obsState` 共有）と**同じ根**なので、直すならまとめて 1 回で。詳細は progress.md の引き継ぎ節
+  - 061b 組み込み投げ銭エフェクト＋発火層＋**sidecar ライフサイクルの切り離し**（[docs/tasks/061b-monetary-effect-builtin.md](tasks/061b-monetary-effect-builtin.md)／「〇〇さんが ¥1,000」・`effectTrigger.ts`・**Rust を含む**・⚠ **security-review 必須**）
+    - ⚠⚠ **仕様変更（2026-08-09・依頼者決定）＝エフェクト窓は sidecar の WS に直接つなぐ**。
+      `sidecar → コメビュ窓 → (localStorage+storage) → エフェクト窓` を **`sidecar → コメビュ窓` と `sidecar → エフェクト窓` の 2 本**へ分割する。
+      動機＝エフェクト機能が内蔵コメビュ窓に依存している状態の解消。⚠ **`effectQueue.ts` は作らない**（localStorage 経由を廃止）
+      - ⚠ **新方式ではない**——`comment-overlay` 窓が既に同じことをしている（WS が 2 → 3 本になるだけ）
+      - ✅ **副産物: `storage` の窓跨ぎ伝播という未検証の賭けが消える**（061a の積み残しが解決）／§9 追補の判定も不要になる
+      - ⚠⚠ **矢印を分けるだけでは足りない**。`ensure_started` の呼び出しは `open_comment_viewer_window` の**1 箇所だけ**で、停止はコメビュ窓の close に紐づく。**sidecar ライフサイクルの切り離し〔061b の (0)〕が必須**で、ここが **§6 に触る**＝レビューが**軽レビュー → security-review 必須**へ格上げ
+      - 達成範囲: ✅「一度コメント取得を開始すれば、コメビュ窓を閉じてもエフェクトが出続ける」／❌「コメビュ窓を一度も開かずに」は**別タスク**（`start-session` の導線を main 窓へ＝§1 の読み直しが要る）
+      - ⚠ 「OBS 側のコメント一覧から取る」案は**技術的に不可能**として却下（obs-websocket にチャット API が無い／チャットドックは外から読めない）
+    - ⚠⚠ **061a からの申し送り（着手前に必ず読むこと）**:
+      - **器の形**＝`screens/obs-effects/EffectOverlayApp.tsx` は「`data-overlay="1"` ＋ 空の `.root`（中央寄せ・`overflow:hidden`・**背景を書かない**）＋セットアップ用ガイド」だけ。061b はこの `.root` の中へ描く
+      - ~~⚠ **エフェクト窓は WS に繋がない**~~ → ⚠⚠ **2026-08-09 の仕様変更で反転**。エフェクト窓は `OverlayApp` と同じく **WS を直接張る**。061a のコメント・テスト・security.md 061a 節にある「WS へは一切接続しない」を**すべて更新すること**（放置すると嘘のコメントが残る）
+      - ⚠ **`sd-overlay` クラスを付けない**（060d の注入先は `comment-overlay` のみ）。静的ガード `check-css-guards.mjs` (10-d) が `EffectOverlayApp.tsx` も否定検査している
+      - **所有者**＝表示/自動反映の**設定は main 窓**（`ObsEffectsScreen`・localStorage キー 2 本）、**`obs-enable` の送出はコメビュ窓**（`obs-enable` を送れる WS ハンドルを持つのがそこだけのため）。061b の**テスト発火ボタンは main 窓に置ける**（localStorage へ書くだけなので）
+      - ⚠⚠ **「コメビュ窓が閉じているとエフェクトは出ない」**は 061b の設計上の帰結。案内は `ObsEffectsScreen` の前提ステータス 3 行＋「コメントビューアを開く」ボタンで既に出してある。**061b で文言を増やす前にそこを見ること**
+      - **ガイドの切り方**＝`SETUP_GUIDE_VISIBLE_MS`（30 秒）で自動消灯（fail-safe）。⚠ 061b でエフェクトを描くとき、ガイドと重ならないようにするか、初回エフェクトでガイドを畳むかを決めること
+      - ~~⚠⚠ **`storage` の窓跨ぎ伝播は 061a の実機確認 ⑦ で初めて実証される**~~ → ⚠ **2026-08-09 の仕様変更で 061b の着手条件ではなくなった**（エフェクトは WS 直結になったため）。ただし **061a の OBS 自動反映は依然この経路に乗っている**ので、そちらの担保としては引き続き有効
+      - ⚠⚠ **起動時に永続設定 ON なら窓が自動で開く**（`MainWindowApp` のマウント）。061b が第三者の表示名・金額を描くようになるので、**「マウント時に過去のエフェクトを再生しない」を必ず守ること**（守れば 046b の S-1 は再発しない・security.md の 061a 節に明記済み）。⚠ **061a レビュー S-1 で「保証ベースライン＝エフェクト窓のマウント時に読む」という逆を指示する行を削除済み**。⚠⚠ その後の**仕様変更（WS 直結）で懸念は構造的に消えた**——localStorage を経由しないので**再生する対象がそもそも存在しない**。⚠ ただし「**接続直後に過去分を遡って発火しない**」は WS でも要るので、061b で必ず確認すること
+      - ⚠ **セットアップ用ガイドはワンショット旗**（`EFFECT_OVERLAY_GUIDE_PENDING_KEY`）で「表示トグル ON の直後だけ」出る。起動時の窓復元では出ない（061a レビュー Q-1）。061b でエフェクトを描くときは、この旗の有無でガイドと共存させるか畳むかを決めること
     - ⚠ **多重発火の 3 経路を基盤側で塞ぐ**: ①043e の combo 再送〔`updated` で出さない〕 ②043a のコミュニティギフト N+1〔同一投稿者の gift をバッチ内で 1 件に畳む〕 ③バースト上限〔1 バッチ最大 N 件・キューに溜めない〕
     - ⚠ **`EffectRequest` に本文（`text`）とアバターを載せない**（§9・配信画面に第三者の自由入力を大写しにしない）。**テストで固定する**
   - 061c エフェクトテンプレート取り込み（[docs/tasks/061c-effect-template-import.md](tasks/061c-effect-template-import.md)／`app_data_dir/effects/<id>/`＋`effect_templates` テーブル＋`manifest.json` のスキーマ検証・**security-review 必須**）

@@ -5,8 +5,8 @@
 //! **CSS 本文・フルパス・除去した URL は 1 つもログへ出さない**・docs/security.md §9）。
 //! DB 保存カテゴリは `LogCategory::Storage` を流用する（テーマ専用カテゴリは設けない）。
 //!
-//! ⚠⚠ **アプリ定義コマンドは ACL の対象外なので、この 7 本は全 4 窓
-//! （main / comment-viewer / comment-overlay / pinned-overlay）から呼べる**（046b / 055b と同じ限界）。
+//! ⚠⚠ **アプリ定義コマンドは ACL の対象外なので、この 7 本は全 5 窓
+//! （main / comment-viewer / comment-overlay / pinned-overlay / effect-overlay）から呼べる**（046b / 055b と同じ限界）。
 //! capability で絞れないため、**コマンド自体を狭く作る**ことで担保している:
 //! - 汎用の `write_file(path, content)` 型は作らない（§3）。書けるのは
 //!   `app_data_dir/themes/<uuid>.css` だけで、**パスは frontend から受け取らない**。

@@ -50,8 +50,10 @@ static WINDOW_OPEN_LOCK: Mutex<()> = Mutex::new(());
 /// directories」／ tauri#11144）。当初の追修正③は overlay 窓にだけ独自引数を付けたため、既定引数で先に起動した
 /// `main` と不一致になり **Windows で overlay が一切開かない回帰** を生んでいた。
 ///
-/// 対策として、UDF を分けず（＝設定同期の localStorage を共有したまま。overlaySettings.ts）**3 窓すべてで
-/// この同一文字列に揃える**。`main`（最初に生成）にこの引数を効かせることで、共有ブラウザプロセスで
+/// 対策として、UDF を分けず（＝設定同期の localStorage を共有したまま。overlaySettings.ts）**全窓で
+/// この同一文字列に揃える**（`main` は `tauri.conf.json`、Rust 側は viewer / comment-overlay /
+/// pinned-overlay / effect-overlay の 4 窓。⚠ 窓数は下の `overlay_window_contract` が固定している）。
+/// `main`（最初に生成）にこの引数を効かせることで、共有ブラウザプロセスで
 /// `CalculateNativeWinOcclusion`（完全に隠れた窓の描画停止最適化）が無効になり、最背面(`always_on_bottom`)の
 /// overlay も描画継続 → OBS ウィンドウキャプチャが黒くならない（追修正③ 本来の目的）。
 ///
@@ -292,7 +294,7 @@ fn is_comment_overlay_open(app: AppHandle) -> bool {
 ///   ⚠ **046d で本窓も 044a の自動追加の対象になった**（046b 時点の「対象外＝手動キャプチャ前提・sidecar 側は
 ///   不変」という記述は失効）。したがってこのタイトルは表示用の文字列ではなく、
 ///   sidecar の `OBS_OVERLAYS.pinned.windowTitle` と**バイト一致していなければ機能が壊れる契約**である
-///   （下の `#[cfg(test)] mod pinned_overlay_contract` で固定した）。
+///   （下の `#[cfg(test)] mod overlay_window_contract` で固定した）。
 /// - 位置は既存 overlay（x=24〜424）の右隣に置いて**重ねない**＝デスクトップでも OBS の窓一覧でも取り違えない。
 /// - 幅 480 は「640 は広すぎ → 400 へ差し戻し・次に試すなら 480〜520」の実測教訓（progress.md）の下限。
 /// - **高さ 560 は実測見積りに基づく（046c で 320 から引き上げ）**。480px 幅では横クロームが 133px
@@ -314,11 +316,12 @@ fn is_comment_overlay_open(app: AppHandle) -> bool {
 ///
 /// 046d レビュー（対応済み）: この窓に関する不変条件のうち、**窓タイトル契約**（下記①）は 046d で
 /// 「壊れると OBS 自動追加が静かに失敗する」機能要件へ格上げされたため、`#[cfg(test)]` でテスト化した
-/// （`pinned_overlay_contract`）。とくに悪質な失敗モードは、sidecar 側 `ensureOverlaySource` の M2 フォールバック
+/// （`overlay_window_contract`）。とくに悪質な失敗モードは、sidecar 側 `ensureOverlaySource` の M2 フォールバック
 /// により **既存ソースがある状態で窓名不一致になると `"reused"`＝成功として返る**（UI は成功表示・OBS の
 /// ソースは真っ黒）ため、grep 頼みでは配信中に切り分けられない。
-/// ① 2 つの窓タイトルが sidecar の `OBS_OVERLAYS` とバイト一致し、かつ互いに部分文字列でないこと → テスト済み。
-/// ② `SHARED_BROWSER_ARGS` が全 4 窓（`main` は `tauri.conf.json`）でバイト一致していること → テスト済み。
+/// ① 窓タイトルが sidecar の `OBS_OVERLAYS` とバイト一致し、かつ互いに部分文字列でないこと → テスト済み
+///   （⚠ 061a で 3 窓へ拡張。総当たりループなので 4 本目を足しても組み合わせを取りこぼさない）。
+/// ② `SHARED_BROWSER_ARGS` が全窓（`main` は `tauri.conf.json`）でバイト一致していること → テスト済み。
 #[tauri::command(async)]
 fn open_pinned_overlay_window(app: AppHandle) -> AppResult<()> {
     // 二重生成試行ガード（viewer / comment-overlay と共有）。poison 回復の理由は WINDOW_OPEN_LOCK の注記、
@@ -385,6 +388,114 @@ fn is_pinned_overlay_open(app: AppHandle) -> bool {
     app.get_webview_window("pinned-overlay").is_some()
 }
 
+/// 061a: エフェクト（061b の「〇〇さんが ¥1,000」・061c/061d のテンプレート）を配信へ載せるための
+/// **専用の背景透過オーバーレイ窓**（label `effect-overlay`）を開く。既存 2 本
+/// （`comment-overlay`＝033f / `pinned-overlay`＝046b）と**同型の単一目的コマンド**で（§3・任意ラベル/
+/// 任意オプションの窓生成は露出しない）、OBS では 3 本目の独立したソースとして取り込む。
+///
+/// **表示専用・通信面ゼロ**: この窓の frontend（`EffectOverlayApp`）は **WS へ接続しない**
+/// （`connectCommentStream` を呼ばない）。061b はコメビュ窓が localStorage へ書いた `EffectRequest` を
+/// `storage` 購読で受ける設計なので、この窓が新規の外部通信・Rust emit・依存を持つことは無い
+/// （`pinned-overlay` と同じ構え）。`open_comment_viewer_window` と異なり sidecar には一切触れない
+/// （`ensure_started` を呼ばない／窓イベントで `shutdown` を登録しない）＝**閉じても sidecar は落ちない**
+/// （no-orphan 3 段 kill の契機はコメビュ窓に集約のまま・§6 の PID kill はそもそも発生しない）。
+/// capability は `capabilities/effect-overlay.json`（最小権限・既存 4 枚は不変）に閉じる。
+///
+/// **窓タイトル `StreamDock エフェクト`**: 044a/046d の自動ソース追加は sidecar の
+/// `OBS_OVERLAYS[kind].windowTitle` と**バイト一致**する窓名を OBS のウィンドウ一覧から `includes` で探すため、
+/// これは表示用の文字列ではなく**壊れると機能が壊れる 2 者間契約**である（下の `overlay_window_contract` で固定）。
+/// 3 つのタイトルが**互いに部分文字列でない**ことも実測済み（同テストが総当たりで固定）。
+/// ⚠ `includes` 一致なので「タイトルに `StreamDock エフェクト` を含む別の OS ウィンドウ」があれば取り違えうるが、
+/// ①一致対象は OS の窓一覧であってユーザーが OBS 上で付けたソース名ではない（OBS 側で好きな名前を付けても衝突しない）
+/// ②既存 2 窓も同じ性質で 044a/046d が受容済み ③誤取得は OBS プレビューで即座に見える
+/// （静かに壊れるのは「既存ソース＋窓名不一致」で `ensureOverlaySource` の M2 が `"reused"` を返す経路だけで、
+/// そちらは上記の契約テストが守る）ため、対策は入れない。
+/// **再修正トリガー**＝実機で誤取得が起きたら、sidecar の `findOverlayWindowItem` を
+/// 「完全一致 → 前方一致 → `includes`」の段階マッチへ変える（sidecar 1 関数の変更で済む）。
+///
+/// **サイズと位置の根拠**（061a で決定・⚠ `decorations(false)` では手動リサイズが実質できずサイズは
+/// 永続化されない＝**既定値がすべて**。046c の教訓）:
+/// - **幅 960** = 想定最小デスクトップ幅 1280（`tauri.conf.json` の `main` 既定幅＝本アプリが前提にする最小）の 75%。
+///   061b の「〇〇さんが ¥1,000」を 1〜2 行で大きく組む帯として、16:9 の配信画面に載せたとき横 3/4 を占める。
+/// - **高さ 360** = 投稿者名 1 行（大）＋金額 1 行（特大）＋余白でも余る値。061b が足りないと判断したら、
+///   frontend で縮小フィット（046c）を足す前に**まずここを上げる**（既定サイズが主役・フィットは保険）。
+/// - **位置 (160, 60)** = 1280×800 で x 160..1120 / y 60..420 ＝**完全に画面内**に収まる。
+///   ⚠ macOS は**完全に画面外**の窓でウィンドウキャプチャが凍結しやすい（033f の注記）ため、画面内は機能要件。
+/// - ⚠ **既存 2 窓と重なるが、これは意図的**。046b の doc が言う「重ねない＝取り違えない」は当時デスクトップに
+///   余白があったための配慮で**機能要件ではない**——OBS の対象特定は**窓タイトル**で行うので重なっても取り違えない。
+///   実測で 1280×800 では既存 2 窓が x24..936 / y48..768 を占め、**大きなエフェクト窓を重ねずに置く余地が無い**
+///   （残余は x968.. の 312px 幅のみ）。透過・最背面・非フォーカスなので配信者の操作も妨げない。
+///
+/// その他（透過・装飾なし・最背面・非フォーカス・影なし・`background_throttling(Disabled)`・
+/// `SHARED_BROWSER_ARGS`・`WINDOW_OPEN_LOCK`）は既存 2 本を**完全踏襲**する。とくに `SHARED_BROWSER_ARGS` は
+/// Windows で UDF 共有窓の引数が**全窓一致**でないと WebView2 生成が `ERROR_INVALID_STATE` で失敗し、
+/// この窓が開けない回帰になる（定数の注記・033f 追修正③の経緯。窓数は契約テストが固定）。
+///
+/// `(async)`: 窓生成を伴うため viewer/overlay と同じ理由で必須（Windows の白画面デッドロック回避。
+/// 詳細は `open_comment_viewer_window` の注記）。
+#[tauri::command(async)]
+fn open_effect_overlay_window(app: AppHandle) -> AppResult<()> {
+    // 二重生成試行ガード（viewer / comment-overlay / pinned-overlay と共有）。poison 回復の理由は
+    // WINDOW_OPEN_LOCK の注記、保持範囲の考え方は `open_comment_viewer_window` の注記を参照。
+    let _guard = WINDOW_OPEN_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+    // 既に開いていれば多重生成せず再利用する。最背面窓を前面へ引き上げてちらつかせないよう、
+    // set_focus はせず show のみ（既に可視なら実質 no-op）。
+    if let Some(window) = app.get_webview_window("effect-overlay") {
+        let _ = window.show();
+        return Ok(());
+    }
+    // 同一 Vite バンドルを読み込み、frontend は `getCurrentWindow().label` で EffectOverlayApp を描画する。
+    let _window =
+        WebviewWindowBuilder::new(&app, "effect-overlay", WebviewUrl::App("index.html".into()))
+            .title("StreamDock エフェクト")
+            .transparent(true)
+            .decorations(false)
+            .always_on_bottom(true)
+            .focused(false)
+            .shadow(false)
+            .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
+            .additional_browser_args(SHARED_BROWSER_ARGS)
+            .position(160.0, 60.0)
+            .inner_size(960.0, 360.0)
+            .min_inner_size(320.0, 120.0)
+            .build()
+            .map_err(|_| AppError::launch_failed("エフェクトのオーバーレイを開けませんでした"))?;
+    // 意図的に window イベントを登録しない: この窓は sidecar を起動/停止しないため、
+    // close 時の shutdown 連動（open_comment_viewer_window）は付けない（既存 overlay 2 本と同じ）。
+    Ok(())
+}
+
+/// 061a: エフェクト専用オーバーレイ窓（label `effect-overlay`）を閉じる。`obs-effects` 画面の表示トグル OFF 用。
+/// `close_pinned_overlay_window` と同型の単一目的コマンド（§3）で、任意ラベルの窓操作は露出しない。
+/// 窓が無ければ no-op（冪等）。この窓は sidecar を起動していないため `.close()` に shutdown 連動は無く、
+/// PID kill・プロセス名 kill も行わず自アプリのウィンドウを閉じるのみ（§6 の PID kill はそもそも発生せず・
+/// no-orphan kill 契機は不変）。
+#[tauri::command]
+fn close_effect_overlay_window(app: AppHandle) -> AppResult<()> {
+    if let Some(window) = app.get_webview_window("effect-overlay") {
+        window.close().map_err(|_| {
+            AppError::launch_failed("エフェクトのオーバーレイを閉じられませんでした")
+        })?;
+    }
+    Ok(())
+}
+
+/// 061a: エフェクト専用オーバーレイ窓が開いているかを返す読み取り専用コマンド（`is_pinned_overlay_open` を手本）。
+/// 用途は 2 つで、**別々の窓から呼ぶ**:
+/// ①`ObsEffectsScreen`（main 窓）が前提ステータス表示とマウント時の窓復元に使う
+/// ②`CommentViewerApp`（コメビュ窓）が `enableObs("effects")` を送る前に「窓が実在するか」を確かめるのに使う。
+/// ⚠ ②が**実窓**を見るのは 046d レビューの指摘と同じ理由——`requestObsAutoAdd` は「窓が OBS の
+/// ウィンドウ一覧に載っている」ことを前提にする操作で、設定 ON ／ 窓なしで走らせると sidecar 側
+/// `ensureOverlaySource` が**先に `CreateInput` でソースを作ってから**窓を探して失敗し、
+/// キャプチャ対象未設定の空ソースが OBS に残る（ユーザーが手で消すまで消えない）。
+#[tauri::command]
+fn is_effect_overlay_open(app: AppHandle) -> bool {
+    app.get_webview_window("effect-overlay").is_some()
+}
+
 /// 032c-b: viewer が接続する Twitch コメント WS の実ポートを返す読み取り専用コマンド（§3・単一目的）。
 /// sidecar が bind した実ポート（既定 17331・使用中なら空きポート）を返す。未確定なら `None`。
 /// frontend からは raw なパス/ポート/コマンドを受け取らない（ポートは Rust が sidecar の stdout から受領）。
@@ -403,7 +514,8 @@ fn get_comment_stream_port(app: AppHandle) -> Option<u16> {
 /// **同意ダイアログを経ずに外部 GET を起こす**経路を塞ぐ（詳細は `comment_sidecar` の
 /// `THEME_TICKET_PREFIX` の注記と `docs/security.md` §1 の 060c 例外節）。
 ///
-/// ⚠ アプリ定義コマンドは ACL 対象外＝全 4 窓から呼べるが、**webview の外からは呼べない**——
+/// ⚠ アプリ定義コマンドは ACL 対象外＝全 5 窓（061a で `effect-overlay` が加わった）から呼べるが、
+/// **webview の外からは呼べない**——
 /// それがここで効いている性質そのものである。⚠ 値はログにも画面にも出さない（§9）。
 #[tauri::command]
 fn get_theme_import_ticket(app: AppHandle) -> Option<String> {
@@ -587,6 +699,9 @@ pub fn run() {
             open_pinned_overlay_window,
             close_pinned_overlay_window,
             is_pinned_overlay_open,
+            open_effect_overlay_window,
+            close_effect_overlay_window,
+            is_effect_overlay_open,
             get_comment_stream_port,
             get_theme_import_ticket,
             launch_voicevox_engine,
@@ -759,8 +874,14 @@ fn boot_launch_presets(handle: tauri::AppHandle) {
 }
 
 #[cfg(test)]
-mod pinned_overlay_contract {
-    //! 046d レビュー: 透過オーバーレイ 2 窓のタイトルと `SHARED_BROWSER_ARGS` の**言語をまたぐ契約**を固定する。
+mod overlay_window_contract {
+    //! 046d レビュー / 061a: 透過オーバーレイ窓のタイトルと `SHARED_BROWSER_ARGS` の
+    //! **言語をまたぐ契約**を固定する。
+    //!
+    //! ⚠ **061a で `pinned_overlay_contract` から改名した**。3 窓（comment-overlay / pinned-overlay /
+    //! effect-overlay）の契約を扱うのに「pinned」を名乗っていると、4 本目を足す人がこのテストへ辿り着けない。
+    //! 旧名を先例として名指ししていた `audio/service.rs` / `overlay_theme/service.rs` /
+    //! `app_update/commands.rs` のコメントも併せて更新済み。
     //!
     //! なぜテストが必要か（046d で重大度が上がった）:
     //! - 046d 以前、窓タイトルの誤りは `SettingsView` の注記文言にしか影響しなかった（手動キャプチャ前提）。
@@ -768,68 +889,123 @@ mod pinned_overlay_contract {
     //!   **バイト一致**していないと OBS 自動追加が対象窓を見つけられない。しかも `ensureOverlaySource` の
     //!   M2 フォールバックにより、**既存ソースがある状態での不一致は `"reused"`＝成功として返る**ため
     //!   UI は成功表示・OBS のソースは真っ黒、という切り分け困難な壊れ方をする。
-    //! - 候補一致は `includes` なので、**2 つのタイトルが互いに部分文字列であってはいけない**
+    //! - 候補一致は `includes` なので、**タイトルが互いに部分文字列であってはいけない**
     //!   （片方を含むと、もう片方のソースが誤った窓を掴む）。
+    //!
+    //! ⚠⚠ **061a の要点＝窓が増えても組み合わせを取りこぼさない形にした**。2 窓のときの手書き比較
+    //! （2 方向）をそのまま 3 窓（6 方向）へ増やすと、4 本目で必ず抜ける。`OVERLAY_TITLES` を回す
+    //! **総当たりループ**にしてあるので、**足すのは配列の 1 行だけ**で 4 テストすべてが自動的に追随する。
     //!
     //! sidecar 側は TS なので Rust から型では参照できない。`include_str!` で**ソースを文字列として読み**、
     //! リテラルの存在を照合する（新規依存ゼロ・`#[cfg(test)]` のみ＝`cargo check` の通常ビルドには入らない）。
     //! 逆方向（TS→Rust）を静的に検証する手段が他に無いための折衷。
     //! 再修正トリガー＝窓名を Rust/TS の共有定義（ビルド時生成の JSON 等）へ寄せたら、このテストは不要になる。
 
-    /// この窓のタイトル（`open_pinned_overlay_window` の `.title` と一致させる）。
-    const PINNED_TITLE: &str = "StreamDock 固定コメント";
-    /// 既存コメント一覧オーバーレイのタイトル（`open_comment_overlay_window` の `.title` と一致させる）。
-    const COMMENTS_TITLE: &str = "StreamDock コメントオーバーレイ";
+    /// OBS 自動追加の対象になる透過オーバーレイ窓のタイトル（Rust の `.title` ／ sidecar の
+    /// `OBS_OVERLAYS[kind].windowTitle` と**バイト一致**する文字列）。
+    /// ⚠ 窓を増やしたら**ここへ 1 行足すだけ**でよい（下のテストは全部この配列を回す）。
+    /// ⚠ `comment-viewer` 窓（`コメントビューア for StreamDock`）は自動追加の対象外なので**入れない**。
+    const OVERLAY_TITLES: [&str; 3] = [
+        // `open_comment_overlay_window`（033f）
+        "StreamDock コメントオーバーレイ",
+        // `open_pinned_overlay_window`（046b）
+        "StreamDock 固定コメント",
+        // `open_effect_overlay_window`（061a）
+        "StreamDock エフェクト",
+    ];
+
+    /// `SHARED_BROWSER_ARGS` を参照している Rust 側の窓の数（`main` は `tauri.conf.json` 側なので含まない）。
+    ///
+    /// ⚠ 061a レビュー（Q-5）: **手で維持する `4` から `OVERLAY_TITLES` 由来の導出へ変えた**。
+    /// 総当たり化の売りが「足すのは `OVERLAY_TITLES` の 1 行だけ」なのに、この定数だけ 2 箇所目の
+    /// 編集を要求していたため。`+ 1` は **OBS 自動追加の対象外だが `SHARED_BROWSER_ARGS` は要る窓**＝
+    /// `comment-viewer`（`open_comment_viewer_window`）の分。
+    /// ⚠ 「透過オーバーレイでない窓」を Rust 側にもう 1 つ足すときだけ、この `+ 1` を増やすこと。
+    const RUST_WINDOWS_WITH_SHARED_ARGS: usize = OVERLAY_TITLES.len() + 1;
 
     const LIB_RS: &str = include_str!("lib.rs");
     const TAURI_CONF: &str = include_str!("../tauri.conf.json");
+    /// 061a レビュー（Q-7）: desktop 側の `ObsOverlayKind`（sidecar と**人手で同期している 2 実装目**）。
+    /// ⚠ WS 境界で型が失われるので、ずれても typecheck では気付けない。
+    const COMMENT_STREAM_TS: &str =
+        include_str!("../../src/features/comment-viewer/commentStream.ts");
+    /// 061a: frontend の窓操作ラッパ（`invoke("…")` の command 名がここに文字列で並ぶ）。
+    const WINDOW_API_TS: &str = include_str!("../../src/features/comment-viewer/windowApi.ts");
     const OBS_CLIENT_TS: &str =
         include_str!("../../../comment-sidecar/src/obs/obs-client.ts");
 
     #[test]
     fn titles_do_not_contain_each_other() {
-        // どちらかが他方の部分文字列になると、sidecar の `includes` 一致が窓を取り違える。
-        assert!(!PINNED_TITLE.contains(COMMENTS_TITLE));
-        assert!(!COMMENTS_TITLE.contains(PINNED_TITLE));
+        // どれかが他方の部分文字列になると、sidecar の `includes` 一致が窓を取り違える。
+        // ⚠ **総当たり**にしてあるので、窓を足しても組み合わせを取りこぼさない。
+        // ⚠ 同一タイトルの重複も同時に捕まる（`a.contains(a)` が真になるため）。
+        for (i, a) in OVERLAY_TITLES.iter().enumerate() {
+            for (j, b) in OVERLAY_TITLES.iter().enumerate() {
+                if i == j {
+                    continue;
+                }
+                assert!(
+                    !a.contains(b),
+                    "窓タイトルが互いに部分文字列になっている（sidecar の includes 一致が窓を取り違える）: {a} ⊃ {b}"
+                );
+            }
+        }
     }
 
     #[test]
     fn titles_are_used_by_the_window_builders() {
         // 実際の `.title(...)` 呼び出しに、このモジュールが契約とみなしている文字列が使われていること。
-        assert!(LIB_RS.contains(&format!(".title(\"{PINNED_TITLE}\")")));
-        assert!(LIB_RS.contains(&format!(".title(\"{COMMENTS_TITLE}\")")));
+        // ⚠ needle を実行時に組む理由は下の `shared_browser_args_match_all_windows` と同じ（自己参照の罠）。
+        // ⚠ 上の `OVERLAY_TITLES` の配列リテラルは `.title("…")` の形ではないので偽陽性にならない。
+        for title in OVERLAY_TITLES {
+            let needle = format!(".title(\"{title}\")");
+            assert!(
+                LIB_RS.contains(needle.as_str()),
+                "窓タイトル `{title}` を `.title(...)` で使っている窓生成が無い"
+            );
+        }
     }
 
     #[test]
     fn titles_match_sidecar_obs_overlays_table() {
         // sidecar の OBS_OVERLAYS が同じ窓名を持っていること（バイト一致・046d の機能要件）。
-        assert!(
-            OBS_CLIENT_TS.contains(&format!("windowTitle: \"{PINNED_TITLE}\"")),
-            "sidecar の OBS_OVERLAYS.pinned.windowTitle が Rust の窓タイトルと一致していない"
-        );
-        assert!(
-            OBS_CLIENT_TS.contains(&format!("windowTitle: \"{COMMENTS_TITLE}\"")),
-            "sidecar の OBS_OVERLAYS.comments.windowTitle が Rust の窓タイトルと一致していない"
+        // ⚠ 書式にも依存する（`windowTitle: "…"`＝コロンの後スペース 1 つ・ダブルクォート）。
+        // prettier がここを改行すると落ちるので、TS 側はこの 1 行の形を維持すること。
+        // ⚠ 開き引用符まで needle に含める。`windowTitle: ` だけだと
+        // `Record<…, { …; windowTitle: string }>` の**型注釈にもヒットする**（実際に踏んだ）。
+        let prefix = format!("{}: \"", "windowTitle");
+        for title in OVERLAY_TITLES {
+            let needle = format!("{prefix}{title}\"");
+            assert!(
+                OBS_CLIENT_TS.contains(needle.as_str()),
+                "sidecar の OBS_OVERLAYS に windowTitle `{title}` が無い（Rust の窓タイトルと不一致）"
+            );
+        }
+        // ⚠ **逆方向も固定する**: TS 側にだけエントリが増えて Rust 側に窓が無い状態
+        //（＝キャプチャ対象の窓が存在しないソースを OBS に作ってしまう）を捕まえる。
+        assert_eq!(
+            OBS_CLIENT_TS.matches(prefix.as_str()).count(),
+            OVERLAY_TITLES.len(),
+            "sidecar の OBS_OVERLAYS のエントリ数が Rust の窓数と一致していない"
         );
     }
 
     #[test]
-    fn shared_browser_args_match_all_four_windows() {
+    fn shared_browser_args_match_all_windows() {
         // Windows では UDF 共有窓の additional_browser_args が全窓一致でないと WebView2 生成が失敗する
         //（033f 追修正③の回帰）。main は tauri.conf.json 側なので、こちらも突き合わせる。
         assert!(
             TAURI_CONF.contains(super::SHARED_BROWSER_ARGS),
             "tauri.conf.json の additionalBrowserArgs が SHARED_BROWSER_ARGS と一致していない"
         );
-        // Rust 側の 3 窓（viewer / comment-overlay / pinned-overlay）すべてが定数を参照していること
-        //（リテラル直書きへの退行を防ぐ）。
+        // Rust 側の窓すべてが定数を参照していること（リテラル直書きへの退行を防ぐ）。
         // ⚠ needle を実行時に組むのは、`include_str!("lib.rs")` が**このテスト自身のソースも含む**ため。
         // 検索文字列をここに直書きすると自分自身がヒットして数が 1 つ増える（実際に踏んだ）。
         let needle = format!(".additional_browser_args({})", "SHARED_BROWSER_ARGS");
         assert_eq!(
             LIB_RS.matches(needle.as_str()).count(),
-            3,
-            "SHARED_BROWSER_ARGS を参照する窓が 3 つでない（窓を増減したらこの数も更新すること）"
+            RUST_WINDOWS_WITH_SHARED_ARGS,
+            "SHARED_BROWSER_ARGS を参照する窓の数が想定と違う（窓を増減したら定数も更新すること）"
         );
     }
 
@@ -856,6 +1032,100 @@ mod pinned_overlay_contract {
         assert!(
             code_only.contains(needle.as_str()),
             "updater plugin の登録が消えている（check_app_update が実行時 panic する）"
+        );
+    }
+
+    /// 061a レビュー（Q-7）: **`ObsOverlayKind` の 2 実装のずれを機械で止める。**
+    ///
+    /// この union は sidecar（`obs/obs-client.ts`）と desktop（`features/comment-viewer/commentStream.ts`）の
+    /// **2 か所に人手で同期**されている。WS 境界で型が失われるので**ずれても typecheck では気付けず**、
+    /// 実害は「desktop が送った種別を sidecar の `parseOverlayKind` が `"comments"` へ落とす」＝
+    /// **誤った窓のソースが OBS に作られる**という静かな方向に出る。
+    /// ⚠ 上の 3 テスト（窓タイトル契約）は**文字列としてのタイトル**しか見ないので、このずれは捕まえない
+    ///（`commentStream.ts` にコメントで明記してあるが、コメントは機械ではない）。
+    ///
+    /// 実装は既存の `OBS_CLIENT_TS` と同じ手口（`include_str!` で TS をソースとして読む・新規依存ゼロ）。
+    /// **再修正トリガー**＝窓名と同じく union も Rust/TS の共有定義（ビルド時生成）へ寄せたら、本テストは不要。
+    #[test]
+    fn obs_overlay_kind_union_matches_between_sidecar_and_desktop() {
+        /// `export type ObsOverlayKind = …;` の右辺を、空白を潰した形で取り出す
+        /// （prettier の改行差で落ちないようにするため）。
+        fn union_body(src: &str, needle: &str) -> Option<String> {
+            let rest = src.split_once(needle)?.1;
+            let decl = rest.split_once(';')?.0;
+            Some(decl.split_whitespace().collect::<String>())
+        }
+        // ⚠ needle は実行時に組む（このモジュールも `include_str!("lib.rs")` の対象なので、
+        // 直書きすると LIB_RS を見る検査へ流用したときに自己ヒットする＝既存テストと同じ規律）。
+        let needle = format!("export type {} =", "ObsOverlayKind");
+        let sidecar = union_body(OBS_CLIENT_TS, needle.as_str());
+        let desktop = union_body(COMMENT_STREAM_TS, needle.as_str());
+        assert!(
+            sidecar.is_some(),
+            "sidecar の obs-client.ts に ObsOverlayKind の宣言が見つからない"
+        );
+        assert_eq!(
+            sidecar, desktop,
+            "ObsOverlayKind が sidecar と desktop でずれている（誤った窓のソースが OBS に作られる）"
+        );
+        // ⚠ **窓の数とも突き合わせる**。片方だけに値を足した状態は上の assert_eq! が捕まえるが、
+        // 「両方に足したのに Rust 側の窓（＝`OVERLAY_TITLES`）を足し忘れた」はこちらでしか止まらない。
+        let quoted = sidecar.map(|u| u.matches('"').count() / 2).unwrap_or(0);
+        assert_eq!(
+            quoted,
+            OVERLAY_TITLES.len(),
+            "ObsOverlayKind の値の数が Rust の窓数と一致していない"
+        );
+    }
+
+    /// 061a: **frontend が呼ぶ窓操作コマンドが、実際に `generate_handler!` へ登録されていること。**
+    ///
+    /// ⚠ command 名は TS 側では**ただの文字列リテラル**で、typo しても `pnpm typecheck` は通る。
+    /// 実行時に invoke が reject するだけだが、呼び出し側（`App.tsx` の起動時復元・
+    /// `ObsEffectsScreen` のトグル）はどちらも `.catch(() => {})` で握りつぶすので、
+    /// **画面上は何も起きないまま静かに壊れる**（「表示 ON にしたのに窓が出ない」が無言で起きる）。
+    /// 逆向き（Rust 側で `generate_handler!` から 1 行消す）も同じ壊れ方をする。
+    /// TS 側の `windowApi.test.ts` は「ラッパがその名前を呼ぶこと」までしか見られないので、
+    /// **名前が Rust に実在するか**はここでしか止められない。
+    #[test]
+    fn window_commands_used_by_the_frontend_are_registered() {
+        // `generate_handler![ … ]` のブロックだけを切り出す（関数定義がある＝登録済み、とは限らないため）。
+        // ⚠ needle は実行時に組む（`include_str!("lib.rs")` の自己ヒット対策・このモジュールの規律）。
+        let handler_head = format!("{}![", "generate_handler");
+        let registered = LIB_RS
+            .split_once(handler_head.as_str())
+            .and_then(|(_, rest)| rest.split_once(']'))
+            .map(|(block, _)| block);
+        assert!(
+            registered.is_some(),
+            "generate_handler! のブロックが見つからない（登録の照合ができない）"
+        );
+        let registered = registered.unwrap_or("");
+
+        // `windowApi.ts` の `invoke<…>("command_name")` を全部拾う。
+        let call_head = format!("{}<", "invoke");
+        let mut found = 0usize;
+        for chunk in WINDOW_API_TS.split(call_head.as_str()).skip(1) {
+            // `invoke<void>("open_effect_overlay_window")` → 最初の引用符の中身を取る。
+            let Some((_, after_quote)) = chunk.split_once('"') else {
+                continue;
+            };
+            let Some((command, _)) = after_quote.split_once('"') else {
+                continue;
+            };
+            found += 1;
+            assert!(
+                registered
+                    .split(',')
+                    .any(|entry| entry.trim() == command),
+                "windowApi.ts が呼ぶ `{command}` が generate_handler! に登録されていない（invoke が実行時に reject し、UI は無反応のまま静かに壊れる）"
+            );
+        }
+        // ⚠ 抽出そのものが壊れて 0 件になったら、このテストは**何も検証しないまま緑になる**。
+        // 窓 4 種 × (open / close / is) の 12 本が下限（減ったら抽出か実装のどちらかが壊れている）。
+        assert!(
+            found >= 12,
+            "windowApi.ts から抽出できた command が {found} 本しかない（抽出が壊れている可能性）"
         );
     }
 }

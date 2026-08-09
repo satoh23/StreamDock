@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "effect-overlay",
+  "description": "Capability for the OBS effect transparent overlay window (061a). Display-only, minimal permissions.",
+  "windows": ["effect-overlay"],
+  "permissions": ["core:default"]
+}

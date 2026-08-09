@@ -34,7 +34,7 @@
 //!   1 バイトも結合しない**（ファイル名は `<uuid v4>.css`）。
 //! - §8: frontend の生パス・生 CSS を信用しない。検証はすべて Rust 側で行う。
 //! - §3: コマンドは単一目的。⚠ **アプリ定義コマンドは ACL の対象外なので、ここで足す 5 本は
-//!   全 4 窓（main / comment-viewer / comment-overlay / pinned-overlay）から呼べる**（046b / 055b と同じ限界）。
+//!   全 5 窓（main / comment-viewer / comment-overlay / pinned-overlay / effect-overlay）から呼べる**（046b / 055b と同じ限界）。
 //! - §1: 外部通信ゼロ。本モジュールは**外部参照を除去する側**で、取得は 060c の領分。
 //! - §9: ログにも `AppError` にも CSS 本文・フルパス・除去した URL を出さない。
 pub mod commands;

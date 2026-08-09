@@ -16852,3 +16852,473 @@ block** ＋ `overflow: hidden`。ブロック幅がコンテナ幅に固定さ�
    「外部フォント URL は取り込み時に除去される」はもう成り立たないので、
    039 に残る固有価値は「**ユーザーが自分の端末に持っているフォントファイルを選んで登録する**」だけ。
    再開時はタスクファイルの動機部分を読み直すこと。
+
+## 061a エフェクト用透過窓＋OBS ソース自動追加＋`obs-effects` 画面の枠（2026-08-09）
+
+エフェクトを配信へ載せるための**器**を作った。**この時点では何も表示しない**（中身は 061b）。
+[タスクファイル](tasks/061a-effect-overlay-window.md) / 親 [061](tasks/061-obs-effects.md)。
+
+### ⚠⚠ 着手前に判明した構造上の穴（本タスク最大の論点）
+
+**`obs-enable` を送れるのはコメビュ窓だけで、`obs-effects` 画面は main 窓にある。** 実コードでの確認:
+
+- `connectCommentStream` を呼ぶのは `CommentViewerApp` と `OverlayApp` の 2 つだけ。**main 窓は WS を張らない。**
+- `enableObs` / `hideObs` を持つ `CommentStreamHandle` を握るのは `CommentViewerApp` の `streamRef` のみ。
+- sidecar のライフサイクルは**コメビュ窓に紐づく**（`open_comment_viewer_window` が `ensure_started`・
+  窓の close で `shutdown`）＝**コメビュ窓が閉じていれば sidecar は動いていない。**
+- 親 061 は「エフェクト画面は main 窓」と決定済み（061c/061d のファイル取り込みが `default.json` の
+  `dialog:allow-open` を要るのが実質理由）。
+
+⚠ **穴は「表示トグル」ではなく `obs-enable` の送出だけに限局される**——アプリ定義コマンドは ACL 対象外なので、
+`open/close/is_effect_overlay_window` は main 窓からそのまま invoke できる（`default.json` は差分ゼロ）。
+
+### ①〜⑧ の判断と根拠
+
+| # | 論点 | 決定 | 根拠 |
+|---|---|---|---|
+| ① | 誰が `obs-enable("effects")` を送るか | **(a) トグルは main 窓・送出はコメビュ窓が代行** | 下記 |
+| ② | 窓の既定サイズ・位置 | `position(160,60)` / `inner_size(960,360)` / `min(320,120)` | 下記 |
+| ③ | セットアップ用ガイド | **マウントから 30 秒で自動消灯**（`SETUP_GUIDE_VISIBLE_MS`） | 下記 |
+| ④ | `parseOverlayKind` の更新範囲 | **`obs-client.ts` へ移し、`OBS_OVERLAYS` から allow-list を導出** | 下記 |
+| ⑤ | 045c の規律の置き場所とタイマー | コメビュ窓／**`Map<ObsOverlayKind, number>` へ一般化** | 下記 |
+| ⑥ | 窓タイトル | `StreamDock エフェクト` で確定・`includes` 衝突対策は**入れない** | 下記 |
+| ⑦ | `ObsEffectsScreen` の最小構成 | 表示トグル＋自動反映トグル＋前提ステータス 3 行 | 下記 |
+| ⑧ | 061b への器の形 | WS を繋がない・`sd-overlay` を付けない・空の `.root` だけ | 下記 |
+
+**① (a) を選んだ理由（(b)(c) を却下した理由）**
+
+- **(b) main 窓からも WS を張る＝却下。** ①`get_comment_stream_port` が null の間**毎秒 invoke が永久ループ**
+  （`RETRY_INTERVAL_MS`＝コメビュ窓を開かない大多数のユーザーで恒久的に回る）②`connectCommentStream` は
+  `onComments` 必須なので**第三者のコメント本文が main 窓へ流れ込む**（§9 の明確な後退）。
+- **(c) トグルをコメビュ窓側へ置く＝次点。** 既存 2 オーバーレイと完全に同型で窓跨ぎの配線ゼロ、
+  `obsState`（added/failed）をそのまま出せる唯一の案だが、**親 061 の「エフェクト画面は main 窓」と正面衝突**し、
+  `obs-effects` 画面が 061a 時点でほぼ空になる（061c/061d は結局 main 窓なので設定が 2 窓に散る）。
+- **(a) の内訳**: main 窓＝窓の open/close を直接 invoke ＋ 自動反映は **localStorage に設定を書くだけ**。
+  コメビュ窓＝**046b と同じ二段構え**（保証ベースライン＝マウント時 reconcile／即時反映＝`storage` 購読・
+  ベストエフォート）で `enableObs("effects")` を代行。
+  ⚠ **決め手は「061b が必ず使う `storage` 経路を 061a で先に実地検証できる」こと。**
+- **①-1 コメビュ窓が閉じているときの伝え方**＝`ObsEffectsScreen` に**前提ステータス 3 行**を常設
+  （エフェクト窓 / コメントビューア / OBS WebSocket。既存の read-only コマンド 3 本を再利用）。
+  ⚠ **`obsState`（added/reused/failed）は main 窓に届かない**ので出さない（結果表示は従来どおり
+  コメビュ窓ツールバー）。再修正トリガー＝「main 窓でも成否を見たい」となったら localStorage に 1 キー足す。
+- **①-2**「コメントビューアを開く」ボタンを置いた（`windowApi.openCommentViewerWindow`＝既存コマンドの
+  薄いラッパ・新規 Rust ゼロ）。⚠ main 窓が sidecar を起動できること自体は既存の構造。
+- **①-3 自動反映は専用キー**（`...effect-obs-auto-add`）。既存 `OBS_AUTO_ADD_KEY` と共有すると
+  `CommentViewerApp` の `obsAutoAdd` **state が main 窓の書換で stale になり**、**045c で回帰が見つかった箇所に
+  手を入れる**ことになるため。専用キーなら既存 2 種の自動反映挙動は差分ゼロ。
+- **①-4 起動時の窓復元は `MainWindowApp` のマウント**（046b と同じ狙い＝配信開始時に OBS ソースが黒くならない）。
+
+**② サイズと位置の実値と根拠**（実値は `open_effect_overlay_window` の doc に記載）
+
+- 幅 960＝想定最小デスクトップ幅 1280（`tauri.conf.json` の `main` 既定幅）の 75%。高さ 360＝名前 1 行＋
+  金額 1 行を大きく組んでも余る値。⚠ `decorations(false)` では手動リサイズが実質できず永続化もされない
+  ＝**既定値がすべて**（046c の教訓）。
+- 位置 (160,60)＝1280×800 で x160..1120 / y60..420 ＝**完全に画面内**。⚠ macOS は完全に画面外の窓で
+  キャプチャが凍結しやすい（033f）ため画面内は機能要件。
+- ⚠ **既存 2 窓と重なるが意図的**。046b の「重ねない＝取り違えない」は当時デスクトップに余白があったための
+  配慮で**機能要件ではない**（OBS の対象特定は窓タイトル）。実測で 1280×800 では既存 2 窓が
+  x24..936 / y48..768 を占め、**大きなエフェクト窓を重ねずに置く余地が無い**（残余は x968.. の 312px 幅）。
+
+**③ ガイドを「時間で消す」にした理由**
+
+- 却下①「`obs-effects` 画面を開いている間だけ」＝main 窓とエフェクト窓は別 webview なので localStorage の
+  フラグが要る。⚠ **main 窓が異常終了するとフラグが立ったまま残る＝fail-open**（配信中に出る）。
+  ハートビートで fail-safe にできるが、数秒ごとの書込が全窓へ `storage` を撒くので割に合わない。
+- 却下②「設定トグルで消せる」＝既定 ON だと配信中に出うる／既定 OFF だとセットアップができない。
+- 採用案は **fail-safe**（永続フラグも窓跨ぎ信号も持たない＝消し忘れが構造的に起きない）で、
+  配信中は窓を開けっぱなしにする運用（親 046）なので配信開始時にはとっくに消えている。
+  出し直しは**表示 OFF→ON**（窓が作り直される）。画面の注記に明記済み。
+
+**④ `parseOverlayKind` を `obs-client.ts` へ移した（予告は `obs-helpers.ts` だった）**
+
+- 046d の JSDoc が「3 つ目の値を足すとき」を再修正トリガーとして名指ししていた。`index.ts` は top-level で
+  `main()` を呼ぶ＝**import すると sidecar が起動する**ためテスト不能だった（＝**検証ゼロ**のまま
+  「実質的な唯一のセキュリティ制御」が置かれていた）。
+- 移動先を変えたのは、**allow-list を `OBS_OVERLAYS` から導出する**形にしたかったから（表と同居が必要）。
+  これで「表を増やしたのに検証側を更新し忘れる」が構造的に起きない。
+  副産物として **`obs-helpers.ts` は差分ゼロ**を維持できた（fail-closed 層に触れていない担保が続く）。
+- ⚠⚠ 照合は **`Object.keys` の配列に対する `includes`**。`v in OBS_OVERLAYS` にすると
+  `"__proto__"` / `"constructor"` / `"toString"` が**プロトタイプ経由で真になり fail-open する**
+  （ミューテーション M7 で実測・3 ケースがレッドになる）。
+
+**⑤ タイマーを `Map` へ一般化した理由**
+
+045c が踏んだ回帰は**「取り消し漏れ」そのもの**。3 本目を copy-paste するとアンマウント cleanup が
+3 分岐になり 4 本目で必ず忘れる。`Map<ObsOverlayKind, number>` にして `clearObsEnableTimer()` を
+**引数なしで全種別**、`clearObsEnableTimer(kind)` で 1 本だけ取り消せる形にした
+（cleanup はループ 1 本＝**種別を増やしても無改変**）。既存 `CommentViewerApp.toolbar.test.tsx`
+（045c/046d の猶予タイマー仕様）が緑のままであることが安全網。
+⚠ **effects の OFF で `disableObs()` は呼ばない**（kind を取らず sidecar を丸ごと idle にするので
+comments / pinned を巻き添えにする）。
+
+**⑥ 窓タイトル**
+
+`"StreamDock エフェクト"`。相互非部分文字列を **node で 6 方向すべて実測 `false`**（UTF-8 で 41/29/26 バイト）。
+`includes` 衝突（タイトルに `StreamDock エフェクト` を含む別の OS ウィンドウ）は**何もしない**:
+①一致対象は OS の窓一覧であって**ユーザーが OBS 上で付けたソース名ではない** ②既存 2 窓も同じ性質で
+044a/046d が受容済み ③誤取得は OBS プレビューで即座に見える（静かに壊れるのは M2 フォールバック経路だけで、
+そちらは契約テストが守る）。再修正トリガー＝実機で誤取得が起きたら `findOverlayWindowItem` を
+「完全一致 → 前方一致 → `includes`」の段階マッチへ変える。
+
+**⑦ main 窓の作法（新しい px / weight を発明しない）**
+
+⚠ **054 の `.fieldLabel` / `.note` はコメビュ窓（`CommentViewerApp.module.css`）の語彙で、main 窓には無い。**
+main 窓は `screens/formLayout.module.css`（`layout.top` / `layout.title` / `layout.pageTitle` /
+`layout.panel` / `layout.panelHead` / `layout.panelBody`）＋画面ごとの `*.module.css`。
+トグルは `screens/comment-viewer/ToggleSwitch` を**再利用**（`role="switch"` の a11y 込みで既製）。
+⚠ ディレクトリ跨ぎ import なので、**3 画面目が使ったら `components/` へ移す**（コメントに再修正トリガー記載）。
+`ObsEffectsScreen.module.css` はステータス行の並びだけ。
+
+**⑧ 061b への器の形**
+
+- **用意した**: `data-overlay="1"` の set/remove ／ 空の `.root`（中央寄せ・`overflow:hidden`・背景を書かない）／
+  ガイド ／ 窓ラベル分岐 ／ capability ／ OBS ソース ／ 契約テスト ／ 設定キー 2 本。
+- **用意しない**: `connectCommentStream`（**WS を繋がない**）／`effectQueue` / `effectTrigger` / `EffectRequest` ／
+  表示秒数・フェード ／ コメント本文・投稿者名・アバターに触れる import ／ **`sd-overlay` クラス**
+  （060d の注入先は `comment-overlay` のみ）。
+- ⚠ `EffectOverlayApp` は `OverlayApp.module.css` を**明示的に import する**。背景透過の `:global` ルールは
+  あの 1 枚にしかなく、「`App.tsx` が `OverlayApp` を静的 import しているからバンドルに入る」という
+  暗黙の依存に頼ると、将来 lazy 化したときに**この窓だけ背景が不透明になる**（原因が追いにくい）。
+
+### 契約テストを 3 窓へ拡張した方法
+
+`lib.rs` の `#[cfg(test)] mod pinned_overlay_contract` を **`overlay_window_contract` へ改名**し
+（3 窓の契約に「pinned」は誤誘導で、4 本目を足す人が grep で辿り着けない。旧名を先例として名指ししていた
+`audio/service.rs` / `overlay_theme/service.rs` / `app_update/commands.rs` のコメントも更新）、
+**`OVERLAY_TITLES: [&str; 3]` を回す総当たりループ**にした。⚠ **足すのは配列の 1 行だけ**で 4 テストが追随する。
+
+1. `titles_do_not_contain_each_other` — 二重ループ（`i != j`）。同一タイトルの重複も同時に捕まる。
+2. `titles_are_used_by_the_window_builders` — 各タイトルが `.title("…")` で使われている。
+3. `titles_match_sidecar_obs_overlays_table` — sidecar の `windowTitle: "…"` とバイト一致 ＋
+   **エントリ数の一致**（TS 側にだけ増えた状態を捕まえる）。
+4. `shared_browser_args_match_all_windows` — `tauri.conf.json` との一致 ＋ Rust 側の参照数 **3 → 4**。
+
+⚠⚠ **踏んだ罠 2 つ**:
+- `windowTitle: ` だけを needle にすると `Record<…, { …; windowTitle: string }>` の**型注釈にもヒットして
+  エントリ数が 4 になる**。開き引用符まで含める（`windowTitle: "`）。
+- `include_str!("lib.rs")` は**このテスト自身のソースも読む**ので、needle は必ず `format!` で実行時に組む
+  （既存コメントの警告どおり）。`OVERLAY_TITLES` の配列リテラルは `.title("…")` の形ではないので偽陽性にならない。
+
+### ミューテーションによる実効性の確認（11 件・全て KILLED）
+
+| # | 変異 | 結果 |
+|---|---|---|
+| M1 | Rust の窓タイトルを 1 文字変える | `titles_are_used_by_the_window_builders` レッド |
+| M2 | sidecar の `windowTitle` を 1 文字変える | `titles_match_sidecar_obs_overlays_table` レッド |
+| M3 | エフェクト窓名を既存名の上位文字列にする | `titles_do_not_contain_each_other` レッド（＋M2 も） |
+| M4 | エフェクト窓から `SHARED_BROWSER_ARGS` を外す | `shared_browser_args_match_all_windows` レッド（3≠4） |
+| M5 | `OBS_OVERLAYS` から `effects` を削除 | **`tsc` と Rust 契約テストの二重で**レッド |
+| M6 | `parseOverlayKind` を `v as ObsOverlayKind` に | sidecar 8 ケースがレッド |
+| M7 | `parseOverlayKind` を `v in OBS_OVERLAYS` に | `__proto__` / `constructor` / `toString` がレッド |
+| M8 | 表示 OFF での猶予タイマー取り消しを外す | `CommentViewerApp.effects.test.tsx` レッド |
+| M9 | 自動反映 ON で窓を開く（045c が消した経路） | `ObsEffectsScreen.test.tsx` レッド |
+| M10 | `App.tsx` の `effect-overlay` 分岐を消す | `App.window.test.tsx` レッド |
+| M11 | `headerSections` を `implemented: false` へ戻す | `headerSections.test.ts` レッド（2 ケース） |
+
+### 検証結果（2026-08-09）
+
+- `pnpm --filter ./apps/desktop typecheck` ✅ / `lint` ✅ / `test` ✅（**54 files / 1256 tests** ＋
+  `check:css` OK ＋ `check:version` OK）
+- `pnpm --filter ./apps/comment-sidecar test` ✅（6 スイートすべて PASS）
+- `cargo check` ✅ / `cargo test` ✅（**267 passed**）
+- **差分ゼロの担保**（すべて確認済み）: `tauri.conf.json` ／ `.github/` ／ 既存 capability 4 枚 ／
+  全 `package.json`・`pnpm-lock.yaml`・`Cargo.toml`/`Cargo.lock` ／ **`obs-helpers.ts`・`host-guard.ts`**。
+  capability は `effect-overlay.json` の **1 ファイル追加のみ**（`core:default` のみ）。
+- `obs-client.ts` の diff は **union ＋ レジストリ 1 エントリ ＋ `parseOverlayKind` の移設だけ**——
+  `enable` / `hide` / `disable` / `ensureOverlaySource` / `findOverlayWindowItem` /
+  `pickWgcMethodValue` / `setOverlaySceneItemEnabled` は 1 行も変えていない。
+
+### security-review（2026-08-09・**外部レビュー**・判定「軽微な懸念あり」・修正必須 2 件／いずれもドキュメント）
+
+⚠ **この節は当初「判定『問題なし』・修正必須 0 件」を、レビュー実施前に書いていた**（指摘 S-2）。
+セキュリティ記録に未実施の判定が入ると「レビュー済みだから見なくてよい」の材料になるため、
+実際の結果へ差し替えた。**以後、実施前に書く場合は「実施予定」と明記すること。**
+
+044a / 046d と同型のため軽め。確認した観点と結果は `docs/security.md` の
+「Tauri Permissions / Capabilities 方針」061a 節が正（新規 capability は `core:default` のみ／
+コマンド 3 本はいずれも引数が `AppHandle` のみ＝**任意ラベルの窓操作を露出しない**／
+`ObsOverlayKind` は固定 union のまま・`parseOverlayKind` は allow-list（プロトタイプ経由を通さない形）／
+新規宛先ゼロ／エフェクト窓は WS を張らず import は React と CSS 2 枚だけ／`console.*`・shell・fs・
+`dangerouslySetInnerHTML` の追加ゼロ）。
+
+記録した 2 つの新しい経路（どちらも受容）:
+1. main 窓に「コメントビューアを開く」導線（＝main 窓から sidecar を起動できる。既存構造で新規能力ではない）。
+2. **アプリ起動時に永続設定 ON なら窓が開く**（046b で指摘された論点）。061a 時点でこの窓は**完全に空**
+   なので 046b より安全側。⚠ **061b のレビューで「マウント時に過去のエフェクトを再生しない」を再確認すること。**
+
+#### レビュー指摘と対応（セキュリティ 4 件）
+
+コード上のセキュリティ欠陥は **0 件**（新規宛先ゼロ・fail-closed 層の差分ゼロ・capability 最小・
+`parseOverlayKind` が fail-closed・§9 該当なしを、いずれも実差分で確認）。**懸念は 4 件ともドキュメント。**
+
+| # | 指摘 | 対応 |
+|---|---|---|
+| S-1（必須） | **061b 仕様書の (2) に「保証ベースライン＝エフェクト窓のマウント時に読む」が残っており、同ファイル内の「マウント時に過去のエフェクトを再生しない」と矛盾**。061a が「起動時に窓を開く」経路を新設したため、字面どおり実装されると**アプリ起動だけで前回配信の表示名・金額が出る＝046b の S-1 再発** | **修正**: 061b を「`storage` 購読の一段だけ」に書き換え、二段構えを採らない理由（機能面＋セキュリティ面）と「復活させないこと」を明記 |
+| S-2（必須） | **security.md / progress.md / task-board / 061a タスクファイルの 4 箇所が、レビュー実施前に「判定『問題なし』・修正必須 0 件」を確定事項として記録していた** | **修正**: 4 箇所すべてを実際の結果へ差し替え、再発防止（実施前は「実施予定」と書く）を security.md に明記 |
+| S-3（後回し可） | 「外部コンテンツを踏む経路ゼロ」という受容根拠の**失効条件**が書かれていない（061c/061d で第三者アセットを読み込む） | **修正**: security.md 061a 節に失効条件と「061c の security-review で必ず再評価」を追記 |
+| S-4（記録のみ） | loopback WS 未認証＝`parseOverlayKind` が実質唯一の制御。`"effects"` が受理値に増えた | 対応不要（姿勢は不変・security.md に記載済み）。むしろ 046d では**検証ゼロ**だった同関数が 061a でテスト化され前進 |
+
+#### レビュー指摘と対応（品質 10 件）
+
+| # | 指摘 | 対応 |
+|---|---|---|
+| Q-1（中） | **起動時の窓自動復元により、セットアップ用ガイドが配信中に出うる。** 「窓が開くのは明示操作のときだけ」という論証を、**同じ 061a が新設した `App.tsx` の復元経路が偽にしていた**（本アプリは配信準備時に起動されるランチャなので主動線）。ユーザー向け文言「配信中には表示されません」が守れない | **修正**: ワンショット旗 `EFFECT_OVERLAY_GUIDE_PENDING_KEY` を新設。**立てるのは表示トグル ON だけ**・倒すのは窓のマウント時。復元経路では出ない。文言も実際の条件へ修正。テスト 2 本追加 |
+| Q-2（中） | **`obsState` を 3 種別で共有しているのに、effects だけマウント時 reconcile からも走る。** 046d の受容根拠「セットアップ時の一度きりの操作」から外れており、「設定 ON のまま OBS 未起動でコメビュ窓を開く」と**開くたびに赤字が出る**（設定した場所は main 窓なので出所が分からない） | **コメントのみ**（要監視）。種別ごとの表示には `obs.state` フレームに種別を載せる＝**wire 変更**が要り、061a の「OBS ロジック不変」要件と 046d の再修正トリガーの領分。再修正トリガー 2 つ（実機で確認された／061b で毎コメント発火になる）を `requestObsAutoAdd` に明記 |
+| Q-3（低） | `MainWindowApp` の復元と `ObsEffectsScreen` のトグルが**別 ref**（046b は 1 本のチェーン）。理屈上 open が close を追い越す | **コメントのみ**。到達に「起動→画面遷移→トグル OFF」が invoke 往復より速いことが要る＝実質到達不能。逆順は既存の直読みが塞ぐ。再修正トリガーを `App.tsx` に明記 |
+| Q-4（低） | `localStorage.clear()` 時、表示 OFF 側の後始末（`hideObs`／idle）に到達しない | **コメントのみ**。「設定の意図ごと消える操作で OBS を触りに行く方が筋が悪い」＋到達は DevTools のみ。設定リセット機能を足すときの指針を明記 |
+| Q-5（低） | `RUST_WINDOWS_WITH_SHARED_ARGS = 4` が手維持で、総当たり化の売り（1 行足すだけ）を損ねている | **修正**: `OVERLAY_TITLES.len() + 1` へ導出化（`+ 1` は `comment-viewer` の分）
+| Q-6（低） | `OBS_OVERLAYS` を export したことで**書き換え可能**になった（読み取り専用はコメントでの宣言のみ） | **修正**: `Object.freeze`（各エントリも）＋ `Readonly<...>`。型（コンパイル時）と freeze（実行時）の両方が要る旨を明記 |
+| Q-7（低） | `ObsOverlayKind` の 2 実装（sidecar / desktop）を人手同期しており、契約テストでは捕まらない。**機械で守る手段が本当に無いか** | **修正**: 既存の `include_str!` の先例で `commentStream.ts` も読み、union 宣言のバイト一致＋値の数を `OVERLAY_TITLES.len()` と突き合わせるテストを追加（`obs_overlay_kind_union_matches_between_sidecar_and_desktop`） |
+| Q-8（低） | `.statusValue.blocked` が `--muted`＝**OK 状態より薄く**、「対処が要る行ほど目立たない」逆向き | **修正**: 色は `--text` に戻し、点線の下線で注意を足す（色覚に依存しない差分）。警告色トークンが入ったら差し替える旨を明記 |
+| Q-9（低） | テストのコメントと実態の乖離（`afterEach` が「clearInterval の裏取り」と称して何も検証していない）／ポーリング停止・トグル直列化が未カバー／**`MainWindowApp` の復元 effect がどのテストにも無い** | **修正**: 誤コメントを訂正し、ポーリング停止・直列化・ガイド旗の 3 ケースを追加。復元 effect は**既知の穴として `App.window.test.tsx` に記録**（純関数へ切り出す再修正トリガー付き） |
+| Q-10（低） | `CommentViewerApp` をマウントするテストが 4 本目でハーネスが重複 | **コメントのみ**。モックは「何を隔離したか」の宣言でもあり、1 本に寄せると片方の都合が他方を巻き添えにする。共有するなら `importOriginal` 方式にする旨と再修正トリガー（5 本目 / 実際に事故ったとき）を明記 |
+
+⚠ このほか情報として、046b の doc が言う「オーバーレイ窓を重ねない」が 061a で方針転換された点を
+046b 側にも 1 行追記した（古い方針を先に読む事故を防ぐため）。
+
+#### レビュー後のテスト補強（1261 → 1298 ／ cargo 268 → 269）
+
+レビューで「テストの死角」と指摘した領域のうち、**ユニットテストで固定できるものを全て埋めた**。
+
+| 追加 | 何を仕様として固定したか |
+|---|---|
+| **`effectOverlayRestore.ts`（新規モジュール）＋ `.test.ts`（9 件）** | ⚠⚠ **Q-9 の穴を塞いだ**。`App.tsx` の `useEffect` 直書きだった「起動時の窓復元」を切り出し、061a で唯一「ユーザー操作なしに窓が開く」挙動をテスト可能にした。固定: 設定 ON ＋窓なし→開く／設定 OFF →開かない／窓あり→開かない／⚠ **`is*` の解決待ちに OFF にされたら開かない**（046b の直読み判断の本体）／⚠ **復元では guide 旗を立てない**（Q-1）／既存の旗を消さない／例外は握りつぶさず返す |
+| **`windowApi.test.ts`（新規・18 件）** | command 名は TS ではただの文字列で typo しても typecheck が通り、呼び出し側は全て `.catch(() => {})` ＝ **無反応のまま静かに壊れる**。12 本の名前を固定し、⚠ **全て無引数で呼ぶ**（窓のラベル/オプションを frontend から渡す口を作らない・§3）＋名前の重複なし＋`is*` の戻り値透過を固定 |
+| **`lib.rs` `window_commands_used_by_the_frontend_are_registered`（新規）** | ⚠ `windowApi.ts` が呼ぶ command が**実際に `generate_handler!` へ登録されている**こと。TS 側テストは「ラッパがその名前を呼ぶ」までしか見られないので、**名前が Rust に実在するか**はここでしか止まらない（逆向き＝Rust から 1 行消す退行も捕まる）。抽出が壊れて 0 件になったら緑になる罠へ下限 12 本のガードを入れた |
+| `overlaySettings.effects.test.ts`（+6） | guide 旗の仕様。⚠ **未保存＝false**（＝起動時復元でガイドを出さないことの土台）／不正値は false へ倒す（fail-safe＝配信画面を汚さない側）／表示設定 ON では旗が立たない／旗を倒しても表示設定は残る |
+| `ObsEffectsScreen.test.tsx`（+5） | ⚠ アンマウントでポーリングが止まる（配信中に回り続けない）／⚠ トグル連打が直列化され最後の意図が勝つ／⚠ guide 旗は表示 ON のときだけ立つ／認証必須の表示／⚠ **他の窓での開閉に追随する**（ポーリングにしている理由そのもの） |
+| `EffectOverlayApp.test.tsx`（+2） | ⚠ **旗が無ければガイドを出さない**（Q-1 の本命）／旗はマウント時に倒れる（次に開く窓では出ない） |
+| `CommentViewerApp.effects.test.tsx`（+2） | ⚠ `localStorage.clear()` は仕掛かりを取り消し **OBS へ何も送らない**（Q-4 で「修正不要」とした判断を仕様として固定）／エフェクト以外のキーの `storage` には反応しない |
+
+**ミューテーション 6 件を実測しすべて KILLED**: ①設定を `is*` の解決前に読む ②窓の有無を無視して常に開く
+③設定を無視して常に開く ④`windowApi` の command 名を typo ⑤`generate_handler!` から 1 行削除
+⑥desktop 側 union だけ 4 値目を足す。⚠ ①⑤⑥ は**いずれも「実行時まで気付けず、UI は無反応のまま」**の
+クラスで、今回の補強で初めて機械的に止まるようになった。
+
+### ⚠ 残していること（実機確認は依頼者の環境で実施）
+
+```bash
+pnpm --filter ./apps/desktop tauri dev
+```
+
+1. ヘッダー「OBSエフェクト」が**実画面**を開く（準備中プレースホルダでない）
+2. 表示トグル ON → 透過窓が開く（最背面・非フォーカス・枠なし・960×360 @ (160,60)・画面内に収まる）
+3. OBS 自動反映 ON ＋ コメビュ窓を開いた状態で表示 ON → OBS に「StreamDock エフェクト」ソースが作られる
+4. ⚠ 3 つ同時に表示して、「コメントオーバーレイ」「固定コメント」と**取り違えない**
+5. 表示 OFF → ソースが**非表示**（削除されない）／コメビュ窓ツールバーのステータスが idle へ
+6. 猶予中に表示 OFF → 後から enable が飛ばない
+7. ⚠ **①の挙動**: コメビュ窓を**閉じた状態**で表示トグルを操作 → 窓は開閉できるが OBS 反映は起きず、
+   画面に「コメントビューアを開いてください／反映は保留」が出る。**その後コメビュ窓を開くと
+   マウント時 reconcile で反映される**（保証ベースライン）。開いたまま操作したときは即時反映（`storage`）。
+   ⚠⚠ **`storage` の窓跨ぎ伝播が実機で届くかはここで初めて実証される**（046a/034e から未検証のまま）。
+   **届かなければ 061b の `EffectRequest` 伝達も同じ経路で詰まる**ので、結果を 061b へ必ず申し送ること。
+8. セットアップ用ガイドが窓を開いた直後に出て、**30 秒で消える**／表示 OFF→ON で出し直せる／配信中に出ない
+9. Windows（098 の VM が使えれば）で窓が生成できる（`SHARED_BROWSER_ARGS` 一致の確認）
+
+## 2026-08-09 セッション引き継ぎ（061a レビュー → 反映 → テスト補強／**未コミット・実機確認は依頼者が実施済み**）
+
+> ⚠ 本セッションは **061a の実装そのものは行っていない**（前セッションの成果物が未コミットで残っていた状態からの開始）。
+> やったのは **①セキュリティレビュー ②品質レビュー ③指摘の反映（apply-review） ④テスト補強**の 4 つ。
+
+### 今回完了したこと
+
+**(1) security-review（外部レビュー・判定「軽微な懸念あり」）**
+- **コード上のセキュリティ欠陥は 0 件**。新規宛先ゼロ／`obs-helpers.ts`・`host-guard.ts` の差分ゼロ／
+  既存 capability 4 枚と `tauri.conf.json`（`csp: null`）の差分ゼロ／新 command 3 本が `AppHandle` のみ／
+  `parseOverlayKind` が fail-closed（`__proto__` 等）／§9 該当なし、を**すべて実差分で確認**。
+- ⚠ **申し送り 8（`git checkout --` 事故後の `lib.rs` 書き直し）は問題なし**と実証。HEAD 版と現行を
+  **コメント行を除いて diff** し、差分が意図した追加のみ＝欠落・混入ゼロであることを確認した。
+- 懸念 4 件は**すべてドキュメント**（S-1〜S-4）。詳細は上の 061a 節「レビュー指摘と対応（セキュリティ 4 件）」。
+
+**(2) code-review（品質・10 件）** — 詳細は上の 061a 節「レビュー指摘と対応（品質 10 件）」。
+- 重い 2 件は **Q-1**（起動時の窓自動復元により**セットアップ用ガイドが配信中に出うる**）と
+  **Q-2**（`obsState` 共有 × effects だけマウント reconcile から走る）。
+
+**(3) apply-review（要修正 6 件を修正・修正不要 6 件をコメント化）**
+- ⚠⚠ **Q-1 を構造で解決**: ワンショット旗 `EFFECT_OVERLAY_GUIDE_PENDING_KEY` を新設し、
+  **旗を立てるのは表示トグル ON（明示操作）だけ**・倒すのは窓のマウント時にした。起動時の窓復元では出ない。
+  読みを `useState` 初期化子・倒しを `useEffect` に分けてある（初期化子で消すと StrictMode の二重レンダーで
+  dev だけガイドが出なくなる罠を回避）。守れない断言だった文言 2 箇所も実条件へ修正。
+- **S-1 を修正**: 061b 仕様書 (2) の「保証ベースライン＝エフェクト窓のマウント時に読む」を削除し
+  「`storage` 購読の一段だけ」に一本化（**復活させないこと**と理由を明記）。
+- **S-2 を修正**: レビュー実施**前**に「判定『問題なし』・修正必須 0 件」を確定事項として書いていた 4 箇所を
+  実際の結果へ差し替え、再発防止（実施前は「実施予定」と書く）を security.md に明記。
+- その他: S-3（受容根拠の失効条件）／Q-5（`RUST_WINDOWS_WITH_SHARED_ARGS` の導出化）／
+  Q-6（`OBS_OVERLAYS` の `Object.freeze`）／Q-7（union ずれの契約テスト新設）／Q-8（`.blocked` の色が逆向き）。
+
+**(4) テスト補強（1256 → 1298 ／ cargo 267 → 269）** — 詳細は上の 061a 節「レビュー後のテスト補強」。
+- ⚠⚠ **Q-9 の穴を塞いだ**: `App.tsx` の `useEffect` 直書きだった起動時の窓復元を
+  **`effectOverlayRestore.ts` へ切り出して単体テスト可能にした**（061a で唯一「ユーザー操作なしに窓が開く」挙動）。
+- `windowApi.test.ts`（新規・command 名と**全て無引数**＝§3 を固定）と、Rust 側
+  `window_commands_used_by_the_frontend_are_registered`（TS が呼ぶ名前が `generate_handler!` に実在するか）を新設。
+- **ミューテーション 6 件を実測しすべて KILLED**（①設定を await 前に読む ②窓の有無を無視 ③設定を無視
+  ④command 名 typo ⑤`generate_handler!` から 1 行削除 ⑥desktop 側 union だけ増やす）。
+
+**(5) 実機確認（依頼者が実施）**
+- 依頼者より「**動作確認問題ありませんでした**」との報告。
+- ⚠ **個別 9 項目の内訳までは共有されていない。** とくに次の 2 つは次セッション冒頭で明示的に確認すること:
+  - ⑦ **`storage` の窓跨ぎ伝播**（046a/034e から未検証だった最重要点。ここが通っていれば 061b の
+    `EffectRequest` 伝達もそのまま乗る／通っていなければ 061b は伝達経路の設計変更が要る）
+  - ⑨ **Windows での 5 窓生成**（`SHARED_BROWSER_ARGS` 一致。Mac では検証不能）
+
+### 変更した主要ファイル（**36 件・すべて未コミット／base は `2130833`**）
+
+| 区分 | ファイル |
+| --- | --- |
+| Rust（主） | `src-tauri/src/lib.rs`（新 command 3 本＋`overlay_window_contract` を 3 窓へ拡張＋**本セッションで契約テスト 2 本追加**） |
+| Rust（コメントのみ） | `src-tauri/src/{audio/service.rs, overlay_theme/{commands,mod,service}.rs, app_update/commands.rs}` |
+| capability（新規 1 枚） | `src-tauri/capabilities/effect-overlay.json`（`core:default` のみ） |
+| sidecar | `src/obs/obs-client.ts`（union＋表＋`parseOverlayKind` 移設＋**本セッションで `Object.freeze`**）／`src/index.ts`／`scripts/test-obs-client.mjs` |
+| frontend（新規画面） | `src/screens/obs-effects/{EffectOverlayApp,ObsEffectsScreen}.{tsx,module.css}` |
+| frontend（**本セッション新規**） | `src/features/comment-viewer/effectOverlayRestore.ts`（起動時復元の切り出し） |
+| frontend（配線） | `src/App.tsx`／`src/components/headerSections.ts`／`src/features/comment-viewer/{commentStream,windowApi,overlaySettings}.ts`／`src/screens/comment-viewer/CommentViewerApp.tsx` |
+| 静的ガード | `apps/desktop/scripts/check-css-guards.mjs`（(10-d) の否定検査に `EffectOverlayApp.tsx` を追加） |
+| テスト（9 本） | `App.window.test.tsx`／`components/headerSections.test.ts`／`features/comment-viewer/{overlaySettings.effects,effectOverlayRestore,windowApi}.test.ts`／`screens/obs-effects/{EffectOverlayApp,ObsEffectsScreen}.test.tsx`／`screens/comment-viewer/CommentViewerApp.effects.test.tsx` |
+| docs | `docs/security.md`／`docs/progress.md`／`docs/task-board.md`／`docs/tasks/{061a,061b,046b}-*.md` |
+
+### まだ未完了のこと
+
+1. ⚠⚠ **セッション終盤に見つかった「OBS 連携の結果が観測できない」問題（未修正・依頼者の判断で最後にまとめて対応）**
+   ——「ツールバーとは何か」の確認から芋づるで判明した、**実装と UI 文言の食い違い**:
+   - **(A) `ObsEffectsScreen` の案内文が事実と違う。** 「追加や失敗の結果はコメントビューアの**画面上部**に
+     表示されます」と書いてあるが、画面上部（`.toolbar`）に出るのは**失敗の赤字 1 つだけ**で、
+     成功（added/reused）も進行（connecting）も**出さない**（045c で意図的に撤回済み）。
+     全状態が見えるのは **⚙設定 →「OBSに表示」カード**（`SettingsView.tsx`）の方。
+   - **(B) エフェクトの失敗が、別トグルの状態次第で消える。** ツールバーの赤字は
+     `{obsAutoAdd && obsState === "failed"}` で、この `obsAutoAdd` は **`OBS_AUTO_ADD_KEY`（コメント一覧・
+     固定コメント用）** の state。つまり「**コメント側 OFF ／ エフェクト側 ON**」という自然な使い方だと、
+     エフェクトの失敗が**ツールバーに出ない**。⚠ Q-2 は「関係ない赤字が出る」方向だったが、
+     こちらは「**出るべき赤字が出ない**」方向で実害が大きい。
+   - **(C)** 設定カードの成功文言は「**OBSにコメントを表示しました。**」で、`obsState` を 3 種別で共有している
+     ため**エフェクトのソース追加でも同じ文**が出る（Q-2 の症状の一つ）。
+   - 修正方針: **A**＝文言 1 箇所（すぐできる）／**B**＝赤字のゲートを効果側の設定にも広げる（数行＋テスト。
+     ただし「どちらの失敗か区別できない」は残る）／**C**＝Q-2 の本丸（`obs.state` に `overlay` を載せ
+     `obsState` を `Record<ObsOverlayKind, ObsState>` へ。**sidecar の wire 変更を含む**＝046d の再修正トリガーと同じ作業）。
+2. **Q-2（`obsState` 共有）はコメントのみで残してある**（`requestObsAutoAdd` の JSDoc に再修正トリガー 2 つを明記）。
+   上記 1(B)(C) と**同じ根**なので、直すならまとめて 1 回で。
+3. ⚠ **コミット・push していない**（36 ファイル・ブランチ `main`）。方針どおり本人の明示指示待ち。
+4. **実機確認の内訳が未共有**（上記「(5)」）。とくに ⑦ `storage` の窓跨ぎ伝播 と ⑨ Windows。
+5. `headerSections.ts` の**らくらくツール設定に `comingSoonDescription` が残置**（`implemented: true` で未使用）。
+   061a のスコープ外なので触っていない。文言タスクを起票するときに揃える。
+
+### ⚠⚠ セッション最後の仕様変更（2026-08-09・依頼者決定）——061b の設計を差し替えた
+
+**きっかけ**: 依頼者から「エフェクトが内蔵コメビュに依存しているのが不便。**OBS 側のコメント一覧から
+取れないか**」という問い。
+
+**調査結果（却下の根拠）**: **OBS からコメントは取れない。** obs-websocket 5 のプロトコルに
+チャット取得のリクエストが 1 つも無く（Scenes / Inputs / SceneItems / Outputs / Stream / Record /
+Filters / Transitions / Ui のみ）、OBS の「チャット」ドックは Twitch/YouTube のチャットページを出す
+**ブラウザパネル**で外から読む口が無い。DOM を掻けば依存先が OBS ではなく**プラットフォームの HTML**へ
+移るだけで、親 061 の「第三者コードを実行しない」とも衝突する。
+
+**採った案**: 問題意識（＝コメビュ窓への依存）は正しいので、**データ経路の方を分けた**。
+
+```
+変更前: sidecar ──WS──▶ コメビュ窓 ──localStorage + storage──▶ エフェクト窓
+変更後: sidecar ──WS──▶ コメビュ窓
+                 └─WS──▶ エフェクト窓          （並列・独立）
+```
+
+**判断の決め手**（実コード調査）:
+- `connectCommentStream` の呼び出しは `CommentViewerApp` と **`OverlayApp`（`comment-overlay` 窓）** の 2 つ。
+  ＝**「オーバーレイ窓が sidecar の WS を直接張る」は既にある構造**で、エフェクト窓だけが例外だった。
+  → **新方式の発明ではなく、既存の形へ揃えるだけ**。
+- ✅ **副産物として、061a のレビューで積み残した最大の技術リスク（`storage` の窓跨ぎ伝播が実機で届くか）が
+  丸ごと消える。** §9 追補（046a）の判定も不要になる（localStorage に第三者データを置かなくなるため）。
+- ⚠⚠ **矢印を分けるだけでは足りない**（ここが重要）: `ensure_started`（sidecar 起動）の呼び出しは
+  **コード全体で `open_comment_viewer_window` の 1 箇所だけ**で、停止はコメビュ窓の close に紐づく。
+  **エフェクト窓が WS を張れても、コメビュ窓を開いていなければ WS サーバー自体が存在しない。**
+  → **sidecar ライフサイクルの切り離し（061b の新設 (0)）が必須**。
+- ⚠ **§1 は破らない**: sidecar の起動はローカル WS サーバーを立てるだけで**外部通信を伴わない**
+  （`index.ts` に「ネットワークは張らない（取得は start-session で明示）」と明記）。
+- ⚠ **達成範囲を過大に書かないこと**: ✅「一度コメント取得を開始すれば、コメビュ窓を閉じても
+  エフェクトが出続ける」まで。❌「コメビュ窓を**一度も開かず**に」は、`start-session` の導線が
+  `CommentViewerApp` にしかないので**別タスク**（§1 の例外範囲の読み直しが要る）。
+
+**影響**: 061b が「frontend のみ・Rust/sidecar 差分ゼロ・**軽レビュー**」から
+「**Rust を含む・security-review 必須**」へ変わった（§6 のプロセス停止設計に触るため）。
+061a の器は作り直さないが、**「WS を張らない」という記述（コード・テスト・security.md 061a 節）は
+061b ですべて更新が要る**。061c/061d への影響は無い。
+
+**記録した先**: [docs/tasks/061b-monetary-effect-builtin.md](tasks/061b-monetary-effect-builtin.md)（冒頭に仕様変更節・
+前提に実コード調査・**(0) を新設**・(2) を全面差し替え・やらないこと/制約/完了条件/確認コマンド/レビューを整合）／
+親 [061](tasks/061-obs-effects.md)（仕様変更節を新設・子タスク表の層とレビュー区分を更新・横断方針に追記）／
+[061a](tasks/061a-effect-overlay-window.md)（冒頭に「決定が 1 つ覆った」節）／
+[task-board.md](task-board.md)（061b 行と、古くなった申し送り 2 行に取り消し線）。
+
+### 次にやるべきタスク
+
+1. **061b 組み込み投げ銭エフェクト＋発火層＋sidecar ライフサイクルの切り離し**
+   （[docs/tasks/061b-monetary-effect-builtin.md](tasks/061b-monetary-effect-builtin.md)）。
+   ⚠ **着手前に必ず読む**: 061b 冒頭の**仕様変更節**と「現在の前提」に足した**実コード調査**、
+   および task-board の 061b 行（061a からの申し送り。**2 行に取り消し線が入っている**）。
+   ⚠ **(0) → (2) を 1 段目として仕上げ、そこで一度動作確認を挟む**こと（(1) 以降は 2 段目）。
+   分けたくなったら `061b-1`（経路）／`061b-2`（エフェクト本体）へ割ってよい。
+   ⚠ **security-review 必須**（§6 の孤児プロセス／§1 の例外範囲が主対象）。
+2. 上記「まだ未完了のこと 1」（A/B/C）の対応。**061b で effects が毎コメント発火の層になる前**にやると、
+   Q-2 の再修正トリガー②と同時に片付く。
+3. 061c（テンプレート取り込み・**security-review 必須**）。⚠ security.md 061a 節に書いた
+   「外部コンテンツを踏む経路ゼロ」の**失効条件**がここで発火する（必ず再評価すること）。
+
+### 既知のエラー
+
+- **なし**（最終状態は全検証グリーン）。
+
+⚠⚠ **ただし未解明の flaky が 1 つある。次に踏んだら深追いすること。**
+
+**観測事実**（推測と分けて書く）:
+- フルスイート（1298 件）で **1 件だけ失敗する事象を 2 回**観測した。
+- **2 回とも「ファイルを編集した直後の 1 回目の実行」**で起きた。
+- **2 回とも失敗テスト名を捕捉できなかった**（気付いて grep したときには再現しなくなっていた）。
+- そのあと **`vitest run` 6 回＋`pnpm test` 8 回＝計 14 回連続グリーン**（同一コードのまま）。
+- cargo / sidecar 側では一度も起きていない。
+
+**仮説（未検証）**: 編集直後の初回は Vite の transform が全件走って実行が遅くなり、
+`waitFor`（`@testing-library` の既定タイムアウト **1000ms**）に依存するケースが負荷で跨いでいる。
+`apps/desktop/vitest.config.ts` には `testTimeout` も `asyncUtilTimeout` も設定が無く、既定のまま。
+
+**打った手**: 本セッションで追加した唯一の `waitFor` 依存ケース（`ObsEffectsScreen` のトグル直列化）は
+**`act` で流し切る決定的な書き方へ直した**（`waitFor` を使わない）。ただし**既存テストには `waitFor` が多数あり**、
+そちらは触っていないので、仮説が正しければ再発しうる。
+
+**次に踏んだときの手順**:
+1. まず **失敗テスト名を必ず記録する**（`pnpm --filter ./apps/desktop test 2>&1 | tee /tmp/vitest.log` で保全）。
+2. 名前が取れたら、そのケースが `waitFor` 依存かを確認する。依存していれば `act` で流し切る形へ書き換える
+   （本セッションの `ObsEffectsScreen.test.tsx` の直列化ケースが手本）。
+3. 個別対応でなく面で潰すなら、`src/test/setup.ts` に
+   `configure({ asyncUtilTimeout: 3000 })`（`@testing-library/dom`）を入れる。⚠ 全テストに効くので、
+   **flaky を隠すだけになっていないか**（＝本当に遅いだけなのか、実は競合バグなのか）を先に切り分けること。
+
+### 実行した確認コマンド（すべてグリーン）
+
+```bash
+pnpm --filter ./apps/desktop typecheck          # tsc --noEmit
+pnpm --filter ./apps/desktop lint               # eslint .
+pnpm --filter ./apps/desktop test               # 56 files / 1298 tests ＋ check:css OK ＋ check:version OK
+pnpm --filter ./apps/comment-sidecar test       # OBS-CLIENT PASS / DEV-MOCK PASS
+cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml
+cargo test  --manifest-path apps/desktop/src-tauri/Cargo.toml   # 269 passed
+```
+
+不変条件の再確認（**すべて差分ゼロを維持**）:
+
+```bash
+git status --short -- apps/comment-sidecar/src/obs/obs-helpers.ts apps/comment-sidecar/src/host-guard.ts
+git status --short -- apps/desktop/src-tauri/capabilities/{comment-overlay,comment-viewer,default,pinned-overlay}.json
+git status --short -- apps/desktop/src-tauri/tauri.conf.json
+git status --short -- {apps/desktop,apps/comment-sidecar,.}/package.json pnpm-lock.yaml apps/desktop/src-tauri/Cargo.{toml,lock}
+```
+
+### 次回セッションで最初に読むべきファイル
+
+1. **本引き継ぎ節**（いま読んでいるここ）。とくに「まだ未完了のこと 1」（A/B/C）が最大の宿題。
+2. **`docs/progress.md` の「## 061a …」節**（16856 行〜）。①〜⑧ の判断と根拠・契約テストの拡張方法・
+   ミューテーション・**レビュー指摘と対応（セキュリティ 4 / 品質 10）**・**レビュー後のテスト補強**が全部ここ。
+3. **`docs/security.md` の「Tauri Permissions / Capabilities 方針」061a 節**
+   （5 窓になった限界・受容根拠と**その失効条件**・レビュー結果）。
+4. **`docs/tasks/061b-monetary-effect-builtin.md`**（次タスク。**(2) 窓間伝達を書き換えてある**）と
+   **`docs/task-board.md` の 061b 行**（061a からの申し送り一式）。
+5. 実装の入口: `apps/desktop/src-tauri/src/lib.rs`（`open_effect_overlay_window` と
+   `mod overlay_window_contract`）／`apps/desktop/src/screens/obs-effects/`／
+   `apps/desktop/src/features/comment-viewer/effectOverlayRestore.ts`。

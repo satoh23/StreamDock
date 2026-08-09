@@ -110,7 +110,7 @@ const MAX_NAME_CHARS: usize = 80;
 /// 登録できるテーマの件数上限。
 ///
 /// ⚠ **無制限にディスクが増える経路を作らないため**。取り込みコマンドはアプリ定義コマンドなので
-/// **全 4 窓から呼べる**（ACL 対象外）＝上限は構造側に持たせる。
+/// **全 5 窓から呼べる**（ACL 対象外）＝上限は構造側に持たせる。
 const MAX_THEMES: u32 = 200;
 
 // --- 純粋な検証（テストの主対象）-----------------------------------------------------------------
@@ -228,7 +228,7 @@ fn validate_source_path(raw: &str) -> AppResult<PathBuf> {
     reject_control_chars(trimmed, "ファイルパスに制御文字は使用できません")?;
 
     // ⚠⚠ **UNC / ネットワークパスは触る前に拒否する**（security-review S-4）。
-    // `import_overlay_theme` はアプリ定義コマンド＝**ACL 対象外で全 4 窓から呼べる**ので、
+    // `import_overlay_theme` はアプリ定義コマンド＝**ACL 対象外で全 5 窓から呼べる**ので、
     // `path` が dialog 由来である保証は無い（Rust からは確かめようがない）。Windows で
     // `\\evil.example\share\x.css` を渡されると、下の `fs::metadata` の時点で
     // **OS が攻撃者ホストへ SMB 接続し、既定設定では NTLM でユーザー/マシンの資格情報ハッシュが飛ぶ**
@@ -639,7 +639,7 @@ mod tests {
     //! 060b の検証・保存まわりの仕様テストと、**ソース文字列の契約テスト**。
     //!
     //! 契約テストは `audio::service` / `obs_config` / `app_update::commands` /
-    //! `lib.rs::pinned_overlay_contract` の先例と同型で、
+    //! `lib.rs::overlay_window_contract` の先例と同型で、
     //! **テストでは踏めないセキュリティ不変条件を機械的に守る**ためのもの。
     //! ⚠ needle は必ず `format!` で実行時に組む（`include_str!` は自ファイルを読むので、
     //! 検索文字列を直書きすると自己ヒットで判定が骨抜きになる）。
@@ -1157,7 +1157,7 @@ mod tests {
 
     #[test]
     fn network_paths_are_refused_before_the_filesystem_is_touched() {
-        // ⚠⚠ security-review S-4。`import_overlay_theme` は ACL 対象外＝全 4 窓から任意文字列で呼べる。
+        // ⚠⚠ security-review S-4。`import_overlay_theme` は ACL 対象外＝全 5 窓から任意文字列で呼べる。
         // Windows で UNC を渡されると `fs::metadata` の時点で SMB 接続が起き、既定設定では NTLM で
         // 資格情報ハッシュが飛ぶ（ユーザー操作ゼロの egress）。**拡張子より前に**弾くこと。
         for bad in [
@@ -1355,7 +1355,7 @@ mod tests {
     }
 
     /// ⚠ 件数上限（200 件）も貼り付け経路で効く＝**無制限にディスクが増える経路にならない**。
-    /// アプリ定義コマンドは ACL 対象外＝全 4 窓から呼べるので、この歯止めは構造側で要る。
+    /// アプリ定義コマンドは ACL 対象外＝全 5 窓から呼べるので、この歯止めは構造側で要る。
     #[test]
     fn pasted_text_respects_the_theme_count_cap() {
         let dir = TempDir::new();
@@ -1809,7 +1809,7 @@ mod tests {
 
     #[test]
     fn exposes_exactly_nine_single_purpose_commands() {
-        // §3: 汎用の読み書きコマンドを作らない。⚠ アプリ定義コマンドは ACL 対象外＝**全 4 窓から呼べる**。
+        // §3: 汎用の読み書きコマンドを作らない。⚠ アプリ定義コマンドは ACL 対象外＝**全 5 窓から呼べる**。
         // ⚠ 060e で 6 本目（`import_overlay_theme_text`）、060c で 7 本目
         // （`import_overlay_theme_snapshot`）、**060h で 8・9 本目（`attach_overlay_theme_fonts` /
         // `get_overlay_theme_font_css`）**を意図的に足したので、関数名も 5 → 6 → 7 → 9 へ改名している

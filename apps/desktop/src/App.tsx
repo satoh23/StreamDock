@@ -35,6 +35,9 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { CommentViewerApp } from "./screens/comment-viewer/CommentViewerApp";
 import { OverlayApp } from "./screens/comment-viewer/OverlayApp";
 import { PinnedOverlayApp } from "./screens/comment-viewer/PinnedOverlayApp";
+import { EffectOverlayApp } from "./screens/obs-effects/EffectOverlayApp";
+import { ObsEffectsScreen } from "./screens/obs-effects/ObsEffectsScreen";
+import { restoreEffectOverlayWindow } from "./features/comment-viewer/effectOverlayRestore";
 
 function MainWindowApp() {
   const [screen, setScreen] = useState<Screen>("main");
@@ -61,6 +64,43 @@ function MainWindowApp() {
   // 「ツール管理へ追加」で来たときは rakuraku-tools へ戻す）。
   const [addToolPrefillName, setAddToolPrefillName] = useState<string | null>(null);
   const [addToolOrigin, setAddToolOrigin] = useState<Screen>("main");
+
+  // 061a: 「エフェクトを配信画面に表示する」が ON なのに窓が無ければ開き直す（永続設定の復元）。
+  //
+  // ⚠ **ここ（main 窓のマウント＝アプリ起動時）で復元するのが要点**。046b が固定コメント窓で同じことを
+  // している理由と同じで、**配信開始時に窓が無いと OBS のウィンドウキャプチャソースが真っ黒のまま始まる**。
+  // `obs-effects` 画面を開いたときだけ復元する案は、その画面を毎回訪れないと窓が出ない＝目的を満たさない。
+  //
+  // ⚠ **ユーザー操作なしに窓が開く経路が 1 本増える**（046b の security-review で指摘された論点）。
+  // 許容する根拠は 046b より明確に強い: ①起点は明示的な永続設定（既定 OFF）②開く窓は
+  // **061a 時点では完全に空**（第三者の個人データを 1 バイトも描かない）③新規通信・OBS 接続・sidecar 起動を
+  // いずれも伴わない。⚠ 061b でこの窓が投稿者名と金額を描くようになるが、061b の設計は
+  // 「届かなかったら諦める・マウント時に過去のエフェクトを再生しない」なので、
+  // **起動時に前回の第三者データが出る経路は生まれない**（046b が踏んだ S-1 とはここが違う）。
+  //
+  // ⚠ 自動 close は作らない（設定 OFF で窓が開いていても閉じない）。親 046 の「窓が消えると OBS ソースが
+  // 壊れる」規律に揃える。⚠ state ではなく `loadEffectOverlayEnabled()` を直読みするのは 046b と同じ理由
+  //（is* の解決を待つ間にユーザーが OFF にしたとき、stale な true で窓を開かないため）。
+  //
+  // ⚠ 061a レビュー（Q-9）: 判断の本体は **`effectOverlayRestore.ts` へ切り出して単体テストしてある**
+  //（`MainWindowApp` は invoke 依存の hook を多数マウントするので、ここに直書きすると
+  // 「ユーザー操作なしに窓が開く」挙動がテストの死角に落ちる）。仕様の正はあちらの JSDoc とテスト。
+  //
+  // ⚠ 061a レビュー（Q-3・修正不要）: 046b は復元とトグルを**同じ `pinnedOverlayOpRef` のチェーン**に
+  // 乗せているが、061a は復元がここ（`MainWindowApp`）・トグルが `ObsEffectsScreen` の
+  // `effectOverlayOpRef` と**別コンポーネント＝別 ref** なので、両者の順序は直列化されていない。
+  // 理屈上は「復元の open（`command(async)`＝別スレッド）が、トグル OFF の close（同期コマンド）を
+  // 追い越す → 設定 OFF なのに窓が残る（自動 close 経路が無いのでセッション中は解消しない）」が起こりうる。
+  // ⚠ それでも直さないのは、**到達に「アプリ起動 → ヘッダーから OBS エフェクト画面へ遷移 → トグル OFF」が
+  // 復元 invoke の往復（数百 ms）より速いこと**が要るから＝実質到達不能。逆順（OFF→ON）は上の直読みが塞ぐ。
+  // 窓をまたぐので ref の共有もできない（共有するなら localStorage 経由のロックが要り、割に合わない）。
+  // **再修正トリガー**＝`obs-effects` 画面が起動直後の初期画面になる／復元を遅延させる等で、
+  // 「復元の解決前にトグルへ触れる」が現実的な操作になったら、復元を `ObsEffectsScreen` 側へ寄せて
+  // 1 本の ref チェーンに統合する。
+  useEffect(() => {
+    // 窓生成の失敗は他機能に影響させない（ここで完結させる）。復元できなくても設定は残るので次回に再挑戦する。
+    void restoreEffectOverlayWindow().catch(() => {});
+  }, []);
 
   // プリセット一覧が変わったら、選択中IDが有効か検証し、無効なら先頭（無ければ null）へ寄せる
   useEffect(() => {
@@ -356,6 +396,9 @@ function MainWindowApp() {
             }
           />
         )}
+        {/* 061a: `headerSections.ts` の `obs` が `implemented: true` になったので、下の
+            `comingSoonSection`（`!implemented` で引く）は当たらなくなり、この実画面が出る。 */}
+        {screen === "obs-effects" && <ObsEffectsScreen />}
         {comingSoonSection && (
           <ComingSoonScreen
             title={comingSoonSection.label}
@@ -369,12 +412,13 @@ function MainWindowApp() {
 }
 
 /**
- * 032c-a/033f/046b: 同一 Vite バンドルをウィンドウラベルで分岐する薄いルート。
+ * 032c-a/033f/046b/061a: 同一 Vite バンドルをウィンドウラベルで分岐する薄いルート。
  * `main`（既定）= 管理画面（MainWindowApp）／`comment-viewer` = 内蔵コメントビューア／
  * `comment-overlay` = OBS 用の背景透過オーバーレイ（コメント一覧・表示専用）／
- * `pinned-overlay` = 固定コメント専用の背景透過オーバーレイ（046a のピンだけを描く・表示専用・WS なし）。
+ * `pinned-overlay` = 固定コメント専用の背景透過オーバーレイ（046a のピンだけを描く・表示専用・WS なし）／
+ * `effect-overlay` = エフェクト専用の背景透過オーバーレイ（061a では空＋セットアップ用ガイド・表示専用・WS なし）。
  * ウィンドウ生成は Rust の `open_comment_viewer_window` / `open_comment_overlay_window` /
- * `open_pinned_overlay_window` に閉じ、frontend からは生成しない。
+ * `open_pinned_overlay_window` / `open_effect_overlay_window` に閉じ、frontend からは生成しない。
  */
 function App() {
   const label = getCurrentWindow().label;
@@ -386,6 +430,9 @@ function App() {
   }
   if (label === "pinned-overlay") {
     return <PinnedOverlayApp />;
+  }
+  if (label === "effect-overlay") {
+    return <EffectOverlayApp />;
   }
   return <MainWindowApp />;
 }

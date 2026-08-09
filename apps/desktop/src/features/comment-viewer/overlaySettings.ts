@@ -33,6 +33,55 @@ export const OBS_AUTO_ADD_KEY = "stream-dock.comment-viewer.obs-auto-add";
 export const PINNED_OVERLAY_ENABLED_KEY =
   "stream-dock.comment-viewer.pinned-overlay-enabled";
 /**
+ * 061a: 「エフェクトを配信画面に表示する」ON/OFF の保存キー（既定 OFF）＝エフェクト専用オーバーレイ窓
+ * （label `effect-overlay`）を出すか。`PINNED_OVERLAY_ENABLED_KEY` と同種の**ユーザー自身の UI 設定値**で、
+ * §9 追補（046a）が対象とする第三者の個人データではない。
+ *
+ * ⚠⚠ **このキーは 061a で初めて「窓をまたいで役割が分かれる」設定になった。**
+ *   - **書き手＝main 窓**（`ObsEffectsScreen` の表示トグル。窓の open/close も main 窓が直接 invoke する）
+ *   - **読み手＝コメビュ窓**（`CommentViewerApp`）。**`obs-enable` を送れる WS ハンドルを持つのは
+ *     コメビュ窓だけ**なので、OBS への自動反映はコメビュ窓が代行する。
+ * 伝達は 046a/046b と同じ**二段構え**（保証ベースライン＝コメビュ窓のマウント時に読み直す／
+ * 即時反映＝`storage` 購読・ベストエフォート）。⚠ **コメビュ窓が閉じている間は誰も送れない**ので、
+ * その事実は `ObsEffectsScreen` の前提ステータスでユーザーに明示する（黙って何も起きない状態を作らない）。
+ */
+export const EFFECT_OVERLAY_ENABLED_KEY =
+  "stream-dock.comment-viewer.effect-overlay-enabled";
+/**
+ * 061a: 「エフェクト窓を OBS へ自動で反映する」ON/OFF の保存キー（既定 OFF）。
+ *
+ * ⚠ **既存の `OBS_AUTO_ADD_KEY`（コメント一覧＋固定コメント用）とは別のキーにしてある。** 理由は
+ * 共有すると `CommentViewerApp` が state に持っている `obsAutoAdd` が **main 窓の書換で stale になる**ため、
+ * 既存 OBS 系へ `storage` 購読を足す必要が生じる＝**045c で回帰が見つかった箇所に手を入れる**ことになる。
+ * 専用キーなら既存 2 種の自動反映挙動は**差分ゼロ**のまま。代償として設定スイッチが 2 つになるので、
+ * 画面側の文言で「エフェクト窓のソース」に限る旨を明示すること。
+ * **再修正トリガー**＝「OBS 連携のスイッチを 1 つにしたい」となったら、先に `obsAutoAdd` を
+ * localStorage 直読み（＋`storage` 購読）へ寄せてから統合する（state のミラーを残したまま統合しない）。
+ */
+export const EFFECT_OBS_AUTO_ADD_KEY =
+  "stream-dock.comment-viewer.effect-obs-auto-add";
+/**
+ * 061a レビュー（Q-1 修正）: **エフェクト窓のセットアップ用ガイドを「次の 1 回だけ」出すためのワンショット旗**。
+ *
+ * ⚠⚠ **なぜ必要になったか**: 061a は「ガイドが配信中に出ない」根拠を「窓が開くのはユーザーが表示トグルを
+ * ON にした明示操作のときだけ」に置いていたが、**同じ 061a が `MainWindowApp` のマウント（＝アプリ起動）で
+ * 窓を開き直す経路を新設したため、その前提が偽になった**。本アプリは `boot_launch_presets` を持つ
+ * **配信準備時に起動されるランチャ**なので、「設定 ON のまま配信直前に StreamDock を起動」は例外ではなく主動線で、
+ * そのとき破線枠とセットアップ文言が 30 秒間 OBS のキャプチャに映る（ユーザー向け文言「配信中には
+ * 表示されません」が守れない）。
+ *
+ * **書き手＝`ObsEffectsScreen` の表示トグル ON だけ**（＝明示操作）。**読み手＝`EffectOverlayApp`** で、
+ * マウント時に読み、直後に false へ倒す（次に開くときは出ない）。起動時の窓復元（`App.tsx`）は
+ * **この旗を立てない**ので、復元経路ではガイドが出ない。表示 OFF → ON で立て直されるので「出し直せる」は不変。
+ *
+ * ⚠ **fail 方向は「余分に 1 回出る」側に倒してある**（窓の open が失敗して旗が残ると、次回起動で 1 度だけ出る）。
+ * 逆側（旗が消えてガイドが二度と出ない）に倒すとセットアップ不能になるため、この向きを選んでいる。
+ * **再修正トリガー**＝ガイドを「窓の位置合わせ中は出し続ける」等の常時表示に変えるなら、この旗ごと廃して
+ * `ObsEffectsScreen` 側の明示トグルにする（061a が却下した案なので、そのときは却下理由から見直すこと）。
+ */
+export const EFFECT_OVERLAY_GUIDE_PENDING_KEY =
+  "stream-dock.comment-viewer.effect-overlay-guide-pending";
+/**
  * 060d: 選択中のカスタム CSS テーマ（`overlay_themes` の id）の保存キー。**未保存＝`null`＝既定意匠**。
  *
  * ⚠ **CSS 本文はここに置かない**（Rust が `app_data_dir/themes/<id>.css` に持ち、
@@ -167,6 +216,67 @@ export function loadPinnedOverlayEnabled(): boolean {
 export function savePinnedOverlayEnabled(enabled: boolean): void {
   try {
     localStorage.setItem(PINNED_OVERLAY_ENABLED_KEY, String(enabled));
+  } catch {
+    // プライベートモード等で書けない場合は黙って無視する。
+  }
+}
+
+/** 061a: 「エフェクトを配信画面に表示する」ON/OFF を読み込む。未保存・例外は false（OFF）へフォールバック。 */
+export function loadEffectOverlayEnabled(): boolean {
+  try {
+    return localStorage.getItem(EFFECT_OVERLAY_ENABLED_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+/** 061a: 「エフェクトを配信画面に表示する」ON/OFF を保存する（ローカルのみ・非機密・外部送信しない）。 */
+export function saveEffectOverlayEnabled(enabled: boolean): void {
+  try {
+    localStorage.setItem(EFFECT_OVERLAY_ENABLED_KEY, String(enabled));
+  } catch {
+    // プライベートモード等で書けない場合は黙って無視する。
+  }
+}
+
+/** 061a: 「エフェクト窓を OBS へ自動反映」ON/OFF を読み込む。未保存・例外は false（OFF）へフォールバック。 */
+export function loadEffectObsAutoAdd(): boolean {
+  try {
+    return localStorage.getItem(EFFECT_OBS_AUTO_ADD_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+/** 061a: 「エフェクト窓を OBS へ自動反映」ON/OFF を保存する（ローカルのみ・非機密・外部送信しない）。 */
+export function saveEffectObsAutoAdd(enabled: boolean): void {
+  try {
+    localStorage.setItem(EFFECT_OBS_AUTO_ADD_KEY, String(enabled));
+  } catch {
+    // プライベートモード等で書けない場合は黙って無視する。
+  }
+}
+
+/**
+ * 061a レビュー（Q-1）: 次にエフェクト窓が開いたときにセットアップ用ガイドを出すか（ワンショット旗）。
+ * ⚠ **未保存＝false**（＝起動時の窓復元では出ない）。旗の設計意図は `EFFECT_OVERLAY_GUIDE_PENDING_KEY` の JSDoc。
+ */
+export function loadEffectOverlayGuidePending(): boolean {
+  try {
+    return localStorage.getItem(EFFECT_OVERLAY_GUIDE_PENDING_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 061a レビュー（Q-1）: 上記の旗を立てる／倒す。
+ * ⚠ 立てるのは **`ObsEffectsScreen` の表示トグル ON（明示操作）だけ**。倒すのは `EffectOverlayApp` のマウント時。
+ * ⚠ 書けない環境（プライベートモード等）では旗が立たず**ガイドが出ないだけ**＝配信画面は汚さない側に倒れる。
+ */
+export function saveEffectOverlayGuidePending(pending: boolean): void {
+  try {
+    localStorage.setItem(EFFECT_OVERLAY_GUIDE_PENDING_KEY, String(pending));
   } catch {
     // プライベートモード等で書けない場合は黙って無視する。
   }

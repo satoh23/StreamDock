@@ -55,6 +55,10 @@
 - [`lib.rs`](../../apps/desktop/src-tauri/src/lib.rs) に `open_pinned_overlay_window` / `close_pinned_overlay_window` / `is_pinned_overlay_open` を追加（`open_comment_overlay_window` 174-220 行・`close_*` 227-235 行・`is_*` 262-265 行を手本）。
   - `WINDOW_OPEN_LOCK`（38 行）を再利用、`SHARED_BROWSER_ARGS`（72 行）を**必ず渡す**（全窓一致）。透過/装飾なし/最背面/非フォーカス/影なし/`background_throttling(Disabled)` を踏襲。窓タイトルは OBS で選びやすい別名（例「StreamDock 固定コメント」）。
   - 既存 overlay と**別の初期位置/サイズ**にして、OBS で 2 つのウィンドウキャプチャを取り違えないようにする。
+    - ⚠ **061a で方針転換した（この記述は 046b 当時の配慮であって機能要件ではない）。** OBS の対象特定は
+      **窓タイトル**で行うので、窓が重なっても取り違えない。061a の `effect-overlay` は 1280×800 に
+      重ねずに置く余地が無く（既存 2 窓が x24..936 / y48..768 を占める）、**意図的に重ねている**。
+      理由の正は `lib.rs` の `open_effect_overlay_window` の注記。
   - **sidecar 連動イベントは登録しない**（表示専用・217-218 行に倣う）。
   - `invoke_handler`（428-436 行）へ 3 コマンドを追加登録する。
 - [`windowApi.ts`](../../apps/desktop/src/features/comment-viewer/windowApi.ts) に `openPinnedOverlayWindow()` / `closePinnedOverlayWindow()` / `isPinnedOverlayOpen()` ラッパを追加（38-58 行を手本）。

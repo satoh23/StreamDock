@@ -52,6 +52,12 @@ import {
   saveObsAutoAdd,
   loadPinnedOverlayEnabled,
   savePinnedOverlayEnabled,
+  // 061a: エフェクト窓の設定は **main 窓（`ObsEffectsScreen`）が書き手**で、この窓は読み手。
+  // ⚠ state にミラーせず、判断のたびに読み直す（詳細はエフェクト連携 effect の JSDoc）。
+  loadEffectOverlayEnabled,
+  loadEffectObsAutoAdd,
+  EFFECT_OVERLAY_ENABLED_KEY,
+  EFFECT_OBS_AUTO_ADD_KEY,
 } from "../../features/comment-viewer/overlaySettings";
 // 046a: 固定コメント（ピン留め）のピンストア。本体が唯一の書き手で、046b の固定専用オーバーレイが読み手になる。
 import {
@@ -99,6 +105,9 @@ import {
   openPinnedOverlayWindow,
   closePinnedOverlayWindow,
   isPinnedOverlayOpen,
+  // 061a: エフェクト窓の open/close は main 窓が持つ。この窓が使うのは **実窓の存在確認だけ**
+  //（`enableObs("effects")` を送ってよいかの判定・046d レビューと同じ理由）。
+  isEffectOverlayOpen,
 } from "../../features/comment-viewer/windowApi";
 import { CommentList } from "./CommentList";
 import {
@@ -509,13 +518,24 @@ export function CommentViewerApp() {
   const [obsConfig, setObsConfig] = useState<ObsWsConfig | null>(null);
   const [obsAutoAdd, setObsAutoAdd] = useState(() => loadObsAutoAdd());
   const [obsState, setObsState] = useState<string>("idle");
+  // 061a: 検出済み OBS 設定を、**マウント時 1 回だけ張る effect**（下のエフェクト連携の `storage` 購読）から
+  // 最新値で読むための ref 同期。state を直接掴むと stale closure で検出ポートが既定 4455 に化ける。
+  // この窓の他の getter 注入（ttsEnabledRef / readMonetaryIdsRef）と同じイディオム。
+  const obsConfigRef = useRef<ObsWsConfig | null>(null);
+  useEffect(() => {
+    obsConfigRef.current = obsConfig;
+  }, [obsConfig]);
   // 045c レビュー（回帰）: 表示 ON で仕掛ける猶予タイマー（OBS_ENABLE_DELAY_MS）の id。取り消せるように保持する。
   // 旧実装は id を捨てていたため、猶予中に表示 OFF / 自動反映 OFF にしても発火が止まらず、hideObs / disableObs の
   // **後に** enableObs が飛んでいた（OBS 側で閉じた窓のソースが再表示され、ツールバーにも表示 OFF のまま赤字が残る）。
-  const obsEnableTimerRef = useRef<number | null>(null);
-  // 046d: 固定コメントオーバーレイ用の猶予タイマー。コメント一覧用（上）とは**別に持つ**
-  //（片方の ON がもう片方の仕掛かりを取り消してしまわないようにする）。
-  const pinnedObsEnableTimerRef = useRef<number | null>(null);
+  //
+  // ⚠⚠ **061a で「種別ごとに 1 本の ref」から `Map<ObsOverlayKind, number>` へ一般化した。**
+  // 046d までは `obsEnableTimerRef` / `pinnedObsEnableTimerRef` の 2 本を手で並べていたが、3 本目を
+  // copy-paste すると**アンマウント時の cleanup が 3 分岐になり、4 本目で必ず 1 つ忘れる**。
+  // 045c が実際に踏んだ回帰は「取り消し漏れ」そのものなので、**取り消しがループで書ける形**にしておく
+  //（`clearObsEnableTimer()` を引数なしで呼べば全種別が止まる＝種別を増やしても cleanup は無改変）。
+  // 種別ごとに別エントリなのは 046d の意図どおり（片方の ON がもう片方の仕掛かりを取り消さない）。
+  const obsEnableTimersRef = useRef<Map<ObsOverlayKind, number>>(new Map());
 
   // 058a: 通知音の出力デバイス（②-軽）。
   // - audioOutputDeviceId: ユーザーが選んだデバイス ID の永続状態（非機密・localStorage）。
@@ -748,17 +768,16 @@ export function CommentViewerApp() {
 
   // 045c レビュー: アンマウント時にも猶予タイマーを止める。streamRef が null 化されるので enableObs 自体は飛ばないが、
   // 破棄済みツリーへ setObsState("failed") が走るのを避ける。ヘルパを参照せず ref だけ見るので deps は空でよい。
-  useEffect(
-    () => () => {
-      if (obsEnableTimerRef.current !== null) {
-        window.clearTimeout(obsEnableTimerRef.current);
+  // ⚠ 061a: **ループで全種別を止める**ので、種別を増やしてもこの effect は無改変でよい（取り消し漏れが起きない）。
+  useEffect(() => {
+    const timers = obsEnableTimersRef.current;
+    return () => {
+      for (const id of timers.values()) {
+        window.clearTimeout(id);
       }
-      if (pinnedObsEnableTimerRef.current !== null) {
-        window.clearTimeout(pinnedObsEnableTimerRef.current);
-      }
-    },
-    [],
-  );
+      timers.clear();
+    };
+  }, []);
 
   // 033c: トグル状態を localStorage に永続化する（channel と同型）。再オープン・再起動で復元される。
   useEffect(() => {
@@ -1347,6 +1366,20 @@ export function CommentViewerApp() {
   // ソース間の相互破壊は起きない（`obs-client.ts` の L5 注記＝毎回独立インスタンスで完結、が種別違いでも成立）。
   // 再修正トリガー＝「どちらのオーバーレイが OBS に出ていないか分からない」という問い合わせが実際に出たら、
   // `obsState` を `Record<ObsOverlayKind, ObsState>` にして表示側も種別ごとに出す。
+  //
+  // ⚠⚠ 061a レビュー（Q-2・**修正不要と判断／要監視**）: 046d が共有を受容した根拠は「これは
+  // **セットアップ時の一度きりの操作**だから」だったが、061a の effects はその条件から外れている——
+  // effects だけ**マウント時 reconcile（下のエフェクト連携 effect）からも走る**ので、
+  // 「設定 ON のまま OBS 未起動でコメビュ窓を開く」と**開くたびにツールバーへ failed が出る**
+  //（しかも設定した場所は main 窓なので、ユーザーには出所が分からない）。
+  // それでも今直さないのは、**種別ごとの表示にするには sidecar の `obs.state` フレームに種別を載せる
+  // ＝ wire の変更が要る**から（`CommentStreamHandlers.onObsState` は `(state, reason)` だけで種別を運ばない）。
+  // 061a は「`enable`/`hide`/`disable`/`ensureOverlaySource` を 1 行も変えない」を要件にしており、
+  // wire 変更はその要件と 046d の再修正トリガーの領分で、レビュー指摘への追従としては過大。
+  // **再修正トリガー**＝①実機で「コメビュを開くたびに OBS の赤字が出る」が確認された
+  // ②061b で effects が毎コメント発火の層になる（＝失敗表示の頻度が跳ね上がる）、のどちらか。
+  // そのときは `obs.state` に `overlay` を足し、`obsState` を `Record<ObsOverlayKind, ObsState>` へ広げる
+  //（046d の再修正トリガーと同じ作業なので、まとめて 1 回で済む）。
   const requestObsAutoAdd = (overlay: ObsOverlayKind) => {
     setObsState("connecting");
     void detectObsWebsocketConfig().then((cfg) => {
@@ -1405,25 +1438,39 @@ export function CommentViewerApp() {
 
   // 044a: オーバーレイ表示 OFF 連動。OBS 側ソースを**削除せず非表示**にする（ON で requestObsAutoAdd が再表示）。
   // port は既知の検出値（無ければ既定 4455）を使う。sidecar 側は best-effort（該当なし/未起動は idle）。
+  // ⚠ 061a: `obsConfig`（state）ではなく `obsConfigRef` から読む。呼び出し元に**マウント時 1 回だけ張る
+  // `storage` 購読**（下のエフェクト連携 effect）が加わったため、state を直接読むと deps 空の closure が
+  // 初期値 null を掴んだままになり、**検出ポートを無視して既定 4455 へ送る**（実質サイレント失敗）。
   const requestObsHide = (overlay: ObsOverlayKind) => {
-    streamRef.current?.hideObs(obsConfig?.port ?? 4455, overlay);
+    streamRef.current?.hideObs(obsConfigRef.current?.port ?? 4455, overlay);
   };
 
   // 045c レビュー（回帰）: 仕掛かり中の猶予タイマーを取り消す。表示 OFF・自動反映 OFF・アンマウントで呼ぶ。
   // 「ユーザーが OFF にしたのに、その後 enableObs が飛ぶ」を止めるのが目的（§1 の「明示的に有効化した時のみ接続」）。
-  const clearObsEnableTimer = () => {
-    if (obsEnableTimerRef.current !== null) {
-      window.clearTimeout(obsEnableTimerRef.current);
-      obsEnableTimerRef.current = null;
+  // ⚠ 061a: 引数を省くと**全種別**を取り消す（アンマウント用）。種別を指定すればその 1 本だけ。
+  const clearObsEnableTimer = (overlay?: ObsOverlayKind) => {
+    const timers = obsEnableTimersRef.current;
+    if (overlay === undefined) {
+      for (const id of timers.values()) window.clearTimeout(id);
+      timers.clear();
+      return;
+    }
+    const id = timers.get(overlay);
+    if (id !== undefined) {
+      window.clearTimeout(id);
+      timers.delete(overlay);
     }
   };
 
-  // 046d: 固定オーバーレイ用の猶予タイマーを取り消す（clearObsEnableTimer と同型・対象が別）。
-  const clearPinnedObsEnableTimer = () => {
-    if (pinnedObsEnableTimerRef.current !== null) {
-      window.clearTimeout(pinnedObsEnableTimerRef.current);
-      pinnedObsEnableTimerRef.current = null;
-    }
+  // 044a/046d: 「窓が OBS のウィンドウ一覧に載る」までの猶予をおいてから自動追加を要求する。
+  // ⚠ **張り直す前に必ず既存を取り消す**（連打で二重に仕掛からないようにする・045c レビュー）。
+  const scheduleObsAutoAdd = (overlay: ObsOverlayKind) => {
+    clearObsEnableTimer(overlay);
+    const id = window.setTimeout(() => {
+      obsEnableTimersRef.current.delete(overlay);
+      requestObsAutoAdd(overlay);
+    }, OBS_ENABLE_DELAY_MS);
+    obsEnableTimersRef.current.set(overlay, id);
   };
 
   const handleOverlayToggle = (next: boolean) => {
@@ -1431,20 +1478,16 @@ export function CommentViewerApp() {
       void openCommentOverlayWindow().then(() => {
         setOverlayOpen(true);
         // 044a: OBS 自動追加が ON なら、窓が OBS のウィンドウ一覧に載る猶予をおいてソース追加を要求する。
-        // 045c レビュー: 連打で二重に仕掛からないよう、張り直す前に既存を取り消す。
+        // 045c レビュー: 連打で二重に仕掛からないよう、張り直す前に既存を取り消す（scheduleObsAutoAdd の中）。
         if (obsAutoAdd) {
-          clearObsEnableTimer();
-          obsEnableTimerRef.current = window.setTimeout(() => {
-            obsEnableTimerRef.current = null;
-            requestObsAutoAdd("comments");
-          }, OBS_ENABLE_DELAY_MS);
+          scheduleObsAutoAdd("comments");
         }
       });
     } else {
       void closeCommentOverlayWindow().then(() => setOverlayOpen(false));
       // 045c レビュー: 猶予中に表示 OFF されたら反映要求ごと取り消す（hideObs の後に enableObs が飛ぶのを防ぐ）。
       // 自動反映の ON/OFF に関わらず取り消してよい（OFF ならそもそも仕掛かっていない）。
-      clearObsEnableTimer();
+      clearObsEnableTimer("comments");
       // 044a: 連携 ON のときは、表示 OFF で OBS 側のソースも非表示にする（削除はしない）。
       if (obsAutoAdd) {
         requestObsHide("comments");
@@ -1487,13 +1530,10 @@ export function CommentViewerApp() {
 
     // 046d: 自動反映が OFF なら OBS へは一切繋がない（045c の「明示的に有効化した時のみ接続」を維持）。
     if (!obsAutoAdd) return;
-    clearPinnedObsEnableTimer();
+    clearObsEnableTimer("pinned");
     if (next) {
       // 窓が OBS の「ウィンドウ一覧」に載るまでの猶予を置いてから追加を要求する（044a と同じ理由・同じ値）。
-      pinnedObsEnableTimerRef.current = window.setTimeout(() => {
-        pinnedObsEnableTimerRef.current = null;
-        requestObsAutoAdd("pinned");
-      }, OBS_ENABLE_DELAY_MS);
+      scheduleObsAutoAdd("pinned");
     } else {
       // 表示 OFF＝OBS 側も非表示（**ソースは消さない**・ON で再表示される）。直前の結果表示も実態へ揃える。
       requestObsHide("pinned");
@@ -1516,6 +1556,97 @@ export function CommentViewerApp() {
     });
   };
 
+  // 061a: エフェクト窓（label `effect-overlay`）の自動追加を**実窓の有無**で判定して要求する。
+  // 理由は `requestPinnedObsAutoAddIfOpen` と完全に同じ（046d レビュー）——設定 ON ／ 窓なしで走らせると
+  // sidecar 側 `ensureOverlaySource` が先に `CreateInput` してから窓を探して失敗し、キャプチャ対象未設定の
+  // 空ソース「StreamDock エフェクト」が OBS に残る（ユーザーが手で消すまで消えない）。
+  const requestEffectObsAutoAddIfOpen = () => {
+    void isEffectOverlayOpen().then((open) => {
+      if (open) requestObsAutoAdd("effects");
+    });
+  };
+
+  /**
+   * 061a: **エフェクト窓の OBS 自動反映を、この窓が代行する。**
+   *
+   * ⚠⚠ **なぜ設定は main 窓にあるのに送出はここなのか**（061a 実装で判明した構造上の制約）:
+   * `obs-enable` を送れるのは WS ハンドル（`streamRef`）を持つこの窓だけで、しかも sidecar の
+   * ライフサイクルもこの窓に紐づいている（`open_comment_viewer_window` が `ensure_started`、close で
+   * `shutdown`）。一方 `obs-effects` 画面は main 窓にある（親 061 の決定＝061c/061d のファイル取り込みが
+   * `default.json` の `dialog:allow-open` を要るため）。main 窓からも WS を張る案は採らなかった
+   * （`get_comment_stream_port` が null の間**毎秒 invoke が永久ループ**し、`onComments` 必須なので
+   * **第三者のコメント本文が main 窓へ流れ込む**＝§9 の後退）。詳細は `ObsEffectsScreen` の JSDoc。
+   *
+   * ⚠ 伝達は 046a/046b と同じ**二段構え**にしてある:
+   *   - **保証ベースライン**＝この effect のマウント時 reconcile。`storage` が届かなくても、
+   *     コメビュ窓を開き直せば必ず反映される。
+   *   - **即時反映**＝`storage` 購読（**ベストエフォート**。別 webview 間の伝播はプラットフォーム依存）。
+   * ⚠ **コメビュ窓が閉じている間は誰も送れない**。この事実は `ObsEffectsScreen` の前提ステータスと
+   * 案内で明示してある（黙って何も起きない状態を作らない）。
+   *
+   * ⚠ 045c の規律をそのまま踏襲する:
+   *   - 自動反映トグルは**設定を立てるだけ**（main 窓に WS が無いので構造として保証されている）
+   *   - **反映の契機は表示 ON**（＝`EFFECT_OVERLAY_ENABLED_KEY` が true になったとき）
+   *   - 表示 OFF で `obsState` を idle へ戻す
+   *   - ⚠ **猶予タイマーは必ず取り消す**（表示 OFF・自動反映 OFF の両方で）
+   *
+   * ⚠ **`disableObs()` は呼ばない。** あれは kind を取らず sidecar の状態を丸ごと idle にするので、
+   * comments / pinned の連携を巻き添えにする。effects の OFF は `hideObs("effects")` だけで足りる。
+   *
+   * ⚠ localStorage を毎回**読み直す**（state にミラーしない）。この 2 つの設定の持ち主は main 窓なので、
+   * state に写すと「main 窓で変えたのに古い値で判断する」形が作れてしまう。
+   */
+  useEffect(() => {
+    if (loadEffectObsAutoAdd() && loadEffectOverlayEnabled()) {
+      // 保証ベースライン: 猶予は要らない（窓は既に開いていて OBS のウィンドウ一覧に載っているはず）。
+      requestEffectObsAutoAddIfOpen();
+    }
+
+    const onStorage = (e: StorageEvent) => {
+      // clear() 時は e.key === null で来るため、その場合は両方を評価する。
+      // ⚠ 061a レビュー（Q-4・修正不要）: `clear()` では**表示 OFF 側の後始末（hideObs／obsState を idle）に
+      // 到達しない**。自動反映キーも同時に消えて `loadEffectObsAutoAdd()` が false になり、
+      // 下の `if (loadEffectObsAutoAdd())` で弾かれるため（＝OBS 側のソースは表示されたまま残る）。
+      // これは意図どおり: `clear()` は「設定そのものが無かったことになる」操作で、**送り先の意図が消えている**のに
+      // OBS を触りに行く方が筋が悪い（ユーザーが OBS 側で消せる／次の表示 ON で整合する）。
+      // なお `clear()` を呼ぶコードは本アプリに無く、DevTools 経由でしか到達しない。
+      // **再修正トリガー**＝設定リセット機能を UI に足すときは、この分岐ではなくその機能側で
+      // 明示的に `hideObs` を送ること（`clear()` に副作用を持たせない）。
+      if (e.key === EFFECT_OVERLAY_ENABLED_KEY || e.key === null) {
+        if (loadEffectOverlayEnabled()) {
+          // 反映の契機は**表示 ON**。窓が OBS の一覧に載るまでの猶予を置く（044a と同じ理由・同じ値）。
+          if (loadEffectObsAutoAdd()) scheduleObsAutoAdd("effects");
+        } else {
+          // ⚠ 自動反映の ON/OFF に関わらず取り消す（OFF ならそもそも仕掛かっていない）。
+          clearObsEnableTimer("effects");
+          if (loadEffectObsAutoAdd()) {
+            // 表示 OFF＝OBS 側も非表示（**ソースは消さない**・ON で再表示される）。
+            requestObsHide("effects");
+            // 直前の結果（connecting/added/failed）は実態と食い違うので idle へ戻す（045c と同じ扱い）。
+            setObsState("idle");
+          }
+        }
+      }
+      if (e.key === EFFECT_OBS_AUTO_ADD_KEY || e.key === null) {
+        if (loadEffectObsAutoAdd()) {
+          // 既に表示中なら猶予不要（窓は OBS のウィンドウ一覧に載っている）ので即反映する。
+          if (loadEffectOverlayEnabled()) requestEffectObsAutoAddIfOpen();
+        } else {
+          // ⚠ 連携 OFF で仕掛かりを取り消す（disableObs の後に enableObs が飛ぶのを防ぐ・045c レビュー）。
+          clearObsEnableTimer("effects");
+        }
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+    };
+    // ⚠ **マウント時 1 回だけ**張る（購読を張り直すと保証ベースラインが何度も走る）。参照している
+    // ヘルパはレンダーごとに作り直されるが、可変の値は ref（`streamRef` / `obsConfigRef` /
+    // `obsEnableTimersRef`）と localStorage 直読みからしか取らないので stale にならない。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // 044a: 「OBS へ自動追加（連携）」トグル。ON の間、オーバーレイ表示 ON に連動して OBS へウィンドウキャプチャ
   // ソースを自動追加（既存なら再利用）する。OFF は連携を止める（OBS 側のソースは消さない）。
   // 045c（E2E 回帰修正）: 旧実装は「未開ならオーバーレイを開いてから追加」＝このトグル ON だけで表示まで ON に
@@ -1529,7 +1660,10 @@ export function CommentViewerApp() {
     setObsAutoAdd(next);
     if (!next) {
       // 045c レビュー: 猶予中に連携 OFF されたら反映要求ごと取り消す（disableObs の後に enableObs が飛ぶのを防ぐ）。
-      clearObsEnableTimer();
+      // ⚠ 061a: このトグルが束ねるのは comments / pinned の 2 種別だけ（effects は専用キー＝
+      // `EFFECT_OBS_AUTO_ADD_KEY` で main 窓が持つ）。**effects の仕掛かりまで巻き添えで消さない。**
+      clearObsEnableTimer("comments");
+      clearObsEnableTimer("pinned");
       streamRef.current?.disableObs();
       setObsState("idle");
       return;

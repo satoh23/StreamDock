@@ -90,6 +90,9 @@ const OVERLAY_APP_TSX = "src/screens/comment-viewer/OverlayApp.tsx";
 // 060c 追修正: 配信窓そのものの CSS（document のスクロール抑止・スクロールバー抑止＝ (10-p)）。
 const OVERLAY_APP_CSS = "src/screens/comment-viewer/OverlayApp.module.css";
 const PINNED_OVERLAY_TSX = "src/screens/comment-viewer/PinnedOverlayApp.tsx";
+// 061a: 3 本目の透過オーバーレイ窓。⚠ **060d の注入先ではない**ので、(10-d) の否定検査の対象に含める
+//（窓を増やすたびにここへ足すこと。足さないと「注入先は comment-overlay のみ」という契約に穴が開く）。
+const EFFECT_OVERLAY_TSX = "src/screens/obs-effects/EffectOverlayApp.tsx";
 const CSS_COMPAT_TS = "src/features/comment-viewer/cssCompat.ts";
 // 060d: ユーザー CSS を実際に注入する側の 3 本（(10-h) / (10-i)）。
 const CSS_SCOPE_TS = "src/features/comment-viewer/cssScope.ts";
@@ -809,6 +812,7 @@ for (const rel of [VIEWER_CSS, OVERLAY_CSS]) {
   const listTsx = stripTsComments(readRaw(COMMENT_LIST_TSX));
   const overlayAppTsx = stripTsComments(readRaw(OVERLAY_APP_TSX));
   const pinnedTsx = stripTsComments(readRaw(PINNED_OVERLAY_TSX));
+  const effectTsx = stripTsComments(readRaw(EFFECT_OVERLAY_TSX));
   const compatTs = stripTsComments(readRaw(CSS_COMPAT_TS));
 
   // (10-a) 契約の安定クラスが実際に DOM を組む側へ付いていること。
@@ -1019,6 +1023,16 @@ for (const rel of [VIEWER_CSS, OVERLAY_CSS]) {
           `また 046c の applyFitScale がこの窓の .root の transform / width / height を排他所有しているため、` +
           `ユーザー CSS がそこを触れると縮小フィットが壊れます。` +
           `固定窓へ広げるのは別タスク（046d と同じ広げ方）として、本ガードも併せて更新してください。`,
+      );
+    }
+    // 061a: 3 本目（エフェクト窓）も同じ理由で注入先ではない。⚠ ここを足さないと、窓を増やすたびに
+    // 「注入先は comment-overlay のみ」という 060d の契約が**静かに穴だらけ**になる。
+    if (classToken(cls).test(effectTsx)) {
+      fail(
+        `${EFFECT_OVERLAY_TSX}: エフェクト窓に \`${cls}\` が付いています（060a / 060d / 061a）。` +
+          `060d の注入先は \`comment-overlay\` のみで、窓の区別をこのクラスの有無で表しています。` +
+          `エフェクト窓へ広げるのは別タスク（061c / 061d のテンプレート意匠とも衝突するので、` +
+          `そのときは注入先の設計から見直すこと）として、本ガードも併せて更新してください。`,
       );
     }
   }

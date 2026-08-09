@@ -30,8 +30,9 @@ export const HEADER_SECTIONS: readonly HeaderSection[] = [
     id: "obs",
     label: "OBSエフェクト",
     screen: "obs-effects",
-    implemented: false,
-    comingSoonDescription:
-      "OBS と連携して配信画面にエフェクトを反映する機能を準備中です。",
+    // 061a: エフェクト専用の透過オーバーレイ窓・OBS へのソース自動追加・画面の枠を実装したため実画面へ遷移する。
+    // ⚠ `comingSoonDescription` は**消してある**。`implemented: true` では使われないので、残すと
+    // 「準備中です」という嘘の説明がコード上に残り続ける（らくらくツール設定は移行時に消し忘れている）。
+    implemented: true,
   },
 ];

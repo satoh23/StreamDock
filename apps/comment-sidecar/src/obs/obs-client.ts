@@ -38,8 +38,9 @@ export type ObsStateListener = (state: ObsState, reason?: string) => void;
 /**
  * 046d: 自動追加の対象オーバーレイ種別。**viewer から任意の名前を受け取らない**ための固定 union で、
  * 実際のソース名／窓名は下の `OBS_OVERLAYS` に閉じてある（§3/§8＝ユーザー入力が OBS 操作へ渡る経路を作らない）。
+ * 061a: 3 本目 `"effects"`（エフェクト専用オーバーレイ窓）を追加。
  */
-export type ObsOverlayKind = "comments" | "pinned";
+export type ObsOverlayKind = "comments" | "pinned" | "effects";
 
 /**
  * オーバーレイ種別ごとの「OBS に作るソース名」と「キャプチャ対象の窓名」。
@@ -48,22 +49,73 @@ export type ObsOverlayKind = "comments" | "pinned";
  * 窓名は Rust の窓タイトルと**バイト一致**させること:
  *   comments → `open_comment_overlay_window` の `.title`（033f）
  *   pinned   → `open_pinned_overlay_window` の `.title`（046b）
- * 候補一致は `includes` なので、**片方が他方を部分文字列として含んではいけない**
- * （「StreamDock 固定コメント」は「StreamDock コメントオーバーレイ」を含まない＝取り違えない）。
+ *   effects  → `open_effect_overlay_window` の `.title`（061a）
+ * 候補一致は `includes` なので、**どれかが他を部分文字列として含んではいけない**
+ * （3 つとも相互に含まないことを実測済み。Rust 側 `overlay_window_contract` が総当たりで固定している）。
+ *
+ * ⚠ **export しているのはテストのため**（`scripts/test-obs-client.mjs`）。046d までは module-private で、
+ * その結果「3 つが `includes` で紛れないこと」を検証する対象がどこにも公開されておらず、
+ * **窓名の衝突を TS 側から確かめる手段がゼロ**だった（061a で解消）。
+ *
+ * ⚠⚠ 061a レビュー（Q-6）: **`Object.freeze` で読み取り専用を構造にした**（061a 時点は「書き換えはしない」と
+ * コメントで宣言していただけ）。export した以上どのモジュールからも書き換えられる状態で、この表は
+ * ①`parseOverlayKind` の allow-list の導出元（＝境界検証そのもの）②OBS のソース名／窓名の唯一の出所、
+ * という二重の役割を持つため、宣言ではなく制約にしておく。`Readonly` は型の話（コンパイル時のみ）で、
+ * 実行時に止めるのは `Object.freeze` の方＝**両方要る**。
  */
-const OBS_OVERLAYS: Record<
-  ObsOverlayKind,
-  { sourceName: string; windowTitle: string }
-> = {
-  comments: {
+export const OBS_OVERLAYS: Readonly<
+  Record<ObsOverlayKind, Readonly<{ sourceName: string; windowTitle: string }>>
+> = Object.freeze({
+  comments: Object.freeze({
     sourceName: "StreamDock コメントオーバーレイ",
     windowTitle: "StreamDock コメントオーバーレイ",
-  },
-  pinned: {
+  }),
+  pinned: Object.freeze({
     sourceName: "StreamDock 固定コメント",
     windowTitle: "StreamDock 固定コメント",
-  },
-};
+  }),
+  effects: Object.freeze({
+    sourceName: "StreamDock エフェクト",
+    windowTitle: "StreamDock エフェクト",
+  }),
+});
+
+/**
+ * 061a: 受理する種別の allow-list。**`OBS_OVERLAYS` から導出する**ので、表に足せば自動的に受理される
+ * （＝「表を増やしたのに検証側を更新し忘れる」が構造的に起きない）。
+ */
+export const OBS_OVERLAY_KINDS: readonly ObsOverlayKind[] = Object.keys(
+  OBS_OVERLAYS,
+) as ObsOverlayKind[];
+
+/**
+ * 046d/061a: 制御フレームの `overlay` フィールドを `ObsOverlayKind` へ正規化する。**allow-list 方式**で、
+ * 既知の値以外はすべて既定 `"comments"` に落とす（未指定＝044a 時点の viewer からのフレーム＝後方互換）。
+ * 任意文字列がソース名/窓名として OBS へ渡る経路は作らない（§3/§8）。
+ *
+ * ⚠⚠ **これは「信頼できない JSON（loopback WS の制御フレーム）が最初に入ってくる境界」に置かれた
+ * 実質的なセキュリティ制御**で、TypeScript の型はここでは何も守らない（引数は `JSON.parse` 由来の `unknown`）。
+ *
+ * ⚠⚠ **照合は「`Object.keys` の配列に対する `includes`」でなければならない。**
+ * `v in OBS_OVERLAYS` や `OBS_OVERLAYS[v] !== undefined` にすると、`"__proto__"` / `"constructor"` /
+ * `"toString"` が**プロトタイプ経由で真になり fail-open する**（`OBS_OVERLAYS["__proto__"]` は
+ * Object.prototype を返す）。`scripts/test-obs-client.mjs` がこの 3 つを名指しで固定している。
+ *
+ * ⚠ **061a で `index.ts` からここへ移した。** 046d の JSDoc は移動先として `obs/obs-helpers.ts` を
+ * 予告していたが、allow-list を**表から導出する**形にするには表と同居している必要がある
+ * （helpers へ移すと表も一緒に動かすことになり、Rust の `overlay_window_contract` が
+ * `include_str!` する先まで変わる）。副産物として **`obs-helpers.ts` は差分ゼロ**を維持できている
+ * ＝ 044a/046d の fail-closed 層に手を入れていないことの担保が続く。
+ * 移した動機は 046d の JSDoc が挙げていた再修正トリガー①そのもの——`index.ts` は top-level で `main()` を
+ * 呼ぶ＝**import すると sidecar が起動する**ためテスト不能で、3 つ目の値を足すと三項演算子で書けなくなる。
+ */
+export function parseOverlayKind(v: unknown): ObsOverlayKind {
+  return typeof v === "string" &&
+    (OBS_OVERLAY_KINDS as readonly string[]).includes(v)
+    ? (v as ObsOverlayKind)
+    : "comments";
+}
+
 /** obs-websocket 接続の timeout（ミリ秒）。未起動/無効は速やかに graceful 失敗させる。 */
 const CONNECT_TIMEOUT_MS = 4000;
 /** ホストは loopback にピン留め（ユーザー/viewer からの host 指定は受けない）。ポートのみ検出値で可変。 */

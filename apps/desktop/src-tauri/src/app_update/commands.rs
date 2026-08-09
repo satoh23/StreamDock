@@ -95,7 +95,7 @@ const APP_UPDATE_PROGRESS_EVENT: &str = "app-update:progress";
 ///
 /// ⚠ frontend の `inFlightRef` が守るのは**メイン窓の中だけ**。Tauri v2 では
 /// **アプリ定義コマンドは ACL の対象外**なので、`install_app_update` はコメビュ窓・オーバーレイ 2 窓を
-/// 含む 4 窓すべての webview から呼べる（親 055 に記録済みの限界）。ここが 055b の security-review 指摘
+/// 含む 5 窓すべての webview から呼べる（親 055 に記録済みの限界）。ここが 055b の security-review 指摘
 /// **S-4「多重実行ガード・レート制限が無い」**に対する回答でもある。
 ///
 /// `Mutex` ではなく `AtomicBool` にしたのは、このリポジトリの State がすべて `std::sync::Mutex` で、
@@ -405,7 +405,7 @@ pub async fn check_app_update(app: AppHandle) -> AppResult<AppUpdateStatus> {
 /// **一時ディレクトリやインストール先の絶対パス**も含みうるので、`map_err(|_| …)` で束縛せずに捨てる。
 #[tauri::command]
 pub async fn install_app_update(app: AppHandle) -> AppResult<AppUpdateInstallOutcome> {
-    // 4 窓すべてから呼べるコマンドなので Rust 側でも多重実行を止める（`INSTALL_IN_FLIGHT` の注記）。
+    // 5 窓すべてから呼べるコマンドなので Rust 側でも多重実行を止める（`INSTALL_IN_FLIGHT` の注記）。
     // ⚠ 走行中の 2 本目を `Ok(())` に畳んではいけない（frontend が「完了」と誤読する・review S-2）。
     let Some(_guard) = InstallGuard::acquire() else {
         return Ok(AppUpdateInstallOutcome::AlreadyRunning);
@@ -575,14 +575,14 @@ mod command_contract {
     //! テストを書くときも `unwrap()` / `.expect(` / panic 系マクロ / `map_err(|e|` を使えない
     //! （`unwrap_or` / `unwrap_or_default` / `unwrap_or_else` は needle にヒットしないので使える）。
     //!
-    //! `lib.rs` の `pinned_overlay_contract` と同じ手口（`include_str!` でソースを文字列として読み、
+    //! `lib.rs` の `overlay_window_contract` と同じ手口（`include_str!` でソースを文字列として読み、
     //! リテラルの有無を照合する）。`check_app_update` 本体は実ネットワークに出るため単体テスト不可で、
     //! updater をモックするには**テストのためだけに本番コードへ trait 抽象を足す**ことになるので採らない。
     //! 実挙動の担保は devtools 実測（404 / available:false / available:true / 応答しないネットワーク）に置き、
     //! ここでは「後から静かに壊せる」3 点だけを止める。
     //!
     //! ⚠ **自己ヒット対策を 2 段でかける**。`include_str!` は**このテストモジュール自身のソースも含む**ため、
-    //! 素朴に書くと検索文字列が自分自身にヒットして判定が骨抜きになる（`pinned_overlay_contract` が
+    //! 素朴に書くと検索文字列が自分自身にヒットして判定が骨抜きになる（`overlay_window_contract` が
     //! 実際に踏んだ罠）。
     //! 1. **行コメントを除いてから照合する**（`code_only()`）。この検査を説明するコメントに needle を
     //!    書いても影響しない＝**コメントを書くことでガードが壊れる**という最悪の性質を消す。
@@ -835,7 +835,7 @@ mod command_contract {
 
     #[test]
     fn install_is_guarded_against_concurrent_runs() {
-        // ⚠ アプリ定義コマンドは ACL の対象外＝**4 窓すべてから呼べる**（親 055 の限界）。
+        // ⚠ アプリ定義コマンドは ACL の対象外＝**5 窓すべてから呼べる**（親 055 の限界）。
         // frontend の inFlightRef はメイン窓しか守らないので Rust 側にもガードを置く。
         // ⚠ `Drop` を消すと 1 度失敗しただけでフラグが立ちっぱなしになり、
         //   以後ずっと即 `Ok(())` を返す＝**サイレントな機能停止**になるので、こちらも固定する。
@@ -850,7 +850,7 @@ mod command_contract {
         let release = compact(&format!("impl Drop for {}", "InstallGuard"));
         assert!(
             src.contains(acquire.as_str()),
-            "install コマンドが同時実行ガードを取得していない（4 窓から多重にインストールが走る）"
+            "install コマンドが同時実行ガードを取得していない（5 窓から多重にインストールが走る）"
         );
         assert!(src.contains(cas.as_str()), "同時実行ガードが消えている");
         assert!(

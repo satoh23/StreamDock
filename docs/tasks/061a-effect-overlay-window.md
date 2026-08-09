@@ -1,6 +1,53 @@
 # 061a エフェクト用透過窓＋OBS ソース自動追加＋`obs-effects` 画面の枠
 
-> 状態: **未着手（実装サブタスク）**。分割・線引きは親 [061](061-obs-effects.md) を正とする。
+> 状態: **✅ 実装済み（2026-08-09）／security-review 済み〔外部〕（判定「軽微な懸念あり」・修正必須 2 件＝
+> いずれもドキュメント・対応済み）／品質レビュー 10 件（要修正 4・コメントのみ 6）対応済み／実機確認は未実施**。
+> ⚠ 指摘と対応の一覧は [`docs/progress.md`](../progress.md) の 061a 節「レビュー指摘と対応」が正。
+> 分割・線引きは親 [061](061-obs-effects.md) を正とする。
+>
+> ## ⚠⚠ 061b の仕様変更（2026-08-09）で、本タスクの決定が 1 つ覆っている
+>
+> 061a は「**エフェクト窓は WS へ接続しない**（061b はコメビュ窓が localStorage へ書いた `EffectRequest` を
+> `storage` で受ける）」を前提に作ったが、**依頼者決定により 061b でこれを反転する**——
+> エフェクト窓は `OverlayApp` と同じく **sidecar の loopback WS を直接張る**。
+> 経緯と設計は [061b](061b-monetary-effect-builtin.md) の冒頭と親 [061](061-obs-effects.md) が正。
+>
+> 本タスクの成果物のうち、**061b で更新が要るもの**:
+> - `EffectOverlayApp.tsx` / `windowApi.ts` / `lib.rs` の各 JSDoc にある「**WS へは一切接続しない**」の記述
+> - `EffectOverlayApp.test.tsx` の「**WS へ接続しない**」ケース（**逆の仕様になる**）
+> - [`docs/security.md`](../security.md) 061a 節の「表示専用・通信面ゼロ」
+>
+> ⚠ 逆に**変わらないもの**: 窓の生成・体裁・capability・窓名の 2 者間契約・OBS ソース自動追加・
+> ガイドのワンショット旗・起動時の窓復元。**061a の器そのものは作り直さない。**
+>
+> ⚠ **実装で判明した前提・判断の根拠は [`docs/progress.md`](../progress.md) の 061a 節が正**
+> （①〜⑧ の決定と理由・窓の既定値の根拠・契約テストの拡張方法・ミューテーション 11 件・実機確認の手順）。
+> 本ファイルは**着手時点の計画**として残し、下記「⚠ 実装で判明した構造上の穴」だけを追記してある。
+
+## ⚠⚠ 実装で判明した構造上の穴（着手時点の本ファイルには書かれていなかった）
+
+**`obs-enable` を送れるのはコメビュ窓だけで、`obs-effects` 画面は main 窓にある。**
+
+- `connectCommentStream` を呼ぶのは `CommentViewerApp` と `OverlayApp` の 2 つだけ＝**main 窓は WS を張らない**。
+  `enableObs` / `hideObs` を持つハンドルを握るのは `CommentViewerApp` の `streamRef` のみ。
+- sidecar のライフサイクルは**コメビュ窓に紐づく**（`open_comment_viewer_window` が `ensure_started`・
+  close で `shutdown`）＝**コメビュ窓が閉じていれば sidecar は動いていない**。
+- ⚠ ただし**穴は「表示トグル」ではなく `obs-enable` の送出だけに限局される**——アプリ定義コマンドは
+  ACL 対象外なので、窓の open/close は main 窓からそのまま invoke できる（`default.json` は差分ゼロ）。
+
+**結論（採用した案）**: **トグルは main 窓・送出はコメビュ窓が代行**する。
+
+- main 窓（`ObsEffectsScreen`）＝窓の open/close を直接 invoke ＋ 自動反映は**localStorage に設定を書くだけ**
+  （045c の「設定を立てるだけ」が**構造として**保証される）。
+- コメビュ窓（`CommentViewerApp`）＝**046b と同じ二段構え**で `enableObs("effects")` を代行する
+  （保証ベースライン＝マウント時 reconcile／即時反映＝`storage` 購読・ベストエフォート）。
+- 「コメビュ窓が閉じているとエフェクトは出ない」は `ObsEffectsScreen` の**前提ステータス 3 行**＋
+  「コメントビューアを開く」ボタンで明示する。
+- ⚠ **`obsState`（added / reused / failed）は main 窓に届かない**（WS 経由の通知なので）。結果表示は
+  従来どおりコメビュ窓のツールバー。
+- 却下した案と理由は progress.md の 061a 節（**main 窓から WS を張ると、第三者のコメント本文が
+  main 窓へ流れ込む＋sidecar 未起動時に毎秒 invoke が永久ループする**）。
+
 >
 > **必読前提**: 親 [061](061-obs-effects.md)、
 > 窓生成の手本 [`lib.rs`](../../apps/desktop/src-tauri/src/lib.rs)（`open_pinned_overlay_window` ＋ `pinned_overlay_contract` テスト）と [046b](046b-pinned-overlay-window.md)、

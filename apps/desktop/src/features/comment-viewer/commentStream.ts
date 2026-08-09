@@ -27,10 +27,16 @@ export interface DeviceCodePrompt {
 export type CommentService = "twitch" | "youtube";
 
 /**
- * 046d: OBS へ自動追加する対象オーバーレイの種別。sidecar 側の `ObsOverlayKind` と**同じ 2 値**で、
+ * 046d/061a: OBS へ自動追加する対象オーバーレイの種別。sidecar 側の `ObsOverlayKind` と**同じ 3 値**で、
  * 制御フレームにはこの識別子だけを載せる（ソース名・窓名は sidecar 内の表に閉じる＝任意の名前を渡さない）。
+ *
+ * ⚠ **型定義は 2 か所（ここと sidecar の `obs/obs-client.ts`）にあり、同期は人手**。ずれても
+ * typecheck では気付けない（WS 境界で型が失われる）が、実害は「送っても sidecar 側の
+ * `parseOverlayKind` が `"comments"` へ落とす」＝**誤った窓のソースが作られる**方向に出る。
+ * ⚠ 窓名の 2 者間契約は Rust の `overlay_window_contract` が固定しているが、**この union のずれは
+ * そこでは捕まらない**（あちらが見るのは窓タイトル文字列）。値を足すときは必ず両方を直すこと。
  */
-export type ObsOverlayKind = "comments" | "pinned";
+export type ObsOverlayKind = "comments" | "pinned" | "effects";
 
 export interface CommentStreamHandlers {
   onComments: (comments: CommentViewDto[]) => void;

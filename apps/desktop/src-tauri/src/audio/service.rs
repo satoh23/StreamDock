@@ -362,7 +362,7 @@ mod tests {
     //! そこで検証は 2 本立てにする:
     //! 1. **純関数**（波形合成）の性質を固定する。
     //! 2. **ソース文字列の契約テスト**で、テストでは踏めないセキュリティ不変条件を機械的に守る。
-    //!    `obs_config` / `app_update::commands` / `lib.rs::pinned_overlay_contract` の先例と同型。
+    //!    `obs_config` / `app_update::commands` / `lib.rs::overlay_window_contract` の先例と同型。
     use super::*;
 
     /// 鳴らせる音の全種類。
