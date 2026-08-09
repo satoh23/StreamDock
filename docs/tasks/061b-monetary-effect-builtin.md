@@ -1,6 +1,118 @@
 # 061b 組み込み投げ銭エフェクト＋発火層（多重発火抑制）
 
-> 状態: **未着手（実装サブタスク）**。分割・線引きは親 [061](061-obs-effects.md) を正とする。
+> 状態: **✅ 061b-1（経路）／061b-2（エフェクト本体）とも実装済み（2026-08-09）**。
+> **実機確認は sidecar の生死 6 項目を実装者が自動操作で実測して成立**（⚠ **エフェクトの描画とテスト発火の
+> `storage` 伝播だけ目視が残っている**）。
+> ⚠ **security-review は 2 回実施済み**（061b-1 に対する 1 回目・061b-1/061b-2 通しの 2 回目。
+> どちらも判定「修正必須」で**対応済み**）。指摘と対応は [`docs/progress.md`](../progress.md) の
+> 「061b security-review②」節が正。
+> 判断の根拠と実測値は [`docs/progress.md`](../progress.md) の **061b-1 / 061b-2 節**が正。
+> 分割・線引きは親 [061](061-obs-effects.md) を正とする。
+>
+> ## ⚠⚠ 本ファイルの誤りで、実装時に訂正したもの（**字面どおり実装すると壊れる**）
+>
+> 1. **(1) の課金判定式 `isMonetaryEvent(displayEventType(c))` は誤り。** これだと**ビッツで出ない**——
+>    `displayEventType` は superchat＋`currency:"BITS"` を `"bits"` へ振り替えるが、**`"bits"` は
+>    `MONETARY_EVENT_TYPES` に無い**（あの Set は「ビッツは superchat に含まれる」前提＝**生の
+>    `eventType` に適用する述語**）。**正は `isMonetaryEvent(c.eventType)`**。059b が通知音で
+>    まったく同じ誤りを踏んで訂正済み。⚠ 回帰テスト（「ビッツで出る」）を置いてある。
+> 2. **(1) の置き場所 `features/comment-viewer/effectTrigger.ts` は採らなかった。**
+>    そこへ置くと**リポジトリ初の `features/` → `screens/` import（層の逆転）**になる
+>    （課金判定・文言・配色はすべて `screens/comment-viewer/viewerFormat.ts` にあるため）。
+>    **実装は `screens/obs-effects/effectTrigger.ts`**。
+> 3. **(0) の「起動: `open_effect_overlay_window` でも `ensure_started` を呼ぶ」は採らなかった**（穴 C・依頼者決定）。
+> 4. **(1) の「バッチ内で畳む／1 バッチ最大 N 件」は実データで一度も発動しない**（穴 H）。時間窓へ変更。
+>
+> ## ⚠⚠ 着手時に判明した「本ファイルに書かれていなかった穴」と、その結論（2026-08-09）
+>
+> **⚠⚠ 穴 H（最重要・下記 (1) の仕様を無効化していた）— バッチ単位の抑制は実データで一度も発動しない**
+> sidecar は `comments.append` を **1 件ずつ** broadcast し（`index.ts` の `outputComments`）、
+> frontend も `commentStream.ts` で `handlers.onComments([comment])` と**常に長さ 1** で渡す。
+> ＝下記 (1) の「同一投稿者の gift を**バッチ内で** 1 件へ畳む」「**1 バッチから**最大 N 件」は
+> **常に「1 件のバッチ」に適用されるので何も抑制しない**。Twitch のコミュニティギフト N+1 は
+> **N+1 個の別バッチ**として届くため、バッチ内畳み込みでは 1 件も減らない。
+> → **決定（依頼者）＝畳み込みとバースト上限は「時間窓を持つ状態」で行う。**
+> `decideEffects(added, updated, state, now)` の形にし、`now` は引数注入（純関数のままテストできる）。
+>
+> **⚠⚠ 穴 A — テスト発火ボタンの経路が消えていた**
+> WS 直結にしたことで **main 窓 → エフェクト窓の伝達手段が 1 本も無くなった**
+> （061a 申し送りの「テスト発火ボタンは main 窓に置ける（**localStorage へ書くだけなので**）」は
+> 旧設計を前提にした文で、取り消し線が入っていなかった）。
+> → **決定（依頼者）＝テスト発火専用の localStorage キーを 1 本だけ持つ。値は nonce のみ**
+> （「いま出せ」という合図だけ。エフェクトの中身はエフェクト窓側の固定ダミー定数から作る）。
+> ＝ **第三者データは 1 バイトも載らない**ので §9 追補（046a）の対象外。`effectQueue.ts` とは別物。
+>
+> **⚠⚠ 穴 B — `CloseRequested` の時点では自窓がまだ生きている**（Tauri のソースで確定）
+> `tauri-runtime-wry` の `on_close_requested()` は **①per-window ハンドラ → ②`RunEvent::WindowEvent`
+> → ③実際の窓破棄**の順なので、**ハンドラ実行中は `get_webview_window(自分)` が `Some`**。
+> 逆に `Destroyed` は **①`RunEvent::WindowEvent`（この中で `AppManager::on_window_close` が map から削除）
+> → ②per-window ハンドラ**の順なので `None`。
+> → **決定＝両イベントで判定しつつ、自窓をラベルで除外する**（どちらの順序でも同じ結果になる）。
+> **⚠⚠ 穴 B″ — `app.exit(0)` では窓イベントが 1 つも配送されない**（`ControlFlow::Exit` →
+> `Event::LoopDestroyed` だけ）。＝**アプリ終了経路の担保は `RunEvent::Exit` の無条件 shutdown だけ**。
+>
+> **⚠⚠ 穴 C — 起動時に無操作で sidecar が起動する**（`restoreEffectOverlayWindow` はアプリ起動で走る）
+> → **決定（依頼者）＝`open_effect_overlay_window` に `ensure_started` を足さない**（本ファイル (0) からの
+> **意図的な逸脱**）。理由: 仕様変更の目的「一度開始すればコメビュ窓を閉じてもエフェクトが出続ける」は
+> **停止条件だけ広げれば 100% 達成**し、起動側を足して買えるのは「コメビュ窓を一度も開かずに sidecar 起動」だけ。
+> だが `start-session` の導線がコメビュ窓にしかない以上コメントは 1 件も来ない＝**機能的な利得ゼロ**。
+> 一方コストは「アプリ起動時に keychain 復元が `WINDOW_OPEN_LOCK` 保持下で走る」（未署名 dev の macOS は
+> 確認ダイアログ待ちがあり得る）。**結果として Rust の差分は `shutdown` の呼び出し条件だけになり、
+> §1 は差分ゼロで済む**（起動契機が変わらないので論証すら要らない）。
+> ⚠ 代償＝sidecar 未起動の間、エフェクト窓が毎秒 `get_comment_stream_port` を invoke し続ける（**穴 I**）。
+> ~~`comment-overlay` 窓が既に同じ性質を持つので新規の性質ではない~~
+> → ⚠⚠ **061b-1 レビュー（S-4）でこの受容根拠は不正確と判明。** `comment-overlay` はコメビュ窓からしか開けず
+> 起動時復元も無いので、実際には sidecar が動いている間しか存在しない。対して**エフェクト窓は永続設定で
+> アプリ起動時に自動復元される唯一の WS 窓**なので、「sidecar 未起動のまま回り続ける」が**既定状態**になる。
+> ＝**性質は同じだが定常状態が新しい。** それでも受容は維持する（1 回の実体が `state.lock()` して
+> `Option<u16>` を読むだけの Rust command で、新規の外部通信でも OS 操作でもない）。
+> 再修正トリガー＝実配信で CPU / IPC が問題化したら、`connectCommentStream` に
+> 「ポート未確定時だけ指数バックオフ（上限 15 秒程度）」を入れる（`OverlayApp` にも同時に効く）。
+>
+> **⚠ 穴 D — 「`OverlayApp` の写し」と「保存しない」は両立しない**
+> `OverlayApp` は `mergeComments` のために本文込み最大 200 件を state に持つ。
+> → **決定＝`mergeComments` を使わず、上限付きの既知 id 集合だけを持つ**（061b-2）。
+> ①本文が state に 1 件も残らない ②043e の combo 再送が**構造的に**発火しない（同一 id は既知）。
+> ⚠ 親 061 の「判定を 2 実装に分けない」とは抵触しない——共有し続けるのは
+> `isMonetaryEvent` / `displayEventType` / `composeEventMessage` / `monetaryTone` / `commentAmount` / `eventLabel`
+> ＝**課金判定・文言・配色**であって差分検出ではない（差分検出は既に `mergeComments` と `mergeMonetary` の 2 実装がある）。
+>
+> **⚠ 穴 F — 「コメビュ窓が閉じているとエフェクトは出ない」が偽になった**（`ObsEffectsScreen` の
+> 「（エフェクトも表示されません）」は嘘）。→ **061b-1 で案内文を修正済み**（回帰テスト 2 件で固定）。
+> **残るねじれ＝エフェクトは出るが OBS への自動追加はコメビュ窓が要る**（`obs-enable` の送出が
+> `CommentViewerApp` のままのため）。**所有者を移すのは別タスク**（`obsState` の受け皿がコメビュ窓にあり、
+> 移すと結果表示が完全に消える＝061a の宿題 (A)(B)(C) と同じ根）。
+>
+> **⚠ 穴 G — `ObsEffectsScreen` の「main 窓から WS を張らない理由」①②③がエフェクト窓に当たる**
+> → **061b-1 で JSDoc を修正済み**。理由③（毎秒 invoke ＋ 第三者本文の流入）は**エフェクト窓では受容**し、
+> **main 窓では受容しない**（あちらは特権 UI＝OBS パスワード入力・視聴者メモリ削除・テーマの既定復帰がある）。
+>
+> ## ✅ 061b-1（経路）の実装結果（2026-08-09）
+>
+> - **Rust の差分は `shutdown` の呼び出し条件だけ**（`ensure_started` は 1 バイトも触っていない・新 command ゼロ）。
+>   `SIDECAR_CONSUMER_LABELS` / `is_last_sidecar_consumer`（純関数）/ `shutdown_sidecar_if_last_consumer`。
+> - `EffectOverlayApp` が `connectCommentStream` を 1 本張る（`onComments` のみ）。
+>   **061b-1 の時点では受け取ったコメントを捨てる**（発火層と描画は 061b-2）。
+> - テスト: Rust **269 → 280**（`mod sidecar_lifecycle` 6 件＋`mod sidecar_lifecycle_contract` 5 件）、
+>   frontend **1298 → 1306**。
+> - ⚠⚠ **061b-1 の security-review（2026-08-09・外部レビュー・判定「修正必須」）で、この行に書いていた
+>   「ミューテーション 5 件すべて KILLED」が過大な主張だと判明した。** 自分で立てた 5 件はいずれも
+>   「自分のガードの主張を裏返す変異」で、レビュー側の独自ミューテーション**9 件中 6 件が生存**していた:
+>   Rust 側 4 件（**ラベル入れ替え／`CloseRequested` を落とす／`RunEvent::Exit` を `match` で条件化／
+>   ガードの `is_open` を `&& false` で骨抜き**）、frontend 側 2 件（**`console.log` で本文を出す／
+>   受信を state に置く**）。**件数ではなく「何を固定できていないか」を書くこと**（061a レビューの
+>   同種の指摘が再発していた）。
+> - ✅ **レビュー対応後**: 上記のうち **8 件が KILLED**。残る 1 件＝「描かずに `useState` へ置くだけ」は
+>   外から観測できないため**意図的に未固定**（`EffectOverlayApp.tsx` の JSDoc に明記。061b-2 では
+>   `EffectRequest` に `text` / `avatar` を持たせない型の側で構造的に守る）。
+>   テストは cargo **280**（件数据え置き・検査の中身を強化）／ frontend **1306 → 1309**。
+> - `docs/security.md`: 061a 節の 2 箇条書きを訂正し、S-1 の記録に 1 文追記、
+>   「レビュー必須条件」の `process停止処理` に下位条件を 1 つ追加した（実装記録は書いていない）。
+>   ⚠⚠ **当初「§1 は差分ゼロで正しい」と判断したが、レビュー（S-1）で誤りと判明した。**
+>   §1 の例外は「いつ始まるか」だけでなく**「いつ終わるか」でも範囲が決まる**——061b で
+>   **コメビュ窓を閉じても（エフェクト窓が生きていれば）Twitch/YouTube の取得が続く**ようになったので、
+>   032c-b の例外へ「**取得の停止条件**」ブロックを追記した。**§6 本文は引き続き差分ゼロ**
+>   （sidecar の停止条件は 061a 節が持つ・「レビュー必須条件」から辿れる）。
 >
 > ## ⚠⚠ 仕様変更（2026-08-09・依頼者決定）——**エフェクト窓は sidecar の WS に直接つなぐ**
 >
@@ -115,10 +227,16 @@
 
 - **いま**: `open_comment_viewer_window` が `ensure_started`、**コメビュ窓の close** が `shutdown`。
   ＝ **sidecar の生存がコメビュ窓 1 点に集約**されている。
-- **これから**: 起動契機と停止条件を「**コメビュ窓 or エフェクト機能のどちらかが使っている間は生かす**」へ広げる。
-  - 起動: `open_effect_overlay_window` でも `ensure_started` を呼ぶ（＝エフェクト窓が開いたら sidecar を立てる）。
+- **これから**: **停止条件だけ**を「**コメビュ窓 or エフェクト窓のどちらかが生きている間は生かす**」へ広げる。
+  - ~~起動: `open_effect_overlay_window` でも `ensure_started` を呼ぶ~~
+    → ⚠⚠ **依頼者決定で採らなかった（穴 C）。起動契機は `open_comment_viewer_window` の 1 箇所のまま。**
+    理由は冒頭の穴 C を参照（機能的な利得ゼロ／アプリ起動時の無操作 keychain 復元を新設しない／
+    結果として Rust の差分が `shutdown` の呼び出し条件だけに閉じ、§1 が差分ゼロで済む）。
   - 停止: **コメビュ窓を閉じただけでは落とさない**。「コメビュ窓が無く、かつエフェクト窓も無い」ときに落とす。
     ⚠ 判定は **Rust 側で実窓を見て行う**（`get_webview_window` の有無）。frontend の設定値を信用しない（§8）。
+    ⚠⚠ **`CloseRequested` と `Destroyed` の両方で判定し、自窓はラベルで除外する**（穴 B）。
+    ⚠⚠ **`RunEvent::Exit` の無条件 shutdown は絶対に条件付きにしない**（穴 B″＝アプリ終了経路では
+    窓イベントが 1 つも配送されないので、あれが唯一の担保）。
 - ⚠⚠ **§6（プロセス停止）の設計に触る。** 現状の no-orphan 3 段 kill は「契機がコメビュ窓 1 点」を前提に
   組まれている。契機が 2 つになるので、**「どの窓も無くなったら必ず落ちる」ことを崩さない**こと。
   とくに次の 3 経路をすべて確認する:
@@ -136,16 +254,23 @@
 
 `features/comment-viewer/effectTrigger.ts` を新設し、**「何で発火するか」を 1 か所に閉じる**。
 
-- `decideEffects(added: CommentViewDto[], updated: CommentViewDto[]): EffectRequest[]`
+⚠⚠ **穴 H により「バッチ内」という条件は使えない**（sidecar は 1 件ずつ送るので `added` は常に長さ 1）。
+畳み込みもバースト上限も**時間窓を持つ状態**で行う。状態と `now` は**引数で受け取る**（純関数のままにする）。
+
+- `decideEffects(added: CommentViewDto[], updated: CommentViewDto[], state: EffectTriggerState, now: number): EffectRequest[]`
   - **`updated` からは何も出さない**（[043e](043e-youtube-jewels-combo-fidelity.md) の combo 再送）
+    ⚠ 呼び出し側（エフェクト窓）は既知 id を除いた配列を `added` に・`[]` を `updated` に渡すので**二重に守る**。
   - `added` のうち `isMonetaryEvent(displayEventType(c))` が真のものだけ拾う
-  - ⚠ **コミュニティギフトの N+1 を畳む**: 同一バッチ内で
-    `eventType === "gift"` かつ**同じ投稿者**のものは 1 件にまとめる。
+  - ⚠ **コミュニティギフトの N+1 を畳む**: **`GIFT_FOLD_WINDOW_MS`（既定 5 秒）以内**に
+    `eventType === "gift"` かつ**同じ投稿者**のものが来たら 1 件にまとめる。
     ⚠ **`community_sub_gift`（total=N）と個別 `sub_gift` は wire 上で区別できない**（両方 `gift`）ので、
-    「同一投稿者の gift はバッチ内で 1 件」という近似で畳む。**この近似はコメントに明記する**
-    （再修正トリガー＝上流で `community_gift_id` による dedup が入ったら不要になる）。
-  - ⚠ **バースト上限**: 1 バッチから出すエフェクトは最大 N 件（例 3）に制限する。
+    「同一投稿者の gift は時間窓内で 1 件」という近似で畳む。**この近似はコメントに明記する**
+    （⚠ 副作用＝**同一人物の本物の 2 件目のギフトも窓内なら畳まれる**。
+    再修正トリガー＝上流で `community_gift_id` による dedup が入ったら不要になる）。
+  - ⚠ **バースト上限**: **`EFFECT_BURST_WINDOW_MS`（既定 5 秒）に最大 `EFFECT_BURST_MAX`（既定 3）件**。
     残りは捨てる（キューに溜めない）。溜めると数分後にエフェクトが出続ける。
+    ⚠ **バースト窓を表示時間（`EFFECT_DISPLAY_MS`＝5 秒）と同値にしてある**——こうすると
+    「**画面上の同時表示数 ≤ 3**」が構造的に保証され、別々の値にして片方だけ調整して破る事故が起きない。
     ⚠ **捨てた件数はログに出さない**（§9）が、**捨てる設計であることをコメントに残す**。
 - `EffectRequest` は**エフェクトを出すのに必要な最小限**だけを持つ:
   `{ id, name, amountText, tone, eventLabel }`

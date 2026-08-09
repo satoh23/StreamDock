@@ -31,8 +31,10 @@ import styles from "./OverlayApp.module.css";
  * **読み取り専用接続**する（`onComments` のみ使用・制御フレームメソッド `startLogin`/`startSession`/`stopSession` は
  * 一切呼ばない＝送信フレームゼロ・新規外部通信ゼロ）。受信は共有 `mergeComments`（append＋id 重複排除＋
  * 200 件クランプ）で蓄積し、`CommentList`（033b 分割）で一覧表示する。**表示専用**で操作 UI（接続・設定・トグル）は
- * 持たない。sidecar の起動/停止には関与せず、cleanup の `disconnect()` もクライアント側 close のみ
- * （no-orphan kill 契機はコメビュ窓に集約のまま）。
+ * 持たない。sidecar の起動/停止には関与せず、cleanup の `disconnect()` もクライアント側 close のみ。
+ * ⚠ **061b: 「no-orphan kill 契機はコメビュ窓に集約のまま」ではなくなった**（061b レビュー②S-4）。
+ * 契機は `comment-viewer` / `effect-overlay` の 2 点（Rust の `SIDECAR_CONSUMER_LABELS`）だが、
+ * **この窓はそこに入っていない**ので「この窓は sidecar の生存に関与しない」は 033f から真のまま。
  *
  * 背景透過: 同一 Vite バンドルを全窓が読むため、`html`/`body`/`#root` を透明化する CSS が他窓（main /
  * comment-viewer）へ波及しないよう、この窓の document にだけ `data-overlay="1"` 属性を立て、

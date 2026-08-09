@@ -1335,7 +1335,9 @@ export function CommentViewerApp() {
   // **本体コメントビューのツールバー**へ移設した（034d の部分反転）が、このハンドラ自体は無変更で流用している。
   // 033f のオープン/クローズ挙動は不変で、
   // Rust が透過・フレームレス・最背面・非フォーカスで生成し（open_comment_overlay_window）、閉じても sidecar は
-  // 落とさない（表示専用・no-orphan kill 契機はコメビュ窓に集約のまま）。
+  // 落とさない（表示専用）。⚠ **061b: 「kill 契機はコメビュ窓に集約のまま」ではなくなった**
+  // （061b レビュー②S-4）。契機は `comment-viewer` / `effect-overlay` の 2 点だが、
+  // `comment-overlay` はそこに入っていないので、この窓の性質自体は 033f から不変。
   // 034f（回帰修正）: 旧実装の cross-window onCloseRequested 購読を撤去（購読があると OFF で Tauri が JS の destroy()
   // へ委譲し capability 不足で拒否＝窓が閉じなかった）。ON は open→state 更新のみ、OFF は Rust close() で確実に閉じる
   // （Rust の window.close() は capability 非依存の直接 API）。トグル state は楽観更新し、実状態は再マウント時の
@@ -1570,18 +1572,31 @@ export function CommentViewerApp() {
    * 061a: **エフェクト窓の OBS 自動反映を、この窓が代行する。**
    *
    * ⚠⚠ **なぜ設定は main 窓にあるのに送出はここなのか**（061a 実装で判明した構造上の制約）:
-   * `obs-enable` を送れるのは WS ハンドル（`streamRef`）を持つこの窓だけで、しかも sidecar の
-   * ライフサイクルもこの窓に紐づいている（`open_comment_viewer_window` が `ensure_started`、close で
-   * `shutdown`）。一方 `obs-effects` 画面は main 窓にある（親 061 の決定＝061c/061d のファイル取り込みが
-   * `default.json` の `dialog:allow-open` を要るため）。main 窓からも WS を張る案は採らなかった
-   * （`get_comment_stream_port` が null の間**毎秒 invoke が永久ループ**し、`onComments` 必須なので
-   * **第三者のコメント本文が main 窓へ流れ込む**＝§9 の後退）。詳細は `ObsEffectsScreen` の JSDoc。
+   * `obs-enable` を送れるのは WS ハンドル（`streamRef`）を持つこの窓だけ。一方 `obs-effects` 画面は
+   * main 窓にある（親 061 の決定＝061c/061d のファイル取り込みが `default.json` の `dialog:allow-open` を
+   * 要るため）。main 窓からも WS を張る案は採らなかった（`get_comment_stream_port` が null の間
+   * **毎秒 invoke が永久ループ**し、`onComments` 必須なので**第三者のコメント本文が main 窓へ流れ込む**
+   * ＝§9 の後退）。詳細は `ObsEffectsScreen` の JSDoc。
+   *
+   * ⚠⚠ **061b で前提が 1 つ変わった**（この effect 自体は無改変）: 当初の根拠には
+   * 「sidecar のライフサイクルもこの窓に紐づいている」も含まれていたが、061b で **sidecar は
+   * 「コメビュ窓 or エフェクト窓のどちらかが生きている間」生存する**ようになった（`SIDECAR_CONSUMER_LABELS`）。
+   * さらにエフェクト窓は自前の WS ハンドルを持つので、**技術的には `obs-enable("effects")` を自分で送れる**。
+   * それでも所有者をここに残しているのは、①`obs.state`（added/reused/failed）の受け皿（ツールバーと
+   * 設定カード）がこの窓にあり、移すと**結果表示が完全に消える** ②045c の規律（設定を立てるだけ／契機は表示 ON／
+   * **猶予タイマーの取り消し**）をエフェクト窓側に再実装することになる、の 2 点で 061b のスコープを超えるため。
+   * **再修正トリガー＝所有者を移す別タスクに着手するとき**（そのときは 061a の宿題 (A)(B)(C) とまとめて）。
+   *
+   * ⚠ **残るねじれ**: 061b 以降「**エフェクトは出るが、OBS への自動追加はコメビュ窓が要る**」。
+   * `ObsEffectsScreen` の前提案内はこの非対称をそのまま書いてある（「エフェクトも表示されません」は
+   * 偽になったので削除済み）。
    *
    * ⚠ 伝達は 046a/046b と同じ**二段構え**にしてある:
    *   - **保証ベースライン**＝この effect のマウント時 reconcile。`storage` が届かなくても、
    *     コメビュ窓を開き直せば必ず反映される。
    *   - **即時反映**＝`storage` 購読（**ベストエフォート**。別 webview 間の伝播はプラットフォーム依存）。
-   * ⚠ **コメビュ窓が閉じている間は誰も送れない**。この事実は `ObsEffectsScreen` の前提ステータスと
+   * ⚠ **コメビュ窓が閉じている間は `obs-enable` を誰も送れない**（＝OBS への自動追加だけが止まる。
+   * エフェクトの表示自体は 061b で独立した）。この事実は `ObsEffectsScreen` の前提ステータスと
    * 案内で明示してある（黙って何も起きない状態を作らない）。
    *
    * ⚠ 045c の規律をそのまま踏襲する:

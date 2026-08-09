@@ -105,6 +105,27 @@ loopback 例外を、合成＋ローカル再生に限定して（再）定義�
   ブラウザ shell-out（`open`）はしない。`csp: null` は当面維持（TODO：将来 viewer CSP を効かせる際は `connect-src` に
   `https://id.twitch.tv https://api.twitch.tv wss://eventsub.wss.twitch.tv wss://*.wss.twitch.tv ws://127.0.0.1:*` を許可する）。
 
+**取得の停止条件（⚠⚠ 061b で変わった。032c-d の YouTube 取得にも等しく適用する）**:
+この例外は「いつ始まるか」（＝ユーザーの明示接続）だけでなく、**「いつ終わるか」でも範囲が決まる**。
+
+- 取得セッションが止まるのは次の 2 つだけ: ①ユーザーの明示操作（`stop-session`）
+  ②**sidecar プロセスの停止**（＝`comment-viewer` と `effect-overlay` の**どちらも無くなったとき**／アプリ終了。
+  詳細は下記「Tauri Permissions / Capabilities 方針」の 061a 節「sidecar の停止条件」）。
+  **WS クライアント（窓）が 0 になっても取得は止まらない**——sidecar 側は接続数を見ていない。
+- ⚠⚠ **061b 以前は「コメビュ窓を閉じる＝sidecar を kill＝取得が必ず止まる」だったが、いまは同値ではない。**
+  **エフェクト窓が開いている間はコメビュ窓を閉じても取得（インターネット通信）が続く。** これは
+  「一度取得を開始すればコメビュ窓を閉じてもエフェクトが出続ける」という 061b の仕様の裏返しであり、意図した挙動。
+- ⚠⚠ **だからこそ「取得が続いていること」と「その止め方」をユーザーへ明示する導線を必ず保つこと。**
+  取得中であることを示す UI はコメビュ窓にしかなく、`close_comment_viewer_window`（＝ツール管理の「停止」ボタン）は
+  **窓を閉じるだけで、それ自体は取得を止めない**（`stop-session` を送らない）。
+  ⚠ **このボタンで取得が止まるのは「その close で sidecar が落ちるとき」＝エフェクト窓も無いときだけ**で、
+  エフェクト窓が開いていれば取得は続く（条件付きであることを落とさずに書くこと。無条件に「取得は止めない」と
+  書くと、エフェクト窓を使っていないユーザーにとって嘘になり、`ObsEffectsScreen` の案内文とも矛盾する）。
+  明示は `ObsEffectsScreen` の前提案内と、ツール管理の停止フィードバック文言（`MainScreen` が
+  `is_effect_overlay_open` を見て分岐する）が担う。
+  ⚠ **この導線を消す／`SIDECAR_CONSUMER_LABELS` に窓を足して sidecar をさらに延命する変更は、
+  「ユーザーが知らないうちに外部通信が続く」を広げる方向なので本例外の再評価が必要**（レビュー必須条件の「外部通信」）。
+
 ### 例外（032c-d・コメントビューアの YouTube コメント取得）
 
 上記「外部通信をしない」原則に対し、**内蔵コメントビューア（別ウィンドウ label `comment-viewer`）の YouTube
@@ -1430,9 +1451,12 @@ sidecar の spawn は Rust の `app.shell().sidecar()` から行い IPC を通�
   呼ばない）。046a が localStorage へ書いた固定コメントを read-on-mount ＋ `storage` 購読で読むだけで、
   **新規の外部通信・宛先・Rust emit・依存はゼロ**。`author.avatar` は保存されていないためアイコンはイニシャル丸で、
   **外部 URL を踏む経路が存在しない**（036a の「webview が踏むのは data URI のみ」ガードは無傷）。
-- **sidecar に触れない＝no-orphan kill 契機は不変**: `comment-overlay` と同じく window イベント（sidecar 連動）を
+- **sidecar に触れない**: `comment-overlay` と同じく window イベント（sidecar 連動）を
   **登録しない**ので、この窓を閉じても sidecar は落ちない。`close_pinned_overlay_window` は自アプリのウィンドウを
   閉じるだけで、**PID kill・プロセス名 kill は行わない**（§6 の PID kill はそもそも発生しない）。
+  ⚠ **061b で「no-orphan kill 契機は不変」ではなくなった**（061b レビュー②S-4）。kill 契機は
+  `comment-viewer` / `effect-overlay` の 2 点（下記 061a 節「sidecar の停止条件」）へ広がっている。
+  ただし**この窓はそこに入っていない**ので、上記「閉じても落ちない／開いていても延命しない」は 046b から真のまま。
 - **窓タイトルは `StreamDock 固定コメント`**。044a の自動ソース追加は窓名の `includes` 一致で対象窓を探すため、
   **2 つの窓名が互いに部分文字列にならない**ことが必須条件（「StreamDock 固定コメント」は
   「StreamDock コメントオーバーレイ」を含まない＝取り違えない）。
@@ -1564,13 +1588,33 @@ Rust の `app.updater_builder()` から行い IPC を通らないため、**4 �
   `close_effect_overlay_window` / `is_effect_overlay_open`。いずれも**引数は `AppHandle` のみ＝
   frontend から値を受け取らない**（ラベルは Rust 内のリテラル）。任意ラベル・任意オプションの汎用窓生成は
   露出しない。ユーザー入力が OS 操作へ渡る経路は無い（§8）。
-- **表示専用・通信面ゼロ**: この窓の frontend（`EffectOverlayApp`）は **WS へ接続しない**
-  （`connectCommentStream` を呼ばない）。import は React と CSS 2 枚だけで、**新規の外部通信・宛先・
-  Rust emit・依存はゼロ**。061b もこの性質を維持する（コメビュ窓が localStorage へ書いた `EffectRequest` を
-  `storage` 購読で受ける設計）。**061a の時点ではコメント本文・投稿者名・金額・アバターを一切描かない。**
-- **sidecar に触れない＝no-orphan kill 契機は不変**: `comment-overlay` / `pinned-overlay` と同じく
-  window イベント（sidecar 連動）を**登録しない**ので、この窓を閉じても sidecar は落ちない。
-  `close_effect_overlay_window` は自アプリのウィンドウを閉じるだけで、**PID kill・プロセス名 kill は行わない**。
+- **読み取り専用接続（⚠⚠ 061b で 061a の決定を反転した）**: この窓の frontend（`EffectOverlayApp`）は、
+  コメビュ窓・`comment-overlay` 窓と**同じ既存の loopback WS**（`ws://127.0.0.1:<port>`）へ
+  `connectCommentStream` で**読み取り専用接続**する（`onComments` のみ・制御フレームは 1 つも送らない）。
+  **新規宛先・新規 WS プロトコル・Tauri イベント・依存はいずれもゼロ**（`OverlayApp` と同じ立場）。
+  ⚠⚠ **この窓は第三者のコメント本文を受け取る。** 061a の「そもそも WS を張らない」という担保は
+  失われたので、代わりに次を満たすこと: **本文とアバターを描かない・state や localStorage に保存しない・
+  ログに出さない**、**エフェクトへ渡す値（投稿者名 / 金額 / 種別 / 配色キー）に本文とアバターを含めない**、
+  **`record_comment` 等の DB 経路へ流さない**。
+  ⚠ **マウント時に過去のエフェクトを再生する経路を作らないこと**（何も永続しないので再生する対象が
+  存在しない、という構造で担保する）。**061c/061d で永続層を足すときは、この前提を必ず再評価すること。**
+- **sidecar の停止条件（⚠⚠ 061b で拡張した）**: sidecar を止めるのは次の 2 つ。
+  ①**`comment-viewer` と `effect-overlay` のどちらも存在しなくなったとき**
+  （判定は Rust 側で `get_webview_window` により**実窓**を見る。frontend の設定値は信用しない＝§8）
+  ②**アプリ終了（`RunEvent::Exit`・無条件）**。
+  **起動契機は `open_comment_viewer_window` の 1 箇所のまま**（エフェクト窓は sidecar を起動しない）。
+  ⚠⚠ **①の判定では「閉じようとしている窓」を必ずラベルで除外すること。** Tauri v2 の実装では
+  `CloseRequested` のハンドラが走る時点で**自窓はまだ `get_webview_window` に居る**（`Destroyed` では既に居ない）。
+  除外を外して「実窓を見ればよい」と単純化すると、**どの窓を閉じても sidecar が落ちなくなる**（＝孤児が残る）。
+  ⚠ これは Tauri のイベント発火順に依存する前提なので、**Tauri を上げるときはここを再確認すること**
+  （`RunEvent::WindowEvent` と per-window ハンドラの前後関係が変わると壊れる側に倒れる）。
+  ⚠ **①の変更は「取得＝外部通信がいつ止まるか」も同時に変える**。§1 の「取得の停止条件」を必ず併せて読むこと。
+  ⚠⚠ **「どの窓も無くなったら必ず落ちる」を崩さないこと**が §6 の趣旨（孤児プロセスを残さない）に対する
+  担保である。とくに②は**アプリ終了経路での唯一の担保**なので（`app.exit(0)` は個々の窓の
+  `CloseRequested`／`Destroyed` を配送しない）、**無条件のまま維持すること**。
+  sidecar 側の ppid 監視 self-exit を担保に数えないこと。
+  `comment-overlay` / `pinned-overlay` は**この判定に含めない**（含めると停止条件が緩む＝孤児が残る方向）。
+  `close_effect_overlay_window` は自アプリのウィンドウを閉じるのみで、**PID kill・プロセス名 kill は行わない**。
 - **窓タイトルは `StreamDock エフェクト`**。044a/046d の自動ソース追加は窓名の `includes` 一致で対象窓を
   探すため、**3 つの窓名が互いに部分文字列にならない**ことが**機能要件**（壊れると `ensureOverlaySource` の
   M2 フォールバックで `"reused"`＝成功として返り、UI は成功表示・OBS は真っ黒という静かな失敗になる）。
@@ -1616,6 +1660,9 @@ Rust の `app.updater_builder()` から行い IPC を通らないため、**4 �
     逆を指示する箇条書きが残っていた**（同ファイル内で矛盾していた）。字面どおり実装されると S-1 が
     そのまま再発するため、**061b 側の記述を「`storage` 購読の一段だけ」に修正済み**
     （[`docs/tasks/061b-monetary-effect-builtin.md`](tasks/061b-monetary-effect-builtin.md) の「(2) 窓間伝達」）。
+    ⚠ **その後の 2026-08-09 の仕様変更（エフェクト窓の WS 直結）で localStorage 経路自体が廃止されたため、
+    この懸念は構造的に消滅した**（保存しないので再生する対象が存在しない）。
+    ⚠ ただし「**接続直後に過去分を遡って発火しない**」は WS 経路でも要件として残る。
 - **新規ウィンドウ＋新規 capability＋新規 command のため security-review 実施**
   （2026-08-09・**外部レビュー**・判定「**軽微な懸念あり**」・修正必須 2 件〔いずれもドキュメント・対応済み〕・
   後回し可 2 件、あわせて品質指摘 10 件〔要修正 4・コメントのみ 6〕。044a / 046d と同型のため軽め）。
@@ -2169,6 +2216,11 @@ distill（vendor）したもので、keyring・`open`・hono/zod・dotenv・goog
 - opener plugin
 - process起動処理
 - process停止処理
+  - ⚠ **コメント取得 sidecar の停止条件**（どの窓が生きている間は落とさないか・どのイベントで判定するか・
+    起動契機を増やすこと）を変える変更も本項に該当する。§6 の本文は「ツールプロセスの停止は自 spawn PID に
+    限定」であって sidecar のライフサイクルを扱っていないが、**「どの窓も無くなったら必ず落ちる」＝
+    孤児プロセスを残さない保証はここ 1 点に集約している**（実体は上記「Tauri Permissions / Capabilities 方針」の
+    061a 節「sidecar の停止条件」）。**§6 の下位条件に当てはまらないことを理由に自分を免除しないこと。**
 - ファイル読み書き処理
 - ログ出力処理
 - 外部通信

@@ -82,6 +82,48 @@ export const EFFECT_OBS_AUTO_ADD_KEY =
 export const EFFECT_OVERLAY_GUIDE_PENDING_KEY =
   "stream-dock.comment-viewer.effect-overlay-guide-pending";
 /**
+ * 061b: 「投げ銭でエフェクトを出す」ON/OFF の保存キー（既定 **false**）。
+ *
+ * ⚠ `EFFECT_OVERLAY_ENABLED_KEY`（窓を出すか）とは**別の軸**: あちらは「エフェクト窓を開くか」、
+ * こちらは「その窓で**投げ銭エフェクトを発火させるか**」。061c/061d のテンプレートや 063 のガチャが
+ * 乗ると発火源が増えるので、種別ごとに ON/OFF できる形にしてある。
+ *
+ * ⚠⚠ **読み手＝エフェクト窓（`EffectOverlayApp`）で、発火のたびに読み直す**（state にミラーしない・
+ * `storage` イベントにも依存しない）。書き手は main 窓（`ObsEffectsScreen`）なので、state に写すと
+ * 「main 窓で変えたのに古い値で判断する」形が作れてしまう（`CommentViewerApp` のエフェクト連携 effect と同じ判断）。
+ * ⚠ **WS 接続そのものはこの設定でゲートしない**（窓が開いている＝ユーザーが「配信画面にエフェクトを出す」と
+ * 決めた状態）。接続をゲートすると「OFF→ON にしたのに窓を開き直すまで効かない」という罠か、
+ * `storage` 依存のどちらかを抱え込む。＝ **OFF でもコメントは届くが 1 件も発火しない**。
+ *
+ * トグルの ON/OFF（boolean）＝**ユーザー自身の UI 設定値**で、§9 追補（046a）が対象とする
+ * 第三者の個人データではない（既存 3 キーと同種）。
+ */
+export const EFFECT_MONETARY_ENABLED_KEY =
+  "stream-dock.comment-viewer.effect-monetary-enabled";
+/**
+ * 061b: **テスト発火の合図**（main 窓 → エフェクト窓）。値は**毎回変わる nonce だけ**。
+ *
+ * ⚠⚠ **なぜこのキーが要るのか**（061b の穴 A）: 2026-08-09 の仕様変更でエフェクト窓が sidecar の WS を
+ * 直接張る形になり、`effectQueue.ts`（localStorage 経由の窓間伝達）を廃止した結果、
+ * **main 窓からエフェクト窓へ届く道が 1 本も無くなった**。しかしテスト発火ボタンは
+ * 「実際のスパチャを待たないと OBS のセットアップができない」ため必須。
+ * 却下した案: ①エフェクト窓側に操作 UI を置く（透過・非フォーカス・最背面なのでクリックを受けられない）
+ * ②sidecar から合成コメントを流す（**sidecar 差分ゼロに反する**うえ、未認証の loopback WS に
+ * 「配信画面へ任意の文字列を出す口」を作ることになる）③Rust コマンド＋Tauri emit（**新 command ゼロに反する**）。
+ *
+ * ⚠⚠ **値は nonce（時刻由来の文字列）だけで、エフェクトの中身は載せない。**
+ * 出す内容はエフェクト窓側の**固定ダミー定数**から作る＝ **第三者のデータが localStorage に 1 バイトも載らない**
+ * （§9 追補〔046a〕の対象外。廃止した `effectQueue` とはここが決定的に違う）。
+ * ⚠ **毎回値を変える**こと。同じ値の `setItem` では `storage` イベントを飛ばさない実装があるため。
+ *
+ * ⚠ 伝達は `storage` イベント（**別 webview 間の伝播はプラットフォーム依存でベストエフォート**）。
+ * 届かなくても壊れ方は「**テストボタンが効かない**」という観測可能なものに留まり、本番の発火（WS 直結）には
+ * 影響しない。**再修正トリガー**＝実機で効かないと分かったら、エフェクト窓側でこのキーだけを
+ * 短間隔で**読む**ポーリングへ切り替える（読み取りは `storage` を撒かないので他窓に副作用が無い）。
+ */
+export const EFFECT_TEST_FIRE_KEY =
+  "stream-dock.comment-viewer.effect-test-fire";
+/**
  * 060d: 選択中のカスタム CSS テーマ（`overlay_themes` の id）の保存キー。**未保存＝`null`＝既定意匠**。
  *
  * ⚠ **CSS 本文はここに置かない**（Rust が `app_data_dir/themes/<id>.css` に持ち、
@@ -279,6 +321,41 @@ export function saveEffectOverlayGuidePending(pending: boolean): void {
     localStorage.setItem(EFFECT_OVERLAY_GUIDE_PENDING_KEY, String(pending));
   } catch {
     // プライベートモード等で書けない場合は黙って無視する。
+  }
+}
+
+/** 061b: 「投げ銭でエフェクトを出す」ON/OFF を読み込む。未保存・例外は false（OFF）へフォールバック。 */
+export function loadEffectMonetaryEnabled(): boolean {
+  try {
+    return localStorage.getItem(EFFECT_MONETARY_ENABLED_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+/** 061b: 「投げ銭でエフェクトを出す」ON/OFF を保存する（ローカルのみ・非機密・外部送信しない）。 */
+export function saveEffectMonetaryEnabled(enabled: boolean): void {
+  try {
+    localStorage.setItem(EFFECT_MONETARY_ENABLED_KEY, String(enabled));
+  } catch {
+    // プライベートモード等で書けない場合は黙って無視する。
+  }
+}
+
+/**
+ * 061b: **テスト発火の合図を出す**（main 窓の「テスト表示」ボタンから呼ぶ）。
+ *
+ * ⚠⚠ **書くのは nonce だけ**（第三者のデータは 1 バイトも載せない・詳細は `EFFECT_TEST_FIRE_KEY` の JSDoc）。
+ * ⚠ **毎回必ず違う値**にする（同値の `setItem` では `storage` イベントを飛ばさない実装があるため）。
+ * `Date.now()` は同一ミリ秒で衝突しうるので、プロセス内カウンタを併記して単調に増やす。
+ */
+let testFireSeq = 0;
+export function requestEffectTestFire(): void {
+  try {
+    testFireSeq += 1;
+    localStorage.setItem(EFFECT_TEST_FIRE_KEY, `${Date.now()}-${testFireSeq}`);
+  } catch {
+    // 書けない環境では**テストボタンが効かないだけ**（本番の発火は WS 直結なので影響しない）。
   }
 }
 

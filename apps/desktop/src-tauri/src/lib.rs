@@ -40,6 +40,99 @@ use tools::commands::DbState;
 /// 従来どおり poison=`expect` を維持する。
 static WINDOW_OPEN_LOCK: Mutex<()> = Mutex::new(());
 
+/// 061b: **コメント取得 sidecar を使っている窓のラベル**。このどれか 1 つでも生きている間は sidecar を止めない。
+///
+/// ⚠⚠ **061b でここが 1 窓から 2 窓へ広がった**（それ以前は「コメビュ窓 1 点」に集約されていた）。
+/// エフェクト窓（`effect-overlay`）が `OverlayApp` と同じく loopback WS を直接張るようになり、
+/// **コメビュ窓を閉じてもエフェクトが出続ける**ことが 061b の目的そのものだから。
+///
+/// ⚠ `comment-overlay` / `pinned-overlay` は**入れない**。前者は WS を張るが表示専用で、
+/// 「コメントオーバーレイだけ開いたまま sidecar を生かす」意味が無い（コメビュ窓からしか開けない）。
+/// 後者はそもそも WS を張らない。**ここへラベルを足すのは「その窓が閉じるまで sidecar を生かす」
+/// と決めたときだけ**で、足すと停止条件が緩む方向（＝孤児が残る方向）に効くので必ずレビューすること。
+///
+/// ⚠ **起動契機はここに含まれない。** sidecar を起動するのは `open_comment_viewer_window` の
+/// `ensure_started` **1 箇所のまま**で、エフェクト窓は sidecar を起動しない
+/// （起動しても `start-session` の導線がコメビュ窓にしか無いためコメントは 1 件も来ず、
+/// アプリ起動時の窓復元経路で keychain 復元だけが走る形になるため。詳細は `open_effect_overlay_window` の注記）。
+const SIDECAR_CONSUMER_LABELS: [&str; 2] = ["comment-viewer", "effect-overlay"];
+
+/// 061b: **閉じようとしている窓を除いて**、sidecar を使う窓が 1 つも残っていなければ `true`。
+///
+/// ⚠⚠ **`closing_label` をラベルで除外するのが要点。** Tauri v2（tauri-runtime-wry）の実装では
+/// 窓イベントの発火順が **`CloseRequested` と `Destroyed` で逆**になっている:
+///
+/// - **`CloseRequested`**: per-window ハンドラ → `RunEvent::WindowEvent` → 実際の窓破棄、の順。
+///   ＝**ハンドラが走る時点で自窓はまだ `get_webview_window` に居る**（`Some` が返る）。
+/// - **`Destroyed`**: `RunEvent::WindowEvent`（この中で `AppManager::on_window_close` が窓を
+///   マネージャの map から削除する）→ per-window ハンドラ、の順。
+///   ＝**ハンドラが走る時点で自窓はもう居ない**（`None` が返る）。
+///
+/// 自窓を除外せずに「生きている窓があるか」を数えると、`CloseRequested` で**必ず自分自身が引っかかり**、
+/// **どの窓を閉じても sidecar が落ちなくなる**（＝孤児が残る）。逆に自窓を除外しておけば
+/// `Destroyed`（既に居ない）でも結果が変わらないので、**どちらのイベントでも同じ判定になる**。
+///
+/// `is_open` を注入しているのは**実窓なしで単体テストできるようにするため**（下の `mod sidecar_lifecycle`）。
+/// 本番の呼び出し元は `shutdown_sidecar_if_last_consumer` で、`AppHandle::get_webview_window` を渡す
+/// ＝ **判定は必ず Rust 側で実窓を見る**（frontend の設定値は信用しない・docs/security.md §8）。
+///
+/// ⚠ **061b レビュー（Q-10）で確認・修正不要**: 本体の `!....any(...)` という二重否定は
+/// `.all(|l| *l == closing_label || !is_open(l))` より読みにくいが、意図が
+/// 「**自分以外に開いている消費者が 1 つでもあるか**を否定する」なので `any` の方が素直と判断した。
+/// `is_open` を `impl Fn` / ジェネリクスではなく `&dyn Fn` にしたのも意図的で、
+/// モノモーフィズムの利得が無い（呼び出しは窓クローズ時のみ）一方、`&dyn` だと
+/// `shutdown_sidecar_if_last_consumer` 側でクロージャを `&is_open` と素直に渡せ、
+/// テストヘルパの戻り値型も書きやすい。再修正トリガー＝ホットパスに入ったら（現状は入り得ない）。
+fn is_last_sidecar_consumer(closing_label: &str, is_open: &dyn Fn(&str) -> bool) -> bool {
+    !SIDECAR_CONSUMER_LABELS
+        .iter()
+        .any(|label| *label != closing_label && is_open(label))
+}
+
+/// 061b: sidecar を使う窓が自窓のほかに 1 つも残っていなければ sidecar を停止する。
+///
+/// ⚠ **`CloseRequested` と `Destroyed` の両方から呼ぶ**（`open_comment_viewer_window` /
+/// `open_effect_overlay_window` の窓イベント登録）。片方だけに絞らない理由:
+/// - `Destroyed` だけ → プラットフォームやアプリ終了の畳み方によっては**届かない**ことがある。
+/// - `CloseRequested` だけ → 届く保証は同じく無い。
+/// 両方に付けて `is_last_sidecar_consumer` で自窓を除外しておけば、**どちらか一方でも届けば収束**し、
+/// 両方届いても `comment_sidecar::shutdown` が idempotent（`guard.take()`）なので無害。
+///
+/// ⚠ **061b レビュー②（受容・修正不要）＝2 窓を「同時に」閉じたときの隙間**: Tauri の manager が窓を
+/// map から消すのは `Destroyed` のときだけなので、片方の `CloseRequested` から `Destroyed` が届くまでの
+/// 極短い間、その窓は `get_webview_window` に**まだ居る**。この隙間にもう一方も閉じると、
+/// **どちらの `CloseRequested` でも落ちない**。**それでも孤児にはならない**——後から届く `Destroyed` が
+/// 順に map から窓を消し、**最後に `Destroyed` が届いた窓のハンドラで必ず落ちる**（macOS では tao の
+/// `windowWillClose` が `Destroyed` を必ず emit する）。仮に `Destroyed` が届かない環境があっても、
+/// 最悪「アプリ稼働中は sidecar が生き残る」で止まり、`RunEvent::Exit` が終了時に無条件で落とす。
+/// 実操作では 2 窓の close は秒単位で離れるので現実には踏まない。
+/// **再修正トリガー**＝「両方閉じたのに sidecar が残る」が実機で再現したら、`CloseRequested` 側の判定を
+/// 「自窓に加えて、`is_closable()` が false／既に close 要求済みの窓も除外する」形へ拡張すること。
+///
+/// ⚠⚠ **これはアプリ終了時の担保にはならない。** `app.exit(0)` は `ControlFlow::Exit` を立てて
+/// イベントループを畳むだけで、**個々の窓の `CloseRequested` も `Destroyed` も配送されない**。
+/// アプリ終了で sidecar を落としているのは `run()` の **`RunEvent::Exit`（無条件）だけ**なので、
+/// **あれを条件付きにしてはいけない**（孤児プロセスを残さない最後の担保・docs/security.md §6 の趣旨）。
+///
+/// ⚠ `WINDOW_OPEN_LOCK` は**取らない**。窓イベントハンドラはイベントループ（メインスレッド）から
+/// 同期的に呼ばれるので、窓生成コマンドのロック待ちをここで跨ぐと相互待ちを作りかねない
+/// （`open_*_window` は `#[tauri::command(async)]`＝worker がロック保持のまま `.build()` で
+/// メインスレッドの完了を待つ。ここでロックを取ると相互待ちになる）。
+/// `shutdown` 自体は sidecar state の Mutex を短時間取って `kill()` するだけ。
+///
+/// ⚠ **061b レビュー（S-6）で確認・修正不要**: `on_window_event` の**登録**自体は非同期
+/// （`proxy.send_event(WindowMessage::AddEventListener)`＝リスナが効くのは次のループ反復）なので、
+/// 「窓を開いた瞬間に閉じる」極端な操作では登録前に閉じ得る。**対策していない**のは、
+/// 取りこぼしても残るのが「アプリ稼働中に sidecar が生き続ける」だけで**孤児にはならない**ため
+/// （アプリ終了時は `RunEvent::Exit` が無条件で拾う）。既存 `open_comment_viewer_window` も同じ構造。
+/// 再修正トリガー＝この取りこぼしが実機で再現し、かつ sidecar の延命が問題になったとき。
+fn shutdown_sidecar_if_last_consumer(app: &AppHandle, closing_label: &str) {
+    let is_open = |label: &str| app.get_webview_window(label).is_some();
+    if is_last_sidecar_consumer(closing_label, &is_open) {
+        comment_sidecar::shutdown(app);
+    }
+}
+
 /// 033f 追修正③（回帰修正）: **全 WebView2 窓で共有する** additional_browser_args。
 ///
 /// Windows の WebView2 は「1 つの user data folder（UDF）＝1 つのブラウザプロセス」で、その起動引数は
@@ -144,10 +237,13 @@ fn open_comment_viewer_window(app: AppHandle) -> AppResult<()> {
             .map_err(|_| AppError::launch_failed("コメントビューアを開けませんでした"))?;
 
     // 032c-b: no-orphan 3 段 kill の①。viewer 窓が閉じたら sidecar を停止する（idempotent）。
+    // ⚠⚠ 061b: **無条件 shutdown をやめ、「sidecar を使う窓が他に残っていないか」を見てから落とす**。
+    // エフェクト窓（`effect-overlay`）も同じ loopback WS を張るようになり、コメビュ窓を閉じても
+    // エフェクトが出続けることが 061b の目的だから。判定の根拠は `is_last_sidecar_consumer` の注記。
     let app_for_event = app.clone();
     window.on_window_event(move |event| match event {
         WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed => {
-            comment_sidecar::shutdown(&app_for_event);
+            shutdown_sidecar_if_last_consumer(&app_for_event, "comment-viewer");
         }
         _ => {}
     });
@@ -165,8 +261,11 @@ fn open_comment_viewer_window(app: AppHandle) -> AppResult<()> {
 ///
 /// **表示専用**: `open_comment_viewer_window` と異なり sidecar には一切触れない
 /// （`comment_sidecar::ensure_started` を呼ばない／窓イベントで `comment_sidecar::shutdown` を登録しない）。
-/// sidecar の起動・停止契機はコメビュ窓の既存イベントに集約したまま＝no-orphan 3 段 kill を壊さない
-/// （オーバーレイの close で sidecar を落とさない）。sidecar 未起動時はオーバーレイの loopback WS が接続待ちに
+/// ⚠ **061b でこの窓の扱いは変えていない**——061b が sidecar の停止条件を「コメビュ窓 or エフェクト窓」へ
+/// 広げたときも、この窓は `SIDECAR_CONSUMER_LABELS` に**入れていない**（この窓はコメビュ窓からしか開けないので、
+/// 「この窓だけ開いたまま sidecar を生かす」という状態に意味が無い）。＝**この窓の close で sidecar は落ちない**
+/// のも、**この窓が開いていても sidecar が延命されない**のも 033f から不変。
+/// sidecar 未起動時はオーバーレイの loopback WS が接続待ちに
 /// なりコメント 0 件表示になるだけで副作用は無い。capability は `capabilities/comment-overlay.json`
 /// （最小権限・`main`/`comment-viewer` 不変）に閉じる。macOS の透過描画には tauri.conf の `macOSPrivateApi` と
 /// Cargo の `tauri/macos-private-api` feature が要る（`.transparent()` は macOS でこの feature でのみコンパイルされる）。
@@ -226,7 +325,8 @@ fn open_comment_overlay_window(app: AppHandle) -> AppResult<()> {
             .build()
             .map_err(|_| AppError::launch_failed("オーバーレイを開けませんでした"))?;
     // 意図的に window イベントを登録しない: オーバーレイは sidecar を起動/停止しないため、
-    // close 時の shutdown 連動（open_comment_viewer_window の 64-71）は付けない。
+    // close 時の shutdown 連動（`open_comment_viewer_window` の `on_window_event` 登録）は付けない。
+    // ⚠ 061b: この窓は `SIDECAR_CONSUMER_LABELS` に**入っていない**ので、開いていても sidecar は延命されない。
     Ok(())
 }
 
@@ -234,7 +334,10 @@ fn open_comment_overlay_window(app: AppHandle) -> AppResult<()> {
 /// 最背面・非フォーカスで開くため Cmd+W で掴みにくく、コメビュ本体から明示的に閉じられるよう用意する。
 /// 単一目的コマンド（§3）で、任意ラベルの窓操作は露出しない。窓が無ければ no-op（冪等）。オーバーレイは
 /// sidecar を起動していないため `.close()` に shutdown 連動は無く、PID kill・プロセス名 kill も行わず自アプリの
-/// ウィンドウを閉じるのみ（§6 の PID kill はそもそも発生せず・no-orphan kill 契機は不変）。
+/// ウィンドウを閉じるのみ（§6 の PID kill はそもそも発生しない）。
+/// ⚠ **061b: 「no-orphan kill 契機は不変」ではなくなった**（061b レビュー②S-4）。kill 契機は
+/// `comment-viewer` / `effect-overlay` の 2 点（`SIDECAR_CONSUMER_LABELS`）へ広がっている。
+/// ただし**この窓はそこに入っていない**ので、「この窓を閉じても sidecar は落ちない」は 033f から真のまま。
 #[tauri::command]
 fn close_comment_overlay_window(app: AppHandle) -> AppResult<()> {
     if let Some(window) = app.get_webview_window("comment-overlay") {
@@ -247,9 +350,18 @@ fn close_comment_overlay_window(app: AppHandle) -> AppResult<()> {
 
 /// 033e: 内蔵コメントビューア窓（label `comment-viewer`）を閉じる。ツール管理の「停止」ボタン用。
 /// 単一目的コマンド（§3）で、任意ラベルの窓操作は露出しない。窓が無ければ no-op（冪等）。
-/// `.close()` は既存の `CloseRequested | Destroyed` イベント経由で sidecar shutdown も連動する
-/// （`open_comment_viewer_window` の 64-71・032c-b）。PID kill・プロセス名 kill は一切行わず、
-/// 自アプリのウィンドウを閉じるのみ（§6 の PID kill はそもそも発生しない）。
+/// PID kill・プロセス名 kill は一切行わず、自アプリのウィンドウを閉じるのみ
+/// （§6 の PID kill はそもそも発生しない）。
+///
+/// ⚠⚠ **061b: 「この窓を閉じれば sidecar も落ちる」は偽になった**（061b レビュー S-1 / S-8）。
+/// `.close()` は `CloseRequested` を出すので `open_comment_viewer_window` が登録した窓イベントを必ず通るが、
+/// そこは `shutdown_sidecar_if_last_consumer` に置き換わっており、**エフェクト窓が開いていれば
+/// sidecar は落ちない**（＝Twitch/YouTube の取得＝外部通信も続く。`stop-session` は送られない）。
+/// ⚠ **このコマンドはツール管理の「停止」ボタンの実体**なので、呼び出し側（`MainScreen`）は
+/// 「停止しました」と表示しつつ取得が続く状態になり得る。**この非対称はユーザーへ明示すること**
+/// （現状は `ObsEffectsScreen` の前提案内が担っている）。docs/security.md §1 の「取得の停止条件」を参照。
+/// ⚠ 再修正トリガー＝ツール管理側で「取得が続いている」ことを表示する必要が出たら、
+/// `is_effect_overlay_open` を見てフィードバック文言を分岐させる（061b-1 のスコープ外として見送った）。
 #[tauri::command]
 fn close_comment_viewer_window(app: AppHandle) -> AppResult<()> {
     if let Some(window) = app.get_webview_window("comment-viewer") {
@@ -283,8 +395,11 @@ fn is_comment_overlay_open(app: AppHandle) -> bool {
 /// localStorage（`stream-dock.comment-viewer.pinned-comments`）へ書いた固定コメントを read-on-mount ＋
 /// `storage` 購読で読むだけで、新規の外部通信・Rust emit・依存を持たない（親 046 の設計判断）。
 /// `open_comment_viewer_window` と異なり sidecar には一切触れない（`ensure_started` を呼ばない／窓イベントで
-/// `shutdown` を登録しない）＝**閉じても sidecar は落ちない**（no-orphan 3 段 kill の契機はコメビュ窓に集約のまま・
-/// §6 の PID kill はそもそも発生しない）。capability は `capabilities/pinned-overlay.json`（最小権限・
+/// `shutdown` を登録しない）＝**閉じても sidecar は落ちない**（§6 の PID kill はそもそも発生しない）。
+/// ⚠ **061b: 「no-orphan 3 段 kill の契機はコメビュ窓に集約のまま」ではなくなった**（061b レビュー②S-4）。
+/// 契機は `comment-viewer` / `effect-overlay` の 2 点（`SIDECAR_CONSUMER_LABELS`）。
+/// ただし**この窓はそこに入っていない**ので、上記「閉じても落ちない」「開いていても延命しない」は真のまま。
+/// capability は `capabilities/pinned-overlay.json`（最小権限・
 /// `main`/`comment-viewer`/`comment-overlay` 不変）に閉じる。
 ///
 /// **既存 overlay と別のタイトル/位置/サイズにする理由**:
@@ -360,8 +475,9 @@ fn open_pinned_overlay_window(app: AppHandle) -> AppResult<()> {
 /// 046b: 固定コメント専用オーバーレイ窓（label `pinned-overlay`）を閉じる。設定ビューのトグル OFF 用。
 /// `close_comment_overlay_window` と同型の単一目的コマンド（§3）で、任意ラベルの窓操作は露出しない。
 /// 窓が無ければ no-op（冪等）。この窓は sidecar を起動していないため `.close()` に shutdown 連動は無く、
-/// PID kill・プロセス名 kill も行わず自アプリのウィンドウを閉じるのみ（§6 の PID kill はそもそも発生せず・
-/// no-orphan kill 契機は不変）。
+/// PID kill・プロセス名 kill も行わず自アプリのウィンドウを閉じるのみ（§6 の PID kill はそもそも発生しない）。
+/// ⚠ **061b: kill 契機は 2 点（`SIDECAR_CONSUMER_LABELS`）へ広がったが、この窓はそこに入っていない**
+/// ＝この窓の close で sidecar が落ちないのは 046b から不変（061b レビュー②S-4）。
 #[tauri::command]
 fn close_pinned_overlay_window(app: AppHandle) -> AppResult<()> {
     if let Some(window) = app.get_webview_window("pinned-overlay") {
@@ -393,12 +509,35 @@ fn is_pinned_overlay_open(app: AppHandle) -> bool {
 /// （`comment-overlay`＝033f / `pinned-overlay`＝046b）と**同型の単一目的コマンド**で（§3・任意ラベル/
 /// 任意オプションの窓生成は露出しない）、OBS では 3 本目の独立したソースとして取り込む。
 ///
-/// **表示専用・通信面ゼロ**: この窓の frontend（`EffectOverlayApp`）は **WS へ接続しない**
-/// （`connectCommentStream` を呼ばない）。061b はコメビュ窓が localStorage へ書いた `EffectRequest` を
-/// `storage` 購読で受ける設計なので、この窓が新規の外部通信・Rust emit・依存を持つことは無い
-/// （`pinned-overlay` と同じ構え）。`open_comment_viewer_window` と異なり sidecar には一切触れない
-/// （`ensure_started` を呼ばない／窓イベントで `shutdown` を登録しない）＝**閉じても sidecar は落ちない**
-/// （no-orphan 3 段 kill の契機はコメビュ窓に集約のまま・§6 の PID kill はそもそも発生しない）。
+/// **表示専用（読み取り専用接続）**: ⚠⚠ **061b で 061a の決定を反転した。** この窓の frontend
+/// （`EffectOverlayApp`）は `comment-overlay` 窓（`OverlayApp`）と**同じ既存の loopback WS**
+/// （`ws://127.0.0.1:<port>`）へ `connectCommentStream` で**読み取り専用接続**する
+/// （`onComments` のみ・制御フレームは送らない）。**新規宛先・新規 WS プロトコル・Rust emit・依存はゼロ**。
+/// 061a が「そもそも WS を張らない」と書いていたのは、当時の 061b が localStorage ＋ `storage` で
+/// `EffectRequest` を受ける設計だったため。その経路は廃止された。
+///
+/// **sidecar のライフサイクル**: ⚠⚠ **061b でこの窓が sidecar の生存に関与するようになった。**
+/// - **起動はしない**（`ensure_started` を呼ばない）。起動契機は `open_comment_viewer_window` の 1 箇所のまま。
+///   ⚠ ここで起動しないのは意図的で、①`start-session`（＝実際のコメント取得）の導線はコメビュ窓にしか無いので
+///   この窓のために sidecar を起動してもコメントは 1 件も来ない ②起動すると `restoreEffectOverlayWindow`
+///   （`MainWindowApp` のマウント＝**アプリ起動**）経由で、**ユーザー操作ゼロで keychain のトークンが
+///   メモリへ復元される**経路を新設することになる（しかも `WINDOW_OPEN_LOCK` を保持したまま跨ぐ）、の 2 点による。
+///   ⚠ 帰結＝**sidecar 未起動の間、この窓の `connectCommentStream` は毎秒 `get_comment_stream_port` を
+///   invoke し続ける**（`RETRY_INTERVAL_MS`）。
+///   ⚠⚠ **受容根拠の訂正（061b レビュー S-4）**: 当初は「`comment-overlay` 窓が既に持っている性質と同じ」
+///   としていたが**不正確**だった——`comment-overlay` はコメビュ窓からしか開けず起動時復元も無いので、
+///   実際には sidecar が動いている間しか存在しない。対して**この窓は永続設定でアプリ起動時に自動復元される
+///   唯一の WS 窓**（`restoreEffectOverlayWindow` ← `MainWindowApp` のマウント）なので、
+///   「sidecar 未起動のまま回り続ける」は**アプリ起動からコメビュ窓を開くまでの全区間**であり、
+///   コメビュ窓を一度も開かなければ**永久**である。＝**性質は同じだが定常状態が新しい。**
+///   それでも受容するのは、1 回の実体が「`state.lock()` して `Option<u16>` を読む」だけの Rust command で、
+///   毎秒 1 回のコストが配信中でも無視できるため（新規の外部通信でも OS 操作でもない）。
+///   ⚠ 再修正トリガー＝実配信で CPU / IPC が問題になったら `connectCommentStream` の
+///   「ポート未確定時だけ指数バックオフ（上限 15 秒程度）」を入れる（`OverlayApp` にも同時に効く）。
+/// - **停止には関与する**（`SIDECAR_CONSUMER_LABELS` に入っている）。この窓が閉じるとき、
+///   **コメビュ窓が残っていなければ sidecar を落とす**（下の窓イベント登録・`is_last_sidecar_consumer`）。
+///   ＝「コメント取得を開始したあとコメビュ窓だけ閉じてもエフェクトが出続ける」を成立させつつ、
+///   **どの窓も無くなれば必ず落ちる**（孤児プロセスを残さない・docs/security.md §6 の趣旨）。
 /// capability は `capabilities/effect-overlay.json`（最小権限・既存 4 枚は不変）に閉じる。
 ///
 /// **窓タイトル `StreamDock エフェクト`**: 044a/046d の自動ソース追加は sidecar の
@@ -448,7 +587,7 @@ fn open_effect_overlay_window(app: AppHandle) -> AppResult<()> {
         return Ok(());
     }
     // 同一 Vite バンドルを読み込み、frontend は `getCurrentWindow().label` で EffectOverlayApp を描画する。
-    let _window =
+    let window =
         WebviewWindowBuilder::new(&app, "effect-overlay", WebviewUrl::App("index.html".into()))
             .title("StreamDock エフェクト")
             .transparent(true)
@@ -463,16 +602,32 @@ fn open_effect_overlay_window(app: AppHandle) -> AppResult<()> {
             .min_inner_size(320.0, 120.0)
             .build()
             .map_err(|_| AppError::launch_failed("エフェクトのオーバーレイを開けませんでした"))?;
-    // 意図的に window イベントを登録しない: この窓は sidecar を起動/停止しないため、
-    // close 時の shutdown 連動（open_comment_viewer_window）は付けない（既存 overlay 2 本と同じ）。
+
+    // ⚠⚠ 061b: **この窓も sidecar の生存に関与するようになった**（061a では窓イベントを一切登録していなかった）。
+    // コメビュ窓と**同じ**ガードを通す＝「自分以外に sidecar を使う窓が残っていなければ落とす」。
+    // これが無いと、コメビュ窓を先に閉じたあとエフェクト窓を閉じても sidecar が落ちず**孤児になる**
+    // （逆に、コメビュ窓側だけを条件付きにしてこちらを登録し忘れるのが最も危険な抜け方）。
+    // ⚠ **起動（`ensure_started`）はしない。** 起動契機はコメビュ窓の 1 箇所のままにしてある（下のクラス注記）。
+    // ⚠ 窓を再利用する経路（上の早期 return）では登録しない＝**登録は窓の生成時 1 回だけ**。
+    let app_for_event = app.clone();
+    window.on_window_event(move |event| match event {
+        WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed => {
+            shutdown_sidecar_if_last_consumer(&app_for_event, "effect-overlay");
+        }
+        _ => {}
+    });
     Ok(())
 }
 
 /// 061a: エフェクト専用オーバーレイ窓（label `effect-overlay`）を閉じる。`obs-effects` 画面の表示トグル OFF 用。
 /// `close_pinned_overlay_window` と同型の単一目的コマンド（§3）で、任意ラベルの窓操作は露出しない。
-/// 窓が無ければ no-op（冪等）。この窓は sidecar を起動していないため `.close()` に shutdown 連動は無く、
-/// PID kill・プロセス名 kill も行わず自アプリのウィンドウを閉じるのみ（§6 の PID kill はそもそも発生せず・
-/// no-orphan kill 契機は不変）。
+/// 窓が無ければ no-op（冪等）。**PID kill・プロセス名 kill は行わず**、自アプリのウィンドウを閉じるのみ
+/// （§6 の PID kill はそもそも発生しない）。
+///
+/// ⚠⚠ **061b: `.close()` は `CloseRequested` を出すので、`open_effect_overlay_window` が登録した
+/// 窓イベントハンドラを必ず通る**（`.destroy()` と違い intercept 可能な経路）。＝**コメビュ窓が既に
+/// 閉じている状態でこのコマンドを呼ぶと sidecar も落ちる**（＝sidecar を使う窓が 1 つも残らないため）。
+/// これは意図どおりで、`obs-effects` 画面の表示トグル OFF が最後の消費者を閉じる操作になり得る。
 #[tauri::command]
 fn close_effect_overlay_window(app: AppHandle) -> AppResult<()> {
     if let Some(window) = app.get_webview_window("effect-overlay") {
@@ -767,6 +922,11 @@ pub fn run() {
         .run(|app_handle, event| {
             if let RunEvent::Exit = event {
                 // アプリ終了時に Twitch コメント取得 sidecar を確実に停止する（孤児を残さない）。
+                // ⚠⚠ **061b: ここは絶対に条件付きにしないこと。** `app.exit(0)`（main 窓の close 経由）は
+                // `ControlFlow::Exit` を立ててイベントループを畳むだけで、**個々の窓の `CloseRequested` も
+                // `Destroyed` も配送されない**（tao は `Event::LoopDestroyed` を 1 発出すだけ）。
+                // ＝アプリ終了経路で sidecar を落としているのは**この 1 行だけ**であり、
+                // `shutdown_sidecar_if_last_consumer`（窓イベント）はここでは 1 度も走らない。
                 comment_sidecar::shutdown(app_handle);
             }
         });
@@ -1127,5 +1287,344 @@ mod overlay_window_contract {
             found >= 12,
             "windowApi.ts から抽出できた command が {found} 本しかない（抽出が壊れている可能性）"
         );
+    }
+}
+
+#[cfg(test)]
+mod sidecar_lifecycle {
+    //! 061b: **sidecar の停止判定**（`is_last_sidecar_consumer`）の単体テスト。
+    //!
+    //! なぜこれが要るか: 061b は sidecar の生存契機を「コメビュ窓 1 点」から
+    //! 「コメビュ窓 or エフェクト窓のどちらかが生きている間」へ広げた。ここを間違えると
+    //! **どの窓を閉じても sidecar が落ちない＝孤児プロセスが残る**（docs/security.md §6 の趣旨に反する）
+    //! か、逆に **1 窓閉じただけで落ちる**（061b の目的そのものが達成できない）かのどちらかになる。
+    //!
+    //! ⚠⚠ **最大の罠は「`CloseRequested` の時点では自窓がまだマネージャに居る」こと。**
+    //! Tauri v2（tauri-runtime-wry）の実装では:
+    //!   - `CloseRequested` … per-window ハンドラ → `RunEvent::WindowEvent` → 実際の窓破棄
+    //!     ＝ **ハンドラ実行中は `get_webview_window(自分)` が `Some`**
+    //!   - `Destroyed`      … `RunEvent::WindowEvent`（`AppManager::on_window_close` が map から削除）
+    //!     → per-window ハンドラ ＝ **ハンドラ実行中は `None`**
+    //! 自窓をラベルで除外しておけば**どちらの順序でも同じ判定**になる。下の
+    //! `close_requested_ignores_the_window_that_is_closing` がこの穴を名指しで固定している。
+    //!
+    //! ⚠ **実窓を使う挙動（`shutdown_sidecar_if_last_consumer`）はここでは検証できない**（`AppHandle` が要る）。
+    //! そちらは下の `sidecar_lifecycle_contract`（配線の形）と、実機 3 経路
+    //! （コメビュ→エフェクトの順／逆順／アプリ終了）で担保する。
+
+    use super::{is_last_sidecar_consumer, SIDECAR_CONSUMER_LABELS};
+
+    /// 「開いている窓のラベル一覧」から `is_open` を作るテスト用ヘルパ。
+    fn opened<'a>(labels: &'a [&'a str]) -> impl Fn(&str) -> bool + 'a {
+        move |label: &str| labels.contains(&label)
+    }
+
+    #[test]
+    fn keeps_sidecar_while_the_other_consumer_window_is_open() {
+        // コメビュ窓を閉じる。エフェクト窓が生きているので**落としてはいけない**
+        //（＝061b の目的「コメビュ窓を閉じてもエフェクトが出続ける」そのもの）。
+        assert!(!is_last_sidecar_consumer(
+            "comment-viewer",
+            &opened(&["effect-overlay"])
+        ));
+        // 逆順も同じ（エフェクト窓を閉じるがコメビュ窓は生きている）。
+        assert!(!is_last_sidecar_consumer(
+            "effect-overlay",
+            &opened(&["comment-viewer"])
+        ));
+    }
+
+    #[test]
+    fn close_requested_ignores_the_window_that_is_closing() {
+        // ⚠⚠ **本命**: `CloseRequested` の時点では**自窓がまだ開いていると報告される**。
+        // 自窓をラベルで除外していないと、ここが false（＝落とさない）になり
+        // **どの窓を閉じても sidecar が落ちなくなる**（孤児が残る）。
+        assert!(is_last_sidecar_consumer(
+            "comment-viewer",
+            &opened(&["comment-viewer"])
+        ));
+        assert!(is_last_sidecar_consumer(
+            "effect-overlay",
+            &opened(&["effect-overlay"])
+        ));
+        // 自窓＋sidecar と無関係な窓が開いていても同じ（それらは消費者ではない）。
+        assert!(is_last_sidecar_consumer(
+            "effect-overlay",
+            &opened(&["effect-overlay", "main", "comment-overlay", "pinned-overlay"])
+        ));
+    }
+
+    #[test]
+    fn stops_when_no_other_consumer_remains() {
+        // `Destroyed` の時点では自窓も消えている。どちらの窓を閉じたときも落とす。
+        assert!(is_last_sidecar_consumer("comment-viewer", &opened(&[])));
+        assert!(is_last_sidecar_consumer("effect-overlay", &opened(&[])));
+    }
+
+    #[test]
+    fn overlay_only_windows_do_not_keep_the_sidecar_alive() {
+        // ⚠ `comment-overlay` / `pinned-overlay` は **`SIDECAR_CONSUMER_LABELS` に入っていない**
+        //（033f/046b から不変）。これらが開いていても sidecar は延命されない＝停止条件が緩まない。
+        // ミューテーション: どちらかを `SIDECAR_CONSUMER_LABELS` へ足すとこのテストが落ちる。
+        assert!(is_last_sidecar_consumer(
+            "comment-viewer",
+            &opened(&["comment-overlay", "pinned-overlay", "main"])
+        ));
+    }
+
+    #[test]
+    fn unknown_closing_label_still_counts_every_consumer() {
+        // 防御的: 知らないラベルで呼ばれても、消費者が生きていれば落とさない（fail-safe 側）。
+        assert!(!is_last_sidecar_consumer(
+            "main",
+            &opened(&["comment-viewer"])
+        ));
+        assert!(is_last_sidecar_consumer("main", &opened(&[])));
+    }
+
+    #[test]
+    fn consumer_labels_are_unique() {
+        // 重複があると「自窓を除外したのにもう 1 つ同じラベルが残る」＝永久に落ちない形が作れる。
+        for (i, a) in SIDECAR_CONSUMER_LABELS.iter().enumerate() {
+            for (j, b) in SIDECAR_CONSUMER_LABELS.iter().enumerate() {
+                assert!(
+                    i == j || a != b,
+                    "SIDECAR_CONSUMER_LABELS にラベルの重複がある: {a}"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod sidecar_lifecycle_contract {
+    //! 061b: **`comment_sidecar::shutdown` が「どこから・どういう条件で」呼ばれるかの形**を固定する。
+    //!
+    //! 上の `sidecar_lifecycle` は判定関数そのものを検証するが、**配線を間違えれば判定関数は素通りされる**
+    //! （例: エフェクト窓のハンドラで直接 `shutdown` を呼ぶ／エフェクト窓にハンドラを登録し忘れる）。
+    //! 実窓を伴う挙動は単体テストできないので、`overlay_window_contract` と同じ手口
+    //! （`include_str!` でソースを文字列として読む・新規依存ゼロ・`#[cfg(test)]` のみ）で**形**を固定する。
+    //!
+    //! ⚠⚠ **needle は必ず実行時に `format!` で組む。** `include_str!("lib.rs")` は
+    //! **このモジュール自身のソースも読む**ので、検索文字列を直書きすると自己ヒットして
+    //! 数が合わなくなる／テストが骨抜きになる（`overlay_window_contract` が 2 度踏んで注記を残している）。
+    //!
+    //! ⚠ ここが緑でも**実挙動の保証にはならない**。最終担保は実機 3 経路
+    //! （①コメビュ窓 → エフェクト窓の順で閉じる ②逆順 ③アプリ終了）で、
+    //! いずれでも sidecar のプロセスが残らないことをプロセス一覧で確認すること。
+    //!
+    //! ⚠⚠ **061b レビュー（S-3）で、当初の 5 ケースが実測ミューテーション 4 件を取り逃していた**ので
+    //! 検査を強化した。取り逃していたのは:
+    //!   - **M1** 2 窓のラベルを**入れ替える**（数もラベルの出現数も変わらないので素通りしていた）
+    //!   - **M2** アームから `CloseRequested` を落として `Destroyed` だけにする
+    //!   - **M3** `RunEvent::Exit` を `match` で条件化する（`if ` が現れないので素通りしていた）
+    //!   - **M5** ガードの `is_open` を `... .is_some() && false` にする（実窓を見るふりだけ）
+    //! いずれも「字面が存在するか」しか見ていなかったのが原因なので、**存在ではなく形**
+    //! （どの窓のブロックの中にあるか／式そのもの／アームに他に何も無いこと）を見る形へ寄せた。
+    //! ⚠ 逆に **M4**（Exit アームに無関係な `if` を足す）で落ちる**偽陽性**も同時に潰してある。
+
+    use super::SIDECAR_CONSUMER_LABELS;
+
+    const LIB_RS: &str = include_str!("lib.rs");
+
+    /// 行コメント（`//` 始まり）を落としたソース。⚠ このモジュールの説明コメント自身が needle を含むため、
+    /// 素の `LIB_RS` で数えると常に多く数えてしまう（`updater_plugin_stays_registered` と同じ対策）。
+    fn code_only() -> String {
+        LIB_RS
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// `head` の直後から**列 0 の `}`**（＝トップレベル定義の終わり）までを切り出す。
+    ///
+    /// ⚠⚠ 切り出しが「列 0 の閉じ波括弧」に依存しているのは承知のうえで、**上限 `max_len` を必ず掛ける**
+    /// （061b レビュー Q-9）。rustfmt の設定変更や関数を `impl` ブロックへ移す変更が入ると、
+    /// このブロックは**エラーにならず黙って伸び**、以降の `contains` 検査が別の定義まで拾って
+    /// **緑のまま骨抜き**になる。上限を超えたら「前提が崩れた」として落とすのが目的で、
+    /// 上限そのものに意味は無い（実測の 2 倍程度を置く）。**上限に引っかかったら数字を上げる前に、
+    /// 切り出し方が壊れていないかを先に確かめること。**
+    fn block_after(code: &str, head: &str, max_len: usize) -> String {
+        let block = code
+            .split_once(head)
+            .and_then(|(_, rest)| rest.split_once("\n}"))
+            .map(|(block, _)| block.to_string())
+            .unwrap_or_else(|| panic!("`{head}` が lib.rs に見つからない"));
+        assert!(
+            block.len() <= max_len,
+            "`{head}` から切り出したブロックが {} 文字ある（上限 {max_len}）。\
+             列 0 の `}}` までで 1 定義が終わるという前提が崩れ、別の定義まで飲み込んでいる可能性が高い\
+             （ここが伸びると以降の検査が緑のまま骨抜きになる）",
+            block.len()
+        );
+        block
+    }
+
+    #[test]
+    fn shutdown_is_called_from_exactly_two_places() {
+        // ⚠⚠ **ミューテーション検知の本命**: 窓イベントで無条件 `shutdown` を呼ぶ実装へ戻すと 3 件になる。
+        // 期待する 2 件は ①`shutdown_sidecar_if_last_consumer` の中（＝窓の存在確認を経る唯一の経路）
+        // ②`RunEvent::Exit` の中（＝アプリ終了時の無条件停止）。
+        // ⚠ これは **lib.rs の中だけ**を数えている。リポジトリ全体では `app_update/commands.rs`
+        // （アップデート適用前の再起動経路）にも 3 つ目の呼び出しがあり、それは対象外＝正常
+        //（061b レビュー Q-6・数え漏らしではない）。
+        let needle = format!("{}::{}(", "comment_sidecar", "shutdown");
+        let count = code_only().matches(needle.as_str()).count();
+        assert_eq!(
+            count,
+            2,
+            "lib.rs 内の comment_sidecar::shutdown の呼び出しが {count} 箇所ある（期待 2 ＝ 窓の存在確認を経るガード関数の中と RunEvent::Exit の中だけ。lib.rs 外の app_update は数えない）。\
+             窓イベントから直接呼ぶと、どちらかの窓を閉じただけで sidecar が落ちる（061b の目的が壊れる）"
+        );
+    }
+
+    #[test]
+    fn the_guard_checks_real_windows_before_shutting_down() {
+        // ⚠ frontend の設定値ではなく**実窓**で判定する（docs/security.md §8）ことの字面での固定。
+        let code = code_only();
+        let guard_head = format!("fn {}(", "shutdown_sidecar_if_last_consumer");
+        let body = block_after(&code, &guard_head, 400);
+
+        // ⚠⚠ **実窓を見る式そのもの**を完全一致で固定する（061b レビュー S-3・変異 M5）。
+        // 旧実装は `contains("get_webview_window(")` だけを見ていたため、
+        // `app.get_webview_window(label).is_some() && false` のような
+        // **「実窓を見るふりだけして常に true を返さない」変異が生存**していた
+        //（＝どちらか 1 窓を閉じただけで sidecar が落ち、061b の目的そのものが壊れる）。
+        // 実窓の有無は `AppHandle` 無しでは実行時に検証できないので、ここは字面の完全一致でしか止められない。
+        // ⚠ **式を書き換えるときは、変更後も同じ意味であることを実機 3 経路で確認してからこの行を直すこと。**
+        let real_window_probe = format!(
+            "let is_open = |label: &str| app.{}(label).is_some();",
+            "get_webview_window"
+        );
+        assert!(
+            body.contains(real_window_probe.as_str()),
+            "停止ガードが実窓を素で見ていない（設定値で判定してはいけない・§8）。期待する式:\n  {real_window_probe}"
+        );
+        // ⚠⚠ **極性（`!` の有無）まで固定する**（061b レビュー②S-1・実測で生存した変異）。
+        // 旧実装は `contains("is_last_sidecar_consumer(")` しか見ていなかったため、
+        // **条件を `if !is_last_sidecar_consumer(...)` へ反転する変異が cargo 280 件緑のまま生存**していた。
+        // 反転すると次の 2 つが同時に起きる（この設計が防ごうとしている失敗の両方）:
+        //   - 他の消費者窓が生きているとき → **落としてしまう**（061b の目的が壊れ、取得も止まる）
+        //   - 自分が最後の消費者のとき     → **落とさない＝孤児プロセスが残る**（§6 の趣旨に反する）
+        // 上の `mod sidecar_lifecycle` は純関数だけを見ており**配線の向きは見ていない**ので、
+        // 極性を止められるのはここだけ（実窓を伴う挙動は `AppHandle` 無しでは実行時に検証できない）。
+        // ⚠ 条件式を書き換えるときは、実機 3 経路（コメビュ→エフェクト／逆順／アプリ終了）で
+        //   孤児が残らないことを確かめてからこの needle を直すこと。
+        let decide = format!("if {}(closing_label, &is_open) {{", "is_last_sidecar_consumer");
+        assert!(
+            body.contains(decide.as_str()),
+            "停止ガードの条件式が期待の形（**極性を含む**）になっていない。期待する式:\n  {decide}\n\
+             ⚠ `!` を付ける／`if let` や `match` へ書き換えると、孤児が残る側にも 061b の目的が壊れる側にも倒れる"
+        );
+        let shutdown = format!("{}::{}(", "comment_sidecar", "shutdown");
+        assert!(
+            body.contains(shutdown.as_str()),
+            "停止ガードから comment_sidecar::shutdown を呼んでいない"
+        );
+    }
+
+    #[test]
+    fn app_exit_still_stops_the_sidecar_unconditionally() {
+        // ⚠⚠ `app.exit(0)` では窓イベント（CloseRequested / Destroyed）が **1 つも配送されない**ので、
+        // アプリ終了経路の担保は RunEvent::Exit の無条件 shutdown **だけ**。条件付きにすると孤児が残る。
+        let code = code_only();
+        let exit_head = format!("{}::{} = event", "RunEvent", "Exit");
+        let arm = code
+            .split_once(exit_head.as_str())
+            .and_then(|(_, rest)| rest.split_once("\n        });"))
+            .map(|(arm, _)| arm.to_string())
+            .expect("RunEvent::Exit のハンドラが見つからない");
+        assert!(
+            arm.len() <= 200,
+            "RunEvent::Exit のアームが {} 文字ある（上限 200）。切り出しの終端目印がずれて別の場所まで飲み込んでいる",
+            arm.len()
+        );
+
+        // ⚠⚠ **アームの中身が「停止 1 文だけ」**であることを、空白を潰した完全一致で固定する。
+        // 旧実装は `!arm.contains("if ")` だったが、これは**両方向に壊れていた**（061b レビュー S-3）:
+        //   - **偽陰性**＝`match any_open { .. }` や `?` で条件化すると `if ` が現れず**素通り**する（実測で生存）
+        //   - **偽陽性**＝無関係な `if cfg!(debug_assertions) {}` を 1 行足しただけで落ちる（実測で失敗）
+        // 「ここには停止しか書かない」という不変条件そのものを見る形にした。
+        // ⚠ ログ出力なども含めて**何も足さないこと**。足したくなったら、それは
+        //   `cleanup_before_exit` など別のフックの仕事かどうかを先に考えること。
+        let squashed = arm.split_whitespace().collect::<Vec<_>>().join(" ");
+        let expected = format!("{{ {}::{}(app_handle); }}", "comment_sidecar", "shutdown");
+        assert_eq!(
+            squashed, expected,
+            "RunEvent::Exit のアームが「無条件の停止 1 文だけ」になっていない。\
+             ここはアプリ終了経路で sidecar を落とす**唯一の担保**なので、条件分岐も追加処理も入れてはいけない"
+        );
+    }
+
+    #[test]
+    fn every_consumer_window_registers_the_guard() {
+        // ⚠⚠ **エフェクト窓側の登録を忘れる**のが最も危険な抜け方（コメビュ窓を先に閉じたあと
+        // エフェクト窓を閉じても誰も落とさない＝孤児）。まず呼び出し数がラベル数と一致すること。
+        let code = code_only();
+        // ⚠⚠ **needle に「ローカル変数名」を書かないこと**（061b レビュー②Q-1・実測で偽陽性）。
+        // 旧実装は `"...(&app_for_event, "` と書いていたため、**挙動を 1 ミリも変えない
+        // 変数リネーム（`app_for_event` → 何か）でこのテストが落ち**、しかもメッセージが
+        // 「呼び出しが 1 箇所」＝存在しない登録漏れの捜索へ読み手を送り込んでいた。
+        // `(&` までにして**呼び出しであること**（定義側は `(app: &AppHandle` なので一致しない）だけを見る。
+        let guard_call = format!("{}(&", "shutdown_sidecar_if_last_consumer");
+        let count = code.matches(guard_call.as_str()).count();
+        assert_eq!(
+            count,
+            SIDECAR_CONSUMER_LABELS.len(),
+            "停止ガードの呼び出しが {count} 箇所（期待 {} ＝ SIDECAR_CONSUMER_LABELS の窓すべてが窓イベントを登録していること）",
+            SIDECAR_CONSUMER_LABELS.len()
+        );
+
+        // ⚠⚠ **ラベルの出現数だけを見てはいけない**（061b レビュー S-3・変異 M1）。
+        // 旧実装は「各ラベルがどこかに 1 回現れる」しか見ていなかったため、
+        // **2 窓のラベルを入れ替える変異が生存**していた（自窓ではない方を除外するので判定が反転し、
+        // `CloseRequested` では落とさない＝プラットフォーム次第で孤児が残る）。
+        // **その窓を生成している関数のブロックの中**にあることまで見る。
+        let builder_head = format!("{}::new(&app, ", "WebviewWindowBuilder");
+        let both_events = format!(
+            "{}::CloseRequested {{ .. }} | {}::Destroyed",
+            "WindowEvent", "WindowEvent"
+        );
+        for label in SIDECAR_CONSUMER_LABELS {
+            let window_fn_tail =
+                block_after(&code, &format!("{builder_head}\"{label}\""), 1800);
+
+            // ⚠ 変異 M2（片方のイベントだけにする）を止める。どちらのイベントが届くかは
+            //   プラットフォームと閉じ方（`.close()` / `.destroy()` / OS の×ボタン）で変わるので、
+            //   **両方に付けて自窓をラベル除外する**のが 061b の設計（`is_last_sidecar_consumer` の注記）。
+            assert!(
+                window_fn_tail.contains(both_events.as_str()),
+                "窓 `{label}` の窓イベントが CloseRequested と Destroyed の**両方**を見ていない（片方だけだと取りこぼす経路が残る）"
+            );
+            // ⚠ 変異 M1（ラベルの取り違え）を止める。⚠ **第 1 引数（変数名）を跨いで第 2 引数だけを見る**
+            //   ——ここにローカル変数名を書くと Q-1 の偽陽性が戻る。呼び出しの直後 80 文字だけを切り出し、
+            //   その中に `, "<自分のラベル>")` があることを見る（ラベル単体の `contains` では
+            //   `get_webview_window("comment-viewer")` 等に誤ヒットするので、必ず引数の位置ごと見る）。
+            let args_tail = window_fn_tail
+                .split_once(guard_call.as_str())
+                .map(|(_, rest)| rest.chars().take(80).collect::<String>())
+                .unwrap_or_default();
+            let with_label = format!(", \"{label}\")");
+            assert!(
+                args_tail.contains(with_label.as_str()),
+                "窓 `{label}` が**自分のラベル**で停止ガードを呼んでいない（ラベルを取り違えると自窓の除外が効かず判定が反転する）"
+            );
+        }
+    }
+
+    #[test]
+    fn consumer_labels_are_windows_that_actually_exist() {
+        // ラベルの typo は「実在しない窓を数える」＝**永久に落ちない**方向に効くので、
+        // `WebviewWindowBuilder::new(&app, "<label>"` に実在することを突き合わせる。
+        let code = code_only();
+        let builder_head = format!("{}::new(&app, ", "WebviewWindowBuilder");
+        for label in SIDECAR_CONSUMER_LABELS {
+            let needle = format!("{builder_head}\"{label}\"");
+            assert!(
+                code.contains(needle.as_str()),
+                "SIDECAR_CONSUMER_LABELS の `{label}` を生成している窓が lib.rs に無い（ラベルの typo は「落ちない」方向に壊れる）"
+            );
+        }
     }
 }

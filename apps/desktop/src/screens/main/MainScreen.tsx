@@ -17,6 +17,7 @@ import { listRuntimeProcesses } from "../../features/presets/runtimeApi";
 import {
   closeCommentViewerWindow,
   isCommentViewerOpen,
+  isEffectOverlayOpen,
 } from "../../features/comment-viewer/windowApi";
 import { toErrorMessage } from "../../features/tools/useTools";
 import { Button, IconTile, Spinner } from "../../components/primitives";
@@ -370,7 +371,24 @@ export function MainScreen({
     }
   };
 
-  // 停止は close_comment_viewer_window で窓を閉じる（既存の窓イベント経由で sidecar も連動停止）。
+  // 停止は close_comment_viewer_window で窓を閉じる。
+  // ⚠⚠ **061b で「窓を閉じれば sidecar も連動停止」は偽になった**（061b レビュー S-1）。
+  //   停止条件が「コメビュ窓 or エフェクト窓のどちらも無いとき」へ広がったので、
+  //   **エフェクト窓が開いている間はこのボタンで sidecar が落ちない**＝Twitch/YouTube の取得
+  //   （外部通信）も続く（sidecar の取得セッションは `stop-session` かプロセス終了でしか止まらず、
+  //   窓を閉じても `stop-session` は送られない）。それでもツール行の state は `stopped` に落とす——
+  //   `is_comment_viewer_open` が見ているのは**窓の存在**であり、ツール行の意味は「窓が開いているか」だから。
+  // ⚠⚠ **ただしフィードバック文言は分岐させる**（061b レビュー②S-5・当初は「別画面の案内で足りる」として
+  //   見送っていたが、**修正必須と再判定された**）。理由: 取得を止める操作をした当の画面が
+  //   「停止しました」と**積極的に偽を述べる**状態になっており、061a の Q-1（「配信中には表示されません」）と
+  //   同じ失敗モードだった。しかも唯一の明示は別画面（`ObsEffectsScreen`）の、さらに
+  //   `viewerOpen === false` のときだけ出る注記で、エフェクト窓は永続設定でアプリ起動時に自動復元される
+  //   ＝ユーザーが数日その画面を見ていなくても成立する。docs/security.md §1「取得の停止条件」が
+  //   「取得が続いていることと止め方を明示する導線を必ず保つこと」を要求している。
+  // ⚠ 窓の状態軸は増やさない（ツール行は「窓が開いているか」のまま）。増やすのは**文言だけ**で、
+  //   判定は既存の `is_effect_overlay_open`（061a・新 command ゼロ）を読むだけ。
+  // ⚠ 判定に失敗したら**通常の文言へフォールバック**する（停止操作自体は成功しているので、
+  //   ここで失敗を見せると「停止できなかった」と誤解させる）。
   // 窓 close 直後は窓存在判定に一瞬ラグがあり得るため、停止直後に reconcile(true) は呼ばず、楽観更新
   // （stopped）＋4 秒ポーラー（窓状態）で確定する（「停止済み↔起動済み」フリッカを避ける）。
   // 前提: 本緩和は「窓 close 完了が次 poll（4 秒）までに終わる」ことに依存する。close が 1 poll 周期を
@@ -385,7 +403,15 @@ export function MainScreen({
       await closeCommentViewerWindow();
       if (!mountedRef.current) return;
       setToolState(id, "stopped");
-      setLaunchFeedback({ kind: "success", text: `${name} を停止しました` });
+      // ⚠ エフェクト窓が残っていると sidecar は落ちず、コメント取得（外部通信）が続く（上の注記）。
+      const effectOpen = await isEffectOverlayOpen().catch(() => false);
+      if (!mountedRef.current) return;
+      setLaunchFeedback({
+        kind: "success",
+        text: effectOpen
+          ? `${name} を閉じました。エフェクトのウィンドウが表示中のため、コメントの取得は続いています（止めるには、エフェクトの表示を OFF にするか、コメントビューアを開いて取得を停止してください）`
+          : `${name} を停止しました`,
+      });
     } catch (e) {
       if (!mountedRef.current) return;
       // 失敗時は起動中へ戻し、再試行できるようにする（handleStop と同型）。

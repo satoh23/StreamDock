@@ -5,6 +5,8 @@ import {
   EFFECT_OVERLAY_ENABLED_KEY,
   EFFECT_OBS_AUTO_ADD_KEY,
   EFFECT_OVERLAY_GUIDE_PENDING_KEY,
+  EFFECT_MONETARY_ENABLED_KEY,
+  EFFECT_TEST_FIRE_KEY,
 } from "../../features/comment-viewer/overlaySettings";
 // 型のみの import（コンパイル時に消えるので vi.hoisted / vi.mock の巻き上げと競合しない）。
 // ⚠ 明示的に型を付けないと `vi.fn(async () => null)` の戻り値が `Promise<null>` に推論され、
@@ -21,6 +23,10 @@ import type { ObsWsConfig } from "../../features/comment-viewer/obsApi";
  *   この画面には WS が無いので構造としても破れないが、**将来ここへ open を足す退行**を止めるために固定する。
  * - **前提ステータス**が「いま何が足りないか」を出す。⚠ とくに**コメビュ窓が閉じていると
  *   OBS へは反映されない**ことを明示する（`obs-enable` を送れる窓が存在しないため）。
+ *   ⚠⚠ **061b で案内文から「（エフェクトも表示されません）」を削った**——エフェクト窓が sidecar の WS を
+ *   直接張るようになり、**コメント取得を開始したあとならコメビュ窓を閉じてもエフェクトは出続ける**ので、
+ *   あの一文は嘘になった。代わりに「エフェクトの表示自体は続く」という非対称を明示する。
+ *   下の 2 ケースがこの文言を仕様として固定する（**復活させない**ための回帰テスト）。
  * - 準備中プレースホルダ（`ComingSoonScreen`）の文言が出ない。
  *
  * 外部境界（Tauri invoke）は全てモックして隔離する。**テストは外部通信も OS 操作も一切行わない**。
@@ -65,6 +71,10 @@ const autoAddToggle = () =>
   screen.getByRole("switch", {
     name: "エフェクトのウィンドウを OBS へ自動で追加する",
   });
+const monetaryToggle = () =>
+  screen.getByRole("switch", { name: "投げ銭でエフェクトを出す" });
+const testFireButton = () =>
+  screen.getByRole("button", { name: "テスト表示" });
 
 describe("061a: ObsEffectsScreen", () => {
   beforeEach(() => {
@@ -90,10 +100,78 @@ describe("061a: ObsEffectsScreen", () => {
     expect(autoAddToggle()).toBeInTheDocument();
   });
 
-  it("既定はどちらのトグルも OFF", () => {
+  it("既定は 3 つのトグルとも OFF", () => {
     render(<ObsEffectsScreen />);
     expect(displayToggle()).toHaveAttribute("aria-checked", "false");
     expect(autoAddToggle()).toHaveAttribute("aria-checked", "false");
+    // ⚠ 061b: 配信画面に出るものは既定で出さない。
+    expect(monetaryToggle()).toHaveAttribute("aria-checked", "false");
+  });
+
+  // --- 061b: 投げ銭エフェクトのトグルとテスト発火 -------------------------------------------------
+
+  it("⚠ 投げ銭トグルは設定を立てるだけ（窓を開かない・045c の規律）", () => {
+    render(<ObsEffectsScreen />);
+    fireEvent.click(monetaryToggle());
+
+    expect(localStorage.getItem(EFFECT_MONETARY_ENABLED_KEY)).toBe("true");
+    expect(mocks.openEffectOverlayWindow).not.toHaveBeenCalled();
+    expect(mocks.closeEffectOverlayWindow).not.toHaveBeenCalled();
+    // 他の 2 つのトグルを巻き添えにしない（3 つの設定は独立）。
+    expect(displayToggle()).toHaveAttribute("aria-checked", "false");
+    expect(autoAddToggle()).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("投げ銭トグルの永続値を読み直す（次に画面を開いたときも ON のまま）", () => {
+    localStorage.setItem(EFFECT_MONETARY_ENABLED_KEY, "true");
+    render(<ObsEffectsScreen />);
+    expect(monetaryToggle()).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("⚠⚠ テスト発火が localStorage へ書くのは nonce だけ（第三者データを載せない・§9）", () => {
+    // ⚠ ここが本命。⚠ **エフェクトの中身（名前・金額）を書くと §9 追補〔046a〕の対象になる**——
+    //   廃止した `effectQueue` はまさにそれをやる設計だった。合図だけを送り、中身は
+    //   エフェクト窓側の固定ダミーから作る、という線引きをここで固定する。
+    render(<ObsEffectsScreen />);
+    fireEvent.click(testFireButton());
+
+    const value = localStorage.getItem(EFFECT_TEST_FIRE_KEY);
+    expect(value).not.toBeNull();
+    // 中身らしきものが 1 つも載っていないこと（数字とハイフンだけの nonce）。
+    expect(value).toMatch(/^\d+-\d+$/);
+  });
+
+  it("⚠ テスト発火は連打のたびに違う値になる（同値だと storage イベントが飛ばない）", () => {
+    render(<ObsEffectsScreen />);
+    fireEvent.click(testFireButton());
+    const first = localStorage.getItem(EFFECT_TEST_FIRE_KEY);
+    fireEvent.click(testFireButton());
+    const second = localStorage.getItem(EFFECT_TEST_FIRE_KEY);
+    expect(second).not.toBe(first);
+  });
+
+  it("⚠ テスト発火は窓を開かない・OBS へも繋がない（合図を書くだけ）", () => {
+    render(<ObsEffectsScreen />);
+    fireEvent.click(testFireButton());
+    expect(mocks.openEffectOverlayWindow).not.toHaveBeenCalled();
+    expect(mocks.detectObsWebsocketConfig).not.toHaveBeenCalledTimes(2);
+  });
+
+  it("⚠ エフェクト窓が停止中なら、テスト発火しても何も出ないことを案内する", async () => {
+    // ⚠ 「黙って何も起きない」を作らないための注記（061a の前提ステータスと同じ趣旨）。
+    mocks.isEffectOverlayOpen.mockResolvedValue(false);
+    render(<ObsEffectsScreen />);
+    await waitFor(() => expect(screen.getByText("停止中")).toBeInTheDocument());
+    expect(
+      screen.getByText(/エフェクトのウィンドウが停止中のため/),
+    ).toBeInTheDocument();
+  });
+
+  it("エフェクト窓が表示中ならその注記は出さない", async () => {
+    mocks.isEffectOverlayOpen.mockResolvedValue(true);
+    render(<ObsEffectsScreen />);
+    await waitFor(() => expect(screen.getByText("表示中")).toBeInTheDocument());
+    expect(screen.queryByText(/エフェクトのウィンドウが停止中のため/)).toBeNull();
   });
 
   it("表示トグル ON で窓を開き、設定を永続化する", async () => {
@@ -145,6 +223,58 @@ describe("061a: ObsEffectsScreen", () => {
     await waitFor(() =>
       expect(mocks.openCommentViewerWindow).toHaveBeenCalledTimes(1),
     );
+  });
+
+  it("⚠⚠ 061b: 案内文が「エフェクトも表示されません」と言わない（嘘になったため）", async () => {
+    // ⚠ 061b でエフェクト窓が sidecar の WS を直接張るようになり、sidecar もエフェクト窓が
+    // 生きている間は落ちなくなった。＝**コメビュ窓を閉じてもエフェクトは出続ける**ので、
+    // 061a の文言（「（エフェクトも表示されません）」）は事実と食い違う。
+    // ⚠ ここが無いと、あの一文を「親切だから」で書き戻せてしまう（嘘の案内が静かに復活する）。
+    mocks.isCommentViewerOpen.mockResolvedValue(false);
+    const { container } = render(<ObsEffectsScreen />);
+
+    await waitFor(() => expect(screen.getByText("閉じています")).toBeInTheDocument());
+    expect(container.textContent).not.toContain("エフェクトも表示されません");
+  });
+
+  it("⚠ 061b: エフェクトの表示だけは続く、という非対称を**条件つきで**案内する", async () => {
+    // 「OBS への反映は止まるが、エフェクトの表示自体は続く」というねじれをユーザーへ明示する
+    //（`obs-enable` の送出だけがコメビュ窓に残っているため）。
+    // ⚠⚠ **061b レビュー Q-1 で「エフェクトのウィンドウを表示したまま」という条件を必須にした。**
+    //   条件抜きで「取得を開始したあとなら続きます」と書くと、この案内が出る状況
+    //   （＝コメビュ窓が閉じている）に「表示 OFF のまま閉じた＝sidecar は既に死んでいる」
+    //   ユーザーが含まれるため**嘘になる**（061a Q-1「配信中には表示されません」と同じ失敗モード）。
+    mocks.isCommentViewerOpen.mockResolvedValue(false);
+    render(<ObsEffectsScreen />);
+
+    await waitFor(() => expect(screen.getByText("閉じています")).toBeInTheDocument());
+    expect(
+      screen.getByText(
+        /エフェクトのウィンドウを表示したまま[\s\S]*閉じた場合は[\s\S]*続きます/,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("⚠⚠ 061b: 条件なしで「閉じても続く」と断言しない（Q-1 の再発防止）", async () => {
+    // ⚠ 「エフェクトの表示そのものは、…取得を開始したあとであれば、…閉じても続きます」という
+    //   **条件が足りない旧文言**を書き戻せないようにする。約束できることだけを書く。
+    mocks.isCommentViewerOpen.mockResolvedValue(false);
+    const { container } = render(<ObsEffectsScreen />);
+
+    await waitFor(() => expect(screen.getByText("閉じています")).toBeInTheDocument());
+    expect(container.textContent).not.toContain("エフェクトの表示そのものは");
+  });
+
+  it("⚠⚠ 061b: コメント取得（外部通信）が続くことと、その止め方を案内する", async () => {
+    // ⚠ 061b レビュー S-1: コメビュ窓を閉じても sidecar が生き続けるケースでは
+    //   Twitch/YouTube への取得＝外部通信も続く（`stop-session` は送られない）。
+    //   ツール管理の「停止」は窓を閉じるだけなので、**取得を止める導線はここにしか無い**。
+    mocks.isCommentViewerOpen.mockResolvedValue(false);
+    const { container } = render(<ObsEffectsScreen />);
+
+    await waitFor(() => expect(screen.getByText("閉じています")).toBeInTheDocument());
+    expect(container.textContent).toContain("コメントの取得がそのまま続きます");
+    expect(container.textContent).toContain("取得を止めたいとき");
   });
 
   it("コメビュ窓が開いているときは案内を出さない", async () => {

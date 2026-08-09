@@ -5,13 +5,28 @@
 //!   出さない（capability に `shell:*` はゼロ付与）。docs/security.md §4 の例外（Node sidecar 同梱）。
 //! - singleton `Mutex<Option<CommentSidecar>>` を app state に持ち、コメントビューア窓を開いたときに
 //!   spawn する。多重起動しない（既に起動済みなら何もしない）。
+//!   ⚠ **061b: spawn の契機はコメビュ窓のままだが、停止の契機は 2 窓へ広がった**（下の 3 段 kill を参照）。
 //! - **Rust に async/WS/HTTP crate は足さない**。plugin が返す stdout ストリームは別スレッドで
 //!   `blocking_recv()` して同期的に読む（tokio ランタイムを自前で持ち込まない）。
 //! - sidecar は bind した実ポートを `COMMENT_SIDECAR_PORT=<port>` の 1 行で stdout に出す。これを受領して
 //!   state に格納し、viewer は読み取り専用コマンド `get_comment_stream_port` で取得してから接続する
 //!   （17331 が使用中なら sidecar が空きポートにフォールバックするため、実ポートは動的）。
-//! - no-orphan の 3 段 kill の Rust 側 2 段（① viewer 窓の Destroyed/CloseRequested、② RunEvent::Exit）から
-//!   `shutdown()` を呼ぶ。3 段目は sidecar 側の ppid 監視 self-exit（mac に PDEATHSIG が無いため）。
+//! - no-orphan の 3 段 kill の Rust 側 2 段（① **sidecar を使う窓**の Destroyed/CloseRequested、
+//!   ② RunEvent::Exit）から `shutdown()` を呼ぶ。3 段目は sidecar 側の ppid 監視 self-exit
+//!   （mac に PDEATHSIG が無いため）。
+//!   ⚠⚠ **061b で ① の対象が「viewer 窓」から「viewer 窓 or エフェクト窓」へ広がった。**
+//!   ①は「**自窓以外に sidecar を使う窓が残っていなければ落とす**」という条件付きになっており、
+//!   その判定は `lib.rs` の `SIDECAR_CONSUMER_LABELS` / `is_last_sidecar_consumer` が持つ（実窓を見る）。
+//!   ⚠ **② は無条件のまま**。`app.exit(0)` では窓イベントが 1 つも配送されないため、
+//!   アプリ終了経路の担保は②だけである（詳細は `lib.rs` の `RunEvent::Exit` の注記）。
+//!   ⚠ 「Rust 側 2 段」は**no-orphan の担保として数えている経路**の話で、`shutdown()` の呼び出し箇所の
+//!   総数ではない。実際にはもう 1 箇所、`app_update/commands.rs` の**アップデート適用前の再起動**からも
+//!   呼ぶ（あちらは `RunEvent::Exit` を通らない経路なので明示的に落としている）。061b レビュー Q-6。
+//! - ⚠⚠ **061b: 「取得（外部通信）が止まる条件」も①に連動して変わった**（docs/security.md §1 の「取得の停止条件」）。
+//!   取得セッション（sidecar 内の `sessionAborts`）は **`stop-session` フレームかプロセス終了でしか止まらない**
+//!   ——WS クライアントが 0 になっても止まらない。＝**コメビュ窓を閉じてもエフェクト窓が生きていれば
+//!   Twitch/YouTube への通信は続く**。061b 以前は「コメビュ窓を閉じる＝必ず kill」だったので同値だったが、
+//!   いまは同値ではない。ユーザー向けの明示は `ObsEffectsScreen` の前提案内が担っている。
 //! - 032c-b/032c-d′(ログイン永続化): Twitch/YouTube の OAuth トークンは Rust 側で OS キーチェーンに保存する
 //!   （[token_vault]・provider 別 account）。起動時に `load()` して sidecar の **stdin** へ復元行
 //!   （`COMMENT_SIDECAR_RESTORE=<provider> <json>`）を書き、sidecar が login/refresh で更新すると **stdout** の
@@ -226,6 +241,13 @@ pub fn theme_import_ticket(app: &AppHandle) -> Option<String> {
 }
 
 /// sidecar を停止する（idempotent）。窓クローズ・アプリ終了フックから呼ぶ。
+///
+/// ⚠ **061b: 窓クローズ側の呼び出しは無条件ではない。** `lib.rs` の `shutdown_sidecar_if_last_consumer`
+/// を通り、「**sidecar を使う窓が自窓のほかに 1 つも残っていないとき**」だけここへ来る
+/// （＝コメビュ窓を閉じてもエフェクト窓が生きていれば落ちない）。アプリ終了（`RunEvent::Exit`）からは
+/// 従来どおり**無条件**で呼ばれる。
+/// ⚠ 同じ窓から `CloseRequested` と `Destroyed` の両方で呼ばれうるが、`guard.take()` により冪等
+/// （2 度目は `None` で no-op）。
 pub fn shutdown(app: &AppHandle) {
     let state = app.state::<CommentSidecarState>();
     let taken = {

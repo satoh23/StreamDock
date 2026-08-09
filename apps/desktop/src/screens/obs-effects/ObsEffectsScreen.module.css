@@ -75,3 +75,16 @@
   font-size: 12px;
   line-height: 1.5;
 }
+
+/* 061b: テスト発火ボタンと説明。ボタンと注記を横に並べ、注記は縮む側にする。 */
+.testFire {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.testFire > p {
+  flex: 1;
+  min-width: 0;
+}

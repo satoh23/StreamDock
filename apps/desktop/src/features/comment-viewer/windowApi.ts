@@ -14,8 +14,14 @@ import { invoke } from "@tauri-apps/api/core";
 
 /**
  * 内蔵コメントビューア窓を閉じる（ツール管理の「停止」用）。窓が無ければ Rust 側 no-op（冪等）。
- * `.close()` は既存の窓イベント経由で Twitch/YouTube コメント取得 sidecar の停止も連動する（032c-b）。
  * PID kill は行わず、自アプリのウィンドウを閉じるのみ（docs/security.md §6）。
+ *
+ * ⚠⚠ **061b で「sidecar の停止も連動する」は偽になった**（061b レビュー S-1）。停止条件が
+ * 「`comment-viewer` と `effect-overlay` のどちらも無いとき」へ広がったので、**エフェクト窓が
+ * 開いている間はこれを呼んでも sidecar は落ちない**＝ Twitch/YouTube の取得（外部通信）も続く
+ * （窓の close では `stop-session` を送らないため）。取得を確実に止めるのは
+ * コメビュ窓の取得停止ボタン（`stop-session`）か、エフェクト窓も閉じること。
+ * docs/security.md §1 の「取得の停止条件」が正。
  */
 export function closeCommentViewerWindow(): Promise<void> {
   return invoke<void>("close_comment_viewer_window");
@@ -32,8 +38,12 @@ export function isCommentViewerOpen(): Promise<boolean> {
 /**
  * 033f: OBS 用の背景透過オーバーレイ窓（label `comment-overlay`）を開く（ワンクリック）。窓が既に開いていれば
  * Rust 側で再利用する（冪等）。033f 追修正で**最背面・非フォーカス**で開くため、配信者の画面に前面表示されず
- * OBS のウィンドウキャプチャにだけ映る。オーバーレイは**表示専用**で、sidecar の起動/停止には関与しない
- * （no-orphan kill 契機はコメビュ窓に集約のまま）。data 源は既存の loopback WS の読み取り専用接続のみ。
+ * OBS のウィンドウキャプチャにだけ映る。オーバーレイは**表示専用**で、sidecar の起動/停止には関与しない。
+ * data 源は既存の loopback WS の読み取り専用接続のみ。
+ *
+ * ⚠ **061b: 「no-orphan kill 契機はコメビュ窓に集約のまま」ではなくなった**（061b レビュー②S-4）。
+ * 契機は `comment-viewer` / `effect-overlay` の 2 点（Rust の `SIDECAR_CONSUMER_LABELS`）。
+ * ただし**この窓はそこに入っていない**ので、「この窓は sidecar の生存に関与しない」は 033f から真のまま。
  */
 export function openCommentOverlayWindow(): Promise<void> {
   return invoke<void>("open_comment_overlay_window");
@@ -42,7 +52,8 @@ export function openCommentOverlayWindow(): Promise<void> {
 /**
  * 033f 追修正: OBS 用オーバーレイ窓を閉じる（コメビュ本体の「閉じる」用）。窓が無ければ Rust 側 no-op（冪等）。
  * オーバーレイは最背面・非フォーカスで開き Cmd+W で掴みにくいため、本体から明示的に閉じられるよう用意する。
- * オーバーレイは sidecar を起動していないため、閉じても sidecar は落ちない（no-orphan kill 契機は不変）。
+ * オーバーレイは sidecar を起動していないため、閉じても sidecar は落ちない
+ * （⚠ 061b で kill 契機は 2 点へ広がったが、この窓は `SIDECAR_CONSUMER_LABELS` に入っていない）。
  */
 export function closeCommentOverlayWindow(): Promise<void> {
   return invoke<void>("close_comment_overlay_window");
@@ -63,7 +74,8 @@ export function isCommentOverlayOpen(): Promise<boolean> {
  * **独立した別窓**で、OBS では別ソースとして取り込む（窓名「StreamDock 固定コメント」）。
  *
  * この窓は**表示専用**で WS へ接続しない（046a が localStorage に書いた固定コメントを読むだけ）。
- * sidecar の起動/停止にも関与しないため、閉じても sidecar は落ちない（no-orphan kill 契機は不変）。
+ * sidecar の起動/停止にも関与しないため、閉じても sidecar は落ちない
+ * （⚠ 061b で kill 契機は 2 点へ広がったが、この窓は `SIDECAR_CONSUMER_LABELS` に入っていない）。
  */
 export function openPinnedOverlayWindow(): Promise<void> {
   return invoke<void>("open_pinned_overlay_window");
@@ -91,8 +103,15 @@ export function isPinnedOverlayOpen(): Promise<boolean> {
  * 既に開いていれば Rust 側で再利用する（冪等）。既存の `comment-overlay` / `pinned-overlay` とは
  * **独立した別窓**で、OBS では 3 本目の別ソースとして取り込む（窓名「StreamDock エフェクト」）。
  *
- * この窓は**表示専用**で WS へ接続しない（061b はコメビュ窓が localStorage へ書いた `EffectRequest` を
- * `storage` 購読で受ける設計）。sidecar の起動/停止にも関与しないため、閉じても sidecar は落ちない。
+ * ⚠⚠ **061b で 061a の決定を反転した。** この窓は**表示専用のまま**だが、`comment-overlay` 窓と同じく
+ * sidecar の loopback WS へ**読み取り専用接続**する（`connectCommentStream` の `onComments` だけ・
+ * 制御フレームは送らない）。061a が「WS へ接続しない」と書いていたのは、当時の 061b が localStorage ＋
+ * `storage` で `EffectRequest` を受ける設計だったため。その経路ごと廃止された。
+ *
+ * ⚠ **sidecar のライフサイクル**: この窓は sidecar を**起動しない**（起動契機は
+ * `openCommentViewerWindow` の 1 箇所のまま）が、**この窓が生きている間は sidecar が落ちない**
+ * （Rust の `SIDECAR_CONSUMER_LABELS`）。＝ **コメント取得を開始したあとコメビュ窓を閉じても
+ * エフェクトが出続ける**。どの窓も無くなれば必ず落ちる（孤児プロセスを残さない）。
  *
  * ⚠ **呼ぶのは main 窓（`ObsEffectsScreen` と起動時復元）**。アプリ定義コマンドは ACL 対象外なので
  * main 窓からそのまま invoke できる（`default.json` は差分ゼロ）。
@@ -123,10 +142,14 @@ export function isEffectOverlayOpen(): Promise<boolean> {
 /**
  * 061a: 内蔵コメントビューア窓（label `comment-viewer`）を開く（＝Twitch/YouTube 取得 sidecar を起動する）。
  *
- * ⚠ **`obs-effects` 画面の前提案内から呼ぶための導線**。エフェクトの OBS 自動反映も
- * （061b では）エフェクトの発火自体も、**コメビュ窓が開いていないと起きない**——
- * `obs-enable` を送れる WS ハンドルを持つのはコメビュ窓だけで、sidecar のライフサイクルも
- * この窓に紐づいているため。main 窓に「開いてください」とだけ書いて放り出さないためのボタン。
+ * ⚠ **`obs-effects` 画面の前提案内から呼ぶための導線**。`obs-enable`（OBS へのソース自動追加）を送れる
+ * WS ハンドルを持つのはコメビュ窓だけなので、**コメビュ窓が開いていないと OBS への自動反映は起きない**。
+ * main 窓に「開いてください」とだけ書いて放り出さないためのボタン。
+ *
+ * ⚠⚠ **061b で「エフェクトの発火自体もコメビュ窓が要る」は偽になった。** エフェクト窓が sidecar の WS を
+ * 直接張り、sidecar もエフェクト窓が生きている間は落ちなくなったため、**一度コメント取得を開始すれば
+ * コメビュ窓を閉じてもエフェクトは出続ける**。ただし **sidecar の起動と `start-session`（取得開始）の
+ * 導線はどちらもコメビュ窓にしかない**ので、「コメビュ窓を一度も開かずにエフェクト」には到達しない。
  *
  * ⚠ 新規コマンドではない（032c-a の `open_comment_viewer_window` をそのまま呼ぶ）。ツール管理
  * （`MainScreen`）は同じ窓を `launchTool` 経由で開いており、main 窓から sidecar を起動できること自体は

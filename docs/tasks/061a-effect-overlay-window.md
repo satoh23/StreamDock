@@ -5,20 +5,27 @@
 > ⚠ 指摘と対応の一覧は [`docs/progress.md`](../progress.md) の 061a 節「レビュー指摘と対応」が正。
 > 分割・線引きは親 [061](061-obs-effects.md) を正とする。
 >
-> ## ⚠⚠ 061b の仕様変更（2026-08-09）で、本タスクの決定が 1 つ覆っている
+> ## ⚠⚠ 061b の仕様変更（2026-08-09）で、本タスクの決定が 1 つ覆った（**061b-1 で反映済み**）
 >
 > 061a は「**エフェクト窓は WS へ接続しない**（061b はコメビュ窓が localStorage へ書いた `EffectRequest` を
-> `storage` で受ける）」を前提に作ったが、**依頼者決定により 061b でこれを反転する**——
+> `storage` で受ける）」を前提に作ったが、**依頼者決定により 061b でこれを反転した**——
 > エフェクト窓は `OverlayApp` と同じく **sidecar の loopback WS を直接張る**。
 > 経緯と設計は [061b](061b-monetary-effect-builtin.md) の冒頭と親 [061](061-obs-effects.md) が正。
 >
-> 本タスクの成果物のうち、**061b で更新が要るもの**:
-> - `EffectOverlayApp.tsx` / `windowApi.ts` / `lib.rs` の各 JSDoc にある「**WS へは一切接続しない**」の記述
-> - `EffectOverlayApp.test.tsx` の「**WS へ接続しない**」ケース（**逆の仕様になる**）
-> - [`docs/security.md`](../security.md) 061a 節の「表示専用・通信面ゼロ」
+> ✅ **061b-1 で更新済み**（「WS へ接続しない」という嘘の記述は 1 つも残っていない）:
+> - `EffectOverlayApp.tsx` / `windowApi.ts` / `lib.rs` / `comment_sidecar/mod.rs` の各 doc コメント
+> - `EffectOverlayApp.test.tsx` の「WS へ接続しない」ケース → **「`connectCommentStream` を 1 回だけ呼ぶ」＋
+>   「受け取っても描かない・保存しない」**へ差し替え
+> - [`docs/security.md`](../security.md) 061a 節の「表示専用・通信面ゼロ」→「読み取り専用接続」
+>
+> ⚠⚠ **もう 1 つ覆ったもの＝ sidecar の停止条件**（着手時点では想定されていなかった）:
+> 061a は「この窓は sidecar に触れない＝ no-orphan kill 契機は不変」としていたが、**061b-1 で
+> 「`comment-viewer` と `effect-overlay` のどちらも無くなったとき」へ広がった**
+> （`lib.rs` の `SIDECAR_CONSUMER_LABELS` / `is_last_sidecar_consumer`）。
+> ⚠ **起動契機は増えていない**（`open_comment_viewer_window` の `ensure_started` 1 箇所のまま）。
 >
 > ⚠ 逆に**変わらないもの**: 窓の生成・体裁・capability・窓名の 2 者間契約・OBS ソース自動追加・
-> ガイドのワンショット旗・起動時の窓復元。**061a の器そのものは作り直さない。**
+> ガイドのワンショット旗・起動時の窓復元。**061a の器そのものは作り直していない。**
 >
 > ⚠ **実装で判明した前提・判断の根拠は [`docs/progress.md`](../progress.md) の 061a 節が正**
 > （①〜⑧ の決定と理由・窓の既定値の根拠・契約テストの拡張方法・ミューテーション 11 件・実機確認の手順）。
@@ -30,8 +37,14 @@
 
 - `connectCommentStream` を呼ぶのは `CommentViewerApp` と `OverlayApp` の 2 つだけ＝**main 窓は WS を張らない**。
   `enableObs` / `hideObs` を持つハンドルを握るのは `CommentViewerApp` の `streamRef` のみ。
+  ⚠ **061b-1 で `EffectOverlayApp` が 3 つ目になった**（読み取り専用＝`onComments` のみ）。
+  **`enableObs` を送るのは依然 `CommentViewerApp` だけ**なので、この節の結論は変わらない。
 - sidecar のライフサイクルは**コメビュ窓に紐づく**（`open_comment_viewer_window` が `ensure_started`・
   close で `shutdown`）＝**コメビュ窓が閉じていれば sidecar は動いていない**。
+  ⚠⚠ **061b-1 で後半が偽になった**——停止条件が「コメビュ窓 or エフェクト窓のどちらも無いとき」へ広がり、
+  **コメビュ窓を閉じてもエフェクト窓が生きていれば sidecar は動き続ける**。
+  ⚠ 起動契機（`ensure_started`）は 1 箇所のままなので、「コメビュ窓を**一度も開いていない**なら
+  sidecar は動いていない」は真のまま。
 - ⚠ ただし**穴は「表示トグル」ではなく `obs-enable` の送出だけに限局される**——アプリ定義コマンドは
   ACL 対象外なので、窓の open/close は main 窓からそのまま invoke できる（`default.json` は差分ゼロ）。
 

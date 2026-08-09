@@ -17322,3 +17322,447 @@ git status --short -- {apps/desktop,apps/comment-sidecar,.}/package.json pnpm-lo
 5. 実装の入口: `apps/desktop/src-tauri/src/lib.rs`（`open_effect_overlay_window` と
    `mod overlay_window_contract`）／`apps/desktop/src/screens/obs-effects/`／
    `apps/desktop/src/features/comment-viewer/effectOverlayRestore.ts`。
+
+## 061b-1 sidecar ライフサイクルの切り離し＋エフェクト窓の WS 直結（2026-08-09）
+
+061b の**1 段目（経路）＝ (0) sidecar ライフサイクル＋ (2) データ経路**のみ。エフェクト本体
+（発火層 `effectTrigger.ts` ・描画・設定トグル・テスト発火）は **061b-2** で、ここでは 1 行も作っていない。
+仕様は [`docs/tasks/061b-monetary-effect-builtin.md`](tasks/061b-monetary-effect-builtin.md)、親は
+[061](tasks/061-obs-effects.md)。⚠ **実機確認は未実施**（手順は末尾）。
+
+### ⚠⚠ 着手前に判明した「タスクファイルに書かれていなかった穴」（本タスク最大の成果）
+
+| 穴 | 内容 | 結論 |
+| --- | --- | --- |
+| **H** | **バッチ単位の抑制が実データで一度も発動しない**。sidecar は `comments.append` を **1 件ずつ** broadcast し（`index.ts` の `outputComments`）、`commentStream.ts` も `handlers.onComments([comment])` と**常に長さ 1** で渡す。＝「同一投稿者の gift を**バッチ内で**畳む」「**1 バッチ**最大 N 件」は常に 1 件の配列に適用され**何も抑制しない**。コミュニティギフト N+1 は **N+1 個の別バッチ**で届く | **061b-2 で時間窓を持つ状態へ**。`decideEffects(added, updated, state, now)`（`now` は引数注入＝純関数のままテストできる） |
+| **A** | **テスト発火の経路が消えていた**。WS 直結にしたことで main 窓 → エフェクト窓の伝達手段が 1 本も無い。061a 申し送りの「テスト発火ボタンは main 窓に置ける（**localStorage へ書くだけなので**）」は旧設計前提の文で、取り消し線が入っていなかった（S-1 と同型） | **061b-2 で localStorage キー 1 本（nonce のみ）**。第三者データは載せず、中身はエフェクト窓の固定ダミーから作る |
+| **B** | **`CloseRequested` の時点では自窓がまだ生きている**（下記「Tauri の実ソースで確定した発火順」） | **両イベントで判定しつつ自窓をラベルで除外**（どちらの順序でも同じ結果になる） |
+| **B″** | **`app.exit(0)` では窓イベントが 1 つも配送されない** | **`RunEvent::Exit` の無条件 shutdown が唯一の担保**。条件付きにしない |
+| **C** | **起動時に無操作で sidecar が起動する**（`restoreEffectOverlayWindow` はアプリ起動で走る） | **`ensure_started` を足さない**（下記②） |
+| **D** | 「`OverlayApp` の写し」と「保存しない」は両立しない（`mergeComments` は本文込み最大 200 件を state に持つ） | **061b-2 で上限付きの既知 id 集合だけ持つ** |
+| **F** | 「コメビュ窓が閉じているとエフェクトは出ない」が**偽になる** | 案内文を修正（下記④）。**残るねじれ**＝ OBS への自動追加だけはコメビュ窓が要る |
+| **G** | `ObsEffectsScreen` の「main 窓から WS を張らない理由」①②③がエフェクト窓に当たる | JSDoc を修正（下記⑤）。③は**エフェクト窓では受容・main 窓では受容しない** |
+| **I** | エフェクト窓が毎秒 `get_comment_stream_port` を invoke し続けうる | 受容。**`comment-overlay` 窓が既に同じ性質**（コメビュ窓を閉じても自動 close されない）＝新規の性質ではない |
+
+### ① Tauri の実ソースで確定した発火順（**推測ではない**・穴 B / B″ の根拠）
+
+`~/.cargo/registry/.../tauri-2.11.5` と `tauri-runtime-wry-2.11.4` を読んで確認した。
+
+```
+CloseRequested … on_close_requested(): ①per-window ハンドラ → ②callback(RunEvent::WindowEvent)
+                 → ③on_window_close()（inner=None＝tao 窓を drop）
+                 ⇒ ①の時点で get_webview_window(自分) は Some
+Destroyed      … Event::WindowEvent: ①callback(RunEvent::WindowEvent)
+                 〔この中で AppManager::on_window_close(label) が windows_lock から remove〕
+                 → ②per-window ハンドラ
+                 ⇒ ②の時点で get_webview_window(自分) は None
+app.exit(0)    … Message::RequestExit → ControlFlow::Exit → tao の Event::LoopDestroyed
+                 ⇒ **個々の窓の CloseRequested も Destroyed も配送されない**
+```
+
+⚠ tauri 側で窓が map から消えるのは `RuntimeWindowEvent::Destroyed` を受けた `on_event_loop_event` の
+`manager.on_window_close(label)` **1 箇所だけ**。⚠ `window.close()` は `CloseRequested` を出す
+（`destroy()` は出さない）ので、**`close_effect_overlay_window`（表示トグル OFF）もこのガードを通る**。
+
+**採った案＝(C) 両イベント＋自窓をラベル除外**。却下したのは:
+- **(A) `Destroyed` でだけ判定** … 論理は正しいが、**`Destroyed` が来ない経路があると落ちない**（単独では薄い）。
+- **(B) `CloseRequested` でだけ判定** … 届く保証は同じく無い。
+
+### ② `open_effect_overlay_window` に `ensure_started` を足さなかった理由（**タスクファイルからの意図的な逸脱**・依頼者決定）
+
+タスクファイル (0) は「起動: `open_effect_overlay_window` でも `ensure_started` を呼ぶ」と指示していたが採らなかった。
+
+- ⚠ **依頼者が示した「(b) は目的が半分しか達成されない」という理解は成り立たない。** 仕様変更の目的
+  「一度コメント取得を開始すれば、コメビュ窓を閉じてもエフェクトが出続ける」は、**停止条件だけ広げれば 100% 達成する**。
+- (a) が追加で買えるのは「**コメビュ窓を一度も開かずに sidecar を起動する**」だけだが、
+  `start-session`（＝実際の取得）の導線はコメビュ窓にしかない（タスクファイルが ❌ と明記したスコープ外）
+  ＝ **sidecar を起動してもコメントは 1 件も来ない＝機能的な利得ゼロ**。
+- 一方コストは実在する: `restoreEffectOverlayWindow` は `MainWindowApp` のマウント（＝**アプリ起動**）で走るので、
+  「設定 ON のまま起動しただけで **ユーザー操作ゼロで keychain のトークンがメモリへ復元される**」経路を新設する。
+  しかも `ensure_started` は `WINDOW_OPEN_LOCK` 保持下で走る（未署名 dev の macOS は確認ダイアログ待ちがあり得る）。
+- **結果**: Rust の差分が **`shutdown` の呼び出し条件だけ**に閉じ（`ensure_started` は 1 バイトも触っていない）、
+  **`docs/security.md` §1 は差分ゼロ**で済んだ（起動契機が変わらないので「sidecar 起動 ≠ 外部通信」を論証する必要が無い）。
+- **代償**＝穴 I（毎秒 invoke ループ）。**先例あり**なので受容した。
+
+### ③ Rust の実装（`lib.rs` の 3 シンボル・新 command ゼロ）
+
+- `SIDECAR_CONSUMER_LABELS: [&str; 2] = ["comment-viewer", "effect-overlay"]`
+  ⚠ `comment-overlay` / `pinned-overlay` は**入れない**（前者はコメビュ窓からしか開けないので「あれだけ開いたまま
+  sidecar を生かす」に意味が無い／後者は WS を張らない）。**足すと停止条件が緩む＝孤児が残る方向**に効く。
+- `is_last_sidecar_consumer(closing_label, is_open) -> bool`（**純関数**）
+  ⚠ `is_open` を注入したのは**実窓なしで単体テストするため**。本番は `AppHandle::get_webview_window` を渡す
+  ＝ **判定は必ず Rust 側で実窓を見る**（frontend の設定値は信用しない・§8）。
+- `shutdown_sidecar_if_last_consumer(app, closing_label)` … 上 2 つを繋いで `comment_sidecar::shutdown` を呼ぶ**唯一の窓経路**。
+  ⚠ **`WINDOW_OPEN_LOCK` は取らない**（窓イベントはメインスレッドで走るので、窓生成コマンドのロック待ちを跨がせない）。
+
+配線は `open_comment_viewer_window`（無条件 shutdown からの差し替え）と `open_effect_overlay_window`（**新規登録**）の 2 箇所。
+`RunEvent::Exit` は**無改変**。`comment_sidecar/mod.rs` は**コードを 1 行も変えず** doc だけ実態へ更新した。
+
+### ④ frontend の実装
+
+- `EffectOverlayApp` が `connectCommentStream` を**マウント時 1 回だけ**張る（`onComments` のみ・
+  戻り値も `disconnect` しか触らない＝**送信フレームゼロ**）。**061b-1 の時点では受け取ったコメントを捨てる**
+  （発火層と描画は 061b-2。空にしてあるのは書き忘れではないと JSDoc に明記した）。
+- ⚠ **`ObsEffectsScreen` の案内文から「（エフェクトも表示されません）」を削除**（061b で**嘘になった**）。
+  代わりに「エフェクトの表示そのものは、取得を開始したあとならコメビュ窓を閉じても続く」という
+  **非対称を明示**する 1 文を足した。⚠ 復活を止める回帰テストを 2 件置いた。
+
+### ⑤ 「WS を張らない」という記述の更新（**1 つ残らず**）
+
+コード 6 ファイル（`EffectOverlayApp.tsx` / `ObsEffectsScreen.tsx` / `windowApi.ts` / `CommentViewerApp.tsx` /
+`lib.rs` / `comment_sidecar/mod.rs`）、テスト 2 ファイル、docs 5 ファイル（`security.md` / `061a` / `061b` /
+`task-board` / 本ファイル）。⚠ **`PinnedOverlayApp` 系は真のままなので触っていない**。
+
+### ⑥ テストとミューテーション（**5 件すべて KILLED**）
+
+新規 `mod sidecar_lifecycle`（6 件・純関数の単体）と `mod sidecar_lifecycle_contract`（5 件・`include_str!` の契約）。
+⚠ 契約テストは既存 `overlay_window_contract` の規律を踏襲した（**needle は `format!` で実行時に組む**＝
+`include_str!("lib.rs")` がテスト自身のソースを読むため。加えて**行コメントを除いてから照合**する）。
+
+| # | 変異 | 結果 |
+| --- | --- | --- |
+| 1 | `is_last_sidecar_consumer` の**自窓除外を外す** | **KILLED** — `close_requested_ignores_the_window_that_is_closing` **のみ**が落ちる（狙いどおり） |
+| 2 | エフェクト窓の close で**無条件 shutdown** | **KILLED** — `shutdown_is_called_from_exactly_two_places`（3 件になる）＋ `every_consumer_window_registers_the_guard` |
+| 3 | エフェクト窓側の**ハンドラ登録を消す** | **KILLED** — `every_consumer_window_registers_the_guard` |
+| 4 | `RunEvent::Exit` の shutdown を**条件付きにする** | **KILLED** — `app_exit_still_stops_the_sidecar_unconditionally` |
+| 5 | エフェクト窓が**受信した本文を描く** | **KILLED** — 「本文・表示名・アバターを描かない」＋「大量に受け取っても何も描かない」の 2 件 |
+
+⚠ **契約テストが緑でも実挙動の保証にはならない**（実窓が要る）。最終担保は実機 3 経路。
+
+### ⑦ `docs/security.md` の扱い（**実装記録は書いていない**）
+
+依頼者の指示「security.md には**セキュリティレビューに利用する情報以外を書かない**」に従い、
+**方針・制約・レビュー時の判断基準だけ**に限った。差分は 3 箇所:
+
+1. **061a 節の 2 箇条書きを訂正**（どちらも 061b で**偽になった**＝「レビューに利用する情報」が誤っている状態だった）。
+   「表示専用・通信面ゼロ／WS へ接続しない」→「**読み取り専用接続**」＋**担保のすり替え**（描かない・保存しない・
+   ログに出さない・`EffectRequest` に本文とアバターを含めない）。
+   「sidecar に触れない＝ no-orphan kill 契機は不変」→「**sidecar の停止条件**」（①どの窓も無いとき ②アプリ終了・無条件。
+   起動契機は 1 箇所のまま。②が唯一の担保である理由も明記）。
+2. **061a レビュー S-1 の記録に 1 文追記**（記録自体は消していない）。「その後の仕様変更で localStorage 経路ごと
+   廃止されたので懸念は構造的に消滅した。ただし『接続直後に過去分を遡って発火しない』は WS でも要件として残る」。
+3. **「レビュー必須条件」の `process停止処理` に下位条件を 1 つ追加**。「**sidecar の停止条件を変える変更も本項に該当する**」
+   ——⚠ §6 の本文はツールプロセスの PID 停止の条文で **sidecar のライフサイクルを 1 行も扱っていない**ため、
+   これが無いと次の担当者が「§6 の下位条件に当てはまらない」で自分を免除できてしまう（059a と同型の誤り）。
+
+⚠ **§1 は差分ゼロ**（②の決定により起動契機が変わらないため）。**§6 本文も差分ゼロ**（置き場所を移さない）。
+
+### 検証結果（2026-08-09）
+
+- `pnpm --filter ./apps/desktop typecheck` ✅ / `lint` ✅
+- `pnpm --filter ./apps/desktop test` ✅ **56 files / 1306 tests**（1298 → +8）。`check:css` ✅ / `check:version` ✅
+- `pnpm --filter ./apps/comment-sidecar test` ✅（差分ゼロだが回帰確認）
+- `cargo check` ✅ / `cargo test` ✅ **280 tests**（269 → +11）
+- **差分ゼロの担保**（実測）: `apps/comment-sidecar/` ／ `.github/` ／ `capabilities/` ／ `tauri.conf.json` ／
+  `package.json` ／ `pnpm-lock.yaml` ／ `Cargo.toml` ／ `Cargo.lock`。
+  **新 command ゼロ**（`generate_handler!` の登録リストは 061a のまま）。
+- `connectCommentStream` のアプリコードからの呼び出しが **2 → 3 箇所**（`CommentViewerApp` / `OverlayApp` / `EffectOverlayApp`）。
+
+### ⚠ 残していること
+
+1. ⚠⚠ **実機確認（依頼者の環境）**。⚠ **StreamDock 本体は起動したまま**で確認すること（アプリ終了の保険と切り分けるため）:
+   ```bash
+   pnpm --filter ./apps/desktop tauri dev
+   ps -ax | grep comment-sidecar | grep -v grep   # PID を控える
+   ```
+   - **⓪-1** コメビュ窓 → エフェクト窓 の順に閉じる。**1 窓目のあとも PID が残り**、2 窓目のあとに `ps -p <PID>` が空になる
+   - **⓪-2** エフェクト窓 → コメビュ窓 の順（対称に成立すること）
+   - **⓪-3** アプリ終了（main 窓を閉じる）→ `ps` が空
+   - **⓪-4** コメント取得開始 → **コメビュ窓だけ閉じる** → sidecar が生きたまま／`lsof -i` でエフェクト窓の WS が残る
+     （⚠ 目に見えるエフェクトは 061b-2 なので、1 段目はここまでが確認範囲）
+   - **⓪-5** エフェクト窓だけ開いた状態（`start-session` 前）でエラー表示も再試行の可視化も出ない
+   - **④の確認** 表示 ON のままアプリを起動 → **sidecar は起動しない**（`ps` が空のまま）・keychain ダイアログも出ない
+2. **061b-2（エフェクト本体）**: 発火層（穴 H の時間窓）・描画（`OVERLAY_TONE_CLASS` を再利用＝043c と構造的に一致）・
+   設定トグル・テスト発火（穴 A の nonce キー）。
+3. ⚠ **061a 実機確認 ⑦（`storage` の窓跨ぎ伝播）が未確認のまま**。061b-1 はこの経路を一切使わないので影響しないが、
+   **061b-2 のテスト発火ボタンはこれに乗る**（効かなければ「エフェクト窓側でキーをポーリング」へ切り替える）。
+4. ⚠ **061a レビュー Q-2 の再修正トリガー②「061b で effects が毎コメント発火の層になる」は発火しない**
+   （エフェクトの発火は WS 直結になり `obsState` を一切触らないため）。宿題 (A)(B)(C) は依頼者の決定どおり据え置き。
+5. ⚠ **コミット・push していない**。
+
+### 061b-1 security-review ＋ code-review の指摘と対応（2026-08-09・外部レビュー・判定「修正必須」）
+
+⚠ 当初は「061b-2 まで通してから実施」と書いていたが、**sidecar のライフサイクル（§6 の趣旨）と
+外部通信の起動条件（§1）に触るため 1 段目で実施**した（`docs/security.md` の「レビュー必須条件」の
+`process停止処理` に足した下位条件がそのまま自分に当たった）。
+
+**レビュー側が実ソースで裏取りした結果＝こちらの前提 4 つはすべて正しかった**:
+`CloseRequested` は per-window ハンドラ → `RunEvent::WindowEvent` の順（自窓は `Some`）／`Destroyed` は逆順（`None`）／
+`app.exit(0)` と Cmd+Q は `LoopDestroyed` → `RunEvent::Exit` だけで窓イベントを配送しない／
+sidecar は `comments.append` を 1 件ずつ送る（穴 H）。**孤児プロセスの経路は見つからなかった。**
+
+#### 修正必須（3 件・すべて対応済み）
+
+- **S-1 ⚠⚠ §1 の変更点は「起動契機」ではなく「外部通信の終了条件」だった。**
+  「起動契機が変わらないので §1 は差分ゼロ」という判断は**片側しか見ていなかった**。
+  sidecar の取得セッション（`sessionAborts`）は **`stop-session` かプロセス終了でしか止まらず、WS
+  クライアントが 0 になっても止まらない**。コメビュ窓の close で `stop-session` は送らない。
+  ＝ **061b 以降、エフェクト窓が開いている間はコメビュ窓を閉じても Twitch/YouTube の取得が続く。**
+  しかも `effect-overlay` は**永続設定でアプリ起動時に自動復元される唯一の WS 窓**なので、
+  一度エフェクト表示を ON にしたユーザーには**これが既定状態**になる。
+  さらに `MainScreen` のツール管理「停止」（`close_comment_viewer_window`）は窓を閉じるだけなので、
+  **「停止しました」と表示しつつ取得が続く**（`is_comment_viewer_open` は窓しか見ない）。
+  → **対応**: `docs/security.md` §1 の 032c-b 例外に「**取得の停止条件**」ブロックを新設（032c-d にも適用）。
+  `ObsEffectsScreen` の前提案内に「取得も続くこと」と「その止め方」を追加。
+  `close_comment_viewer_window` / `MainScreen.handleStopInternal` / `comment_sidecar` モジュール doc の
+  「窓を閉じれば sidecar も連動停止」という**偽になった記述**を訂正。
+  ⚠ ツール行を `stopped` にするのは据え置き（窓の存在が行の意味だから）。再修正トリガーは各所のコメントに記載。
+
+- **S-2 ⚠⚠ §9 の担保のうち「ログに出さない」がテストで固定されていなかった。**
+  `onComments` に `console.log("[effect]", cs)` を足す変異が**全テスト緑のまま生存**した
+  （`no-console` の eslint ルールも無い）。それなのに JSDoc と security.md は 4 項目すべてを
+  「テストが固定」と書いていた＝**嘘のコメント**。
+  → **対応**: `console.*` 6 レベルを spy して未呼び出しを固定するケースを追加。
+  JSDoc は**項目ごとに「✅ テストが固定 / ⚠ 固定できていない」を明記**する形へ書き換えた。
+  ⚠ 「描かずに `useState` へ置くだけ」の変異は**外から観測できないので固定していない**（意図的）。
+  061b-2 では `EffectRequest` に `text` / `avatar` を持たせない型の側で守る。
+
+- **S-3 ⚠⚠ 契約テストが §6 の no-orphan 保証を実質守れていなかった（独自ミューテーション 5 件中 4 件が生存）。**
+  生存したのは ①**2 窓のラベル入れ替え**（数もラベルの出現数も変わらない）②**`CloseRequested` を落として
+  `Destroyed` だけにする** ③**`RunEvent::Exit` を `match` で条件化**（`!arm.contains("if ")` は `if ` が
+  現れないので素通り）④**ガードの `is_open` を `... .is_some() && false` で骨抜き**（`contains("get_webview_window(")`
+  だけでは止まらない）。⚠ 逆に**無関係な `if` を 1 行足すと落ちる偽陽性**もあった。
+  → **対応**: 「字面が存在するか」から「**形**を見る」へ寄せた。
+  `block_after(code, head, max_len)` を新設して**切り出しブロックに長さ上限**を掛け（Q-9）、
+  各窓の**生成関数ブロックの中**にガード呼び出しと `CloseRequested | Destroyed` の両方があることを検査（①②）、
+  `RunEvent::Exit` は**空白を潰した完全一致で「停止 1 文だけ」**を固定（③・偽陽性も同時に解消）、
+  `is_open` は**式そのものを完全一致**で固定（④）。**再実測で 4 件すべて KILLED。**
+
+#### 後回し可・修正不要（コメントで意図と再修正トリガーを残した）
+
+- **S-4** 「毎秒 `get_comment_stream_port`」の受容根拠が不正確だった。`comment-overlay` は起動時復元が無く
+  実際には sidecar が動いている間しか存在しないので「同じ性質」ではない。**受容は維持**（1 回の実体が
+  `Option<u16>` の読み取りだけ）だが、根拠を書き換えた。再修正トリガー＝ポート未確定時の指数バックオフ。
+- **S-5** `comment-overlay` を `SIDECAR_CONSUMER_LABELS` に入れない判断は**妥当**と確認された（対応不要）。
+- **S-6** `on_window_event` の登録が非同期な件は**修正不要**。取りこぼしても孤児にはならず
+  （`RunEvent::Exit` が拾う）、既存 `open_comment_viewer_window` と同じ構造。理由をコメント化。
+- **S-7** security.md の停止条件に「**自窓をラベルで除外する**」が書かれていなかった（Tauri のイベント順
+  依存の前提なので、次の人が「実窓を見ればよい」と単純化すると孤児側に倒れる）。→ 追記＋
+  「Tauri を上げるときに再確認」も明記。
+- **Q-1** ⚠⚠ `ObsEffectsScreen` の新しい案内文が **061a Q-1 と同じ失敗モード**だった。
+  「取得を開始したあとであれば…閉じても続きます」には**エフェクト窓が開いていること**という条件が抜けており、
+  この案内が出るのは `viewerOpen === false` のとき＝「表示 OFF のまま閉じた（sidecar は既に死んでいる）」
+  ユーザーも読む。→ **条件つきの 2 文へ書き直し**、旧文言を書き戻せない回帰テストも追加。
+- **Q-3** `expect(Object.keys(handle)).toEqual(["disconnect"])` は**テスト自身が作った形を見るトートロジー**で、
+  コンポーネントが何をしても失敗しなかった。→ **Proxy で実際に参照されたプロパティを記録**する形へ。
+  `handle.enableObs?.(...)` のような optional chaining の送信も捕まることを実測で確認。
+- **Q-6** `shutdown_is_called_from_exactly_two_places` の「2」は **lib.rs 内の数**で、`app_update` の
+  3 つ目（再起動経路）は対象外。メッセージと `comment_sidecar` モジュール doc にその旨を明記。
+- **Q-7** 「ミューテーション 5 件すべて KILLED」は到達範囲を過大に見せる書き方だった。→ 件数ではなく
+  「何を固定できていないか」を書く形へ（task-board / 061b タスクファイル）。
+- **Q-10** `is_last_sidecar_consumer` の二重否定と `&dyn Fn` は**修正不要**と確認。理由をコメント化。
+
+⚠ **実機確認（下記 ⓪-1〜⓪-5・④）は依然として未実施**。契約テストは「形」を固定するだけで
+実挙動の保証にはならないので、**実機がいまも最終担保**である。
+⚠ レビューで新たに追加された実機確認項目: **⓪-6** コメビュ窓を閉じたあと（エフェクト窓は開いたまま）
+配信サービス側へ投稿し、**取得が続いていること**を確認する／**⓪-7** そのときツール管理の行が
+「停止」表示になっていること（S-1 の乖離を目視する）。
+
+## 061b-2 組み込み投げ銭エフェクト（発火層＋描画＋設定＋テスト発火）／061b 実機確認（2026-08-09）
+
+061b の**2 段目**。1 段目（経路）は上の 061b-1 節が正。⚠ 依頼者の指示で**段階分けをやめて通しで実施**し、
+**実機確認も実装者（AI）が macOS の a11y 自動操作で実施**した（結果は末尾）。
+
+### ① 発火層の置き場所を `features/` → `screens/obs-effects/` に変えた（⚠ タスクファイルからの逸脱）
+
+タスクファイルは `features/comment-viewer/effectTrigger.ts` を指定していたが、そこへ置くと
+**リポジトリで初めての `features/` → `screens/` import（層の逆転）**になる（実測: 現状 0 件）。
+本モジュールは課金判定・文言・配色をすべて `screens/comment-viewer/viewerFormat.ts` から取るため。
+049 が `ttsQueue` で同じ逆転を **getter 注入**で回避した先例があるが、今回は注入すべき関数が 6 本あり過剰。
+→ **依存の向きを守れて、唯一の消費者（エフェクト窓）と同居する `screens/obs-effects/` を選んだ**。
+063（ガチャ）も同じディレクトリから素直に import できる。
+**再修正トリガー＝`viewerFormat` が `features/` へ移るなら本モジュールも一緒に移す。**
+
+### ② ⚠⚠ タスクファイルの課金判定式が**誤っていた**（実装で訂正）
+
+061b タスクファイル (1) は「`added` のうち **`isMonetaryEvent(displayEventType(c))`** が真のものだけ拾う」と
+書いているが、**この式ではビッツでエフェクトが出ない**。`displayEventType` は superchat＋`currency:"BITS"` を
+`"bits"` へ振り替えるが、**`"bits"` は `MONETARY_EVENT_TYPES` に無い**（あの Set は「ビッツは superchat に
+含まれる」前提＝**生の `eventType` に適用する述語**）。
+→ 正しい式は **`isMonetaryEvent(c.eventType)`**。059b が通知音で**まったく同じ誤りを踏んで訂正済み**で
+（task-board の 059b 節に記録あり）、`CommentList` の本体一覧・047 ティッカー・049 読み上げ優先キュー・
+固定帯と**同一の式**がこれ。⚠ 専用の回帰テスト（「ビッツで出る」）を置き、**誤った式へ戻すとレッド**にした。
+
+### ③ 定数と「溜めない」設計
+
+| 定数 | 値 | 根拠 |
+| --- | --- | --- |
+| `EFFECT_DISPLAY_MS` | 5,000 | 「誰がいくら」を OBS 上で読み切る時間＋余裕。短いと読めず長いと次が詰まる |
+| `EFFECT_MAX_CONCURRENT` | 3 | 窓は 960×360。約 100px のカードが縦 3 枚＋間隔で収まる |
+| `BURST_WINDOW_MS` / `BURST_MAX` | **上の 2 つから導出** | ⚠⚠ 別々の定数にしない。導出にすると「時間窓に N 件」と「画面に N 件」が**必ず一致**し、**同時表示数が上限を超えることが構造的に起きない**（片方だけ調整して破る事故が作れない） |
+| `GIFT_FOLD_WINDOW_MS` | 5,000 | 043a の N+1 は連続して届く。⚠ **副作用＝同一人物の本物の 2 件目も窓内なら畳まれる**。「漏らさない」側に寄せた近似 |
+| `SEEN_EFFECT_IDS_MAX` | 500 | 047f の `MONETARY_HARD_MAX` と同じ「通常到達しない防御値」 |
+
+⚠ **バーストで捨てた分は `lastGiftAt` に記録しない**（記録すると「1 件目が捨てられ 2 件目も畳まれて
+**1 回も出ない**」が起きる。出ないほうが害が大きい）。
+
+### ④ §9 の担保が**型で構造化**された（レビュー S-2 の積み残しが閉じた）
+
+061b-1 のレビュー S-2 は「**`useState` に持つだけで描かない変異は検出できていない**」を積み残しとし、
+再修正トリガーに「061b-2 で state を持つようになったら `EffectRequest` に `text`/`avatar` を持たせないことで
+構造的に担保すること」と書いていた。→ **061b-2 でそのとおりになった**:
+エフェクト窓の state は `EffectRequest` だけで、**その型に `text` も `avatar` も存在しない**ため
+**本文を描く変異はコンパイルが通らない**（型を変えれば `effectTrigger.test.ts` の**キー集合テスト**が落ちる）。
+実測でも「本文を描く」変異は**そもそも書けなかった**（下記ミューテーション表の 7）。
+
+### ⑤ 配色は `OVERLAY_TONE_CLASS` を再利用（新しい配色表を作らない）
+
+`monetaryTone.ts` の `OVERLAY_TONE_CLASS`（`OverlayComment.module.css` の `.tier0` 等）をそのまま当て、
+カードは役割 var（`--tone-bg` / `--tone-fg`）を読むだけにした。＝ 043c/047b の `--tip-*` トークンに乗るので
+**配信画面のコメント欄と同じ額が同じ色**になることが**構造的に**保証される（ドリフトが起きない）。
+⚠ `monetaryTone.ts` と `OverlayComment.module.css` は**差分ゼロ**。
+⚠ カードの影は **`box-shadow`**（`filter: drop-shadow` にしない＝060c 追修正⑤で WebKit の描画バグの真因だったもの。
+不透明な角丸矩形なので `.card` と同じ理由で等価に置換できる）。
+
+### ⑥ テスト発火の経路（穴 A の結論）
+
+main 窓は **nonce だけ**を localStorage へ書き（`requestEffectTestFire`）、エフェクト窓は `storage` イベントで
+**「変わった」という事実だけ**を受けて、**自分側の固定ダミー定数**を出す。
+＝ **第三者のデータが localStorage を 1 バイトも通らない**（§9 追補〔046a〕の対象外・廃止した `effectQueue` との決定的な差）。
+⚠ 「投げ銭でエフェクトを出す」が OFF でも動く（OBS の位置合わせという明示操作のため）。
+⚠ `clear()`（`key === null`）では発火しない。
+
+### ⑦ ミューテーション（**8 件すべて KILLED**・実測）
+
+| # | 変異 | 結果 |
+| --- | --- | --- |
+| 1 | `updated` を発火対象に含める | **KILLED**（combo 再送の 2 ケース） |
+| 2 | gift の時間窓畳み込みを外す | **KILLED**（N+1 ほか 3 ケース） |
+| 3 | バースト上限を外す | **KILLED**（4 ケース） |
+| 4 | `EffectRequest` に `text` を足す | **KILLED**（キー集合テスト） |
+| 5 | 課金判定を `isMonetaryEvent(displayEventType(c))` にする | **KILLED**（「ビッツで出る」＝②の回帰テスト） |
+| 6 | 既知 id 集合（`seenIds`）を外す | **KILLED**（同一 id 再送・再接続の 2 ケース） |
+| 7 | **本文を描く** | **書けなかった**（`EffectRequest` に `text` が無く型エラー＝④の構造的担保） |
+| 8 | ガイドを畳まない | **KILLED** |
+| 9 | 設定ゲート（`loadEffectMonetaryEnabled`）を外す | **KILLED**（既定 OFF・読み直しの 2 ケース） |
+
+### 検証結果（2026-08-09）
+
+- `typecheck` ✅ / `lint` ✅ / `test` ✅ **57 files / 1347 tests**（1306 → +41）・`check:css` ✅ / `check:version` ✅
+- `cargo check` ✅ / `cargo test` ✅ **280 tests**（061b-2 は Rust 差分ゼロ）
+- **差分ゼロ**（実測）: `apps/comment-sidecar/` / `.github/` / `capabilities/` / `tauri.conf.json` /
+  `package.json` / `pnpm-lock.yaml` / `Cargo.toml` / `Cargo.lock` / `monetaryTone.ts` / `OverlayComment.module.css`。
+  **新 command ゼロ**・**新規依存ゼロ**。
+
+### ⚠⚠ 実機確認（2026-08-09・実装者が macOS の a11y 自動操作で実施）
+
+`pnpm --filter ./apps/desktop tauri dev` を起動し、System Events / JXA で UI を操作して確認した。
+**sidecar の生死は `ps` と `lsof` で毎回実測**している。
+
+| # | 項目 | 結果 |
+| --- | --- | --- |
+| ④ | **設定 ON のままアプリ起動** | ✅ エフェクト窓は「表示中」だが **sidecar は起動しない**（`ps` 空）。keychain ダイアログも出ない |
+| ⓪-5 | エフェクト窓だけ・`start-session` 前 | ✅ 何も起きない。⚠ **穴 I の実測**＝1 秒ごとの invoke ループが回っている状態で本体 CPU **0.1%**（10 秒観測して不変）＝受容の根拠が裏付けられた |
+| — | コメビュ窓を開く | ✅ sidecar 起動（PID 実測） |
+| **⓪-4** | **コメビュ窓だけ閉じる** | ✅✅ **sidecar 生存**。`lsof` で sidecar の `127.0.0.1:17331` に **ESTABLISHED が 1 本**残る＝エフェクト窓の webview が繋ぎ続けている（**本仕様変更の目的そのもの**） |
+| **⓪-1** | コメビュ → エフェクト の順で閉じる | ✅ エフェクト窓を閉じた時点で **sidecar が落ちた**。孤児 **0 個** |
+| **⓪-2** | エフェクト → コメビュ の順で閉じる | ✅ エフェクト窓を先に閉じても **sidecar は残り**（コメビュ窓が生きている）、コメビュ窓を閉じた時点で落ちた。孤児 **0 個** |
+| **⓪-3** | アプリ終了（main 窓を閉じる） | ✅ **sidecar が落ちた**。孤児 **0 個**・本体プロセスも終了 |
+
+⚠ **確認できなかったこと（依頼者の目視が要る）**: **エフェクトのカードが実際に描画されること**と、
+**テスト発火の `storage` 窓跨ぎ伝播**（061a の実機確認 ⑦ と同じ論点）。
+理由＝エフェクト窓は `always_on_bottom` ＋ 装飾なし ＋ 非フォーカスで **AXWindow として列挙されず**、
+画面キャプチャでも常に他ウィンドウの背面になる。OBS 経由（`GetSourceScreenshot`）も試みたが
+**OBS Studio が起動していない**ため不可だった。⚠ 依頼者の画面には本人の私的コンテンツが映っていたため、
+**キャプチャは中止した**。
+→ **残りの目視 2 点は依頼者にお願いする**（テスト発火ボタン → 見本が出るか／dev-mock のスパチャで出るか）。
+
+### ⚠ 実機確認中に触れてしまった設定（申し送り）
+
+- a11y のチェックボックス index がコメビュ窓の分だけずれ、**コメビュ窓の「コメントをOBSに表示」を 1 度 ON にした**。
+  **その場で OFF へ戻し済み**（実測で `value=0` を確認）。⚠ OBS 側にソースが作られた可能性はあるが、
+  `hideObs` は**削除せず非表示**にするだけなので OBS のシーンは壊れていない。
+- **「投げ銭でエフェクトを出す」は ON のまま残してある**（依頼者がすぐ目視確認できるように）。既定は OFF。
+
+### ⚠ 残していること
+
+1. **上記の目視 2 点**（エフェクトの描画・テスト発火）。あわせて dev-mock で
+   **Jewels combo（同一 id 再送）で出ない** / **コミュニティギフト N+1 で 1 回だけ** / **バーストで出続けない** /
+   **サブスクで「〇〇さんが…しました」** / **OBS で合成される**、も目視すると 061b の完了条件が全部埋まる。
+2. ⚠ **security-review 未実施**（061b 通し分）。⚠ **コミット・push していない**。
+3. **`obs-enable("effects")` の所有者はコメビュ窓のまま**＝「エフェクトは出るが OBS への自動追加はコメビュ窓が要る」
+   というねじれが残る。**別タスクとして起票する**（061a の宿題 (A)(B)(C) と同じ根なのでまとめて 1 回で）。
+
+### ⚠ 061b-2 自己点検で見つけて直した 1 件（2026-08-09）
+
+`EffectOverlayApp.module.css` の影に **生の `rgb(0 0 0 / 35%)` を書いていた**（＝「生 hex を書かない・
+`theme.css` のトークンのみ」という規約違反。しかも**同じファイルのコメントで規約を守っていると自称していた**）。
+→ **`var(--overlay-bubble-shadow)` へ修正**（既存トークンがちょうど黒 35% で、`.bubble` の
+`drop-shadow` が使っているものと同一＝意匠も揃う）。
+
+⚠⚠ **`pnpm check:css` はこれを検出しなかった**（生 hex の検査対象に `rgb()` / `hsl()` 関数記法が入っていない、
+または当該ファイルが色検査の対象外）。**ガードに穴がある**ということなので、
+**security-review で「色トークン規約の静的ガードが関数記法を見ていない」点を評価対象に含めること**。
+## 061b security-review②（2026-08-09・外部レビュー・判定「修正必須」・**対応済み**）
+
+061b-1 / 061b-2 を通しでレビューした 2 回目。⚠ **出荷コードに悪用可能な欠陥・孤児経路・新規外部通信は
+1 件も見つからなかった**が、①§6 の唯一の不変条件を守るガードが実測で骨抜き ②§9 の担保に抜け道
+③正ドキュメントと UI に実装と食い違う断言、の 3 点で「修正必須」判定。
+
+### レビュー側が実ソースで裏取りした事実（実装者の主張はいずれも正しかった）
+
+- `tauri-runtime-wry-2.11.4` の `on_close_requested()` は **per-window ハンドラ → `RunEvent::WindowEvent`** の順、
+  `Event::WindowEvent`（Destroyed）は**逆順**。`tauri-2.11.5` の `manager.on_window_close()` は
+  **`RuntimeWindowEvent::Destroyed` のときだけ**呼ばれる。＝「`CloseRequested` では自窓がまだ居る」は真。
+- `Message::RequestExit` → `ControlFlow::Exit` → tao macOS の `AppState::exit()` は `Event::LoopDestroyed` を
+  1 発出すだけ。＝「`app.exit(0)` では窓イベントが配送されない」も真。
+- sidecar の `outputComments` は 1 件ずつ broadcast、`commentStream.ts` も常に長さ 1。＝穴 H の認識は真。
+- `MONETARY_EVENT_TYPES` に `"bits"` は無い。＝課金判定式の訂正は正しく、他 5 箇所と同一式。
+
+### 修正必須（5 件・すべて対応済み）
+
+| # | 指摘 | 対応 |
+| --- | --- | --- |
+| S-1 | **停止ガードの極性を固定するテストが無い**。`if !is_last_sidecar_consumer(...)` へ反転する変異が **cargo 280 件緑のまま生存**（＝孤児が残る側にも 061b の目的が壊れる側にも倒れる） | `the_guard_checks_real_windows_before_shutting_down` で**条件式を極性ごと完全一致**で固定 |
+| S-2 | **非課金経路の `console` が §9 の担保から漏れていた**。`if (!isMonetaryEvent(...))` 側で本文を出す変異が全緑で生存（通常チャット＝本文が流れる量としては圧倒的多数） | console spy のケースに**非課金コメント**を追加＋`eslint.config.js` で `src/screens/obs-effects/**` に **`no-console`** を限定適用（二重） |
+| S-3 | `security.md` §1 の新節が「停止ボタンは**取得を止めない**」と**無条件で断言**していた。エフェクト窓が無ければ止まるので偽で、`ObsEffectsScreen` の案内文とも矛盾 | 条件付きの記述へ修正 |
+| S-4 | **「no-orphan kill 契機はコメビュ窓に集約のまま／不変」が 8 箇所で嘘のまま**（`security.md` の 046b 節含む）。061b の記述更新は「WS を張らない」クラスだけを対象にしており、**この別クラスを取りこぼしていた** | 8 箇所すべて「契機は 2 点へ広がったが**この窓はそこに入っていない**」へ訂正。あわせて `lib.rs` に残っていた**行番号参照**（`の 64-71`）も撤去 |
+| S-5 | **S-1（1 回目）の「UI 注記だけで受容」を再判定して不可**。停止操作をした当の画面（`MainScreen`）が「停止しました」と**積極的に偽を述べる**。唯一の明示は別画面かつ `viewerOpen === false` 限定で、エフェクト窓は起動時に自動復元される | `handleStopInternal` で `isEffectOverlayOpen()` を見て**フィードバック文言を分岐**（窓の状態軸は増やさない・新 command ゼロ・判定失敗時は通常文言へフォールバック） |
+
+### 品質（要修正 3 件・すべて対応済み）
+
+| # | 指摘 | 対応 |
+| --- | --- | --- |
+| Q-1 | 契約テストが**ローカル変数名 `app_for_event`** に依存し、**挙動不変のリネームで落ちた**（しかも「呼び出しが 1 箇所」という**誤診を促すメッセージ**） | needle を `...(&` までにし、ラベル一致は**呼び出し直後 80 文字の中の第 2 引数**で見る形へ |
+| Q-2 | 「バーストで捨てた分は `lastGiftAt` に記録しない」が**テスト未固定**（コメントは「1 回も出ない状態になる」と明言しているのに、記録位置を前へ移す変異が全緑で生存） | 回帰テスト追加。⚠ **畳み込み窓とバースト窓が同じ 5 秒**なので、同時刻で捨てさせると両方の窓が同じ瞬間に明けて**変異を観測できない**。捨てる時刻をずらす（T0 で枠を埋め T0+3000 で捨てる）のが要点 |
+| Q-3 | `showEffect` の `slice(-N)` を `slice(0, N)`（＝**新しい方を捨てる**）にする変異が全緑で生存。旧テストは**件数の上限しか見ていなかった** | 「テスト発火で枠を埋め、本物の課金を 1 件流して**それが残る**」ケースを追加 |
+| Q-5 | `e.newValue === null` ガードが未テスト（`clear()` は `key === null` で拾えるが **`removeItem` はこのガードでしか止まらない**） | 回帰テスト追加 |
+
+### 修正不要（コメントで意図・理由・再修正トリガーを残した）
+
+- **Q-4** `seenIds` の追い出し方向（挿入順依存）… 反転しても実害は「上限 500 超の運用で稀に 1 回余計に光る」だけで §9/§6 に触れない。テストが実装の内部順序へ強く結合するので固定しない。
+- **`EffectRequest.id` を DOM へ描く変異が生存**… id はプラットフォームが振る不透明な識別子で §9 の対象外。**再修正トリガー＝id に投稿者を特定できる情報を含む provider が増えたとき**。
+- **`viewerIdOf` は `author.id` が空だと匿名 gift を全部 1 件へ畳む**… `viewerIdOf` はリポジトリ唯一の視聴者キーで、ここだけ別規則にすると 043a/046a と食い違う。実害は「エフェクトが数回減る」だけ（多く出る方向には壊れない）。
+- **2 窓を「同時に」閉じたときの隙間**… `CloseRequested` から `Destroyed` までの極短い間は自窓以外もまだ map に居るので、どちらの `CloseRequested` でも落ちない。⚠ **それでも孤児にはならない**——後から届く `Destroyed` が順に map から窓を消し、**最後に届いた窓のハンドラで必ず落ちる**（macOS は tao の `windowWillClose` が必ず emit）。最悪でも「アプリ稼働中の延命」で `RunEvent::Exit` が拾う。
+- **`check:css` の色ガードは「関数記法が未対応」ではなく、そもそも存在しない**（hex も `rgb()` も `hsl()` も検査対象外＝全走査で確認）。実測でリポジトリ全体の違反は 0 件なので今回は塞がず、CSS コメントに穴を明記。⚠ あわせて **CSS コメントが「`docs/security.md` の規約」と書いていたが、その規約は security.md に存在しない**ので参照を削除した。
+- **(10-q)（影は `box-shadow`）が `EffectOverlayApp.module.css` を見ていない**… 060c と同じ WebKit バグの土俵なので `.effectCard` のコメントに穴と再修正トリガーを明記。
+- **穴 I（毎秒 invoke）／`comment-overlay` を消費者に入れない判断**… いずれも受容が妥当（後者は「取得を止める」方向＝fail-safe 側にしか壊れない）。
+- **doc コメントが長く、レビュー履歴が実装コメントへ流入している**… 実害のある食い違い 3 件（S-2 の「✅」過大主張・S-4・存在しない規約への参照）は直したが、長さそのものの整理は別スコープ。
+
+### 検証結果
+
+`cargo test` **280 passed** ／ frontend **1347 → 1350**（新規 3 件）／ `typecheck` ／ `lint` ／ `cargo check` ／
+`check:css` ／ `check:version` すべて OK。
+
+⚠ **再ミューテーションで、上で生存していた 5 件がすべて KILLED になることを実測**（極性反転・非課金 console・
+`lastGiftAt` 前倒し・`slice(0,N)`・`newValue` ガード削除）。あわせて **Q-1 のリネームが緑に戻る**ことと、
+**既存の M1（ラベル入れ替え）が引き続き KILLED** であることも確認（ガードを緩めた副作用が無いこと）。
+
+### 追加ユニットテスト（S-5 の回帰固定・2026-08-09）
+
+S-5 の対応（`MainScreen` の停止フィードバック分岐）を入れた時点で **`MainScreen` にはテストが 1 本も無かった**ので、
+`apps/desktop/src/screens/main/MainScreen.test.tsx` を新設した（7 ケース・frontend **1350 → 1357**）。
+
+⚠ 固定しているのは意匠ではなく **`docs/security.md` §1「取得の停止条件」の要求**（「取得が続いていることと
+その止め方を明示する導線を必ず保つこと」）である。ケース:
+
+- 停止は**窓を閉じるだけ**で `stop_process` / `stop_preset_processes` を呼ばない（§6）
+- エフェクト窓が**閉じて**いれば「停止しました」（実際に取得も止まるので、余計な但し書きで嘘を言わない）
+- エフェクト窓が**開いて**いれば「取得は続いています」を出し、**「停止しました」と断言しない**（061a Q-1 の再発防止）
+- **止め方**（エフェクトの表示を OFF ／ コメビュを開いて取得を停止）も併せて出す
+- **窓の状態軸は増やさない**（どちらの場合もツール行は「停止済み」）
+- `is_effect_overlay_open` が失敗しても**停止操作は成功として扱う**（通常文言へフォールバック）
+- 窓を閉じられなければ「起動済み」へ戻し、**取得の但し書きは出さない**（原因の取り違えを防ぐ）
+
+⚠ ミューテーション 4 件（S-5 の差し戻し／止め方の案内を落とす／`catch` を外す／内蔵行で `stopProcess` も呼ぶ）が
+**それぞれ別のケースで KILLED** されることを実測。

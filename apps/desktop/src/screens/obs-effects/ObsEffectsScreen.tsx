@@ -2,9 +2,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   loadEffectObsAutoAdd,
   saveEffectObsAutoAdd,
+  loadEffectMonetaryEnabled,
+  saveEffectMonetaryEnabled,
   loadEffectOverlayEnabled,
   saveEffectOverlayEnabled,
   saveEffectOverlayGuidePending,
+  requestEffectTestFire,
 } from "../../features/comment-viewer/overlaySettings";
 import {
   closeEffectOverlayWindow,
@@ -32,16 +35,24 @@ import styles from "./ObsEffectsScreen.module.css";
  * **061a 時点で置くのは 3 つだけ**——表示トグル・OBS 自動反映トグル・前提ステータス。
  * テンプレート一覧・割り当ては 061d、エフェクトの中身とテスト発火は 061b。
  *
- * ⚠⚠ **この画面の設計を決めている構造上の制約**（061a の実装で判明した最大の論点）:
+ * ⚠⚠ **この画面の設計を決めている構造上の制約**（061a の実装で判明した最大の論点。⚠ **061b で①②が変わった**）:
  *
- * `obs-enable` を sidecar へ送れるのは **コメビュ窓だけ**である。理由は 3 つ:
- *   ①`connectCommentStream` を呼んでいるのは `CommentViewerApp` と `OverlayApp` の 2 つだけで、
- *     WS ハンドル（`enableObs` を持つ `CommentStreamHandle`）を握っているのは前者のみ。
- *   ②sidecar のライフサイクルは**コメビュ窓に紐づく**（`open_comment_viewer_window` が `ensure_started`、
- *     窓の close で `shutdown`）＝コメビュ窓が閉じていれば sidecar はそもそも動いていない。
+ * `obs-enable` を sidecar へ送れるのは **コメビュ窓だけ**である。理由:
+ *   ①`connectCommentStream` を呼んでいるアプリコードは `CommentViewerApp` / `OverlayApp` /
+ *     **`EffectOverlayApp`（061b で 3 つ目）** だが、**WS ハンドル（`enableObs` を持つ
+ *     `CommentStreamHandle`）を握って制御フレームを送るのは `CommentViewerApp` だけ**
+ *     （残り 2 つは `onComments` しか使わない読み取り専用接続で、戻り値も `disconnect` しか触らない）。
+ *   ②~~sidecar のライフサイクルはコメビュ窓に紐づく~~ → ⚠ **061b で「コメビュ窓 or エフェクト窓の
+ *     どちらかが生きている間」へ広がった**（`lib.rs` の `SIDECAR_CONSUMER_LABELS`）。
+ *     ただし **sidecar を起動するのは依然コメビュ窓だけ**なので、「コメビュ窓を一度も開いていない」状態では
+ *     やはり sidecar が動いておらず `obs-enable` の送り先も無い。
  *   ③main 窓から WS を張る案は採らなかった——`get_comment_stream_port` が null の間**毎秒 invoke が
  *     永久ループ**し、かつ `connectCommentStream` は `onComments` 必須なので**第三者のコメント本文が
  *     main 窓へ流れ込む**（§9 の後退）。
+ *     ⚠ **061b でこの 2 つの性質はエフェクト窓に現れた**（＝理由③は「main 窓では嫌だ」であって
+ *     「どの窓でも嫌だ」ではない）。エフェクト窓で受容できるのは、あちらが**透過・最背面・非フォーカスの
+ *     表示専用窓**で `OverlayApp` と同じ立場だから。**main 窓は特権 UI**（OBS パスワード入力・
+ *     視聴者メモリの削除導線・テーマの「既定に戻す」）なので、同じ受容はしない。
  *
  * したがってこの画面の役割分担はこうなっている:
  *   - **表示トグル**（窓の open/close）＝**この画面が直接 invoke する**。コメビュ窓に依存しない。
@@ -67,6 +78,10 @@ export function ObsEffectsScreen() {
   // 起動時の窓復元は `App.tsx`（`MainWindowApp`）が担うので、ここはユーザー操作だけを見る。
   const [enabled, setEnabled] = useState(() => loadEffectOverlayEnabled());
   const [obsAutoAdd, setObsAutoAdd] = useState(() => loadEffectObsAutoAdd());
+  // 061b: 「投げ銭でエフェクトを出す」。⚠ **既定 false**（配信画面に出るものは既定で出さない）。
+  const [monetaryEnabled, setMonetaryEnabled] = useState(() =>
+    loadEffectMonetaryEnabled(),
+  );
 
   // 前提ステータス。null = 未取得。
   const [effectWindowOpen, setEffectWindowOpen] = useState<boolean | null>(null);
@@ -140,6 +155,29 @@ export function ObsEffectsScreen() {
     saveEffectObsAutoAdd(next);
   };
 
+  /**
+   * 061b: 「投げ銭でエフェクトを出す」トグル。⚠⚠ **設定を立てるだけ**（窓も開かないし OBS へも繋がない）。
+   * 読み手はエフェクト窓（`EffectOverlayApp`）で、**発火のたびに localStorage を読み直す**ので
+   * `storage` の窓跨ぎ伝播に依存しない（＝この設定は必ず届く）。詳細は
+   * `EFFECT_MONETARY_ENABLED_KEY` の JSDoc。
+   */
+  const handleMonetaryToggle = (next: boolean) => {
+    setMonetaryEnabled(next);
+    saveEffectMonetaryEnabled(next);
+  };
+
+  /**
+   * 061b: テスト発火。⚠⚠ **localStorage へ書くのは nonce だけ**で、エフェクトの中身は
+   * エフェクト窓側の固定ダミーから作る（＝第三者のデータが localStorage を経由しない・§9）。
+   *
+   * ⚠ **「投げ銭でエフェクトを出す」が OFF でも動く**——これは OBS の位置合わせという明示操作のための
+   * 機能で、設定でゲートすると「トグルを ON にしないとセットアップできない」になる。
+   * ⚠ **エフェクト窓が開いていないと何も起きない**（送り先が存在しないため）。下の注記でユーザーへ明示する。
+   */
+  const handleTestFire = () => {
+    requestEffectTestFire();
+  };
+
   const handleOpenCommentViewer = () => {
     void openCommentViewerWindow()
       .then(refreshStatus)
@@ -201,6 +239,43 @@ export function ObsEffectsScreen() {
 
         <section className={layout.panel}>
           <div className={layout.panelHead}>
+            <h3>投げ銭でエフェクトを出す</h3>
+            <p>
+              スーパーチャットやサブスクなどを受け取ったときに、「〇〇さんが ¥1,000」を配信画面へ数秒だけ表示します。
+            </p>
+          </div>
+          <div className={layout.panelBody}>
+            <ToggleSwitch
+              label="投げ銭でエフェクトを出す"
+              checked={monetaryEnabled}
+              onChange={handleMonetaryToggle}
+            />
+            <p className={styles.note}>
+              コメントの本文とアイコンは表示しません（配信画面に映るのは、名前・金額・種類だけです）。金額の色はコメントビューアの投げ銭カードと同じです。
+            </p>
+            {/* ⚠ 「同時に 3 件まで・5 秒で消える・あふれた分は捨てる」は実装の定数（effectTrigger.ts）が正。
+                ここでは秒数や件数を断言せず、**溜まらない**という性質だけを伝える（値を変えても文言が嘘にならない）。 */}
+            <p className={styles.note}>
+              短い時間にたくさん届いたときは、いくつかは表示されません（あとからまとめて流れ続けないようにするためです）。
+            </p>
+
+            <div className={styles.testFire}>
+              <Button type="button" onClick={handleTestFire}>
+                テスト表示
+              </Button>
+              <p className={styles.note}>
+                エフェクトのウィンドウに見本を 1 つ出します。OBS
+                での位置合わせに使ってください（上の「投げ銭でエフェクトを出す」が OFF
+                でも出ます）。
+                {effectWindowOpen === false &&
+                  "エフェクトのウィンドウが停止中のため、いまは何も表示されません。"}
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <section className={layout.panel}>
+          <div className={layout.panelHead}>
             <h3>OBS へ自動で反映</h3>
             <p>
               OBS
@@ -254,13 +329,36 @@ export function ObsEffectsScreen() {
             </div>
 
             {/* ⚠⚠ **この案内が「黙って何も起きない」を防いでいる。** コメビュ窓が閉じている間は
-                OBS への反映を送れる窓が存在せず、061b 以降はエフェクトそのものも出ない。
-                コメビュ窓を開いた時点で `CommentViewerApp` のマウント時 reconcile が反映を実行する。 */}
+                OBS への反映（ソースの自動追加）を送れる窓が存在しない。
+                コメビュ窓を開いた時点で `CommentViewerApp` のマウント時 reconcile が反映を実行する。
+                ⚠⚠ **061b で「エフェクトも表示されません」を削った。** あれは 061b で**嘘になった**——
+                エフェクト窓が sidecar の WS を直接張るようになり、sidecar もエフェクト窓が生きている間は
+                落ちないので、**コメント取得を開始したあとならコメビュ窓を閉じてもエフェクトは出続ける**。
+                ⚠ 残るねじれ（エフェクトは出るが OBS への自動追加はコメビュ窓が要る）は、
+                `obs-enable` の送出がコメビュ窓のままだから。所有者を移すのは別タスク。
+
+                ⚠⚠ **061b レビュー（Q-1 / S-1）で 2 文目を書き直した。** 差し替え前は
+                「取得を開始したあとであれば、コメビュ窓を閉じても続きます」と書いていたが、
+                **エフェクト窓が開いていること**という必須条件が抜けており、061a の
+                「配信中には表示されません」（Q-1）と**同じ失敗モード**だった——この案内が出るのは
+                `viewerOpen === false` のときだけで、そこには「エフェクト表示 OFF のままコメビュ窓を
+                閉じた（＝sidecar は既に死んでいる）」ユーザーも含まれる。あの文を読んで表示トグルを
+                ON にしても、sidecar もセッションも無いので**何も起きない**。
+                いまは条件（表示したまま閉じたか／表示せずに閉じたか）を両方書き、
+                **取得＝外部通信が続くことと、その止め方**も併せて出している（docs/security.md §1 の
+                「取得の停止条件」）。⚠ **約束できることだけを書く**こと。 */}
             {viewerOpen === false && (
               <div className={styles.prerequisite}>
                 <p className={styles.prerequisiteText}>
                   コメントビューアが閉じているあいだは、OBS
-                  への反映は行われません（エフェクトも表示されません）。コメントビューアを開くと、そのときに反映されます。
+                  への反映は行われません。コメントビューアを開くと、そのときに反映されます。
+                </p>
+                <p className={styles.prerequisiteText}>
+                  エフェクトのウィンドウを表示したままコメントビューアを閉じた場合は、エフェクトの表示とコメントの取得がそのまま続きます。取得を止めたいときは、コメントビューアを開いて取得を停止するか、エフェクトの表示を
+                  OFF にしてください。
+                </p>
+                <p className={styles.prerequisiteText}>
+                  エフェクトのウィンドウを表示していない状態でコメントビューアを閉じたときは、コメントの取得も止まります（取得の開始はコメントビューアから行います）。
                 </p>
                 <Button type="button" onClick={handleOpenCommentViewer}>
                   コメントビューアを開く
