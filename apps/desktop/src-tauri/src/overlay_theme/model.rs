@@ -80,6 +80,34 @@ pub struct OverlayThemeRecord {
     pub updated_at: String,
 }
 
+/// 060h: 除去した `@font-face` 1 ブロック分（frontend が「取り込む書体」を選ぶための最小の情報）。
+///
+/// ⚠ 記述子はユーザー CSS 由来の未署名文字列だが、**Rust 側で clamp 済み**
+/// （長さ・制御文字・bidi・CSS の構造を壊せる文字。詳細は `sanitize::clamp_descriptor`）。
+/// 読めない値は空文字で届く。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/features/comment-viewer/bindings/")]
+pub struct StrippedFontFace {
+    /// `font-family` の値。
+    ///
+    /// ⚠⚠ **引用符は付かない**（`clamp_descriptor` が `"` と `'` を落とす）。
+    /// ＝ frontend が CSS へ書き戻すときは**自分で引用符を付けること**——
+    /// `font-family:M PLUS 1p` のように素で書くと、`1p` が数字始まりで `<custom-ident>` になれず
+    /// **`@font-face` ルールごとブラウザに捨てられる**（060h review Q-1 の実害）。
+    /// ⚠ ここを「引用符付きのまま届きうる」と書いていたのが誤りで、
+    /// その記述に沿って書かれたテスト fixture が引用符忘れを緑のまま通していた。
+    pub family: String,
+    /// `font-weight` の値（無ければ空文字）。
+    pub weight: String,
+    /// `font-style` の値（無ければ空文字）。
+    pub style: String,
+    /// `unicode-range` の値（無ければ空文字）。⚠ **分割配信のどの範囲か**を選別に使う。
+    pub unicode_range: String,
+    /// このブロックの `src` にあった取得候補。
+    pub urls: Vec<String>,
+}
+
 /// `import_overlay_theme` の戻り値。
 ///
 /// ⚠ **永続する値（`theme`）と一過性の値（`stripped_import_urls`）を意図的に分けている。**
@@ -104,6 +132,19 @@ pub struct OverlayThemeImportResult {
     /// 060c の同意ダイアログは**ホストを別行で強調して出すこと**（URL を素で出すと先頭を信じられる）。
     /// ⚠ **ログにも `AppError` にも出さないこと**（§9）。
     pub stripped_import_urls: Vec<String>,
+    /// 060h: 除去した **`@font-face` の `src`** を、**ブロック単位で**返す（宛先＋選別に要る記述子）。
+    ///
+    /// ⚠⚠ **載るのは「`@font-face` ブロックの直下」かつ「プロパティ名が `src`」の宣言の url だけ**
+    /// （[`super::sanitize::SanitizeOutcome::stripped_font_faces`] が正）。
+    /// `background-image` / `cursor` / `mask` の url は**載らない**——載せると
+    /// **任意の外部画像取得＝トラッキングピクセル**になるため（`docs/security.md` §1 の 060h 追補）。
+    /// ⚠ 形の clamp（http(s) 絶対 URL のみ・エスケープ無し・bidi 無し・2048 文字）は
+    /// `stripped_import_urls` と**同じ 1 実装**。違うのは件数上限だけ（256 件）。
+    /// ⚠⚠ **平坦な URL 配列にしていない理由**＝保存される CSS からは `src` 宣言が丸ごと消えるので、
+    /// 「どの URL がどの `@font-face` のものか」を保存後の CSS から復元できない（実測）。
+    /// 対応関係をここで返すことで、**CSS を解析する実装が frontend 側に生まれるのを防いでいる**。
+    /// ⚠ **ログにも `AppError` にも出さないこと**（§9）。
+    pub stripped_font_faces: Vec<StrippedFontFace>,
     /// 060c: 取り込みが**ファイル末尾まで巻き込んで欠損した疑い**があるか。
     ///
     /// 詳細と実測例は [`super::sanitize::SanitizeOutcome::truncated_to_eof`]。

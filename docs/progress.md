@@ -16688,3 +16688,167 @@ block** ＋ `overflow: hidden`。ブロック幅がコンテナ幅に固定さ�
 `￥1,000` → `1,000 JPY`）。一方**プレビュー見本の綴り合わせ（`OverlayThemeCard.tsx` / `repro/measure.tsx`）は
 060i に残してよい**——金額バッジの幅こそが本不具合の症状だから。差分が 1 関数なのでやり直しはしない。
 **次回同型の判断では「検証手段が違うなら割る」を基準にする。**
+
+---
+
+## 060h 外部 Web フォントの取り込み時スナップショット（2026-08-09）
+
+`@font-face` の `src` が指す woff2 を**取り込み時に 1 回だけ**取得し、base64 の `data:` URI として
+**意匠とは別ファイル・別 `<style>`** で保存・注入する。⚠⚠ **security-review 未実施（必須・重め）／実機確認未実施。**
+
+### 実施の順序（着手条件だった宿題 2 件を先に片付けた）
+
+1. **コミット 1 相当＝ `OverlayThemeCard.tsx` の分割だけ（振る舞い差分ゼロ）**（060c review Q-1 の宿題）。
+   1357 → **841 行**。切った先は指定どおり ①純関数＋定数 → `overlayThemeCard.helpers.ts`
+   ②取り込みと解析 → `useThemeImport.ts`。
+   ⚠ **`OverlayThemeCard.test.tsx` を 1 行も触っていない**（＝振る舞い差分ゼロの担保）。
+   ⚠ **設計を 1 点変えた**: `busy` / `error` はフックへ移さずカード側に残した——改名・削除でも使うので、
+   移すと「フックの state を改名処理が setter 経由で書く」ねじれた依存ができる。
+   ⚠ **計画では「600 行台」と書いたが実際は 841 行**（残りは JSX と注記）。600 行台にはプレビューも
+   切る必要があるが、**静的ガード (10-i) / (10-m) が本ファイルを名指ししている**ので黙って移せない。
+2. **コミット 2 相当＝ sidecar の `theme-import.fetch` 分岐を純関数へ（振る舞い差分ゼロ）**（S-3 の宿題）。
+   `theme-import-frame.ts` の `handleThemeImportFrame` へ切り出し、`isSameSecret` も一緒に移した。
+   ⚠ テストは `test-theme-import.mjs` へ追記したので **`package.json` 差分ゼロ**（060c は 1 行増やしていた）。
+   ⚠ **ミューテーション 3 件で実効性を確認**（チケット照合を常に true ／ unicast をやめて 2 回送る ／
+   未受領チケットを素通し＝どれも RED）。060c 時点では**テスト不能でミューテーションが生存していた**箇所。
+
+### ①〜⑩ の判断と根拠（詳細は `docs/tasks/060h-external-font-snapshot.md` に書き込み済み）
+
+| # | 論点 | 結論 |
+|---|---|---|
+| ① | 2 段目の同意 | **段ごとに必ず同意**。1・2 段目は 1 件ずつ（2 段目は文言を変える）。**3 段目だけホスト単位で 1 枚**（110 枚は同意として機能しないため）。1 段目に「さらに参照があれば改めて確認する」の 1 行を追加 |
+| ② | 辿る対象 | **`@font-face` の `src` だけ**。担保は Rust のサニタイザ 1 か所（`in_font_face && property=="src"`） |
+| ③ | 上限 | 意匠 256KiB **据え置き**／フォント 1 本 512KiB・総量 3MiB（base64 4MiB）・本数 256・保存 5MiB。選別は **C 案**（使っているファミリ → `unicode-range` 無しを優先 → 宣言順） |
+| ④ | 別ファイル | 別 uuid の `<uuid v4>.css` ＋ DB 列 `font_file_name`。⚠ **予告された契約テスト 2 つは壊さずに済ませた**（下記） |
+| ⑤ | フォント URL の入手 | **Rust の `SanitizeOutcome` に `stripped_font_faces` を新設**（(a) frontend 解析は**ファイル取り込み経路で不可能**なので採らない） |
+| ⑥ | 段数 | **`@import` は深さ 2・フォントは 1 回**。`MAX_IMPORT_ROUNDS = 2` の定数 1 つが決める |
+| ⑦ | レート制限 | **フレーム種別で別枠**。CSS 8 件/60s 据え置き／フォント 300 件・16MiB/60s。⚠ **バイト側の天井を新設**したので件数だけだった 060c より強い |
+| ⑧ | バイナリ取得 | `runThemeFontFetch` を**別関数**で新設。MIME allow-list（⚠ **`application/octet-stream` は入れない**）・`.woff2`/`.woff` 終端・**`TextDecoder` を通さない**・タイムアウト 5 秒 |
+| ⑨ | 新フレーム | `theme-import.fetch-font`。**チケット照合は種別で分岐する前**に置く（書き忘れの形を作らない） |
+| ⑩ | プレビューの `@font-face` 汚染 | **能力は増えていない・頻度は上がる**（`data:` フォントは 060b の許可形＝ 060d 時点で既に注入できた）。**受容維持**＋露出時間の担保をフォント側にも適用 |
+
+### ⚠⚠ 実装して判明した「着手前の記述が誤っていた」3 件
+
+1. **平坦な `Vec<String>` では返せない。** 保存後の CSS からは `src` 宣言が丸ごと消えるので、
+   「どの URL がどの `@font-face` のものか」を**復元できない**（URL がどこにも残っていない）。
+   最初 `stripped_font_urls: Vec<String>` で実装し、**テストが落ちて初めて**気づいた。
+   → `stripped_font_faces: Vec<StrippedFontFace>`（`family` / `weight` / `style` / `unicodeRange` / `urls`）へ変更。
+   ⚠ これは「frontend が CSS を解析しない」を守る形でもある。
+2. **クエリの解禁だけでは Google Fonts に到達できない。**
+   `https://fonts.googleapis.com/css2?family=…` の `pathname` は **`/css2`** で `.css` で終わらない。
+   → CSS 側のパス判定を「`.css` 終端 **または** 最後のパス片が `css` ＋ 数字 0 個以上」へ緩めた
+   （⚠ ホストは 1 つも allow-list へ足していない＝あくまで「形」の規則）。
+3. **静的ガード (10-i) は本タスクを検出できなかった。** ファイル単位の allow-list だったので、
+   既に許可されたファイルに 2 本目の `<style>` を足しても緑のままだった
+   （060d review S-5 で向きを反転したときに**同一ファイル内の増加**が残っていた）。
+   → **「ファイル → 本数」の Map へ強化**した。
+
+### ⚠⚠ 壊した契約と、壊さずに済ませた契約（数字合わせにしていないことの記録）
+
+**壊さずに済ませた 2 つ**（タスクファイルは「壊れる」と予告していた）:
+- `is_managed_file_name()` … フォント資産にも**別の uuid v4 を採番**するのでファイル名は `<uuid v4>.css` のまま。
+  **書けるファイル名の集合は 1 バイトも広がっていない。**
+- `exactly_one_place_sanitizes_and_exactly_one_place_writes` … 2 本目の保存経路は私有ヘルパ
+  `write_sanitized_asset` へ委譲するだけで、`sanitize_css(` と `fs::write(` はソース上 1 か所のまま。
+  ⚠ **テストが守る不変条件（保存経路が 2 本に分かれない）を実際に維持している**ので、数字合わせではない。
+  新しい契約テストで「両方の経路が共通コアを通ること」を出現回数で固定した。
+
+**設計どおり落ちた 2 つ**（先に `docs/security.md` §5 の 060b 例外節へ「④ フォント資産の再評価」を書いてから上げた）:
+- `exposes_exactly_seven_single_purpose_commands` … **7 → 9**（`attach_overlay_theme_fonts` /
+  `get_overlay_theme_font_css`）。テスト名も `..._nine_...` へ改名。
+- `takes_no_arbitrary_path_or_content_from_the_frontend` … `css: String` の出現回数 **2 → 3**。
+
+### ⚠ 実測値
+
+- **`OverlayThemeCard.tsx`**: 1357 → 841 行（helpers 238 行 / useThemeImport 約 400 行へ分割）。
+- **テスト**: cargo **259**／vitest **1193**（46 → 47 ファイル）／sidecar 6 スイート。
+- **ミューテーション 13 種**（Rust 5 / frontend 4 / sidecar 5 / 静的ガード 1）。
+  ⚠ **1 件は初版のテストで生存した**——「`@font-face` の外の `src`」をテスト CSS の**後ろ**に置いていたため、
+  `in_font_face` を外す変異でも「溜めたまま誰も確定しない」で素通りしていた。**前へ移して殺した。**
+  ⚠ これは 055e の教訓（自分のガードの主張を裏返す変異だけでは足りない）の実例で、
+  **テストの並び順そのものがミューテーションを隠す**という形は本リポジトリで初めて。
+- ⚠ **フォントの分割数・総量・取得時間は実測できていない**（実機確認が未実施のため）。
+  想定は「日本語 1 ファミリ ≒ 110 分割・生 1.5〜2MB・逐次で 6〜17 秒」。**実機確認で埋めること。**
+
+### 変更したファイル
+
+- **Rust**: `overlay_theme/{sanitize,model,service,repository,commands}.rs` / `lib.rs`
+  （`StrippedFontFace` / `ThemeAsset` / `write_sanitized_asset` / `attach_theme_fonts` / `read_font_css` /
+  `font_file_name` 列 / コマンド 2 本）
+- **sidecar**: `host-guard.ts`（パス判定の関数化・クエリ解禁・`assertAllowedThemeFontUrl` / `themeFontFetch`）／
+  `theme-import.ts`（`runThemeFontFetch` / `createThemeFontFetcher` / バイト枠付きレート制限）／
+  `theme-import-frame.ts`（新設）／`index.ts`（配線のみ）／`scripts/test-{host-guard,theme-import}.mjs`
+- **frontend**: `commentStream.ts`（`requestThemeFont`・待ち機構を 1 本へ共通化）／`overlayThemeApi.ts`／
+  `overlayThemeCard.helpers.ts`（新設）／`useThemeImport.ts`（新設）／`OverlayThemeCard.tsx`／
+  `OverlayApp.tsx`／`SettingsView.tsx`／`CommentViewerApp.tsx`／`scripts/check-css-guards.mjs`
+- **docs**: `security.md`（§1 追補・§5 ④・レビュー必須条件・CSP方針 060d 節）／
+  `tasks/060h-external-font-snapshot.md`（結論の書き込み）／`task-board.md`／本ファイル
+
+### ✅ security-review 実施済み（2026-08-09・判定「軽微な懸念あり」→ 反映済み）
+
+指摘の一覧と対応は [`docs/tasks/060h-external-font-snapshot.md`](tasks/060h-external-font-snapshot.md) の
+「security-review の反映」節が正。要点だけ:
+
+- **新しい egress の穴・任意ファイル書き込み・任意コマンドは無し。** ゼロ拡大も実測で全項目 ZERO。
+- ⚠⚠ **問題の中心は「テストで固定した」と書いた担保が実際には固定できていなかったこと**——
+  レビュー側の独自ミューテーション 19 本のうち **8 本が生存**した（当方の 13 種では見つからなかった穴）。
+  とくに `hostile_font_face_descriptors_cannot_break_the_generated_css` が **vacuous**
+  （`stripped_font_faces` が 0 件で assert が 1 度も走っていなかった）だったのが痛い。
+  ⚠ **「並び順が変異を隠す」と同型の、より単純な形＝「assert 対象が 0 件」**。
+  この種のテストを書くときは**必ず「対象が 1 件以上あること」を先に固定する**こと。
+- ⚠⚠ **機能バグが 1 件（Q-1）**: `buildFontFaceCss` が `font-family` を引用符なしで出しており、
+  **`M PLUS 1p`（実サンプルの 6 ファミリの 1 つ）の `@font-face` がブラウザに丸ごと捨てられていた**。
+  全テスト緑のまま。原因は `model.rs` の doc「引用符付きのまま届きうる」が**誤り**で、
+  その記述に沿って書かれたテスト fixture（`family: '"X"'`）が引用符忘れを緑にしていたこと。
+  ⚠ **doc の誤りがテストの前提になると、テストは実装ではなく doc を検証してしまう。**
+- 実装側の修正は 11 件（`clamp_descriptor` に `/` `*` 追加／`@font-face` 宛先バッファのローカル化／
+  記述子のコロン位置を控える／`attach_theme_fonts` が `@font-face` 以外を拒否／UPDATE 0 行の孤児／
+  Q-1〜Q-5・Q-10 の UI と選別）。**条文は 1 つも緩めていない**（緩めたのはゼロ、狭めたのが 1 つ）。
+- 検証: `cargo test` **264 passed**（+5）／vitest **1195 passed**（+2）／sidecar 6 スイート PASS／
+  check:css・check:version OK／typecheck・lint・cargo check 緑。**生存した 8 変異は全て KILLED を再確認**。
+
+### ⚠ 残していること
+
+- **実機確認は未実施**（依頼者の手番）。⚠ **最優先で見るのは 3 つ**:
+  ①`M PLUS 1p` が反映されるか（Q-1 の修正が実サンプルで効くか）
+  ②「書体を N 件取り込みました」の N と候補数の比（**タイムアウト 5 秒が足りているか**。
+  DNS 解決はこのタイムアウトの外なので実際は「5 秒＋DNS」＝ Q-9）
+  ③`lsof` で意図したホスト以外へ出ていないこと。
+- ⚠ **恒久策（プレビューの shadow root / iframe 化）はタスク番号が無いまま**。
+  060h で `@font-face` が実際に読み込まれるようになったので、task-board に立てる価値が上がった。
+  ⚠ レビュー S-9 で**優先度が上がった**——「能力は 060d 時点で開いていた」は正しいが、
+  ①リモート配信でよくなった ②上限が 256KiB → 5MiB ③`scopeSelectors` の経路から完全に外れた、
+  の 3 点で規模と経路は広がっている。**安価な代替＝「プレビューにはフォントを注入しない」**
+  （配信窓だけに入れる）も選択肢として `docs/security.md` に明記した。
+- ✅ **060g は「不要」で決着（2026-08-09・依頼者判断）**。当初は「060h の実機確認後に確認する」と
+  していたが、確認を待たずに不要と判断された。タスクファイルは記録として残す（058b / 057 系と同じ作法）。
+
+## 060 系クローズ（2026-08-09）
+
+**依頼者判断で 060 オーバーレイ カスタム CSS テーマは実装完了扱いとした。**
+
+| サブ | 状態 |
+|---|---|
+| 060a セレクタ契約＋変換表 | ✅ 実装済み（2026-08-04・契約は 060f が拡張） |
+| 060b 取り込み基盤 | ✅ 実装済み（2026-08-05）／security-review 済み |
+| 060d テーマ管理 UI ＋注入 | ✅ 実装済み（2026-08-05）／security-review 済み |
+| 060e 貼り付け取り込み | ✅ 実装済み（2026-08-05）／security-review 済み |
+| 060f オーバーレイ DOM の整合 | ✅ 実装済み（2026-08-05〜09 追修正⑥まで） |
+| 060c 外部 `@import` のスナップショット | ✅ 実装済み（2026-08-09）／security-review 済み |
+| 060h 外部 Web フォントのスナップショット | ✅ 実装済み（2026-08-09）／security-review 済み |
+| 060i ヘッダ行が縮まない不具合 | ✅ 実装済み（2026-08-09） |
+| **060g 表示項目のユーザートグル** | ❌ **不要（実装しない）** |
+
+### ⚠ 060 のスコープ外へ持ち越したもの
+
+1. **実機確認**（060d / 060e / 060f / 060h）。手順と合格基準は上の 060h 節「残していること」が正。
+2. ⚠⚠ **プレビューの shadow root / iframe 化**——`@font-face` の family 名と `@keyframes` の名前が
+   **文書グローバルで閉じない**件の恒久策。**タスク番号がまだ無い。** 060h の security-review S-9 で
+   優先度が上がった（能力は 060d 時点で開いていたが、060h でリモート配信可・上限 256KiB → 5MiB・
+   `scopeSelectors` の経路から離脱、と規模と経路が広がったため）。
+   ⚠ 安価な代替＝**「プレビューにはフォントを注入しない」**（配信窓だけに入れる）も
+   `docs/security.md` のレビュー必須条件 060d 節に明記してある。
+3. **039 フォントインポート**（`## 保留`）——⚠ **060h で前提の半分が変わった**。
+   「外部フォント URL は取り込み時に除去される」はもう成り立たないので、
+   039 に残る固有価値は「**ユーザーが自分の端末に持っているフォントファイルを選んで登録する**」だけ。
+   再開時はタスクファイルの動機部分を読み直すこと。

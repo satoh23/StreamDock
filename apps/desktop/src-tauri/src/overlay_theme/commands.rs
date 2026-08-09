@@ -172,6 +172,55 @@ pub fn get_overlay_theme_css(
     service::read_css(&dir, &conn, &id)
 }
 
+/// 060h: 取得した Web フォントを **`@font-face` だけの CSS** としてテーマへ添える（**2 つ目の管理ファイル**）。
+///
+/// ⚠⚠ **`css: String` を取る 3 本目**。契約テスト
+/// `takes_no_arbitrary_path_or_content_from_the_frontend` が 2 → 3 で**設計どおり落ちた**ので、
+/// `docs/security.md` §5 の 060b 例外節へ「④ フォント資産の再評価」を書いてから解禁している
+/// （数字だけ書き換えて通してはいない）。再評価の要点:
+/// - **増えない**: 保存先の組み立て（`app_data_dir/themes/<uuid v4>.css` の固定形）・`is_managed_file_name` の
+///   完全一致・**サニタイズ 1 か所・書き込み 1 か所**（`service::write_sanitized_asset`）。
+///   ＝ 書けるファイル名の集合も、書ける場所も **1 バイトも動いていない**。
+/// - **増える**: ①1 テーマが持つ管理ファイルが最大 2 つになる ②本文の上限が資産種別で 2 値になる
+///   （意匠 256KB / フォント 5MiB。⚠ **意匠側は動かしていない**）。
+///
+/// ⚠ **パスを受け取らない**（`id` と本文だけ）。⚠ **同期でよい**（触るのは `app_data_dir` だけ）。
+/// ⚠ CSS 本文も取得先 URL もログに出さない（§9）。
+#[tauri::command]
+pub fn attach_overlay_theme_fonts(
+    app: AppHandle,
+    db: State<'_, DbState>,
+    id: String,
+    css: String,
+) -> AppResult<()> {
+    let dir = service::themes_dir(&app)?;
+    let conn = db.lock().expect("db mutex poisoned");
+    let result = service::attach_theme_fonts(&dir, &conn, &id, &css);
+    app_logs::service::log_command_err(
+        &conn,
+        LogCategory::Storage,
+        "attach_overlay_theme_fonts",
+        &result,
+    );
+    result
+}
+
+/// 060h: テーマのフォント CSS を返す（無ければ空文字）。read-only。
+///
+/// ⚠ 意匠の `get_overlay_theme_css` と**別コマンドにしてある**。注入側が
+/// **別の `<style>` に載せる**ためで、意匠側の戻り値に混ぜると
+/// 「`rewriteSelectors` が数 MB を毎回走査する」という 060h 問題④そのものが復活する。
+#[tauri::command]
+pub fn get_overlay_theme_font_css(
+    app: AppHandle,
+    db: State<'_, DbState>,
+    id: String,
+) -> AppResult<String> {
+    let dir = service::themes_dir(&app)?;
+    let conn = db.lock().expect("db mutex poisoned");
+    service::read_font_css(&dir, &conn, &id)
+}
+
 /// テーマの表示名を変更する（ファイル実体には触れない）。
 #[tauri::command]
 pub fn rename_overlay_theme(

@@ -11,6 +11,7 @@ const {
   assertAllowedGrpcTarget,
   assertAllowedObsUrl,
   assertAllowedThemeImportUrl,
+  assertAllowedThemeFontUrl,
   isInternalAddress,
 } = __hostGuardInternals;
 
@@ -192,12 +193,85 @@ themeOk(".home.arpa", "https://nas.home.arpa/a.css", true);
 // ポート・クエリ・フラグメント・拡張子で形を狭める。
 themeOk("non-443 port", "https://example.com:8443/a.css", true);
 themeOk("port 80", "https://example.com:80/a.css", true);
-themeOk("query string (060h will need to relax this)", "https://example.com/a.css?v=1", true);
+// ⚠⚠ **060h でクエリを解禁した**（`https://fonts.googleapis.com/css2?family=…` が 2 段目の必須形）。
+//   緩めてよい根拠＝クエリで運べる情報は**パスで既に運べる**（`https://tracker.example/<id>.css` は
+//   060c の時点で通る）ので脅威モデルが変わらない。形を狭める担保は `https:` / 443 / 拡張子 /
+//   IP リテラル拒否 / 内部サフィックス拒否 / DNS 事前検査 / リダイレクト禁止 / 毎回の同意 / チケットが持つ。
+themeOk("query string (relaxed by 060h)", "https://example.com/a.css?v=1", false);
+// ⚠⚠ **`.css` 終端だけでは 2 段目に到達できない**（実測）。Google Fonts v2 の `pathname` は
+//   **`/css2`**（v1 は `/css`）で拡張子を持たない。→ 「最後のパス片が `css` ＋ 数字 0 個以上」も許す。
+//   ⚠ これは**ホストを名指ししない「形」の規則**である（allow-list にホストは 1 つも足していない）。
+themeOk(
+  "the real Google Fonts v2 shape (/css2?family=)",
+  "https://fonts.googleapis.com/css2?family=M+PLUS+1p:wght@400&display=swap",
+  false,
+);
+themeOk("the Google Fonts v1 shape (/css?family=)", "https://fonts.googleapis.com/css?family=X", false);
+// ⚠ その形も**最後のパス片が丸ごと `css<数字>` のときだけ**（部分一致では通さない）。
+themeOk("a path segment merely containing css", "https://example.com/cssomething", true);
+themeOk("css as a directory, not the last segment", "https://example.com/css/x", true);
+themeOk("cssx is not css<digits>", "https://example.com/css2x", true);
+// ⚠ パスの形は `pathname` で見る（クエリの中の `.css` では通さない）。
+themeOk("extension must be in the path, not the query", "https://example.com/a.php?x=.css", true);
+// ⚠ **フラグメントの禁止は残す**（サーバへ送られない部分＝取得の形を広げる意味が無い）。
 themeOk("fragment", "https://example.com/a.css#x", true);
+themeOk("query and fragment together", "https://example.com/a.css?v=1#x", true);
 themeOk("not .css", "https://example.com/a.txt", true);
 themeOk("no extension", "https://example.com/a", true);
 themeOk("percent-encoded dot does not count as .css", "https://example.com/a%2Ecss", true);
 themeOk("directory ending in .css/", "https://example.com/a.css/", true);
+
+// --- 060h: フォント実体のガード（`assertAllowedThemeFontUrl`）------------------------------------
+//
+// ⚠⚠ **CSS 用と同一の条件で、違うのは拡張子だけ**（判定本体は 1 実装を共有している）。
+// だからここでは「①拡張子の入れ替わりが効いていること ②SSRF 系の条件が**フォント側でも**
+// 全部効いていること」の 2 点を厚く固定する（②が抜けると「新しい口だけ SSRF が通る」形になる）。
+const fontOk = (label, url, shouldThrow) =>
+  ok(`font ${label}`, () => assertAllowedThemeFontUrl(url), shouldThrow);
+
+// 正常系（実サンプルが踏む 3 段目の形）。
+fontOk("https://fonts.gstatic.com/s/x/y.woff2", "https://fonts.gstatic.com/s/x/y.woff2", false);
+fontOk(".woff fallback", "https://fonts.gstatic.com/s/x/y.woff", false);
+fontOk("uppercase .WOFF2", "https://fonts.gstatic.com/s/x/Y.WOFF2", false);
+fontOk("query is allowed (same rule as CSS)", "https://f.example/a.woff2?v=2", false);
+
+// ⚠⚠ **拡張子で口を分けている**（CSS の口でフォントは取れず、フォントの口で CSS は取れない）。
+fontOk(".css is not a font", "https://example.com/a.css", true);
+themeOk(".woff2 is not a stylesheet", "https://fonts.gstatic.com/s/x/y.woff2", true);
+fontOk(".ttf is not allowed (only what is actually needed)", "https://f.example/a.ttf", true);
+fontOk(".otf is not allowed", "https://f.example/a.otf", true);
+fontOk("no extension", "https://f.example/a", true);
+// ⚠ CSS 側の「拡張子無しでも通る形」（`/css2`）は**フォント側では通さない**（必要が無い＝広げない）。
+// ⚠⚠ **060h security-review S-2 で URL を直した。** 初版は `https://f.example/woff2` を試しており、
+//   最終パス片が `woff2` なので **`css<digits>` の形を 1 度も試していなかった**——`isFontPath` に
+//   CSS 側の `/^css[0-9]*$/` をコピーする変異が**生存した**（実測）。実際に `/css` `/css2` を試すこと。
+fontOk("the css<digits> shape is not a font path", "https://f.example/css2", true);
+fontOk("the css (v1) shape is not a font path", "https://f.example/css", true);
+fontOk("the real Google Fonts CSS url is not a font path", "https://fonts.googleapis.com/css2?family=X", true);
+fontOk("a bare woff2 segment is not a font path either", "https://f.example/woff2", true);
+fontOk("percent-encoded dot", "https://f.example/a%2Ewoff2", true);
+fontOk("extension in the query only", "https://f.example/a.php?x=.woff2", true);
+
+// ⚠⚠ SSRF 系は**フォント側でも全部効くこと**（ここが抜けると新しい口だけ穴になる）。
+fontOk("http", "http://f.example/a.woff2", true);
+fontOk("userinfo", "https://trusted.example@evil.example/a.woff2", true);
+fontOk("loopback 127.0.0.1", "https://127.0.0.1/a.woff2", true);
+fontOk("loopback localhost", "https://localhost/a.woff2", true);
+fontOk("loopback [::1]", "https://[::1]/a.woff2", true);
+fontOk("private 10.x", "https://10.0.0.1/a.woff2", true);
+fontOk("private 192.168.x", "https://192.168.1.1/a.woff2", true);
+fontOk("metadata 169.254.169.254", "https://169.254.169.254/a.woff2", true);
+fontOk("metadata by name", "https://metadata.google.internal/a.woff2", true);
+fontOk("decimal IPv4 2130706433", "https://2130706433/a.woff2", true);
+fontOk("mDNS .local", "https://printer.local/a.woff2", true);
+fontOk("double trailing dot must not evade .local", "https://printer.local../a.woff2", true);
+fontOk("empty label in the middle", "https://a..b/a.woff2", true);
+fontOk("single label", "https://intranet/a.woff2", true);
+fontOk("non-443 port", "https://f.example:8443/a.woff2", true);
+fontOk("fragment", "https://f.example/a.woff2#x", true);
+fontOk("not-a-url", "a.woff2", true);
+// ⚠ フォントガードも OBS ガードとは逆向きであること。
+fontOk("obs loopback target", "ws://127.0.0.1:4455", true);
 
 // ⚠⚠ **既存 allow-list と混ざっていないこと**（`assertAllowedObsUrl` とは逆向きのガードである）。
 ok(

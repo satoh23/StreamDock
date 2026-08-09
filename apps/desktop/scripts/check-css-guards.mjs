@@ -1245,8 +1245,32 @@ for (const rel of [VIEWER_CSS, OVERLAY_CSS]) {
   // (i-2) `<style>` / `<link>` の**生成箇所**を allow-list で固定する。
   //   ⚠ ここが本検査の要点——注入先が増えたこと自体を検出する。新しい注入先を足すときは、
   //   **先に docs/security.md「レビュー必須条件」の 060d 項を読み**、レビュー区分を確認してから
-  //   この allow-list を更新すること（＝黙って 4 本目が入らないようにする）。
-  const STYLE_ELEMENT_CREATORS = new Set([OVERLAY_APP_TSX, THEME_CARD_TSX]);
+  //   この allow-list を更新すること（＝黙って新しい注入先が入らないようにする）。
+  //
+  //   ⚠⚠ **060h で「ファイルの集合」から「ファイル → 本数」へ強化した。**
+  //   旧実装は `Set<ファイル>` だったので、**既に許可されたファイルの中に 2 本目の `<style>` を足しても
+  //   何も落ちなかった**（060h はまさにそれを行った＝意匠とは別にフォント用の `<style>` を足す）。
+  //   これは 060d security-review S-5 で「4 つ目の注入先が別ファイルに増えても落ちない」を直したときに
+  //   **同一ファイル内の増加が残っていた**、という同型の穴である。本数まで固定すれば次は必ず落ちる。
+  //   ⚠⚠ **060h security-review S-3 でさらに 2 つ穴を塞いだ**（どちらも実測で「緑のまま通った」）:
+  //     ① 本数のカウントが**ダブルクォートしか見ていなかった**——allow-list 済みファイルに
+  //        `createElement('style')`（シングルクォート）で 3 本目を足すと actual が増えず素通りする。
+  //     ② **`link` の本数を固定していなかった**——allow-list 済みファイルに
+  //        `createElement("link")` ＋ `href="https://cdn.example/x.css"` を足しても何も落ちない。
+  //        これは §1 が名指しで禁じる「CDN からの css 読み込み」そのもので、`csp: null` の下では
+  //        他に止めるものが無い。**`link` の期待値は 0**（増やすなら §1 の例外新設が要る）。
+  //   ＝ 「条件を満たすものが 1 つ在るか」ではなく「**該当する全部が期待どおりか**」を見る、という
+  //     (10-m) が 3 度踏んだのと同じ教訓。数える対象を増やすときは必ずクォート両対応にすること。
+  const STYLE_ELEMENT_CREATORS = new Map([
+    // [ファイル, { style: 本数, link: 本数 }]
+    // 意匠（060d）＋ フォント（060h）。⚠ `link` は**どちらのファイルでも 0**。
+    [OVERLAY_APP_TSX, { style: 2, link: 0 }],
+    // プレビューの意匠（060d）＋ プレビューのフォント（060h）。
+    [THEME_CARD_TSX, { style: 2, link: 0 }],
+  ]);
+  /** ⚠ クォートは両対応で数える（片方だけ見ると、もう片方で書いた 3 本目が素通りする）。 */
+  const countCreateElement = (src, tag) =>
+    (src.match(new RegExp(`createElement\\(\\s*["']${tag}["']`, "g")) ?? []).length;
   for (const [rel, src] of injectionSources) {
     const creates =
       /createElement\(\s*"(?:style|link)"/.test(src) ||
@@ -1254,20 +1278,27 @@ for (const rel of [VIEWER_CSS, OVERLAY_CSS]) {
     if (creates && !STYLE_ELEMENT_CREATORS.has(rel)) {
       fail(
         `${rel}: \`<style>\` / \`<link>\` を生成しています（060d・(10-i)）。` +
-          `ユーザー CSS の注入先は現在 ${[...STYLE_ELEMENT_CREATORS].join(" / ")} の 2 か所だけです。` +
+          `ユーザー CSS の注入先は現在 ${[...STYLE_ELEMENT_CREATORS.keys()].join(" / ")} の 2 ファイルだけです。` +
           `新しい注入先を足すなら、docs/security.md の「レビュー必須条件」（オーバーレイへのユーザー CSS の注入）` +
           `に該当するかを先に確認し、そのうえで本検査の allow-list を更新してください。`,
       );
     }
   }
-  for (const rel of STYLE_ELEMENT_CREATORS) {
+  for (const [rel, expected] of STYLE_ELEMENT_CREATORS) {
     const src = injectionSources.find(([r]) => r === rel)?.[1] ?? "";
-    if (!/createElement\(\s*"style"/.test(src)) {
-      fail(
-        `${rel}: \`createElement("style")\` が見つかりません（060d・(10-i)）。` +
-          `注入経路を別の方式へ変えたなら、docs/security.md のレビュー必須条件を確認したうえで` +
-          `本検査の allow-list も更新してください（allow-list が古いまま緑になるのを防ぎます）。`,
-      );
+    for (const tag of ["style", "link"]) {
+      const actual = countCreateElement(src, tag);
+      if (actual !== expected[tag]) {
+        fail(
+          `${rel}: \`createElement("${tag}")\` が ${actual} 個です（期待 ${expected[tag]} 個・060d/060h・(10-i)）。` +
+            (tag === "link"
+              ? `⚠⚠ \`<link rel=stylesheet href=…>\` は **§1 が禁じている「CDN からの css 読み込み」** そのもので、` +
+                `\`csp: null\` の下では他に止めるものがありません。足すなら §1 の例外新設（security-review 必須）が要ります。`
+              : `注入する \`<style>\` を増減させたなら、docs/security.md の「レビュー必須条件」` +
+                `（オーバーレイへのユーザー CSS の注入）を確認したうえで本検査の本数も更新してください` +
+                `（allow-list が古いまま緑になるのを防ぎます）。`),
+        );
+      }
     }
   }
 

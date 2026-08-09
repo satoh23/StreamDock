@@ -17,7 +17,10 @@ import {
   rewriteRootLike,
 } from "../../features/comment-viewer/cssScope";
 import { withDecorationReset } from "../../features/comment-viewer/overlayThemeReset";
-import { getOverlayThemeCss } from "../../features/comment-viewer/overlayThemeApi";
+import {
+  getOverlayThemeCss,
+  getOverlayThemeFontCss,
+} from "../../features/comment-viewer/overlayThemeApi";
 import { CommentList } from "./CommentList";
 import styles from "./OverlayApp.module.css";
 
@@ -148,6 +151,37 @@ export function OverlayApp() {
       })
       .catch(() => {
         // 既定意匠のまま（<style> を作らない）。詳細は出さない（§9）。
+      });
+
+    return () => {
+      cancelled = true;
+      el?.remove();
+    };
+  }, [themeId]);
+
+  // 060h: 取り込んだ Web フォント（`@font-face` ＋ `data:` の woff2）を**別の `<style>`** で注入する。
+  //
+  // ⚠⚠ **変換を 1 つも通さない**（`rewriteSelectors` / `rewriteRootLike` / `withDecorationReset`）。
+  //   `@font-face` はセレクタを持たないので変換する対象が無く、意匠と同じ文字列に混ぜると
+  //   **テーマを切り替えるたびに数 MB を走査する**ことになる（060h 問題④＝別ファイルにした理由そのもの）。
+  // ⚠ 注入は意匠と同じく **`<style>` の `textContent` のみ**（静的ガード (10-i)）。
+  // ⚠ cleanup で必ず取り除く＝**フォント用 `<style>` も常に 0 個か 1 個**（切り替えで積み上がらない）。
+  // ⚠ フォントが無いテーマ・読めないテーマでは `<style>` を作らない（空文字が返る）。
+  useEffect(() => {
+    if (themeId === null) return;
+    let cancelled = false;
+    let el: HTMLStyleElement | null = null;
+
+    getOverlayThemeFontCss(themeId)
+      .then((css) => {
+        if (cancelled || css.trim() === "") return;
+        el = document.createElement("style");
+        el.dataset.sdOverlayFonts = "";
+        el.textContent = css;
+        document.head.appendChild(el);
+      })
+      .catch(() => {
+        // フォント無しとして扱う（意匠は別経路で入っている）。詳細は出さない（§9）。
       });
 
     return () => {

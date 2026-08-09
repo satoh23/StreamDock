@@ -20,6 +20,7 @@ import {
   type CommentStreamHandle,
   type DeviceCodePrompt,
   type ObsOverlayKind,
+  type ThemeFontFetchResult,
   type ThemeImportFetchResult,
 } from "../../features/comment-viewer/commentStream";
 import {
@@ -1384,6 +1385,24 @@ export function CommentViewerApp() {
     [],
   );
 
+  /**
+   * 060h: `@font-face` の `src` が指すフォント実体の取得を sidecar へ依頼する（**1 本だけ**）。
+   * ⚠ 経路も判断も `requestThemeImport` と同一で、違うのは sidecar 側のガードとレート枠だけ。
+   */
+  const requestThemeFont = useCallback(
+    (url: string, maxBytes: number) => {
+      const stream = streamRef.current;
+      if (!stream) {
+        return Promise.resolve<ThemeFontFetchResult>({
+          ok: false,
+          reason: "offline",
+        });
+      }
+      return stream.requestThemeFont(url, maxBytes);
+    },
+    [],
+  );
+
   // 044a: オーバーレイ表示 OFF 連動。OBS 側ソースを**削除せず非表示**にする（ON で requestObsAutoAdd が再表示）。
   // port は既知の検出値（無ければ既定 4455）を使う。sidecar 側は best-effort（該当なし/未起動は idle）。
   const requestObsHide = (overlay: ObsOverlayKind) => {
@@ -1583,6 +1602,7 @@ export function CommentViewerApp() {
           overlayShowSource={overlayShowSource}
           onOverlayShowSourceChange={setOverlayShowSource}
           onRequestThemeImport={requestThemeImport}
+          onRequestThemeFont={requestThemeFont}
           obsConfig={obsConfig}
           obsAutoAdd={obsAutoAdd}
           onObsAutoAddToggle={handleObsAutoAddToggle}

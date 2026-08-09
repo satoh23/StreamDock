@@ -1,7 +1,27 @@
 # 060 オーバーレイ カスタム CSS テーマ（親・設計/方針）
 
-> 状態: **未着手（親ドキュメント）**。本ファイルは 060a〜060d の**分割・線引き・実装順の正**。
-> **[037](037-overlay-design-expansion.md) を supersede する**（下記「037 の扱い」節）。
+> 状態: ✅ **実装完了（2026-08-09・依頼者判断で 060 系をクローズ）**。本ファイルは 060a〜060i の
+> **分割・線引き・実装順の正**。**[037](037-overlay-design-expansion.md) を supersede する**（下記「037 の扱い」節）。
+>
+> ### 060 系の最終状態（2026-08-09）
+>
+> | サブ | 内容 | 状態 |
+> |---|---|---|
+> | [060a](060a-overlay-selector-contract.md) | セレクタ契約＋変換表 | ✅ 実装済み（2026-08-04・契約は 060f が拡張） |
+> | [060b](060b-custom-css-import-backend.md) | 取り込み基盤（検証・サニタイズ・保存） | ✅ 実装済み（2026-08-05）／security-review 済み |
+> | [060d](060d-css-theme-management-ui.md) | テーマ管理 UI ＋注入 | ✅ 実装済み（2026-08-05）／security-review 済み |
+> | [060e](060e-paste-css-import.md) | 貼り付け取り込み | ✅ 実装済み（2026-08-05）／security-review 済み |
+> | [060f](060f-overlay-dom-alignment.md) | オーバーレイ DOM の整合 | ✅ 実装済み（2026-08-05〜09 追修正⑥まで） |
+> | [060c](060c-external-css-snapshot.md) | 外部 `@import` のスナップショット | ✅ 実装済み（2026-08-09）／security-review 済み |
+> | [060h](060h-external-font-snapshot.md) | 外部 Web フォントのスナップショット | ✅ 実装済み（2026-08-09）／security-review 済み |
+> | [060i](060i-overlay-header-overflow.md) | ヘッダ行が縮まない不具合 | ✅ 実装済み（2026-08-09） |
+> | [060g](060g-overlay-display-toggles.md) | 表示項目のユーザートグル | ❌ **不要（2026-08-09・依頼者判断）** |
+>
+> ⚠ **残っているのは実機確認だけ**（060d / 060e / 060f / 060h。手順は `docs/progress.md` の 060h 節と
+> task-board を正とする）。⚠ **恒久策「プレビューの shadow root / iframe 化」はタスク番号が無いまま**で、
+> 060h の security-review S-9 で優先度が上がっている（着手するなら新規タスクを立てること）。
+> ⚠ 実装順は当初「060a → 060b → 060d → 060c」だったが、実際は **060a → 060b → 060d/060e → 060f →
+> 060c → 060h → 060i** で進み、060g だけが落ちた。
 >
 > **必読前提**: オーバーレイ描画 [`OverlayApp.tsx`](../../apps/desktop/src/screens/comment-viewer/OverlayApp.tsx) と
 > [`CommentList.tsx`](../../apps/desktop/src/screens/comment-viewer/CommentList.tsx)（`variant="overlay"` の分岐）、
@@ -133,7 +153,7 @@ StreamDock のオーバーレイは**独自 DOM ＋ CSS Modules（クラス名�
 | [060d](060d-css-theme-management-ui.md) | テーマ管理 UI（名前・一覧・切替・削除・プレビュー）＋オーバーレイへの注入・即時反映 | frontend | なし | 軽レビュー |
 | [060e](060e-paste-css-import.md) | **CSS を貼り付けて取り込む**（ユーザーに `.css` ファイルを作らせない導線） | Rust/frontend | なし | **security-review 必須** |
 | [060f](060f-overlay-dom-alignment.md) | ⚠⚠ **オーバーレイ DOM の整合**（chat 限定・中間 div 廃止・安定クラス追加・変換表拡充） | frontend | なし | **security-review 必須** |
-| [060g](060g-overlay-display-toggles.md) | ⏸ **保留**（2026-08-08）。表示項目のユーザートグル（サイト名・アイコン）＋テーマより後に効く表示設定層 | frontend | なし | 軽レビュー |
+| [060g](060g-overlay-display-toggles.md) | ❌ **不要（2026-08-09・依頼者判断）。実装しない。** 表示項目のユーザートグル（サイト名・アイコン）＋テーマより後に効く表示設定層 | — | — | — |
 | [060h](060h-external-font-snapshot.md) | 外部 **Web フォント**の取り込み時スナップショット（`@font-face` の woff2 を data URI 化） | sidecar/Rust | **あり（2 段目のホスト）** | **security-review 必須** |
 
 - **060a は本機能の芯**。ここが無いとユーザー CSS が狙う的が存在しない。
@@ -150,7 +170,7 @@ StreamDock のオーバーレイは**独自 DOM ＋ CSS Modules（クラス名�
 | ⚠⚠ **吹き出しが二重になる**（YouTube に `.sd-comment-body` 相当の要素が無い） | [060f](060f-overlay-dom-alignment.md) |
 | 意匠の実体が外部 `@import` の中にある | [060c](060c-external-css-snapshot.md) |
 | 書体が外部 Web フォントで、060c でも反映されない | [060h](060h-external-font-snapshot.md) |
-| 「何を表示するか」をユーザーが決められない | ⏸ [060g](060g-overlay-display-toggles.md)（**保留**。下記の理由により大半が 060f で解消） |
+| 「何を表示するか」をユーザーが決められない | ❌ [060g](060g-overlay-display-toggles.md)（**不要で確定・2026-08-09**。大半が 060f 追修正で解消し、残る穴はテーマ CSS の 1 行で回避できる） |
 
 ⚠ **「変換表が足りない」が主因ではなかった。** 実サンプル 30 セレクタ中 10 は既に変換でき、
 未変換 20 のうち 14 は StreamDock に対応物が無い無害なもの（YouTube の画面部品を隠す指定）だった。
@@ -169,7 +189,7 @@ StreamDock のオーバーレイは**独自 DOM ＋ CSS Modules（クラス名�
 060a ──> 060b ──> 060d ──> 060e ──> [実機確認] ──> 060f ──> 060c ──> 060h
  済       済       済       済       ⚠未実施       済       ←ここ    未
 
-060g … ⏸ 保留（2026-08-08）。再開条件＝ 060c の実機確認で「それでも表示トグルが要る」と分かったとき
+060g … ❌ 不要で確定（2026-08-09・依頼者判断）。実装しない
 ```
 
 - **060d を 060c より先**に置く理由＝060b＋060d で「ローカル CSS を入れて切り替える」が**通しで動く**状態になり、
@@ -184,7 +204,7 @@ StreamDock のオーバーレイは**独自 DOM ＋ CSS Modules（クラス名�
   順番を逆にすると「取り込めたのに全然違う」の原因切り分けが 2 層になる。
 - ⚠ **060h は最後**。060c が「意匠が出る」という最大の価値を先に届けるので、
   重い 060h（256KB 上限と契約テストの再設計を伴う）を待たせない。
-- ⏸ **[060g](060g-overlay-display-toggles.md) は保留へ移した（2026-08-08・依頼者判断）。**
+- ❌ **[060g](060g-overlay-display-toggles.md) は不要で確定した（2026-08-09・依頼者判断）。** 2026-08-08 に保留とし、再開条件を「060c の実機確認で『それでも表示トグルが要る』と分かったとき」としていたが、確認を待たずに不要と判断された。**タスクファイルは記録として残す**（058b / 057 系と同じ作法）。
   起票時の動機（アイコンを消すと名前行のインデントが残る／「消す」だけが効いて「出す」が効かない）は
   **060f の追修正でほぼ解消**しており（アイコンをグリッド 1 列目へ移して**消えれば列ごと畳まれる**・
   既定は「表示」なので取り込んだ CSS 側で自由に消せる）、残るのは

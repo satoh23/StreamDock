@@ -58,6 +58,17 @@ export type ThemeImportFetchResult =
   | { ok: true; css: string }
   | { ok: false; reason: string };
 
+/**
+ * 060h: `@font-face` の `src` が指すフォント実体の取得結果（同じく unicast）。
+ *
+ * ⚠⚠ **`mime` は sidecar が allow-list で検証した値だけ**（`font/woff2` 等）。
+ * frontend はこれをそのまま `data:<mime>;base64,<base64>` に組むので、
+ * **こちら側で型を決められない**ことが要件である。
+ */
+export type ThemeFontFetchResult =
+  | { ok: true; mime: string; base64: string }
+  | { ok: false; reason: string };
+
 export interface CommentStreamHandle {
   disconnect(): void;
   /** 032c-d: service 省略時は twitch（後方互換）。youtube はブラウザ同意フロー。 */
@@ -89,6 +100,20 @@ export interface CommentStreamHandle {
     url: string,
     maxBytes: number,
   ): Promise<ThemeImportFetchResult>;
+  /**
+   * 060h: `@font-face` の `src` が指すフォント実体を **1 本だけ** sidecar に取得させる。
+   *
+   * ⚠⚠ 前提は `requestThemeImport` とまったく同じ（**呼ぶ前に明示同意を得ていること**・
+   * **URL は同意ダイアログが示したものと同一の変数**・チケットは取得のたびに取り直す）。
+   * ⚠ sidecar 側は **別ガード（`.woff2` / `.woff`）と別枠のレート制限**を通る。
+   *
+   * @param url      取得先（sidecar 側の `assertAllowedThemeFontUrl` が再検証する）
+   * @param maxBytes 残り予算（sidecar 側で 512KiB の天井にクランプされる）
+   */
+  requestThemeFont(
+    url: string,
+    maxBytes: number,
+  ): Promise<ThemeFontFetchResult>;
 }
 
 /** sidecar から届く platform を正規化する（未指定・不正は既定 twitch＝後方互換）。 */
@@ -104,6 +129,32 @@ const RETRY_INTERVAL_MS = 1000;
  * ⚠ これが無いと、sidecar が応答しないときに同意ループが永久に止まる。
  */
 const THEME_IMPORT_TIMEOUT_MS = 15_000;
+
+/**
+ * 060h: フォント 1 本の待ち上限（ミリ秒）。sidecar 側の 5 秒＋往復の余裕。
+ * ⚠ CSS の 15 秒と分けてあるのは、日本語 1 ファミリで 110 本を逐次で引くため
+ * （15 秒 × 110 本＝最悪 27 分になり、取り込みが終わらなくなる）。
+ */
+const THEME_FONT_TIMEOUT_MS = 8_000;
+
+/** 060h: sidecar 側の制御フレーム種別（`theme-import-frame.ts` と同じ綴り）。 */
+const THEME_IMPORT_FETCH_FRAME = "theme-import.fetch";
+const THEME_IMPORT_RESULT_FRAME = "theme-import.result";
+const THEME_FONT_FETCH_FRAME = "theme-import.fetch-font";
+const THEME_FONT_RESULT_FRAME = "theme-import.font-result";
+
+/**
+ * 060h: 取得待ちの 1 件（CSS / フォント共通）。
+ *
+ * ⚠ **WS 境界を跨ぐ値なので型は信用しない**——応答の中身を検証して所定の形へ落とすのは
+ * 各 `request*` の責務で、ここは「どのフレームの、どの requestId を待っているか」だけを持つ。
+ */
+interface PendingThemeRequest {
+  requestId: number;
+  /** 期待する応答フレーム種別（別種別の応答を取り違えない）。 */
+  resultType: string;
+  settle: (payload: Record<string, unknown> | null) => void;
+}
 
 function isDeviceCodePrompt(v: unknown): v is DeviceCodePrompt {
   if (typeof v !== "object" || v === null) return false;
@@ -121,10 +172,7 @@ export function connectCommentStream(
    * 060c: 進行中のテーマ取得（**同時 1 本だけ**）。同意ループが逐次なので自然に 1 本になる。
    * `requestId` が一致しない結果は捨てる（stale な応答を取り違えない）。
    */
-  let pendingThemeImport: {
-    requestId: number;
-    settle: (result: ThemeImportFetchResult) => void;
-  } | null = null;
+  let pendingThemeImport: PendingThemeRequest | null = null;
   let nextThemeImportRequestId = 1;
 
   const clearRetry = (): void => {
@@ -198,27 +246,24 @@ export function connectCommentStream(
         if (typeof p?.linked === "boolean") {
           handlers.onLinkState?.(parsePlatform(p.platform), p.linked);
         }
-      } else if (m.type === "theme-import.result") {
-        // 060c: 要求元だけに unicast で届く取得結果。⚠ `requestId` が一致するものだけ受ける。
-        // ⚠ **CSS 本文もエラー理由も `console.*` に出さない**（§9）。
-        const p = m.payload as
-          | { requestId?: unknown; ok?: unknown; css?: unknown; reason?: unknown }
-          | undefined;
+      } else if (
+        m.type === THEME_IMPORT_RESULT_FRAME ||
+        m.type === THEME_FONT_RESULT_FRAME
+      ) {
+        // 060c/060h: 要求元だけに unicast で届く取得結果。
+        // ⚠ **`requestId` と応答フレーム種別の両方が一致するものだけ**受ける
+        //   （stale な応答も、別種別の応答も取り違えない）。
+        // ⚠ **CSS 本文もフォントのバイト列もエラー理由も `console.*` に出さない**（§9）。
+        const p = m.payload as Record<string, unknown> | undefined;
         if (
           pendingThemeImport !== null &&
+          m.type === pendingThemeImport.resultType &&
           typeof p?.requestId === "number" &&
           p.requestId === pendingThemeImport.requestId
         ) {
           const settle = pendingThemeImport.settle;
           pendingThemeImport = null;
-          if (p.ok === true && typeof p.css === "string") {
-            settle({ ok: true, css: p.css });
-          } else {
-            settle({
-              ok: false,
-              reason: typeof p.reason === "string" ? p.reason : "network",
-            });
-          }
+          settle(p);
         }
       } else if (m.type === "obs.state") {
         // 044a: OBS 連携の状態通知。非秘密（state/reason のみ・パスワードは載らない）。
@@ -242,7 +287,8 @@ export function connectCommentStream(
       if (pendingThemeImport !== null) {
         const settle = pendingThemeImport.settle;
         pendingThemeImport = null;
-        settle({ ok: false, reason: "offline" });
+        // ⚠ `null` ＝「応答が来なかった」。各 `request*` が `offline` へ落とす。
+        settle(null);
       }
       scheduleReconnect();
     };
@@ -256,6 +302,81 @@ export function connectCommentStream(
   };
 
   void connect();
+
+  /**
+   * 060c/060h: テーマ資産（CSS / フォント）の取得を **1 本だけ** sidecar へ依頼し、応答を待つ。
+   *
+   * ⚠⚠ **CSS とフォントで 1 本に共通化してある**のが要点——未接続の扱い・同時 1 本の制限・
+   * **チケットの取り直し**・タイムアウト・stale 応答の破棄はどちらにも等しく要るので、
+   * 分けると「新しいほうだけチケットを付け忘れる」形が作れてしまう。
+   * 違うのは**フレーム種別・応答種別・待ち時間**の 3 つだけで、すべて引数で受ける。
+   *
+   * @returns 応答の payload（そのまま）。`null` は「応答が来なかった／送れなかった」。
+   *
+   * ⚠ **戻り値に 3 種類の意味が混ざっている**（060h review Q-8・受容）:
+   * ① sidecar から届いた payload ② ローカルで合成した `{ok:false, reason:"busy"|"timeout"}`
+   * ③ `null`（未接続・チケット無し・切断）。判別する必要が無いので型を割っていない——
+   * **呼び出し側（`requestThemeImport` / `requestThemeFont`）は 3 つとも同じ扱い**
+   * （`ok===true` かつ期待フィールドが揃っていれば成功、それ以外は `reason` を出す）で、
+   * ①と②を区別してユーザーの行動が変わることは無い。
+   * ⚠ 再修正トリガー＝「sidecar 由来かどうか」で処理を分けたくなったとき
+   * （そのときは `{ kind: "payload" | "local", value }` の union へ割ること）。
+   */
+  const requestThemeAsset = async (
+    frameType: string,
+    resultType: string,
+    url: string,
+    maxBytes: number,
+    timeoutMs: number,
+  ): Promise<Record<string, unknown> | null> => {
+    // ⚠ **未接続なら送らない。** `send` は OPEN でなければ黙って捨てるので、送ってから待つと
+    // タイムアウトまで固まったうえに「なぜ効かないか」が伝わらない。
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      return null;
+    }
+    // 進行中があれば拒否する（同時 1 本。同意ループは逐次なので通常起きない）。
+    // ⚠ **この検査と `pendingThemeImport` への代入の間に `await invoke` が挟まる**ので、
+    // 厳密には 2 本が同時に通り抜けうる（security-review 060c Q-11）。塞いでいない理由は
+    // 呼び出し元が**逐次ループ 1 か所だけ**で、同時に 2 本呼ぶ経路が存在しないから。
+    // ⚠ 再修正トリガー＝呼び出し元が 2 か所以上になったら「予約席を先に立てる」形へ直すこと。
+    if (pendingThemeImport !== null) {
+      return { ok: false, reason: "busy" };
+    }
+    // ⚠⚠ チケットは**取得のたびに取り直す**。sidecar が再 spawn されると値が変わるので、
+    // 握ったまま使い回すと再起動後に黙って無視される。⚠ 値はログにも画面にも出さない（§9）。
+    let ticket: string | null = null;
+    try {
+      ticket = await invoke<string | null>("get_theme_import_ticket");
+    } catch {
+      ticket = null;
+    }
+    if (ticket === null) {
+      return null;
+    }
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      return null;
+    }
+
+    const requestId = nextThemeImportRequestId++;
+    return await new Promise<Record<string, unknown> | null>((resolve) => {
+      const timer = window.setTimeout(() => {
+        if (pendingThemeImport?.requestId === requestId) {
+          pendingThemeImport = null;
+          resolve({ ok: false, reason: "timeout" });
+        }
+      }, timeoutMs);
+      pendingThemeImport = {
+        requestId,
+        resultType,
+        settle: (payload) => {
+          window.clearTimeout(timer);
+          resolve(payload);
+        },
+      };
+      // ⚠ **`url` はここまで一度も組み立て直していない**（同意ダイアログが表示した文字列そのもの）。
+      send({ type: frameType, ticket, requestId, url, maxBytes });
+    });
+  };
 
   return {
     disconnect(): void {
@@ -292,54 +413,47 @@ export function connectCommentStream(
       url: string,
       maxBytes: number,
     ): Promise<ThemeImportFetchResult> {
-      // ⚠ **未接続なら送らない。** `send` は OPEN でなければ黙って捨てるので、送ってから待つと
-      // タイムアウトまで 15 秒固まったうえに「なぜ効かないか」が伝わらない（③ の劣化文言へ回す）。
-      if (!ws || ws.readyState !== WebSocket.OPEN) {
-        return { ok: false, reason: "offline" };
+      const payload = await requestThemeAsset(
+        THEME_IMPORT_FETCH_FRAME,
+        THEME_IMPORT_RESULT_FRAME,
+        url,
+        maxBytes,
+        THEME_IMPORT_TIMEOUT_MS,
+      );
+      if (payload === null) return { ok: false, reason: "offline" };
+      if (payload.ok === true && typeof payload.css === "string") {
+        return { ok: true, css: payload.css };
       }
-      // 進行中があれば拒否する（同時 1 本。同意ループは逐次なので通常起きない）。
-      // ⚠ **この検査と `pendingThemeImport` への代入の間に `await invoke` が挟まる**ので、
-      // 厳密には 2 本が同時に通り抜けうる（security-review 060c Q-11）。塞いでいない理由は
-      // 呼び出し元が `runConsentLoop` の逐次ループ 1 か所だけで、**同時に 2 本呼ぶ経路が存在しない**から
-      // （前の `await` が返るまで次の `askConsent` すら出ない）。⚠ 再修正トリガー＝
-      // `requestThemeImport` の呼び出し元が 2 か所以上になったら、ここを「予約席を先に立てる」形
-      // （`pendingThemeImport` に placeholder を置いてから `await`）へ直すこと。
-      if (pendingThemeImport !== null) {
-        return { ok: false, reason: "busy" };
+      return {
+        ok: false,
+        reason: typeof payload.reason === "string" ? payload.reason : "network",
+      };
+    },
+    async requestThemeFont(
+      url: string,
+      maxBytes: number,
+    ): Promise<ThemeFontFetchResult> {
+      const payload = await requestThemeAsset(
+        THEME_FONT_FETCH_FRAME,
+        THEME_FONT_RESULT_FRAME,
+        url,
+        maxBytes,
+        THEME_FONT_TIMEOUT_MS,
+      );
+      if (payload === null) return { ok: false, reason: "offline" };
+      // ⚠⚠ **`mime` も `base64` も sidecar 由来のものだけを通す。** 片方でも欠けていたら失敗扱いにする
+      // （欠けたまま `data:` を組むと、型の無い data URI や空フォントが CSS に混ざる）。
+      if (
+        payload.ok === true &&
+        typeof payload.mime === "string" &&
+        typeof payload.base64 === "string"
+      ) {
+        return { ok: true, mime: payload.mime, base64: payload.base64 };
       }
-      // ⚠⚠ チケットは**取得のたびに取り直す**。sidecar が再 spawn されると値が変わるので、
-      // 握ったまま使い回すと再起動後に黙って無視される。⚠ 値はログにも画面にも出さない（§9）。
-      let ticket: string | null = null;
-      try {
-        ticket = await invoke<string | null>("get_theme_import_ticket");
-      } catch {
-        ticket = null;
-      }
-      if (ticket === null) {
-        return { ok: false, reason: "offline" };
-      }
-      if (!ws || ws.readyState !== WebSocket.OPEN) {
-        return { ok: false, reason: "offline" };
-      }
-
-      const requestId = nextThemeImportRequestId++;
-      return await new Promise<ThemeImportFetchResult>((resolve) => {
-        const timer = window.setTimeout(() => {
-          if (pendingThemeImport?.requestId === requestId) {
-            pendingThemeImport = null;
-            resolve({ ok: false, reason: "timeout" });
-          }
-        }, THEME_IMPORT_TIMEOUT_MS);
-        pendingThemeImport = {
-          requestId,
-          settle: (result) => {
-            window.clearTimeout(timer);
-            resolve(result);
-          },
-        };
-        // ⚠ **`url` はここまで一度も組み立て直していない**（同意ダイアログが表示した文字列そのもの）。
-        send({ type: "theme-import.fetch", ticket, requestId, url, maxBytes });
-      });
+      return {
+        ok: false,
+        reason: typeof payload.reason === "string" ? payload.reason : "network",
+      };
     },
   };
 }

@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import type { OverlayThemeImportResult } from "./bindings/OverlayThemeImportResult";
 import type { OverlayThemeOrigin } from "./bindings/OverlayThemeOrigin";
 import type { OverlayThemeRecord } from "./bindings/OverlayThemeRecord";
+// 060h: 除去した `@font-face`（宛先＋選別に要る記述子）。⚠ 生成元は Rust の `overlay_theme/model.rs`。
+import type { StrippedFontFace } from "./bindings/StrippedFontFace";
 
 /**
  * 060d: オーバーレイ カスタム CSS テーマ（060b）の Rust command 薄いラッパ。
@@ -23,7 +25,13 @@ import type { OverlayThemeRecord } from "./bindings/OverlayThemeRecord";
  * docs/security.md「Capabilities 方針」。
  */
 
-export type { OverlayThemeImportResult, OverlayThemeOrigin, OverlayThemeRecord };
+export type {
+  OverlayThemeImportResult,
+  OverlayThemeOrigin,
+  OverlayThemeRecord,
+  // 060h: 除去した `@font-face`（宛先＋選別に要る記述子）。⚠ 生成元は Rust の `model.rs`。
+  StrippedFontFace,
+};
 
 /**
  * 060d: テーマ名の最大長（**Rust の `MAX_NAME_CHARS` と同値**）。
@@ -180,6 +188,56 @@ export function listOverlayThemes(): Promise<OverlayThemeRecord[]> {
 export function getOverlayThemeCss(id: string): Promise<string> {
   return invoke<string>("get_overlay_theme_css", { id });
 }
+
+/**
+ * 060h: 取得した Web フォントを **`@font-face` だけの CSS** としてテーマへ添える（**2 つ目の管理ファイル**）。
+ *
+ * ⚠⚠ **意匠 CSS と別ファイル・別 `<style>` にするのが要件**（060h 問題④）。同じ文字列に混ぜると、
+ * テーマを切り替えるたびに `rewriteSelectors` が数 MB を走査する。
+ * ⚠ 保存先の組み立て・サニタイズ・書き込みは意匠と**同じ共通コア**（`service::write_sanitized_asset`）で、
+ * 違うのは**本文の上限だけ**（意匠 256KB / フォント 5MB）。
+ * ⚠ **フォントのバイト列をログにも画面にも出さない**（§9）。
+ */
+export function attachOverlayThemeFonts(
+  id: string,
+  css: string,
+): Promise<void> {
+  return invoke<void>("attach_overlay_theme_fonts", { id, css });
+}
+
+/**
+ * 060h: テーマのフォント CSS を受け取る（**無ければ空文字**）。
+ *
+ * ⚠ 注入側は**変換を一切通さずに**別の `<style>` へ載せること
+ * （`rewriteSelectors` / `scopeSelectors` / `withDecorationReset` はいずれも `@font-face` に無意味で、
+ * 数 MB を毎回走査するだけになる）。
+ */
+export function getOverlayThemeFontCss(id: string): Promise<string> {
+  return invoke<string>("get_overlay_theme_font_css", { id });
+}
+
+/**
+ * 060h: **フォント取り込みの予算**。
+ *
+ * | 定数 | 値 | 根拠 |
+ * |---|---|---|
+ * | 1 本の上限（生 woff2） | 512KiB | Google の日本語サブセットは 1 本 4〜40KB。**分割していない CJK フォント丸ごと（1〜4MB）は落ちる**＝ 1 本で予算を食い潰す形を排除 |
+ * | 総量の上限（生 woff2 合計） | 3MiB | base64 で 4MiB。**日本語 1 ファミリ（約 110 分割・生 1.5〜2MB）が丸ごと入る**値 |
+ * | 本数の上限 | 256 本 | 日本語 1 ファミリ 110 分割の 2 倍強（Rust の `MAX_STRIPPED_FONT_URLS` と同値） |
+ *
+ * ⚠ 保存側の上限（5MB）は Rust の `MAX_FONT_CSS_BYTES` が別に持つ。ここは**取得側の予算**である。
+ *
+ * ⚠ **同じ数字が下流にもある**（060h review Q-11・受容）。512KiB は sidecar の `THEME_FONT_MAX_BYTES`、
+ * 256 は Rust の `MAX_STRIPPED_FONT_URLS` にもある。**片方だけ動かせる形にはなっていない**——
+ * どちらも「**下流が天井を持ち、ここは要求値**」という非対称で、ここを緩めても下流が切る
+ * （sidecar は `maxBytes` をクランプ、Rust は 256 件でリストを打ち切る）。
+ * ⚠ 総量 3MiB だけはここにしか無く、Rust の `MAX_FONT_CSS_BYTES`（5MiB）が backstop になっている。
+ * ⚠ 再修正トリガー＝「ここを上げれば実際に上限が上がる」形になったら（＝下流の天井を外したら）、
+ * その時点で 1 か所へ寄せること。
+ */
+export const THEME_FONT_MAX_ONE_BYTES = 512 * 1024;
+export const THEME_FONT_MAX_TOTAL_BYTES = 3 * 1024 * 1024;
+export const THEME_FONT_MAX_COUNT = 256;
 
 /** テーマの表示名を変更する（ファイル実体には触れない）。⚠ `name` は `themeNameError` を通してから渡す。 */
 export function renameOverlayTheme(

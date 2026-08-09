@@ -108,6 +108,10 @@
 
 use crate::error::{AppError, AppResult};
 
+// 060h: 除去した `@font-face` の DTO は **frontend へそのまま返る値**なので `model` が正。
+// ⚠ ここで別の型を定義すると「Rust 内の形」と「frontend へ返す形」が分裂する（変換漏れの温床）。
+use super::model::StrippedFontFace;
+
 /// 除去した `@import` 先を戻り値へ載せる上限（件数）。
 ///
 /// ⚠ ユーザー CSS 由来の**未署名文字列**なので、素のままだと件数も 1 件の長さも入力次第で無制限になる
@@ -116,6 +120,14 @@ const MAX_STRIPPED_IMPORT_URLS: usize = 16;
 
 /// 同じく 1 件あたりの長さ上限（文字数）。ブラウザの実用的な URL 長を十分に超える値。
 const MAX_STRIPPED_IMPORT_URL_CHARS: usize = 2048;
+
+/// 060h: 除去した `@font-face` の `src` 先を戻り値へ載せる上限（件数）。
+///
+/// ⚠ **`@import` の 16 件とは桁が違う**理由＝ Google Fonts は日本語を `unicode-range` で
+/// **約 110 分割**して配信するので、1 ファミリだけで 110 件の `@font-face` が並ぶ。
+/// 16 件で切ると「書体が半分しか入らない」が既定の挙動になってしまう。
+/// ⚠ 1 件あたりの長さ上限は `@import` と共通（[`MAX_STRIPPED_IMPORT_URL_CHARS`]）。
+const MAX_STRIPPED_FONT_URLS: usize = 256;
 
 /// `{}` の入れ子の上限。
 ///
@@ -166,6 +178,41 @@ pub struct SanitizeOutcome {
     /// **bidi / format 文字を含むものは載せない**（同意ダイアログの表示偽装対策）。
     /// いずれも**除去と計数はしている**ので、`stripped_count >= stripped_import_urls.len()` が常に成り立つ。
     pub stripped_import_urls: Vec<String>,
+    /// 060h: 除去した **`@font-face` の `src`** を、**ブロック単位で**返す。
+    ///
+    /// ⚠⚠ **載る条件は 2 つで、どちらもパーサの構造が保証する**:
+    /// ①その宣言が **`@font-face` ブロックの直下**にあること（[`Scanner::scan_content`] の `in_font_face`）
+    /// ②その宣言の**プロパティ名が `src`** であること（[`UnitScan::property`]）。
+    /// ＝ `@font-face{ background-image:url(https://tracker.example/x.png) }` も
+    /// `.a{ src:url(https://…) }` も**載らない**。
+    ///
+    /// ⚠⚠ **「CSS の中の url を集める」への一般化を絶対に行わないこと。**
+    /// `background-image` まで拾うと、それは**トラッキングピクセルの取得経路**になる
+    /// （`docs/security.md` §1 の 060h 追補・`font_urls_are_only_recorded_inside_font_face_src` が固定）。
+    ///
+    /// ⚠ 形の clamp は [`SanitizeOutcome::stripped_import_urls`] と**まったく同じ**
+    /// （http(s) 絶対 URL のみ／エスケープを含むものは載せない／bidi・format 文字を含むものは載せない／
+    /// 1 件 2048 文字）。違うのは**件数上限だけ**（256 件・[`MAX_STRIPPED_FONT_URLS`] の注記）。
+    ///
+    /// ⚠⚠ **URL だけの平坦な配列にしない**のには実測の理由がある——保存される CSS からは
+    /// **`src` 宣言が丸ごと消える**ので、「どの URL がどの `@font-face` のものか」を
+    /// 保存後の CSS から復元することが**できない**（URL がどこにも残っていない）。
+    /// 取り込む書体を選ぶには `font-family`（テーマが実際に使っているか）と
+    /// `unicode-range`（分割配信のどの範囲か）が要るので、**対応関係ごとここで返す**。
+    /// ＝ CSS を解析する実装が frontend 側に生まれるのを防ぐ（生まれると
+    /// `background-image` まで拾える形になり、それはトラッキングピクセルの取得経路である）。
+    pub stripped_font_faces: Vec<StrippedFontFace>,
+    /// 060h review S-10: **トップレベルに `@font-face` 以外の中身があったか**（空白・コメントは数えない）。
+    ///
+    /// ⚠⚠ **フォント資産（`service::ThemeAsset::Fonts`）だけがこれを見て拒否する。** 意匠 CSS は当然
+    /// セレクタを持つので、こちらは値を見ない（見たら何も保存できない）。
+    ///
+    /// なぜ要るか＝フォント資産は**注入時に `rewriteSelectors` / `scopeSelectors` / `withDecorationReset` を
+    /// 1 つも通らない**（`@font-face` はセレクタを持たないので変換対象が無い、という前提で別 `<style>` に
+    /// 載せている）。その前提を守っているのが frontend の `buildFontFaceCss` の作法だけだと、
+    /// 「変換を通さない注入口へ任意の CSS を流す」形が将来の 1 行で作れてしまう。
+    /// ＝ **Rust 側で構造的に閉じる**（`attach_theme_fonts` が `@font-face` 以外を拒否する）。
+    pub top_level_non_font_face: bool,
     /// 060c: **除去が入力の末尾まで達したか**（＝終端記号を持たない文を EOF まで食って消したか）。
     ///
     /// ⚠⚠ これは 060d の `unclosedBlockDepth()`（frontend）が**構造上取り逃す失敗モード**を埋めるための値
@@ -200,7 +247,8 @@ pub struct SanitizeOutcome {
 pub fn sanitize_css(input: &str) -> AppResult<SanitizeOutcome> {
     let src: Vec<char> = input.chars().collect();
     let mut scanner = Scanner::new(&src);
-    scanner.scan_content(0)?;
+    // ⚠ 060h: 第 2 引数は「いま `@font-face` ブロックの直下か」。トップレベルは当然 `false`。
+    scanner.scan_content(0, false)?;
 
     let css = build_output(&src, &scanner.removals);
 
@@ -214,6 +262,8 @@ pub fn sanitize_css(input: &str) -> AppResult<SanitizeOutcome> {
         css,
         stripped_count: scanner.stripped_count,
         stripped_import_urls: scanner.stripped_import_urls,
+        stripped_font_faces: scanner.stripped_font_faces,
+        top_level_non_font_face: scanner.top_level_non_font_face,
         truncated_to_eof: scanner.truncated_to_eof,
     })
 }
@@ -355,6 +405,38 @@ struct UnitScan {
     import_url: Option<String>,
     /// url 位置が 1 つでもあったか（ブロックのプレリュード判定に使う）。
     any_url_position: bool,
+    /// 060h: **この文の最初の識別子で、直後が `:` のもの**＝宣言のプロパティ名（小文字化・エスケープ復元済み）。
+    ///
+    /// ⚠ 「最初の 1 つだけ」を見るのが要点。`div:hover{…}` のようなセレクタも形の上では
+    /// 「識別子＋`:`」なので、2 つ目以降まで拾うと**セレクタをプロパティ名と誤認する**。
+    /// ⚠ 実際に使うのは `@font-face` の直下だけ（[`Scanner::scan_content`] の `in_font_face` と AND を取る）。
+    ///
+    /// ⚠ **既知の過剰収集（受容・060h review S-7）**: 先頭の記号を読み飛ばして識別子から見るので、
+    /// `@font-face{*src:url(https://…)}` のような**ハック記法**でも `src` と判定する。
+    /// 標準モードのブラウザは `*src` を宣言ごと捨てるため、
+    /// **「取得しうる URL の集合 ⊋ ブラウザが取得する集合」**になる。
+    /// 直さない理由＝ここで拾えるのは結局「`@font-face` ブロックの直下に書かれた url」だけで、
+    /// **同意ダイアログにホストが必ず出る**（取得は毎回の明示同意を通る）ため §1 の規則から外れない。
+    /// 逆に「先頭が識別子でなければ落とす」形にすると、CSS の書き方の揺れで**正当な `src` を取りこぼす**
+    /// ほうの失敗が増える。⚠ 再修正トリガー＝ここを**同意なしで取得する**経路が生まれたとき、
+    /// または「ブラウザが実際に解釈する宣言だけ」を厳密に一致させる必要が出たとき。
+    property: Option<String>,
+    /// 060h: プロパティ名の判定を**この文で 1 度だけ**行うためのフラグ。
+    seen_ident: bool,
+    /// 060h review S-6: [`UnitScan::property`] を立てた**コロンの絶対位置**（`src` の添字）。
+    ///
+    /// ⚠⚠ **`text.find(':')` で探し直してはいけない**。文のスライスは
+    /// [`Scanner::scan_unit`] の `skip_ws_and_comments()` より**前**から始まるので、
+    /// `@font-face{/*a:b*/font-family:REAL;…}` のように**先頭コメントの中にコロンがある**と
+    /// そちらを掴み、`family` が `b*/font-family:REAL` になる（実測）。
+    /// プロパティ名を確定したその場で位置を控えておけば、探し直しが構造的に起きない。
+    property_colon: Option<usize>,
+    /// 060h: `src` 宣言の中に現れた url（エスケープ無し・壊れていないものだけ）。
+    ///
+    /// ⚠ `@import` と違い **1 宣言に複数入りうる**（`src:url(a) format("woff2"),url(b) format("woff")`）。
+    /// ⚠ ここに積むのは候補まで。**実際に載せるかは [`Scanner::decide_unit`] が
+    /// `in_font_face` と AND を取ってから決める**（`@font-face` の外の `src` は載せない）。
+    font_src_urls: Vec<String>,
 }
 
 /// 文の終わり方。
@@ -374,6 +456,11 @@ struct Scanner<'a> {
     removals: Vec<(usize, usize)>,
     stripped_count: u32,
     stripped_import_urls: Vec<String>,
+    /// 060h: 除去した `@font-face`（[`SanitizeOutcome::stripped_font_faces`]）。
+    stripped_font_faces: Vec<StrippedFontFace>,
+    /// 060h review S-10: トップレベルに `@font-face` 以外の中身があったか
+    /// （[`SanitizeOutcome::top_level_non_font_face`]）。
+    top_level_non_font_face: bool,
     /// 060c: 終端記号を持たない文を EOF まで食って除去したか（[`SanitizeOutcome::truncated_to_eof`]）。
     truncated_to_eof: bool,
 }
@@ -386,6 +473,8 @@ impl<'a> Scanner<'a> {
             removals: Vec::new(),
             stripped_count: 0,
             stripped_import_urls: Vec::new(),
+            stripped_font_faces: Vec::new(),
+            top_level_non_font_face: false,
             truncated_to_eof: false,
         }
     }
@@ -628,17 +717,48 @@ impl<'a> Scanner<'a> {
     /// アットルール / 波括弧を値に持つカスタムプロパティ）」の列として一様に扱う。
     /// この一様化のおかげで、`@media` / `@supports` / `@font-face` / `@keyframes` / CSS Nesting /
     /// `--foo: { … }` を個別に知らなくても正しく走査できる。
-    fn scan_content(&mut self, depth: usize) -> AppResult<()> {
+    ///
+    /// ⚠⚠ 060h: `in_font_face` は「**いま走査している中身が `@font-face{…}` の直下か**」。
+    /// これが [`SanitizeOutcome::stripped_font_urls`] に載せてよい範囲を**構造で**決めている
+    /// （＝正規表現で `@font-face` を探すのではなく、走査器がブロックの入れ子を辿った結果として分かる）。
+    /// ⚠ 子ブロックへは**そのブロック自身のアットキーワード**で判定し直して渡す
+    /// （`@font-face` の中に別のブロックがあっても、その中は `@font-face` の直下ではない）。
+    ///
+    /// ⚠⚠ 060h review S-5: **溜め場所（`pending`）はこの呼び出しのローカル**である。
+    /// 初版は `Scanner` のフィールド 1 本にしており、「`in_font_face` が真になるのは直下 1 段だけ」を
+    /// 根拠に単一バッファで足りるとしていたが、**その前提は成立しない**——`@font-face` の中の
+    /// `@font-face`（壊れた入力・閉じ忘れ）でも真になるので、内側の `flush` が外側の溜め分を
+    /// 奪って**別ブロックの記述子と混線していた**（実測。取得する URL 集合は変わらないが、
+    /// `font-family` / `unicode-range` との対応づけが誤る＝選別と生成 CSS が壊れる）。
+    /// ローカルにすれば混線が**構造的に起こせない**。
+    fn scan_content(&mut self, depth: usize, in_font_face: bool) -> AppResult<()> {
         if depth > MAX_NESTING_DEPTH {
             return Err(reject_too_deep());
         }
+        // 060h: `@font-face` の直下なら、ブロックが閉じるまで記述子と宛先を溜めておく。
+        let mut face = StrippedFontFace::default();
+        let mut pending: Vec<String> = Vec::new();
         loop {
             let unit_start = self.i;
             let mut unit = UnitScan::default();
-            match self.scan_unit(&mut unit) {
+            let terminator = self.scan_unit(&mut unit);
+            // ⚠ 060h review S-10: トップレベルに `@font-face` 以外の中身があったかを記録する
+            // （空白・コメントだけの文は数えない）。フォント資産の保存だけがこれを見る。
+            if depth == 0
+                && unit.at_keyword.as_deref() != Some("font-face")
+                && self.src[unit_start.min(self.src.len())..self.i.min(self.src.len())]
+                    .iter()
+                    .any(|c| !is_ws(*c))
+            {
+                self.top_level_non_font_face = true;
+            }
+            match terminator {
                 Terminator::Semicolon => {
                     let unit_end = self.i;
-                    self.decide_unit(unit_start, unit_end, &unit);
+                    if in_font_face {
+                        self.capture_descriptor(unit_start, unit_end, &unit, &mut face);
+                    }
+                    self.decide_unit(unit_start, unit_end, &unit, in_font_face, &mut pending);
                 }
                 Terminator::OpenBrace => {
                     // ⚠ プレリュードに**取り除けない**参照があるときは「その 1 つだけ消す」が構文上
@@ -655,14 +775,26 @@ impl<'a> Scanner<'a> {
                         return Err(reject_prelude_url());
                     }
                     self.i += 1;
-                    self.scan_content(depth + 1)?;
+                    // ⚠ 060h: 中身が `@font-face` の直下になるのは、**このブロックを開いた文の
+                    // アットキーワードが `font-face` のとき**だけ。
+                    self.scan_content(
+                        depth + 1,
+                        unit.at_keyword.as_deref() == Some("font-face"),
+                    )?;
                 }
                 Terminator::CloseBrace => {
                     // `;` を省いた最後の宣言。
                     let unit_end = self.i;
-                    self.decide_unit(unit_start, unit_end, &unit);
+                    if in_font_face {
+                        self.capture_descriptor(unit_start, unit_end, &unit, &mut face);
+                    }
+                    self.decide_unit(unit_start, unit_end, &unit, in_font_face, &mut pending);
                     self.i += 1;
                     if depth > 0 {
+                        // ⚠ 060h: ブロックが閉じた＝ここで 1 件確定する。
+                        if in_font_face {
+                            self.flush_font_face(face, pending);
+                        }
                         return Ok(());
                     }
                     // トップレベルの迷子の `}` は読み飛ばして続行する（壊れた入力で止まらない）。
@@ -675,9 +807,16 @@ impl<'a> Scanner<'a> {
                     // 位置で見ると誤検知する。`Terminator::Eof` は「`;` も `{` も `}` も見つからないまま
                     // EOF まで食った」＝ **文が壊れている**ことを意味する。
                     let removals_before = self.removals.len();
-                    self.decide_unit(unit_start, unit_end, &unit);
+                    if in_font_face {
+                        self.capture_descriptor(unit_start, unit_end, &unit, &mut face);
+                    }
+                    self.decide_unit(unit_start, unit_end, &unit, in_font_face, &mut pending);
                     if self.removals.len() > removals_before {
                         self.truncated_to_eof = true;
+                    }
+                    // ⚠ 閉じ `}` を持たないまま EOF に達した `@font-face` も取りこぼさない。
+                    if in_font_face {
+                        self.flush_font_face(face, pending);
                     }
                     return Ok(());
                 }
@@ -740,6 +879,25 @@ impl<'a> Scanner<'a> {
                         self.i += 1;
                         continue;
                     }
+                    // ⚠⚠ 060h: **この文の最初の識別子で、直後（空白・コメントを飛ばして）が `:`** なら
+                    // それを宣言のプロパティ名として控える。`@font-face` の直下で `src` のときだけ
+                    // 宛先を [`SanitizeOutcome::stripped_font_urls`] に載せるための材料である。
+                    // ⚠ **1 度しか見ない**（`seen_ident`）——2 つ目以降まで拾うと `div:hover{…}` のような
+                    // セレクタをプロパティ名と誤認する。
+                    // ⚠ `:` でなければ**位置を必ず戻す**（既存の走査を 1 文字も動かさない）。
+                    if !unit.seen_ident {
+                        unit.seen_ident = true;
+                        if unit.at_keyword.is_none() {
+                            let after_ident = self.i;
+                            self.skip_ws_and_comments();
+                            if self.peek() == Some(':') {
+                                unit.property = Some(name.to_ascii_lowercase());
+                                // ⚠ 060h review S-6: **ここで位置を控える**（後で `find(':')` しない）。
+                                unit.property_colon = Some(self.i);
+                            }
+                            self.i = after_ident;
+                        }
+                    }
                     if self.peek() != Some('(') {
                         continue;
                     }
@@ -754,6 +912,18 @@ impl<'a> Scanner<'a> {
                             && !token.malformed
                         {
                             unit.import_url = Some(token.value.clone());
+                        }
+                        // ⚠⚠ 060h: **`src` 宣言の url だけ**を候補として積む。
+                        // `background-image` / `cursor` / `mask` の url はここへ入らない
+                        // （＝トラッキングピクセルの取得経路を構造的に作らない）。
+                        // ⚠ `@font-face` の外の `src` かどうかはここでは分からないので、
+                        //   最終判断は [`Scanner::decide_unit`] が `in_font_face` と AND を取って行う。
+                        if unit.property.as_deref() == Some("src")
+                            && !token.has_escape
+                            && !token.malformed
+                            && unit.font_src_urls.len() < MAX_STRIPPED_FONT_URLS
+                        {
+                            unit.font_src_urls.push(token.value.clone());
                         }
                         if !is_allowed_url_value(&token) {
                             unit.disallowed = unit.disallowed.saturating_add(1);
@@ -772,8 +942,71 @@ impl<'a> Scanner<'a> {
         }
     }
 
+    /// 060h: `@font-face` の直下の宣言から、**選別に要る記述子**を控える。
+    ///
+    /// ⚠ 値はユーザー CSS 由来の未署名文字列なので [`clamp_descriptor`] を通す
+    /// （長さ・制御文字・bidi・CSS の構造を壊せる文字）。読めない値は空文字のままにする。
+    /// ⚠ 拾うのは 4 つだけ（`font-family` / `font-weight` / `font-style` / `unicode-range`）。
+    /// **`src` は拾わない**——あれは除去して data URI へ差し替える対象そのものだから。
+    /// ⚠ 060h review S-6: 値の開始位置は [`UnitScan::property_colon`]（プロパティ名を確定したその場で
+    /// 控えた絶対位置）から取る。スライスを `find(':')` で探し直すと、文の先頭コメントの中のコロンを
+    /// 掴んでしまう（`start` は `skip_ws_and_comments()` より前を指しているため）。
+    fn capture_descriptor(
+        &mut self,
+        _start: usize,
+        end: usize,
+        unit: &UnitScan,
+        face: &mut StrippedFontFace,
+    ) {
+        let Some(property) = unit.property.as_deref() else {
+            return;
+        };
+        let Some(colon) = unit.property_colon else {
+            return;
+        };
+        let slot = match property {
+            "font-family" => &mut face.family,
+            "font-weight" => &mut face.weight,
+            "font-style" => &mut face.style,
+            "unicode-range" => &mut face.unicode_range,
+            _ => return,
+        };
+        if !slot.is_empty() {
+            return; // 同じ記述子が 2 回あれば**先勝ち**（後勝ちにする理由が無い）。
+        }
+        let from = (colon + 1).min(self.src.len());
+        let to = end.min(self.src.len()).max(from);
+        let text: String = self.src[from..to].iter().collect();
+        *slot = clamp_descriptor(text.trim_end_matches(';'));
+    }
+
+    /// 060h: 溜めた `@font-face` 1 件を確定する（**宛先が 1 つも無いブロックは載せない**）。
+    ///
+    /// ⚠ `pending` は [`Scanner::scan_content`] のローカル（S-5 の注記）。フィールドにすると
+    /// 入れ子・閉じ忘れの `@font-face` で別ブロックの宛先が混線する。
+    fn flush_font_face(&mut self, mut face: StrippedFontFace, pending: Vec<String>) {
+        face.urls = pending;
+        if face.urls.is_empty() {
+            return;
+        }
+        if self.stripped_font_faces.len() >= MAX_STRIPPED_FONT_URLS {
+            return;
+        }
+        self.stripped_font_faces.push(face);
+    }
+
     /// 1 つの文を残すか落とすかを決める。
-    fn decide_unit(&mut self, start: usize, end: usize, unit: &UnitScan) {
+    ///
+    /// ⚠ 060h: `in_font_face` は呼び出し元（[`Scanner::scan_content`]）だけが知っている情報で、
+    /// **`@font-face` の `src` 宛先を載せてよいか**の AND の片側になる。
+    fn decide_unit(
+        &mut self,
+        start: usize,
+        end: usize,
+        unit: &UnitScan,
+        in_font_face: bool,
+        pending: &mut Vec<String>,
+    ) {
         if start >= end {
             return;
         }
@@ -792,6 +1025,21 @@ impl<'a> Scanner<'a> {
         if unit.at_keyword.as_deref() == Some("import") {
             if let Some(url) = unit.import_url.as_deref() {
                 self.record_import_url(url);
+            }
+        }
+        // ⚠⚠ 060h: **`@font-face` の直下**（`in_font_face`）で、**プロパティ名が `src`** の宣言だけ。
+        // この 2 条件の AND が「`@font-face` の `src` 以外の url を 1 つも取得しない」の実体である
+        // （`font_urls_are_only_recorded_inside_font_face_src` がミューテーションで固定）。
+        if in_font_face && unit.property.as_deref() == Some("src") {
+            for url in &unit.font_src_urls {
+                // ⚠ 1 ブロックあたりの件数上限。`src` 宣言が何本あってもここで頭打ちになる
+                // （`unit.font_src_urls` 側の上限は「1 宣言あたり」なので、ブロック単位の天井は別に要る）。
+                if pending.len() >= MAX_STRIPPED_FONT_URLS {
+                    break;
+                }
+                if is_offerable_url(url) {
+                    pending.push(url.to_string());
+                }
             }
         }
         self.removals.push((start, end));
@@ -816,17 +1064,58 @@ impl<'a> Scanner<'a> {
         if self.stripped_import_urls.len() >= MAX_STRIPPED_IMPORT_URLS {
             return;
         }
-        if url.is_empty() || url.chars().count() > MAX_STRIPPED_IMPORT_URL_CHARS {
-            return;
+        if is_offerable_url(url) {
+            self.stripped_import_urls.push(url.to_string());
         }
-        if url.chars().any(is_unsafe_in_import_url) {
-            return;
-        }
-        if !starts_with_http_scheme(url) {
-            return;
-        }
-        self.stripped_import_urls.push(url.to_string());
     }
+}
+
+/// 060c/060h: **同意ダイアログへ載せてよい形か**（`@import` と `@font-face` の `src` で共通）。
+///
+/// ⚠⚠ **1 実装にしてあるのが要点**（060h で 2 つ目の載せ先ができたときに分けなかった）。
+/// 分けると「片方だけ bidi を許す」型の非対称が生まれる——このリポジトリで既に 2 回起きている失敗である
+/// （060b review② S-6 / 060c Q-4）。理由の詳細は [`Scanner::record_import_url`] の注記が正。
+/// 060h: `@font-face` の記述子を**そのまま CSS へ書き戻せる形**へ潰す。
+///
+/// ⚠⚠ この値は 060h が組み立てるフォント CSS へ**そのまま埋め込まれ、もう一度サニタイザを通る**。
+/// つまり構造を壊す文字（`{}();"'\` と `@` `\\`）が混ざると「取得できたのに保存で拒否される」になり、
+/// 原因がユーザーからまったく見えない。**ここで落としておく**のが唯一の防ぎ方である。
+/// ⚠ 制御文字と bidi / format 文字も落とす（`@import` の宛先と同じ理由——表示の偽装に使える）。
+/// ⚠ 長さ上限は 128（実物は `"Zen Kaku Gothic Antique"` や `U+3000-30FF, U+FF00-FFEF, …` の並び）。
+///
+/// ⚠⚠ **060h review S-4 で `/` と `*` を足した。** 上の集合だけだと**規則注入は不可能**だが
+/// （`{` `}` `;` `(` `)` `@` が全部落ちるので `@font-face{…}` の外へ出られない）、
+/// **CSS コメントの開始は作れていた**。実測:
+/// `@font-face{font-family:"/*";src:url(https://…)}` → `family = "/*"` がそのまま生成 CSS に載り、
+/// **以降のフォント CSS 全体がコメントとして飲まれて静かに無効化される**
+/// （サニタイザは無改変で通すので保存も成功し、ユーザーからは「書体が入らない」としか見えない）。
+/// ＝ `clamp_descriptor` が防ごうとしたその失敗モードなので、`/` と `*` を落として塞ぐ。
+/// ⚠ 記述子の正当な値に `/` `*` は現れない（`font-weight:700` / `font-style:italic` /
+/// `unicode-range:U+3000-30FF, U+FF00-FFEF` / 引用符を外したファミリ名）。
+fn clamp_descriptor(raw: &str) -> String {
+    const MAX_DESCRIPTOR_CHARS: usize = 128;
+    let cleaned: String = raw
+        .chars()
+        .filter(|c| {
+            !is_unsafe_in_import_url(*c)
+                && !matches!(
+                    *c,
+                    '{' | '}' | '(' | ')' | ';' | '"' | '\'' | '\\' | '@' | '/' | '*'
+                )
+        })
+        .collect();
+    let trimmed = cleaned.trim();
+    if trimmed.chars().count() > MAX_DESCRIPTOR_CHARS {
+        return String::new();
+    }
+    trimmed.to_string()
+}
+
+fn is_offerable_url(url: &str) -> bool {
+    !url.is_empty()
+        && url.chars().count() <= MAX_STRIPPED_IMPORT_URL_CHARS
+        && !url.chars().any(is_unsafe_in_import_url)
+        && starts_with_http_scheme(url)
 }
 
 /// 削除区間の**補集合**を書き出す。
@@ -913,6 +1202,15 @@ mod tests {
             Ok(outcome) => outcome,
             Err(e) => panic!("拒否されるはずのない CSS が拒否された: {e}"),
         }
+    }
+
+    /// 060h: 取得候補の URL を**全ブロックぶん平坦化**して返す（宛先だけを見たいテスト用）。
+    fn font_urls(outcome: &SanitizeOutcome) -> Vec<String> {
+        outcome
+            .stripped_font_faces
+            .iter()
+            .flat_map(|f| f.urls.iter().cloned())
+            .collect()
     }
 
     /// 出力に外部参照が 1 つも残っていないこと（残留検証を素通しさせない二重の保険）。
@@ -1274,6 +1572,278 @@ font-family: "M PLUS 1p", sans-serif;}
         assert_eq!(outcome.css, "@font-face{font-family:X;}");
         assert_eq!(outcome.stripped_count, 1);
         assert_clean(&outcome);
+    }
+
+    // --- 060h: `@font-face` の `src` の宛先だけを記録する ----------------------------------------
+    //
+    // ⚠⚠ **ここが「`@font-face` の `src` 以外の url を 1 つも取得しない」の唯一の担保**である。
+    // frontend も sidecar も CSS から URL を抜き出さず、取得できるのは
+    // `stripped_font_urls` に載ったものだけなので、**ここが緩むと取得対象が広がる**。
+
+    #[test]
+    fn font_urls_are_only_recorded_inside_font_face_src() {
+        // ⚠ 1 本の CSS に「載ってよいもの 1 件」と「載ってはいけないもの 4 件」を混ぜてある。
+        //   ミューテーション（`in_font_face` を外す／`property == "src"` を外す）で必ずレッドになる形。
+        // ⚠⚠ **並び順が要点（2026-08-09 のミューテーションで判明）。**
+        //   「`@font-face` の外の `src`」を**最初に**置くこと。後ろに置くと、`in_font_face` の判定を
+        //   外す変異を入れても「溜めたまま誰も確定しない」ので**テストが素通りして変異が生存する**
+        //   （実測で生存した）。前に置けば、直後の `@font-face` の確定に**混ざって**必ずレッドになる。
+        let outcome = run(concat!(
+            // `@font-face` の外の `src`（CSS Values 4 の `src()` 関数ではない普通の宣言）。
+            ".sd-comment{src:url(https://tracker.example/outside.woff2)}",
+            // 通常の意匠宣言。
+            ".sd-comment{background-image:url(https://tracker.example/bg.png)}",
+            ".sd-comment{cursor:url(https://tracker.example/c.png),auto}",
+            // ⚠⚠ **トラッキングピクセルの形**。`@font-face` の中でも `src` でなければ載せない。
+            "@font-face{font-family:Y;background-image:url(https://tracker.example/pixel.png)}",
+            // ここだけが候補に載ってよい。
+            "@font-face{font-family:X;src:url(https://fonts.example/ok.woff2) format(\"woff2\")}",
+        ));
+        assert_eq!(
+            font_urls(&outcome),
+            vec!["https://fonts.example/ok.woff2".to_string()],
+            "⚠ `@font-face` の `src` 以外の url が取得候補に載っている（トラッキングピクセルになる）"
+        );
+        assert_clean(&outcome);
+    }
+
+    #[test]
+    fn one_font_face_can_offer_several_sources() {
+        // `src:url(a) format(…),url(b) format(…)` は 1 宣言に複数の宛先を持つ（`@import` との違い）。
+        let outcome = run(
+            "@font-face{font-family:X;src:url(https://f.example/a.woff2) format(\"woff2\"),url(https://f.example/b.woff) format(\"woff\")}",
+        );
+        assert_eq!(
+            font_urls(&outcome),
+            vec![
+                "https://f.example/a.woff2".to_string(),
+                "https://f.example/b.woff".to_string()
+            ]
+        );
+        // ⚠ **1 ブロック 1 件**として返る（＝どの URL がどの `@font-face` のものか分かる）。
+        assert_eq!(outcome.stripped_font_faces.len(), 1);
+        assert_clean(&outcome);
+    }
+
+    #[test]
+    fn a_font_face_that_only_uses_data_uris_is_untouched_and_offers_nothing() {
+        // ⚠ 060h が保存するフォント CSS そのものの形。**サニタイザを無改変で通ること**が要件で、
+        //   通らないと「取得したのに保存できない」になる。
+        let css = "@font-face{font-family:X;src:url(data:font/woff2;base64,d09GMg==) format(\"woff2\");unicode-range:U+3000-30FF}";
+        let outcome = run(css);
+        assert_eq!(outcome.css, css, "生成したフォント CSS が書き換えられた");
+        assert_eq!(outcome.stripped_count, 0);
+        assert!(outcome.stripped_font_faces.is_empty());
+        assert_clean(&outcome);
+    }
+
+    #[test]
+    fn font_urls_follow_the_same_clamp_as_import_urls() {
+        // ⚠ 載せる形の規則は `@import` と**同一の 1 実装**（`is_offerable_url`）が決めている。
+        for css in [
+            // 相対 URL（ベースが無く取得しようがない）。
+            "@font-face{src:url(a.woff2)}",
+            // `data:` は取得対象ではない。
+            "@font-face{src:url(data:font/woff2;base64,AA)}",
+            // ⚠ エスケープを含む宛先は**難読化**なので fetcher へ渡さない。
+            r"@font-face{src:url(\68ttps://evil.example/a.woff2)}",
+            // ⚠ bidi / format 文字は表示偽装に使える（`char::is_control` では弾けない）。
+            "@font-face{src:url(https://evil.example/\u{202E}a.woff2)}",
+            // スキームが http(s) でない。
+            "@font-face{src:url(file:///etc/passwd)}",
+        ] {
+            let outcome = run(css);
+            assert!(
+                outcome.stripped_font_faces.is_empty(),
+                "載せてはいけない宛先を fetcher へ渡そうとしている: {css}"
+            );
+        }
+
+        // 2048 文字を超える宛先は載せない（1 件あたりの長さ上限は `@import` と共通）。
+        let long = format!(
+            "@font-face{{src:url(https://f.example/{}.woff2)}}",
+            "a".repeat(MAX_STRIPPED_IMPORT_URL_CHARS)
+        );
+        assert!(run(&long).stripped_font_faces.is_empty());
+    }
+
+    #[test]
+    fn the_font_url_list_is_capped() {
+        // ⚠ 日本語 Web フォントは unicode-range で約 110 分割されるので上限は 256 件（`@import` の 16 件とは別値）。
+        let mut css = String::new();
+        for i in 0..(MAX_STRIPPED_FONT_URLS + 8) {
+            css.push_str(&format!(
+                "@font-face{{font-family:X;src:url(https://f.example/{i}.woff2)}}"
+            ));
+        }
+        let outcome = run(&css);
+        assert_eq!(outcome.stripped_font_faces.len(), MAX_STRIPPED_FONT_URLS);
+        assert_clean(&outcome);
+    }
+
+    #[test]
+    fn font_face_descriptors_are_carried_and_clamped() {
+        // ⚠ `font-weight` / `font-style` / `unicode-range` を引き継がないと、複数ウェイトのファミリが
+        //   同じ family 名で潰れ、分割配信の意味も失われる（frontend の `buildFontFaceCss` が使う）。
+        let outcome = run(concat!(
+            "@font-face{font-family:'Zen Kaku Gothic Antique';font-weight:700;font-style:italic;",
+            "unicode-range:U+3000-30FF, U+FF00-FFEF;src:url(https://f.example/a.woff2)}",
+        ));
+        let face = &outcome.stripped_font_faces[0];
+        assert_eq!(face.family, "Zen Kaku Gothic Antique");
+        assert_eq!(face.weight, "700");
+        assert_eq!(face.style, "italic");
+        assert_eq!(face.unicode_range, "U+3000-30FF, U+FF00-FFEF");
+    }
+
+    #[test]
+    fn hostile_font_face_descriptors_cannot_break_the_generated_css() {
+        // ⚠⚠ **これが `clamp_descriptor` の存在理由**。ここで返る値は 060h が組み立てるフォント CSS へ
+        //   そのまま埋め込まれ、**もう一度サニタイザを通る**。構造を壊す文字が混ざると
+        //   「取得できたのに保存で拒否される」になり、原因がユーザーからまったく見えない。
+        //   ⚠ bidi / format 文字も落とす（`@import` の宛先と同じ理由＝表示の偽装に使える）。
+        //
+        // ⚠⚠ **初版のテストは vacuous だった**（060h security-review S-1・実測）。テスト CSS の
+        //   `src` 宣言が `@font-face` ブロックの**外**にある形になっており、`stripped_font_faces` が
+        //   **0 件**＝下のループが 1 度も回らず、`clamp_descriptor` を素通しにする部分変異
+        //   （`@` と `\` だけフィルタから外す）が**生存していた**。
+        //   → **`src` がブロックの中で閉じる形に直し、非空 assert を先頭に置く**。
+        //   ⚠ この種のテストを足すときは必ず「assert 対象が 1 件以上あること」を先に固定すること。
+        // ⚠ 敵対的な文字は**引用符の中**に置く。素の `}` は文（とブロック）をそこで終わらせてしまい、
+        //   `src` がブロックの外へ出て「0 件＝また vacuous」に戻るため。
+        let outcome = run(concat!(
+            "@font-face{font-family:'A\u{202E}B/*';",
+            "font-weight:'7}00{';",
+            "font-style:'it\\@(alic)';",
+            "unicode-range:'U+30*/,U+40';",
+            "src:url(https://f.example/a.woff2)}",
+        ));
+        assert!(
+            !outcome.stripped_font_faces.is_empty(),
+            "⚠⚠ assert 対象が 0 件＝このテストは何も検証していない（vacuous）"
+        );
+        for face in &outcome.stripped_font_faces {
+            for value in [&face.family, &face.weight, &face.style, &face.unicode_range] {
+                assert!(
+                    !value.chars().any(|c| matches!(
+                        c,
+                        '{' | '}' | '(' | ')' | ';' | '"' | '\'' | '\\' | '@' | '/' | '*'
+                    )),
+                    "⚠ 生成するフォント CSS の構造を壊せる文字が記述子に残った: {value:?}"
+                );
+                assert!(
+                    !value.chars().any(is_unsafe_in_import_url),
+                    "⚠ bidi / 制御文字が記述子に残った: {value:?}"
+                );
+            }
+        }
+        assert_clean(&outcome);
+    }
+
+    #[test]
+    fn a_quoted_comment_start_cannot_reach_the_generated_css() {
+        // ⚠⚠ 060h security-review S-4 の実測を固定する。`clamp_descriptor` が `/` `*` を落とさなかった
+        //   ときは、`font-family:"/*"` が `family = "/*"` として返り、生成したフォント CSS の
+        //   **以降すべてがコメントとして飲まれて静かに無効化**されていた（サニタイザは無改変で通すので
+        //   保存も成功し、ユーザーからは「書体が入らない」としか見えない）。
+        let outcome = run("@font-face{font-family:\"/*\";src:url(https://f.example/x.woff2)}");
+        assert_eq!(outcome.stripped_font_faces.len(), 1);
+        assert_eq!(
+            outcome.stripped_font_faces[0].family, "",
+            "⚠ コメント開始だけの記述子が生成 CSS へ届く（フォント CSS 全体が黙って無効になる）"
+        );
+    }
+
+    #[test]
+    fn a_leading_comment_does_not_shift_where_the_descriptor_value_starts() {
+        // ⚠⚠ 060h security-review S-6。文のスライスは `skip_ws_and_comments()` より**前**から始まるので、
+        //   値の開始を `find(':')` で探し直すと**先頭コメントの中のコロン**を掴む
+        //   （実測では `family` が `b*/font-family:REAL` になっていた）。
+        //   → プロパティ名を確定したその場で控えた `property_colon` を使う。
+        let outcome = run("@font-face{/*a:b*/font-family:REAL;src:url(https://f.example/x.woff2)}");
+        assert_eq!(outcome.stripped_font_faces.len(), 1);
+        assert_eq!(outcome.stripped_font_faces[0].family, "REAL");
+    }
+
+    #[test]
+    fn a_nested_or_unclosed_font_face_never_mixes_urls_into_another_block() {
+        // ⚠⚠ 060h security-review S-5。溜め場所が `Scanner` のフィールド 1 本だったときは、
+        //   `@font-face` の中の `@font-face`（および閉じ忘れ）で**内側の flush が外側の溜め分を奪い**、
+        //   別ブロックの記述子と混線していた（実測: family="INNER" urls=[outer, inner]／外側は消滅）。
+        //   ⚠ 取得する URL の集合自体は変わらない（どちらも `@font-face` 直下の `src`）が、
+        //   `font-family` / `unicode-range` との対応づけが壊れると選別も生成 CSS も誤る。
+        let outcome = run(concat!(
+            "@font-face{font-family:OUTER;src:url(https://f.example/outer.woff2);",
+            "@font-face{font-family:INNER;src:url(https://f.example/inner.woff2)}",
+            "}",
+        ));
+        for face in &outcome.stripped_font_faces {
+            match face.family.as_str() {
+                "OUTER" => assert_eq!(face.urls, vec!["https://f.example/outer.woff2".to_string()]),
+                "INNER" => assert_eq!(face.urls, vec!["https://f.example/inner.woff2".to_string()]),
+                other => panic!("知らない `@font-face` が返った: {other:?}"),
+            }
+        }
+        assert_eq!(outcome.stripped_font_faces.len(), 2, "⚠ ブロックを取りこぼした");
+
+        // 閉じ忘れ（EOF 終端）でも同じ。⚠ こちらは初版で「a も b も Y のもの」になっていた。
+        let unclosed = run(concat!(
+            "@font-face{font-family:X;src:url(https://f.example/a.woff2);",
+            "@font-face{font-family:Y;src:url(https://f.example/b.woff2)}",
+        ));
+        for face in &unclosed.stripped_font_faces {
+            assert_eq!(
+                face.urls.len(),
+                1,
+                "⚠ 別ブロックの宛先が混線している: {face:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn top_level_content_other_than_font_face_is_reported() {
+        // ⚠⚠ 060h security-review S-10。フォント資産は注入時に `rewriteSelectors` /
+        //   `scopeSelectors` / `withDecorationReset` を**1 つも通らない**ので、そこへ
+        //   セレクタ付きの CSS が流れると**変換を通さない注入口**になる。
+        //   `service::attach_theme_fonts` だけがこの値を見て拒否する（意匠 CSS は当然セレクタを持つ）。
+        for only_font_face in [
+            "@font-face{font-family:X;src:url(data:font/woff2;base64,AA==) format(\"woff2\")}",
+            // 生成物の実際の形（`\n` 連結・複数ブロック）。
+            "@font-face{font-family:X;src:url(data:font/woff2;base64,AA==)}\n@font-face{font-family:Y;src:url(data:font/woff2;base64,BB==)}",
+            "",
+            "   \n\t ",
+        ] {
+            assert!(
+                !run(only_font_face).top_level_non_font_face,
+                "⚠ `@font-face` だけの CSS を拒否側に倒している: {only_font_face:?}"
+            );
+        }
+        for has_other in [
+            ".sd-comment{color:red}",
+            "@font-face{font-family:X;src:url(data:font/woff2;base64,AA==)}\n.sd-comment{color:red}",
+            "@media screen{@font-face{font-family:X;src:url(data:font/woff2;base64,AA==)}}",
+            "@keyframes k{from{opacity:0}}",
+            "body{display:none}",
+        ] {
+            assert!(
+                run(has_other).top_level_non_font_face,
+                "⚠ `@font-face` 以外のトップレベル規則を見逃した: {has_other:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_selector_pseudo_class_is_not_mistaken_for_a_property() {
+        // ⚠ プロパティ名の判定は「**文の最初の識別子**で直後が `:`」。2 つ目以降まで見ると
+        //   `div:hover` のようなセレクタをプロパティ名と誤認する。ここで固定しておく。
+        let outcome = run("@font-face{a:hover;src:url(https://f.example/x.woff2)}");
+        assert_eq!(
+            font_urls(&outcome),
+            vec!["https://f.example/x.woff2".to_string()]
+        );
+        // ⚠ セレクタ形（`div:hover`）の中の url は載らない。
+        let other = run("div:hover{src:url(https://tracker.example/x.woff2)}");
+        assert!(other.stripped_font_faces.is_empty());
     }
 
     #[test]

@@ -364,7 +364,7 @@ export function isInternalAddress(address: string, family: number): boolean {
  * | `https:` のみ | `http:` は中間者に書き換えられる＝任意 CSS を注入される |
  * | userinfo 無し | `https://trusted.example@evil.example/a.css` の実宛先は `evil.example` |
  * | ポート指定無し（＝ 443 のみ） | ⚠ WHATWG URL は既定ポートを削るので `https://a/x` も `https://a:443/x` も `port === ""` |
- * | クエリ・フラグメント無し | 取得できる形を狭める。⚠ **060h（Google Fonts の `?family=`）は緩和が要る**——そのときは再レビュー |
+ * | フラグメント無し | 取得できる形を狭める（⚠ **クエリは 060h で解禁した**——下の [`assertAllowedThemeUrl`] の注記） |
  * | パスが `.css` 終端 | 同上。`%2Ecss` は一致せず拒否＝安全側 |
  * | IP リテラルでない | ⚠ **SSRF の中核**。10 進/16 進の変種も URL 正規化で dotted-quad になるので 1 本で捕まる |
  * | 単一ラベルでない（ドットを含む） | `https://intranet/a.css` は検索ドメインで社内に解決される |
@@ -376,6 +376,82 @@ export function isInternalAddress(address: string, family: number): boolean {
  * 取得直前の DNS 検査で塞ぐ（`theme-import.ts`）。本関数は同期で、ネットワークに触らない。
  */
 export function assertAllowedThemeImportUrl(raw: string): void {
+  assertAllowedThemeUrl(raw, isStylesheetPath);
+}
+
+/**
+ * 060c/060h: **スタイルシートとして取得してよいパスの形か。**
+ *
+ * ⚠⚠ **060h で `.css` 終端だけでは足りないことが実測で分かった**——2 段目の必須形
+ * `https://fonts.googleapis.com/css2?family=…` の `pathname` は **`/css2`** であり、
+ * `.css` で終わらない（v1 は `/css`）。クエリだけ解禁しても Google Fonts には**到達できない**。
+ *
+ * → 許すのは次の 2 つだけ:
+ * 1. パスが **`.css` 終端**（従来どおり。`%2Ecss` は一致せず拒否＝安全側）
+ * 2. **最後のパス片が `css` ＋ 数字 0 個以上**（`/css` `/css2` …）
+ *
+ * ⚠ 2 は**ホストを名指ししない「形」の規則**である（allow-list にホストを 1 つも足していない）。
+ * ⚠ **これ以上は広げないこと。** ここを「拡張子を見ない」まで緩めると、この経路は
+ * 「ユーザーが同意すれば任意の HTTPS エンドポイントへ GET できる汎用フェッチャ」になる。
+ * 実際の中身が CSS であることは別途 `Content-Type: text/css` の厳密一致が担保している。
+ */
+function isStylesheetPath(path: string): boolean {
+  if (path.endsWith(".css")) return true;
+  const last = path.slice(path.lastIndexOf("/") + 1);
+  return /^css[0-9]*$/.test(last);
+}
+
+/**
+ * 060h: **フォント実体として取得してよいパスの形か**（`.woff2` / `.woff` 終端）。
+ *
+ * ⚠ `.ttf` / `.otf` / `.eot` は入れない——060h が扱うのは
+ * 「Web フォント CSS が `@font-face` の `src` で指す実体」で、実運用は woff2（フォールバックに woff）である。
+ * 広げるほど「何でも取れる汎用フェッチャ」に近づくので、**実際に要る形だけ**に留める。
+ * ⚠ CSS 側の `/css2` のような**拡張子無しの形は許さない**（フォント側にその必要が無い＝
+ * `fonts.gstatic.com` の実体 URL は必ず `.woff2` で終わる）。
+ */
+function isFontPath(path: string): boolean {
+  return path.endsWith(".woff2") || path.endsWith(".woff");
+}
+
+/**
+ * 060h: **`@font-face` の `src` が指すフォント実体**の取得先を検証する fail-closed アサート。
+ *
+ * ⚠⚠ **`assertAllowedThemeImportUrl` と同一の条件で、違うのは拡張子だけ**
+ * （`.css` → `.woff2` / `.woff`）。だから判定本体は [`assertAllowedThemeUrl`] の**1 実装**を共有する
+ * ——分けると「片方だけ SSRF 拒否が緩む」型の事故が起きる（060c が
+ * `assertAllowedObsUrl` を別関数にした理由とは**逆向き**の判断である点に注意:
+ * あちらは要件が正反対だから分けた／こちらは要件が同じだから分けない）。
+ *
+ * ⚠ **別の名前で公開しているのは意味がある**——「CSS を取る口」と「フォントを取る口」が
+ * 呼び出し側で取り違えられないようにするため（フォント枠のレート制限も別枠なので、
+ * ここが混ざると濫用防止の枠まで混ざる）。
+ */
+export function assertAllowedThemeFontUrl(raw: string): void {
+  assertAllowedThemeUrl(raw, isFontPath);
+}
+
+/**
+ * 060c/060h: テーマ取り込みの取得先に共通の形の検査（**拡張子だけ**が呼び出し側で変わる）。
+ *
+ * ⚠⚠ **クエリの禁止は 060h で解禁した。** 理由:
+ * - **必要**: 2 段目の宛先 `https://fonts.googleapis.com/css2?family=M+PLUS+1p:wght@400` は
+ *   クエリが本体で、禁止したままだと 060h の目的（書体を反映する）を達成できない。
+ * - **脅威モデルは変わらない**: クエリで運べる情報は**パスで既に運べる**
+ *   （`https://tracker.example/<id>.css` は 060c の時点で通る）。
+ *   ＝「取得できる形を狭める」担保は `https:` / 443 / 拡張子 / IP リテラル拒否 / 内部サフィックス拒否 /
+ *   DNS 事前解決検査 / リダイレクト禁止 / 毎回の明示同意 / チケット認証 が引き続き受け持つ。
+ * - ⚠ **フラグメントの禁止は残す**（サーバへ送られない部分なので取得の形を広げる意味が無く、
+ *   同意ダイアログの表示だけを長くする）。
+ * - ⚠ `redactUrl` は**引き続きクエリを落とす**ので、ログ・エラーに載る面は広がっていない（§9）。
+ *
+ * ⚠ パスの判定は `pathname`（＝クエリを含まない）に対して行う。
+ * `…/a.woff2?v=1` は通り、`…/a.php?x=.woff2` は通らない。
+ */
+function assertAllowedThemeUrl(
+  raw: string,
+  isAllowedPath: (path: string) => boolean,
+): void {
   let u: URL;
   try {
     u = new URL(raw);
@@ -383,14 +459,14 @@ export function assertAllowedThemeImportUrl(raw: string): void {
     throw new DisallowedHostError(raw);
   }
   const host = normalizeThemeImportHost(u.hostname);
+  const path = u.pathname.toLowerCase();
   if (
     u.protocol !== "https:" ||
     u.username !== "" ||
     u.password !== "" ||
     u.port !== "" ||
-    u.search !== "" ||
     u.hash !== "" ||
-    !u.pathname.toLowerCase().endsWith(".css") ||
+    !isAllowedPath(path) ||
     host === "" ||
     host.startsWith("[") || // IPv6 リテラル
     isIpv4Literal(host) || // IPv4 リテラル（10 進/16 進の変種も正規化済み）
@@ -422,6 +498,22 @@ export function themeImportFetch(
   init: RequestInit,
 ): Promise<Response> {
   assertAllowedThemeImportUrl(rawUrl);
+  const unguarded = preGuardFetch ?? globalThis.fetch;
+  return unguarded(rawUrl, init);
+}
+
+/**
+ * 060h: **フォント実体**の取得を行う唯一の入口。必ず [`assertAllowedThemeFontUrl`] を通す。
+ *
+ * ⚠ `themeImportFetch` と**別関数にしてある**のは、`.css` を取る口で `.woff2` が取れたり
+ * その逆が起きたりしないようにするため（アサートと入口が 1 対 1 で対応する）。
+ * ⚠ 素の `fetch` の参照はこのモジュールの外へ出さない（`themeImportFetch` と同じ規則）。
+ */
+export function themeFontFetch(
+  rawUrl: string,
+  init: RequestInit,
+): Promise<Response> {
+  assertAllowedThemeFontUrl(rawUrl);
   const unguarded = preGuardFetch ?? globalThis.fetch;
   return unguarded(rawUrl, init);
 }
@@ -494,4 +586,6 @@ export const __hostGuardInternals = {
   // 060c
   assertAllowedThemeImportUrl,
   isInternalAddress,
+  // 060h
+  assertAllowedThemeFontUrl,
 };

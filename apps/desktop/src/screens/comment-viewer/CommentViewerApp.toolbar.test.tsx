@@ -85,7 +85,10 @@ const mocks = vi.hoisted(() => ({
     disableObs: vi.fn(),
     // 060c: 外部 `@import` 取得。⚠ テストで**実際に呼ばれてはいけない**（このファイルは
     // WS の制御フレームを検証する場所で、取得の同意経路は OverlayThemeCard.test.tsx が持つ）。
-    requestThemeImport: vi.fn(async () => ({
+    requestThemeFont: vi.fn(() =>
+    Promise.resolve({ ok: false as const, reason: "offline" }),
+  ),
+  requestThemeImport: vi.fn(async () => ({
       ok: false as const,
       reason: "offline",
     })),

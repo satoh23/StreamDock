@@ -53,6 +53,57 @@ const THEMES_DIR: &str = "themes";
 /// `MAX_CSS_BYTES - 既存 CSS 長` の動的値にする」の 2 段にすること。
 const MAX_CSS_BYTES: u64 = 256 * 1024;
 
+/// 060h: **フォント資産**（`@font-face` だけの CSS）の上限（5MiB）。
+///
+/// ⚠⚠ **意匠の [`MAX_CSS_BYTES`] を上げていないのが要点。** 256KB は 060a の実測に紐づく
+/// **注入経路の予算**で、`rewriteSelectors` は 060d が注入のたびに毎回走らせる。
+/// フォント資産は **`rewriteSelectors` も `scopeSelectors` も `withDecorationReset` も通らない**
+/// （`@font-face` はセレクタを持たないので変換する対象が無い）＝注入時のコストは
+/// 「ブラウザが CSS を 1 回パースする」だけなので、256KB の根拠がそもそも及ばない。
+///
+/// 値の根拠: 060h の取得側予算は **生 woff2 で 3MiB**（base64 で 4MiB）。
+/// それに `@font-face` の記述（1 ブロック約 200 バイト × 256 件 ≒ 50KB）と余裕を足して 5MiB。
+/// ⚠ **ディスクの天井が上がる**（従来 256KB×200 件 ≒ 50MB → 最大 (256KB+5MiB)×200 件 ≒ 1GB）。
+/// 200 件上限（[`MAX_THEMES`]）は**据え置く**。再修正トリガーは `docs/security.md` §5 の 060b 例外節④。
+const MAX_FONT_CSS_BYTES: u64 = 5 * 1024 * 1024;
+
+/// 060h: テーマが持つ**管理下の資産**の種別。
+///
+/// ⚠⚠ **違うのは本文の上限だけ**である。保存先の組み立て（`app_data_dir/themes/<uuid v4>.css`）・
+/// サニタイズ・書き込みは [`write_sanitized_asset`] の**1 セット**を共有する。
+/// ＝ `is_managed_file_name()` は書き換えていない（**書けるファイル名の集合は 1 バイトも広がっていない**）。
+///
+/// ⚠ この型に「`@font-face` だけか」の規則を持たせていないのは意図（060h review S-10）。
+/// あれは**資産の性質**ではなく **`attach_theme_fonts` という 1 つの入口の受け入れ条件**なので、
+/// 検査はそちらに置いてある（`SanitizeOutcome::top_level_non_font_face` を見る）。
+/// ここへ持ち込むと `validate_css_body` が資産種別ごとに分岐を増やす形になり、
+/// 「**上限だけが違う**」という読みやすさが崩れる。
+/// ⚠ 再修正トリガー＝ 3 つ目の資産種別が増えて、種別ごとに違う本文規則が 2 つ以上になったとき。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ThemeAsset {
+    /// 意匠 CSS（従来の `<theme id>.css`）。注入のたびに `rewriteSelectors` が走る。
+    Design,
+    /// 060h: フォント CSS（`@font-face` ＋ `data:` の woff2 だけ）。変換を一切通さない別 `<style>` に載る。
+    Fonts,
+}
+
+impl ThemeAsset {
+    fn max_bytes(self) -> u64 {
+        match self {
+            ThemeAsset::Design => MAX_CSS_BYTES,
+            ThemeAsset::Fonts => MAX_FONT_CSS_BYTES,
+        }
+    }
+
+    /// エラー文言に出す上限の表記（⚠ ユーザー入力は 1 バイトも補間しない・§9）。
+    fn limit_label(self) -> &'static str {
+        match self {
+            ThemeAsset::Design => "256KB",
+            ThemeAsset::Fonts => "5MB",
+        }
+    }
+}
+
 /// テーマ名の長さ上限（文字数。バイト数ではない）。一覧の 1 行に収まる長さ。
 const MAX_NAME_CHARS: usize = 80;
 
@@ -114,14 +165,19 @@ pub fn validate_theme_name(raw: &str) -> AppResult<String> {
 /// CSS 本文に当てると**まともなファイルが 1 つも通らない**。ここでは CSS が空白として扱う
 /// `\t` / `\n` / `\r` / `\u{0C}` を許し、それ以外の C0 と DEL を拒否する。
 /// ⚠ `name` の規則（`reject_control_chars`）とは**意図的に違う**。片方を直すときはもう片方も見ること。
-fn validate_css_body(raw: &str) -> AppResult<String> {
+///
+/// ⚠⚠ 060h: **`asset` で変わるのは上限だけ**（意匠 256KB／フォント 5MiB）。制御文字の規則も BOM の扱いも
+/// 共通である＝「フォントだけ検査がゆるい」という形を作らない。理由は [`ThemeAsset`] の注記。
+fn validate_css_body(raw: &str, asset: ThemeAsset) -> AppResult<String> {
     // CSS 仕様上、スタイルシートは BOM で始まってよい。剥がさないと先頭の規則が壊れる。
     // ⚠ 途中の U+FEFF は制御文字ではない（ゼロ幅スペース）ので触らない。
     let css = raw.strip_prefix('\u{FEFF}').unwrap_or(raw);
-    if css.len() as u64 > MAX_CSS_BYTES {
-        return Err(AppError::validation(
-            "CSS が大きすぎます。256KB 以内にしてください。",
-        ));
+    if css.len() as u64 > asset.max_bytes() {
+        // ⚠ 補間するのはコンパイル時定数だけ（ユーザー入力は 1 バイトも載せない・§9）。
+        return Err(AppError::validation(format!(
+            "CSS が大きすぎます。{} 以内にしてください。",
+            asset.limit_label()
+        )));
     }
     if css.chars().any(is_forbidden_in_css_body) {
         return Err(AppError::unsupported_file_type(
@@ -359,25 +415,16 @@ pub fn store_sanitized_css(
     origin: OverlayThemeOrigin,
 ) -> AppResult<OverlayThemeImportResult> {
     let name = validate_theme_name(raw_name)?;
-    let css = validate_css_body(raw_css)?;
     if repository::count(conn)? >= MAX_THEMES {
         return Err(AppError::validation(
             "登録できるテーマの上限に達しています。不要なテーマを削除してください。",
         ));
     }
 
-    // ⚠ ここが本タスクの核心。取り除ききれない形は Err で返る（fail-closed）。
-    let outcome = sanitize::sanitize_css(&css)?;
-
     // ファイル名は**アプリが採番した id 由来**。元ファイル名も name も使わない（§5）。
     let id = uuid::Uuid::new_v4().to_string();
     let file_name = format!("{id}.css");
-    let path = managed_path(dir, &file_name)?;
-
-    std::fs::create_dir_all(dir)
-        .map_err(|_| AppError::storage("テーマの保存先を用意できませんでした。"))?;
-    std::fs::write(&path, outcome.css.as_bytes())
-        .map_err(|_| AppError::storage("テーマを保存できませんでした。"))?;
+    let (path, outcome) = write_sanitized_asset(dir, raw_css, &file_name, ThemeAsset::Design)?;
 
     let now = now_rfc3339();
     let theme = OverlayThemeRecord {
@@ -401,8 +448,132 @@ pub fn store_sanitized_css(
     Ok(OverlayThemeImportResult {
         theme,
         stripped_import_urls: outcome.stripped_import_urls,
+        stripped_font_faces: outcome.stripped_font_faces,
         truncated_to_eof: outcome.truncated_to_eof,
     })
+}
+
+/// **検証・サニタイズ・ファイル書き込みの共通コア**（060h で切り出した私有ヘルパ）。
+///
+/// ⚠⚠ **`sanitize::sanitize_css(` と `std::fs::write(` が現れるのはこの関数の中だけ**である。
+/// 契約テスト `exactly_one_place_sanitizes_and_exactly_one_place_writes` が出現回数 1 で固定しており、
+/// **060h でフォント資産という 2 本目の保存経路ができても、それは緩めずに済んだ**——
+/// [`store_sanitized_css`]（意匠）と [`attach_theme_fonts`]（フォント）は
+/// **どちらもここへ委譲するだけ**なので、「保存経路が 2 本に分かれて片方だけ緩む」形が構造的に作れない。
+/// ⚠ **数字合わせで契約テストを通したのではない**（`docs/security.md` §5 の 060b 例外節④が再評価の記録）。
+///
+/// ⚠ `file_name` は**呼び出し側がアプリ採番の uuid v4 から組む**（ユーザー入力は 1 バイトも入らない）。
+/// パスへ結合する直前に [`managed_path`] が `<uuid v4>.css` 完全一致を検査する（多層防御）。
+fn write_sanitized_asset(
+    dir: &Path,
+    raw_css: &str,
+    file_name: &str,
+    asset: ThemeAsset,
+) -> AppResult<(PathBuf, sanitize::SanitizeOutcome)> {
+    let css = validate_css_body(raw_css, asset)?;
+    // ⚠ ここが 060b の核心。取り除ききれない形は Err で返る（fail-closed）。
+    let outcome = sanitize::sanitize_css(&css)?;
+    let path = managed_path(dir, file_name)?;
+
+    std::fs::create_dir_all(dir)
+        .map_err(|_| AppError::storage("テーマの保存先を用意できませんでした。"))?;
+    std::fs::write(&path, outcome.css.as_bytes())
+        .map_err(|_| AppError::storage("テーマを保存できませんでした。"))?;
+    Ok((path, outcome))
+}
+
+/// 060h: 取得した Web フォントを **`@font-face` だけの CSS** としてテーマへ添える。
+///
+/// ⚠⚠ **意匠 CSS とは別ファイル・別 `<style>`** にするのが要件（060h 問題④）。
+/// 同じ文字列に混ぜると、テーマを切り替えるたびに `rewriteSelectors` が数 MB を走査することになる。
+/// フォント CSS はセレクタを持たないので**変換も走査も要らない**。
+///
+/// ⚠ **ファイル名は資産ごとに別の uuid v4**（`<uuid v4>.css`）。テーマ id とは独立させてあるので、
+/// [`is_managed_file_name`] の完全一致を**1 文字も緩めずに**2 つ目のファイルを持てる。
+///
+/// ⚠ 既にフォント資産があるテーマに対して呼ぶと**差し替える**（古いファイルは best-effort 削除）。
+/// 取り込みは「撮ったら固定」なので通常は 1 回だけだが、`@import` のラウンドが増えたときに
+/// 同じテーマへ 2 回書く経路が理屈の上では作れるため、冪等に倒しておく。
+pub fn attach_theme_fonts(
+    dir: &Path,
+    conn: &Connection,
+    id: &str,
+    raw_css: &str,
+) -> AppResult<()> {
+    if !is_theme_id(id) {
+        return Err(AppError::not_found("テーマが見つかりません。"));
+    }
+    // ⚠ 実在しないテーマへ書かない（孤児ファイルを作らない）。
+    if repository::file_name_of(conn, id)?.is_none() {
+        return Err(AppError::not_found("テーマが見つかりません。"));
+    }
+    let previous = repository::font_file_name_of(conn, id)?;
+
+    let asset_id = uuid::Uuid::new_v4().to_string();
+    let file_name = format!("{asset_id}.css");
+    let (path, outcome) = write_sanitized_asset(dir, raw_css, &file_name, ThemeAsset::Fonts)?;
+
+    // ⚠⚠ 060h review S-10: **フォント資産は `@font-face` だけであること**を Rust 側で確かめる。
+    // この資産は注入時に `rewriteSelectors` / `scopeSelectors` / `withDecorationReset` を
+    // **1 つも通らない**（`@font-face` はセレクタを持たないから変換が要らない、という前提で
+    // 別 `<style>` に載せている）。その前提を守っているのが frontend の `buildFontFaceCss` の
+    // 作法だけだと、「変換を通さない注入口へ任意の CSS を流す」形が将来の 1 行で作れてしまう。
+    // ここで拒否すれば、**注入経路の性質と保存できる中身が構造的に一致する**。
+    // ⚠ 書いた後に検査しているのはサニタイズ済みの本文を見たいため。落ちたら必ず掃除する。
+    if outcome.top_level_non_font_face {
+        let _ = std::fs::remove_file(&path);
+        return Err(AppError::validation(
+            "書体の取り込みに失敗しました。書体以外の指定が含まれています。",
+        ));
+    }
+
+    // ⚠ **書き込み → UPDATE の順**（意匠と同じ理由）。UPDATE に失敗したら書いたファイルを掃除する。
+    // ⚠ 060h review S-11: **更新行数も見る**。存在確認と UPDATE の間にテーマが消えると
+    // `Ok(0)` が返り、書いたファイルが `delete` からも辿れない永久孤児になる。
+    match repository::set_font_file_name(conn, id, &file_name, &now_rfc3339()) {
+        Err(e) => {
+            let _ = std::fs::remove_file(&path);
+            return Err(AppError::from(e));
+        }
+        Ok(0) => {
+            let _ = std::fs::remove_file(&path);
+            return Err(AppError::not_found("テーマが見つかりません。"));
+        }
+        Ok(_) => {}
+    }
+    // 旧資産は best-effort で消す（残っても不可視の孤児ファイル＝無害）。
+    if let Some(previous) = previous {
+        if previous != file_name {
+            if let Ok(old) = managed_path(dir, &previous) {
+                let _ = std::fs::remove_file(old);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 060h: テーマのフォント CSS を返す（無ければ空文字）。
+///
+/// ⚠ 意匠と同じく **frontend からパスを受け取らない**。`id` で DB を引き、DB の `font_file_name` を
+/// [`managed_path`] に通してから読む。
+/// ⚠ **「フォントが無い」と「読めない」を分けない**（どちらも空文字）——注入側は
+/// 「空なら `<style>` を作らない」だけなので、ユーザーが取る行動が変わらない。
+pub fn read_font_css(dir: &Path, conn: &Connection, id: &str) -> AppResult<String> {
+    if !is_theme_id(id) {
+        return Err(AppError::not_found("テーマが見つかりません。"));
+    }
+    let Some(file_name) = repository::font_file_name_of(conn, id)? else {
+        return Ok(String::new());
+    };
+    let path = managed_path(dir, &file_name)?;
+    let Ok(bytes) = std::fs::read(&path) else {
+        return Ok(String::new());
+    };
+    match String::from_utf8(bytes) {
+        Ok(css) => Ok(css),
+        // ⚠ 自分で書いた UTF-8 なので通常は起きない。壊れていたら「フォント無し」へ倒す（配信を止めない）。
+        Err(_) => Ok(String::new()),
+    }
 }
 
 // --- 取り出し・更新・削除 -----------------------------------------------------------------------
@@ -449,11 +620,14 @@ pub fn delete(dir: &Path, conn: &Connection, id: &str) -> AppResult<()> {
         return Err(AppError::not_found("テーマが見つかりません。"));
     }
     let file_name = repository::file_name_of(conn, id)?;
+    // ⚠ 060h: テーマは**最大 2 ファイル**を持つ（意匠 ＋ フォント）。取り出すのは行を消す**前**。
+    let font_file_name = repository::font_file_name_of(conn, id)?;
     if repository::delete(conn, id)? == 0 {
         return Err(AppError::not_found("テーマが見つかりません。"));
     }
-    if let Some(file_name) = file_name {
-        if let Ok(path) = managed_path(dir, &file_name) {
+    // ⚠ **どちらも消す**。片方だけ消すと不可視の孤児ファイルが残り続ける（無害だが増える一方になる）。
+    for name in [file_name, font_file_name].into_iter().flatten() {
+        if let Ok(path) = managed_path(dir, &name) {
             let _ = std::fs::remove_file(path);
         }
     }
@@ -610,10 +784,10 @@ mod tests {
     fn the_css_body_keeps_whitespace_controls_but_rejects_the_rest() {
         // CSS は改行・タブ・フォームフィードを空白として使う。`reject_control_chars` を
         // そのまま当てるとここが全滅する（だから別規則にしてある）。
-        assert!(validate_css_body(".a{\n\tcolor:red;\r\n}\u{0C}").is_ok());
+        assert!(validate_css_body(".a{\n\tcolor:red;\r\n}\u{0C}", ThemeAsset::Design).is_ok());
 
         for bad in [".a{\u{0}}", ".a{\u{1}}", ".a{\u{7F}}", ".a{\u{1B}}"] {
-            let err = match validate_css_body(bad) {
+            let err = match validate_css_body(bad, ThemeAsset::Design) {
                 Ok(_) => panic!("制御文字入りの CSS を通した: {bad:?}"),
                 Err(e) => e,
             };
@@ -623,11 +797,11 @@ mod tests {
 
     #[test]
     fn a_leading_bom_is_stripped_so_the_first_rule_still_parses() {
-        let body = validate_css_body("\u{FEFF}.a{color:red}").ok();
+        let body = validate_css_body("\u{FEFF}.a{color:red}", ThemeAsset::Design).ok();
         assert_eq!(body, Some(".a{color:red}".to_string()));
         // 途中の U+FEFF は制御文字ではないので触らない。
         assert_eq!(
-            validate_css_body(".a{content:\"\u{FEFF}\"}").ok(),
+            validate_css_body(".a{content:\"\u{FEFF}\"}", ThemeAsset::Design).ok(),
             Some(".a{content:\"\u{FEFF}\"}".to_string())
         );
     }
@@ -635,13 +809,309 @@ mod tests {
     #[test]
     fn the_size_limit_is_enforced_on_the_body_at_its_exact_boundary() {
         let at_limit = "a".repeat(MAX_CSS_BYTES as usize);
-        assert!(validate_css_body(&at_limit).is_ok());
+        assert!(validate_css_body(&at_limit, ThemeAsset::Design).is_ok());
         let over_limit = "a".repeat(MAX_CSS_BYTES as usize + 1);
-        let err = match validate_css_body(&over_limit) {
+        let err = match validate_css_body(&over_limit, ThemeAsset::Design) {
             Ok(_) => panic!("上限超えの CSS を通した"),
             Err(e) => e,
         };
         assert_eq!(err.code, ErrorCode::ValidationError);
+    }
+
+    // --- 060h: フォント資産（2 つ目の管理ファイル）-------------------------------------------------
+
+    #[test]
+    fn the_font_asset_has_its_own_byte_limit_and_the_design_limit_is_unchanged() {
+        // ⚠⚠ **意匠の 256KB は動かしていない**（060a の実測に紐づく注入経路の予算）。
+        let over_design = "a".repeat(MAX_CSS_BYTES as usize + 1);
+        assert!(validate_css_body(&over_design, ThemeAsset::Design).is_err());
+        // フォント資産は同じ本文でも通る（上限だけが違う）。
+        assert!(validate_css_body(&over_design, ThemeAsset::Fonts).is_ok());
+        // フォント側にも上限はある（無制限ではない）。
+        let over_fonts = "a".repeat(MAX_FONT_CSS_BYTES as usize + 1);
+        let err = match validate_css_body(&over_fonts, ThemeAsset::Fonts) {
+            Ok(_) => panic!("上限超えのフォント CSS を通した"),
+            Err(e) => e,
+        };
+        assert_eq!(err.code, ErrorCode::ValidationError);
+        // ⚠ 制御文字の規則は資産種別で変わらない（「フォントだけ検査がゆるい」を作らない）。
+        assert!(validate_css_body(".a{\u{0}}", ThemeAsset::Fonts).is_err());
+    }
+
+    #[test]
+    fn attaching_fonts_writes_a_second_managed_file_and_reads_back() {
+        let dir = TempDir::new();
+        let conn = conn();
+        let imported = match import_pasted_text(dir.path(), &conn, ".sd-comment{color:red}", "t") {
+            Ok(r) => r,
+            Err(e) => panic!("取り込みに失敗: {e}"),
+        };
+        // 取り込み直後はフォント資産を持たない＝空文字（「無い」と「読めない」を分けない）。
+        assert_eq!(
+            read_font_css(dir.path(), &conn, &imported.theme.id).ok(),
+            Some(String::new())
+        );
+
+        let fonts = "@font-face{font-family:X;src:url(data:font/woff2;base64,d09GMg==) format(\"woff2\")}";
+        if let Err(e) = attach_theme_fonts(dir.path(), &conn, &imported.theme.id, fonts) {
+            panic!("フォント資産を添えられない: {e}");
+        }
+        assert_eq!(
+            read_font_css(dir.path(), &conn, &imported.theme.id).ok(),
+            Some(fonts.to_string()),
+            "⚠ 生成したフォント CSS がサニタイザに書き換えられている（data: は許可形のはず）"
+        );
+
+        // ⚠⚠ **ファイルは 2 つ**、どちらも `<uuid v4>.css` 形（`is_managed_file_name` を緩めていない）。
+        let entries = dir.entries();
+        assert_eq!(entries.len(), 2, "管理ファイルが 2 つでない: {entries:?}");
+        for name in &entries {
+            assert!(
+                is_managed_file_name(name),
+                "管理外のファイル名で保存された: {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn attaching_fonts_twice_replaces_the_previous_asset() {
+        let dir = TempDir::new();
+        let conn = conn();
+        let imported = match import_pasted_text(dir.path(), &conn, ".sd-comment{color:red}", "t") {
+            Ok(r) => r,
+            Err(e) => panic!("取り込みに失敗: {e}"),
+        };
+        let first = "@font-face{font-family:A;src:url(data:font/woff2;base64,AA==)}";
+        let second = "@font-face{font-family:B;src:url(data:font/woff2;base64,BB==)}";
+        let _ = attach_theme_fonts(dir.path(), &conn, &imported.theme.id, first);
+        let _ = attach_theme_fonts(dir.path(), &conn, &imported.theme.id, second);
+        assert_eq!(
+            read_font_css(dir.path(), &conn, &imported.theme.id).ok(),
+            Some(second.to_string())
+        );
+        // 旧資産は掃除される（不可視の孤児を溜めない）。
+        assert_eq!(dir.entries().len(), 2, "古いフォント資産が残っている");
+    }
+
+    #[test]
+    fn the_generated_font_css_survives_the_sanitizer_byte_for_byte() {
+        // ⚠⚠ **frontend の `buildFontFaceCss` が実際に作る形**をそのまま通す言語跨ぎの契約テスト。
+        //   ここが崩れると「同意も帯域も使ったのに保存で拒否される／書き換えられる」になり、
+        //   原因がユーザーからまったく見えない。⚠ 060h review Q-1 で引用符を付けたので、
+        //   **引用符付きファミリ・数字始まりのトークン（`M PLUS 1p`）・カンマ入り unicode-range・
+        //   複数ブロックの `\n` 連結**という実物の形を固定しておく。
+        let dir = TempDir::new();
+        let conn = conn();
+        let imported = match import_pasted_text(dir.path(), &conn, ".sd-comment{color:red}", "t") {
+            Ok(r) => r,
+            Err(e) => panic!("取り込みに失敗: {e}"),
+        };
+        let generated = concat!(
+            "@font-face{font-family:\"M PLUS 1p\";font-weight:700;font-style:italic;",
+            "unicode-range:U+3000-30FF, U+FF00-FFEF;",
+            "src:url(data:font/woff2;base64,d09GMgABAAAAAA==) format(\"woff2\")}\n",
+            "@font-face{font-family:\"Zen Kaku Gothic Antique\";",
+            "src:url(data:application/font-woff;base64,d09GRg==) format(\"woff\")}",
+        );
+        if let Err(e) = attach_theme_fonts(dir.path(), &conn, &imported.theme.id, generated) {
+            panic!("生成したフォント CSS が保存できない: {e}");
+        }
+        assert_eq!(
+            read_font_css(dir.path(), &conn, &imported.theme.id).ok(),
+            Some(generated.to_string()),
+            "⚠ 生成したフォント CSS がサニタイザに書き換えられた（1 バイトも動いてはいけない）"
+        );
+    }
+
+    #[test]
+    fn a_database_created_before_060h_gains_the_font_column() {
+        // ⚠⚠ マイグレーション基盤が無いので冪等 ADD COLUMN で足している。
+        //   **060c までに作られた既存 DB**（`font_file_name` を持たないテーブル）でも効くこと。
+        let dir = TempDir::new();
+        let conn = match Connection::open_in_memory() {
+            Ok(c) => c,
+            Err(e) => panic!("in-memory SQLite を開けない: {e}"),
+        };
+        // 060h 以前のスキーマを手で作る（`font_file_name` が無い）。
+        if let Err(e) = conn.execute_batch(
+            "CREATE TABLE overlay_themes (
+                id             TEXT PRIMARY KEY,
+                name           TEXT NOT NULL,
+                origin         TEXT NOT NULL,
+                file_name      TEXT NOT NULL,
+                stripped_count INTEGER NOT NULL,
+                created_at     TEXT NOT NULL,
+                updated_at     TEXT NOT NULL
+            );",
+        ) {
+            panic!("旧スキーマを作れない: {e}");
+        }
+        if let Err(e) = repository::init(&conn) {
+            panic!("既存 DB に対する init が失敗した: {e}");
+        }
+        // ⚠ 2 回呼んでも壊れない（起動のたびに走るため）。
+        if let Err(e) = repository::init(&conn) {
+            panic!("init が冪等でない: {e}");
+        }
+
+        let imported = match import_pasted_text(dir.path(), &conn, ".sd-comment{color:red}", "t") {
+            Ok(r) => r,
+            Err(e) => panic!("既存 DB へ取り込めない: {e}"),
+        };
+        assert_eq!(
+            read_font_css(dir.path(), &conn, &imported.theme.id).ok(),
+            Some(String::new()),
+            "⚠ 追加カラムが NULL のときは空文字（＝フォント無し）でなければならない"
+        );
+        let fonts = "@font-face{font-family:\"X\";src:url(data:font/woff2;base64,AA==)}";
+        if let Err(e) = attach_theme_fonts(dir.path(), &conn, &imported.theme.id, fonts) {
+            panic!("既存 DB でフォント資産を添えられない: {e}");
+        }
+        assert_eq!(
+            read_font_css(dir.path(), &conn, &imported.theme.id).ok(),
+            Some(fonts.to_string())
+        );
+    }
+
+    #[test]
+    fn an_unreadable_font_asset_degrades_to_no_font() {
+        // ⚠ 「無い」と「読めない」を分けない（注入側は「空なら `<style>` を作らない」だけなので、
+        //   ユーザーが取る行動が変わらない）。⚠ **配信を止めないことが要件**。
+        let dir = TempDir::new();
+        let conn = conn();
+        let imported = match import_pasted_text(dir.path(), &conn, ".sd-comment{color:red}", "t") {
+            Ok(r) => r,
+            Err(e) => panic!("取り込みに失敗: {e}"),
+        };
+        let fonts = "@font-face{font-family:\"X\";src:url(data:font/woff2;base64,AA==)}";
+        if let Err(e) = attach_theme_fonts(dir.path(), &conn, &imported.theme.id, fonts) {
+            panic!("フォント資産を添えられない: {e}");
+        }
+
+        // ファイルだけ消える（外部要因での破損・手動削除）。
+        for name in dir.entries() {
+            if name != format!("{}.css", imported.theme.id) {
+                let _ = std::fs::remove_file(dir.path().join(&name));
+            }
+        }
+        assert_eq!(
+            read_font_css(dir.path(), &conn, &imported.theme.id).ok(),
+            Some(String::new()),
+            "⚠ 読めないフォント資産で Err を返すと、意匠まで巻き添えで出せなくなる"
+        );
+
+        // 不正な UTF-8 が入っていても同じ（自分で書いた UTF-8 なので通常は起きないが fail-safe）。
+        let broken = dir.write("d0f4e6b8-8e0f-4f4a-9a3a-6a5b4c3d2e1f.css", &[0xff, 0xfe]);
+        let name = broken
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_string();
+        if let Err(e) = repository::set_font_file_name(&conn, &imported.theme.id, &name, "now") {
+            panic!("差し替えに失敗: {e}");
+        }
+        assert_eq!(
+            read_font_css(dir.path(), &conn, &imported.theme.id).ok(),
+            Some(String::new())
+        );
+    }
+
+    #[test]
+    fn attaching_fonts_rejects_anything_that_is_not_a_font_face() {
+        // ⚠⚠ 060h review S-10。フォント資産は注入時に `rewriteSelectors` / `scopeSelectors` /
+        //   `withDecorationReset` を**1 つも通らない**ので、ここへセレクタ付きの CSS が入ると
+        //   「変換を通さない注入口」ができる。frontend の作法だけに任せず Rust で閉じる。
+        let dir = TempDir::new();
+        let conn = conn();
+        let imported = match import_pasted_text(dir.path(), &conn, ".sd-comment{color:red}", "t") {
+            Ok(r) => r,
+            Err(e) => panic!("取り込みに失敗: {e}"),
+        };
+        for bad in [
+            ".sd-comment{color:red}",
+            "@font-face{font-family:X;src:url(data:font/woff2;base64,AA==)}\nbody{display:none}",
+            "@keyframes k{from{opacity:0}}",
+        ] {
+            let err = match attach_theme_fonts(dir.path(), &conn, &imported.theme.id, bad) {
+                Ok(()) => panic!("書体以外を含む CSS をフォント資産として保存した: {bad:?}"),
+                Err(e) => e,
+            };
+            assert_eq!(err.code, ErrorCode::ValidationError);
+        }
+        // ⚠ 拒否したときは孤児ファイルを残さない（意匠 1 つだけが残る）。
+        assert_eq!(dir.entries().len(), 1, "孤児ファイルが残った: {:?}", dir.entries());
+        // ⚠ `@font-face` だけなら通る（生成物の実際の形＝ `\n` 連結）。
+        let good = "@font-face{font-family:X;src:url(data:font/woff2;base64,AA==)}\n@font-face{font-family:Y;src:url(data:font/woff2;base64,BB==)}";
+        if let Err(e) = attach_theme_fonts(dir.path(), &conn, &imported.theme.id, good) {
+            panic!("`@font-face` だけの CSS を拒否した: {e}");
+        }
+    }
+
+    #[test]
+    fn attaching_fonts_to_a_missing_theme_writes_nothing() {
+        let dir = TempDir::new();
+        let conn = conn();
+        let err = match attach_theme_fonts(
+            dir.path(),
+            &conn,
+            "00000000-0000-4000-8000-000000000000",
+            "@font-face{src:url(data:font/woff2;base64,AA==)}",
+        ) {
+            Ok(()) => panic!("存在しないテーマへフォントを添えられてしまった"),
+            Err(e) => e,
+        };
+        assert_eq!(err.code, ErrorCode::NotFound);
+        assert!(dir.entries().is_empty(), "孤児ファイルが残った");
+        // ⚠ id の形が壊れていても同じ（パスへ結合する前に落ちる）。
+        assert!(attach_theme_fonts(dir.path(), &conn, "../evil", "x").is_err());
+    }
+
+    #[test]
+    fn deleting_a_theme_removes_both_assets() {
+        let dir = TempDir::new();
+        let conn = conn();
+        let imported = match import_pasted_text(dir.path(), &conn, ".sd-comment{color:red}", "t") {
+            Ok(r) => r,
+            Err(e) => panic!("取り込みに失敗: {e}"),
+        };
+        let _ = attach_theme_fonts(
+            dir.path(),
+            &conn,
+            &imported.theme.id,
+            "@font-face{src:url(data:font/woff2;base64,AA==)}",
+        );
+        assert_eq!(dir.entries().len(), 2);
+        if let Err(e) = delete(dir.path(), &conn, &imported.theme.id) {
+            panic!("削除に失敗: {e}");
+        }
+        assert!(
+            dir.entries().is_empty(),
+            "⚠ フォント資産が消し残された（不可視の孤児が増え続ける）: {:?}",
+            dir.entries()
+        );
+    }
+
+    #[test]
+    fn font_urls_reach_the_import_result() {
+        // ⚠ 取得候補は **Rust のサニタイザだけ**が作る。ここが戻り値まで通っていないと
+        // frontend は URL を得る手段が無い（＝ frontend が CSS を自前で解析する誘惑が生まれる）。
+        let dir = TempDir::new();
+        let conn = conn();
+        let css = concat!(
+            "@font-face{font-family:X;src:url(https://fonts.example/a.woff2)}",
+            ".sd-comment{background-image:url(https://tracker.example/x.png)}",
+        );
+        let result = match import_pasted_text(dir.path(), &conn, css, "t") {
+            Ok(r) => r,
+            Err(e) => panic!("取り込みに失敗: {e}"),
+        };
+        assert_eq!(result.stripped_font_faces.len(), 1);
+        assert_eq!(
+            result.stripped_font_faces[0].urls,
+            vec!["https://fonts.example/a.woff2".to_string()]
+        );
+        // ⚠ 選別に要る記述子も**同じ 1 か所**から届く（frontend が CSS を解析しないための前提）。
+        assert_eq!(result.stripped_font_faces[0].family, "X");
     }
 
     // --- パスの検証 -----------------------------------------------------------------------------
@@ -1338,18 +1808,21 @@ mod tests {
     }
 
     #[test]
-    fn exposes_exactly_seven_single_purpose_commands() {
+    fn exposes_exactly_nine_single_purpose_commands() {
         // §3: 汎用の読み書きコマンドを作らない。⚠ アプリ定義コマンドは ACL 対象外＝**全 4 窓から呼べる**。
-        // ⚠ 060e で 6 本目（`import_overlay_theme_text`）、**060c で 7 本目
-        // （`import_overlay_theme_snapshot`）**を意図的に足したので、関数名も 5 → 6 → 7 へ改名している
+        // ⚠ 060e で 6 本目（`import_overlay_theme_text`）、060c で 7 本目
+        // （`import_overlay_theme_snapshot`）、**060h で 8・9 本目（`attach_overlay_theme_fonts` /
+        // `get_overlay_theme_font_css`）**を意図的に足したので、関数名も 5 → 6 → 7 → 9 へ改名している
         // （security-review②・品質 #7。テスト名は git の追跡単位ではないので改名コストは無く、
         // **名前と assert が食い違うテスト**のほうが「どちらが正か」を毎回確かめさせる負債になる）。
         // 守っているのは数そのものではなく「**単一目的のコマンドしか無い・増やすときは必ずここが落ちる**」。
+        // ⚠⚠ 060h の 2 本を足してよい根拠は `docs/security.md` §5 の 060b 例外節④が正
+        // （**書ける場所も書けるファイル名の集合も 1 バイトも動いていない**）。
         let code = production_source("commands.rs");
         assert_eq!(
             code.matches(&format!("#[tauri::{}]", "command")).count(),
-            7,
-            "overlay_theme のコマンド数が 7 でない（増やすなら §3 の再評価と security-review が要る）"
+            9,
+            "overlay_theme のコマンド数が 9 でない（増やすなら §3 の再評価と security-review が要る）"
         );
         // ⚠ ユーザーが選ぶファイルはネットワークボリューム上にありうる。同期コマンドはメインスレッドで
         // 走るので、取り込みだけは非同期にして UI を止めない（`audio` の同型の判断）。
@@ -1388,18 +1861,31 @@ mod tests {
         //   サニタイズ前の本文を信頼していないので扱いは同じで、取得できる形は sidecar 側の
         //   `assertAllowedThemeImportUrl` で極端に狭めてある（`https:` / 443 / `.css` / SSRF 拒否 /
         //   リダイレクト禁止 / `text/css` / サイズ・時間上限 / 毎回の明示同意 / チケット認証）。
+        //
+        // ⚠⚠ **060h での再評価の記録（ここでも数字だけ書き換えて通していない）**:
+        // フォント資産（`attach_overlay_theme_fonts`）で 3 本目が増えた。`docs/security.md` §5 の
+        // 060b 例外節へ「④ フォント資産の再評価」を書き足したうえで 3 へ上げている。要点は
+        // - 増えない: 保存先の組み立て・`is_managed_file_name` の完全一致（フォント資産も `<uuid v4>.css`）・
+        //   **サニタイズ 1 か所・書き込み 1 か所**（`write_sanitized_asset` へ委譲するだけなので、
+        //   すぐ下の `exactly_one_place_sanitizes_and_exactly_one_place_writes` は**緑のまま**）。
+        // - 増える: 1 テーマの管理ファイルが最大 2 つ／本文の上限が資産種別で 2 値
+        //   （意匠 256KB・**据え置き** / フォント 5MiB）。
         assert_eq!(
             code.matches(&format!("{}: String", "css")).count(),
-            2,
-            "CSS 本文を受け取るコマンドは貼り付け取り込みとスナップショットの 2 本だけであること\
-             （3 本目を足すなら §3 の再評価と security-review が要る）"
+            3,
+            "CSS 本文を受け取るコマンドは貼り付け・スナップショット・フォント資産の 3 本だけであること\
+             （4 本目を足すなら §3 の再評価と security-review が要る）"
         );
-        // ⚠ 上の「2」は**どのコマンドか**までは固定しないので、名前でも押さえる（片方を汎用名の
+        // ⚠ 上の「3」は**どのコマンドか**までは固定しないので、名前でも押さえる（片方を汎用名の
         // 別コマンドへ差し替える変異が数字だけでは生き残るため）。
-        for expected in ["import_overlay_theme_text", "import_overlay_theme_snapshot"] {
+        for expected in [
+            "import_overlay_theme_text",
+            "import_overlay_theme_snapshot",
+            "attach_overlay_theme_fonts",
+        ] {
             assert!(
                 code.contains(expected),
-                "commands.rs から {expected} が消えた。`css: String` を取ってよいのはこの 2 本だけである"
+                "commands.rs から {expected} が消えた。`css: String` を取ってよいのはこの 3 本だけである"
             );
         }
         for banned in ["content", "bytes", "data"] {
@@ -1480,10 +1966,21 @@ mod tests {
             &format!("{}(raw_path)", "validate_source_path"),
             "パスの検証が外された（§7 / §8）。",
         );
+        // ⚠ 060h: 引数に `asset` が増えた（**上限だけ**が資産種別で変わる）。needle も合わせて具体化し、
+        // 「資産種別を渡さずに呼ぶ＝どちらかの上限が効かない」形が入ったら落ちるようにする。
         assert_present_in(
             "service.rs",
-            &format!("{}(raw_css)", "validate_css_body"),
+            &format!("{}(raw_css, asset)", "validate_css_body"),
             "CSS 本文の検証（サイズ・制御文字・BOM）が外された（§8）。",
+        );
+        // ⚠⚠ 060h: **保存経路は 2 本になったが、検証と書き込みの実体は 1 か所のまま**であることを固定する
+        // （`store_sanitized_css` と `attach_theme_fonts` がどちらもここへ委譲していること）。
+        assert_eq!(
+            production_source("service.rs")
+                .matches(&format!("{}(dir, raw_css", "write_sanitized_asset"))
+                .count(),
+            2,
+            "⚠ 保存経路が共通コア（write_sanitized_asset）を通らなくなった／本数が変わった"
         );
         assert_present_in(
             "sanitize.rs",

@@ -7,8 +7,14 @@ import {
   cleanup,
   fireEvent,
 } from "@testing-library/react";
-import type { OverlayThemeImportResult } from "../../features/comment-viewer/overlayThemeApi";
-import type { ThemeImportFetchResult } from "../../features/comment-viewer/commentStream";
+import type {
+  OverlayThemeImportResult,
+  StrippedFontFace,
+} from "../../features/comment-viewer/overlayThemeApi";
+import type {
+  ThemeFontFetchResult,
+  ThemeImportFetchResult,
+} from "../../features/comment-viewer/commentStream";
 import type { OverlayThemeRecord } from "../../features/comment-viewer/bindings/OverlayThemeRecord";
 import { OVERLAY_THEME_KEY } from "../../features/comment-viewer/overlaySettings";
 import { OverlayThemeCard } from "./OverlayThemeCard";
@@ -68,6 +74,10 @@ let snapshotResult: OverlayThemeImportResult | null = null;
 let snapshotError: unknown = null;
 /** 060c: 実際に呼ばれた `import_overlay_theme_snapshot` の引数（連結順の検証に使う）。 */
 let snapshotCalls: { css: string; name: string }[] = [];
+/** 060h: 実際に呼ばれた `attach_overlay_theme_fonts` の引数。 */
+let attachFontCalls: { id: string; css: string }[] = [];
+/** 060h: 保存済みのフォント CSS（プレビューの注入で読む）。 */
+let fontCssById: Record<string, string> = {};
 
 beforeEach(() => {
   localStorage.clear();
@@ -81,8 +91,11 @@ beforeEach(() => {
   snapshotResult = null;
   snapshotError = null;
   snapshotCalls = [];
-  // ⚠ 060c: 既定は**取得の導線ごと無し**。差し込まないテストは 060d までと同じ経路を通る。
+  attachFontCalls = [];
+  fontCssById = {};
+  // ⚠ 060c/060h: 既定は**取得の導線ごと無し**。差し込まないテストは 060d までと同じ経路を通る。
   requestThemeImport = undefined;
+  requestThemeFont = undefined;
 
   mocks.open.mockReset();
   mocks.invoke.mockReset();
@@ -127,6 +140,13 @@ beforeEach(() => {
       case "delete_overlay_theme":
         themes = themes.filter((t) => t.id !== args?.id);
         return Promise.resolve();
+      // 060h: フォント資産（意匠とは別ファイル）。⚠ **本文と対象 id をそのまま記録する**
+      // （どのテーマへ・何を保存したかを検証するため）。
+      case "attach_overlay_theme_fonts":
+        attachFontCalls.push({ id: args?.id ?? "", css: args?.css ?? "" });
+        return Promise.resolve();
+      case "get_overlay_theme_font_css":
+        return Promise.resolve(fontCssById[args?.id ?? ""] ?? "");
       default:
         return Promise.reject(new Error(`unexpected command: ${cmd}`));
     }
@@ -136,6 +156,9 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   document.head.querySelectorAll("style[data-sd-preview-theme]").forEach((el) => {
+    el.remove();
+  });
+  document.head.querySelectorAll("style[data-sd-preview-fonts]").forEach((el) => {
     el.remove();
   });
 });
@@ -148,12 +171,20 @@ let requestThemeImport:
   | ((url: string, maxBytes: number) => Promise<ThemeImportFetchResult>)
   | undefined;
 
+/**
+ * 060h: フォント実体の取得依頼のモック。⚠ 既定は `undefined`＝**フォント段ごと出ない**（fail-closed）。
+ */
+let requestThemeFont:
+  | ((url: string, maxBytes: number) => Promise<ThemeFontFetchResult>)
+  | undefined;
+
 function renderCard() {
   return render(
     <OverlayThemeCard
       overlayFont="system"
       overlayShowSource={false}
       requestThemeImport={requestThemeImport}
+      requestThemeFont={requestThemeFont}
     />,
   );
 }
@@ -325,6 +356,7 @@ describe("取り込み", () => {
     importResult = {
       theme: makeTheme(NEW_ID, "配信用", 0),
       strippedImportUrls: [],
+      strippedFontFaces: [],
       truncatedToEof: false,
     };
     cssById[NEW_ID] = ".sd-comment{color:green}";
@@ -363,6 +395,7 @@ describe("取り込み", () => {
     importResult = {
       theme: makeTheme(NEW_ID, "ふきだし", 0),
       strippedImportUrls: [],
+      strippedFontFaces: [],
       truncatedToEof: false,
     };
     cssById[NEW_ID] = ".sd-comment{color:green}";
@@ -409,6 +442,7 @@ describe("取り込み結果の表示", () => {
     importResult = {
       theme: makeTheme(NEW_ID, "テーマ", strippedCount),
       strippedImportUrls,
+      strippedFontFaces: [],
       truncatedToEof: false,
     };
     cssById[NEW_ID] = css;
@@ -658,6 +692,7 @@ describe("⚠ security-review（2026-08-05）の回帰", () => {
     importResult = {
       theme: makeTheme(NEW_ID, "テーマ", 2),
       strippedImportUrls: [],
+      strippedFontFaces: [],
       truncatedToEof: false,
     };
     // ⚠ `cssById[NEW_ID]` を用意しない＝ `analyze` の `get_overlay_theme_css` が reject する。
@@ -686,6 +721,7 @@ describe("⚠ security-review（2026-08-05）の回帰", () => {
         { length: 16 },
         (_, i) => `https://example.test/${i}.css`,
       ),
+      strippedFontFaces: [],
       truncatedToEof: false,
     };
     cssById[NEW_ID] = ".sd-comment{color:red}";
@@ -875,6 +911,7 @@ describe("⚠⚠ 060e: CSS を貼り付けて取り込む（ファイルを作�
     importResult = {
       theme: makeTheme(NEW_ID, "デザイン 1", 0),
       strippedImportUrls: [],
+      strippedFontFaces: [],
       truncatedToEof: false,
     };
     cssById[NEW_ID] = ".sd-comment{color:red}";
@@ -904,6 +941,7 @@ describe("⚠⚠ 060e: CSS を貼り付けて取り込む（ファイルを作�
     importResult = {
       theme: makeTheme(NEW_ID, "デザイン 2", 0),
       strippedImportUrls: [],
+      strippedFontFaces: [],
       truncatedToEof: false,
     };
     cssById[NEW_ID] = ".a{color:red}";
@@ -925,6 +963,7 @@ describe("⚠⚠ 060e: CSS を貼り付けて取り込む（ファイルを作�
     importResult = {
       theme: makeTheme(NEW_ID, "配信用", 0),
       strippedImportUrls: [],
+      strippedFontFaces: [],
       truncatedToEof: false,
     };
     cssById[NEW_ID] = ".a{color:red}";
@@ -1003,6 +1042,7 @@ describe("⚠⚠ 060e: CSS を貼り付けて取り込む（ファイルを作�
     importResult = {
       theme: makeTheme(NEW_ID, "デザイン 1", 0),
       strippedImportUrls: [],
+      strippedFontFaces: [],
       truncatedToEof: false,
     };
     cssById[NEW_ID] = ".a{color:red}";
@@ -1082,6 +1122,7 @@ font-family: "M PLUS 1p", sans-serif;}
     importResult = {
       theme: makeTheme(NEW_ID, "YouTube サンプル", 1),
       strippedImportUrls: ["https://ruri.info/tool/css/midashi1Comment.css"],
+      strippedFontFaces: [],
       truncatedToEof: false,
     };
     cssById[NEW_ID] = savedAfterSanitize;
@@ -1116,6 +1157,7 @@ font-family: "M PLUS 1p", sans-serif;}
     importResult = {
       theme: makeTheme(NEW_ID, "ファイル由来", 0),
       strippedImportUrls: [],
+      strippedFontFaces: [],
       truncatedToEof: false,
     };
     cssById[NEW_ID] = ".a{color:red}";
@@ -1162,6 +1204,7 @@ describe("060c: 外部 @import のスナップショット", () => {
     importResult = {
       theme: makeTheme(NEW_ID, "テーマ", urls.length),
       strippedImportUrls: urls,
+      strippedFontFaces: [],
       truncatedToEof: false,
     };
     cssById[NEW_ID] = savedCss;
@@ -1269,6 +1312,7 @@ describe("060c: 外部 @import のスナップショット", () => {
     snapshotResult = {
       theme: { ...makeTheme(SNAP_ID, "テーマ", 0), origin: "snapshot" },
       strippedImportUrls: [],
+      strippedFontFaces: [],
       truncatedToEof: false,
     };
     cssById[SNAP_ID] = ".fetched{color:lime}\n.sd-comment{color:red}";
@@ -1308,32 +1352,50 @@ describe("060c: 外部 @import のスナップショット", () => {
     expect(screen.getByText(/「テーマ」を取り込みました。/)).toBeInTheDocument();
   });
 
-  it("⚠⚠ Snapshot 結果の strippedImportUrls で同意ループを再起動しない（無限ループ防止）", async () => {
+  // ⚠⚠ **060h でここの契約が変わった（設計どおり）。**
+  // 060c は「Snapshot 結果の `strippedImportUrls` で同意ループを再起動しない」＝**深さ 1**だったが、
+  // 実サンプルの構造が `ユーザー CSS` → `ruri.info/…css` → **`@import fonts.googleapis.com`** →
+  // `@font-face src: fonts.gstatic.com/….woff2` なので、深さ 1 では Google Fonts の CSS に到達できず
+  // 書体が 1 バイトも入らない。→ **深さ 2 まで辿り、3 段目で必ず打ち切る**（`MAX_IMPORT_ROUNDS`）。
+  // ⚠ 無限ループしない根拠は「各ラウンドの候補は前ラウンドで取得したテキスト由来のものだけ」
+  // （保存済み CSS からは `@import` が除去済み）＋ **ラウンド数の上限**の 2 本立てである。
+  it("⚠⚠ @import は 2 段目まで辿り、3 段目は必ず打ち切る（MAX_IMPORT_ROUNDS）", async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true as const,
       css: "@import url(https://fonts.googleapis.com/css2?family=X);",
     }));
     requestThemeImport = fetchMock;
+    // ⚠ どのラウンドでも同じ結果を返すモック＝**打ち切りが無ければ永久に回る**形にしてある。
     snapshotResult = {
       theme: { ...makeTheme(SNAP_ID, "テーマ", 6), origin: "snapshot" },
-      // ⚠ 実サンプルでは Google Fonts が 6 本ここに載る。**これで 2 巡目を始めてはいけない。**
-      strippedImportUrls: Array.from(
-        { length: 6 },
-        (_, i) => `https://fonts.googleapis.com/css2?family=F${i}`,
-      ),
+      strippedImportUrls: ["https://fonts.googleapis.com/css2?family=F0"],
+      strippedFontFaces: [],
       truncatedToEof: false,
     };
     cssById[SNAP_ID] = "@font-face{font-family:'Zen Kaku Gothic Antique'}";
     await importWithOneStrippedImport();
+
+    // 1 段目（ユーザー CSS の `@import`）。
     await findConsent();
-
+    expect(
+      screen.getByText(/取り込んだ CSS は、次のアドレス/),
+    ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "取得する" }));
-    await screen.findByText(/外部デザインを 1 件取り込みました/);
 
-    // 取得は 1 回きり・保存も 1 回きり・ダイアログは閉じたまま。
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(snapshotCalls).toHaveLength(1);
+    // 2 段目（1 段目で取得した内容が参照している別のアドレス）。⚠ 文言が変わることも固定する。
+    await screen.findByText(/取得したデザインは、さらに次のアドレス/);
+    fireEvent.click(screen.getByRole("button", { name: "取得する" }));
+
+    await screen.findByText(/外部デザインを 2 件取り込みました/);
+
+    // ⚠⚠ **3 段目は求められない**（ダイアログが閉じたまま）。取得も保存も 2 回きり。
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(snapshotCalls).toHaveLength(2);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    // ⚠ 打ち切ったことを黙らない（「取り込んだのに一部が反映されない」の唯一の説明）。
+    expect(
+      screen.getByText(/そこから先は取得していません/),
+    ).toBeInTheDocument();
   });
 
   it("@import が 3 本なら 3 回同意を求め、途中でやめても壊れない", async () => {
@@ -1345,6 +1407,7 @@ describe("060c: 外部 @import のスナップショット", () => {
     snapshotResult = {
       theme: { ...makeTheme(SNAP_ID, "テーマ", 0), origin: "snapshot" },
       strippedImportUrls: [],
+      strippedFontFaces: [],
       truncatedToEof: false,
     };
     cssById[SNAP_ID] = ".a{color:lime}";
@@ -1380,6 +1443,7 @@ describe("060c: 外部 @import のスナップショット", () => {
     snapshotResult = {
       theme: { ...makeTheme(SNAP_ID, "テーマ", 0), origin: "snapshot" },
       strippedImportUrls: [],
+      strippedFontFaces: [],
       truncatedToEof: false,
     };
     cssById[SNAP_ID] = "x";
@@ -1446,6 +1510,7 @@ describe("060c: 外部 @import のスナップショット", () => {
     importResult = {
       theme: makeTheme(NEW_ID, "テーマ", 1),
       strippedImportUrls: [IMPORT_URL],
+      strippedFontFaces: [],
       truncatedToEof: false,
     };
     cssById[NEW_ID] = ".sd-comment{color:red}";
@@ -1483,6 +1548,7 @@ describe("060c: フォントの案内", () => {
     importResult = {
       theme: makeTheme(NEW_ID, "テーマ", 1),
       strippedImportUrls: [],
+      strippedFontFaces: [],
       truncatedToEof: false,
     };
     cssById[NEW_ID] = "@font-face{font-family:'Zen Kaku Gothic Antique'}";
@@ -1502,6 +1568,7 @@ describe("060c: フォントの案内", () => {
         "https://fonts.googleapis.com/css2?family=M+PLUS+1p:wght@400",
         "https://fonts.googleapis.com/css2?family=Hachi+Maru+Pop",
       ],
+      strippedFontFaces: [],
       truncatedToEof: false,
     };
     cssById[NEW_ID] = "@font-face{font-family:X}";
@@ -1516,6 +1583,7 @@ describe("060c: フォントの案内", () => {
     importResult = {
       theme: makeTheme(NEW_ID, "テーマ", 0),
       strippedImportUrls: [],
+      strippedFontFaces: [],
       truncatedToEof: false,
     };
     cssById[NEW_ID] = ".sd-comment{color:red}";
@@ -1541,6 +1609,7 @@ describe("060c: truncatedToEof と unclosedBlockDepth の両方で警告する",
     importResult = {
       theme: makeTheme(NEW_ID, "テーマ", 1),
       strippedImportUrls: [],
+      strippedFontFaces: [],
       truncatedToEof,
     };
     cssById[NEW_ID] = savedCss;
@@ -1564,5 +1633,338 @@ describe("060c: truncatedToEof と unclosedBlockDepth の両方で警告する",
   it("どちらでもなければ警告しない", async () => {
     await importWith(false, ".a{color:red}");
     expect(screen.queryByText(warning)).not.toBeInTheDocument();
+  });
+});
+
+// --- 060h: フォント実体の取り込み --------------------------------------------------------------
+//
+// ⚠⚠ **この describe が守っている中心の不変条件**:
+// 「取得するのは **Rust が `strippedFontFaces` に載せた URL だけ**」——frontend は CSS から URL を
+// 抜き出さない。抜き出す実装にすると `background-image` まで拾える形になり、それは
+// **トラッキングピクセルの取得経路**である（docs/security.md §1 の 060h 追補）。
+describe("060h: フォント実体の取り込み", () => {
+  const FONT_A = "https://fonts.gstatic.com/s/x/a.woff2";
+  const FONT_B = "https://fonts.gstatic.com/s/x/b.woff2";
+
+  /** Rust が返す `@font-face` 1 ブロック分（既定は「使われているファミリ X・全字面」）。 */
+  const face = (
+    urls: string[],
+    over: Partial<StrippedFontFace> = {},
+  ): StrippedFontFace => ({
+    // ⚠ 060h review Q-1: **引用符は付かない**（Rust の `clamp_descriptor` が落とす）。
+    //   ここを `'"X"'` にしていたせいで、`buildFontFaceCss` の引用符忘れが緑のまま通っていた。
+    family: "X",
+    weight: "",
+    style: "",
+    unicodeRange: "",
+    urls,
+    ...over,
+  });
+
+  /**
+   * フォント候補付きで取り込みを走らせる（`@import` は無しにして、フォント段だけを見る）。
+   *
+   * ⚠⚠ 候補は **Rust が返す `strippedFontFaces`**（ブロック単位）で与える。
+   * frontend は CSS から URL を抜き出さないので、**ここに載っていない URL は取得されえない**。
+   */
+  async function importWithFonts(savedCss: string, faces: StrippedFontFace[]) {
+    importResult = {
+      theme: makeTheme(NEW_ID, "テーマ", faces.length),
+      strippedImportUrls: [],
+      strippedFontFaces: faces,
+      truncatedToEof: false,
+    };
+    cssById[NEW_ID] = savedCss;
+    await renderLoaded();
+    fireEvent.change(pasteCssBox(), { target: { value: ".sd-comment{color:red}" } });
+    fireEvent.click(screen.getByRole("button", { name: "取り込む" }));
+  }
+
+  type FontFetch = (url: string, maxBytes: number) => Promise<ThemeFontFetchResult>;
+  const okFont = () =>
+    vi.fn<FontFetch>(async () => ({
+      ok: true as const,
+      mime: "font/woff2",
+      base64: "d09GMg==",
+    }));
+
+  it("フォントの導線が無ければ（requestThemeFont 未指定）フォント段ごと出ない（fail-closed）", async () => {
+    requestThemeFont = undefined;
+    await importWithFonts(
+      '.sd-comment{font-family:"X"}@font-face{font-family:"X";src:url()}',
+      [face([FONT_A])],
+    );
+    await screen.findByText(/「テーマ」を取り込みました。/);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(attachFontCalls).toHaveLength(0);
+  });
+
+  it("同意ダイアログに取得先ホストを強調して出し、既定はキャンセル側", async () => {
+    const fetchFont = okFont();
+    requestThemeFont = fetchFont;
+    await importWithFonts(
+      '.sd-comment{font-family:"X"}@font-face{font-family:"X";src:url()}',
+      [face([FONT_A])],
+    );
+    const dialog = await screen.findByRole("dialog");
+    // ⚠ ホストは `<strong>` で別行に出す（URL を素で読ませない・060c と同じ作法）。
+    expect(
+      within(dialog).getByText("fonts.gstatic.com").tagName.toLowerCase(),
+    ).toBe("strong");
+    // ⚠ **既定はキャンセル側**（作った瞬間に担保が消えるので反転させないこと）。
+    expect(document.activeElement?.textContent).toBe("取り込まない");
+    // ⚠ ライセンスの責任所在を必ず出す（任意 URL を指定できる以上、StreamDock は確認できない）。
+    expect(
+      within(dialog).getByText(/利用条件（ライセンス）はご自身で/),
+    ).toBeInTheDocument();
+  });
+
+  it("⚠⚠ @font-face の src 以外の url は 1 本も取得しない（背景画像を混ぜても）", async () => {
+    const fetchFont = okFont();
+    requestThemeFont = fetchFont;
+    // ⚠ 保存済み CSS には背景画像の指定も入っているが、**Rust の一覧に載っていない**ので取得対象外。
+    //   ここでは「frontend が CSS を自前で解析して URL を増やしていないこと」を固定している。
+    await importWithFonts(
+      '.sd-comment{font-family:"X";background-image:url(https://tracker.example/p.png)}' +
+        '@font-face{font-family:"X";src:url()}',
+      [face([FONT_A])],
+    );
+    await screen.findByRole("dialog");
+    fireEvent.click(screen.getByRole("button", { name: "書体を取り込む" }));
+    await screen.findByText(/書体を 1 件取り込みました/);
+
+    expect(fetchFont).toHaveBeenCalledTimes(1);
+    expect(fetchFont.mock.calls.map((c) => c[0])).toEqual([FONT_A]);
+    expect(
+      fetchFont.mock.calls.some(([url]) =>
+        String(url).includes("tracker.example"),
+      ),
+    ).toBe(false);
+  });
+
+  it("⚠ 取得した書体は data URI 化されて別ファイルへ保存される", async () => {
+    requestThemeFont = okFont();
+    await importWithFonts(
+      '.sd-comment{font-family:"X"}',
+      [face([FONT_A], { unicodeRange: "U+3000-30FF" })],
+    );
+    await screen.findByRole("dialog");
+    fireEvent.click(screen.getByRole("button", { name: "書体を取り込む" }));
+    await screen.findByText(/書体を 1 件取り込みました/);
+
+    expect(attachFontCalls).toHaveLength(1);
+    expect(attachFontCalls[0].id).toBe(NEW_ID);
+    // ⚠ `src` は data URI へ**置き換わる**が、`unicode-range` は**引き継ぐ**（分割配信の意味を保つ）。
+    expect(attachFontCalls[0].css).toContain("data:font/woff2;base64,d09GMg==");
+    expect(attachFontCalls[0].css).toContain("unicode-range:U+3000-30FF");
+    expect(attachFontCalls[0].css).not.toContain("gstatic.com");
+  });
+
+  it("取り込まないを選ぶと 1 本も取得せず、案内だけ出る", async () => {
+    const fetchFont = okFont();
+    requestThemeFont = fetchFont;
+    await importWithFonts(
+      '.sd-comment{font-family:"X"}@font-face{font-family:"X";src:url()}',
+      [face([FONT_A])],
+    );
+    await screen.findByRole("dialog");
+    fireEvent.click(screen.getByRole("button", { name: "取り込まない" }));
+    await screen.findByText(/書体は取り込みませんでした/);
+    expect(fetchFont).not.toHaveBeenCalled();
+    expect(attachFontCalls).toHaveLength(0);
+  });
+
+  it("⚠⚠ テーマが使っていないファミリは取得しない（実サンプルの 6 ファミリを絞る仕掛け）", async () => {
+    const fetchFont = okFont();
+    requestThemeFont = fetchFont;
+    // `X` だけを使い、`Y` は定義されているが使われていない。
+    await importWithFonts(
+      '.sd-comment{font-family:"X"}',
+      [face([FONT_A]), face([FONT_B], { family: "Y" })],
+    );
+    const dialog = await screen.findByRole("dialog");
+    // ⚠ **同意の前に**「候補 2 件のうち 1 件だけ」が分かる（帯域も同意も無駄にしない）。
+    expect(within(dialog).getByText(/1 件/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "書体を取り込む" }));
+    await screen.findByText(/書体を 1 件取り込みました/);
+    expect(fetchFont.mock.calls.map((c) => c[0])).toEqual([FONT_A]);
+  });
+
+  it("1 本あたりの予算を渡す（総量の残りと 1 本上限の小さいほう）", async () => {
+    const fetchFont = okFont();
+    requestThemeFont = fetchFont;
+    await importWithFonts(
+      '.sd-comment{font-family:"X"}@font-face{font-family:"X";src:url()}',
+      [face([FONT_A])],
+    );
+    await screen.findByRole("dialog");
+    fireEvent.click(screen.getByRole("button", { name: "書体を取り込む" }));
+    await screen.findByText(/書体を 1 件取り込みました/);
+    // 512KiB（1 本の上限）を超える値は渡らない。
+    expect(fetchFont.mock.calls[0][1]).toBe(512 * 1024);
+  });
+
+  it("取得に失敗しても取り込み自体は成功のまま（案内だけ出す）", async () => {
+    requestThemeFont = vi.fn<FontFetch>(async () => ({
+      ok: false as const,
+      reason: "type",
+    }));
+    await importWithFonts(
+      '.sd-comment{font-family:"X"}@font-face{font-family:"X";src:url()}',
+      [face([FONT_A])],
+    );
+    await screen.findByRole("dialog");
+    fireEvent.click(screen.getByRole("button", { name: "書体を取り込む" }));
+    await screen.findByText(/書体を 1 件取得できませんでした/);
+    expect(attachFontCalls).toHaveLength(0);
+    expect(screen.getByText(/「テーマ」を取り込みました。/)).toBeInTheDocument();
+  });
+
+  it("⚠ プレビューではフォントを別の <style> に載せる（積み上がらない・閉じると消える）", async () => {
+    fontCssById[THEME_A_ID] = "@font-face{font-family:A}";
+    localStorage.setItem(OVERLAY_THEME_KEY, THEME_A_ID);
+    await renderLoaded();
+    fireEvent.click(screen.getByRole("switch", { name: "プレビューを表示する" }));
+
+    await waitFor(() =>
+      expect(
+        document.head.querySelectorAll("style[data-sd-preview-fonts]"),
+      ).toHaveLength(1),
+    );
+    // ⚠ 意匠側の `<style>` にフォントが混ざっていないこと（別ファイル・別要素の担保）。
+    const themeStyle = document.head.querySelector(
+      "style[data-sd-preview-theme]",
+    );
+    expect(themeStyle?.textContent).not.toContain("@font-face{font-family:A}");
+
+    // ⚠⚠ **閉じたら消える**——`@font-face` の family 名は文書グローバルで閉じられないので、
+    //   露出時間を明示操作の間だけに限るのが 060d の受容の担保である（060h でも同じ強さを保つ）。
+    fireEvent.click(screen.getByRole("switch", { name: "プレビューを表示する" }));
+    await waitFor(() =>
+      expect(
+        document.head.querySelectorAll("style[data-sd-preview-fonts]"),
+      ).toHaveLength(0),
+    );
+  });
+
+  // --- 060h security-review の反映ぶん -------------------------------------------------------
+  //
+  // ⚠ どれも「レビューで実測された食い違い」を仕様として固定するもの。
+  //   仕様の根拠は docs/tasks/060h-external-font-snapshot.md の「security-review の反映」節。
+
+  it("⚠⚠ font-family は引用符付きで書き出す（`M PLUS 1p` が丸ごと捨てられない）", async () => {
+    // ⚠ Q-1。`clamp_descriptor` は引用符を落とすので、素で書くと `font-family:M PLUS 1p` になる。
+    //   CSS の `<family-name>` は `<string> | <custom-ident>+` で、`1p` は数字始まり＝
+    //   `<custom-ident>` になれず**記述子ごと不正**＝ブラウザは `@font-face` を丸ごと捨てる。
+    //   ⚠ 実サンプルの 6 ファミリの 1 つがまさにこの名前である。
+    requestThemeFont = okFont();
+    await importWithFonts('.sd-comment{font-family:"M PLUS 1p"}', [
+      face([FONT_A], { family: "M PLUS 1p" }),
+    ]);
+    await screen.findByRole("dialog");
+    fireEvent.click(screen.getByRole("button", { name: "書体を取り込む" }));
+    await screen.findByText(/書体を 1 件取り込みました/);
+
+    expect(attachFontCalls[0].css).toContain('font-family:"M PLUS 1p"');
+    expect(attachFontCalls[0].css).not.toContain("font-family:M PLUS 1p");
+  });
+
+  it("⚠⚠ 書体を取り込めたら「外部からフォントを読み込みません」は出さない（矛盾する案内）", async () => {
+    // ⚠ Q-2。保存済み意匠 CSS には `src` を抜かれた `@font-face` が必ず残るので、
+    //   060c の案内条件を素のままにすると**060h の正常系で必ず出て**、
+    //   「書体を N 件取り込みました」と正反対の文が並ぶ。
+    requestThemeFont = okFont();
+    await importWithFonts(
+      '.sd-comment{font-family:"X"}@font-face{font-family:"X";src:url()}',
+      [face([FONT_A])],
+    );
+    await screen.findByRole("dialog");
+    fireEvent.click(screen.getByRole("button", { name: "書体を取り込む" }));
+    await screen.findByText(/書体を 1 件取り込みました/);
+
+    expect(
+      screen.queryByText(/StreamDock は外部からフォントを読み込みません/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("⚠ 書体を取り込めなかったときは従来どおり案内を出す（説明の場が消えない）", async () => {
+    requestThemeFont = okFont();
+    await importWithFonts(
+      '.sd-comment{font-family:"X"}@font-face{font-family:"X";src:url()}',
+      [face([FONT_A])],
+    );
+    await screen.findByRole("dialog");
+    fireEvent.click(screen.getByRole("button", { name: "取り込まない" }));
+    await screen.findByText(/書体は取り込みませんでした/);
+
+    expect(
+      screen.getByText(/StreamDock は外部からフォントを読み込みません/),
+    ).toBeInTheDocument();
+  });
+
+  it("⚠⚠ 使うファミリを特定できないときは絞り込まず、候補をそのまま出す", async () => {
+    // ⚠ Q-3。`font-family:var(--f)` から実名は取れない。素直に走査すると
+    //   `var(--f)` という**どれとも一致しない名前が 1 件**入って集合が非空になり、
+    //   「空なら絞り込まない」フォールバックが効かず**全ブロックが落ちて同意も案内も出ない**。
+    const fetchFont = okFont();
+    requestThemeFont = fetchFont;
+    await importWithFonts(".sd-comment{font-family:var(--fontfamily)}", [
+      face([FONT_A]),
+      face([FONT_B], { family: "Y" }),
+    ]);
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(/2 件/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "書体を取り込む" }));
+    await screen.findByText(/書体を 2 件取り込みました/);
+    expect(fetchFont.mock.calls.map((c) => c[0])).toEqual([FONT_A, FONT_B]);
+  });
+
+  it("⚠ 候補を 1 つも選べなかったときは黙らずに理由を出す", async () => {
+    // ⚠ Q-3 の裏側。ここで黙ると、ユーザーには「同意も案内も無いまま書体だけ入らない」に見える。
+    const fetchFont = okFont();
+    requestThemeFont = fetchFont;
+    // 使っているのは Z だが、候補は X しか無い＝ 1 本も選べない。
+    await importWithFonts('.sd-comment{font-family:"Z"}', [face([FONT_A])]);
+    await screen.findByText(/書体を特定できなかったため/);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(fetchFont).not.toHaveBeenCalled();
+  });
+
+  it("⚠⚠ 使っていないファミリを外しただけでは「上限に達した」と言わない", async () => {
+    // ⚠ Q-4。実サンプルは 6 ファミリ（≒660 ブロック）のうち使うのが 1〜2 ファミリなので、
+    //   「使わないから取らなかった」を「見送った」に混ぜると、**サイズには 1 バイトも
+    //   触れていないのに**「合計サイズが上限に達したため…」が正常系で毎回出る。
+    requestThemeFont = okFont();
+    await importWithFonts('.sd-comment{font-family:"X"}', [
+      face([FONT_A]),
+      face([FONT_B], { family: "Y" }),
+    ]);
+    await screen.findByRole("dialog");
+    fireEvent.click(screen.getByRole("button", { name: "書体を取り込む" }));
+    await screen.findByText(/書体を 1 件取り込みました/);
+
+    expect(
+      screen.queryByText(/書体の合計サイズが上限に達したため/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("⚠⚠ 1 ブロックの woff2 と woff を両方は取りに行かない（同じ書体の別形式）", async () => {
+    // ⚠ Q-5。両方引くと ①予算を 2 倍使い ②記述子が同一の `@font-face` が 2 つ並んで
+    //   後勝ちになり、先に引いた woff2 が丸損になる。
+    const fetchFont = okFont();
+    requestThemeFont = fetchFont;
+    const woff = "https://fonts.gstatic.com/s/x/a.woff";
+    await importWithFonts('.sd-comment{font-family:"X"}', [
+      face([woff, FONT_A]),
+    ]);
+    const dialog = await screen.findByRole("dialog");
+    // ⚠ 同意ダイアログの件数も「1 ブロック 1 本」で数える（実際に取得する本数と一致させる）。
+    expect(within(dialog).getByText("1 件")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "書体を取り込む" }));
+    await screen.findByText(/書体を 1 件取り込みました/);
+
+    expect(fetchFont.mock.calls.map((c) => c[0])).toEqual([FONT_A]);
+    // 生成される `@font-face` も 1 つだけ（同一記述子の重複を作らない）。
+    expect(attachFontCalls[0].css.match(/@font-face/g)).toHaveLength(1);
   });
 });

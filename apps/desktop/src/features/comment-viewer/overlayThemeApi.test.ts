@@ -24,9 +24,11 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 import { invoke } from "@tauri-apps/api/core";
 import {
+  attachOverlayThemeFonts,
   cssByteLength,
   deleteOverlayTheme,
   getOverlayThemeCss,
+  getOverlayThemeFontCss,
   importOverlayTheme,
   importOverlayThemeText,
   listOverlayThemes,
@@ -34,6 +36,9 @@ import {
   themeCssError,
   themeNameError,
   THEME_CSS_MAX_BYTES,
+  THEME_FONT_MAX_COUNT,
+  THEME_FONT_MAX_ONE_BYTES,
+  THEME_FONT_MAX_TOTAL_BYTES,
   THEME_NAME_MAX_CHARS,
 } from "./overlayThemeApi";
 
@@ -218,6 +223,45 @@ describe("invoke ラッパ: 単一目的の command を正しい引数で呼ぶ�
     expect(mockInvoke).toHaveBeenCalledWith("get_overlay_theme_css", {
       id: THEME_ID,
     });
+  });
+
+  it("⚠ 060h: フォント資産も id と本文だけ（保存先も出自も frontend が決めない・§3/§5）", async () => {
+    // ⚠⚠ `css: String` を取る 3 本目。**パスを渡さない**ことが §5 の担保そのもの
+    //   （保存先の組み立ては Rust 側の `app_data_dir/themes/<uuid v4>.css` 固定形で、
+    //   ユーザー入力は 1 バイトも結合されない）。
+    mockInvoke.mockResolvedValue(undefined as never);
+    await attachOverlayThemeFonts(THEME_ID, "@font-face{font-family:\"X\"}");
+    expect(mockInvoke).toHaveBeenCalledWith("attach_overlay_theme_fonts", {
+      id: THEME_ID,
+      css: '@font-face{font-family:"X"}',
+    });
+    const [, attachArgs] = mockInvoke.mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    for (const banned of ["path", "origin", "fileName", "dir"]) {
+      expect(attachArgs).not.toHaveProperty(banned);
+    }
+
+    mockInvoke.mockReset();
+    mockInvoke.mockResolvedValue("@font-face{}" as never);
+    await getOverlayThemeFontCss(THEME_ID);
+    expect(mockInvoke).toHaveBeenCalledWith("get_overlay_theme_font_css", {
+      id: THEME_ID,
+    });
+  });
+
+  it("⚠ 060h: 取得側の予算は「1 本 ≦ 総量」かつ Rust の保存上限に収まる", () => {
+    // 仕様（docs/tasks/060h の問題③の表）: 1 本 512KiB / 総量 3MiB（base64 で 4MiB）/ 本数 256。
+    // ⚠ ここが崩れると「同意も帯域も使ったのに保存で落ちる」＝ユーザーから原因が見えない失敗になる。
+    expect(THEME_FONT_MAX_ONE_BYTES).toBe(512 * 1024);
+    expect(THEME_FONT_MAX_TOTAL_BYTES).toBe(3 * 1024 * 1024);
+    expect(THEME_FONT_MAX_COUNT).toBe(256);
+    expect(THEME_FONT_MAX_ONE_BYTES).toBeLessThanOrEqual(THEME_FONT_MAX_TOTAL_BYTES);
+    // base64 化（4/3 倍）した総量＋記述子（1 ブロック約 200B × 256 ≒ 50KB）が
+    // Rust の `MAX_FONT_CSS_BYTES`（5MiB）に収まること。
+    const base64Total = Math.ceil((THEME_FONT_MAX_TOTAL_BYTES * 4) / 3);
+    expect(base64Total + THEME_FONT_MAX_COUNT * 200).toBeLessThan(5 * 1024 * 1024);
   });
 
   it("rename / delete も単一目的（id と name だけ）", async () => {

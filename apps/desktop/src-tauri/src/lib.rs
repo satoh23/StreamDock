@@ -639,6 +639,9 @@ pub fn run() {
             overlay_theme::commands::import_overlay_theme_snapshot,
             overlay_theme::commands::list_overlay_themes,
             overlay_theme::commands::get_overlay_theme_css,
+            // 060h: フォント資産（意匠とは別ファイル・別 `<style>`）。
+            overlay_theme::commands::attach_overlay_theme_fonts,
+            overlay_theme::commands::get_overlay_theme_font_css,
             overlay_theme::commands::rename_overlay_theme,
             overlay_theme::commands::delete_overlay_theme,
         ])

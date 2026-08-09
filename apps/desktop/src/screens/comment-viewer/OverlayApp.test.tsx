@@ -28,6 +28,8 @@ import { DEFAULT_DECORATION_RESET } from "../../features/comment-viewer/overlayT
 const mocks = vi.hoisted(() => ({
   connectCommentStream: vi.fn(),
   getOverlayThemeCss: vi.fn(),
+  // 060h: フォント資産（意匠とは別ファイル・別 `<style>`）。既定は「フォント無し」＝空文字。
+  getOverlayThemeFontCss: vi.fn(),
 }));
 
 vi.mock("../../features/comment-viewer/commentStream", () => ({
@@ -36,6 +38,7 @@ vi.mock("../../features/comment-viewer/commentStream", () => ({
 
 vi.mock("../../features/comment-viewer/overlayThemeApi", () => ({
   getOverlayThemeCss: mocks.getOverlayThemeCss,
+  getOverlayThemeFontCss: mocks.getOverlayThemeFontCss,
 }));
 
 const THEME_A = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
@@ -44,6 +47,10 @@ const THEME_B = "9c858901-8a57-4791-81fe-4c455b099bc9";
 /** 注入された `<style>` を引く（実装が使う data 属性）。 */
 const themeStyles = (): HTMLStyleElement[] =>
   Array.from(document.head.querySelectorAll("style[data-sd-overlay-theme]"));
+
+/** 060h: 注入されたフォント用 `<style>` を引く（意匠とは**別要素**であることの担保）。 */
+const fontStyles = (): HTMLStyleElement[] =>
+  Array.from(document.head.querySelectorAll("style[data-sd-overlay-fonts]"));
 
 /**
  * 060f 追修正(2026-08-08): 注入された CSS から**既定意匠のリセットを剥がして**テーマ由来のぶんを返す。
@@ -76,6 +83,8 @@ beforeEach(() => {
   mocks.connectCommentStream.mockReturnValue({ disconnect: vi.fn() });
   mocks.getOverlayThemeCss.mockReset();
   mocks.getOverlayThemeCss.mockResolvedValue(".sd-comment{color:red}");
+  mocks.getOverlayThemeFontCss.mockReset();
+  mocks.getOverlayThemeFontCss.mockResolvedValue("");
 });
 
 afterEach(() => {
@@ -256,6 +265,70 @@ describe("OverlayApp: テーマ CSS の注入", () => {
     await waitFor(() => expect(themeStyles()).toHaveLength(0));
     // ⚠ 既定意匠へ戻る＝ 取り込んだ CSS が 1 バイトも残っていないこと。
     expect(document.head.innerHTML).not.toContain("display:none");
+  });
+
+  // --- 060h: フォント資産（**意匠とは別ファイル・別 `<style>`**）---------------------------------
+
+  it("フォントが無いテーマではフォント用 <style> を作らない", async () => {
+    saveOverlayTheme(THEME_A);
+    render(<OverlayApp />);
+    await waitFor(() => expect(themeStyles()).toHaveLength(1));
+    expect(fontStyles()).toHaveLength(0);
+  });
+
+  it("⚠⚠ フォントは意匠とは別の <style> に、変換を通さずそのまま載る", async () => {
+    // ⚠ 意匠側は `rewriteSelectors` / `rewriteRootLike` / `withDecorationReset` を通るが、
+    //   フォントは**1 つも通らない**（`@font-face` はセレクタを持たないので変換対象が無く、
+    //   混ぜるとテーマ切り替えのたびに数 MB を走査することになる＝ 060h 問題④）。
+    const fontCss =
+      '@font-face{font-family:"X";src:url(data:font/woff2;base64,d09GMg==) format("woff2")}';
+    mocks.getOverlayThemeFontCss.mockResolvedValue(fontCss);
+    saveOverlayTheme(THEME_A);
+    render(<OverlayApp />);
+    await waitFor(() => expect(fontStyles()).toHaveLength(1));
+    expect(mocks.getOverlayThemeFontCss).toHaveBeenCalledWith(THEME_A);
+    // ⚠ **1 文字も書き換わっていないこと**（変換を通していないことの担保）。
+    expect(fontStyles()[0].textContent).toBe(fontCss);
+    // ⚠ 意匠側の `<style>` にフォントが混ざっていないこと（＝別ファイル・別要素の担保）。
+    expect(themeStyles()[0].textContent).not.toContain("@font-face");
+  });
+
+  it("⚠ テーマを切り替えてもフォント用 <style> は積み上がらない", async () => {
+    mocks.getOverlayThemeFontCss.mockResolvedValue("@font-face{font-family:A}");
+    saveOverlayTheme(THEME_A);
+    render(<OverlayApp />);
+    await waitFor(() => expect(fontStyles()).toHaveLength(1));
+
+    mocks.getOverlayThemeFontCss.mockResolvedValue("@font-face{font-family:B}");
+    saveOverlayTheme(THEME_B);
+    emitStorage(OVERLAY_THEME_KEY);
+
+    await waitFor(() =>
+      expect(fontStyles()[0]?.textContent).toBe("@font-face{font-family:B}"),
+    );
+    expect(fontStyles()).toHaveLength(1);
+  });
+
+  it("⚠⚠ 既定へ戻すとフォント用 <style> も消える（脱出路がフォントにも効く）", async () => {
+    mocks.getOverlayThemeFontCss.mockResolvedValue("@font-face{font-family:A}");
+    saveOverlayTheme(THEME_A);
+    render(<OverlayApp />);
+    await waitFor(() => expect(fontStyles()).toHaveLength(1));
+
+    saveOverlayTheme(null);
+    emitStorage(OVERLAY_THEME_KEY);
+
+    await waitFor(() => expect(fontStyles()).toHaveLength(0));
+    expect(document.head.innerHTML).not.toContain("@font-face");
+  });
+
+  it("フォントの取得に失敗しても意匠は入る（フォントだけ無しへ倒す）", async () => {
+    mocks.getOverlayThemeFontCss.mockRejectedValue({ code: "NotFound" });
+    saveOverlayTheme(THEME_A);
+    render(<OverlayApp />);
+    await waitFor(() => expect(themeStyles()).toHaveLength(1));
+    expect(fontStyles()).toHaveLength(0);
+    expect(themeCssOf(themeStyles()[0])).toBe(".sd-comment{color:red}");
   });
 
   it("不正な id が保存されていても既定意匠へ倒す（コマンドを呼ばない）", async () => {

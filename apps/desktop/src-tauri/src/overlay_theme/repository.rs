@@ -39,6 +39,10 @@ pub fn init(conn: &Connection) -> rusqlite::Result<()> {
             updated_at     TEXT NOT NULL
         );",
     )?;
+    // 060h: 取得した Web フォントを収めた**2 つ目の管理ファイル**の名前（無ければ NULL）。
+    // ⚠⚠ 意匠と同じ `<uuid v4>.css` 形（別採番）なので、`is_managed_file_name` は 1 文字も緩めていない。
+    // マイグレーション基盤が無いため冪等 ADD COLUMN（table/column/decl はコンパイル時定数のみ）。
+    crate::util::ensure_column(conn, "overlay_themes", "font_file_name", "TEXT")?;
     Ok(())
 }
 
@@ -114,6 +118,30 @@ pub fn get(conn: &Connection, id: &str) -> rusqlite::Result<Option<OverlayThemeR
 pub fn file_name_of(conn: &Connection, id: &str) -> rusqlite::Result<Option<String>> {
     let mut stmt = conn.prepare("SELECT file_name FROM overlay_themes WHERE id = ?1")?;
     stmt.query_row([id], |row| row.get::<_, String>(0)).optional()
+}
+
+/// 060h: id に対応する**フォント資産のファイル名**だけを引く（未設定なら `None`）。
+///
+/// ⚠ `file_name_of` と同じく、**パスへ結合する前に必ず `is_managed_file_name` を通すこと**。
+/// ⚠ `OverlayThemeRecord` には載せない（frontend に実ファイル名を知らせない・§3 / §5）。
+pub fn font_file_name_of(conn: &Connection, id: &str) -> rusqlite::Result<Option<String>> {
+    let mut stmt = conn.prepare("SELECT font_file_name FROM overlay_themes WHERE id = ?1")?;
+    stmt.query_row([id], |row| row.get::<_, Option<String>>(0))
+        .optional()
+        .map(|v| v.flatten())
+}
+
+/// 060h: フォント資産のファイル名を設定する。戻りは更新行数。
+pub fn set_font_file_name(
+    conn: &Connection,
+    id: &str,
+    file_name: &str,
+    updated_at: &str,
+) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE overlay_themes SET font_file_name = ?2, updated_at = ?3 WHERE id = ?1",
+        rusqlite::params![id, file_name, updated_at],
+    )
 }
 
 /// 名前を更新する。戻りは更新行数。
