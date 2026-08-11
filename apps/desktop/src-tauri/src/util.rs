@@ -56,6 +56,30 @@ pub fn validate_http_url(raw: &str) -> AppResult<String> {
     Ok(url.to_string())
 }
 
+/// UNC / ネットワークパス（`\\server\share` / `//server/share`）か。
+///
+/// ⚠⚠ **`fs::metadata` を叩く「前」に通すこと。** Windows で UNC を触ると、その時点で
+/// OS が相手ホストへ SMB 接続し、既定設定では NTLM でユーザー/マシンの資格情報ハッシュが飛ぶ
+/// ——ユーザー操作ゼロ・ダイアログ非経由で、docs/security.md §1 の趣旨に直接反する。
+/// 取り込み系コマンドはアプリ定義コマンド＝**ACL 対象外で全 5 窓から呼べる**ので、
+/// 引数が dialog 由来である保証は Rust 側には無い。
+///
+/// ⚠⚠ **先頭 2 文字を `\` へ正規化してから見る。** Windows は `/` と `\` を**等価な区切り**として
+/// 扱うため、`\\` `//` だけを見ると `\/server\share` / `/\server/share` という混在形が素通りする
+/// （061c security-review S-1。それ以前は両方の呼び出し側が `starts_with` 2 本で判定していた）。
+///
+/// ⚠ macOS の `/Volumes/...`（マウント済み共有）は対象外——ユーザーが既にマウントした先だけが
+/// 見えるので、**新しい宛先を作らない**。POSIX の `//foo` と Windows の `\\?\C:\`（ローカルの
+/// 拡張長パス）も巻き添えで落ちるが、ファイル選択ダイアログはどちらの形も返さない。
+pub fn is_network_path(value: &str) -> bool {
+    let mut head = value
+        .trim()
+        .chars()
+        .take(2)
+        .map(|c| if c == '/' { '\\' } else { c });
+    head.next() == Some('\\') && head.next() == Some('\\')
+}
+
 /// `AppError` に「ファイル名のみ」の `details` を付与する（フルパスは frontend / log に露出しない）。
 ///
 /// `path_not_found` / `duplicate_path` で共通していた「`file_name` を取り出して
@@ -93,4 +117,36 @@ pub fn ensure_column(
         ))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn network_paths_are_detected_including_mixed_separators() {
+        // ⚠⚠ 061c security-review S-1。Windows は `/` と `\` を等価な区切りとして扱うので、
+        // `\\` / `//` だけを見ると混在形（`\/` / `/\`）が素通りする。
+        for bad in [
+            r"\\evil.example\share",
+            "//evil.example/share",
+            r"\/evil.example\share",
+            r"/\evil.example/share",
+            r"\\?\UNC\evil.example\share",
+            r"  \\evil.example\share", // 呼び出し側が trim する前でも落ちること
+        ] {
+            assert!(is_network_path(bad), "ネットワークパスを見逃した: {bad:?}");
+        }
+        // ⚠ 過剰に弾かないこと（ローカルの絶対パス・相対パス・`/Volumes` のマウント済み共有）。
+        for ok in [
+            "/Users/me/templates",
+            "/Volumes/share/templates",
+            r"C:\Users\me\templates",
+            "templates",
+            "/",
+            "",
+        ] {
+            assert!(!is_network_path(ok), "ローカルパスを弾いた: {ok:?}");
+        }
+    }
 }

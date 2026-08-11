@@ -3,6 +3,7 @@ mod app_update;
 mod audio;
 mod comment_sidecar;
 mod comment_viewer;
+mod effect_template;
 mod error;
 mod obs_config;
 mod overlay_theme;
@@ -779,6 +780,11 @@ pub fn run() {
             //（overlay_theme::service の保存ヘルパが冪等に create_dir_all する＝
             //  実行中にディレクトリを消されても復旧できる）。
             overlay_theme::repository::init(&conn)?;
+            // 061c: エフェクトテンプレート（effect_templates）。アセット実体は
+            // app_data_dir/effects/<uuid v4>/ で、そのディレクトリは取り込み時に作る
+            //（effect_template::service::store_template が冪等に create_dir_all する＝
+            //  overlay_theme と同じく、実行中にディレクトリを消されても復旧できる）。
+            effect_template::repository::init(&conn)?;
             app.manage(Mutex::new(conn));
             // stream-dock がこのセッション中に起動したプロセスを保持する runtime process registry。
             // 009 の停止は raw PID ではなくここに保持した Child ハンドル経由で行う。
@@ -914,6 +920,12 @@ pub fn run() {
             overlay_theme::commands::get_overlay_theme_font_css,
             overlay_theme::commands::rename_overlay_theme,
             overlay_theme::commands::delete_overlay_theme,
+            // 061c: エフェクトテンプレート（app_data_dir/effects/<uuid v4>/ ＋ effect_templates）。
+            // ⚠ アプリ定義コマンドは ACL 対象外＝この 4 本も全 5 窓から呼べる。狭さはコマンド側で担保する。
+            effect_template::commands::import_effect_template,
+            effect_template::commands::list_effect_templates,
+            effect_template::commands::get_effect_template_media,
+            effect_template::commands::delete_effect_template,
         ])
         // 032c-b: RunEvent::Exit フックを追加するため .run() を .build()+.run(closure) に分割した
         //（従来は lib.rs に exit フックが無かった）。no-orphan 3 段 kill の②。

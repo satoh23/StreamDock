@@ -17,7 +17,7 @@
     "build:sidecar": "pnpm --filter @stream-dock/comment-sidecar build:sea",
     "check:sidecar": "node ../comment-sidecar/scripts/check-fresh.mjs",
     "gen:bindings": "cd src-tauri && cargo test export_bindings",
-    "check:bindings": "pnpm gen:bindings && git diff --exit-code -- src/features/tools/bindings src/features/presets/bindings src/features/logs/bindings src/features/comment-viewer/bindings src/features/viewer-memory/bindings src/features/app-update/bindings"
+    "check:bindings": "pnpm gen:bindings && git diff --exit-code -- src/features/tools/bindings src/features/presets/bindings src/features/logs/bindings src/features/comment-viewer/bindings src/features/viewer-memory/bindings src/features/app-update/bindings src/features/obs-effects/bindings"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

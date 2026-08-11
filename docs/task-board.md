@@ -560,11 +560,23 @@
       - ⚠ **061b-1 レビュー S-2 の積み残しが閉じた**: state に持つのは `EffectRequest` だけで、**その型に `text`/`avatar` が無い**ため**本文を描く変異はコンパイルが通らない**（実測で「書けなかった」）
       - ⚠⚠ **security-review②（061b-1/061b-2 通し）実施済み（2026-08-09・外部レビュー・判定「修正必須」・対応済み）**。修正必須 5 件＝①**停止ガードの極性を固定するテストが無く、条件を反転する変異が cargo 280 件緑のまま生存**（孤児が残る側にも 061b の目的が壊れる側にも倒れる）②**非課金経路の `console` が §9 の担保から漏れていた**（通常チャットの本文を出す変異が生存）③`security.md` §1 の新節が「停止ボタンは取得を止めない」と**無条件で断言**していた（エフェクト窓が無ければ止まる＝偽）④**「no-orphan kill 契機はコメビュ窓に集約のまま／不変」が 8 箇所で嘘のまま**（`security.md` 046b 節含む）⑤**「UI 注記だけで受容」の再判定で不可**——`MainScreen` が「停止しました」と偽を述べるので `isEffectOverlayOpen()` で文言を分岐。品質 4 件（契約テストの変数名依存による偽陽性／`lastGiftAt` の記録位置／`slice` の向き／`newValue` ガード）も対応。frontend **1347 → 1350**、`no-console` を `obs-effects` に限定適用。判断の根拠は [docs/progress.md](progress.md) の「061b security-review②」節が正
     - ✅ **実機確認は実装者（AI）が macOS の a11y 自動操作で実施（2026-08-09）**。**④／⓪-1／⓪-2／⓪-3／⓪-4／⓪-5 はすべて `ps` + `lsof` の実測で成立・孤児 0 個**。⚠ **エフェクトの描画とテスト発火の `storage` 伝播だけは目視できていない**（エフェクト窓は AXWindow に列挙されず常に最背面／OBS 未起動でソース経由の撮影も不可／依頼者の私的コンテンツが映るためキャプチャ中止）＝**この 2 点だけ依頼者の目視が残っている**
-  - 061c エフェクトテンプレート取り込み（[docs/tasks/061c-effect-template-import.md](tasks/061c-effect-template-import.md)／`app_data_dir/effects/<id>/`＋`effect_templates` テーブル＋`manifest.json` のスキーマ検証・**security-review 必須**）
-    - ⚠ **パス検証が本タスクの本体**: `..` / 絶対パス / **symlink** を canonicalize で実際に確認する。**`manifest.json` が参照するファイルだけコピーする**（`.html` が紛れ込む経路を作らない）
-    - ⚠ **差し込み変数は `{name}` / `{amount}` / `{event}` の 3 つに固定**（061b の §9 判断を形式レベルで固定する）
-    - ⚠ **capability 追加ゼロ**（main 窓は既に `dialog:allow-open` を持つ）
+  - ✅ **061c 実装済み（2026-08-11・実機確認は 061d へ移管）** エフェクトテンプレート取り込み（[docs/tasks/061c-effect-template-import.md](tasks/061c-effect-template-import.md)／`app_data_dir/effects/<uuid v4>/`＋`effect_templates` テーブル＋`manifest.json` のスキーマ検証／`src-tauri/src/effect_template/` 6 分割＋コマンド 4 本＋描画ガード `screens/obs-effects/effectMedia.ts`。cargo **280 → 342** ／ frontend **1350 → 1368** ／ **security-review 2 回実施**＝①自己レビュー（レビュー中に 2 件検出・修正）②**外部の独立レビュー（判定「軽微な懸念あり」・修正必須 0／後回し可 6 ＋ 品質 6 を全件対応済み）**。判断の根拠は [docs/progress.md](progress.md) の 061c 節が正）
+    - ⚠⚠ **独立レビューで自己レビューが見落としていた 3 件が出た**（自己レビューの「問題なし」は独立レビューの代替にならない）: ①**UNC ガードが混在区切り `\/` `/\` を素通り**（**060b にも同じ欠落**があり、`util::is_network_path` へ共通化して両方修正）②**Windows 予約デバイス名が 22 件では不足**（`COM0` / `LPT0` / 上付き `COM¹²³` / `CONIN$` / `"CON .png"`。32 件＋語幹 trim へ）③⚠⚠ **symlink 拒否は目的を半分しか閉じない**——`manifest.media` に「**選ばれたディレクトリに既に在る別のファイル名**」を書けばリンク無しで同じ結果になる。構造的に塞げないので受容し、**緩和は 061d の UI**（専用フォルダ案内＋プレビュー必須）へ申し送り
+    - ⚠ **M5 の equivalent mutant 判定は独立レビューで追認された**（`symlink_metadata(link).is_file() == false` を実測）。`{message}` の §9 正当化・`dialog:allow-open` の前提・ゼロ拡大・bindings のドリフトゼロも追認
+    - ⚠⚠ **④ canonicalize / symlink は軸で結論が分かれた**（060b の判断を無断で覆していない）: **保存先は 060b 踏襲＝ canonicalize しない**（組み立てにユーザー入力ゼロ）／⚠ **アセットの symlink は拒否する**——060b の「特権境界を跨がない」は**選ぶのがユーザー本人だった**から成立していた論証で、`manifest.media` を決めるのは**第三者**なので及ばない（`main.png` を `~/Pictures` へのリンクにすれば意図しない画像が配信に出る）／⚠ **選ばれたディレクトリ自体の symlink は拒否しない**（Dropbox / iCloud 構成を壊さない）
+    - ⚠⚠ **「参照されているファイルだけコピー」は数値ではなく構造で担保した**＝ **`read_dir` を 1 度も呼ばない**（契約テストが不在を固定）。`manifest.json` 自体もコピーしないので**管理ディレクトリに入りうるのは最大 2 ファイル**＝ ファイル数上限そのものが不要になった
+    - ⚠⚠ **差し込み変数は 3 つ → 4 つへ変更**（`{name}` / `{amount}` / `{event}` / **`{message}`**）＋ `text.templateWithoutAmount`（既定 `"{message}"`）。3 つのままだと **`amountText` が null**（サブスク／メンシプ／ギフト＝課金イベントの大半）でどの選択肢も破綻する。§9 の正当化＝`{message}` は `composeEventMessage` の定型文で、**第三者の自由入力は `author.name` ただ 1 つ＝既に `{name}` として露出済み**（新しいデータ面を増やしていない）
+    - ⚠⚠ **`path` を受け取るコマンドが 2 本目**になり、§5 の 060b 例外節の再修正トリガーが**発火した**。再評価済み（合成は「**メディア形式に限定された読み取り**」で、`.css` 版より狭い軸と広い軸がある）
+    - ⚠ **capability 追加ゼロ**（`dialog:allow-open` の `open` が `options.directory` を内包＝ファイル選択と同じ 1 コマンドであることを plugin ソースで確認）。`tauri.conf.json` / sidecar / 依存はすべて差分ゼロ
+    - ⚠ **ミューテーション 12 件中 M5（`is_symlink()` 分岐の削除）が SURVIVED**。⚠ これは「テストが弱い」ではなく **equivalent mutant**（`symlink_metadata().is_file()` がリンクに対して既に false）で、追試（`symlink_metadata` → `metadata`）は KILLED。**壁はこの 1 語のほう**という発見を R-2 として反映済み
+    - ⚠ **合計サイズ上限を「個別上限の和」にすると到達不能な検査になる**ことに実装中に気づき、**5MiB**（＝ 1 回のエフェクトで webview へ載る base64 の総量）へ設計変更した
   - 061d テンプレート適用 UI（[docs/tasks/061d-effect-template-ui.md](tasks/061d-effect-template-ui.md)／一覧・**イベント種別ごとの割り当て**〔行は最初から全部ある＝「条件を追加」を作らない〕・プレビュー・**軽レビュー**）
+    - ⚠⚠ **061c から移管された実機確認①〜⑧を完了条件に含めること**（060b → 060d の申し送り⓪と同じ形。⚠ **⑧〔OBS キャプチャのカクつき〕はそもそも 061c の範囲外**＝ 061c は描画層を持たないので、移管ではなく**新設**）
+    - ⚠⚠ **音は 061d が鳴らす。Rust では鳴らせない**（`rodio` は `features=["playback"]` のみで、058a が `wav` を意図的に落としている＝デコーダが無い）。⇒ **webview の `<audio>` ＋ data URI**で、出力は **OS 既定＝配信に載る**。059b の通知音（Rust・実デバイス指定・配信に載せない）とは**別系統**で同時に鳴りうる。⚠ **`rodio` にデコーダ feature を足さないこと**
+    - ⚠ **data URI は「割り当て時／画面表示時」に先読みし、発火の瞬間に取りに行かないこと**（最大 5MiB → base64 約 6.7MB。`EFFECT_MAX_CONCURRENT = 3` は**触らない**）
+    - ⚠ **`kind` の拡張点** = `{ kind: "builtin-monetary" } | { kind: "template"; templateId: string }`。061c は `effectTrigger.ts` に 1 バイトも触っていない
+    - ⚠ **描画ガード `screens/obs-effects/effectMedia.ts` を必ず通す**（`data:` ＋ **MIME 完全一致** ＋ base64 文字集合）。`safeEffectMedia` は**メディアが弾かれたら `undefined`**／**音源だけ弾かれたらメディアは出す**
+    - ⚠⚠ **security.md 061a 節の「外部コンテンツを踏む経路ゼロ」の失効条件を 061d でもう一度見ること**（061c の再評価は「経路ができた」までで、**実際に踏むのは 061d**。061c の再評価をもって免除しない）
     - ⚠ **プレビューは `obs-effects` 画面内で再生**（エフェクト窓で再生すると配信中に出る）
     - ⚠ **「すべての割り当てを解除」を必ず置く**（壊れたテンプレートからの脱出路）／**メディア読み込み失敗は組み込みへフォールバック**（無反応にしない）
 

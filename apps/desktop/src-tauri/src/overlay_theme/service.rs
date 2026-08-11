@@ -26,7 +26,9 @@ use rusqlite::Connection;
 use tauri::{AppHandle, Manager};
 
 use crate::error::{AppError, AppResult};
-use crate::util::{now_rfc3339, reject_control_chars, require_non_empty, with_filename_detail};
+use crate::util::{
+    is_network_path, now_rfc3339, reject_control_chars, require_non_empty, with_filename_detail,
+};
 
 use super::model::{OverlayThemeImportResult, OverlayThemeOrigin, OverlayThemeRecord};
 use super::repository;
@@ -234,10 +236,11 @@ fn validate_source_path(raw: &str) -> AppResult<PathBuf> {
     // **OS が攻撃者ホストへ SMB 接続し、既定設定では NTLM でユーザー/マシンの資格情報ハッシュが飛ぶ**
     // ——ユーザー操作ゼロ・ダイアログ非経由で、§1 の趣旨（アプリが外へ出ない）に直接反する。
     // ⚠ 拡張子チェックより**前**に置くこと（`.css` 以外でも接続は起きてしまうため）。
-    // ⚠ macOS の `/Volumes/...`（マウント済み共有）は拒否しない——ユーザーが既にマウントした先だけが
-    // 見えるので、**新しい宛先を作らない**。POSIX の `//foo` と Windows の `\\?\C:\`（ローカルの
-    // 拡張長パス）も巻き添えで落ちるが、ファイル選択ダイアログはどちらの形も返さない。
-    if trimmed.starts_with("\\\\") || trimmed.starts_with("//") {
+    // ⚠⚠ 判定は `util::is_network_path` に集約してある（061c security-review S-1）。以前はここで
+    // `starts_with("\\\\") || starts_with("//")` を直接見ていたが、**Windows は `/` と `\` を
+    // 等価な区切りとして扱う**ので `\/server\share` / `/\server/share` という混在形が素通りしていた。
+    // 規則を 2 か所（060b / 061c）に複製すると片方だけ古くなるため、共有ヘルパへ寄せている。
+    if is_network_path(trimmed) {
         return Err(AppError::validation(
             "ネットワーク上のファイルは取り込めません。ローカルにコピーしてから選んでください。",
         ));
@@ -1165,6 +1168,10 @@ mod tests {
             r"\\evil.example\share\x.txt", // 拡張子チェックより前に落ちる
             r"\\?\UNC\evil.example\share\x.css",
             "//evil.example/share/x.css",
+            // ⚠⚠ 061c security-review S-1: Windows は `/` と `\` を等価な区切りとして扱うので、
+            // 混在形も UNC として解決される（`starts_with` 2 本の旧実装では素通りしていた）。
+            r"\/evil.example\share\x.css",
+            r"/\evil.example/share/x.css",
         ] {
             let err = match validate_source_path(bad) {
                 Ok(_) => panic!("ネットワークパスを通した: {bad:?}"),
