@@ -1,0 +1,101 @@
+/* 061d: 取り込んだテンプレート 1 件の意匠。**エフェクト窓と main 窓のプレビューが共有する**。
+   ⚠ **background を書かない。** この器はエフェクト窓の透過（`html[data-overlay="1"]`）の内側にも
+   入るので、塗ると OBS の合成が壊れる（`EffectOverlayApp.module.css` / `PinnedOverlayApp.module.css`
+   と同じ規律）。テンプレート自身の見た目は**メディアが持つ**（alpha 付き WebM / APNG / GIF）。
+   ⚠ 生 hex を書かない（`theme.css` のトークンのみ）。 */
+
+/* テンプレート 1 件ぶんの器。⚠⚠ **親は `position: relative` 以上であること。**
+   `inset: 0` で親と同じ大きさになるので、中の `max-width/height: 100%` が
+   **確定した大きさ**に対して解決される。
+   ⚠⚠ **061d-1 レビュー Q-6: いま `position` を持っているのはプレビュー枠（`.previewStage`）だけで、
+   `EffectOverlayApp.module.css` には `position` 宣言が 1 つも無い。** エフェクト窓では
+   「窓＝ビューポート」なので **061d-2 で素朴に置くと*たまたま*正しく見える**が、
+   それは初期包含ブロック（ビューポート）に解決されているだけである。
+   `.effectStack`（組み込みカードの縦積み・padding / gap を持つ）の中へ入れると
+   **その箱を無視して層が飛び出す**。061d-2 でテンプレート層を置くコンテナには
+   **必ず明示的に `position: relative` を付けること。** */
+.root {
+  position: absolute;
+  inset: 0;
+  /* ⚠ はみ出しをここで切る（親の窓／枠の外へ描かない）。 */
+  overflow: hidden;
+  /* ⚠ エフェクト窓は非フォーカス・クリック不可、プレビューは表示専用。どちらも操作対象ではない。 */
+  pointer-events: none;
+}
+
+/* メディア（`<img>` / `<video>`）。大きさは `manifest.layout` の宣言値を inline style で当て、
+   ⚠⚠ **窓／枠より大きい場合はここで縮む**（`max-*: 100%` ＋ `object-fit: contain`）。
+   切るのではなく縮めるのは、961px 以上のテンプレートが「黙って端が欠ける」のを避けるため。 */
+.media {
+  position: absolute;
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+/* 差し込み文面。⚠ 大きさは `manifest.text.fontSize`（inline style）。
+   ⚠ 影は `text-shadow`（`filter: drop-shadow` にしない＝060c 追修正⑤の WebKit 描画バグ）。
+   映像の上に載るので、影が無いと背景次第で読めなくなる。
+   ⚠⚠ **061d-2 の未解決課題（061d-1 レビュー Q-2 ／ 実機 E2E で結論を修正）**:
+   `--text` は `--color-text` ＝ **ダークで #f9fafb / ライトで #111827** と反転するので、
+   061d-2 でこの部品がエフェクト窓（**任意の配信映像の上**）に載ると
+   ①ライトテーマの配信者では「濃い文字 ＋ 黒 35% の影」が暗い映像に埋もれる
+   ②同じテンプレートが**配信者のアプリのテーマ設定によって別物に見える**、という 2 つの問題が出る。
+   ⚠⚠ **ただし `--overlay-source-fg`（白固定）へ単純に置き換えるのは誤り。実機で確認して差し戻した**
+   ——061d-1 で実際に出荷されるのは **main 窓のプレビューだけ**で、その枠の背景は
+   `--surface-subtle`（ライトテーマでほぼ白）。白固定にすると**白地に白**でほとんど読めなくなる。
+   `--text` はプレビュー枠に対しては**両テーマとも正しい**。
+   ⚠ **再修正トリガー＝061d-2 でエフェクト窓へ載せるとき。** そのときは色だけを直すのではなく
+   ①テーマ非依存の専用トークン（`--overlay-*` に暗い面／縁取り用が無いので新設が要る）
+   ②プレビュー枠の背景を「映像の上」を模した暗色 or 市松にする、の**2 つを一緒に決めること**
+   （枠が明るいままだと、どちらの色を選んでもプレビューと本番のどちらかが破綻する）。 */
+.text {
+  position: absolute;
+  max-width: 100%;
+  color: var(--text);
+  font-weight: 800;
+  line-height: 1.3;
+  text-align: center;
+  text-shadow: 0 2px 6px var(--overlay-bubble-shadow);
+  word-break: break-word;
+}
+
+/* anchor（9 値）の寄せ先。⚠ 中央寄せの `-50%` は tsx 側の `ANCHOR_SHIFT` が `transform` で足す
+   （オフセットの px と同じ `transform` に並べるため）。**必ず対で触ること。** */
+.anchorTopLeft {
+  top: 0;
+  left: 0;
+}
+.anchorTop {
+  top: 0;
+  left: 50%;
+}
+.anchorTopRight {
+  top: 0;
+  right: 0;
+}
+.anchorLeft {
+  top: 50%;
+  left: 0;
+}
+.anchorCenter {
+  top: 50%;
+  left: 50%;
+}
+.anchorRight {
+  top: 50%;
+  right: 0;
+}
+.anchorBottomLeft {
+  bottom: 0;
+  left: 0;
+}
+.anchorBottom {
+  bottom: 0;
+  left: 50%;
+}
+.anchorBottomRight {
+  bottom: 0;
+  right: 0;
+}

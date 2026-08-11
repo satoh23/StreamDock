@@ -93,6 +93,11 @@ const PINNED_OVERLAY_TSX = "src/screens/comment-viewer/PinnedOverlayApp.tsx";
 // 061a: 3 本目の透過オーバーレイ窓。⚠ **060d の注入先ではない**ので、(10-d) の否定検査の対象に含める
 //（窓を増やすたびにここへ足すこと。足さないと「注入先は comment-overlay のみ」という契約に穴が開く）。
 const EFFECT_OVERLAY_TSX = "src/screens/obs-effects/EffectOverlayApp.tsx";
+// 061d: エフェクト窓の描画の一部が**ファイルとして外へ出た**（main 窓のプレビューと共有するため）。
+// ⚠⚠ (10-d) はファイル名で対象を選ぶので、**切り出した先を足さないと否定検査がすり抜ける**
+//（「窓を増やすたびに足す」の**ファイル分割版**。この窓に描かれるものを増やすときは必ずここへ足すこと）。
+const EFFECT_TEMPLATE_VIEW_TSX =
+  "src/screens/obs-effects/EffectTemplateView.tsx";
 const CSS_COMPAT_TS = "src/features/comment-viewer/cssCompat.ts";
 // 060d: ユーザー CSS を実際に注入する側の 3 本（(10-h) / (10-i)）。
 const CSS_SCOPE_TS = "src/features/comment-viewer/cssScope.ts";
@@ -813,6 +818,7 @@ for (const rel of [VIEWER_CSS, OVERLAY_CSS]) {
   const overlayAppTsx = stripTsComments(readRaw(OVERLAY_APP_TSX));
   const pinnedTsx = stripTsComments(readRaw(PINNED_OVERLAY_TSX));
   const effectTsx = stripTsComments(readRaw(EFFECT_OVERLAY_TSX));
+  const effectTemplateTsx = stripTsComments(readRaw(EFFECT_TEMPLATE_VIEW_TSX));
   const compatTs = stripTsComments(readRaw(CSS_COMPAT_TS));
 
   // (10-a) 契約の安定クラスが実際に DOM を組む側へ付いていること。
@@ -1027,13 +1033,23 @@ for (const rel of [VIEWER_CSS, OVERLAY_CSS]) {
     }
     // 061a: 3 本目（エフェクト窓）も同じ理由で注入先ではない。⚠ ここを足さないと、窓を増やすたびに
     // 「注入先は comment-overlay のみ」という 060d の契約が**静かに穴だらけ**になる。
-    if (classToken(cls).test(effectTsx)) {
-      fail(
-        `${EFFECT_OVERLAY_TSX}: エフェクト窓に \`${cls}\` が付いています（060a / 060d / 061a）。` +
-          `060d の注入先は \`comment-overlay\` のみで、窓の区別をこのクラスの有無で表しています。` +
-          `エフェクト窓へ広げるのは別タスク（061c / 061d のテンプレート意匠とも衝突するので、` +
-          `そのときは注入先の設計から見直すこと）として、本ガードも併せて更新してください。`,
-      );
+    // 061d: エフェクト窓へ描かれるものが 2 ファイルに分かれた（`EffectTemplateView` は main 窓の
+    // プレビューと共有する描画本体）ので、**切り出した先も同じ否定検査にかける**。
+    // ⚠ 変数名を `tsxRel` にしているのは、外側の `for (const rel of [VIEWER_CSS, OVERLAY_CSS])` を
+    //   シャドウしないため（061d-1 レビュー Q-5）。このスクリプトは「フェイル文にファイル名を出す」ことが
+    //   機能そのものなので、同名だと後で外側の `rel` を参照した瞬間に**間違ったファイル名を報告する**。
+    for (const [tsxRel, tsxSrc] of [
+      [EFFECT_OVERLAY_TSX, effectTsx],
+      [EFFECT_TEMPLATE_VIEW_TSX, effectTemplateTsx],
+    ]) {
+      if (classToken(cls).test(tsxSrc)) {
+        fail(
+          `${tsxRel}: エフェクト窓に \`${cls}\` が付いています（060a / 060d / 061a / 061d）。` +
+            `060d の注入先は \`comment-overlay\` のみで、窓の区別をこのクラスの有無で表しています。` +
+            `エフェクト窓へ広げるのは別タスク（061c / 061d のテンプレート意匠とも衝突するので、` +
+            `そのときは注入先の設計から見直すこと）として、本ガードも併せて更新してください。`,
+        );
+      }
     }
   }
 

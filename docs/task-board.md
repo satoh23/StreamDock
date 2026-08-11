@@ -570,15 +570,31 @@
     - ⚠ **capability 追加ゼロ**（`dialog:allow-open` の `open` が `options.directory` を内包＝ファイル選択と同じ 1 コマンドであることを plugin ソースで確認）。`tauri.conf.json` / sidecar / 依存はすべて差分ゼロ
     - ⚠ **ミューテーション 12 件中 M5（`is_symlink()` 分岐の削除）が SURVIVED**。⚠ これは「テストが弱い」ではなく **equivalent mutant**（`symlink_metadata().is_file()` がリンクに対して既に false）で、追試（`symlink_metadata` → `metadata`）は KILLED。**壁はこの 1 語のほう**という発見を R-2 として反映済み
     - ⚠ **合計サイズ上限を「個別上限の和」にすると到達不能な検査になる**ことに実装中に気づき、**5MiB**（＝ 1 回のエフェクトで webview へ載る base64 の総量）へ設計変更した
-  - 061d テンプレート適用 UI（[docs/tasks/061d-effect-template-ui.md](tasks/061d-effect-template-ui.md)／一覧・**イベント種別ごとの割り当て**〔行は最初から全部ある＝「条件を追加」を作らない〕・プレビュー・**軽レビュー**）
+  - 061d テンプレート適用 UI（[docs/tasks/061d-effect-template-ui.md](tasks/061d-effect-template-ui.md)／一覧・**イベント種別ごとの割り当て**〔行は最初から全部ある＝「条件を追加」を作らない〕・プレビュー）
+    - ⚠⚠ **依頼者の判断で 061d-1 / 061d-2 に分割した**（061b が 061b-1 / 061b-2 に割った先例と同型）。判断の根拠・穴 A〜K の追認/訂正・①〜⑬ の結論は **docs/progress.md の 061d-1 節が正**
+      - ✅ **061d-1 実装済み（2026-08-11・未コミット）**: invoke ラッパ `features/obs-effects/effectTemplateApi.ts`／差し込み文面の純関数 `screens/obs-effects/effectTemplateText.ts`／**共有描画部品 `EffectTemplateView`**（エフェクト窓と main 窓のプレビューが共有）／取り込み・一覧・削除・プレビューの `EffectTemplateCard`。frontend **1368 → 1408**。⚠ **`effectTrigger.ts` は 1 バイトも触っていない**（差分ゼロを実測）
+        - ✅ **security-review ＋ code-review 実施済み**（2026-08-11・判定「**軽微な懸念あり**」・**コード上のセキュリティ欠陥 0 件**・修正必須 3 件＋後回し可 2 件＋品質 11 件をすべて反映。**1408 → 1413 tests**）。⚠ 主な修正＝ **S-3 案内文の中間 1 文をテストで固定**（削る変異が生存していた）／**プレビューが「無言の空」に倒れる 2 経路を fail-closed 化**（一覧の再取得失敗・メディアのデコード失敗）／**`no-console` を `features/obs-effects/` へ拡張**／**プレビュー文字色をテーマ非依存トークンへ**（ライトテーマで暗い映像の上に濃い文字＋黒い影になっていた）
+        - ⚠⚠ **`docs/security.md` の 061a 節へ「失効条件の再評価結果」を反映した**（⑬の一部を前倒し）。**結論＝「5 窓いずれも外部コンテンツを踏まない」は 061d-1 で偽になったが、先に踏んだのは*エフェクト窓ではなく main 窓*（プレビュー）である。エフェクト窓側はまだ真。** ⚠ ⑬の残り（「エフェクト窓も踏む」への本文書き換え＋レビュー必須条件へ 1 語句）は**061d-2 完了時のまま**
+        - ✅ **実機 E2E 実施済み（2026-08-11・macOS）**: **①③④⑦ ＋ capability の前提**を実バイナリで確認。⚠⚠ とくに **既存の `dialog:allow-open` だけで `open({directory:true})` が通る**（capability 追加ゼロの前提が実証）／**symlink 越しの私的画像は取り込まれない**（保存された `media.png` の sha256 が正規ファイルと完全一致）／**`ConfirmDialog` の backdrop と inert が実 webview で効く**（jsdom では検証不能）。⚠ ②⑤⑥は **Rust テストが実 I/O で網羅済み**のため実機では省略（同じ IPC 経路は 2 件で実証済み）
+        - ⚠⚠ **E2E が実バグを 1 件検出**: レビュー対応 Q-2 で入れた「テンプレート文字色を白固定」が、プレビュー枠の背景（`--surface-subtle`＝ライトテーマでほぼ白）と衝突して**白地に白**になっていた。**差し戻し**、061d-2 の課題（色と枠の背景を一緒に決める）として CSS に記録
+        - ✅ **E2E 後にテストを追加（1413 → 1418）＋ 新ガード 1 本**: ⚠⚠ **`scripts/check-effect-template-contract.mjs`**＝ **TS ↔ Rust のコマンド名・引数キー・許可 MIME を突き合わせる**（既存の 2 本は片側しか見ておらず、**片側だけ改名すると両方緑のまま実機でだけ失敗する**）。**7 変異すべて KILLED を実測**。ほかに `EffectRequest` → `EffectTemplateVars` の型互換（061d-2 の前提）／9 anchor の対応／金額なしの経路／`durationLabel` の劣化
+        - ⚠ **残件**: 実機確認 ②⑤⑥（Rust テストでカバー済み・任意）と **⑩（金額なしの経路・dev-mock が要る）**
+        - ⚠ **061d-1 の時点ではテンプレートを配信画面へ出せない**（取り込んで中身を確かめるまで）
+        - ⚠ `scripts/check-css-guards.mjs` の **(10-d) の否定検査へ `EffectTemplateView.tsx` を追加**した（**ファイル名で対象を選ぶ検査なので、エフェクト窓へ描くものを切り出したら必ず足すこと**＝「窓を増やすたびに足す」のファイル分割版）
+        - ⚠ **ミューテーション 11 件中 1 件 SURVIVED（equivalent mutant）**——プレビュー音の `useState(false)` は観測できず、「既定 OFF」を担保しているのは `openPreview` の reset。テストを 1 件足して**そちら**を固定した
+      - ⏳ **061d-2 未着手**: 割り当て（`screens/obs-effects/effectAssignments.ts`＋割り当て UI＋「すべての割り当てを解除」）／`effectTrigger.ts` の `kind` union と **resolver 注入**（引数は**既定つき**＝既存 21 ケースを触らない）／エフェクト窓の描画・**先読み（20MiB ＋ LRU）**・`<audio>`／テスト発火の割り当て対応／②の per-effect duration
+    - ⚠⚠ **レビュー区分を「軽レビュー」→ `security-review` へ格上げした**（⑨）。理由＝ security.md 061a 節が 061d を名指ししている／**第三者由来のバイト列を実際に webview へ載せる最初のタスク**／⚠ **先に踏むのは main 窓（プレビュー）**で、main 窓は `default.json` に `dialog:*` / `autostart:*` / `core:window:*` を持つ**最も permission が広い窓**（エフェクト窓は `core:default` のみ）。**各段の末尾で実施する**
     - ⚠⚠ **061c から移管された実機確認①〜⑧を完了条件に含めること**（060b → 060d の申し送り⓪と同じ形。⚠ **⑧〔OBS キャプチャのカクつき〕はそもそも 061c の範囲外**＝ 061c は描画層を持たないので、移管ではなく**新設**）
     - ⚠⚠ **音は 061d が鳴らす。Rust では鳴らせない**（`rodio` は `features=["playback"]` のみで、058a が `wav` を意図的に落としている＝デコーダが無い）。⇒ **webview の `<audio>` ＋ data URI**で、出力は **OS 既定＝配信に載る**。059b の通知音（Rust・実デバイス指定・配信に載せない）とは**別系統**で同時に鳴りうる。⚠ **`rodio` にデコーダ feature を足さないこと**
     - ⚠ **data URI は「割り当て時／画面表示時」に先読みし、発火の瞬間に取りに行かないこと**（最大 5MiB → base64 約 6.7MB。`EFFECT_MAX_CONCURRENT = 3` は**触らない**）
     - ⚠ **`kind` の拡張点** = `{ kind: "builtin-monetary" } | { kind: "template"; templateId: string }`。061c は `effectTrigger.ts` に 1 バイトも触っていない
     - ⚠ **描画ガード `screens/obs-effects/effectMedia.ts` を必ず通す**（`data:` ＋ **MIME 完全一致** ＋ base64 文字集合）。`safeEffectMedia` は**メディアが弾かれたら `undefined`**／**音源だけ弾かれたらメディアは出す**
     - ⚠⚠ **security.md 061a 節の「外部コンテンツを踏む経路ゼロ」の失効条件を 061d でもう一度見ること**（061c の再評価は「経路ができた」までで、**実際に踏むのは 061d**。061c の再評価をもって免除しない）
-    - ⚠ **プレビューは `obs-effects` 画面内で再生**（エフェクト窓で再生すると配信中に出る）
+    - ⚠ **プレビューは `obs-effects` 画面内で再生**（エフェクト窓で再生すると配信中に出る）／⚠ **プレビューの音は既定 OFF ＋明示トグル ＋「配信にも流れます」の明示**（⑦。音量は 059a の `sound-volume` と**共有しない**）
     - ⚠ **「すべての割り当てを解除」を必ず置く**（壊れたテンプレートからの脱出路）／**メディア読み込み失敗は組み込みへフォールバック**（無反応にしない）
+    - ⚠⚠ **割り当ての既定は全「組み込み」**（⑪。タスクファイルの「全なし」から意図的にずらした＝全「なし」だと **061d のリリースで既存ユーザーの組み込みエフェクトが黙って止まる**）。**実在しない id も組み込みへフォールバック＋UI で警告**（`effectMedia.ts` の「弾かれたら組み込みへ」と同じ壊れ方に 2 種類の答えを持たせない）
+    - ⚠ **穴 H の逆向きのリスク（061d-1 で判明）**: エフェクト窓は `focused(false)` でクリックを受けられないので、**autoplay policy が `<audio>` を拒否して「鳴らない」可能性がある**（`<video muted>` は許可される）。jsdom では検出不能＝**実機確認⑪（新設）で見る**。fail する向きとしては安全（`effectMedia.ts` が「音が鳴らないことは配信を壊さない」と明記）。⚠⚠ **061d-1 レビューで範囲が macOS / WKWebView だけに絞られた**——Windows / WebView2 は `lib.rs` の `SHARED_BROWSER_ARGS` が `--autoplay-policy=no-user-gesture-required` を**全 5 窓へバイト一致で渡している**ので既に対策済み（実測）
+    - ⚠ **`ConfirmDialog` を跨いで使うのは 061d-1 が初めて**（実体は `screens/comment-viewer/`・意匠は `CommentViewerApp.module.css`）。`ToggleSwitch` と合わせて**跨ぎ部品が 2 本**になった。**再修正トリガー＝3 本目が跨いだら 2 本まとめて `components/` へ移す**（呼び出し側 5 箇所＋CSS の改修）
 
 - 062 配信サマリー（集計・保存・フィルタ・レイド）（親設計 [docs/tasks/062-stream-summary.md](tasks/062-stream-summary.md)／要望⑤＋⑥・配信終わりに総コメント数/総課金額/課金回数/サブスク件数/**誰がいくら**〔マスト〕/**誰がレイドしたか**〔マスト・Twitch のみ〕を出し、配信ごとに保存してフィルタできる）
   - 実装順: 062a → 062b → 062c → 062d

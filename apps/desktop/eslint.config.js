@@ -32,7 +32,16 @@ export default tseslint.config(
     // ⚠ ここだけに限定するのは、他の画面には既存の意図的な `console` が有り得るため（全体禁止は別スコープ）。
     // ⚠ 再修正トリガー＝エフェクト窓でどうしてもログを出したくなったら、まず「第三者データを含まない」
     //   ことを型か関数の境界で担保してから、この override を緩めること。
-    files: ["src/screens/obs-effects/**/*.{ts,tsx}"],
+    //
+    // ⚠⚠ **061d-1 レビュー S-3: `src/features/obs-effects/**` を対象へ足した。**
+    // 061d の invoke ラッパ（`effectTemplateApi.ts`）はテンプレート名・フォルダのパス・例外の生文言を
+    // 扱う層なのに、当初 `src/screens/**` 限定だったため **lint の外**にあり、
+    // 「ここに console を書かないこと」というコメントだけが規約を支えていた。061b レビュー②S-2 は
+    // まさに「コメントで守っていたつもりの console が変異で生存した」という指摘だったので、同じ形を残さない。
+    files: [
+      "src/screens/obs-effects/**/*.{ts,tsx}",
+      "src/features/obs-effects/**/*.{ts,tsx}",
+    ],
     rules: { "no-console": "error" },
   },
 );

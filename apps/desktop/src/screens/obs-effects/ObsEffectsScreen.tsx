@@ -22,9 +22,15 @@ import {
 } from "../../features/comment-viewer/obsApi";
 // ⚠ ディレクトリ跨ぎの再利用。トグルは `role="switch"` の a11y ごと既製なので、main 窓のために
 // 別実装を起こすと**新しい px / weight を発明する**ことになる（061a の要件に反する）。
-// 再修正トリガー＝3 画面目がこれを使うようになったら `components/` へ移す。
+// ⚠⚠ **061d で跨いでいる部品が 2 本になった**（`ToggleSwitch` ＋ `EffectTemplateCard` が使う
+// `ConfirmDialog`）。どちらも実体は `screens/comment-viewer/` にあり、意匠を
+// `CommentViewerApp.module.css` から取っている。
+// **再修正トリガー＝3 本目が跨いだとき。** そのときは 2 本まとめて `components/` へ移すこと
+// （意匠を `CommentViewerApp.module.css` から切り出す作業を含む＝`ConfirmDialog` は
+// 既に 4 箇所から使われているので、移動は呼び出し側 5 箇所 ＋ CSS の改修になる）。
 import { ToggleSwitch } from "../comment-viewer/ToggleSwitch";
 import { Button } from "../../components/primitives";
+import { EffectTemplateCard } from "./EffectTemplateCard";
 import layout from "../formLayout.module.css";
 import styles from "./ObsEffectsScreen.module.css";
 
@@ -33,7 +39,10 @@ import styles from "./ObsEffectsScreen.module.css";
  * `ComingSoonScreen` ではなくここを出すようになった。
  *
  * **061a 時点で置くのは 3 つだけ**——表示トグル・OBS 自動反映トグル・前提ステータス。
- * テンプレート一覧・割り当ては 061d、エフェクトの中身とテスト発火は 061b。
+ * エフェクトの中身とテスト発火は 061b が足した。
+ * ⚠ **061d-1 でテンプレートの取り込み・一覧・プレビュー（[`EffectTemplateCard`]）が加わった。**
+ * イベント種別ごとの割り当てと、エフェクト窓でのテンプレート描画は **061d-2**。
+ * ＝ **061d-1 の時点ではテンプレートを配信画面へ出すことはできない**（取り込んで中身を確かめるまで）。
  *
  * ⚠⚠ **この画面の設計を決めている構造上の制約**（061a の実装で判明した最大の論点。⚠ **061b で①②が変わった**）:
  *
@@ -273,6 +282,10 @@ export function ObsEffectsScreen() {
             </div>
           </div>
         </section>
+
+        {/* 061d-1: 取り込み・一覧・削除・プレビュー。⚠ 材料（テンプレート）→ 使い道（割り当て・061d-2）
+            の順に並べる。⚠ **プレビューはこの画面の中だけ**で再生する（エフェクト窓へ出さない）。 */}
+        <EffectTemplateCard />
 
         <section className={layout.panel}>
           <div className={layout.panelHead}>

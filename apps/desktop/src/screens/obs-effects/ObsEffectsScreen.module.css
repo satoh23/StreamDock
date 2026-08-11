@@ -88,3 +88,109 @@
   flex: 1;
   min-width: 0;
 }
+
+/* --- 061d: テンプレートの取り込み・一覧・プレビュー -------------------------------------------- */
+
+/* ⚠⚠ **読み飛ばされては困る注記**（061c security-review S-3 の緩和策＝専用フォルダの案内と、
+   プレビューの音が配信に載る旨）。`.note` より 1 段強い扱いにするが、⚠ **色だけで伝えない**——
+   文言自体が具体的な行動を書いているので、色と左罫は補助にとどめる（`.statusValue.blocked` と同じ判断）。 */
+.caution {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-left: 3px solid var(--warn-border-strong);
+  border-radius: 6px;
+  background: var(--warn-soft);
+  color: var(--warn-text);
+}
+
+/* エラー文言。⚠ 詳細（パス・テンプレート名・例外の中身）は載せない（§9）。 */
+.errorText {
+  margin-top: 10px;
+  color: var(--danger-text);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* ボタンを横に並べる行（取り込み／再生し直し／閉じる）。 */
+.rowActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+/* 取り込み済みテンプレートの一覧。 */
+.templateList {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.templateRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* ⚠ テンプレート名は**第三者が書いた文字列**（制御文字と長さは Rust が検証済み）。
+   長い名前でボタンを押し出さないよう、縮むのは名前側だけにする（043c 追修正と同じ要件）。 */
+.templateName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.templateMeta {
+  flex: none;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+/* プレビュー枠。⚠ **main 窓の中だけ**で再生する（エフェクト窓へ出すと配信中に出てしまう）。 */
+.preview {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.previewCaption {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+/* ⚠⚠ **`position: relative` が要る**——`EffectTemplateView` の器が `position: absolute; inset: 0` で
+   ここに重なり、その中の `max-width/height: 100%` がこの枠の大きさに対して解決される。
+
+   ⚠ 比率はエフェクト窓（960×360）と同じ 8/3 にしてある。**ただし「本番と同じ収まりで見える」わけではない**
+   （061d-1 レビュー Q-1 で当初の主張を撤回）。`layout.width/height` / `offsetX/Y` / `text.fontSize` は
+   いずれも**絶対 px** なので、比率が同じでも枠の実寸が違えば見え方が変わる:
+     - main 窓の既定幅 1280 では、この枠は約 1188×445（＝エフェクト窓の約 1.24 倍）。
+     - 480×240 のテンプレートは本番で幅 50%・プレビューで幅 40% を占める。
+     - `max-*: 100%` の**縮小が始まる境界も違う**（例: 1000×380 は本番では縮むがここでは縮まない）。
+   ＝ **この枠で確かめられるのは「何が取り込まれたか」と「だいたいの配置」まで**で、
+   はみ出し・収まりの最終確認は実機（エフェクト窓）で行うこと。**061c S-3 の緩和策としての価値
+   （意図しない画像が混入していないかを見る）は、この制限があっても損なわれない。**
+   ⚠ **再修正トリガー＝「プレビューどおりに出ない」と実機で言われたとき。** そのときは
+   内側に 960×360 固定の層を置き `transform: scale()` で縮める形にする（絶対 px・オフセット・
+   fontSize・クランプ境界を同時に正しくできる唯一の形。倍率は `ResizeObserver` で測る）。
+   ⚠ 046c の `fitScale` を持ち込むという意味ではない（あちらは内容を測る反復ソルバ）。 */
+.previewStage {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 8 / 3;
+  margin-top: 8px;
+  border: 1px dashed var(--muted-border);
+  border-radius: var(--radius);
+  background: var(--surface-subtle);
+  overflow: hidden;
+}
