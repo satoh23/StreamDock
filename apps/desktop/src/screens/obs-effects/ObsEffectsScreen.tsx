@@ -30,7 +30,9 @@ import {
 // 既に 4 箇所から使われているので、移動は呼び出し側 5 箇所 ＋ CSS の改修になる）。
 import { ToggleSwitch } from "../comment-viewer/ToggleSwitch";
 import { Button } from "../../components/primitives";
+import { EffectAssignmentCard } from "./EffectAssignmentCard";
 import { EffectTemplateCard } from "./EffectTemplateCard";
+import { useEffectTemplates } from "./useEffectTemplates";
 import layout from "../formLayout.module.css";
 import styles from "./ObsEffectsScreen.module.css";
 
@@ -91,6 +93,10 @@ export function ObsEffectsScreen() {
   const [monetaryEnabled, setMonetaryEnabled] = useState(() =>
     loadEffectMonetaryEnabled(),
   );
+
+  // ⚠⚠ 061d-2: テンプレート一覧と割り当ての state は**この画面が 1 つだけ持つ**（061d-1 レビュー Q-9）。
+  //   削除は「一覧」と「割り当て」の両方を書き換えるので、2 つのカードが別々に持つと片方が古くなる。
+  const effectTemplates = useEffectTemplates();
 
   // 前提ステータス。null = 未取得。
   const [effectWindowOpen, setEffectWindowOpen] = useState<boolean | null>(null);
@@ -283,9 +289,13 @@ export function ObsEffectsScreen() {
           </div>
         </section>
 
-        {/* 061d-1: 取り込み・一覧・削除・プレビュー。⚠ 材料（テンプレート）→ 使い道（割り当て・061d-2）
+        {/* 061d-1: 取り込み・一覧・削除・プレビュー。⚠ 材料（テンプレート）→ 使い道（割り当て）
             の順に並べる。⚠ **プレビューはこの画面の中だけ**で再生する（エフェクト窓へ出さない）。 */}
-        <EffectTemplateCard />
+        <EffectTemplateCard {...effectTemplates} />
+
+        {/* 061d-2: イベント種別ごとの割り当て。⚠ **材料の直後**に置く（テンプレートを取り込んでから
+            割り当てる、という順に画面が並ぶ）。 */}
+        <EffectAssignmentCard {...effectTemplates} />
 
         <section className={layout.panel}>
           <div className={layout.panelHead}>

@@ -382,4 +382,160 @@ describe("061b: decideEffects（発火層）", () => {
     expect(state.lastGiftAt.size).toBe(0);
     expect(state.recentFires).toHaveLength(0);
   });
+
+  // --- 061d-2: 割り当ての resolver（①・穴 γ） ---------------------------------------------------
+  //
+  // ⚠⚠ **上の 21 ケースは 1 文字も書き換えていない。** resolver は**既定つきの第 5 引数**なので、
+  //   061b までの呼び出しは全部「組み込み」のまま動く（＝ `git diff` で「発火判定に手が入っていない」
+  //   ことを示せる）。⚠ キー集合を固定しているケースも、組み込み経路のキーが 7 個のまま変わらないので
+  //   **緑のまま**である（テンプレート経路の 8 キーは下の新規ケースで固定する）。
+
+  it("⚠ resolver を省略すると全部「組み込み」（既定引数＝061b までの挙動と同一）", () => {
+    const out = decideEffects([comment()], [], createEffectTriggerState(), T0);
+    expect(out[0].kind).toBe("builtin-monetary");
+  });
+
+  it("⚠⚠ resolver が null を返す種別は 1 件も出ない（＝エフェクトを出さない）", () => {
+    const out = decideEffects(
+      [comment()],
+      [],
+      createEffectTriggerState(),
+      T0,
+      () => null,
+    );
+    expect(out).toEqual([]);
+  });
+
+  it("⚠ resolver がテンプレートを返すと kind と templateId が載る（キー集合は 8 個）", () => {
+    const out = decideEffects(
+      [comment()],
+      [],
+      createEffectTriggerState(),
+      T0,
+      () => ({ kind: "template", templateId: "tpl-1" }),
+    );
+    expect(out).toHaveLength(1);
+    expect(Object.keys(out[0]).sort()).toEqual(
+      [
+        "amountText",
+        "eventLabel",
+        "id",
+        "kind",
+        "message",
+        "name",
+        "templateId",
+        "tone",
+      ].sort(),
+    );
+    // ⚠ 本文・アバターは**テンプレート経路でも**載らない（§9）。
+    const dump = JSON.stringify(out[0]);
+    expect(dump).not.toContain("本文です");
+  });
+
+  it("⚠ resolver は生の eventType を受け取る（ビッツは superchat として引ける）", () => {
+    const seen: string[] = [];
+    decideEffects(
+      [comment({ monetary: { amount: 300, currency: "BITS" } })],
+      [],
+      createEffectTriggerState(),
+      T0,
+      (eventType) => {
+        seen.push(eventType);
+        return { kind: "builtin-monetary" };
+      },
+    );
+    // ⚠ `displayEventType` を通すと "bits" になるが、`MONETARY_EVENT_TYPES` に "bits" は無い
+    //   ＝ 割り当て表（スーパーチャットの行）と引き当てられなくなる（061b の穴②と同型の罠）。
+    expect(seen).toEqual(["superchat"]);
+  });
+
+  // --- 穴 γ: 「出さない」の判定位置 -------------------------------------------------------------
+
+  it("⚠⚠ 「出さない」種別はバースト枠も gift 畳み込み状態も消費しない", () => {
+    const state = createEffectTriggerState();
+    feedOneByOne(
+      Array.from({ length: 5 }, (_, i) =>
+        comment({
+          id: `g${i}`,
+          eventType: "gift",
+          monetaryAmount: undefined,
+          monetary: undefined,
+          author: { id: `u${i}`, name: `${i}` },
+        }),
+      ),
+      state,
+      T0,
+    );
+    // ⚠ ここは resolver 無しの呼び出しなので、まず「出す」状態を確認しておく。
+    expect(state.recentFires.length).toBeGreaterThan(0);
+
+    const skipped = createEffectTriggerState();
+    for (let i = 0; i < 5; i++) {
+      decideEffects(
+        [
+          comment({
+            id: `n${i}`,
+            eventType: "gift",
+            monetaryAmount: undefined,
+            monetary: undefined,
+            author: { id: `u${i}`, name: `${i}` },
+          }),
+        ],
+        [],
+        skipped,
+        T0,
+        () => null,
+      );
+    }
+    // ⚠⚠ **判定をバースト検査の後ろへ移す変異は、この 2 行がレッドにする。**
+    expect(skipped.recentFires).toHaveLength(0);
+    expect(skipped.lastGiftAt.size).toBe(0);
+  });
+
+  it("⚠⚠ 「出さない」種別が枠を食って、出すはずの種別が捨てられることが無い", () => {
+    const state = createEffectTriggerState();
+    // 「サブスクは出さない／スーパーチャットは組み込み」という割り当て。
+    const resolve = (eventType: string) =>
+      eventType === "subscription"
+        ? null
+        : ({ kind: "builtin-monetary" } as const);
+
+    // サブスクをバースト上限より多く流す（全部「出さない」）。
+    for (let i = 0; i < EFFECT_MAX_CONCURRENT + 2; i++) {
+      decideEffects(
+        [
+          comment({
+            id: `s${i}`,
+            eventType: "subscription",
+            monetaryAmount: undefined,
+            monetary: undefined,
+          }),
+        ],
+        [],
+        state,
+        T0,
+        resolve,
+      );
+    }
+    // 直後のスーパーチャットは**必ず出る**（判定が後ろにあると枠が尽きて捨てられる）。
+    const out = decideEffects([comment({ id: "sc" })], [], state, T0, resolve);
+    expect(out).toHaveLength(1);
+    expect(out[0].id).toBe("sc");
+  });
+
+  it("⚠ 「出す」種別は従来どおりバースト上限で切られる（穴 γ の対処で上限が緩んでいない）", () => {
+    const state = createEffectTriggerState();
+    const out = feedOneByOne(
+      Array.from({ length: EFFECT_MAX_CONCURRENT + 3 }, (_, i) =>
+        comment({ id: `c${i}` }),
+      ),
+      state,
+      T0,
+    );
+    expect(out).toHaveLength(EFFECT_MAX_CONCURRENT);
+    // 表示時間ぶん経てば窓が空く（既存の導出は組み込みについては不変）。
+    expect(
+      decideEffects([comment({ id: "later" })], [], state, T0 + EFFECT_DISPLAY_MS),
+    ).toHaveLength(1);
+  });
 });

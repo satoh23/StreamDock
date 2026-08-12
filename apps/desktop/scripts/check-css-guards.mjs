@@ -98,6 +98,14 @@ const EFFECT_OVERLAY_TSX = "src/screens/obs-effects/EffectOverlayApp.tsx";
 //（「窓を増やすたびに足す」の**ファイル分割版**。この窓に描かれるものを増やすときは必ずここへ足すこと）。
 const EFFECT_TEMPLATE_VIEW_TSX =
   "src/screens/obs-effects/EffectTemplateView.tsx";
+// 061d-2: エフェクト窓の 2 層（テンプレート層＝絶対配置・組み込み＝手前）の位置指定を持つ CSS。
+// ⚠⚠ **jsdom はレイアウトを解決しないので、この 3 ルールはコンポーネントテストでは殺せない**
+//（061d-2 のミューテーションで `.templateLayer` の `position/inset` を外す変異が実際に生存した）。
+// ＝ **(10-r) がこの不変条件を殺している唯一の検査**である。
+const EFFECT_OVERLAY_CSS = "src/screens/obs-effects/EffectOverlayApp.module.css";
+// 061d-2: main 窓のプレビュー（エフェクト窓と `EffectTemplateView` を共有する 2 つ目の呼び出し元）。
+// ⚠ (10-t) の対象＝「取り込んだメディアを `src` に載せるファイル」はここまでの 3 本。
+const EFFECT_PREVIEW_TSX = "src/screens/obs-effects/EffectTemplatePreview.tsx";
 const CSS_COMPAT_TS = "src/features/comment-viewer/cssCompat.ts";
 // 060d: ユーザー CSS を実際に注入する側の 3 本（(10-h) / (10-i)）。
 const CSS_SCOPE_TS = "src/features/comment-viewer/cssScope.ts";
@@ -1842,6 +1850,95 @@ for (const rel of [VIEWER_CSS, OVERLAY_CSS]) {
         `\`::before\`/\`::after\` の**しっぽを含めた 1 つのシルエット**に落ちており、` +
         `\`box-shadow\` にすると**しっぽの影だけが消えます**。`,
     );
+  }
+}
+
+// (10-r) **エフェクト窓の 2 層の位置指定は意匠ではなく要件**（061d-2・穴 δ / 061d-1 レビュー Q-6）。
+//   `EffectTemplateView` の器は `position: absolute; inset: 0` なので、置き場所を間違えると
+//   **縦積みの箱（padding / gap を持つ `.effectStack`）を無視して飛び出す**。061d-2 は
+//   「テンプレート専用の絶対配置層を作り、`.root` に基準を明示する」ことでこれを構造的に回避したが、
+//   ⚠⚠ **その担保は CSS 側の 3 ルールに乗っている**:
+//     - `.root` の `position: relative` … 無いと `.templateLayer` の基準が初期包含ブロック
+//       （＝窓）になり、`.root` に padding / margin が入った瞬間にずれる
+//     - `.templateLayer` の `position: absolute; inset: 0` … これ自身が子の包含ブロックになる
+//     - `.effectStack` の `position: relative; z-index: 1` … **組み込みを手前**にする
+//       （情報が装飾に隠されない／フォールバック先が下敷きにならない）
+//   ⚠⚠ **jsdom はカスケードもレイアウトも解決しない**ので、DOM 構造（テンプレートが縦積みの外に
+//   あること）は `EffectOverlayApp.test.tsx` が固定できても、**CSS だけを壊す変更は 1 件も止まらない**
+//   （061d-2 のミューテーションで実測＝10 件中この 1 件だけが SURVIVED した）。
+//   ⚠ 値そのもの（`z-index` が 1 か 2 か）は問わない。**前後関係が生きているか**だけを見る。
+{
+  const effectCss = read(EFFECT_OVERLAY_CSS);
+  const expectations = [
+    [".root", "position", "relative", "テンプレート層の基準（無いと窓に解決される）"],
+    [".templateLayer", "position", "absolute", "テンプレートを縦積みの外へ出す層"],
+    [".templateLayer", "inset", "0", "層を窓いっぱいに広げる（`EffectTemplateView` の器の基準）"],
+    [".effectStack", "position", "relative", "`z-index` を効かせるための位置指定"],
+    [".effectStack", "z-index", "[1-9]", "組み込みを絶対配置のテンプレート層より手前に出す"],
+  ];
+  for (const [selector, prop, valuePattern, role] of expectations) {
+    const body = ruleBody(effectCss, selector);
+    if (body === null) {
+      fail(
+        `${EFFECT_OVERLAY_CSS}: \`${selector}\` の規則が見つかりません（061d-2・(10-r)）。` +
+          `この 3 ルールでエフェクト窓の 2 層（テンプレート＝背面の絶対配置層／組み込み＝手前の縦積み）が` +
+          `成立しています。`,
+      );
+      continue;
+    }
+    if (!hasDecl(body, prop, valuePattern)) {
+      fail(
+        `${EFFECT_OVERLAY_CSS}: \`${selector}\` の \`${prop}\`（${role}）がありません（061d-2・(10-r)）。` +
+          `⚠ これは意匠ではなく **061d-1 レビュー Q-6 の罠（\`inset:0\` の層が縦積みの箱を突き抜ける）を` +
+          `回避している構造**です。⚠ **jsdom はレイアウトを解決しないので、ここを外す変更を止められるのは` +
+          `この検査だけ**（コンポーネントテストは全部緑のまま通ります）。` +
+          `判断の全文は \`EffectOverlayApp.module.css\` の各ルールの注記と docs/progress.md の 061d-2 節が正。`,
+      );
+    }
+  }
+}
+
+// (10-t) **取り込んだメディアを描く側で「実行文脈になれる入れ物」を作らない**（061d-2 レビュー S-2）。
+//   docs/security.md の Capabilities 方針 061a 節「失効条件の最終判定」は、第三者由来のバイト列を
+//   webview へ載せることの受容根拠を **3 経路が閉じていること**に置いている:
+//     1. `image/svg+xml` / `text/html` を許可しない → `check-effect-template-contract.mjs` が固定
+//     2. `innerHTML` 系を使わない                   → (10-i) が固定
+//     3. `blob:` / `<iframe>` / 外部 URL を作らない → **ここまで機械検査が無かった**
+//   ⚠⚠ 3 だけが「レビューと JSDoc」で支えられている状態は、1 と 2 に対して非対称である
+//   （061c/061d のレビューが繰り返し「コメントだけが規約を支えている形を残さない」と書いている）。
+//   ⚠ 対象は**取り込んだメディアを `src` に載せる 3 本**。ファイル名で選ぶ検査なので、
+//   **描画を切り出したら必ずここへ足すこと**（(10-d) と同じ運用）。
+{
+  const banned = [
+    ["createObjectURL", "`blob:` URL を作っています"],
+    ["<iframe", "`<iframe>` を置いています"],
+    ["srcDoc", "`srcDoc` を使っています"],
+    ["srcdoc", "`srcdoc` を使っています"],
+  ];
+  for (const rel of [
+    EFFECT_OVERLAY_TSX,
+    EFFECT_TEMPLATE_VIEW_TSX,
+    EFFECT_PREVIEW_TSX,
+  ]) {
+    // ⚠ コメントで言及するのは許す（この不変条件は各ファイルの JSDoc が説明しているため）。
+    //   行コメント / ブロックコメントを落としてから見る（(10-i) と同じ前処理の考え方）。
+    const src = read(rel)
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "")
+      .replace(/\{\/\*[\s\S]*?\*\/\}/g, "");
+    for (const [needle, what] of banned) {
+      if (src.includes(needle)) {
+        fail(
+          `${rel}: ${what}（061d-2・(10-t)）。` +
+            `この窓が第三者由来のバイト列を \`src\` に載せられるのは、` +
+            `**実行文脈が生まれる 3 経路が閉じている**ことだけが根拠です` +
+            `（\`svg\`/\`html\` を許可しない・\`innerHTML\` を使わない・` +
+            `**\`blob:\` / \`<iframe>\` / 外部 URL を作らない**）。` +
+            `1 つでも緩めるのは受容根拠を作り直す変更なので、` +
+            `先に docs/security.md の「Tauri Permissions / Capabilities 方針」061a 節を読むこと。`,
+        );
+      }
+    }
   }
 }
 

@@ -8,6 +8,11 @@
 /* 窓いっぱいの器。061b はこの中へエフェクトを描く（061a では空＋セットアップ用ガイドだけ）。
    中央寄せにしてあるのは「〇〇さんが ¥1,000」を画面中央〜上部に大きく出す想定のため。 */
 .root {
+  /* ⚠⚠ **061d-2（穴 δ / 061d-1 レビュー Q-6）: この 1 行が `.templateLayer` の基準である。**
+     無くても「窓＝ビューポート」なので*たまたま*正しく見えるが、それは初期包含ブロックに
+     解決されているだけで、`.root` に padding や margin が入った瞬間にずれる。
+     **明示的に基準を作る**（＝テンプレート層は必ず「この器」の中に収まる）。 */
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -16,6 +21,19 @@
      スクロールバーが映り込むのを防ぐ（046c で `PinnedOverlayApp` が踏んだのと同じ事故）。 */
   overflow: hidden;
   color: var(--text);
+}
+
+/* 061d-2: **テンプレートの絶対配置層**（⑥）。
+   ⚠⚠ **`EffectTemplateView` をここ以外に置かないこと。** あの器は `position: absolute; inset: 0` で、
+   `.effectStack`（padding / gap を持つ縦積みの箱）の中へ入れると**その箱を無視して飛び出す**
+   （061d-1 レビュー Q-6 の罠）。この層は `position: absolute` なので、それ自身が
+   子の包含ブロックになり、`.root` の `position: relative` に対して `inset: 0` が解決される。
+   ⚠ **背面に置く**（`.effectStack` が `z-index: 1` で手前に来る）。理由は `.effectStack` 側の注記。
+   ⚠ 背景を塗らない（透過窓の規律）。⚠ 表示専用なので pointer-events も持たない
+   （`EffectTemplateView` 側の `.root` が `pointer-events: none` を持っている）。 */
+.templateLayer {
+  position: absolute;
+  inset: 0;
 }
 
 /* セットアップ用ガイド。OBS で「ウィンドウキャプチャ」を追加するときに**この窓がどこにあるか**を
@@ -40,6 +58,14 @@
 /* 061b: エフェクトの積み上げ。新しいものが下に積まれる。⚠ 件数の上限は tsx 側（EFFECT_MAX_CONCURRENT）が
    保証しているので、ここでスクロールさせない（配信画面にスクロールバーを出さない）。 */
 .effectStack {
+  /* ⚠⚠ **061d-2（穴 δ）: 組み込みのカードはテンプレートより手前に描く。**
+     `.templateLayer` は絶対配置なので、位置指定の無い通常フローの要素より必ず前面に来てしまう。
+     ここで `position: relative` ＋ `z-index: 1` にして**明示的に前後を逆転させる**。
+     理由＝ ①組み込みは「誰がいくら」という**情報**、テンプレートは**装飾**で、装飾に情報を隠させない
+     ②組み込みは**テンプレートが壊れたときのフォールバック先**でもあるので、
+     フォールバックした瞬間に別のテンプレートの下敷きになると「直っていない」ように見える。 */
+  position: relative;
+  z-index: 1;
   display: flex;
   flex-direction: column;
   gap: 12px;

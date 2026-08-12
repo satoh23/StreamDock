@@ -1,13 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, act } from "@testing-library/react";
+import { render, screen, act, fireEvent } from "@testing-library/react";
 import { EffectOverlayApp } from "./EffectOverlayApp";
 import {
+  EFFECT_ASSIGNMENTS_KEY,
   EFFECT_MONETARY_ENABLED_KEY,
   EFFECT_OVERLAY_GUIDE_PENDING_KEY,
   EFFECT_TEST_FIRE_KEY,
 } from "../../features/comment-viewer/overlaySettings";
 import type { CommentViewDto } from "../../features/comment-viewer/types";
-import { EFFECT_MAX_CONCURRENT } from "./effectTrigger";
+import type { EffectTemplateMedia } from "../../features/obs-effects/bindings/EffectTemplateMedia";
+import type { EffectTemplateRecord } from "../../features/obs-effects/bindings/EffectTemplateRecord";
+import { EFFECT_DISPLAY_MS, EFFECT_MAX_CONCURRENT } from "./effectTrigger";
 
 /**
  * 061a / 061b-1: エフェクト専用オーバーレイ窓（label `effect-overlay`）の描画本体の仕様テスト。
@@ -43,10 +46,21 @@ import { EFFECT_MAX_CONCURRENT } from "./effectTrigger";
  * そのまま state に置いていないこと」を `decideEffects` の入出力の型で構造的に担保すること**
  * （`EffectRequest` に `text` / `avatar` を持たせない＝親 061 の決定）。
  */
-const mocks = vi.hoisted(() => ({ connectCommentStream: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  connectCommentStream: vi.fn(),
+  listEffectTemplates: vi.fn(),
+  getEffectTemplateMedia: vi.fn(),
+}));
 
 vi.mock("../../features/comment-viewer/commentStream", () => ({
   connectCommentStream: mocks.connectCommentStream,
+}));
+
+// ⚠ 061d-2: この窓は先読みのために `list_effect_templates` / `get_effect_template_media` を呼ぶ。
+//   ⚠ **実 IPC は 1 つも走らせない**（テストは外部通信も OS 操作も一切行わない）。
+vi.mock("../../features/obs-effects/effectTemplateApi", () => ({
+  listEffectTemplates: mocks.listEffectTemplates,
+  getEffectTemplateMedia: mocks.getEffectTemplateMedia,
 }));
 
 /**
@@ -112,6 +126,65 @@ const superchat = (): CommentViewDto => ({
 const enableMonetary = () =>
   localStorage.setItem(EFFECT_MONETARY_ENABLED_KEY, "true");
 
+// --- 061d-2: テンプレート割り当てのための道具立て -----------------------------------------------
+
+const TEMPLATE_ID = "93c76e02-1111-4222-8333-444455556666";
+const TEMPLATE_ID2 = "0f0e0d0c-1111-4222-8333-444455556666";
+
+const PNG: EffectTemplateMedia = {
+  media: "data:image/png;base64,iVBORw0KGgo=",
+  sound: null,
+};
+
+const templateRecord = (
+  over: Partial<EffectTemplateRecord> = {},
+): EffectTemplateRecord => ({
+  id: TEMPLATE_ID,
+  name: "きらきら演出",
+  durationMs: 5000,
+  layout: { anchor: "center", offsetX: 0, offsetY: 0, width: 480, height: 240 },
+  text: {
+    template: "{name}さんが{amount}",
+    templateWithoutAmount: "{message}",
+    anchor: "bottom",
+    fontSize: 32,
+  },
+  hasSound: false,
+  createdAt: "2026-08-11T00:00:00Z",
+  updatedAt: "2026-08-11T00:00:00Z",
+  ...over,
+});
+
+/** main 窓が割り当てを保存した状況を作る（未指定の種別は「組み込み」へ埋まる）。 */
+const setAssignments = (value: Record<string, unknown>) =>
+  localStorage.setItem(EFFECT_ASSIGNMENTS_KEY, JSON.stringify(value));
+
+/** ⚠ `<img alt="">` は role が "presentation" なので `getByRole("img")` では引けない。 */
+const container0 = () => document.body;
+
+/**
+ * 窓を描いて**先読みが終わるまで待つ**。
+ * ⚠ これが「先読み済みの状態」を作る唯一の手順で、キャッシュミス側のケースでは**呼ばない**。
+ *
+ * ⚠⚠ **061d-2 レビュー Q-7: マイクロタスクの段数に結合している**（`warmTemplates` の await が
+ * 1 段増えると足りなくなる）。ほとんどのケースは「温まっていなければテンプレートが出ない」で
+ * **落ちて気付ける**が、**否定アサーション**（`not.toHaveBeenCalledWith(…)`）だけは
+ * 温まっていなくても緑になる＝ **vacuous になりうる**。
+ * ⚠ **規律: 否定を見るケースでは、必ず先に「温まったこと」を肯定で確かめてから否定を見る。**
+ * （`waitFor` へ寄せない理由＝ 待つ対象が「IPC が呼ばれたこと」ではなく「先読みが一巡したこと」で、
+ * 肯定の観測点をケースごとに書くほうが、何を待っているかがテストに残る。）
+ */
+const renderWarmed = async () => {
+  const view = render(<EffectOverlayApp />);
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  return view;
+};
+
 /** main 窓が「テスト表示」を押した状況を作る（＝他窓からの `storage` イベント）。 */
 const fireTestFrom = (value = "1") => {
   localStorage.setItem(EFFECT_TEST_FIRE_KEY, value);
@@ -130,6 +203,10 @@ describe("061a/061b: EffectOverlayApp", () => {
     localStorage.clear();
     mocks.connectCommentStream.mockReset();
     mocks.connectCommentStream.mockReturnValue({ disconnect: vi.fn() });
+    mocks.listEffectTemplates.mockReset();
+    mocks.listEffectTemplates.mockResolvedValue([]);
+    mocks.getEffectTemplateMedia.mockReset();
+    mocks.getEffectTemplateMedia.mockResolvedValue(PNG);
   });
 
   afterEach(() => {
@@ -491,5 +568,528 @@ describe("061a/061b: EffectOverlayApp", () => {
     fireTestFrom();
     expect(screen.queryByText("StreamDock エフェクト")).toBeNull();
     expect(screen.getByText("テスト")).toBeInTheDocument();
+  });
+
+  // --- 061d-2: テンプレートの描画・先読み・音・テスト発火の割り当て反映 --------------------------
+  //
+  // ⚠⚠ **この窓が第三者由来のバイト列を実際に踏むのは 061d-2 から**である
+  // （061c は「経路ができた」まで、061d-1 は main 窓のプレビューが先に踏んだところまで）。
+  // ここで固定するのは「踏んでも安全である根拠」そのもの＝
+  //   ①`safeEffectMedia` を通っていること ②差し込み文面がテキストノードであること
+  //   ③失敗しても**無反応にならない**こと（必ず組み込みへ落ちる）。
+
+  it("⚠⚠ 割り当てたテンプレートが配信画面に出る", async () => {
+    enableMonetary();
+    mocks.listEffectTemplates.mockResolvedValue([templateRecord()]);
+    setAssignments({
+      superchat: { kind: "template", templateId: TEMPLATE_ID },
+    });
+    await renderWarmed();
+
+    emitComments([superchat()]);
+    expect(screen.getByTestId("effect-template")).toBeInTheDocument();
+    // ⚠ `alt=""` の装飾画像なので role は "presentation"（`getByRole("img")` では引けない）。
+    expect(container0().querySelector("img")).toHaveAttribute("src", PNG.media);
+    // ⚠ 差し込み文面が出る（`{name}` / `{amount}` が置換されている）。
+    expect(
+      screen.getByText(`${THIRD_PARTY_NAME}さんが¥1,000`),
+    ).toBeInTheDocument();
+  });
+
+  it("⚠⚠ テンプレートは組み込みの縦積みの**外**に置く（`inset: 0` の層が箱を突き抜けない）", async () => {
+    enableMonetary();
+    mocks.listEffectTemplates.mockResolvedValue([templateRecord()]);
+    setAssignments({
+      superchat: { kind: "template", templateId: TEMPLATE_ID },
+      subscription: { kind: "builtin-monetary" },
+    });
+    const { container } = await renderWarmed();
+
+    emitComments([
+      superchat(),
+      {
+        ...superchat(),
+        id: "sub-1",
+        eventType: "subscription",
+        monetaryAmount: undefined,
+        monetary: undefined,
+        author: { id: "u2", name: "サブスクの人" },
+      },
+    ]);
+
+    // ⚠ 組み込みのカードとテンプレートが**同時に**出ている状況を作ってから見る。
+    expect(screen.getByText(/サブスクの人/)).toBeInTheDocument();
+    const template = screen.getByTestId("effect-template");
+    const stack = container.querySelector('[class*="effectStack"]');
+    expect(stack).not.toBeNull();
+    // ⚠⚠ **テンプレート層を `.effectStack` の中へ移す変異は、この 1 行がレッドにする**
+    //   （061d-1 レビュー Q-6 の罠＝箱を無視して層が飛び出す）。
+    expect(stack?.contains(template)).toBe(false);
+  });
+
+  it("⚠⚠ `data:` 以外のメディアは描かず組み込みで出す（safeEffectMedia を通す）", async () => {
+    enableMonetary();
+    mocks.listEffectTemplates.mockResolvedValue([templateRecord()]);
+    mocks.getEffectTemplateMedia.mockResolvedValue({
+      media: "javascript:alert(1)",
+      sound: null,
+    });
+    setAssignments({
+      superchat: { kind: "template", templateId: TEMPLATE_ID },
+    });
+    await renderWarmed();
+
+    emitComments([superchat()]);
+    expect(screen.queryByTestId("effect-template")).toBeNull();
+    // ⚠ **無反応にならない**（組み込み意匠で出る）。
+    expect(screen.getByText(THIRD_PARTY_NAME)).toBeInTheDocument();
+    expect(screen.getByText("¥1,000")).toBeInTheDocument();
+  });
+
+  it("⚠⚠ メディアのデコードに失敗したら組み込みへフォールバックする（無反応にならない）", async () => {
+    enableMonetary();
+    mocks.listEffectTemplates.mockResolvedValue([templateRecord()]);
+    setAssignments({
+      superchat: { kind: "template", templateId: TEMPLATE_ID },
+    });
+    await renderWarmed();
+
+    emitComments([superchat()]);
+    const img = container0().querySelector("img");
+    if (img === null) throw new Error("テンプレートのメディアが描かれていない");
+    act(() => {
+      fireEvent.error(img);
+    });
+    expect(screen.queryByTestId("effect-template")).toBeNull();
+    expect(screen.getByText(THIRD_PARTY_NAME)).toBeInTheDocument();
+    expect(screen.getByText("¥1,000")).toBeInTheDocument();
+  });
+
+  it("⚠⚠ `{name}` に HTML を入れても *テキストとして* 出る（第三者の自由入力）", async () => {
+    enableMonetary();
+    mocks.listEffectTemplates.mockResolvedValue([templateRecord()]);
+    setAssignments({
+      superchat: { kind: "template", templateId: TEMPLATE_ID },
+    });
+    const { container } = await renderWarmed();
+
+    const evil = '<img src=x onerror=alert(1)>';
+    emitComments([
+      { ...superchat(), author: { id: "u9", name: evil } },
+    ]);
+    expect(screen.getByText(`${evil}さんが¥1,000`)).toBeInTheDocument();
+    // ⚠ 要素になっていない＝ テンプレートのメディア 1 枚しか `<img>` が無い。
+    expect(container.querySelectorAll("img")).toHaveLength(1);
+  });
+
+  it("⚠ text を持たないテンプレート（メディアだけ）でも描ける", async () => {
+    enableMonetary();
+    mocks.listEffectTemplates.mockResolvedValue([templateRecord({ text: null })]);
+    setAssignments({
+      superchat: { kind: "template", templateId: TEMPLATE_ID },
+    });
+    await renderWarmed();
+
+    emitComments([superchat()]);
+    expect(screen.getByTestId("effect-template")).toBeInTheDocument();
+    expect(screen.queryByText(THIRD_PARTY_NAME)).toBeNull();
+  });
+
+  // --- ②: per-effect の撤去タイマー -------------------------------------------------------------
+
+  it("⚠⚠ テンプレートは `durationMs` で消える（組み込みの既定より短くても長くても）", async () => {
+    enableMonetary();
+    mocks.listEffectTemplates.mockResolvedValue([
+      templateRecord({ durationMs: 800 }),
+    ]);
+    setAssignments({
+      superchat: { kind: "template", templateId: TEMPLATE_ID },
+    });
+    await renderWarmed();
+    vi.useFakeTimers();
+
+    emitComments([superchat()]);
+    expect(screen.getByTestId("effect-template")).toBeInTheDocument();
+    // ⚠ 既定（`EFFECT_DISPLAY_MS`）より**手前**で消える＝固定値へ戻す変異でレッド。
+    act(() => {
+      vi.advanceTimersByTime(900);
+    });
+    expect(screen.queryByTestId("effect-template")).toBeNull();
+  });
+
+  it("⚠⚠ 長い `durationMs` のテンプレートは既定時間を過ぎても残る", async () => {
+    enableMonetary();
+    mocks.listEffectTemplates.mockResolvedValue([
+      templateRecord({ durationMs: 15_000 }),
+    ]);
+    setAssignments({
+      superchat: { kind: "template", templateId: TEMPLATE_ID },
+    });
+    await renderWarmed();
+    vi.useFakeTimers();
+
+    emitComments([superchat()]);
+    act(() => {
+      vi.advanceTimersByTime(EFFECT_DISPLAY_MS + 1_000);
+    });
+    expect(screen.getByTestId("effect-template")).toBeInTheDocument();
+    act(() => {
+      vi.advanceTimersByTime(15_000);
+    });
+    expect(screen.queryByTestId("effect-template")).toBeNull();
+  });
+
+  it("⚠ `durationMs` が壊れていても即座に消えない（setTimeout に NaN を渡さない）", async () => {
+    enableMonetary();
+    mocks.listEffectTemplates.mockResolvedValue([
+      templateRecord({ durationMs: Number.NaN }),
+    ]);
+    setAssignments({
+      superchat: { kind: "template", templateId: TEMPLATE_ID },
+    });
+    await renderWarmed();
+    vi.useFakeTimers();
+
+    emitComments([superchat()]);
+    act(() => {
+      vi.advanceTimersByTime(EFFECT_DISPLAY_MS - 100);
+    });
+    expect(screen.getByTestId("effect-template")).toBeInTheDocument();
+  });
+
+  it("⚠ `durationMs` が `setTimeout` の上限ちょうどなら、そのまま使う（境界）", async () => {
+    // ⚠ 仕様: 弾くのは「`setTimeout` が壊れる値」だけ。上限ちょうど（2^31-1）は壊れないので
+    //   既定へ落とさない（Rust の範囲 500〜15000 を TS に複製しない、という判断と両立させる）。
+    enableMonetary();
+    mocks.listEffectTemplates.mockResolvedValue([
+      templateRecord({ durationMs: 2_147_483_647 }),
+    ]);
+    setAssignments({
+      superchat: { kind: "template", templateId: TEMPLATE_ID },
+    });
+    await renderWarmed();
+    vi.useFakeTimers();
+
+    emitComments([superchat()]);
+    // 既定（`EFFECT_DISPLAY_MS`）を大きく超えても残る＝既定へ落ちていない。
+    act(() => {
+      vi.advanceTimersByTime(EFFECT_DISPLAY_MS * 10);
+    });
+    expect(screen.getByTestId("effect-template")).toBeInTheDocument();
+  });
+
+  it("⚠ `durationMs` が 32bit を超えていても即座に消えない（setTimeout のオーバーフロー・レビュー Q-5）", async () => {
+    enableMonetary();
+    // ⚠ `setTimeout` の遅延は 32bit に丸められるので、`2^31-1` 超は**即時発火**する（NaN と同じ症状）。
+    mocks.listEffectTemplates.mockResolvedValue([
+      templateRecord({ durationMs: 2_147_483_648 }),
+    ]);
+    setAssignments({
+      superchat: { kind: "template", templateId: TEMPLATE_ID },
+    });
+    await renderWarmed();
+    vi.useFakeTimers();
+
+    emitComments([superchat()]);
+    act(() => {
+      vi.advanceTimersByTime(EFFECT_DISPLAY_MS - 100);
+    });
+    expect(screen.getByTestId("effect-template")).toBeInTheDocument();
+  });
+
+  // --- ④: 先読みと 穴 β の (c) ------------------------------------------------------------------
+
+  it("⚠⚠ 先読みするのは「割り当てに出てくる id」だけ（一覧全部を読まない）", async () => {
+    mocks.listEffectTemplates.mockResolvedValue([
+      templateRecord(),
+      templateRecord({ id: TEMPLATE_ID2, name: "使っていない演出" }),
+    ]);
+    setAssignments({
+      superchat: { kind: "template", templateId: TEMPLATE_ID },
+    });
+    await renderWarmed();
+
+    expect(mocks.getEffectTemplateMedia).toHaveBeenCalledWith(TEMPLATE_ID);
+    expect(mocks.getEffectTemplateMedia).not.toHaveBeenCalledWith(TEMPLATE_ID2);
+  });
+
+  it("⚠⚠ 先読み前に発火したら、その回は組み込みで出し切る（穴 β の案 (c)）", async () => {
+    enableMonetary();
+    // ⚠ 先読みを終わらせずに発火させる（`renderWarmed` を使わない）。
+    let resolveList: (value: EffectTemplateRecord[]) => void = () => {};
+    mocks.listEffectTemplates.mockReturnValue(
+      new Promise<EffectTemplateRecord[]>((r) => {
+        resolveList = r;
+      }),
+    );
+    setAssignments({
+      superchat: { kind: "template", templateId: TEMPLATE_ID },
+    });
+    render(<EffectOverlayApp />);
+
+    emitComments([superchat()]);
+    // ⚠ **無反応にならない**（組み込みで出る）。
+    expect(screen.queryByTestId("effect-template")).toBeNull();
+    expect(screen.getByText(THIRD_PARTY_NAME)).toBeInTheDocument();
+
+    // 温まったら次回からテンプレートで出る（＝「初回だけ組み込み」で収束する）。
+    await act(async () => {
+      resolveList([templateRecord()]);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    emitComments([{ ...superchat(), id: "sc-2" }]);
+    expect(screen.getByTestId("effect-template")).toBeInTheDocument();
+  });
+
+  it("⚠ 発火時ミスの取り直しは 1 id につき 1 回だけ（投げ銭のたびに IPC が走らない）", async () => {
+    enableMonetary();
+    // 一覧に載っていない id を割り当てておく（＝削除済みテンプレートを指す割り当て）。
+    mocks.listEffectTemplates.mockResolvedValue([]);
+    mocks.getEffectTemplateMedia.mockRejectedValue(new Error("gone"));
+    setAssignments({
+      superchat: { kind: "template", templateId: TEMPLATE_ID },
+    });
+    await renderWarmed();
+    const listCallsAfterWarm = mocks.listEffectTemplates.mock.calls.length;
+
+    for (let i = 0; i < 3; i++) {
+      emitComments([{ ...superchat(), id: `sc-${i}` }]);
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    }
+    // ⚠ 3 回発火しても取り直しは 1 回だけ。
+    expect(mocks.listEffectTemplates.mock.calls.length).toBe(
+      listCallsAfterWarm + 1,
+    );
+    // ⚠ そして**必ず組み込みで出ている**（実在しない id が「なし」へ倒れていない＝⑪）。
+    expect(screen.getAllByText(THIRD_PARTY_NAME).length).toBeGreaterThan(0);
+  });
+
+  it("⚠ 割り当てが変わったら（`storage`）キャッシュを温め直す", async () => {
+    mocks.listEffectTemplates.mockResolvedValue([
+      templateRecord(),
+      templateRecord({ id: TEMPLATE_ID2, name: "別の演出" }),
+    ]);
+    setAssignments({
+      superchat: { kind: "template", templateId: TEMPLATE_ID },
+    });
+    await renderWarmed();
+    // ⚠ **先に肯定を見る**（Q-7）。これが無いと、先読みが一巡していないだけで
+    //   下の否定が通ってしまい、ケース全体が vacuous になる。
+    expect(mocks.getEffectTemplateMedia).toHaveBeenCalledWith(TEMPLATE_ID);
+    expect(mocks.getEffectTemplateMedia).not.toHaveBeenCalledWith(TEMPLATE_ID2);
+
+    setAssignments({
+      superchat: { kind: "template", templateId: TEMPLATE_ID2 },
+    });
+    await act(async () => {
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key: EFFECT_ASSIGNMENTS_KEY,
+          newValue: "{}",
+        }),
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mocks.getEffectTemplateMedia).toHaveBeenCalledWith(TEMPLATE_ID2);
+  });
+
+  // --- 割り当ての反映（①・⑪） ------------------------------------------------------------------
+
+  it("⚠⚠ 「エフェクトを出さない」種別は 1 件も出ない", async () => {
+    enableMonetary();
+    setAssignments({ superchat: { kind: "none" } });
+    const { container } = await renderWarmed();
+
+    emitComments([superchat()]);
+    expect(container.textContent).toBe("");
+  });
+
+  it("⚠ 割り当ては発火のたびに読み直す（main 窓で変えた直後の 1 件目から効く）", async () => {
+    enableMonetary();
+    await renderWarmed();
+    emitComments([superchat()]);
+    expect(screen.getAllByText(THIRD_PARTY_NAME)).toHaveLength(1);
+
+    // ⚠ `storage` を撒かずに localStorage だけ書き換える＝**窓跨ぎ伝播に依存していない**ことの担保。
+    setAssignments({ superchat: { kind: "none" } });
+    emitComments([{ ...superchat(), id: "sc-2" }]);
+    // ⚠ 2 件目は出ない（1 件目は表示時間が来るまで残っているので、件数で見る）。
+    expect(screen.getAllByText(THIRD_PARTY_NAME)).toHaveLength(1);
+  });
+
+  // --- 穴 ε: 音 ---------------------------------------------------------------------------------
+
+  it("⚠ 音源を持つテンプレートでは `<audio>` を 1 本置く（配信に載る）", async () => {
+    enableMonetary();
+    mocks.listEffectTemplates.mockResolvedValue([
+      templateRecord({ hasSound: true }),
+    ]);
+    mocks.getEffectTemplateMedia.mockResolvedValue({
+      media: PNG.media,
+      sound: "data:audio/wav;base64,AAAA",
+    });
+    setAssignments({
+      superchat: { kind: "template", templateId: TEMPLATE_ID },
+    });
+    await renderWarmed();
+
+    emitComments([superchat()]);
+    expect(screen.getByTestId("effect-sound")).toHaveAttribute(
+      "src",
+      "data:audio/wav;base64,AAAA",
+    );
+  });
+
+  it("⚠⚠ 同時に 3 件出ても鳴るのは 1 本だけ（最後に出たもの）", async () => {
+    enableMonetary();
+    mocks.listEffectTemplates.mockResolvedValue([
+      templateRecord({ hasSound: true }),
+    ]);
+    mocks.getEffectTemplateMedia.mockResolvedValue({
+      media: PNG.media,
+      sound: "data:audio/wav;base64,AAAA",
+    });
+    setAssignments({
+      superchat: { kind: "template", templateId: TEMPLATE_ID },
+    });
+    await renderWarmed();
+
+    emitComments(
+      Array.from({ length: EFFECT_MAX_CONCURRENT }, (_, i) => ({
+        ...superchat(),
+        id: `sc-${i}`,
+        author: { id: `u${i}`, name: `視聴者${i}` },
+      })),
+    );
+    expect(screen.getAllByTestId("effect-template")).toHaveLength(
+      EFFECT_MAX_CONCURRENT,
+    );
+    // ⚠⚠ **3 本鳴らす変異は、この 1 行がレッドにする。**
+    expect(screen.getAllByTestId("effect-sound")).toHaveLength(1);
+  });
+
+  it("⚠ 音源が `data:` 以外なら鳴らさない（メディアは出す）", async () => {
+    enableMonetary();
+    mocks.listEffectTemplates.mockResolvedValue([
+      templateRecord({ hasSound: true }),
+    ]);
+    mocks.getEffectTemplateMedia.mockResolvedValue({
+      media: PNG.media,
+      sound: "https://example.com/a.wav",
+    });
+    setAssignments({
+      superchat: { kind: "template", templateId: TEMPLATE_ID },
+    });
+    await renderWarmed();
+
+    emitComments([superchat()]);
+    expect(screen.getByTestId("effect-template")).toBeInTheDocument();
+    expect(screen.queryByTestId("effect-sound")).toBeNull();
+  });
+
+  it("⚠ 組み込みのエフェクトでは音を鳴らさない", async () => {
+    enableMonetary();
+    await renderWarmed();
+    emitComments([superchat()]);
+    expect(screen.queryByTestId("effect-sound")).toBeNull();
+  });
+
+  it("⚠⚠ 組み込みが後から出ても、鳴っているテンプレートの音は止めない（レビュー Q-10）", async () => {
+    // ⚠ 仕様: 音を差し替えるのは**音源を持つテンプレートが出たときだけ**。
+    //   組み込みが後続で出たときに音を止めると、`EFFECT_MAX_CONCURRENT` を超えた瞬間に
+    //   「まだ表示時間が残っているのに音だけ切れる」が起きる（音と映像を独立させる方針）。
+    // ⚠ **画面から押し出された 1 件の音も、その 1 件の撤去タイマーまでは鳴り続ける**
+    //   ——これは受容した挙動で、実装のコメントに理由と再修正トリガーを書いてある。
+    enableMonetary();
+    // ⚠ テンプレートの表示時間はバースト窓（＝`EFFECT_DISPLAY_MS`）より長くしておく。
+    //   でないと、下で窓を空けるために時計を進めた時点でテンプレート自身が撤去されてしまい、
+    //   「押し出されたのに音が残る」ではなく「時間切れで消えた」を見ることになる。
+    mocks.listEffectTemplates.mockResolvedValue([
+      templateRecord({ hasSound: true, durationMs: 15_000 }),
+    ]);
+    mocks.getEffectTemplateMedia.mockResolvedValue({
+      media: PNG.media,
+      sound: "data:audio/wav;base64,AAAA",
+    });
+    setAssignments({
+      superchat: { kind: "template", templateId: TEMPLATE_ID },
+      subscription: { kind: "builtin-monetary" },
+    });
+    await renderWarmed();
+    vi.useFakeTimers();
+
+    emitComments([superchat()]);
+    expect(screen.getByTestId("effect-sound")).toBeInTheDocument();
+
+    // ⚠ バースト窓を空ける（空けないと下の 3 件のうち 2 件しか発火せず、押し出しが起きない）。
+    act(() => {
+      vi.advanceTimersByTime(EFFECT_DISPLAY_MS + 100);
+    });
+    // 組み込みを `EFFECT_MAX_CONCURRENT` 件流してテンプレートを画面から押し出す。
+    emitComments(
+      Array.from({ length: EFFECT_MAX_CONCURRENT }, (_, i) => ({
+        ...superchat(),
+        id: `sub-${i}`,
+        eventType: "subscription",
+        monetaryAmount: undefined,
+        monetary: undefined,
+        author: { id: `u${i}`, name: `サブスクの人${i}` },
+      })),
+    );
+    expect(screen.queryByTestId("effect-template")).toBeNull();
+    // ⚠⚠ **音を止める変異（組み込みでも `setSound` を呼ぶ／押し出しで音を消す）はここがレッドにする。**
+    expect(screen.getByTestId("effect-sound")).toBeInTheDocument();
+  });
+
+  it("⚠ `clear()`（`e.key === null`）では温め直さない（レビュー Q-4）", async () => {
+    // ⚠ 仕様: 温め直しは「割り当てが変わった」ときだけ。`clear()` は**設定そのものが無かったことになる**
+    //   操作で、送り先の意図が消えているのにキャッシュを触りに行く筋は無い
+    //   （テスト発火の受け口が `clear()` で発火しないのと同じ向き）。
+    mocks.listEffectTemplates.mockResolvedValue([templateRecord()]);
+    setAssignments({
+      superchat: { kind: "template", templateId: TEMPLATE_ID },
+    });
+    await renderWarmed();
+    const callsAfterWarm = mocks.listEffectTemplates.mock.calls.length;
+
+    await act(async () => {
+      window.dispatchEvent(new StorageEvent("storage", { key: null }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mocks.listEffectTemplates.mock.calls.length).toBe(callsAfterWarm);
+  });
+
+  // --- ⑧: テスト発火の割り当て反映 --------------------------------------------------------------
+
+  it("⚠⚠ テスト発火はスーパーチャットの割り当てを反映する", async () => {
+    mocks.listEffectTemplates.mockResolvedValue([templateRecord()]);
+    setAssignments({
+      superchat: { kind: "template", templateId: TEMPLATE_ID },
+    });
+    await renderWarmed();
+
+    fireTestFrom();
+    expect(screen.getByTestId("effect-template")).toBeInTheDocument();
+    // ⚠ 中身は**この窓の固定ダミー**（第三者のデータが localStorage を経由しない・§9）。
+    expect(screen.getByText("テストさんが¥1,000")).toBeInTheDocument();
+  });
+
+  it("⚠⚠ 「エフェクトを出さない」設定でもテスト発火は組み込みで必ず出る（OBS の位置合わせ）", async () => {
+    setAssignments({ superchat: { kind: "none" } });
+    await renderWarmed();
+
+    fireTestFrom();
+    // ⚠⚠ **この特例を消す変異（`?? { kind: "builtin-monetary" }` を外す）はここがレッドにする。**
+    expect(screen.getByText("テスト")).toBeInTheDocument();
+    expect(screen.getByText("¥1,000")).toBeInTheDocument();
   });
 });

@@ -124,6 +124,26 @@ export const EFFECT_MONETARY_ENABLED_KEY =
 export const EFFECT_TEST_FIRE_KEY =
   "stream-dock.comment-viewer.effect-test-fire";
 /**
+ * 061d-2: **イベント種別 → エフェクトの割り当て**の保存キー（未保存＝全種別「組み込み」）。
+ *
+ * ⚠⚠ **接頭辞が `comment-viewer` なのは既存 8 本と揃えるため**（`obs-effects.*` という 2 つ目の
+ * 名前空間を作らない）。この画面の設定はすべてこの接頭辞に載っている。
+ *
+ * ⚠ **値は「イベント種別（固定 6 値）」と「テンプレート id（uuid v4）」だけ**＝ ユーザー自身の
+ * UI 設定値で、§9 追補（046a）が対象とする第三者の個人データ（本文・表示名・金額）は 1 バイトも入らない。
+ * 既存の `EFFECT_MONETARY_ENABLED_KEY` 等と同種。
+ *
+ * ⚠⚠ **読み書きのロジックは `screens/obs-effects/effectAssignments.ts` が持つ**（⑩）。
+ * ここに置くのはキーだけ——「localStorage のキーは本ファイルを grep すれば全部見える」という
+ * §9 の監査上の性質を壊さないため（`load*` / `save*` の実体が別ファイルにあるのは本ファイルで初めて）。
+ *
+ * ⚠ **読み手はエフェクト窓（`EffectOverlayApp`）で、発火のたびに読み直す**
+ * （`EFFECT_MONETARY_ENABLED_KEY` と同じ規律＝state にミラーしない・`storage` にも依存しない）。
+ * `storage` イベントは**メディアの先読みを温めるためだけ**に使う（届かなくても壊れ方は「初回だけ組み込みで出る」）。
+ */
+export const EFFECT_ASSIGNMENTS_KEY =
+  "stream-dock.comment-viewer.effect-assignments";
+/**
  * 060d: 選択中のカスタム CSS テーマ（`overlay_themes` の id）の保存キー。**未保存＝`null`＝既定意匠**。
  *
  * ⚠ **CSS 本文はここに置かない**（Rust が `app_data_dir/themes/<id>.css` に持ち、

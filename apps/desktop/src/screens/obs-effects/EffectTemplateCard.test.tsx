@@ -43,6 +43,21 @@ vi.mock("../../features/obs-effects/effectTemplateApi", () => ({
 }));
 
 import { EffectTemplateCard } from "./EffectTemplateCard";
+import { useEffectTemplates } from "./useEffectTemplates";
+
+/**
+ * ⚠⚠ **061d-2 で `EffectTemplateCard` が state を持たなくなった**（061d-1 レビュー Q-9 の分割）。
+ * state は `useEffectTemplates`、プレビューは `EffectTemplatePreview` にある。
+ *
+ * ⚠ **hook をモックせず、本物を組み合わせて描く。** ここで見たいのは
+ * 「ユーザーが取り込みボタンを押すと何が起きるか」という**画面の振る舞い**で、
+ * hook を差し替えると **分割の継ぎ目そのもの**（＝ 061d-2 で新しく壊れうる箇所）が検査されない。
+ * 外部境界（Tauri invoke / dialog）は上でモック済みなので、これでも実 I/O は 1 つも起きない。
+ */
+function Harness() {
+  const templates = useEffectTemplates();
+  return <EffectTemplateCard {...templates} />;
+}
 
 const record = (over: Partial<EffectTemplateRecord> = {}): EffectTemplateRecord => ({
   id: "t1",
@@ -88,7 +103,7 @@ describe("EffectTemplateCard", () => {
   // --- S-3 の緩和策 ---------------------------------------------------------------------------
 
   it("⚠⚠ 「テンプレート専用のフォルダを選んでください」の案内が出ている（S-3 の緩和策）", async () => {
-    render(<EffectTemplateCard />);
+    render(<Harness />);
     // ⚠ この文言を消す変異はここで赤くなる。Rust 側では塞げないので、UI がただ 1 つの防波堤。
     // ⚠⚠ **3 文を独立に固定する**（061d-1 レビュー S-1）。当初は 1 文目と 3 文目だけを見ており、
     //   「なぜ専用フォルダが要るか」を説明する 2 文目を削る変異が**生存していた**（実測）。
@@ -107,7 +122,7 @@ describe("EffectTemplateCard", () => {
   });
 
   it("⚠ StreamDock 形式だけを扱うことを明示する（親 061 の決定）", () => {
-    render(<EffectTemplateCard />);
+    render(<Harness />);
     expect(screen.getByText(/HTML\s*エフェクトは読み込めません/)).toBeTruthy();
   });
 
@@ -116,7 +131,7 @@ describe("EffectTemplateCard", () => {
     mocks.importEffectTemplate.mockResolvedValue(record());
     mocks.listEffectTemplates.mockResolvedValue([record()]);
 
-    render(<EffectTemplateCard />);
+    render(<Harness />);
     fireEvent.click(screen.getByText("フォルダを選んで取り込む"));
 
     await waitFor(() => {
@@ -136,7 +151,7 @@ describe("EffectTemplateCard", () => {
       .mockResolvedValueOnce([])
       .mockRejectedValueOnce(new Error("db locked"));
 
-    render(<EffectTemplateCard />);
+    render(<Harness />);
     fireEvent.click(screen.getByText("フォルダを選んで取り込む"));
 
     await screen.findByTestId("effect-template");
@@ -148,9 +163,30 @@ describe("EffectTemplateCard", () => {
     expect(screen.queryByText(/db locked/)).toBeNull();
   });
 
+  it("⚠⚠ 再取得した一覧にまだ新しい record が載っていなくても、取り込み直後のプレビューは閉じない", async () => {
+    // ⚠⚠ **061d-2 の回帰**。プレビューを閉じる条件を「一覧に無くなったら」にすると、
+    //   取り込みは「record を受け取る → 一覧を取り直す」の順なので、
+    //   **一覧がまだ新しい record を返さない一瞬で、開いたばかりのプレビューが閉じられる**
+    //   ＝ 061c S-3 の唯一の緩和策が、削除とは無関係な理由で fail-open する。
+    //   いまは**削除という明示的な出来事だけ**を見て閉じている。
+    mocks.open.mockResolvedValue("/Users/me/templates/kirakira");
+    mocks.importEffectTemplate.mockResolvedValue(record({ id: "t2" }));
+    // ⚠ 一覧は成功するが、**新しい record を含まない**（レプリカ遅延・読めない行の取りこぼし等）。
+    mocks.listEffectTemplates.mockResolvedValue([record({ id: "t1" })]);
+
+    render(<Harness />);
+    await screen.findByText("きらきら演出");
+    fireEvent.click(screen.getByText("フォルダを選んで取り込む"));
+
+    await waitFor(() => {
+      expect(mocks.getEffectTemplateMedia).toHaveBeenCalledWith("t2");
+    });
+    expect(screen.getByTestId("effect-template")).toBeTruthy();
+  });
+
   it("ディレクトリ選択をキャンセルすると取り込まない", async () => {
     mocks.open.mockResolvedValue(null);
-    render(<EffectTemplateCard />);
+    render(<Harness />);
     fireEvent.click(screen.getByText("フォルダを選んで取り込む"));
     await waitFor(() => {
       expect(mocks.open).toHaveBeenCalled();
@@ -161,7 +197,7 @@ describe("EffectTemplateCard", () => {
   it("⚠ 取り込みは open({ directory: true }) で選んだ生パスをそのまま渡す", async () => {
     mocks.open.mockResolvedValue("/Users/me/My Templates/きらきら");
     mocks.importEffectTemplate.mockResolvedValue(record());
-    render(<EffectTemplateCard />);
+    render(<Harness />);
     fireEvent.click(screen.getByText("フォルダを選んで取り込む"));
     await waitFor(() => {
       expect(mocks.importEffectTemplate).toHaveBeenCalledWith(
@@ -179,7 +215,7 @@ describe("EffectTemplateCard", () => {
     const setItem = vi.spyOn(Storage.prototype, "setItem");
     mocks.listEffectTemplates.mockResolvedValue([record()]);
 
-    render(<EffectTemplateCard />);
+    render(<Harness />);
     await screen.findByText("きらきら演出");
     fireEvent.click(screen.getByText("プレビュー"));
     await screen.findByTestId("effect-template");
@@ -205,7 +241,7 @@ describe("EffectTemplateCard", () => {
       sound: null,
     });
 
-    render(<EffectTemplateCard />);
+    render(<Harness />);
     await screen.findByText("きらきら演出");
     fireEvent.click(screen.getByText("プレビュー"));
 
@@ -219,7 +255,7 @@ describe("EffectTemplateCard", () => {
     //   （マジックバイトは通るが途中で切れた WebM / APNG 等）。`onMediaError` を渡していないと
     //   **枠が無言で空になり**、ユーザーは「確認した」と誤認する。
     mocks.listEffectTemplates.mockResolvedValue([record()]);
-    render(<EffectTemplateCard />);
+    render(<Harness />);
     await screen.findByText("きらきら演出");
     fireEvent.click(screen.getByText("プレビュー"));
 
@@ -253,7 +289,7 @@ describe("EffectTemplateCard", () => {
         : Promise.resolve(GIF),
     );
 
-    render(<EffectTemplateCard />);
+    render(<Harness />);
     await screen.findByText("きらきら演出");
     fireEvent.click(screen.getAllByText("プレビュー")[0]); // t1（保留のまま）
     fireEvent.click(screen.getAllByText("プレビュー")[1]); // t2（即座に解決）
@@ -275,7 +311,7 @@ describe("EffectTemplateCard", () => {
     mocks.listEffectTemplates.mockResolvedValue([record()]);
     mocks.getEffectTemplateMedia.mockRejectedValue(new Error("boom"));
 
-    render(<EffectTemplateCard />);
+    render(<Harness />);
     await screen.findByText("きらきら演出");
     fireEvent.click(screen.getByText("プレビュー"));
 
@@ -291,7 +327,7 @@ describe("EffectTemplateCard", () => {
       sound: "data:audio/wav;base64,UklGRg==",
     });
 
-    render(<EffectTemplateCard />);
+    render(<Harness />);
     await screen.findByText("きらきら演出");
     fireEvent.click(screen.getByText("プレビュー"));
     await screen.findByTestId("effect-template");
@@ -308,7 +344,7 @@ describe("EffectTemplateCard", () => {
       sound: "data:audio/wav;base64,UklGRg==",
     });
 
-    render(<EffectTemplateCard />);
+    render(<Harness />);
     await screen.findByText("きらきら演出");
     fireEvent.click(screen.getByText("プレビュー"));
     await screen.findByTestId("effect-template");
@@ -332,7 +368,7 @@ describe("EffectTemplateCard", () => {
       sound: "data:audio/wav;base64,UklGRg==",
     });
 
-    render(<EffectTemplateCard />);
+    render(<Harness />);
     const rows = await screen.findAllByText("プレビュー");
     fireEvent.click(rows[0]);
     await screen.findByTestId("effect-template");
@@ -356,7 +392,7 @@ describe("EffectTemplateCard", () => {
     // ⚠ `hasSound` のゲートを外す変異が生存していた（061d-1 レビュー Q-4 / MX4）。
     //   鳴らせない相手に「音を鳴らす」トグルを出すと、押しても何も起きない導線ができる。
     mocks.listEffectTemplates.mockResolvedValue([record({ hasSound: false })]);
-    render(<EffectTemplateCard />);
+    render(<Harness />);
     await screen.findByText("きらきら演出");
     fireEvent.click(screen.getByText("プレビュー"));
     await screen.findByTestId("effect-template");
@@ -374,7 +410,7 @@ describe("EffectTemplateCard", () => {
       sound: "http://evil.example/x.mp3",
     });
 
-    render(<EffectTemplateCard />);
+    render(<Harness />);
     await screen.findByText("きらきら演出");
     fireEvent.click(screen.getByText("プレビュー"));
     await screen.findByTestId("effect-template");
@@ -389,7 +425,7 @@ describe("EffectTemplateCard", () => {
     mocks.listEffectTemplates.mockResolvedValue([
       record({ durationMs: 3000, hasSound: true }),
     ]);
-    render(<EffectTemplateCard />);
+    render(<Harness />);
     await screen.findByText("きらきら演出");
     expect(screen.getByText("3.0秒・音あり")).toBeTruthy();
   });
@@ -400,7 +436,7 @@ describe("EffectTemplateCard", () => {
     mocks.listEffectTemplates.mockResolvedValue([
       record({ durationMs: Number.NaN as unknown as number }),
     ]);
-    render(<EffectTemplateCard />);
+    render(<Harness />);
     await screen.findByText("きらきら演出");
     expect(screen.getByText("—")).toBeTruthy();
   });
@@ -409,14 +445,14 @@ describe("EffectTemplateCard", () => {
     mocks.listEffectTemplates.mockResolvedValue([
       record({ name: "<img src=x onerror=alert(1)>" }),
     ]);
-    render(<EffectTemplateCard />);
+    render(<Harness />);
     expect(await screen.findByText("<img src=x onerror=alert(1)>")).toBeTruthy();
     expect(document.querySelectorAll("img")).toHaveLength(0);
   });
 
   it("削除は確認を挟む（確認前は削除しない）", async () => {
     mocks.listEffectTemplates.mockResolvedValue([record()]);
-    render(<EffectTemplateCard />);
+    render(<Harness />);
     await screen.findByText("きらきら演出");
 
     fireEvent.click(screen.getByText("削除"));
@@ -435,7 +471,7 @@ describe("EffectTemplateCard", () => {
     // ⚠ 061d-1 レビュー Q-4 / MX2。閉じないと、消えた id の取り直しに失敗して
     //   「読み込めませんでした」が出るだけの枠が残る。
     mocks.listEffectTemplates.mockResolvedValue([record()]);
-    render(<EffectTemplateCard />);
+    render(<Harness />);
     await screen.findByText("きらきら演出");
     fireEvent.click(screen.getByText("プレビュー"));
     await screen.findByTestId("effect-template");
@@ -456,7 +492,7 @@ describe("EffectTemplateCard", () => {
 
   it("確認をキャンセルすると削除しない", async () => {
     mocks.listEffectTemplates.mockResolvedValue([record()]);
-    render(<EffectTemplateCard />);
+    render(<Harness />);
     await screen.findByText("きらきら演出");
 
     fireEvent.click(screen.getByText("削除"));
@@ -467,7 +503,7 @@ describe("EffectTemplateCard", () => {
 
   it("一覧が読めないときは、その事実だけを出す（詳細は出さない・§9）", async () => {
     mocks.listEffectTemplates.mockRejectedValue(new Error("db locked"));
-    render(<EffectTemplateCard />);
+    render(<Harness />);
     expect(
       await screen.findByText(/テンプレートの一覧を読み込めませんでした/),
     ).toBeTruthy();
@@ -475,7 +511,7 @@ describe("EffectTemplateCard", () => {
   });
 
   it("0 件のときは空であることを伝える", async () => {
-    render(<EffectTemplateCard />);
+    render(<Harness />);
     expect(
       await screen.findByText("取り込んだテンプレートはまだありません。"),
     ).toBeTruthy();

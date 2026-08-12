@@ -57,9 +57,19 @@ export const EFFECT_MAX_CONCURRENT = 3;
 /**
  * バースト上限の時間窓（ミリ秒）と件数。
  *
- * ⚠⚠ **表示時間・同時表示数から導出しているのが要点**（別々の定数にしない）。
- * こうしておくと「時間窓に N 件まで」と「画面に N 件まで」が**必ず一致**し、
- * **画面上の同時表示数が上限を超えることが構造的に起きない**（片方だけ調整して破る事故が作れない）。
+ * ⚠⚠ **061d-2 で JSDoc を実態へ書き換えた（②）。** 061b はここを「表示時間・同時表示数から
+ * 導出しているので、時間窓の件数と画面の件数が**必ず一致**し、同時表示数が上限を超えることが
+ * 構造的に起きない」と説明していたが、**その導出は 061d-2 で偽になった**——テンプレートの
+ * 表示時間は `manifest.durationMs`（500〜15000ms）で**1 件ずつ違う**ので、
+ * 「5 秒の窓に 3 件」と「画面に何件残っているか」はもう対応しない
+ * （例: 15 秒のテンプレートが出ている間に、窓が 2 回転して 6 件が発火しうる）。
+ *
+ * ⚠⚠ **画面上の同時表示数を担保しているのは `EffectOverlayApp` の `showEffect` にある
+ * `.slice(-EFFECT_MAX_CONCURRENT)` **だけ**である。** ここの値はもう「画面の上限」ではなく、
+ * 「**短時間に届いた課金を何件まで拾うか**」という発火側の間引きだけを意味する。
+ * ⚠ 由来を残して `EFFECT_DISPLAY_MS` / `EFFECT_MAX_CONCURRENT` から導いているのは、
+ * 組み込みエフェクトについては依然この対応が成り立つため（＝値の根拠として妥当）。
+ * ⚠ **`EFFECT_MAX_CONCURRENT` は触らない**（061c 申し送り 6・②の結論）。
  */
 const BURST_WINDOW_MS = EFFECT_DISPLAY_MS;
 const BURST_MAX = EFFECT_MAX_CONCURRENT;
@@ -89,8 +99,46 @@ const GIFT_FOLD_WINDOW_MS = 5_000;
  *
  * ⚠ `EffectRequest.test.ts` 相当のテストが**キー集合そのもの**を固定している。
  * 「便利だから」で `text` を足すと落ちる。
+ *
+ * ⚠⚠ **061d-2 で「共通部分（[`EffectRequestBase`]）＋ 判別子（[`EffectKind`]）」の合成になった。**
+ * 交差型にしてあるのは、**`kind` を見ずに `templateId` を読むコードが書けない**ようにするため
+ * （`kind === "template"` で絞って初めて `templateId` が生える）。
+ * ⚠ 組み込み経路のキー集合は **7 個のまま変わっていない**ので、061b が固定したキー集合の
+ * ケースは**書き換え不要**である（テンプレート経路の 8 キーは別ケースとして足した）。
  */
-export interface EffectRequest {
+export type EffectRequest = EffectRequestBase & EffectKind;
+
+/**
+ * 061d-2: **どのエフェクトで出すか**（`EffectRequest` の判別子部分）。
+ *
+ * ⚠⚠ **`EffectRequest` に `eventType` を足さない**（①）。「どのイベントか」は割り当てを引くための
+ * 一時的な鍵にすぎず、描画にも表示にも要らない——足すと `EffectRequest` が
+ * 「出すのに要る最小限」ではなくなり、061b が型で作った §9 の担保（持ち回るものを増やさない）が緩む。
+ * 割り当ての解決は**この union を返す resolver** が担い、結果だけがここに載る。
+ *
+ * ⚠ **063（ガチャ）は 3 本目の variant として乗る**（`{ kind: "gacha"; … }`）。
+ * そのとき `EffectOverlayApp` の描画分岐と `effectAssignments.ts` の検証表に 1 行ずつ足すことになる。
+ */
+export type EffectKind =
+  | { kind: "builtin-monetary" }
+  | { kind: "template"; templateId: string };
+
+/** 組み込み意匠（061b の「〇〇さんが ¥1,000」）。⚠ **resolver 省略時の既定**でもある。 */
+const BUILTIN_KIND: EffectKind = { kind: "builtin-monetary" };
+
+/**
+ * 061d-2: イベント種別 → **どのエフェクトで出すか**を決める関数（`null` ＝ **1 件も出さない**）。
+ *
+ * ⚠⚠ **これが「割り当て」を発火層へ持ち込む唯一の口である**（①）。本モジュールは
+ * localStorage も `effectAssignments.ts` も import しない＝**純関数のまま**で、
+ * 実体（`resolveEffectKind`）は呼び出し側が渡す。
+ * ⚠ 引数は**生の `eventType`**（`displayEventType` を通したものではない）。
+ * `isMonetaryEvent` と同じ値を使うことで、「ビッツは superchat に含まれる」という
+ * `MONETARY_EVENT_TYPES` の前提が割り当て表とずれない（061b の穴②と同じ罠）。
+ */
+export type EffectKindResolver = (eventType: string) => EffectKind | null;
+
+interface EffectRequestBase {
   /**
    * 元コメントの id。**重複発火の抑止と React の key** に使う（不透明な識別子で、本文は含まない）。
    *
@@ -111,11 +159,6 @@ export interface EffectRequest {
   eventLabel: string;
   /** 配色キー。⚠ **043c/047b と同じ `monetaryTone`** なので、コメント欄のカードと**同じ額が同じ色**になる。 */
   tone: MonetaryTone;
-  /**
-   * 061c/063 への拡張余地＝**どのエフェクトで出すか**。061b は組み込み 1 種だけなので常にこの値。
-   * ⚠ テンプレート（061c/061d）やガチャ（063）は、ここを増やして分岐する形で乗る想定。
-   */
-  kind: "builtin-monetary";
 }
 
 /**
@@ -136,7 +179,7 @@ export function createEffectTriggerState(): EffectTriggerState {
 }
 
 /** `CommentViewDto` → `EffectRequest`。⚠ **判定・文言・配色はすべて既存の共有関数**（2 実装に分けない）。 */
-function toEffectRequest(c: CommentViewDto): EffectRequest {
+function toEffectRequest(c: CommentViewDto, kind: EffectKind): EffectRequest {
   return {
     id: c.id,
     name: c.author.name,
@@ -150,7 +193,9 @@ function toEffectRequest(c: CommentViewDto): EffectRequest {
     message: composeEventMessage(c),
     eventLabel: eventLabel(displayEventType(c)),
     tone: monetaryTone(c),
-    kind: "builtin-monetary",
+    // ⚠ 061d-2: 割り当ての解決結果をそのまま載せる（`kind` の 1 フィールド、または
+    //   `kind` ＋ `templateId` の 2 フィールドになる）。判定は resolver の責務で、ここでは分岐しない。
+    ...kind,
   };
 }
 
@@ -161,6 +206,10 @@ function toEffectRequest(c: CommentViewDto): EffectRequest {
  * @param updated `mergeComments` の `updated` 相当。⚠ **ここからは 1 件も出さない**
  * @param state   時間窓の状態（`createEffectTriggerState` で作る）
  * @param now     現在時刻(ms)。⚠ **引数で受ける**ので本関数は決定的（テストで時計を偽装しなくてよい）
+ * @param resolveKind 061d-2: イベント種別 → **どのエフェクトで出すか**（`null` ＝ 出さない）。
+ *   ⚠⚠ **既定つき**にしてあるので、割り当てを持たない呼び出し（＝061b までの 21 ケースすべて）は
+ *   **1 文字も書き換えずに全部「組み込み」のまま**動く。これが「発火判定に手が入っていない」ことを
+ *   `git diff` で示せる形である（①）。
  *
  * 塞いでいる多重発火は 3 経路:
  * 1. **[043e] Jewels の combo 再送** … `updated` から出さない（下記）。
@@ -172,6 +221,7 @@ export function decideEffects(
   updated: CommentViewDto[],
   state: EffectTriggerState,
   now: number,
+  resolveKind: EffectKindResolver = () => BUILTIN_KIND,
 ): EffectRequest[] {
   // ⚠⚠ **`updated` は意図的に 1 件も読まない。** [043e] の Jewels は「別メッセージが N 件届く」のではなく
   // 「**同じ 1 件が N 回更新される**」（公式 proto に "For giftEvents, the same ID may be reused to update
@@ -199,6 +249,18 @@ export function decideEffects(
     // `CommentList` の本体一覧・047 ティッカー・049 読み上げ優先キュー・固定帯と**同一の式**がこれ。
     if (!isMonetaryEvent(c.eventType)) continue;
 
+    // ⚠⚠ **061d-2（穴 γ）: 割り当ての解決は「バースト検査より前」に置く。**
+    //   後ろに置くと「サブスクを『エフェクトを出さない』にしているのに、サブスクが 3 件届いただけで
+    //   **その直後のスーパーチャットが捨てられる**」が起きる＝ユーザーから見ると
+    //   「出さない設定にしたら、出るはずのものまで出なくなった」で設定の意味が反転する。
+    // ⚠ gift 畳み込みとの前後は**振る舞い上は等価**（`lastGiftAt` は実際に出したときにしか書かない）。
+    //   それでも手前に置くのは、`viewerIdOf` の計算を無駄にしないためと、
+    //   「出さないと決まったものは以降の状態に一切触らない」という読める規律にするため。
+    // ⚠ `effectTrigger.test.ts` の「出さない種別はバースト枠も畳み込み状態も消費しない」が
+    //   この位置を固定している（下へ動かす変異でレッドになる）。
+    const kind = resolveKind(c.eventType);
+    if (kind === null) continue;
+
     // [043a] コミュニティギフトの N+1 を畳む（同一投稿者の gift は時間窓内で 1 件）。
     // ⚠ 判定キーは `viewerIdOf`（`provider:userId`）＝**表示名ではなく安定 ID**（改名や同名で崩れない）。
     // ⚠ **061b レビュー②（受容・修正不要）**: `author.id` が空だと键が `"twitch:"` になり、
@@ -215,7 +277,7 @@ export function decideEffects(
     // ⚠ **捨てた件数はログに出さない**（§9。出すと第三者の課金の量が端末ログに残る）。
     if (state.recentFires.length >= BURST_MAX) continue;
 
-    requests.push(toEffectRequest(c));
+    requests.push(toEffectRequest(c, kind));
     state.recentFires.push(now);
     // ⚠ **実際に出したときだけ**記録する。バーストで捨てた分まで記録すると、
     // 「1 件目が捨てられ、2 件目も畳まれて **1 回も出ない**」が起きる（出ないほうが害が大きい）。

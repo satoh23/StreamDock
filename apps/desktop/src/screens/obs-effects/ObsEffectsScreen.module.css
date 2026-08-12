@@ -191,6 +191,42 @@
   margin-top: 8px;
   border: 1px dashed var(--muted-border);
   border-radius: var(--radius);
-  background: var(--surface-subtle);
+  /* ⚠⚠ **061d-2: 「配信映像の上」を模した暗色**（`--surface-subtle` から変更）。
+     061d-1 の実機 E2E で「文字を白固定にしたら白地に白で読めない」という破綻が起きたのは、
+     ここが `--surface-subtle`（ライトテーマでほぼ白）だったため。**色と枠の背景は一緒に決める**
+     （判断の全文は `EffectTemplateView.module.css` の `.text` の注記が正）。
+     ⚠ 生 hex を書かない（`theme.css` のトークンのみ）。 */
+  background: var(--overlay-effect-preview-bg);
   overflow: hidden;
+}
+
+/* 061d-2: イベント種別ごとの割り当て表。⚠ 行は `MONETARY_EVENT_TYPES` から機械的に作られる
+   （「条件を追加」ボタンで増やす形にしない＝061d の (2) の判断）。 */
+.assignmentList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+/* 1 行＝「種別名」と選択ボックス。⚠ 警告文は行の下に回り込ませる（`flex-wrap`）。 */
+.assignmentRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+/* 種別名。⚠ 幅を固定して選択ボックスの左端を揃える（6 行が階段状にならないように）。 */
+.assignmentLabel {
+  flex: none;
+  width: 190px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* 実在しないテンプレートを指している行の警告。⚠ 行全体を折り返して次の行へ落とす。 */
+.assignmentRow > .errorText {
+  flex-basis: 100%;
 }
