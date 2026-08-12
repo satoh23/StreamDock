@@ -701,11 +701,15 @@ export function EffectOverlayApp() {
           ⚠⚠ **実機確認⑪**: この窓は `focused(false)` なので、autoplay policy が音付き再生を拒否して
           **そもそも鳴らない**可能性を疑っていた。⚠ **2026-08-12 の調査で、policy は 5 窓とも既に
           無効化済みだと分かった**——Windows / WebView2 は `lib.rs` の `SHARED_BROWSER_ARGS` が
-          `--autoplay-policy=no-user-gesture-required` を渡し、**macOS / WKWebView は wry の
+          `--autoplay-policy=no-user-gesture-required` を渡し、**macOS / WKWebView は wry 0.55.1 の
           `autoplay`（既定 `true`）が `setMediaTypesRequiringUserActionForPlayback(None)` を呼んでいる**
-          （`tauri-runtime-wry` はこの値に触っていない）。
-          ⇒ **鳴らなかった場合に疑うのは policy ではなく音源のデコード可否**（⚠ `audio/ogg` が最有力）
-          **／出力デバイス／data URI の長さ**である。切り分け手順は `docs/tasks/061f-*.md` が正。
+          （`tauri-runtime-wry` はこの値に触っていない）。⚠ **ここを疑い直さないこと。**
+          ⚠⚠ **061f（2026-08-13）で残りの宿題も片付いた**——許可 3 種のうち実機確認できていたのは
+          `wav` だけだったが、**`mp3` は鳴り、`ogg` は macOS の WebKit がコンテナごとデコードできない**
+          ことが分かった（Safari で `error`／Chromium では同じファイルが鳴る＝ファイル不備ではない）。
+          ⇒ **`audio/ogg` は取り込み時点で断る側へ落とした**（`effectMedia.ts` と Rust の `AssetKind`）。
+          ＝ **いまこの `<audio>` に届く音源は `wav` / `mp3` だけ**で、どちらも macOS で鳴る。
+          ⇒ それでも鳴らない報告が出たら、疑うのは **出力デバイス／data URI の長さ**である。
           jsdom は再生を実装しないので**テストでは検出できない**。fail する向きとしては安全。 */}
       {sound !== null && (
         <audio

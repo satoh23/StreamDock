@@ -165,6 +165,56 @@ if (!guard.includes("[A-Za-z0-9+/]+={0,2}")) {
   fail("effectMedia.ts の BASE64_BODY が緩んでいます（`+` を `*` にすると空ペイロードが通ります）。");
 }
 
+// --- (5) docs/security.md の許可拡張子が Rust の表と一致すること ---------------------------------
+
+// ⚠⚠ **061f レビュー Q-7 で追加。** (3) は Rust ↔ TS を守るが、**`docs/security.md` だけが
+//   古くなる変異は誰も止めなかった**。security.md は許可リストの「正」として参照される文書なので、
+//   そこだけ `ogg` を許可したまま残ると、次にこの節を読む人が**戻してよいと誤読する**。
+//   ⚠ 「規約で足りる」は 061f の時点で反証されている——同じ許可リストを書いた docs が
+//   **2 か所古いまま残っていた**（レビュー Q-2）。人の注意力ではなく機械で突き合わせる。
+// ⚠ 読むのは「**拡張子は許可リスト（media = …、sound = …）**」の 1 行だけ。**散文は読まない。**
+// ⚠⚠ **抽出が空なら fail させること**（下記）。これが無いと、行の書き方を変えた瞬間に
+//   この検査が**黙って無効化される**（(3) の「抽出そのものが壊れていたら先に見る」と同じ作法）。
+
+const securityMd = readFileSync(resolve(ROOT, "../../docs/security.md"), "utf8");
+
+const allowLine =
+  /\*\*拡張子は許可リスト\*\*（media = ([^、]*)、sound = ([^）]*)）/.exec(securityMd);
+if (allowLine === null) {
+  fail(
+    "docs/security.md から「拡張子は許可リスト（media = …、sound = …）」の行を見つけられませんでした。" +
+      " 行の書き方を変えたなら、この検査（(5)）の正規表現も直してください（黙って無効化しないこと）。",
+  );
+}
+
+// Rust: `fn extension()` の表を (3) と同じ `slot()` の振り分けでスロット別に分ける。
+const extBlock = blockOf("extension");
+const extOf = [...extBlock.matchAll(/AssetKind::(\w+)\s*=>\s*"([a-z0-9]+)"/g)];
+const rustMediaExt = new Set();
+const rustSoundExt = new Set();
+for (const [, kind, ext] of extOf) {
+  (mediaSide.includes(`AssetKind::${kind}`) ? rustMediaExt : rustSoundExt).add(ext);
+}
+if (extOf.length === 0) {
+  fail("service.rs から `fn extension()` の表を抽出できませんでした（表の書き方が変わった可能性があります）。");
+}
+
+if (allowLine !== null && extOf.length > 0) {
+  const docExts = (chunk) => new Set([...chunk.matchAll(/`([a-z0-9]+)`/g)].map((m) => m[1]));
+  eq(
+    sorted(docExts(allowLine[1])),
+    sorted(rustMediaExt),
+    "docs/security.md の許可拡張子（media）が service.rs の `fn extension()` とずれています" +
+      "（⚠ security.md だけが古いと、次に読む人が『戻してよい』と誤読します）。",
+  );
+  eq(
+    sorted(docExts(allowLine[2])),
+    sorted(rustSoundExt),
+    "docs/security.md の許可拡張子（sound）が service.rs の `fn extension()` とずれています" +
+      "（⚠ `.ogg` を戻すなら Rust / TS / security.md の 3 か所を同時に直してください・061f）。",
+  );
+}
+
 if (failed > 0) {
   console.error(`\nEffect template contract check FAILED (${failed} 件)`);
   process.exit(1);

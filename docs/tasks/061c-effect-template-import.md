@@ -89,8 +89,14 @@ my-effect/
   実挙動は [098](098-windows-build.md) へ申し送り。
   ⚠⚠ 当初は 22 件・trim 無しで、上記の**上付き数字版・`COM0`/`LPT0`・`CONIN$`/`CONOUT$`・末尾空白形が
   素通りしていた**（security-review② S-2）。**不完全な拒否リストは「守られている」と誤読させる**）。
-- 拡張子の許可リスト: media = `png` / `apng` / `gif` / `webp` / `webm`、sound = `wav` / `mp3` / `ogg`。
+- 拡張子の許可リスト: media = `png` / `apng` / `gif` / `webp` / `webm`、sound = `wav` / `mp3`。
   ⚠⚠ **`.svg` は入れない**（理由は `docs/security.md` §8 の 061c 節）。
+  ⚠⚠ **`.ogg` は [061f](061f-macos-effect-audio-autoplay.md)（2026-08-13）で落とした。**
+  起票時は `wav` / `mp3` / `ogg` の 3 種だったが、**macOS の WebKit が Ogg コンテナをデコードできない**
+  ことが実機で確定したため（＝「取り込めた＝使える」が破れる）。⚠ **この行は「確定スキーマ」として
+  参照されるので、古いまま残さないこと**（061f レビュー Q-2 で実際に古いまま残っていた）。
+  ⚠ **正は `docs/security.md` §8 の 061c 節**で、そこと Rust / TS のずれは
+  `scripts/check-effect-template-contract.mjs` が機械で止める（**このファイルは対象外＝人が直す**）。
 - ⚠ **すべての struct が `deny_unknown_fields`**。ただし **`schemaVersion` を先に見る 2 段構え**にしてある
   （直接落とすと、将来の版で増えたフィールドが `deny_unknown_fields` に先に落とされ
   「アプリを更新してください」と案内できない）。

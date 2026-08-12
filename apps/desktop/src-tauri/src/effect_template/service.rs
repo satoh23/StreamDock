@@ -162,6 +162,27 @@ const WINDOWS_RESERVED_STEMS: [&str; 32] = [
 /// ⚠⚠ **`.svg` を足さないこと。** `<img>` の SVG は secure static mode で外部参照が仕様上禁止されるが、
 /// `filter:` / `mask:` は SVG を「リソース文書」として読むのでその保証が及ばない
 /// （060b が `data:` のフラグメントを落とした理由と同じ構図）。docs/security.md §8 の 061c 節が正。
+///
+/// ⚠⚠ **`.ogg` を足し直さないこと（061f・2026-08-13 の実測）。**
+/// 061c は音源を `wav` / `mp3` / `ogg` の 3 種で受けていたが、**macOS の WebKit は Ogg コンテナを
+/// デコードできない**——同一の元音から作った 4 本を Safari（＝エフェクト窓の WKWebView と同じエンジン）で
+/// 試すと `wav` / `mp3` は鳴り、`ogg`（Vorbis）と `ogg`（Opus）はどちらも `error` になった。
+/// `afinfo`（AudioToolbox）も両方 `AudioFileOpenURL failed` を返す。⚠ 拒否されているのは
+/// **コーデックではなく Ogg コンテナ**である（Opus 側は libopus＝リファレンス実装で作ったものが落ちた）。
+/// ⚠ **ファイルが壊れていたのではない**——同じ 4 本を Chromium は 4 本ともデコードできた（実測）。
+///
+/// ⇒ 許可したままにすると「**取り込めたのに macOS でだけ無音**」という、061c の約束
+/// （取り込めた＝使える）が破れた状態になる。**取り込み時に断るほうが約束を守れる**ので落とした。
+/// ⚠ **OS で分岐させないこと**——`scripts/check-effect-template-contract.mjs` が Rust と TS の
+/// 許可 MIME を**静的に**突き合わせているので崩れるうえ、「同じテンプレートが OS によって
+/// 取り込めたり取り込めなかったりする」形はテンプレートを配る側が最も混乱する。
+/// ⚠⚠ **再修正トリガー**（061f レビュー Q-8 で差し替え）——旧トリガー「WebKit が Ogg を再生できるように
+/// なったとき」は**誰もそれを観測しないので永久に発火しない**。実際に届くのは次の 2 つだけ:
+/// **①098（Windows ビルド）で Windows 実機を触るとき ②利用者から「ogg を使いたい」と要望が出たとき**。
+/// ⇒ どちらでも `docs/progress.md` の 061f 節にある **ffmpeg の再測定レシピ**を貼って測り直す。
+/// ⚠ 結論が変わったら、TS の `ALLOWED_SOUND_PREFIXES` と `docs/security.md` の許可拡張子も
+/// **同時に**戻すこと（**どれか 1 つだけ戻すと `scripts/check-effect-template-contract.mjs` が落ちる**
+/// ——TS だけ／Rust だけは (3)、**security.md だけは (5)** が止める。3 方向とも変異で実測済み）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AssetKind {
     Png,
@@ -171,7 +192,6 @@ enum AssetKind {
     Webm,
     Wav,
     Mp3,
-    Ogg,
 }
 
 impl AssetKind {
@@ -185,7 +205,6 @@ impl AssetKind {
             AssetKind::Webm => "webm",
             AssetKind::Wav => "wav",
             AssetKind::Mp3 => "mp3",
-            AssetKind::Ogg => "ogg",
         }
     }
 
@@ -199,7 +218,6 @@ impl AssetKind {
             AssetKind::Webm => "video/webm",
             AssetKind::Wav => "audio/wav",
             AssetKind::Mp3 => "audio/mpeg",
-            AssetKind::Ogg => "audio/ogg",
         }
     }
 
@@ -214,7 +232,6 @@ impl AssetKind {
             "webm" => AssetKind::Webm,
             "wav" => AssetKind::Wav,
             "mp3" => AssetKind::Mp3,
-            "ogg" => AssetKind::Ogg,
             _ => return None,
         };
         (kind.slot() == slot).then_some(kind)
@@ -225,7 +242,7 @@ impl AssetKind {
             AssetKind::Png | AssetKind::Apng | AssetKind::Gif | AssetKind::Webp | AssetKind::Webm => {
                 AssetSlot::Media
             }
-            AssetKind::Wav | AssetKind::Mp3 | AssetKind::Ogg => AssetSlot::Sound,
+            AssetKind::Wav | AssetKind::Mp3 => AssetSlot::Sound,
         }
     }
 
@@ -264,7 +281,6 @@ impl AssetKind {
                 bytes.starts_with(b"ID3")
                     || (bytes.len() >= 2 && bytes[0] == 0xFF && (bytes[1] & 0xE0) == 0xE0)
             }
-            AssetKind::Ogg => bytes.starts_with(b"OggS"),
         }
     }
 }
@@ -578,7 +594,17 @@ fn read_template_asset(dir: &Path, raw_name: &str, slot: AssetSlot) -> AppResult
     else {
         return Err(AppError::unsupported_file_type(match slot {
             AssetSlot::Media => "メディアは .png / .apng / .gif / .webp / .webm のいずれかにしてください。",
-            AssetSlot::Sound => "音源は .wav / .mp3 / .ogg のいずれかにしてください。",
+            // ⚠ `.ogg` は 061f で落とした（macOS の WebKit がデコードできない・[`AssetKind`] の注記が正）。
+            // ⚠⚠ **理由まで文言に入れるのは 061f レビュー Q-3 の指摘**——ここは
+            //   「なぜ ogg がダメなのか」がユーザーに届く**唯一の場所**で、理由が無いと
+            //   とくに Windows ユーザーには「自分の環境では鳴るのになぜ弾かれるのか」が分からない。
+            //   落とす判断の要は「取り込んだ瞬間に断って**変換を促せる**」ことなので、
+            //   促す材料を文言に載せないと判断の半分が届かない。
+            // ⚠ **固定リテラルのままであること**（ファイル名・パス・`manifest.json` 本文を 1 バイトも
+            //   載せない・§9）。文言は `the_sound_rejection_message_explains_why_ogg_is_not_supported` が固定する。
+            AssetSlot::Sound => {
+                "音源は .wav / .mp3 のいずれかにしてください（.ogg は macOS で再生できないため対応していません）。"
+            }
         }));
     };
 
@@ -1213,7 +1239,12 @@ mod tests {
         for (name, bytes, ok) in [
             ("s.wav", wav_bytes(), true),
             ("s.mp3", mp3_bytes(), true),
-            ("s.ogg", ogg_bytes(), true),
+            // ⚠⚠ **061f: `.ogg` は「中身が正しい Ogg でも取り込まない」。**
+            //   macOS の WebKit が Ogg コンテナをデコードできず、許可したままだと
+            //   「取り込めたのに無音」になるため（[`AssetKind`] の注記が正）。
+            //   ⚠ **マジックバイトが通ることと許可されることは別**——ここは `ogg_bytes()`＝
+            //   正真正銘の `OggS` 始まりを渡したうえで**拒否される**ことを固定している。
+            ("s.ogg", ogg_bytes(), false),
             ("s.png", png_bytes(), false), // 画像は sound 枠に入れられない
             ("s.aiff", b"FORM".to_vec(), false),
         ] {
@@ -1873,7 +1904,7 @@ mod tests {
             assert!(!is_managed_dir_name(bad), "管理下と誤判定した: {bad:?}");
         }
 
-        for good in ["media.png", "media.webm", "sound.wav", "sound.ogg"] {
+        for good in ["media.png", "media.webm", "sound.wav", "sound.mp3"] {
             assert!(is_managed_asset_name(good), "管理下の名前を拒否した: {good}");
         }
         for bad in [
@@ -1882,6 +1913,7 @@ mod tests {
             "media.svg",
             "media.wav",  // media 枠に音源の拡張子は入らない
             "sound.png",  // sound 枠に画像の拡張子は入らない
+            "sound.ogg",  // ⚠ 061f で落とした（macOS の WebKit がデコードできない）
             "media.png.exe",
             "../media.png",
             "/etc/passwd",
@@ -1893,7 +1925,7 @@ mod tests {
 
     #[test]
     fn the_magic_byte_table_accepts_each_format_and_rejects_the_others() {
-        let samples: [(AssetKind, Vec<u8>); 8] = [
+        let samples: [(AssetKind, Vec<u8>); 7] = [
             (AssetKind::Png, png_bytes()),
             (AssetKind::Apng, png_bytes()),
             (AssetKind::Gif, gif_bytes()),
@@ -1901,7 +1933,6 @@ mod tests {
             (AssetKind::Webm, webm_bytes()),
             (AssetKind::Wav, wav_bytes()),
             (AssetKind::Mp3, mp3_bytes()),
-            (AssetKind::Ogg, ogg_bytes()),
         ];
         for (kind, bytes) in &samples {
             assert!(kind.matches_magic(bytes), "{kind:?} の正常な先頭バイトを拒否した");
@@ -1916,6 +1947,93 @@ mod tests {
         // ⚠ mp3 はフレーム同期でも通る（ID3 が無い実ファイルが存在するため）。
         assert!(AssetKind::Mp3.matches_magic(&[0xFF, 0xFB, 0x90, 0x00]));
         assert!(!AssetKind::Mp3.matches_magic(&[0xFF, 0x0B, 0x90, 0x00]));
+    }
+
+    /// 061f: **音源の許可は `wav` / `mp3` の 2 種だけ**（`ogg` を足し直さない）。
+    ///
+    /// ⚠⚠ **これは「取り込めた＝使える」を守るための回帰である。** macOS の WebKit は Ogg コンテナを
+    /// デコードできないので（2026-08-13 実測・[`AssetKind`] の注記が正）、許可を戻すと
+    /// 「取り込めたのに macOS でだけ無音」が復活する。
+    /// ⚠ **`effectMedia.ts` の `ALLOWED_SOUND_PREFIXES` と対**であり、
+    /// `scripts/check-effect-template-contract.mjs` が両層を突き合わせている。**片方だけ戻さないこと。**
+    #[test]
+    fn the_sound_slot_allows_exactly_wav_and_mp3() {
+        // 拡張子 → 種別（大小無視）。
+        assert_eq!(
+            AssetKind::from_extension("wav", AssetSlot::Sound),
+            Some(AssetKind::Wav)
+        );
+        assert_eq!(
+            AssetKind::from_extension("MP3", AssetSlot::Sound),
+            Some(AssetKind::Mp3)
+        );
+        // ⚠⚠ **ここが 061f の本体は `ogg` / `OGG` の 2 件だけ**である。
+        //   ⚠ `oga` / `opus` は**元々許可リストに無かった**ので、今回の変更に対する回帰としては
+        //     効いていない（061f レビュー Q-5 の指摘は事実）。残しているのは
+        //     **「ogg がダメなら oga なら？」という将来の誘惑への歯止め**としてで、
+        //     どちらも Ogg コンテナなので macOS では同じく鳴らない。
+        // ⚠ **media の拡張子も Sound 枠では通らないこと**まで見る（テスト名の「exactly」に実体を持たせる。
+        //   枠をまたぐ穴は `only_the_allowlisted_extensions_are_accepted_per_slot` が取り込み経路で見ているが、
+        //   純関数レベルでも固定しておく）。
+        for rejected in [
+            "ogg", "OGG", "oga", "opus", // 061f で落とした／その近縁
+            "png", "apng", "gif", "webp", "webm", // media 枠の拡張子は sound では通らない
+            "aiff", "m4a", "flac", "", "mp3.exe",
+        ] {
+            assert_eq!(
+                AssetKind::from_extension(rejected, AssetSlot::Sound),
+                None,
+                "音源として {rejected} を受け入れてしまった（061f: macOS で鳴らない／許可外）"
+            );
+        }
+        // ⚠ **この 2 行は「表の網羅」ではなく「2 件の対応」しか見ていない**（061f レビュー Q-4）。
+        //   配列がベタ書きなので、仮に第 3 の音源 variant が復活してもここは緑のまま通る。
+        //   ⇒ **スロット別 MIME 集合の網羅は `scripts/check-effect-template-contract.mjs` の (3) が担当**
+        //     （`mime()` と `slot()` のブロックから実際に集合を作って TS 側と突き合わせる）。
+        //     ここが守るのは「Wav → audio/wav」「Mp3 → audio/mpeg」という対応が動かないことだけ。
+        let sound_mimes: Vec<&str> = [AssetKind::Wav, AssetKind::Mp3]
+            .into_iter()
+            .map(AssetKind::mime)
+            .collect();
+        assert_eq!(sound_mimes, vec!["audio/wav", "audio/mpeg"]);
+
+        // ⚠⚠ **`matches_magic` から Ogg 分岐が消えたことを固定するテストは書かない**（061f レビュー Q-6）。
+        //   `AssetKind::Ogg` という variant ごと消えたので、あの分岐は**書こうとしてもコンパイルが通らない**
+        //   ＝ テストで固定する対象が存在しない。variant を戻す変異は上の `from_extension` の assert と
+        //   contract script が両方で止める。**再修正トリガー＝ `matches_magic` に `_ =>` の catch-all が
+        //   生えたとき**（そのときは網羅マッチという保証が消えるので、形式ごとの表テストが必要になる）。
+    }
+
+    /// 061f レビュー Q-3: **拒否の文言に「なぜ」まで入っている**ことを固定する。
+    ///
+    /// ⚠⚠ **これはユーザーが目にする唯一の説明である。** 落とした判断（macOS の WebKit が Ogg コンテナを
+    /// デコードできない）が文言に無いと、とくに Windows ユーザーには
+    /// 「自分の環境では鳴るのになぜ弾かれるのか」が分からないまま終わる。
+    /// ⚠ **同時に §9 も見る**——文言は固定リテラルで、**第三者が付けたファイル名を 1 バイトも含まない**こと。
+    /// ⚠ **再修正トリガー＝ `.ogg` を許可へ戻すとき**（そのときはこのテストごと消す）。
+    #[test]
+    fn the_sound_rejection_message_explains_why_ogg_is_not_supported() {
+        let source = TempDir::new();
+        source.write(
+            "manifest.json",
+            manifest_json("main.png", Some("s.ogg")).as_bytes(),
+        );
+        source.write("main.png", &png_bytes());
+        source.write("s.ogg", &ogg_bytes());
+        let managed = TempDir::new();
+        let conn = conn();
+        let err = match import_from_dir(managed.path(), &conn, &source.as_arg()) {
+            Ok(_) => panic!(".ogg を取り込んでしまった"),
+            Err(e) => e,
+        };
+        assert_eq!(err.code, ErrorCode::UnsupportedFileType);
+        let message = &err.message;
+        assert!(message.contains(".wav"), "許可形式が出ていない: {message}");
+        assert!(message.contains(".mp3"), "許可形式が出ていない: {message}");
+        assert!(message.contains("macOS"), "理由が出ていない: {message}");
+        // ⚠ 第三者が付けたファイル名が漏れていないこと（§9）。
+        assert!(!message.contains("s.ogg"), "ファイル名が漏れた: {message}");
+        assert!(managed.entries().is_empty(), "孤児が残った");
     }
 
     // --- 契約テスト（ソース文字列で不変条件を固定する）---------------------------------------------

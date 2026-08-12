@@ -19135,3 +19135,233 @@ in-flight のウィンドウは**数ミリ秒**しかない。レビューで「
 
 ⚠ **Q-1 / Q-2 は「実装を変えずに受容し、その受容をコードに書く」対応にした**——どちらも
 「塞ぐには wire を種別ごとに広げるしかない」に帰着し、それは 061e の「やらないこと」に明記された範囲外だから。
+
+## 061f 音源の許可形式を実機で確定し、`audio/ogg` を落とす（2026-08-13）
+
+⚠⚠ **これは「実装で解く」タスクではなく「実機で聴いて確定させる」タスクだった。**
+061d-2 の実機 E2E で確認できていたのは **`audio/wav` だけ**で、許可していた 3 種のうち
+`audio/mpeg` と `audio/ogg` が未確認のまま残っていた（＝ 061f に縮小して残した唯一の宿題）。
+
+### 起票理由は既に反証済み（再確認のみ・(3) の分岐には入っていない）
+
+`wry 0.55.1` の `wkwebview/mod.rs` が `if attributes.autoplay {` で
+`setMediaTypesRequiringUserActionForPlayback(None)` を呼んでおり、`tauri-runtime-wry` は
+この値に触っていない（grep でヒットゼロ）＝ **macOS の autoplay policy は 5 窓とも既に無効化済み**。
+⇒ **`WKWebViewConfiguration` を触る分岐は成立しない**ことを着手前にもう一度確認した。
+
+### ⚠⚠ 何を試して何が起きたか（フィクスチャと観測方法）
+
+**フィクスチャ**（⚠ **リポジトリには 1 バイトも入れていない**。`~/Desktop/streamdock-effect-fixtures/`）:
+**同一の元音**（5 秒・440Hz・ステレオ・ffmpeg の `sine` フィルタ）から 4 形式を作り、
+**差をコンテナ／コーデックだけ**にした。1 テンプレート＝1 フォルダ（`manifest.json` ＋ 共通の
+半透明 PNG ＋ 音源）。`durationMs` は上限の 15000。
+
+⚠⚠ **再測定用のレシピ**（061f レビュー Q-8 で追加）。⚠ **当時のコマンドそのものの記録ではなく、
+同じ条件を再現するために書き起こしたもの**だが、**2026-08-13 に実際に実行して再現を確認した**。
+⚠ **再燃したときはフィクスチャを一から考え直さず、これを貼ること**——再測定のコストが
+「作り直し」から「コピペ」に下がらないと、下の再修正トリガーは実際には発火しない:
+
+```bash
+ffmpeg -v error -f lavfi -i "sine=frequency=440:duration=5" -ac 2 -c:a pcm_s16le tone.wav -y
+ffmpeg -v error -i tone.wav -c:a libmp3lame tone.mp3 -y
+# ⚠ brew の ffmpeg 9.0 に libvorbis が無いので内蔵 vorbis（experimental）を使う＝ 2ch 必須
+ffmpeg -v error -i tone.wav -c:a vorbis -strict -2 tone-vorbis.ogg -y
+ffmpeg -v error -i tone.wav -c:a libopus tone-opus.ogg -y
+for f in tone.wav tone.mp3 tone-vorbis.ogg tone-opus.ogg; do
+  printf "%-18s " "$f"; afinfo "$f" >/dev/null 2>&1 && echo OK || echo "AudioFileOpenURL failed"
+done
+```
+
+⚠ **2026-08-13 の再実行でも結論は変わっていない**——`wav` / `mp3` は `OK`、
+**`ogg` は Vorbis / Opus とも `AudioFileOpenURL failed`**（＝下表の `afinfo` 列は再現する）。
+⚠⚠ **フィクスチャは必ずリポジトリの外に作ること**（`~/Desktop/` か scratchpad）。
+
+⚠ **環境に無かったもの**: `ffmpeg` / `sox` / `lame` / `oggenc` は未インストールで、
+**`afconvert` は mp3 も ogg もエンコードできない**（`afconvert -hf` に `MPG3` のエントリは
+**あるが**、それは「読める形式」であって書けるという意味ではない。実測すると
+`afconvert -f MPG3` は `ExtAudioFileSetProperty ('cfmt') failed` で落ち、対照の AAC は成功する）。
+⇒ **依頼者の許可を得て `brew install ffmpeg`**（⚠ 開発環境のツールであり、
+`package.json` / `pnpm-lock.yaml` / `Cargo.toml` / `Cargo.lock` は**差分ゼロ**）。
+⚠ brew の ffmpeg 9.0 に `libvorbis` が無かったので内蔵の `vorbis`（experimental・`-strict -2`）を使い、
+それが 2ch しか受けないため**4 形式すべて stereo に揃え直した**。Opus は `libopus`（リファレンス実装）。
+
+| 形式 | Safari（＝エフェクト窓と同じ WebKit） | Chromium 151 | `afinfo`（AudioToolbox） |
+|---|---|---|---|
+| `wav` | ✅ 鳴る | ✅ OK (5.000s) | ✅ 読める |
+| `mp3` | ✅ 鳴る | ✅ OK (5.000s) | ✅ 読める |
+| `ogg`（Vorbis） | ❌ **デコード不可** | ✅ OK (5.001s) | ❌ `AudioFileOpenURL failed` |
+| `ogg`（Opus） | ❌ **デコード不可** | ✅ OK (5.006s) | ❌ `AudioFileOpenURL failed` |
+
+⚠⚠ **拒否されているのはコーデックではなくコンテナである**——Opus 側は libopus 製なのに落ちた。
+⚠⚠ **ファイルの不備ではない**——同じ 4 本を Chromium は 4 本ともデコードできた
+（`canPlayType` も `audio/ogg; codecs="vorbis"` / `"opus"` の両方に `probably` を返す）。
+＝ **「鳴らない」と「壊れている」の切り分け（061f の穴 4）は済んでいる。**
+
+**観測方法**: ①`~/Desktop/streamdock-effect-fixtures/_codec-check.html` を Safari と Chrome で開く
+（`canPlayType` ＋ 実ファイル 4 本の `loadedmetadata` / `error`）②Chromium 側は
+**CDP（`--remote-debugging-port` ＋ Node 22 組み込みの `fetch` / `WebSocket`・新規依存ゼロ）**で
+`Runtime.evaluate` を叩いて自動取得 ③`afinfo` / `afplay`。
+⚠ **`pmset -g assertions` の coreaudiod コンテキスト差分**（061d-2 で wav に使った方法）は
+**この判定には使っていない**——ブラウザ 2 種で `error` イベントが直接取れたため、より直接的な証拠になる。
+⚠ 実機（エフェクト窓）での確認は下記「残っていること」。
+
+### 決定＝ **`audio/ogg` を両層から落とす**（当初の推奨から覆した）
+
+最初は「(2)(a) 許可のまま UI で伝える」を推奨したが、**依頼者の指摘で覆した**。理由:
+
+1. ⚠⚠ **反対理由の主軸だった「既存 ogg テンプレートの移行」が成立しない**——
+   `git tag` は 0 件・version は `0.1.0` で、**061c / 061d のテンプレート機能は一度も
+   リリースされていない**。⇒ 移行対象のユーザーが存在しない（061f タスクファイルが
+   「レコードは残り音だけ返さなくなる」と書いていたのは誤りで、実際は
+   `read_media` が `?` で早期 return するため**テンプレートごと出なくなる**——
+   その重い副作用ごと、対象がゼロなので問題にならない）。
+   - ⚠⚠ **根拠はこの紙の指標ではなく実データである**（2026-08-13・security-review S-1 で確認）。
+     `git tag` 0 件・`0.1.0` は「配っていないから誰も持っていないはず」という**推定**にすぎない。
+     実際に唯一存在するインストール（依頼者の dev 機）の `app_data_dir` を見た結果:
+
+     ```
+     ~/Library/Application Support/com.tetsuya.stream-dock/effects/
+       6590f67b-.../ media.png     ← テンプレート 1 件・音源なし
+     .ogg ファイル: 0 件（app data 全域）
+     ```
+
+     ⚠ **次に許可リストを狭めるときも、リリース有無ではなくこれを見ること**（1 コマンドで済む）。
+   - ⚠ **「再取り込みもできない＝詰み」は誤りだった**（同 S-1 で訂正）。`delete_effect_template` は
+     `is_template_id` しか見ず、`remove_managed_dir` は `remove_dir_all` で**ディレクトリごと**消す
+     ＝ **拡張子の許可リストを 1 つも通らない**。`list` → `to_record` も `parse_manifest` だけで
+     拡張子を見ないので**一覧に出続け、削除ボタンは押せる**。
+     ⇒ 復帰経路は「**削除 → 音源を変換 → 取り込み直す**」で成立している。
+     塞がっているのは「ogg を含む**元のフォルダをそのまま**入れ直す」だけで、それは意図どおり。
+2. ⚠⚠ **落とすほうが 061c の約束（取り込めた＝使える）を守る。**
+   許可したままだと「取り込めるのに macOS でだけ無音」＝約束が破れたまま文言で謝ることになる。
+   落とせば**取り込んだ瞬間に**「音源は .wav / .mp3 のいずれかにしてください。」と言え、
+   変換すればよいことまで伝わる。
+3. 失うのは **Windows / Linux で ogg を使う経路だけ**（macOS ユーザーは元々鳴らない）。
+   ⚠ Windows で鳴ること自体は **Chromium 実測に裏打ちされた見込み**であって
+   **Windows 実機は未検証**（098 へ申し送り）。
+4. ⚠⚠ **OS 別分岐は採らなかった**——`check-effect-template-contract.mjs` が Rust と TS の
+   許可 MIME を**静的に**突き合わせているので崩れるうえ、「同じテンプレートが OS によって
+   取り込めたり取り込めなかったりする」形はテンプレートを配る側が最も混乱する。
+
+### 変更（⚠ **frontend ＋ Rust。capabilities / `tauri.conf.json` / 依存 / sidecar は差分ゼロ**）
+
+- `effect_template/service.rs`: `AssetKind::Ogg` を 6 箇所から削除
+  （enum / `extension` / `mime` / `from_extension` / `slot` / `matches_magic`）＋
+  エラー文言を「音源は **.wav / .mp3** のいずれかにしてください。」へ。
+  ⚠ **`AssetKind` の doc に「足し直さないこと」と再修正トリガー**（WebKit が Ogg を再生できるように
+  なったとき・そのとき TS と security.md も**同時に**戻す）を明記。
+- `screens/obs-effects/effectMedia.ts`: `ALLOWED_SOUND_PREFIXES` から `data:audio/ogg;base64,` を削除＋同じ注記。
+- `screens/obs-effects/EffectOverlayApp.tsx`: `<audio>` の JSDoc を実測結果へ更新
+  （⚠ **wry 0.55.1 の autoplay 調査結果はここを正として残す**——`onError` を付けない判断の根拠が
+  同じ場所にあり、コードを変える人が必ず読むため）。
+- `docs/security.md`: 許可拡張子から `ogg` を削除＋「`.ogg` を足さないこと」を `.svg` と同じ形で 3 行
+  （⚠ **依頼者に全文を提示して承認済み**・実装記録は書いていない）。
+- `scripts/check-effect-template-contract.mjs`: **無改変**（両層を直せば自動で通る）。
+
+### テスト（cargo **342 → 343** ／ frontend **1519 → 1520**）
+
+- Rust 新規 `the_sound_slot_allows_exactly_wav_and_mp3`（`ogg` / `OGG` / `oga` / `opus` を全部拒否＋MIME 表）。
+- Rust 既存の許可リスト表: `("s.ogg", ogg_bytes(), true)` → **`false`**。
+  ⚠ **`ogg_bytes()` は残した**——「正真正銘の `OggS` 始まりでも拒否される」ことを固定するため
+  （マジックバイトが通ることと許可されることは別、を明示する）。
+- Rust `is_managed_asset_name`: `sound.ogg` を good → **bad** へ、good 側は `sound.mp3` に差し替え。
+- `effectMedia.test.ts`: ogg を通すケースを削り、**通さないことを固定する 1 件**を新設。
+- ⚠⚠ **変異で落ちることを実測した**:
+  ①**TS だけ ogg を戻す** → `check-effect-template-contract.mjs` が
+  「音源の許可 MIME が effectMedia.ts と service.rs でずれています」で **FAIL** ＋ 新規 TS テストも FAIL。
+  ②**Rust だけ ogg を戻す**（`"ogg" => AssetKind::Wav` の 1 行） → cargo **2 件 FAIL**
+  （新規テスト＋取り込み許可リスト）。⇒ **片側だけ緩む形は両方向で止まる。**
+
+### ⚠⚠ 「鳴ること」はテストで固定できない
+
+jsdom は再生を実装しないので、**`<audio>` が実際に音を出すことを vitest では検出できない**。
+今回の判定も**テストではなくブラウザ 2 種の実測**である。⇒ **実機確認だけが検証手段**という
+061d-2 からの申し送りは、061f を経ても**そのまま有効**。
+
+### ⚠⚠ 実機確認 実施結果（2026-08-13・AI が GUI 操作で実施）
+
+⚠ **実施方法**: `pnpm tauri dev` で起動し、**`osascript`（System Events）の
+アクセシビリティ操作**（`AXPress` / 座標クリック / Tab によるフォーカス移動）で画面を操作、
+`screencapture` と**アクセシビリティツリーの文字列**で観測した。
+⚠ **`pmset -g assertions` の coreaudiod コンテキスト差分**は 061d-2 と同じ方法を踏襲。
+
+| 項目 | 結果 |
+|---|---|
+| **① mp3 の取り込み** | ✅ **成功**。一覧に「061f MP3」・**「15.0秒・音あり」**（＝ Rust が音源を認識）・**取り込み直後にプレビューが自動で開いた**（061c S-3 の緩和策）・プレビューに**映像（半透明 PNG）と差し込み文面「061f MP3 ¥1,000」**が出た |
+| **② mp3・main 窓のプレビュー** | ✅ **鳴った**。トグル ON から **約 1.5〜3.5 秒で** `pmset` に新しい coreaudiod コンテキストが出現（`Created for PID: 41520` ＝ `com.apple.WebKit.GPU`＝ StreamDock の WebKit プロセス群 41518〜41521 の一員） |
+| **③ mp3・エフェクト窓** | ✅ **鳴った**。⚠⚠ **プレビューを閉じ、発火前に coreaudiod コンテキストが 0 件であることを確認したうえで**「テスト表示」→ 新しいコンテキストが出現。＝ **`focused(false)` の窓で、data URI 経由の mp3 が鳴る**ことの直接証拠 |
+| **④ ogg（Vorbis）の取り込み** | ✅ **拒否された**。画面に赤字で**「音源は .wav / .mp3 のいずれかにしてください。」**。一覧は増えていない |
+| **⑤ ogg（Opus）の取り込み** | ✅ **拒否された**（同じ文言） |
+
+⚠ **後始末済み**——取り込んだ「061f MP3」は削除（⚠ **依頼者の既存テンプレート「回転リング（動作確認用）」は
+触っていない**）、割り当ては元の「スーパーチャット・ビッツ＝回転リング（動作確認用）／他は組み込み」へ復元、
+main 窓の位置も復元、クリップボードも退避・復元した。⚠ **表示トグルは開始時から ON だったのでそのまま**。
+
+### ⚠⚠ 実機確認で得た運用上の教訓（次回の E2E で必ず守ること）
+
+⚠⚠ **エフェクト窓（`effect-overlay`）の領域をスクリーンショットしてはいけない。**
+この窓は**透過**なので、その矩形を `screencapture -R` で撮ると**背後にある依頼者の画面がそのまま写る**。
+実際に 1 枚撮ってしまい、**内容は記録せず即座に削除した**。
+⚠ 061d-2 の「撮影はアプリの窓の領域だけに限定した」という配慮は**この窓には効かない**——
+必要なら `screencapture -o -l <windowid>`（窓単体・アルファ付き）で撮ること。
+⚠ そもそも**音の判定に画像は要らない**（`pmset` で足りる）ので、撮らないのが最善。
+
+**ほかに実機で分かった操作上の注意**（次回の GUI E2E を速くするため）:
+- **`<select>` は AXValue の代入を受け付けない**。`AXPress` でメニューを開き、**項目を座標でクリック**する
+  （キーボードの上下＋Return は効かなかった）。
+- **Page Down / Home ではスクロールしない**。⚠ **Tab でフォーカスを送ると、ブラウザが対象を
+  自動で可視領域へスクロールする**——これが唯一確実なスクロール手段だった。
+- **WebKit のアクセシビリティツリーは可視領域の周辺しか露出しない**ので、
+  `entire contents` の結果はスクロール位置で変わる。**取得はリトライ前提**で書くこと。
+- **ファイル選択ダイアログにパスを `keystroke` で打ってはいけない**——macOS のテキスト置換が
+  ハイフンを**ダッシュに変換**して失敗する。⚠ **`pbcopy` ＋ Cmd+V** を使う（クリップボードは退避・復元する）。
+
+### ⚠⚠ security-review（2026-08-13・別セッション）＝「軽微な懸念あり」・修正必須 0 件
+
+**判定**: 軽微な懸念あり／**修正必須 0 件**。許可リストの縮小のみで攻撃面はどの方向にも増えておらず、
+入口（`read_template_asset`）と出口（`managed_asset_path` → `is_managed_asset_name`）が
+**同じ `from_extension` を通る**ので縮小は両端に効いている。`matches_magic` は Ogg アームが消えただけで
+**残り 7 形式はバイト不変**、`match self` は catch-all を持たない網羅マッチのままであることも確認された。
+
+**指摘 11 件はすべて対応した**（要修正 3・受容のコメント化 8）:
+
+| # | 指摘 | 対応 |
+|---|---|---|
+| S-1 | 「未リリースだから移行不要」の前提が紙の指標だけ | **実データで裏取り**（`app_data_dir` に ogg 0 件）＋「再取り込みもできない」の**誤りを訂正**（上記） |
+| S-2 | `read_media` の `?` が音の失敗でメディアごと落とす（`safeEffectMedia` の doc と矛盾） | **受容**。`effectMedia.ts` に理由と**再修正トリガー**を明記（⚠ 緩めるなら「許可外拡張子」と「改竄の疑い」を**分けて**実装すること） |
+| S-3 | security.md の `.ogg` 禁止が `.svg`（セキュリティ）と同じ書式 | security.md に**「機能上の禁止」であること**を明記（⇒ `.ogg` が解けても `.svg` は解けない） |
+| Q-1 | 盤面の「未コミット」が git の実態と食い違い | **訂正**（061c/061d-1/061d-2/061e は `53f3f14` まででコミット済み）＋「**新しく書かない**」規則を追加 |
+| Q-2 | 古い許可リストが docs 2 か所に残存 | `061c-effect-template-import.md` と親 `061-obs-effects.md` を**訂正** |
+| Q-3 | エラー文言に理由が無く、Windows ユーザーに不可解 | **文言に理由を追加**＋`the_sound_rejection_message_explains_why_ogg_is_not_supported` で固定（§9 も同時に検査） |
+| Q-4 | MIME assert が「表の網羅」を検査していないのにコメントがそう読める | **コメントを訂正**（網羅は contract script の (3) が担当と明示） |
+| Q-5 | `oga` / `opus` は今回の回帰ではない／テスト名が看板倒れ | **自己申告どおり**と確認。media 拡張子も回して「exactly」に実体を持たせ、**歯止めとして残す理由**を明記 |
+| Q-6 | `matches_magic` の Ogg 削除を固定するテストが無い | **不要**と結論（variant ごと消えたのでコンパイルが通らない）。**書かない理由と再修正トリガー**をテストに明記 |
+| Q-7 | security.md だけ戻す変異は誰も止めない | **contract script に (5) を追加**（`docs/security.md` ↔ Rust の `fn extension()`）。**変異 2 種でレッド確認**（下記） |
+| Q-8 | 再修正トリガーが観測できない事象に紐づいている | **トリガーを紐づけ直し**＋**ffmpeg の再測定レシピ**を上記に追加（実行して再現を確認） |
+
+⚠⚠ **(5) の実効性を変異で確認した**（2 方向とも赤）:
+①**security.md だけ ogg を戻す** → `実際: ["mp3","ogg","wav"] / 期待: ["mp3","wav"]` で FAIL。
+②**行の書き方を変えて抽出を壊す** → 「行を見つけられませんでした」で FAIL
+（⚠ **この 2 つ目が肝**——抽出失敗を fail にしないと、行を書き換えた瞬間に検査が**黙って無効化される**）。
+
+### ⚠ 再修正トリガー（061f レビュー Q-8 で紐づけ直した）
+
+⚠⚠ **旧トリガー「WebKit が Ogg を再生できるようになったとき」は使わない**——
+**誰もそれを観測しない**（Safari のリリースノートを追う運用は無く、対応してもアプリには何の signal も来ない）
+＝ 永久に発火しない書き方だった。**実際に届くイベント**へ差し替える:
+
+- **098（Windows ビルド）で Windows 実機を触るとき**——下の申し送りと同じ場所で必ず思い出す。
+- **利用者から「ogg を使いたい」と要望が出たとき**——ユーザーから届く唯一の経路。
+- ⇒ どちらでも、上の**再測定レシピを貼って 5 分で測り直す**。結論が変われば
+  **Rust / TS / `docs/security.md` の 3 か所を同時に**戻す（片側だけは contract script が止める）。
+
+### 残っていること
+
+- ⚠ **実機確認・`security-review`・レビュー指摘対応はすべて完了した**（上表）。
+- ⚠ **098（Windows ビルド）への申し送り**: `audio/ogg` を落としたのは **macOS の制約が理由**で、
+  Windows / WebView2 では鳴る**見込み**（Chromium 実測）。Windows 実機で確認できたら、
+  「OS で分ける」ではなく「**この判断を維持する**」ことの是非として再評価すること。
+- ⚠ **タスクファイルを 301 行 → 結論だけに縮めた**（061f レビュー Q-11）。旧版にあった
+  「鳴らないときの切り分け手順」は、**`EffectOverlayApp.tsx` の `<audio>` の JSDoc**（疑う順序）と
+  **061f タスクファイルの「再燃したときの入口」**（3 か所の対・autoplay を疑い直さないこと）へ
+  **分けて要約した**。⇒ **切り分け手順を探すならこの 2 か所**。

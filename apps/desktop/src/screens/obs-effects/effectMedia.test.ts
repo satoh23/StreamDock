@@ -88,12 +88,20 @@ describe("effectMediaDataUri", () => {
 
 describe("effectSoundDataUri", () => {
   it("許可した音源の MIME だけを通す", () => {
-    for (const good of [
-      WAV,
-      "data:audio/mpeg;base64,SUQzAwAA",
-      "data:audio/ogg;base64,T2dnUwAC",
-    ]) {
+    for (const good of [WAV, "data:audio/mpeg;base64,SUQzAwAA"]) {
       expect(effectSoundDataUri(good)).toBe(good);
+    }
+  });
+
+  // ⚠⚠ **061f の回帰。** macOS の WebKit は Ogg コンテナをデコードできないので、
+  //   許可したままだと「取り込めたのに macOS でだけ無音」になる（`effectMedia.ts` の注記が正）。
+  //   ⚠ **Rust の `AssetKind` と対**で、`check-effect-template-contract.mjs` が両層を突き合わせている。
+  it("⚠ audio/ogg は通さない（061f: macOS の WebKit がデコードできない）", () => {
+    for (const ogg of [
+      "data:audio/ogg;base64,T2dnUwAC", // Vorbis / Opus のどちらでも接頭辞は同じ
+      "data:audio/ogg;base64,T2dnUwACAAAAAAAAAAA=",
+    ]) {
+      expect(effectSoundDataUri(ogg)).toBeUndefined();
     }
   });
 
