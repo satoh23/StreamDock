@@ -525,6 +525,16 @@ export function CommentViewerApp() {
   useEffect(() => {
     obsConfigRef.current = obsConfig;
   }, [obsConfig]);
+  // ⚠⚠ 061e(5)（実機確認で発見した Bug-1 の修正）: **sidecar WS が OPEN かどうか**を、deps 空の effect や
+  // イベントハンドラから最新値で読むための ref 同期（`obsConfigRef` と同じイディオム）。
+  // `streamConnected` は `onConnectionChange` 由来で、その呼び出し元は `commentStream.ts` の
+  // `socket.onopen` / `socket.onclose` なので、**「`send` が通るか」と厳密に等価**。
+  // ⚠ `streamRef.current`（ハンドルの有無）では代用できない——`connectCommentStream` は接続確立を待たずに
+  // 同期でハンドルを返すので、**接続前でも非 null** になる。これが Bug-1 の直接の原因だった。
+  const streamConnectedRef = useRef(false);
+  useEffect(() => {
+    streamConnectedRef.current = streamConnected;
+  }, [streamConnected]);
   // 045c レビュー（回帰）: 表示 ON で仕掛ける猶予タイマー（OBS_ENABLE_DELAY_MS）の id。取り消せるように保持する。
   // 旧実装は id を捨てていたため、猶予中に表示 OFF / 自動反映 OFF にしても発火が止まらず、hideObs / disableObs の
   // **後に** enableObs が飛んでいた（OBS 側で閉じた窓のソースが再表示され、ツールバーにも表示 OFF のまま赤字が残る）。
@@ -1382,13 +1392,35 @@ export function CommentViewerApp() {
   // ②061b で effects が毎コメント発火の層になる（＝失敗表示の頻度が跳ね上がる）、のどちらか。
   // そのときは `obs.state` に `overlay` を足し、`obsState` を `Record<ObsOverlayKind, ObsState>` へ広げる
   //（046d の再修正トリガーと同じ作業なので、まとめて 1 回で済む）。
+  //
+  // ⚠⚠ **061e レビュー Q-1（修正不要・受容の明示）: 連携 ON でゲートされるのは「呼ぶ瞬間」だけで、
+  // in-flight の結果は追いかけられない。** `disableObs()` は sidecar の `disable()`＝`onState("idle")` を
+  // 出すだけで、**走っている `enable()` を止めない**（`obs-client.ts`）。よって
+  //   ①連携 ON・表示 ON で反映を仕掛ける →②sidecar が接続待ち（OBS 未起動なら `CONNECT_TIMEOUT_MS`＝4 秒）
+  //   →③その間に連携を OFF（`disableObs` の echo で idle・赤字は消える）→④timeout の `failed` が着弾
+  // という順序だと、**連携 OFF なのに数秒遅れで赤字が出る**（061e(2) でゲートが外れたため可視化された）。
+  // ⚠ この状態は「表示 OFF」では消えない（`handleOverlayToggle` の OFF 分岐は `if (obsAutoAdd)` の内側）。
+  // 消えるのは「自動反映を ON→OFF」または窓の開き直し。
+  // **それでも直さないのは**、④の赤字が指す事実（**OBS へ繋がらない**）はその瞬間**現に真**で、
+  // ユーザーが取る行動も変わらない（OBS を起動する）から＝(b) が受け入れた stale-positive と同種。
+  // **再修正トリガー**＝実機で「OFF にしたのに後から赤字が出る」が煩わしいと分かったとき。
+  // そのときは**世代カウンタ**（`requestObsAutoAdd` 発行時と OFF 系操作で世代を上げ、`onObsState` は
+  // 最新世代の結果だけ反映する）を足す。⚠ ゲートを戻すのは不可（061e(2) の (B) が再発する）。
   const requestObsAutoAdd = (overlay: ObsOverlayKind) => {
     setObsState("connecting");
     void detectObsWebsocketConfig().then((cfg) => {
       setObsConfig(cfg);
       const stream = streamRef.current;
-      if (!stream) {
-        // L2: コメントストリーム WS 未接続なら enableObs が no-op になり connecting が固着するため failed に落とす。
+      // L2: コメントストリーム WS 未接続なら enableObs が no-op になり connecting が固着するため failed に落とす。
+      // ⚠⚠ **061e(5)（実機で発見した Bug-1 の修正）: 判定を `streamRef.current` から
+      // `streamConnectedRef.current` へ直した。** L2 の意図は元から「**送っても届かないなら failed**」だったが、
+      // 見ていたのが**ハンドルの有無**で、`connectCommentStream` は接続確立を待たず同期でハンドルを返すため
+      // **接続前でも非 null**＝ガードが素通りしていた。その結果 `send`（`commentStream.ts`・OPEN 以外は
+      // **黙って捨てる**）に飲まれ、**`obsState` が `connecting` のまま永久に固着**していた
+      //（実機確認で 2 回再現。ツールバーは failed のときだけ出すので**赤字も出ない**＝
+      // 061e が直そうとした「結果が読み取れない」が、最も起きやすい経路で残っていた）。
+      // ⚠ これで「切断中に storage で連携 ON」のような経路も `connecting` 固着ではなく failed へ落ちる。
+      if (!stream || !streamConnectedRef.current) {
         setObsState("failed");
         return;
       }
@@ -1592,8 +1624,11 @@ export function CommentViewerApp() {
    * 偽になったので削除済み）。
    *
    * ⚠ 伝達は 046a/046b と同じ**二段構え**にしてある:
-   *   - **保証ベースライン**＝この effect のマウント時 reconcile。`storage` が届かなくても、
-   *     コメビュ窓を開き直せば必ず反映される。
+   *   - **保証ベースライン**＝下の**接続確立時 reconcile**（`streamConnected` が true になった 1 回）。
+   *     `storage` が届かなくても、コメビュ窓を開き直せば必ず反映される。
+   *     ⚠⚠ **061e(5) で契機を「マウント時」から「WS 接続確立時」へ移した**（実機で発見した Bug-1）。
+   *     マウント時点では sidecar WS がまだ OPEN でなく、`send` が**黙って捨てる**ため
+   *     **保証ベースラインが保証になっていなかった**（詳細は下の effect のコメント）。
    *   - **即時反映**＝`storage` 購読（**ベストエフォート**。別 webview 間の伝播はプラットフォーム依存）。
    * ⚠ **コメビュ窓が閉じている間は `obs-enable` を誰も送れない**（＝OBS への自動追加だけが止まる。
    * エフェクトの表示自体は 061b で独立した）。この事実は `ObsEffectsScreen` の前提ステータスと
@@ -1603,6 +1638,9 @@ export function CommentViewerApp() {
    *   - 自動反映トグルは**設定を立てるだけ**（main 窓に WS が無いので構造として保証されている）
    *   - **反映の契機は表示 ON**（＝`EFFECT_OVERLAY_ENABLED_KEY` が true になったとき）
    *   - 表示 OFF で `obsState` を idle へ戻す
+   *     ⚠ **061e(1) で「自動反映 OFF」側でも戻すようにした**（045c の不変条件を両側で成立させる）。
+   *     ⚠ ただし `obsState` は 3 種別で 1 本なので、**他種別の連携がすべて OFF のときだけ**倒す
+   *     （理由は下の分岐のコメント＝061e 穴 1）。
    *   - ⚠ **猶予タイマーは必ず取り消す**（表示 OFF・自動反映 OFF の両方で）
    *
    * ⚠ **`disableObs()` は呼ばない。** あれは kind を取らず sidecar の状態を丸ごと idle にするので、
@@ -1612,11 +1650,6 @@ export function CommentViewerApp() {
    * state に写すと「main 窓で変えたのに古い値で判断する」形が作れてしまう。
    */
   useEffect(() => {
-    if (loadEffectObsAutoAdd() && loadEffectOverlayEnabled()) {
-      // 保証ベースライン: 猶予は要らない（窓は既に開いていて OBS のウィンドウ一覧に載っているはず）。
-      requestEffectObsAutoAddIfOpen();
-    }
-
     const onStorage = (e: StorageEvent) => {
       // clear() 時は e.key === null で来るため、その場合は両方を評価する。
       // ⚠ 061a レビュー（Q-4・修正不要）: `clear()` では**表示 OFF 側の後始末（hideObs／obsState を idle）に
@@ -1649,6 +1682,56 @@ export function CommentViewerApp() {
         } else {
           // ⚠ 連携 OFF で仕掛かりを取り消す（disableObs の後に enableObs が飛ぶのを防ぐ・045c レビュー）。
           clearObsEnableTimer("effects");
+          // ⚠⚠ 061e(1): **045c の不変条件「連携 OFF なら必ず `obsState` を idle へ戻す」を effects 側でも
+          // 成立させる。** 061a はここで `clearObsEnableTimer` しか呼んでおらず（表示 OFF 側の分岐だけが
+          // idle へ戻していた）、そのせいで「エフェクトの失敗の赤字が、連携を OFF にしても残る」形になっていた。
+          // ⚠ 061e(2) でツールバーの赤字ゲートから `obsAutoAdd &&` を外すため、この後始末が**赤字を消す
+          // 唯一の経路**になる（ゲートが肩代わりしてくれなくなる）。
+          //
+          // ⚠⚠ **`!loadObsAutoAdd()` で狭めている理由（061e 穴 1 の結論）**: `obsState` は
+          // comments / pinned / effects の **3 種別で 1 本**なので、ここで無条件に idle へ倒すと
+          // **comments / pinned の失敗の赤字まで巻き添えで消える**。それは 061e が消そうとしている
+          // 「失敗が黙って出ない」を 061e 自身が 1 本作ることになるので採らない。
+          // ＝「**他種別の連携もすべて OFF のときだけ倒す**」。代償は「エフェクトの連携を OFF にしたのに
+          // 赤字が残る」だが、その赤字は**そのとき真**（comments/pinned 側が現に OBS へ繋がっていない）で、
+          // ユーザーが取る行動も同じ＝OBS を起動する（059b の「失敗の中身で文言を変えない」と同じ論拠）。
+          //
+          // ⚠⚠ **なぜコメント側の idle 経路（`handleOverlayToggle` / `handlePinnedOverlayToggle` /
+          // `handleObsAutoAddToggle` の OFF 分岐）は同じように狭めないのか**: あちらは `hideObs` /
+          // `disableObs` を送るので、**sidecar が `obs.state = idle` を broadcast し返す**
+          //（`obs-client.ts` の `hide()` は `finally { onState("idle") }`、`disable()` は `onState("idle")`）。
+          // frontend の `setObsState("idle")` は "先取りの echo" にすぎず、そこを条件付きにしても
+          // echo が遅れて着弾して同じ結果になる＝**効かないガードになる**（読んだ人が守られていると誤解する）。
+          // **この分岐だけは sidecar へ何も送らない**ので、frontend の判断だけで完全に制御できる。
+          // ＝ 種別ごとの完全な出し分けは **wire を変えない限り不可能**（下記 (2) のコメントの再修正トリガー）。
+          //
+          // ⚠⚠ **061e レビュー Q-2（修正不要・例外の明示）: echo が来るのは WS 接続時だけ。**
+          // `requestObsHide` も `disableObs()` も `streamRef.current?.` なので、**WS 未接続なら何も送られず
+          // echo も返らない**。しかも `failed` が出る主要経路の 1 つが**その未接続状態そのもの**
+          //（`requestObsAutoAdd` の L2 分岐が `setObsState("failed")` する）。よって WS 未接続時は、
+          // 上記 3 経路と**エフェクトの「表示 OFF」分岐（すぐ上）**の `setObsState("idle")` が
+          // echo の裏打ち無しに comments/pinned の failed を消しうる。
+          // **それでもここ以外を狭めないのは**、①通常時（WS 接続時）は echo で必ず潰されるので
+          // 「効かないガード」になる ②未接続時は OBS 連携そのものが成立しておらず、赤字を残しても
+          // ユーザーが取れる行動が無い（sidecar が復帰すれば次の明示操作で再評価される）から。
+          // **再修正トリガー**＝ WS 未接続のまま失敗表示を保ちたい要求が出たとき
+          //（そのときは種別ごとの state ＝ wire 変更の領分。下記 (2) のトリガーと同じ作業でまとめて）。
+          //
+          // ⚠ state（`obsAutoAdd`）ではなく `loadObsAutoAdd()` を直読みするのは、この `storage` 購読が
+          // **マウント時 1 回だけ張る effect**（deps 空）で、state を読むと stale closure を掴むため。
+          // 永続値はこの窓の `saveObsAutoAdd(obsAutoAdd)` effect が常に同期しているので、
+          // **判断の瞬間の最新値**が読める（`loadPinnedOverlayEnabled()` を直読みするマウント同期 effect と同じ形）。
+          // ⚠ これは (2) が `obsAutoAdd || effectObsAutoAdd` を却下した理由（**レンダー時**に state ミラーが要る）
+          // には当たらない——こちらは**イベントハンドラ内の 1 回きりの判断**で、ミラーも再レンダーも要らない。
+          // ⚠⚠ **さらに決め手は「キーの所有者」**（061e レビューの補強）: `obsAutoAdd` は**この窓が所有する**
+          // キー（書き手は同窓の `saveObsAutoAdd` effect だけ）なので、直読みは**窓跨ぎ伝播に一切依存しない**。
+          // 却下した OR のほうは `effectObsAutoAdd`＝**main 窓所有**で、読むにはベストエフォートの伝播が要る。
+          // ＝ 非対称の根拠は「ハンドラかレンダーか」より「**自窓所有か他窓所有か**」のほうが強い。
+          //
+          // ⚠ `localStorage.clear()`（`e.key === null`）でもこの分岐に入るが、`loadObsAutoAdd()` も
+          // false になるので idle へ倒れる。**OBS へは何も送らない**ので Q-4 の判断（`clear()` に副作用を
+          // 持たせない）とは矛盾しない。
+          if (!loadObsAutoAdd()) setObsState("idle");
         }
       }
     };
@@ -1656,11 +1739,49 @@ export function CommentViewerApp() {
     return () => {
       window.removeEventListener("storage", onStorage);
     };
-    // ⚠ **マウント時 1 回だけ**張る（購読を張り直すと保証ベースラインが何度も走る）。参照している
+    // ⚠ **マウント時 1 回だけ**張る（購読を張り直すと購読が多重化する）。参照している
     // ヘルパはレンダーごとに作り直されるが、可変の値は ref（`streamRef` / `obsConfigRef` /
-    // `obsEnableTimersRef`）と localStorage 直読みからしか取らないので stale にならない。
+    // `streamConnectedRef` / `obsEnableTimersRef`）と localStorage 直読みからしか取らないので stale にならない。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /**
+   * ⚠⚠ 061e(5): **エフェクト連携の「保証ベースライン」reconcile**（上の `storage` 購読から切り出したもの）。
+   *
+   * **実機確認で見つかった Bug-1 の修正。** 061a はこれを**マウント時**に走らせていたが、その時点では
+   * sidecar への WS がまだ OPEN でなく、`commentStream.ts` の `send` は **OPEN 以外を黙って捨てる**。
+   * よって `enableObs("effects")` は誰にも届かず、しかし直前に `requestObsAutoAdd` が
+   * `setObsState("connecting")` を立てているので、**`obsState` が `connecting` のまま永久に固着**していた。
+   * ツールバーの赤字は `failed` のときだけ出るので**何も出ず**、設定カードには「OBSに接続しています…」が
+   * 残り続ける＝ **061e が直そうとした「結果が読み取れない」が、最も起きやすい経路で残っていた。**
+   * ⚠ 061a が「`storage` が届かなくても開き直せば必ず反映される」と書いていた**保証が成立していなかった**。
+   * ⚠ 実機で 2 回再現。ユニットテストが緑だったのは `obs.state` を手で注入していたためで、
+   * 「failed が来ない」経路そのものを再現していなかった（061d-1 に続く「テスト緑≠実機で正しい」の 2 例目）。
+   *
+   * ⇒ **契機を「マウント」から「WS 接続確立」へ移す。** `streamConnected` は `onConnectionChange` 由来で、
+   * その呼び出し元は `commentStream.ts` の `socket.onopen` / `socket.onclose` なので、
+   * **「`send` が通るか」と厳密に等価**。
+   *
+   * ⚠ **走らせるのは「最初に接続できた 1 回」だけ**（`effectReconcileDoneRef`）。再接続のたびに走らせると
+   * 045c の「**反映の契機は表示 ON**」を越えて、配信中に sidecar が落ちて復帰するたび `enableObs` が飛ぶ。
+   * 061a の意味論（**窓を開いたら 1 回**）をそのまま接続タイミングへ移すのが目的で、増やすのが目的ではない。
+   * **再修正トリガー**＝実機で「再接続後に OBS の反映が落ちたままになる」が確認されたとき
+   *（そのときは ref を落として毎回走らせるのではなく、**切断を検知して idle へ倒す**方を先に検討すること）。
+   *
+   * ⚠ 一度も接続できない窓では走らない＝**何も起きない**。ただし `requestObsAutoAdd` を呼ばないので
+   * `connecting` 固着にはならず（idle のまま）、sidecar 未接続そのものは既存の接続状態表示が伝える。
+   */
+  const effectReconcileDoneRef = useRef(false);
+  useEffect(() => {
+    if (!streamConnected || effectReconcileDoneRef.current) return;
+    effectReconcileDoneRef.current = true;
+    if (loadEffectObsAutoAdd() && loadEffectOverlayEnabled()) {
+      // 猶予は要らない（窓は既に開いていて OBS のウィンドウ一覧に載っているはず）。
+      requestEffectObsAutoAddIfOpen();
+    }
+    // ⚠ `requestEffectObsAutoAddIfOpen` はレンダーごとに作り直されるが、読むのは ref と localStorage だけ。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streamConnected]);
 
   // 044a: 「OBS へ自動追加（連携）」トグル。ON の間、オーバーレイ表示 ON に連動して OBS へウィンドウキャプチャ
   // ソースを自動追加（既存なら再利用）する。OFF は連携を止める（OBS 側のソースは消さない）。
@@ -1934,8 +2055,35 @@ export function CommentViewerApp() {
                   絞っていない。両者が等価なのは **連携 OFF 時に必ず obsState を idle へ戻す**（handleObsAutoAddToggle の
                   OFF 分岐）という不変条件があるためで、粒度の違い（ここは失敗のみ／カードは全状態）とは別の話。
                   再修正トリガー＝setObsState の呼び出し箇所が増えてこの不変条件が崩れたとき（そのときは派生値に
-                  切り出して両方から使う）。 */}
-              {obsAutoAdd && obsState === "failed" && (
+                  切り出して両方から使う）。
+                  ⚠⚠ **061e(2): その `obsAutoAdd &&` を外した。** 045c の再修正トリガーが 061a で発火していた——
+                  `obsAutoAdd` が束ねるのは **comments / pinned の 2 種別だけ**で、effects の連携は main 窓が持つ
+                  別キー（`EFFECT_OBS_AUTO_ADD_KEY`）。そのため「コメント側 OFF ／ エフェクト側 ON」の構成では
+                  **エフェクトの OBS 追加に失敗しても赤字が 1 文字も出ない**（＝黙って反映されない）。
+                  ⚠ ゲートの代わりになるのは **061e(1) で両側に揃えた不変条件**（連携 OFF なら必ず idle へ倒す）。
+                  ⚠ **`obsAutoAdd || effectObsAutoAdd` の OR にはしない**——そのためには main 窓が持つ設定を
+                  この窓の state へミラーする必要があり、`storage` の窓跨ぎ伝播（**ベストエフォート**）に
+                  **表示の可否**を委ねることになる＝伝播が届かないと失敗が黙って出ない（いま直している症状そのもの）。
+                  不変条件で担保するほうが、state を増やさずに強い。
+                  ⚠ **文言は変えない**（どの種別で失敗してもユーザーが取る行動は同じ＝OBS が起動しているか確認する。
+                  059b の通知音インジケータが「失敗の中身で文言を変えない」と決めたのと同じ理由）。
+                  ⚠⚠ **これでも「どの種別が失敗したか」は出せない**（`obs.state` の payload は `{ state, reason? }` で
+                  `overlay` を運ばない＝`obsState` は 3 種別で 1 本）。さらに sidecar は `hide()` / `disable()` の
+                  たびに `idle` を broadcast し返すので、**ある種別の OFF が別種別の failed を消す**のは
+                  frontend では塞げない（061e 穴 1 の結論。唯一 frontend で制御できる経路＝エフェクトの
+                  連携 OFF だけは上のエフェクト連携 effect で狭めてある）。
+                  **再修正トリガーは 046d / 061a Q-2 のものをそのまま引き継ぐ**＝「**どちらのオーバーレイが OBS に
+                  出ていないか分からない**」という問い合わせが実際に出たら、`obs.state` に `overlay` を足し
+                  `obsState` を `Record<ObsOverlayKind, ObsState>` へ広げる（sidecar・commentStream・この窓・
+                  SettingsView の 4 層に同時に手が入るので、046d の分とまとめて 1 回で済ませる）。
+                  ⚠⚠ **061e レビュー Q-4: このゲート撤去で 061a Q-2 のトリガー①は「引き継いだ」だけでなく
+                  発火しやすくなった。** トリガー①は「実機で**コメビュを開くたびに OBS の赤字が出る**が確認された」
+                  だが、061e 前はコメント側連携が OFF ならこの症状はゲートで見えなかった。いまは
+                  **エフェクト連携 ON ＋ OBS 未起動なら、コメビュ窓を開くたび**（マウント時 reconcile →
+                  `enableObs("effects")` → failed）に**必ず**赤字が出る。⚠ これは 061e の目的（失敗の可視化）
+                  そのものなので**赤字を隠す方向では直さない**——発火したときの答えは wire 変更（種別ごとの
+                  state ＋ 種別つきの文言）であって、ゲートを戻すことではない。 */}
+              {obsState === "failed" && (
                 <span
                   className={styles.toolbarError}
                   role="status"

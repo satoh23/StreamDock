@@ -202,10 +202,27 @@ const AUTO_ADD_TOGGLE = "「コメントをOBSに表示」ON時、OBSに自動�
 // 046b: 固定コメント専用オーバーレイの表示トグル（設定ビュー）。カード見出しと同一文字列なので role で絞る。
 const PINNED_OVERLAY_TOGGLE = "固定コメントをOBSに表示";
 
-/** 実窓の初期状態（マウント同期の戻り値）を決めて描画する。 */
+/**
+ * ⚠⚠ 061e(5): **sidecar WS の接続確立**を再現する（実 WS は張らないので捕捉した handlers を直接叩く）。
+ * 実機ではこれを呼ぶのは `commentStream.ts` の `socket.onopen`。
+ *
+ * ⚠ **これが要るようになったのは実機で見つかった Bug-1 の修正から。** `requestObsAutoAdd` の未接続判定が
+ * 「ハンドルの有無」から「**WS が OPEN か**」に変わったので、接続を再現しないと反映要求は failed に落ちる。
+ * ＝ **テストを通すための追加ではなく、実機の順序（マウント直後はまだ繋がっていない）の再現**である
+ *（`emitSettingChange` が「別窓の書換 → storage」の順序を再現しているのと同じ作法）。
+ * ⚠ `?.` は捕捉が壊れても黙って no-op になるので、捕捉の生存をここで落とす（`emitObsState` と同じ）。
+ */
+function emitConnected() {
+  expect(mocks.handlers.current).not.toBeNull();
+  act(() => mocks.handlers.current?.onConnectionChange?.(true));
+}
+
+/** 実窓の初期状態（マウント同期の戻り値）を決めて描画する。⚠ 061e(5): 接続確立まで再現する。 */
 function renderApp(overlayAlreadyOpen = false) {
   mocks.isCommentOverlayOpen.mockResolvedValue(overlayAlreadyOpen);
-  return render(<CommentViewerApp />);
+  const result = render(<CommentViewerApp />);
+  emitConnected();
+  return result;
 }
 
 /** 044a: sidecar からの obs.state 通知を再現する（実 WS は張らないので捕捉した handlers を直接叩く）。 */
@@ -396,6 +413,10 @@ describe("045c 自動反映は表示に従う（E2E 回帰）", () => {
     );
 
     // 表示を OFF にすると OBS 側も非表示になるので、残留した赤字が誤解を生まないよう消える。
+    // ⚠⚠ **061e で「消える根拠」が変わった**（棚卸し）。旧実装ではゲート（`obsAutoAdd &&`）と
+    // `handleOverlayToggle` の `setObsState("idle")` の**どちらでも説明できた**が、061e(2) でゲートを
+    // 外したので、いま消しているのは **045c の不変条件（表示 OFF＝OBS 側も非表示なので idle へ戻す）1 本だけ**。
+    // ＝ この行は「ゲートが効いていること」ではなく「不変条件が生きていること」を守っている。
     fireEvent.click(overlaySwitch());
     await waitFor(() =>
       expect(
@@ -429,6 +450,8 @@ describe("045c レビュー 猶予中の取り消し", () => {
       // hideObs の後に enableObs が飛ぶと、OBS 側では閉じた窓のソースが再表示されてしまう。
       expect(mocks.stream.enableObs).not.toHaveBeenCalled();
       // 反映要求が飛ばない＝sidecar から failed も返らないので、表示 OFF のまま赤字が残ることもない。
+      // ⚠ **061e 後もこの理由づけは変わらない**（棚卸し）。061e(2) でゲート（`obsAutoAdd &&`）は外れたが、
+      // ここが守っているのは元から「**そもそも failed が来ない**」であってゲートではない。
       expect(
         screen.queryByText("OBSに接続できませんでした"),
       ).not.toBeInTheDocument();

@@ -707,8 +707,15 @@ export function SettingsView({
           {obsState === "connecting" && (
             <span className={styles.note}>OBSに接続しています…</span>
           )}
+          {/* ⚠⚠ 061e(3): 「OBSにコメントを表示しました。」→「OBSに表示しました。」（**「コメント」を消しただけ**）。
+              `obsState` は comments / pinned / effects の **3 種別で共有**されているので、
+              **エフェクトや固定コメントの成功でもこの文が出る**＝「コメントを」と書くと嘘になる。
+              ⚠ `connecting` / `failed` は既に種別非依存なので触らない。カードの見出し・トグルの label も触らない
+              （あちらはコメント用トグルの説明として正しい）。⚠ 「OBSに」表記の統一（045b）は維持する。
+              ⚠ 種別を名乗らないのは wire が種別を運ばないため（`obs.state` の payload は `{ state, reason? }`）。
+              再修正トリガーは 046d / 061a Q-2 と同じ（`CommentViewerApp` のツールバー赤字のコメントが正）。 */}
           {(obsState === "added" || obsState === "reused") && (
-            <span className={styles.note}>OBSにコメントを表示しました。</span>
+            <span className={styles.note}>OBSに表示しました。</span>
           )}
           {obsState === "failed" && (
             <span className={styles.errorText}>

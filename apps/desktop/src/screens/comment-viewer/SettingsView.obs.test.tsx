@@ -215,16 +215,25 @@ describe("SettingsView OBS 連携", () => {
     );
     // 045b: 「OBS に」→「OBSに」へ表記統一（045a が残した表記ゆれの解消）。検証の意図は不変。
     expect(screen.getByText("OBSに接続しています…")).toBeInTheDocument();
+    // ⚠⚠ 061e(3): 「OBSにコメントを表示しました。」→「OBSに表示しました。」。`obsState` は
+    // comments / pinned / effects の **3 種別で共有**されているので、**エフェクトや固定コメントの成功でも
+    // この文が出る**＝「コメントを」と書くと嘘になる（061a の宿題 (C)）。
     rerender(<SettingsView {...baseProps({ obsState: "added" })} />);
-    expect(
-      screen.getByText("OBSにコメントを表示しました。"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("OBSに表示しました。")).toBeInTheDocument();
     rerender(<SettingsView {...baseProps({ obsState: "reused" })} />);
-    expect(
-      screen.getByText("OBSにコメントを表示しました。"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("OBSに表示しました。")).toBeInTheDocument();
     // 「再利用」という語はユーザーに出さない。
     expect(screen.queryByText(/再利用/)).toBeNull();
+  });
+
+  it("⚠ 061e(3): 成功文言は種別に依存しない（「コメント」を含まない）", () => {
+    // ⚠ これが無いと「OBSにコメントを表示しました。」へ書き戻せてしまう（エフェクトの成功で嘘になる）。
+    // ⚠ カード見出し（「OBSに表示」）やトグル label には「コメント」が残っているので、
+    //   **状態表示の要素だけ**を見る（カード全体の textContent では拾えない）。
+    render(<SettingsView {...baseProps({ obsState: "added" })} />);
+    expect(screen.getByText("OBSに表示しました。").textContent).not.toContain(
+      "コメント",
+    );
   });
 
   it("failed は技術エラー（ECONNREFUSED 等）を出さず、平易な確認文だけを出す（§8）", () => {

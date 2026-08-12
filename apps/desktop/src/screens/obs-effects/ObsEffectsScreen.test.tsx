@@ -277,6 +277,72 @@ describe("061a: ObsEffectsScreen", () => {
     expect(container.textContent).toContain("取得を止めたいとき");
   });
 
+  /**
+   * ⚠⚠ 061e(4): 「OBS へ自動で反映」カードの注記が**事実と一致している**こと。
+   *
+   * 旧文は「追加や失敗の結果はコメントビューアの画面上部に表示されます。」だったが、実際にツールバーへ
+   * 出るのは**失敗の赤字だけ**（成功時は何も出ない＝045c が「配信中のツールバーを騒がしくしない」として
+   * 意図的にそう決めている）。全状態が見えるのはコメビュ窓の ⚙設定 →「OBSに表示」カード。
+   * ＝旧文のままだと「成功したはずなのに何も出ない」＝**壊れていると誤解する**。
+   *
+   * 固定する 3 要素（061a レビュー Q-1 の規律＝**約束できることだけ書く**）:
+   *   ①失敗したときだけ赤い文字が出る（成功時は何も出ない）
+   *   ②追加できたかどうかの確認場所（コメビュ窓の設定 →「OBSに表示」）
+   *   ③コメビュ窓を開いていないと反映そのものが行われない
+   */
+  it("⚠⚠ 061e: 注記が「失敗のときだけ赤字・成功は無表示」と書いてある（旧文は嘘だった）", async () => {
+    const { container } = render(<ObsEffectsScreen />);
+    await waitFor(() => expect(autoAddToggle()).toBeInTheDocument());
+
+    // 要素①
+    expect(container.textContent).toContain("失敗したときだけ");
+    expect(container.textContent).toContain("成功したときは何も出ません");
+    // ⚠⚠ **「コメント画面の」という限定まで固定する**（061e レビュー Q-3）。ここが無いと
+    // 「コメントビューアの画面上部に**いつでも**赤い文字が出ます」のような**別の言い回しの嘘**へ
+    // 書き換える変異が**生存する**（実測: 上の部分一致 2 件と旧文の不在 assert だけでは 28/28 緑のまま通った）。
+    // ⚠ 限定が要る理由＝コメビュ窓で設定/視聴者ビューを開いている間はツールバーごと差し替わる
+    //（045c/059a の既知の割り切り）。
+    expect(container.textContent).toContain(
+      "コメントビューアのコメント画面の上部に赤い文字が出ます",
+    );
+    // ⚠ ここが無いと、あの一文を「親切だから」で書き戻せてしまう（嘘の案内が静かに復活する）。
+    expect(container.textContent).not.toContain(
+      "追加や失敗の結果はコメントビューアの画面上部に表示されます",
+    );
+  });
+
+  it("⚠ 061e: 注記に「どこで結果を確認できるか」と「コメビュ窓が要ること」が書いてある", async () => {
+    const { container } = render(<ObsEffectsScreen />);
+    await waitFor(() => expect(autoAddToggle()).toBeInTheDocument());
+
+    // 要素②（全状態が見えるのは設定カードのほう）
+    expect(container.textContent).toContain("「OBSに表示」で確認できます");
+    // 要素③（061a の事実＝`obs-enable` を送れるのはコメビュ窓だけ）
+    expect(container.textContent).toContain(
+      "コメントビューアを開いていないあいだは反映そのものが行われない",
+    );
+  });
+
+  it("⚠⚠ 061e: 注記は常時出る／前提案内の指示文とは重複させない（役割分担の固定）", async () => {
+    // ⚠⚠ **穴 2 の結論をここで固定する。**
+    //   - **注記（常時）** ＝「**結果がどこに出るか**」（このカードの意味論）
+    //   - **前提案内（`viewerOpen === false` のときだけ）** ＝「**いま何が足りないか・どうすればよいか**」
+    // 同じことを 2 か所に別の言葉で載せない（061a Q-1 が戒めた形）ので、注記側には前提案内の
+    // **指示**（「コメントビューアを開くと、そのときに反映されます」）を書かない。
+    mocks.isCommentViewerOpen.mockResolvedValue(true);
+    const { container } = render(<ObsEffectsScreen />);
+    await waitFor(() =>
+      expect(screen.getByText("開いています")).toBeInTheDocument(),
+    );
+
+    // コメビュ窓が開いていても注記は出る（＝常時表示）。
+    expect(container.textContent).toContain("失敗したときだけ");
+    // 前提案内は出ないので、その指示文もこの画面のどこにも無い（＝注記が抱え込んでいない）。
+    expect(container.textContent).not.toContain(
+      "コメントビューアを開くと、そのときに反映されます",
+    );
+  });
+
   it("コメビュ窓が開いているときは案内を出さない", async () => {
     mocks.isCommentViewerOpen.mockResolvedValue(true);
     render(<ObsEffectsScreen />);
