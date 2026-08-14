@@ -284,7 +284,9 @@ describe("EffectTemplateView", () => {
     expect(transform).toContain("translate(-50%, -50%)");
   });
 
-  it("メディアの読み込み失敗を onMediaError で通知する（呼び出し側が組み込みへ落ちるため）", () => {
+  // ⚠ 061h: 呼び出し側の後始末が変わった（エフェクト窓＝**その 1 件を撤去**／
+  //   main 窓のプレビュー＝「読み込めませんでした」を出す）。通知そのものの契約は不変。
+  it("メディアの読み込み失敗を onMediaError で通知する（呼び出し側が後始末をするため）", () => {
     const onMediaError = vi.fn();
     const { container } = render(
       <EffectTemplateView

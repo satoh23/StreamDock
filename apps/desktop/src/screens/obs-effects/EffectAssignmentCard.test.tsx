@@ -13,13 +13,16 @@ import { MONETARY_EVENT_TYPES } from "../comment-viewer/viewerFormat";
 /**
  * 061d-2: イベント種別ごとの割り当て UI の仕様テスト。
  *
- * ⚠⚠ 固定したい不変条件:
+ * ⚠⚠ 固定したい不変条件（⚠ **061h で倒れる向きを反転した**）:
  * - **行は `MONETARY_EVENT_TYPES` から機械的に作られる**（「条件を追加」ボタンを作らない・
  *   7 種別目が増えたら行も増える）。
- * - ⚠⚠ **実在しないテンプレート id は「組み込み」として表示し、警告を出す**（⑪。**「なし」ではない**）。
- * - ⚠⚠ **「すべての割り当てを解除（組み込みに戻す）」が動く**——壊れたテンプレートで配信画面が
+ * - ⚠⚠ **実在しないテンプレート id は「エフェクトを出さない」として表示し、警告を出す**
+ *   （061d-2 は「組み込み」として表示していた。⚠ **判定そのものは残っている**——
+ *   `<select>` の value が選択肢に無いとブラウザが勝手に先頭を選ぶ、という理由は 061h でも生きており、
+ *   **明示的に**落とす先を書く必要がある。061h が変えたのは落とす先だけ）。
+ * - ⚠⚠ **「すべて「表示しない」に戻す」が動く**——壊れたテンプレートで配信画面が
  *   読めなくなったときの**唯一の脱出路**（エフェクト窓は透過・最背面・非フォーカスで操作できない）。
- * - **テンプレート削除で、それを使っている割り当てが組み込みへ戻る**＋確認文にその旨が出る。
+ * - **テンプレート削除で、それを使っている割り当てが「表示しない」へ戻る**＋確認文にその旨が出る。
  *
  * 外部境界（Tauri invoke / dialog）は全てモックして隔離する。
  * **テストは外部通信も OS 操作も一切行わない。**
@@ -77,7 +80,9 @@ function Harness() {
   const templates = useEffectTemplates();
   return (
     <>
-      <EffectTemplateCard {...templates} />
+      {/* ⚠ 061h: `effectWindowOpen`（前提ステータス）は `ObsEffectsScreen` が渡す props。
+          このファイルが見るのは割り当て側なので、値は固定でよい。 */}
+      <EffectTemplateCard {...templates} effectWindowOpen={true} />
       <EffectAssignmentCard {...templates} />
     </>
   );
@@ -119,7 +124,7 @@ describe("EffectAssignmentCard", () => {
     expect(screen.getByText("スーパーチャット・ビッツ")).toBeInTheDocument();
   });
 
-  it("選択肢は「エフェクトを出さない」「組み込み（名前と金額）」＋テンプレート名", async () => {
+  it("⚠⚠ 選択肢は「エフェクトを出さない」＋テンプレート名だけ（061h：組み込みの選択肢を消した）", async () => {
     render(<Harness />);
     await waitFor(() =>
       expect(mocks.listEffectTemplates).toHaveBeenCalledTimes(1),
@@ -127,22 +132,21 @@ describe("EffectAssignmentCard", () => {
     const options = Array.from(
       selectFor("スーパーチャット・ビッツ").options,
     ).map((o) => o.textContent);
-    expect(options).toEqual([
-      "エフェクトを出さない",
-      "組み込み（名前と金額）",
-      "きらきら演出",
-    ]);
+    // ⚠⚠ **「組み込み（名前と金額）」を足し直す変異はここがレッドにする。**
+    expect(options).toEqual(["エフェクトを出さない", "きらきら演出"]);
   });
 
   // --- 既定と保存 -------------------------------------------------------------------------------
 
-  it("⚠⚠ 未保存の既定は全種別「組み込み」（全「なし」だと既存ユーザーのエフェクトが黙って止まる）", async () => {
+  it("⚠⚠ 未保存の既定は全種別「エフェクトを出さない」（061h：割り当てるまで何も出ない）", async () => {
+    // ⚠⚠ **061h の本命。** 061d-2 はここが全種別「組み込み」で、
+    //   **条件を 1 つも設定していない状態で投げ銭が来ると演出が出た**（＝運用と真逆）。
     render(<Harness />);
     await waitFor(() =>
       expect(mocks.listEffectTemplates).toHaveBeenCalledTimes(1),
     );
     for (const select of screen.getAllByRole("combobox")) {
-      expect((select as HTMLSelectElement).value).toBe("builtin");
+      expect((select as HTMLSelectElement).value).toBe("none");
     }
   });
 
@@ -160,18 +164,29 @@ describe("EffectAssignmentCard", () => {
     });
   });
 
-  it("「エフェクトを出さない」を選ぶと保存される", async () => {
+  it("「エフェクトを出さない」へ戻すと保存される", async () => {
+    // ⚠ 061h: 既定が「出さない」になったので、**まずテンプレートを選んでから**戻す
+    //   （既定のまま「出さない」を選んでも保存キーごと消える＝未保存と同じ状態に潰れる）。
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify({
+        subscription: { kind: "template", templateId: TEMPLATE_ID },
+        gift: { kind: "template", templateId: TEMPLATE_ID },
+      }),
+    );
     render(<Harness />);
     await waitFor(() =>
       expect(mocks.listEffectTemplates).toHaveBeenCalledTimes(1),
     );
     fireEvent.change(selectFor("サブスク"), { target: { value: "none" } });
     expect(stored().subscription).toEqual({ kind: "none" });
+    // ⚠ 他の行は巻き添えにしない。
+    expect(stored().gift).toEqual({ kind: "template", templateId: TEMPLATE_ID });
   });
 
   // --- ⑪: 実在しない id ------------------------------------------------------------------------
 
-  it("⚠⚠ 実在しないテンプレート id の行は「組み込み」として表示し、警告を出す（「なし」ではない）", async () => {
+  it("⚠⚠ 実在しないテンプレート id の行は「出さない」として表示し、警告を出す（061h で反転）", async () => {
     localStorage.setItem(
       EFFECT_ASSIGNMENTS_KEY,
       JSON.stringify({
@@ -182,10 +197,15 @@ describe("EffectAssignmentCard", () => {
     await waitFor(() =>
       expect(mocks.listEffectTemplates).toHaveBeenCalledTimes(1),
     );
-    // ⚠⚠ **「なし」へ倒す変異はこの 1 行がレッドにする。**
-    expect(selectFor("スーパーチャット・ビッツ").value).toBe("builtin");
+    // ⚠⚠ **「組み込み」へ倒す変異はこの 1 行がレッドにする**（061d-2 とは逆向き）。
+    expect(selectFor("スーパーチャット・ビッツ").value).toBe("none");
+    // ⚠⚠ **この警告が、061h で「出さない側へ倒した」ことを観測可能にしている。**
+    //   エフェクト窓は透過・最背面・非フォーカスで何も出せないので、
+    //   「割り当てたのに出ない」に気付ける場所はここしかない（`fire()` の注記が前提として名指ししている）。
     expect(
-      screen.getByText(/割り当てていたテンプレートが見つかりません/),
+      screen.getByText(
+        /割り当てていたエフェクトが見つかりません。いまは何も表示されません。/,
+      ),
     ).toBeInTheDocument();
   });
 
@@ -200,12 +220,12 @@ describe("EffectAssignmentCard", () => {
       }),
     );
     render(<Harness />);
-    expect(screen.queryByText(/割り当てていたテンプレートが見つかりません/)).toBeNull();
+    expect(screen.queryByText(/割り当てていたエフェクトが見つかりません/)).toBeNull();
     // 一覧が届いたあとも（実在する id なので）出ない。
     await waitFor(() =>
       expect(mocks.listEffectTemplates).toHaveBeenCalledTimes(1),
     );
-    expect(screen.queryByText(/割り当てていたテンプレートが見つかりません/)).toBeNull();
+    expect(screen.queryByText(/割り当てていたエフェクトが見つかりません/)).toBeNull();
     expect(selectFor("スーパーチャット・ビッツ").value).toBe(
       `template:${TEMPLATE_ID}`,
     );
@@ -229,10 +249,12 @@ describe("EffectAssignmentCard", () => {
       ).toBeInTheDocument(),
     );
     // ⚠⚠ **`listState` の検査を外す変異は、この 1 行がレッドにする。**
-    expect(screen.queryByText(/割り当てていたテンプレートが見つかりません/)).toBeNull();
-    // ⚠ それでも `<select>` は「組み込み」を指す（選択肢に無い value を渡すと
-    //   ブラウザが先頭の「エフェクトを出さない」を勝手に選んでしまうため）。
-    expect(selectFor("スーパーチャット・ビッツ").value).toBe("builtin");
+    expect(screen.queryByText(/割り当てていたエフェクトが見つかりません/)).toBeNull();
+    // ⚠ それでも `<select>` は明示的に「エフェクトを出さない」を指す（061h）。
+    //   ⚠ **判定（`notInList`）を消してよい、という意味ではない**——選択肢に無い value を渡すと
+    //   ブラウザが**勝手に**先頭を選ぶので、「たまたま先頭が『出さない』だから合っている」状態になる。
+    //   061d-2 の判定はそのまま残し、落とす先だけを変えてある。
+    expect(selectFor("スーパーチャット・ビッツ").value).toBe("none");
   });
 
   it("⚠ 実在しない id を見つけても保存値は書き換えない（一時的な取得失敗で設定が消えない）", async () => {
@@ -252,7 +274,10 @@ describe("EffectAssignmentCard", () => {
 
   // --- 復帰導線 ---------------------------------------------------------------------------------
 
-  it("⚠⚠ 「すべての割り当てを解除（組み込みに戻す）」で全部「組み込み」へ戻る", async () => {
+  it("⚠⚠ 「すべて「表示しない」に戻す」で全部「出さない」へ戻る（復帰導線）", async () => {
+    // ⚠⚠ **061h で文言と戻し先が変わったが、担保は不変**＝ **no-op にする変異でレッドになること**。
+    //   ⚠ むしろ復帰導線としては強くなっている（061d-2 は解除しても組み込みが出続けたので、
+    //   配信画面を完全に静かにするには 6 種別を 1 つずつ「出さない」にするしかなかった）。
     localStorage.setItem(
       EFFECT_ASSIGNMENTS_KEY,
       JSON.stringify({
@@ -270,14 +295,12 @@ describe("EffectAssignmentCard", () => {
     );
 
     fireEvent.click(
-      screen.getByRole("button", {
-        name: "すべての割り当てを解除（組み込みに戻す）",
-      }),
+      screen.getByRole("button", { name: "すべて「表示しない」に戻す" }),
     );
 
     // ⚠⚠ **no-op にする変異はこの 2 つがレッドにする**（画面と保存の両方を見る）。
     for (const select of screen.getAllByRole("combobox")) {
-      expect((select as HTMLSelectElement).value).toBe("builtin");
+      expect((select as HTMLSelectElement).value).toBe("none");
     }
     expect(localStorage.getItem(EFFECT_ASSIGNMENTS_KEY)).toBeNull();
   });
@@ -302,6 +325,23 @@ describe("EffectAssignmentCard", () => {
     ).toBeInTheDocument();
   });
 
+  it("⚠⚠ 061h の移行案内を出す（旧「組み込み」が黙って止まったことに気付ける唯一の場所）", async () => {
+    // ⚠⚠ **061h レビュー Q-8 で足した回帰。** 旧版の `{"kind":"builtin-monetary"}` は
+    //   `parseAssignment` が**未知 kind として「出さない」へ倒す**ので、更新したユーザーは
+    //   自分で変えた覚えが無いのに何も出なくなる。⚠ しかも `notInList` は
+    //   `kind === "template"` のときしか立たない（旧値はここへ届く前に `{kind:"none"}` へ化ける）ので、
+    //   上の「見つかりません」警告も出ない＝**この 1 文が唯一の気付ける経路**である。
+    // ⚠ 移行の判定コードは書かない方針（＝「未知 kind は安全側へ倒す」を 2 通りに書かない）なので、
+    //   **静的な文**として全ユーザーに出る。⚠ 消してよいのは 061h が十分に行き渡ってから。
+    render(<Harness />);
+    await waitFor(() =>
+      expect(mocks.listEffectTemplates).toHaveBeenCalledTimes(1),
+    );
+    expect(
+      screen.getByText(/以前のバージョンで「組み込み（名前と金額）」のエフェクトを使っていた場合/),
+    ).toBeInTheDocument();
+  });
+
   // --- 削除との連動 -----------------------------------------------------------------------------
 
   it("⚠⚠ 割り当て中のテンプレートを削除すると、確認文にその旨が出る", async () => {
@@ -318,8 +358,9 @@ describe("EffectAssignmentCard", () => {
     fireEvent.click(screen.getByRole("button", { name: "削除" }));
     // ⚠ 行のラベルにも同じ文字列があるので、ダイアログの中に絞って見る。
     const dialog = within(screen.getByRole("dialog"));
+    // ⚠ 061h: 戻し先が変わったので文言も追随する（「組み込みのエフェクトに戻ります」→ これ）。
     expect(
-      dialog.getByText(/組み込みのエフェクトに戻ります/),
+      dialog.getByText(/「表示しない」に戻ります/),
     ).toBeInTheDocument();
     expect(dialog.getByText(/スーパーチャット・ビッツ/)).toBeInTheDocument();
   });
@@ -330,10 +371,10 @@ describe("EffectAssignmentCard", () => {
       expect(mocks.listEffectTemplates).toHaveBeenCalledTimes(1),
     );
     fireEvent.click(screen.getByRole("button", { name: "削除" }));
-    expect(screen.queryByText(/組み込みのエフェクトに戻ります/)).toBeNull();
+    expect(screen.queryByText(/「表示しない」に戻ります/)).toBeNull();
   });
 
-  it("⚠⚠ 削除すると、それを使っていた割り当てが「組み込み」へ戻る", async () => {
+  it("⚠⚠ 削除すると、それを使っていた割り当てが「出さない」へ戻る", async () => {
     localStorage.setItem(
       EFFECT_ASSIGNMENTS_KEY,
       JSON.stringify({
@@ -365,7 +406,7 @@ describe("EffectAssignmentCard", () => {
       expect(mocks.deleteEffectTemplate).toHaveBeenCalledWith(TEMPLATE_ID),
     );
     await waitFor(() =>
-      expect(selectFor("スーパーチャット・ビッツ").value).toBe("builtin"),
+      expect(selectFor("スーパーチャット・ビッツ").value).toBe("none"),
     );
     // ⚠ 別のテンプレートと「出さない」は巻き添えにしない。
     expect(selectFor("メンバーシップ").value).toBe(`template:${TEMPLATE_ID2}`);

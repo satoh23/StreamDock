@@ -139,8 +139,10 @@ export function useEffectTemplates(): UseEffectTemplates {
       setError(null);
       try {
         await deleteEffectTemplate(template.id);
-        // ⚠⚠ **061d-2: 削除したテンプレートを指す割り当てを「組み込み」へ戻す**（⑪）。
-        //   ⚠ **「なし」へ倒さない**——削除の副作用で配信画面のエフェクトが黙って止まるのを避ける。
+        // ⚠⚠ **061h: 削除したテンプレートを指す割り当てを「表示しない」へ戻す。**
+        //   ⚠ 061d-2 は「組み込み」へ戻していた（削除の副作用でエフェクトが黙って止まるのを避けるため）が、
+        //   組み込みを廃止したので戻し先が 1 つしか無い。呼ぶ関数は同じ
+        //   （`clearEffectAssignmentsForTemplate` が `DEFAULT_EFFECT_ASSIGNMENT` を見ている）。
         //   ⚠ **削除が成功した後にだけ書き換える**（失敗したら割り当ては触らない）。
         setAssignments(clearEffectAssignmentsForTemplate(template.id));
         // 消したものをプレビューしたままにしない（取り直しに失敗して "failed" が出るだけになる）。

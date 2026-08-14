@@ -5,6 +5,7 @@ import {
   decideEffects,
   EFFECT_DISPLAY_MS,
   EFFECT_MAX_CONCURRENT,
+  type EffectKindResolver,
   type EffectRequest,
 } from "./effectTrigger";
 
@@ -26,6 +27,27 @@ import {
 
 const T0 = 1_700_000_000_000;
 
+/** テンプレート id（形は問われないが、実物に合わせて uuid の形にしておく）。 */
+const TEMPLATE_ID = "93c76e02-1111-4222-8333-444455556666";
+
+/**
+ * ⚠⚠ **061h: resolver は「省略できる第 5 引数」ではなく必須の引数になった。**
+ *
+ * 061d-2 は `resolveKind: EffectKindResolver = () => BUILTIN_KIND` と**既定つき**にして、
+ * 「061b までの 21 ケースが 1 文字も書き換わらない＝発火判定に手が入っていないことを
+ * `git diff` で示せる」という担保を作っていた。⚠ **061h はその担保を意図的に捨てている**——
+ * 既定が消えると「**割り当てを引かずにエフェクトが出る**」経路が**型として消える**からで、
+ * それが 061h の目的そのものである（判断の全文は docs/progress.md の 061h 節）。
+ * ＝ **下のケースは全部この resolver を明示的に渡す**（＝「何を出すか」を決めているのは
+ * 常に呼び出し側であることが、テストの字面にも現れる）。
+ * ⚠ **ここに既定引数を復活させる変異は「型エラー」で落ちる**（`{ kind: "builtin-monetary" }` は
+ * もう `EffectKind` ではない）。
+ */
+const TPL: EffectKindResolver = () => ({
+  kind: "template",
+  templateId: TEMPLATE_ID,
+});
+
 const comment = (over: Partial<CommentViewDto> = {}): CommentViewDto => ({
   id: "c1",
   source: "youtube",
@@ -44,11 +66,11 @@ const feedOneByOne = (
   state = createEffectTriggerState(),
   at = T0,
 ): EffectRequest[] =>
-  comments.flatMap((c) => decideEffects([c], [], state, at));
+  comments.flatMap((c) => decideEffects([c], [], state, at, TPL));
 
 describe("061b: decideEffects（発火層）", () => {
   it("課金コメントからエフェクトを 1 件出す", () => {
-    const out = decideEffects([comment()], [], createEffectTriggerState(), T0);
+    const out = decideEffects([comment()], [], createEffectTriggerState(), T0, TPL);
     expect(out).toHaveLength(1);
     expect(out[0].name).toBe("視聴者A");
     expect(out[0].amountText).toBe("¥1,000");
@@ -61,6 +83,7 @@ describe("061b: decideEffects（発火層）", () => {
       [],
       createEffectTriggerState(),
       T0,
+      TPL,
     );
     expect(out).toEqual([]);
   });
@@ -80,6 +103,7 @@ describe("061b: decideEffects（発火層）", () => {
       [],
       createEffectTriggerState(),
       T0,
+      TPL,
     );
     expect(out).toHaveLength(1);
     expect(out[0].eventLabel).toBe("ビッツ");
@@ -94,13 +118,13 @@ describe("061b: decideEffects（発火層）", () => {
       monetary: { amount: 30, currency: "JEWELS" },
       comboCount: 5,
     });
-    const out = decideEffects([], [jewels], createEffectTriggerState(), T0);
+    const out = decideEffects([], [jewels], createEffectTriggerState(), T0, TPL);
     expect(out).toEqual([]);
   });
 
   it("⚠ `added` と `updated` に同じものが来ても `added` の 1 件だけ（updated を足し込まない）", () => {
     const jewels = comment({ id: "j1", eventType: "jewels" });
-    const out = decideEffects([jewels], [jewels], createEffectTriggerState(), T0);
+    const out = decideEffects([jewels], [jewels], createEffectTriggerState(), T0, TPL);
     expect(out).toHaveLength(1);
   });
 
@@ -159,6 +183,7 @@ describe("061b: decideEffects（発火層）", () => {
       [],
       state,
       T0,
+      TPL,
     );
     expect(first).toHaveLength(1);
     // ⚠ 畳み込み窓もバースト窓も十分に過ぎた時刻で流す。
@@ -167,6 +192,7 @@ describe("061b: decideEffects（発火層）", () => {
       [],
       state,
       T0 + 60_000,
+      TPL,
     );
     expect(later).toHaveLength(1);
   });
@@ -195,7 +221,7 @@ describe("061b: decideEffects（発火層）", () => {
     );
     feedOneByOne(many, state, T0);
     // ⚠ 窓が明けたあと、**何も新しく届いていない**のにエフェクトが出たら「溜めている」ということ。
-    expect(decideEffects([], [], state, T0 + 60_000)).toEqual([]);
+    expect(decideEffects([], [], state, T0 + 60_000, TPL)).toEqual([]);
   });
 
   it("⚠ 時間窓が明ければまた出せる（永久に止まらない）", () => {
@@ -209,6 +235,7 @@ describe("061b: decideEffects（発火層）", () => {
       [],
       state,
       T0 + EFFECT_DISPLAY_MS,
+      TPL,
     );
     expect(after).toHaveLength(1);
   });
@@ -230,6 +257,7 @@ describe("061b: decideEffects（発火層）", () => {
         [],
         state,
         T0 + EFFECT_DISPLAY_MS - 1,
+        TPL,
       ),
     ).toEqual([]);
   });
@@ -258,6 +286,7 @@ describe("061b: decideEffects（発火層）", () => {
       [],
       state,
       T0 + 3_000,
+      TPL,
     );
     expect(dropped).toEqual([]);
     // バースト枠が明けたあと、同じ人の gift が**出ること**（捨てた分を記録していれば畳まれて出ない）。
@@ -266,6 +295,7 @@ describe("061b: decideEffects（発火層）", () => {
       [],
       state,
       T0 + EFFECT_DISPLAY_MS,
+      TPL,
     );
     expect(after).toHaveLength(1);
   });
@@ -308,9 +338,20 @@ describe("061b: decideEffects（発火層）", () => {
       [],
       createEffectTriggerState(),
       T0,
+      TPL,
     );
+    // ⚠ 061h: 組み込み経路（7 キー）が消え、**常に 8 キー**になった（`templateId` が必ず載る）。
     expect(Object.keys(out[0]).sort()).toEqual(
-      ["amountText", "eventLabel", "id", "kind", "message", "name", "tone"].sort(),
+      [
+        "amountText",
+        "eventLabel",
+        "id",
+        "kind",
+        "message",
+        "name",
+        "templateId",
+        "tone",
+      ].sort(),
     );
     const dump = JSON.stringify(out[0]);
     expect(dump).not.toContain("第三者の自由入力です");
@@ -333,6 +374,7 @@ describe("061b: decideEffects（発火層）", () => {
       [],
       createEffectTriggerState(),
       T0,
+      TPL,
     );
     expect(out[0].amountText).toBeNull();
     expect(out[0].message).toBe("視聴者Aさんがサブスクを3ヶ月継続しました（Tier1）");
@@ -345,6 +387,7 @@ describe("061b: decideEffects（発火層）", () => {
       [],
       createEffectTriggerState(),
       T0,
+      TPL,
     );
     expect(t6[0].tone).toBe("t6");
     const t0 = decideEffects(
@@ -352,13 +395,14 @@ describe("061b: decideEffects（発火層）", () => {
       [],
       createEffectTriggerState(),
       T0,
+      TPL,
     );
     expect(t0[0].tone).toBe("t0");
   });
 
-  it("⚠ 061c/063 への拡張余地として kind を持つ", () => {
-    const out = decideEffects([comment()], [], createEffectTriggerState(), T0);
-    expect(out[0].kind).toBe("builtin-monetary");
+  it("⚠ 063 への拡張余地として kind を持つ（061h 以降の唯一の variant は template）", () => {
+    const out = decideEffects([comment()], [], createEffectTriggerState(), T0, TPL);
+    expect(out[0].kind).toBe("template");
   });
 
   // --- 状態が増え続けないこと ---------------------------------------------------------------------
@@ -378,21 +422,35 @@ describe("061b: decideEffects（発火層）", () => {
     );
     expect(state.lastGiftAt.size).toBeGreaterThan(0);
     // 窓の外の時刻で 1 回呼ぶと掃除される。
-    decideEffects([], [], state, T0 + 60_000);
+    decideEffects([], [], state, T0 + 60_000, TPL);
     expect(state.lastGiftAt.size).toBe(0);
     expect(state.recentFires).toHaveLength(0);
   });
 
   // --- 061d-2: 割り当ての resolver（①・穴 γ） ---------------------------------------------------
   //
-  // ⚠⚠ **上の 21 ケースは 1 文字も書き換えていない。** resolver は**既定つきの第 5 引数**なので、
-  //   061b までの呼び出しは全部「組み込み」のまま動く（＝ `git diff` で「発火判定に手が入っていない」
-  //   ことを示せる）。⚠ キー集合を固定しているケースも、組み込み経路のキーが 7 個のまま変わらないので
-  //   **緑のまま**である（テンプレート経路の 8 キーは下の新規ケースで固定する）。
+  // ⚠⚠ **061h: 上の全ケースへ resolver（`TPL`）を明示的に渡す形へ書き換えた。**
+  //   061d-2 は「既定つきの第 5 引数なので 061b までの 21 ケースが 1 文字も書き換わらない」
+  //   （＝発火判定に手が入っていないことを `git diff` で示せる）という担保を作っていたが、
+  //   **061h はその担保を意図的に捨てている**——既定が消えることで
+  //   「割り当てを引かずにエフェクトが出る」経路が型として消えるほうが価値が高いため。
+  //   ⚠ **発火判定（課金判定・combo 再送・gift 畳み込み・バースト）のロジックは 061h でも 1 行も
+  //   動いていない**。上のケースの差分が `TPL` の 1 引数だけであることが、その代わりの担保になる。
 
-  it("⚠ resolver を省略すると全部「組み込み」（既定引数＝061b までの挙動と同一）", () => {
-    const out = decideEffects([comment()], [], createEffectTriggerState(), T0);
-    expect(out[0].kind).toBe("builtin-monetary");
+  it("⚠⚠ 発火層は「何を出すか」を 1 つも知らない（resolver が返した kind がそのまま載る）", () => {
+    // ⚠ 061h: 既定引数を外したので、**渡した resolver の結果が唯一の答え**になる
+    //   （061d-2 の「省略すると全部『組み込み』」ケースは、この形へ置き換わった）。
+    const out = decideEffects(
+      [comment()],
+      [],
+      createEffectTriggerState(),
+      T0,
+      () => ({ kind: "template", templateId: "0f0e0d0c-1111-4222-8333-444455556666" }),
+    );
+    expect(out[0]).toMatchObject({
+      kind: "template",
+      templateId: "0f0e0d0c-1111-4222-8333-444455556666",
+    });
   });
 
   it("⚠⚠ resolver が null を返す種別は 1 件も出ない（＝エフェクトを出さない）", () => {
@@ -441,7 +499,7 @@ describe("061b: decideEffects（発火層）", () => {
       T0,
       (eventType) => {
         seen.push(eventType);
-        return { kind: "builtin-monetary" };
+        return { kind: "template", templateId: TEMPLATE_ID };
       },
     );
     // ⚠ `displayEventType` を通すと "bits" になるが、`MONETARY_EVENT_TYPES` に "bits" は無い
@@ -494,11 +552,11 @@ describe("061b: decideEffects（発火層）", () => {
 
   it("⚠⚠ 「出さない」種別が枠を食って、出すはずの種別が捨てられることが無い", () => {
     const state = createEffectTriggerState();
-    // 「サブスクは出さない／スーパーチャットは組み込み」という割り当て。
-    const resolve = (eventType: string) =>
+    // 「サブスクは出さない／スーパーチャットはテンプレート」という割り当て。
+    const resolve: EffectKindResolver = (eventType) =>
       eventType === "subscription"
         ? null
-        : ({ kind: "builtin-monetary" } as const);
+        : { kind: "template", templateId: TEMPLATE_ID };
 
     // サブスクをバースト上限より多く流す（全部「出さない」）。
     for (let i = 0; i < EFFECT_MAX_CONCURRENT + 2; i++) {
@@ -533,9 +591,9 @@ describe("061b: decideEffects（発火層）", () => {
       T0,
     );
     expect(out).toHaveLength(EFFECT_MAX_CONCURRENT);
-    // 表示時間ぶん経てば窓が空く（既存の導出は組み込みについては不変）。
+    // 表示時間ぶん経てば窓が空く（バースト窓の値そのものは 061h でも不変）。
     expect(
-      decideEffects([comment({ id: "later" })], [], state, T0 + EFFECT_DISPLAY_MS),
+      decideEffects([comment({ id: "later" })], [], state, T0 + EFFECT_DISPLAY_MS, TPL),
     ).toHaveLength(1);
   });
 });

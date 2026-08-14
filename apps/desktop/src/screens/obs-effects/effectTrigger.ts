@@ -67,8 +67,12 @@ export const EFFECT_MAX_CONCURRENT = 3;
  * ⚠⚠ **画面上の同時表示数を担保しているのは `EffectOverlayApp` の `showEffect` にある
  * `.slice(-EFFECT_MAX_CONCURRENT)` **だけ**である。** ここの値はもう「画面の上限」ではなく、
  * 「**短時間に届いた課金を何件まで拾うか**」という発火側の間引きだけを意味する。
- * ⚠ 由来を残して `EFFECT_DISPLAY_MS` / `EFFECT_MAX_CONCURRENT` から導いているのは、
- * 組み込みエフェクトについては依然この対応が成り立つため（＝値の根拠として妥当）。
+ * ⚠⚠ **061h で最後の対応関係も消えた**——組み込みエフェクトを廃止したので、
+ * 表示時間は**常に `manifest.durationMs`**（500〜15000ms）であり、
+ * `EFFECT_DISPLAY_MS` が実際の表示時間になる経路はもう 1 本も無い。
+ * ＝ ここで `EFFECT_DISPLAY_MS` / `EFFECT_MAX_CONCURRENT` から導いているのは
+ * **「5 秒に 3 件」という間引きの強さの由来を書き残しているだけ**である
+ * （値としては妥当だが、画面の件数とは対応しない）。
  * ⚠ **`EFFECT_MAX_CONCURRENT` は触らない**（061c 申し送り 6・②の結論）。
  */
 const BURST_WINDOW_MS = EFFECT_DISPLAY_MS;
@@ -103,8 +107,13 @@ const GIFT_FOLD_WINDOW_MS = 5_000;
  * ⚠⚠ **061d-2 で「共通部分（[`EffectRequestBase`]）＋ 判別子（[`EffectKind`]）」の合成になった。**
  * 交差型にしてあるのは、**`kind` を見ずに `templateId` を読むコードが書けない**ようにするため
  * （`kind === "template"` で絞って初めて `templateId` が生える）。
- * ⚠ 組み込み経路のキー集合は **7 個のまま変わっていない**ので、061b が固定したキー集合の
- * ケースは**書き換え不要**である（テンプレート経路の 8 キーは別ケースとして足した）。
+ * ⚠⚠ **061h で [`EffectKind`] が 1 本になったので、キー集合は常に 8 個**である
+ * （`{id,name,amountText,message,eventLabel,tone,kind,templateId}`）。061b/061d-2 が
+ * 「組み込み経路は 7 個のまま」と書いていた対比は**もう存在しない**。
+ * ⚠ `tone` は 061h の時点で**描画側の読み手が居ない**（組み込みカードの配色に使っていた）。
+ * それでも残しているのは ①`EffectRequestBase` を削らないという 061h の指定 ②061k の
+ * ステージ窓・063 のガチャが同じ配色表に乗る余地、の 2 点による。
+ * **再修正トリガー＝ 061k / 063 が終わっても読み手が現れなかったとき**（そのとき落とす）。
  */
 export type EffectRequest = EffectRequestBase & EffectKind;
 
@@ -116,15 +125,16 @@ export type EffectRequest = EffectRequestBase & EffectKind;
  * 「出すのに要る最小限」ではなくなり、061b が型で作った §9 の担保（持ち回るものを増やさない）が緩む。
  * 割り当ての解決は**この union を返す resolver** が担い、結果だけがここに載る。
  *
- * ⚠ **063（ガチャ）は 3 本目の variant として乗る**（`{ kind: "gacha"; … }`）。
+ * ⚠⚠ **061h で `{ kind: "builtin-monetary" }` を削り、variant は 1 本になった。**
+ * 組み込み意匠（061b の「〇〇さんが ¥1,000」）は**完全に廃止**である——エフェクトは
+ * 各々が使いたいものを取り込んで割り当てる、という運用に対して、
+ * 「未設定・不正・壊れたメディアがすべて組み込みへ倒れる」形が真逆だったため
+ * （判断の全文は docs/progress.md の 061h 節）。
+ * ⚠ **union のまま残してある**（`{ kind: "template"; … }` を裸で書かない）のは、
+ * 063（ガチャ）が `{ kind: "gacha"; … }` を **2 本目**として足すため。
  * そのとき `EffectOverlayApp` の描画分岐と `effectAssignments.ts` の検証表に 1 行ずつ足すことになる。
  */
-export type EffectKind =
-  | { kind: "builtin-monetary" }
-  | { kind: "template"; templateId: string };
-
-/** 組み込み意匠（061b の「〇〇さんが ¥1,000」）。⚠ **resolver 省略時の既定**でもある。 */
-const BUILTIN_KIND: EffectKind = { kind: "builtin-monetary" };
+export type EffectKind = { kind: "template"; templateId: string };
 
 /**
  * 061d-2: イベント種別 → **どのエフェクトで出すか**を決める関数（`null` ＝ **1 件も出さない**）。
@@ -193,8 +203,8 @@ function toEffectRequest(c: CommentViewDto, kind: EffectKind): EffectRequest {
     message: composeEventMessage(c),
     eventLabel: eventLabel(displayEventType(c)),
     tone: monetaryTone(c),
-    // ⚠ 061d-2: 割り当ての解決結果をそのまま載せる（`kind` の 1 フィールド、または
-    //   `kind` ＋ `templateId` の 2 フィールドになる）。判定は resolver の責務で、ここでは分岐しない。
+    // ⚠ 061d-2: 割り当ての解決結果をそのまま載せる（061h 以降は `kind` ＋ `templateId` の
+    //   2 フィールド）。判定は resolver の責務で、ここでは分岐しない。
     ...kind,
   };
 }
@@ -207,9 +217,14 @@ function toEffectRequest(c: CommentViewDto, kind: EffectKind): EffectRequest {
  * @param state   時間窓の状態（`createEffectTriggerState` で作る）
  * @param now     現在時刻(ms)。⚠ **引数で受ける**ので本関数は決定的（テストで時計を偽装しなくてよい）
  * @param resolveKind 061d-2: イベント種別 → **どのエフェクトで出すか**（`null` ＝ 出さない）。
- *   ⚠⚠ **既定つき**にしてあるので、割り当てを持たない呼び出し（＝061b までの 21 ケースすべて）は
- *   **1 文字も書き換えずに全部「組み込み」のまま**動く。これが「発火判定に手が入っていない」ことを
- *   `git diff` で示せる形である（①）。
+ *   ⚠⚠ **061h で既定値を外し、必須にした。** 061d-2 はここを
+ *   `resolveKind: EffectKindResolver = () => BUILTIN_KIND` と既定つきにして
+ *   「061b までの 21 ケースが 1 文字も書き換わらない＝発火判定に手が入っていないことを
+ *   `git diff` で示せる」という担保を作っていたが、**それは 061d-2 のレビューのための足場**であり、
+ *   役目は終わっている。⚠⚠ **既定を外したことで「割り当てを引かずにエフェクトが出る」経路が
+ *   型として消えた**——本関数は「何を出すか」を**自分では 1 つも知らない**ので、
+ *   呼び出し側が resolver を渡さない限り 1 件も発火しない。これが 061h の目的そのものである。
+ *   ⚠ **ここに既定値を書き戻さないこと**（書き戻した瞬間に、割り当てを無視して出る経路が復活する）。
  *
  * 塞いでいる多重発火は 3 経路:
  * 1. **[043e] Jewels の combo 再送** … `updated` から出さない（下記）。
@@ -221,7 +236,7 @@ export function decideEffects(
   updated: CommentViewDto[],
   state: EffectTriggerState,
   now: number,
-  resolveKind: EffectKindResolver = () => BUILTIN_KIND,
+  resolveKind: EffectKindResolver,
 ): EffectRequest[] {
   // ⚠⚠ **`updated` は意図的に 1 件も読まない。** [043e] の Jewels は「別メッセージが N 件届く」のではなく
   // 「**同じ 1 件が N 回更新される**」（公式 proto に "For giftEvents, the same ID may be reused to update

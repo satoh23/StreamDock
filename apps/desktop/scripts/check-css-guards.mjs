@@ -1969,35 +1969,34 @@ for (const rel of [VIEWER_CSS, OVERLAY_CSS]) {
   }
 }
 
-// (10-r) **エフェクト窓の 2 層の位置指定は意匠ではなく要件**（061d-2・穴 δ / 061d-1 レビュー Q-6）。
+// (10-r) **エフェクト窓のテンプレート層の位置指定は意匠ではなく要件**（061d-2・穴 δ / 061d-1 レビュー Q-6）。
 //   `EffectTemplateView` の器は `position: absolute; inset: 0` なので、置き場所を間違えると
-//   **縦積みの箱（padding / gap を持つ `.effectStack`）を無視して飛び出す**。061d-2 は
-//   「テンプレート専用の絶対配置層を作り、`.root` に基準を明示する」ことでこれを構造的に回避したが、
-//   ⚠⚠ **その担保は CSS 側の 3 ルールに乗っている**:
+//   **padding / gap を持つ箱を無視して飛び出す**。061d-2 は
+//   「テンプレート専用の絶対配置層を作り、`.root` に基準を明示する」ことでこれを構造的に回避した。
+//   ⚠⚠ **その担保は CSS 側の 2 ルールに乗っている**:
 //     - `.root` の `position: relative` … 無いと `.templateLayer` の基準が初期包含ブロック
 //       （＝窓）になり、`.root` に padding / margin が入った瞬間にずれる
 //     - `.templateLayer` の `position: absolute; inset: 0` … これ自身が子の包含ブロックになる
-//     - `.effectStack` の `position: relative; z-index: 1` … **組み込みを手前**にする
-//       （情報が装飾に隠されない／フォールバック先が下敷きにならない）
-//   ⚠⚠ **jsdom はカスケードもレイアウトも解決しない**ので、DOM 構造（テンプレートが縦積みの外に
-//   あること）は `EffectOverlayApp.test.tsx` が固定できても、**CSS だけを壊す変更は 1 件も止まらない**
+//   ⚠⚠ **061h で `.effectStack`（組み込みカードの縦積み）の 2 検査を落とした。** 組み込み意匠を
+//   廃止して**層が 1 枚になった**ので、「組み込みを手前に出す（`position: relative; z-index: 1`）」
+//   という前後関係の担保は**守る対象そのものが無くなった**（061d-2 の穴 δ の論点は解消ではなく消滅）。
+//   ⚠ 残る 2 ルールは 061h でも**そのまま生きている**（テンプレート層の基準は依然この 2 つ）。
+//   ⚠⚠ **jsdom はカスケードもレイアウトも解決しない**ので、DOM 構造は
+//   `EffectOverlayApp.test.tsx` が固定できても、**CSS だけを壊す変更は 1 件も止まらない**
 //   （061d-2 のミューテーションで実測＝10 件中この 1 件だけが SURVIVED した）。
-//   ⚠ 値そのもの（`z-index` が 1 か 2 か）は問わない。**前後関係が生きているか**だけを見る。
 {
   const effectCss = read(EFFECT_OVERLAY_CSS);
   const expectations = [
     [".root", "position", "relative", "テンプレート層の基準（無いと窓に解決される）"],
-    [".templateLayer", "position", "absolute", "テンプレートを縦積みの外へ出す層"],
+    [".templateLayer", "position", "absolute", "テンプレートを通常フローの外へ出す層"],
     [".templateLayer", "inset", "0", "層を窓いっぱいに広げる（`EffectTemplateView` の器の基準）"],
-    [".effectStack", "position", "relative", "`z-index` を効かせるための位置指定"],
-    [".effectStack", "z-index", "[1-9]", "組み込みを絶対配置のテンプレート層より手前に出す"],
   ];
   for (const [selector, prop, valuePattern, role] of expectations) {
     const body = ruleBody(effectCss, selector);
     if (body === null) {
       fail(
         `${EFFECT_OVERLAY_CSS}: \`${selector}\` の規則が見つかりません（061d-2・(10-r)）。` +
-          `この 3 ルールでエフェクト窓の 2 層（テンプレート＝背面の絶対配置層／組み込み＝手前の縦積み）が` +
+          `この 2 ルールでエフェクト窓のテンプレート層（\`.root\` を基準にした絶対配置層）が` +
           `成立しています。`,
       );
       continue;
@@ -2005,10 +2004,11 @@ for (const rel of [VIEWER_CSS, OVERLAY_CSS]) {
     if (!hasDecl(body, prop, valuePattern)) {
       fail(
         `${EFFECT_OVERLAY_CSS}: \`${selector}\` の \`${prop}\`（${role}）がありません（061d-2・(10-r)）。` +
-          `⚠ これは意匠ではなく **061d-1 レビュー Q-6 の罠（\`inset:0\` の層が縦積みの箱を突き抜ける）を` +
+          `⚠ これは意匠ではなく **061d-1 レビュー Q-6 の罠（\`inset:0\` の層が箱を突き抜ける）を` +
           `回避している構造**です。⚠ **jsdom はレイアウトを解決しないので、ここを外す変更を止められるのは` +
           `この検査だけ**（コンポーネントテストは全部緑のまま通ります）。` +
-          `判断の全文は \`EffectOverlayApp.module.css\` の各ルールの注記と docs/progress.md の 061d-2 節が正。`,
+          `判断の全文は \`EffectOverlayApp.module.css\` の各ルールの注記と docs/progress.md の` +
+          ` 061d-2 節（＋層が 1 枚になった経緯は 061h 節）が正。`,
       );
     }
   }

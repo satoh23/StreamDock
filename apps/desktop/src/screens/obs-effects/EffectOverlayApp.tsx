@@ -3,7 +3,6 @@ import { connectCommentStream } from "../../features/comment-viewer/commentStrea
 import {
   EFFECT_ASSIGNMENTS_KEY,
   EFFECT_TEST_FIRE_KEY,
-  loadEffectMonetaryEnabled,
   loadEffectOverlayGuidePending,
   saveEffectOverlayGuidePending,
 } from "../../features/comment-viewer/overlaySettings";
@@ -11,9 +10,9 @@ import {
   listEffectTemplates,
   type EffectTemplateRecord,
 } from "../../features/obs-effects/effectTemplateApi";
-import { OVERLAY_TONE_CLASS } from "../comment-viewer/monetaryTone";
 import {
   assignedTemplateIds,
+  isEffectTemplateId,
   loadEffectAssignments,
   resolveEffectKind,
 } from "./effectAssignments";
@@ -88,14 +87,18 @@ const SETUP_GUIDE_VISIBLE_MS = 30_000;
 const SEEN_EFFECT_IDS_MAX = 500;
 
 /**
- * 061b: **テスト発火で出す固定ダミー**（`ObsEffectsScreen` の「テスト表示」ボタン用）。
+ * 061b: **テスト表示で出す固定ダミー**（main 窓のテンプレート行の「配信画面でテスト表示」用）。
  *
- * ⚠⚠ **中身をここに置くのが要点。** main 窓が localStorage へ書くのは**nonce だけ**で、
- * エフェクトの内容は 1 バイトも載らない（＝**第三者のデータが localStorage を経由しない**・§9）。
+ * ⚠⚠ **中身をここに置くのが要点。** main 窓が localStorage へ書くのは
+ * **nonce と テンプレート id だけ**で、エフェクトの内容（名前・金額・種別ラベル）は 1 バイトも載らない
+ * （＝**第三者のデータが localStorage を経由しない**・§9。061h の判断は
+ * `EFFECT_TEST_FIRE_KEY` の JSDoc が正）。
  * ⚠ `tone` は `t3`（¥1,000〜の黄）＝実際のスパチャで最も見る帯に合わせてある。
  *
- * ⚠ **061d-2 で `kind` を外して「ベース」にした**（⑧）。どのエフェクトで出すかは
- * 発火のたびに割り当てから解決する（下のテスト発火の effect）。
+ * ⚠ **061d-2 で `kind` を外して「ベース」にした**（⑧）。
+ * ⚠⚠ **061h で「どれを出すか」の決め方が変わった**——061d-2 は
+ * `resolveEffectKind("superchat") ?? { kind: "builtin-monetary" }` と**割り当てから解決**していたが、
+ * いまは **wire で受け取った `templateId` をそのまま使う**（＝押した行のテンプレートが出る）。
  * ⚠ **中身（名前・金額・種別ラベル・tone）は 1 文字も変えていない。**
  */
 const TEST_FIRE_REQUEST_BASE = {
@@ -119,11 +122,20 @@ interface ShownTemplate {
   media: SafeEffectMedia;
 }
 
-/** 画面に出ている 1 件。⚠ `template === null` ＝ **組み込み意匠で出ている**（フォールバック後も含む）。 */
+/**
+ * 画面に出ている 1 件。
+ *
+ * ⚠⚠ **061h で `template` が非 null になった。** 061d-2 は `ShownTemplate | null` で、
+ * `null` ＝「組み込み意匠で出ている（フォールバック後も含む）」を表していたが、
+ * 組み込みを廃止したので**テンプレートを伴わない表示中エフェクトは存在しない**。
+ * ＝ **`showEffect(request, null)`（＝材料が無くても出し切る）を型として書けなくした**のが要点で、
+ * これは「割り当てを引かずにエフェクトが出る経路を型で消す」という 061h の目的の一部である。
+ * ⚠ **ここを `| null` に戻さないこと**（戻した瞬間に「何も描かない要素が枠を 1 つ食う」形が作れる）。
+ */
 interface ShownEffect {
   key: number;
   request: EffectRequest;
-  template: ShownTemplate | null;
+  template: ShownTemplate;
 }
 
 /**
@@ -133,7 +145,8 @@ interface ShownEffect {
  * `effect_template/manifest.rs` で、TS 側へ数字を写すと必ず片方が古くなる
  * （`effectMedia.ts` が長さ上限を持たないのと同じ理由）。ここで見るのは
  * **`setTimeout` を壊さないこと**だけ＝ `NaN` を渡すと**即座に発火して一瞬で消える**ので、
- * 有限の正数でなければ組み込みと同じ既定へ落とす。
+ * 有限の正数でなければ `EFFECT_DISPLAY_MS` へ落とす
+ * （⚠ 061h で組み込みが消えたので、この既定は**壊れた `durationMs` の受け皿専用**になった）。
  *
  * ⚠ **061d-2 レビュー Q-5: 上限側も同じ症状を持つ。** `setTimeout` の遅延は 32bit に丸められるので、
  * `2^31-1` を超える値は**オーバーフローして即座に発火する**（＝`NaN` と見分けがつかない壊れ方）。
@@ -142,8 +155,8 @@ interface ShownEffect {
  */
 /** `setTimeout` が 32bit に丸めずに扱える最大の遅延（これを超えると即時発火する）。 */
 const MAX_TIMEOUT_MS = 2_147_483_647;
-const effectDurationMs = (record: EffectTemplateRecord | undefined): number => {
-  const declared = record?.durationMs;
+const effectDurationMs = (record: EffectTemplateRecord): number => {
+  const declared = record.durationMs;
   return typeof declared === "number" &&
     Number.isFinite(declared) &&
     declared > 0 &&
@@ -236,7 +249,21 @@ const effectDurationMs = (record: EffectTemplateRecord | undefined): number => {
  *     ⚠ **発火の瞬間に `get_effect_template_media` を呼ばない**（061c 申し送り 6・実機確認⑧）
  *   - **2 層の描画**＝テンプレートは絶対配置層、組み込みは従来の縦積み（⑥）
  *   - **per-effect の撤去タイマー**（②）と **`<audio>` 1 本**（穴 ε）
- *   - **テスト発火の割り当て反映**（⑧。⚠ 「出さない」でも組み込みで必ず出す）
+ *   - **テスト発火の割り当て反映**（⑧）
+ *
+ * ## ⚠⚠ 061h でこの窓から「組み込み意匠」が消えた
+ *
+ * この窓が描くのは**取り込んだテンプレートだけ**になった。反転した 3 つの判断:
+ *   1. **`onComments` 先頭の `if (!loadEffectMonetaryEnabled()) return;` を削除**——
+ *      発火するかどうかの関門を **`resolveEffectKind` 1 つに一本化**する（二重の関門を残さない。
+ *      061b は「表示・投げ銭・割り当て」で ON/OFF の軸が 3 つに割れており、
+ *      どれか 1 つ忘れると**黙って何も出ない**のが実機で破綻していた最大の原因だった）。
+ *   2. **`fire()` のフォールバック除去**（穴 β 案 (c) の反転）——材料が揃わなければ
+ *      **その 1 件は出さない**（温め直しだけ走らせる）。⚠ 出ないことは main 窓の警告で見える。
+ *   3. **`handleMediaError` は組み込みへ落とさず、その 1 件を撤去する**。
+ *      ⚠ **音は止めない**（061d-2 の「音と映像は独立」を据え置く。撤去タイマーが来れば自然に止まる）。
+ * さらに **テスト表示が「押した行のテンプレートを出す」**へ変わり、
+ * `?? { kind: "builtin-monetary" }` という特例（穴 η）は**特例ごと消えた**。
  *
  * ⚠ **足さないもの**: エラー表示・再試行の可視化（この窓に何かを出せば OBS にそのまま映る）／
  *   `console.*`（§9・eslint の `no-console`）／テンプレートの取り込み・削除（main 窓の役目）。
@@ -303,8 +330,8 @@ export function EffectOverlayApp() {
   const missHandledRef = useRef<Set<string>>(new Set());
 
   /**
-   * 061b: エフェクトを 1 件出す。表示時間は **1 件ごと**（②）＝ テンプレートは `durationMs`、
-   * 組み込みは `EFFECT_DISPLAY_MS`。
+   * 061b: エフェクトを 1 件出す。表示時間は **1 件ごと**（②）＝ `durationMs`
+   * （壊れた値のときだけ `EFFECT_DISPLAY_MS` へ落とす）。
    *
    * ⚠⚠ **キューに溜めない**（`EFFECT_MAX_CONCURRENT` を超える分は末尾を捨てる）。
    * ⚠⚠ **061d-2 以降、画面上の同時表示数を担保しているのはこの `.slice` だけである**——
@@ -316,28 +343,28 @@ export function EffectOverlayApp() {
    * どちらも読めない（`SETUP_GUIDE_VISIBLE_MS` による自動消灯は fail-safe としてそのまま残す）。
    */
   const showEffect = useCallback(
-    (request: EffectRequest, template: ShownTemplate | null) => {
+    (request: EffectRequest, template: ShownTemplate) => {
       const key = nextKeyRef.current++;
       setGuideVisible(false);
       setEffects((prev) =>
         [...prev, { key, request, template }].slice(-EFFECT_MAX_CONCURRENT),
       );
-      // ⚠ 音源を持つテンプレートのときだけ差し替える（＝組み込みは前の音を止めない）。
+      // ⚠ 音源を持つテンプレートのときだけ差し替える（＝音の無いテンプレートは前の音を止めない）。
       // ⚠ **061d-2 レビュー Q-10（受容・修正不要）**: `.slice` で画面から押し出された 1 件の音は、
       //   **そのエフェクト自身の撤去タイマーが来るまで鳴り続ける**（次に鳴るのは「音つきの新しい
-      //   テンプレート」が出たときだけなので、組み込みが 3 件続くと映像だけ先に消える）。
+      //   テンプレート」が出たときだけなので、音の無いテンプレートが 3 件続くと映像だけ先に消える）。
       //   直さない理由＝ ①音と映像を独立させる方針（`handleMediaError` が音を止めないのと同じ向き）
       //   ②押し出しは「短時間に大量に届いた」ときだけで、その状況では音を途中で切るほうが
       //   ぶつ切りに聞こえる。**再修正トリガー＝実機確認 11 で「消えたエフェクトの音が残って気持ち悪い」
       //   となったとき**（そのときは `.slice` で落ちた key の音も止める）。
-      const src = template?.media.sound;
+      const src = template.media.sound;
       if (src !== undefined) setSound({ key, src });
       const timer = window.setTimeout(() => {
         expireTimersRef.current.delete(timer);
-        // ⚠ **通し番号で消す**（id で消すとテスト発火の固定 id が連打で衝突し、まとめて消える）。
+        // ⚠ **通し番号で消す**（id で消すとテスト表示の固定 id が連打で衝突し、まとめて消える）。
         setEffects((prev) => prev.filter((e) => e.key !== key));
         setSound((prev) => (prev?.key === key ? null : prev));
-      }, effectDurationMs(template?.record));
+      }, effectDurationMs(template.record));
       expireTimersRef.current.add(timer);
     },
     [],
@@ -347,7 +374,8 @@ export function EffectOverlayApp() {
    * 061d-2: **レコード一覧だけ**を取り直す（メディアは触らない＝軽い）。
    *
    * ⚠ **失敗しても何も表示しない**（この窓に出したものは OBS にそのまま映る）。
-   * 壊れ方は「その間はテンプレートではなく組み込みで出る」に留まる。
+   * ⚠ 061h 以降、壊れ方は「**その間はエフェクトが出ない**」である
+   * （061d-2 の「テンプレートではなく組み込みで出る」ではない）。
    */
   const refreshRecords = useCallback(async () => {
     try {
@@ -364,8 +392,9 @@ export function EffectOverlayApp() {
    * ⚠⚠ **温めるのは「割り当てに出てくる id」だけ**（最大 6 件・通常 1〜2 件）。一覧の全テンプレートを
    * 読むと、20MiB の予算を配信に出す予定のないもので使い切る。
    * ⚠ **`storage` はキャッシュを温めるだけ**（061b と同じ位置づけ）。窓跨ぎ伝播はベストエフォートだが、
-   * 届かなくても壊れ方は「そのテンプレートの初回だけ組み込みで出る」に留まる
-   * ——**割り当てそのものは発火時に localStorage を直接読む**ので必ず届く。
+   * 届かなくても壊れ方は「そのテンプレートの**初回だけ出ない**」に留まる（061h で反転。
+   * 061d-2 は「初回だけ組み込みで出る」だった）——**割り当てそのものは発火時に
+   * localStorage を直接読む**ので必ず届く。
    */
   const warmTemplates = useCallback(async () => {
     const cache = cacheRef.current;
@@ -380,7 +409,7 @@ export function EffectOverlayApp() {
     // ⚠ **061d-2 レビュー Q-11（受容・修正不要）**: `wanted` は「一覧に載っている id」で絞るので、
     //   061c の「読めない行は黙って落とす」に当たると**温め済みのキャッシュも捨てる**
     //   ——保存値は書き換えないのに、キャッシュは捨てるという非対称になっている。
-    //   直さない理由＝ 壊れ方が「次の 1 回だけ組み込みで出る」に留まり（`handleCacheMiss` が
+    //   直さない理由＝ 壊れ方が「次の 1 回だけ出ない」に留まり（`handleCacheMiss` が
     //   1 回だけ取り直す）、逆に「一覧に無い id を温め続ける」ほうが 20MiB の予算を
     //   読めないテンプレートで抱え込む。**再修正トリガー＝一覧が間欠的に行を落とす事象が実機で出たとき。**
     cache.retain(wanted);
@@ -406,43 +435,131 @@ export function EffectOverlayApp() {
   );
 
   /**
-   * 061d-2: `EffectRequest` を 1 件出す。**割り当ての解決結果（`kind`）に従って層を選ぶ。**
+   * 061d-2: `EffectRequest` を 1 件出す。**材料（レコード＋メディア）が揃っているときだけ出す。**
    *
-   * ⚠⚠ **テンプレートの材料が揃っていなければ組み込みで出し切る**（穴 β の案 (c)）。
-   * 「無反応」にはしない——配信中に何も出ないより、素の表示でも出るほうがよい
-   * （`effectMedia.ts` が引いた線と同じ）。
+   * ⚠⚠ **061h: 穴 β の案 (c)（＝材料が無ければ組み込みで出し切る）を反転した。**
+   * 061d-2 は「配信中に何も出ないより、素の表示でも出るほうがよい」として
+   * `showEffect(request, null)` で必ず出していた（`effectMedia.ts` が引いた線と同じ向き）。
+   * ⚠ **いまは「その 1 件は出さない」**。理由は 2 つ:
+   *   1. 組み込み意匠そのものを廃止したので、**出すとしたら何を出すのかが存在しない**。
+   *   2. 運用が「使いたいものを取り込んで割り当てる」に固まった以上、
+   *      **頼んでいない演出が出るほうが、出ないことより害が大きい**。
+   *
+   * ⚠⚠ **反転の理由は上の 2 点であって「出ないことが観測できるから」ではない**
+   * （061h レビューでの是正・2026-08-14）。main 窓の `EffectAssignmentCard` は
+   * 「割り当てていたエフェクトが見つかりません。いまは何も表示されません。」を出す（(5)）が、
+   * ⚠⚠ **あの警告の条件は `notInList`＝「main 窓の一覧にその id が無い」だけ**なので、
+   * **無音になる 5 経路のうち 1 つしかカバーしていない**:
+   *   - (a) 割り当て先が削除済み／一覧に無い … ✅ 警告が出る
+   *   - (b) 一覧には在るが `safeEffectMedia` に弾かれる … ❌ 警告なし・`failed` に載る
+   *   - (c) `get_effect_template_media` が一時的に失敗 … ❌ 警告なし・`failed` に載る
+   *   - (d) 描画時のデコード失敗（[`handleMediaError`]） … ❌ 警告なし・`markFailed`
+   *   - (e) 先読み前の初回発火 … ❌ 警告なし。⚠ ただし**2 件目から出る**（自己回復する）
+   * ⚠⚠ **(b)(c)(d) は `warmTemplates`（割り当ての `storage` か窓のマウント）まで無音のままである**
+   * ——061d-2 は同じ失敗が「組み込みが出る」に倒れており、少なくとも配信画面上で異常が見えていた。
+   * **その可視化は 061h で失われ、代替は (a) にしか用意していない**（受容。判断の全文は
+   * docs/progress.md の 061h 節「⚠ 固定できていないもの」）。
+   * **再修正トリガー＝実機で「割り当てたのに出ない」が起きたとき**——そのときは
+   * `failed` / `missHandledRef` の解除契機を増やす（テスト表示の `storage` でも `missHandledRef` を
+   * 捨てる等）か、main 窓側で割り当て済みテンプレートのメディアが読めるかを検証して警告に載せる
+   * （どちらも 061i の「条件が 1 つでも有効なら窓を開く」と同時にやるのが安い）。
+   * ⚠ **`handleCacheMiss` は残す**（＝次回に備えて温める）。ここを一緒に消すと
+   * 「一度冷えたら二度と出ない」になる。
+   * ⚠ **ここで `await` しない**（＝発火の瞬間に IPC を呼ばない・061c 申し送り 6／実機確認⑧）。
    */
   const fire = useCallback(
     (request: EffectRequest) => {
-      if (request.kind === "template") {
-        const record = recordsRef.current.get(request.templateId);
-        const media = cacheRef.current.get(request.templateId);
-        if (record !== undefined && media !== undefined) {
-          showEffect(request, { record, media });
-          return;
-        }
+      const record = recordsRef.current.get(request.templateId);
+      const media = cacheRef.current.get(request.templateId);
+      if (record === undefined || media === undefined) {
         handleCacheMiss(request.templateId);
+        return;
       }
-      showEffect(request, null);
+      showEffect(request, { record, media });
     },
     [showEffect, handleCacheMiss],
   );
 
   /**
-   * 061d-2: メディアのデコードに失敗した 1 件を**組み込み意匠へ落とす**。
+   * 061d-2 / 061h: メディアのデコードに失敗した 1 件を**画面から撤去する**。
    *
    * ⚠ ガードを通った data URI でもデコードは失敗しうる（マジックバイトは通るが途中で切れた
-   * WebM / APNG 等）。⚠ **main 窓のプレビューとは目的が違う**——あちらは「壊れている事実を見せる」、
-   * こちらは「配信中に無反応にしない」。
-   * ⚠ 音は止めない（音源は別ストリームで、`effectMedia.ts` が「音が鳴らないことは配信を壊さない／
-   * エフェクトが出ないことは壊す」と線を引いている。逆向きも同じ理由で独立させる）。
+   * WebM / APNG 等）。
+   * ⚠⚠ **061h で落とし先が変わった**——061d-2 は `{ ...e, template: null }` で組み込み意匠へ
+   * 落としていた（「配信中に無反応にしない」）が、その受け皿が無くなったので**その 1 件を消す**。
+   * ⚠ **main 窓のプレビューとは目的が違う**（あちらは「壊れている事実を見せる」ためにエラー文言を出す。
+   * この窓に何かを出せば OBS にそのまま映るので、ここでは黙って消す）。
+   * ⚠ **音は止めない**（061d-2 の判断を据え置く。音源は別ストリームで、`effectMedia.ts` が
+   * 「音が鳴らないことは配信を壊さない／エフェクトが出ないことは壊す」と線を引いており、
+   * 逆向きも同じ理由で独立させる。⚠ `showEffect` が仕掛けた撤去タイマーは残っているので、
+   * 表示時間が来れば音は自然に止まる＝鳴りっぱなしにはならない）。
    */
   const handleMediaError = useCallback((key: number, templateId: string) => {
     cacheRef.current.markFailed(templateId);
-    setEffects((prev) =>
-      prev.map((e) => (e.key === key ? { ...e, template: null } : e)),
-    );
+    setEffects((prev) => prev.filter((e) => e.key !== key));
   }, []);
+
+  /**
+   * 061h: **テスト表示**（main 窓のテンプレート行のボタン → localStorage → `storage`）。
+   *
+   * ⚠⚠ **`fire()` と分けてあるのが要点。** 本番の発火経路は
+   * 「発火の瞬間に `get_effect_template_media` を呼ばない」（061c 申し送り 6・実機確認⑧の
+   * カクつき対策）を守るため**冷えていたら諦める**が、こちらは**明示操作 1 回**なので
+   * **待ってでも出す**。⚠ そうしないと「取り込んだばかりのテンプレートは、
+   * 1 回目のテスト表示では何も出ず 2 回目から出る」になる——`warmTemplates` が温めるのは
+   * **割り当てに出てくる id だけ**（20MiB の予算をそこへ使う設計）で、
+   * **位置合わせは割り当てより前にやりたい**のが普通だから。
+   * ⚠ 温まっていれば**同期で出す**（`storage` ハンドラから同期で呼ばれる形を保つ）。
+   * ⚠ 失敗（レコードが無い／メディアが読めない）は**黙って何も出さない**（§9・`no-console`）。
+   */
+  const fireTest = useCallback(
+    (templateId: string) => {
+      const request: EffectRequest = {
+        ...TEST_FIRE_REQUEST_BASE,
+        kind: "template",
+        templateId,
+      };
+      const record = recordsRef.current.get(templateId);
+      const media = cacheRef.current.get(templateId);
+      if (record !== undefined && media !== undefined) {
+        showEffect(request, { record, media });
+        return;
+      }
+      void (async () => {
+        // ⚠ **`refreshRecords` は in-flight を畳んでいない**（`prime` は id 単位で畳む）＝
+        //   連打すると押した回数だけ `list_effect_templates` が走る。
+        //   ⚠ **意図して畳んでいない**: ①明示操作なので上限がユーザーの指の速さで、本番経路が
+        //   `missHandledRef` で絞っている「投げ銭のたびに走る」問題とは性質が違う
+        //   ②戻り値は毎回**完全な一覧**なので、どちらが後勝ちしても `recordsRef` の中身は同じ
+        //   （競合しても壊れない）③重いのはメディア側で、そちらは `prime` が畳む。
+        //   **再修正トリガー＝一覧の取得が重くなったとき**（＝ DTO にメディアやサムネイルが載ったとき）。
+        if (!recordsRef.current.has(templateId)) await refreshRecords();
+        const found = recordsRef.current.get(templateId);
+        if (found === undefined) return;
+        // ⚠ 一度失敗した id は `prime` が再挑戦しないので、ユーザーの明示操作では失敗を忘れる
+        //   （`warmTemplates` が割り当て変更時に `clearFailures` するのと同じ考え方）。
+        // ⚠⚠ **これは「その id だけ」ではなく全 id の失敗記録を消す**（`EffectMediaCache` に
+        //   id 単位の解除 API が無いため）。⚠ **広いままにしてある**理由は 2 つ:
+        //   ①実害＝他 id が次に `prime` される機会（`warmTemplates` / `handleCacheMiss`）で
+        //   高々 1 度だけ取り直すことだけで、`handleCacheMiss` は `missHandledRef` が絞っている
+        //   ②`fire()` の注記にある「(b)(c)(d) の無音は警告に出ない」に対して、
+        //   **テスト表示を押せば失敗記録が消えて本番経路も復活する**＝ユーザーが自力で試せる
+        //   唯一の復帰手段になっている（広いことがここでは利点になる）。
+        //   **再修正トリガー＝ id 単位の `clearFailure(id)` が要る場面が出たとき**（そのときは
+        //   `markFailed` の対称形として `effectMediaCache.ts` に足し、ここだけ寄せる）。
+        cacheRef.current.clearFailures();
+        await cacheRef.current.prime(templateId);
+        const primed = cacheRef.current.get(templateId);
+        if (primed === undefined) return;
+        // ⚠ アンマウント後にここへ来ると、`showEffect` が仕掛ける撤去タイマーは
+        //   下のクリーンアップ（`expireTimersRef` の全消し）を**もう通らない**。
+        //   ⚠ **実アプリでは無害**（この窓は閉じると webview ごと破棄される）ので `mountedRef` を
+        //   足していない。**再修正トリガー＝テスト間でタイマーが漏れる事象が出たとき**。
+        showEffect(request, { record: found, media: primed });
+      })();
+    },
+    [refreshRecords, showEffect],
+  );
 
   // ⚠ 旗は**一度読んだら倒す**（次に開く窓では出ない）。同じ値の上書きなので StrictMode の
   // 二重実行でも冪等で、cleanup は要らない（旗を立て直すのは main 窓の明示操作だけ）。
@@ -492,8 +609,10 @@ export function EffectOverlayApp() {
   useEffect(() => {
     const handle = connectCommentStream({
       onComments: (incoming) => {
-        if (!loadEffectMonetaryEnabled()) return;
-
+        // ⚠⚠ **061h: ここにあった `if (!loadEffectMonetaryEnabled()) return;` を削除した。**
+        //   発火するかどうかの関門は **`resolveEffectKind` が `null` を返すこと**に一本化してある
+        //   （二重の関門を残さない＝「トグルは ON なのに割り当てが無くて出ない」「割り当てはあるのに
+        //   トグルが OFF で出ない」という**黙って何も起きない状態**を 2 通り作らない）。
         const seen = seenIdsRef.current;
         // 既知 id を除く＝[043e] の combo 再送（同一 id の更新）がここで落ちる。
         const fresh = incoming.filter((c) => !seen.has(c.id));
@@ -555,36 +674,42 @@ export function EffectOverlayApp() {
     };
   }, [warmTemplates]);
 
-  // 061b: **テスト発火**（main 窓の「テスト表示」ボタン → localStorage の nonce → `storage` イベント）。
+  // 061b/061h: **テスト表示**（main 窓のテンプレート行のボタン → localStorage → `storage` イベント）。
   //
-  // ⚠⚠ **localStorage から読むのは「変わった」という事実だけで、中身は使わない。** 出すのは
-  //   このファイルの固定ダミー（`TEST_FIRE_REQUEST`）＝ **第三者のデータが localStorage を経由しない**（§9）。
+  // ⚠⚠ **localStorage から読むのは nonce と「どのテンプレートか」だけ。** エフェクトの中身
+  //   （名前・金額・種別ラベル）はこのファイルの固定ダミー（`TEST_FIRE_REQUEST_BASE`）から作る
+  //   ＝ **第三者のデータが localStorage を経由しない**（§9。判断の全文は `EFFECT_TEST_FIRE_KEY` の JSDoc）。
   // ⚠ `storage` イベントは**他窓での書換**でのみ発火する（自窓の書換では飛ばない）＝ main 窓 → この窓の一方通行。
   // ⚠ `clear()` 時は `e.key === null` で来るが、**そのときは発火しない**（設定を消す操作でエフェクトが出るのは筋が悪い）。
-  // ⚠ **「投げ銭でエフェクトを出す」設定に関係なく動く**——OBS の位置合わせという明示操作のための機能で、
-  //   これを設定でゲートすると「トグルを ON にしないとセットアップできない」になる（画面の文言で明示済み）。
   //
-  // ⚠⚠ **061d-2（⑧・穴 η）: テスト発火は割り当てを反映する。** スーパーチャットに割り当てた
-  //   テンプレートで位置合わせできないと、テストボタンの意味が半分になるため。
-  //   ⚠⚠ **ただし「エフェクトを出さない」設定でも組み込みで必ず出す**——このボタンの目的は
-  //   OBS の位置合わせであって、設定の確認ではない。「出さない」にしている種別があるせいで
-  //   **窓の位置が一生わからない**という状態を作らない。
-  //   ⚠⚠ **この特例（`?? { kind: "builtin-monetary" }`）はここの 1 行だけに閉じている。**
-  //   `effectAssignments.ts` にも `decideEffects` にも置かない（置くと本番の発火経路へ漏れ、
-  //   「出さない」にしたのに出る、という設定の裏切りになる）。
+  // ⚠⚠ **061h: 受け取った id は使う前に形を検証する。** localStorage は**他窓から書ける**ので、
+  //   ここは多層防御の 1 枚目である（実際には Rust の `is_template_id` も同じ形を要求する）。
+  //   検証は `effectAssignments.ts` の [`isEffectTemplateId`] を借りる＝ **正規表現を 2 か所に書かない**
+  //   （061d-2 レビュー S-4 の「検証を 2 か所に分けると片方だけ緩む」と同じ理由）。
+  // ⚠⚠ **061h: 割り当ては引かない。** 061d-2 は `resolveEffectKind("superchat")` を引き、
+  //   「出さない」設定のときは組み込みで必ず出す、という**特例（穴 η）**を持っていたが、
+  //   テスト表示が**テンプレート行ごと**になったので「どれを出すか」は wire に載っている。
+  //   ＝ 特例ごと不要になった（「出さない」にしている種別があっても、押した行のものが出る）。
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
       if (e.key !== EFFECT_TEST_FIRE_KEY) return;
       if (e.newValue === null) return;
-      // ⚠ **本番と同じ resolver**を `"superchat"` として引く（2 実装に分けない）。
-      const kind = resolveEffectKind("superchat") ?? { kind: "builtin-monetary" };
-      fire({ ...TEST_FIRE_REQUEST_BASE, ...kind });
+      // ⚠ 値は `<nonce>:<templateId>`。nonce にも uuid にも `:` は現れないので、
+      //   最初の `:` の後ろがそのまま id になる。
+      // ⚠ **区切りが無い値は受け付けない**（061b の旧形式＝nonce だけの値もここで落ちる）。
+      //   ⚠ 「`:` が無ければ全体を id とみなす」にしないこと——**素の uuid 1 個を書けば発火する**
+      //   という、wire の形を満たさない入口を増やすことになる。
+      const sep = e.newValue.indexOf(":");
+      if (sep === -1) return;
+      const templateId = e.newValue.slice(sep + 1);
+      if (!isEffectTemplateId(templateId)) return;
+      fireTest(templateId);
     };
     window.addEventListener("storage", onStorage);
     return () => {
       window.removeEventListener("storage", onStorage);
     };
-  }, [fire]);
+  }, [fireTest]);
 
   // セットアップ用ガイドを一定時間で畳む（上の SETUP_GUIDE_VISIBLE_MS の JSDoc が判断の根拠）。
   // ⚠ cleanup で必ず取り消す（StrictMode の二重実行でもタイマーが残らない）。
@@ -598,77 +723,34 @@ export function EffectOverlayApp() {
     };
   }, []);
 
-  // ⚠ **1 本の配列を層ごとに振り分ける**（`showEffect` の `.slice` が総数を切っているので、
-  //   組み込みとテンプレートを合わせて `EFFECT_MAX_CONCURRENT` 件を超えない）。
-  const builtinEffects = effects.filter((e) => e.template === null);
-  const hasTemplate = effects.some((e) => e.template !== null);
-
   return (
     <div className={styles.root}>
-      {hasTemplate && (
+      {effects.length > 0 && (
         // ⚠⚠ **061d-2（穴 δ / Q-6）: テンプレートは専用の絶対配置層に置く。**
         //   `EffectTemplateView` の器は `position: absolute; inset: 0` なので、
-        //   **`.effectStack`（padding / gap を持つ縦積みの箱）の中へ入れるとその箱を無視して飛び出す。**
+        //   **padding / gap を持つ箱の中へ入れるとその箱を無視して飛び出す。**
         //   `.templateLayer` は `position: absolute; inset: 0`（＝それ自身が子の包含ブロック）で、
         //   さらに `.root` に `position: relative` を明示してあるので、窓ではなく**この器**に解決される。
-        //   ⚠ **ここを `.effectStack` の中へ移す変異は、`EffectOverlayApp.test.tsx` の
-        //   「テンプレートは縦積みの外にある」がレッドにする。**
+        //   ⚠ **この 2 ルールは `scripts/check-css-guards.mjs` の (10-r) が固定している**
+        //   （jsdom はレイアウトを解決しないので、CSS だけを壊す変更を止められるのはあちらだけ）。
+        //   ⚠⚠ **061h で層は 1 枚になった**（組み込みの縦積み `.effectStack` を廃止）。
+        //   ＝ 061d-2 の「2 層の前後関係（z-index）」という論点そのものが消えている。
         //   ⚠ ⑥ のとおり**テンプレート同士の重なりは受容する**（再修正トリガー＝実機で読めないなら
         //   「テンプレートは同時 1 件まで」へ倒す）。
         <div className={styles.templateLayer}>
-          {effects.map((e) =>
-            e.template === null ? null : (
-              <EffectTemplateView
-                key={e.key}
-                layout={e.template.record.layout}
-                text={e.template.record.text}
-                // ⚠⚠ **`SafeEffectMedia` しか渡せない**（`safeEffectMedia` を通していない値は
-                //   型として書けない）。この構造を崩さないこと。
-                media={e.template.media}
-                // ⚠ `EffectRequest` が `EffectTemplateVars` を構造的に満たす（061d-1 の型テストが固定）。
-                //   ⚠ 本文もアバターも持っていないので、**渡せるものが構造的に存在しない**（§9）。
-                vars={e.request}
-                onMediaError={() => {
-                  if (e.request.kind === "template") {
-                    handleMediaError(e.key, e.request.templateId);
-                  }
-                }}
-              />
-            ),
-          )}
-        </div>
-      )}
-      {builtinEffects.length > 0 && (
-        // ⚠ 新しいものが**下**に積まれる（会話の流れと同じ向き）。⚠ 件数の上限は `showEffect` が保証する。
-        <div className={styles.effectStack}>
-          {builtinEffects.map(({ key, request: effect }) => (
-            // ⚠ key は表示 1 回ごとの通し番号（コメントの id ではない・上の state の注記が理由）。
-            <div
-              key={key}
-              className={`${styles.effectCard} ${OVERLAY_TONE_CLASS[effect.tone]}`}
-            >
-              {/* 種別ラベル（「スーパーチャット」等）。未知種別は空文字なので何も出ない。 */}
-              {effect.eventLabel !== "" && (
-                <span className={styles.effectLabel}>{effect.eventLabel}</span>
-              )}
-              {effect.amountText !== null ? (
-                // 金額を持つ種別＝「〇〇さんが ¥1,000」。⚠ **名前を伸ばしても金額を見切れさせない**
-                // （043c 追修正と同じ要件）ので、縮むのは名前側だけ（CSS の min-width:0 / flex:none）。
-                <p className={styles.effectLine}>
-                  <span className={styles.effectName}>{effect.name}</span>
-                  <span className={styles.effectParticle}>さんが</span>
-                  <span className={styles.effectAmount}>{effect.amountText}</span>
-                </p>
-              ) : (
-                // 金額を持たない種別（サブスク/メンシプ/ギフト）＝`composeEventMessage` の文をそのまま。
-                // ⚠ 文言を**この場で組み立てない**（本体一覧・読み上げと 2 実装に分裂させない）。
-                <p className={styles.effectLine}>
-                  <span className={styles.effectMessage}>
-                    {effect.message ?? `${effect.name}さん`}
-                  </span>
-                </p>
-              )}
-            </div>
+          {effects.map((e) => (
+            <EffectTemplateView
+              key={e.key}
+              layout={e.template.record.layout}
+              text={e.template.record.text}
+              // ⚠⚠ **`SafeEffectMedia` しか渡せない**（`safeEffectMedia` を通していない値は
+              //   型として書けない）。この構造を崩さないこと。
+              media={e.template.media}
+              // ⚠ `EffectRequest` が `EffectTemplateVars` を構造的に満たす（061d-1 の型テストが固定）。
+              //   ⚠ 本文もアバターも持っていないので、**渡せるものが構造的に存在しない**（§9）。
+              vars={e.request}
+              onMediaError={() => handleMediaError(e.key, e.request.templateId)}
+            />
           ))}
         </div>
       )}

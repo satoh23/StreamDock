@@ -5,8 +5,6 @@ import {
   EFFECT_OVERLAY_ENABLED_KEY,
   EFFECT_OBS_AUTO_ADD_KEY,
   EFFECT_OVERLAY_GUIDE_PENDING_KEY,
-  EFFECT_MONETARY_ENABLED_KEY,
-  EFFECT_TEST_FIRE_KEY,
 } from "../../features/comment-viewer/overlaySettings";
 // 型のみの import（コンパイル時に消えるので vi.hoisted / vi.mock の巻き上げと競合しない）。
 // ⚠ 明示的に型を付けないと `vi.fn(async () => null)` の戻り値が `Promise<null>` に推論され、
@@ -71,10 +69,9 @@ const autoAddToggle = () =>
   screen.getByRole("switch", {
     name: "エフェクトのウィンドウを OBS へ自動で追加する",
   });
-const monetaryToggle = () =>
-  screen.getByRole("switch", { name: "投げ銭でエフェクトを出す" });
-const testFireButton = () =>
-  screen.getByRole("button", { name: "テスト表示" });
+// ⚠ 061h: 「投げ銭でエフェクトを出す」トグルと「テスト表示」ボタンは**この画面から消えた**
+//   （前者は組み込み演出の ON/OFF が本体で廃止／後者は `EffectTemplateCard` の各行へ移設）。
+//   移設先のケースは `EffectTemplateCard.test.tsx` にある。
 
 describe("061a: ObsEffectsScreen", () => {
   beforeEach(() => {
@@ -100,78 +97,31 @@ describe("061a: ObsEffectsScreen", () => {
     expect(autoAddToggle()).toBeInTheDocument();
   });
 
-  it("既定は 3 つのトグルとも OFF", () => {
+  it("既定は 2 つのトグルとも OFF", () => {
     render(<ObsEffectsScreen />);
     expect(displayToggle()).toHaveAttribute("aria-checked", "false");
     expect(autoAddToggle()).toHaveAttribute("aria-checked", "false");
-    // ⚠ 061b: 配信画面に出るものは既定で出さない。
-    expect(monetaryToggle()).toHaveAttribute("aria-checked", "false");
   });
 
-  // --- 061b: 投げ銭エフェクトのトグルとテスト発火 -------------------------------------------------
+  // --- 061h: 廃止したものが戻ってこないこと ------------------------------------------------------
 
-  it("⚠ 投げ銭トグルは設定を立てるだけ（窓を開かない・045c の規律）", () => {
-    render(<ObsEffectsScreen />);
-    fireEvent.click(monetaryToggle());
-
-    expect(localStorage.getItem(EFFECT_MONETARY_ENABLED_KEY)).toBe("true");
-    expect(mocks.openEffectOverlayWindow).not.toHaveBeenCalled();
-    expect(mocks.closeEffectOverlayWindow).not.toHaveBeenCalled();
-    // 他の 2 つのトグルを巻き添えにしない（3 つの設定は独立）。
-    expect(displayToggle()).toHaveAttribute("aria-checked", "false");
-    expect(autoAddToggle()).toHaveAttribute("aria-checked", "false");
-  });
-
-  it("投げ銭トグルの永続値を読み直す（次に画面を開いたときも ON のまま）", () => {
-    localStorage.setItem(EFFECT_MONETARY_ENABLED_KEY, "true");
-    render(<ObsEffectsScreen />);
-    expect(monetaryToggle()).toHaveAttribute("aria-checked", "true");
-  });
-
-  it("⚠⚠ テスト発火が localStorage へ書くのは nonce だけ（第三者データを載せない・§9）", () => {
-    // ⚠ ここが本命。⚠ **エフェクトの中身（名前・金額）を書くと §9 追補〔046a〕の対象になる**——
-    //   廃止した `effectQueue` はまさにそれをやる設計だった。合図だけを送り、中身は
-    //   エフェクト窓側の固定ダミーから作る、という線引きをここで固定する。
-    render(<ObsEffectsScreen />);
-    fireEvent.click(testFireButton());
-
-    const value = localStorage.getItem(EFFECT_TEST_FIRE_KEY);
-    expect(value).not.toBeNull();
-    // 中身らしきものが 1 つも載っていないこと（数字とハイフンだけの nonce）。
-    expect(value).toMatch(/^\d+-\d+$/);
-  });
-
-  it("⚠ テスト発火は連打のたびに違う値になる（同値だと storage イベントが飛ばない）", () => {
-    render(<ObsEffectsScreen />);
-    fireEvent.click(testFireButton());
-    const first = localStorage.getItem(EFFECT_TEST_FIRE_KEY);
-    fireEvent.click(testFireButton());
-    const second = localStorage.getItem(EFFECT_TEST_FIRE_KEY);
-    expect(second).not.toBe(first);
-  });
-
-  it("⚠ テスト発火は窓を開かない・OBS へも繋がない（合図を書くだけ）", () => {
-    render(<ObsEffectsScreen />);
-    fireEvent.click(testFireButton());
-    expect(mocks.openEffectOverlayWindow).not.toHaveBeenCalled();
-    expect(mocks.detectObsWebsocketConfig).not.toHaveBeenCalledTimes(2);
-  });
-
-  it("⚠ エフェクト窓が停止中なら、テスト発火しても何も出ないことを案内する", async () => {
-    // ⚠ 「黙って何も起きない」を作らないための注記（061a の前提ステータスと同じ趣旨）。
-    mocks.isEffectOverlayOpen.mockResolvedValue(false);
-    render(<ObsEffectsScreen />);
-    await waitFor(() => expect(screen.getByText("停止中")).toBeInTheDocument());
+  it("⚠⚠ 061h: 「投げ銭でエフェクトを出す」トグルがこの画面に無い", () => {
+    // ⚠⚠ **あのトグルの本体は組み込み演出（「〇〇さんが ¥1,000」）の ON/OFF だった**ので、
+    //   組み込みを廃止した 061h で意味が無くなった。⚠ さらに実機で UX が破綻していた最大の原因が
+    //   「ON/OFF の軸が 3 つ（表示・投げ銭・割り当て）に割れ、どれか 1 つ忘れると黙って何も出ない」
+    //   だったので、**軸を戻さない**こと自体が仕様である（表示トグルの削除は 061i）。
+    const { container } = render(<ObsEffectsScreen />);
     expect(
-      screen.getByText(/エフェクトのウィンドウが停止中のため/),
-    ).toBeInTheDocument();
+      screen.queryByRole("switch", { name: "投げ銭でエフェクトを出す" }),
+    ).toBeNull();
+    expect(container.textContent).not.toContain("投げ銭でエフェクトを出す");
   });
 
-  it("エフェクト窓が表示中ならその注記は出さない", async () => {
-    mocks.isEffectOverlayOpen.mockResolvedValue(true);
+  it("⚠ 061h: 「テスト表示」はこの画面ではなくテンプレート行にある", () => {
+    // ⚠ 移設の理由＝「**どのエフェクトの位置合わせをしているのか**」を選べないのが旧設計の弱点だった。
+    //   移設先の仕様（wire・停止中の注記）は `EffectTemplateCard.test.tsx` が固定する。
     render(<ObsEffectsScreen />);
-    await waitFor(() => expect(screen.getByText("表示中")).toBeInTheDocument());
-    expect(screen.queryByText(/エフェクトのウィンドウが停止中のため/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "テスト表示" })).toBeNull();
   });
 
   it("表示トグル ON で窓を開き、設定を永続化する", async () => {

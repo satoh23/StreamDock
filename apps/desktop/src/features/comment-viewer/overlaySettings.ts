@@ -82,26 +82,7 @@ export const EFFECT_OBS_AUTO_ADD_KEY =
 export const EFFECT_OVERLAY_GUIDE_PENDING_KEY =
   "stream-dock.comment-viewer.effect-overlay-guide-pending";
 /**
- * 061b: 「投げ銭でエフェクトを出す」ON/OFF の保存キー（既定 **false**）。
- *
- * ⚠ `EFFECT_OVERLAY_ENABLED_KEY`（窓を出すか）とは**別の軸**: あちらは「エフェクト窓を開くか」、
- * こちらは「その窓で**投げ銭エフェクトを発火させるか**」。061c/061d のテンプレートや 063 のガチャが
- * 乗ると発火源が増えるので、種別ごとに ON/OFF できる形にしてある。
- *
- * ⚠⚠ **読み手＝エフェクト窓（`EffectOverlayApp`）で、発火のたびに読み直す**（state にミラーしない・
- * `storage` イベントにも依存しない）。書き手は main 窓（`ObsEffectsScreen`）なので、state に写すと
- * 「main 窓で変えたのに古い値で判断する」形が作れてしまう（`CommentViewerApp` のエフェクト連携 effect と同じ判断）。
- * ⚠ **WS 接続そのものはこの設定でゲートしない**（窓が開いている＝ユーザーが「配信画面にエフェクトを出す」と
- * 決めた状態）。接続をゲートすると「OFF→ON にしたのに窓を開き直すまで効かない」という罠か、
- * `storage` 依存のどちらかを抱え込む。＝ **OFF でもコメントは届くが 1 件も発火しない**。
- *
- * トグルの ON/OFF（boolean）＝**ユーザー自身の UI 設定値**で、§9 追補（046a）が対象とする
- * 第三者の個人データではない（既存 3 キーと同種）。
- */
-export const EFFECT_MONETARY_ENABLED_KEY =
-  "stream-dock.comment-viewer.effect-monetary-enabled";
-/**
- * 061b: **テスト発火の合図**（main 窓 → エフェクト窓）。値は**毎回変わる nonce だけ**。
+ * 061b: **テスト発火の合図**（main 窓 → エフェクト窓）。値は `<nonce>:<templateId>`。
  *
  * ⚠⚠ **なぜこのキーが要るのか**（061b の穴 A）: 2026-08-09 の仕様変更でエフェクト窓が sidecar の WS を
  * 直接張る形になり、`effectQueue.ts`（localStorage 経由の窓間伝達）を廃止した結果、
@@ -111,10 +92,42 @@ export const EFFECT_MONETARY_ENABLED_KEY =
  * ②sidecar から合成コメントを流す（**sidecar 差分ゼロに反する**うえ、未認証の loopback WS に
  * 「配信画面へ任意の文字列を出す口」を作ることになる）③Rust コマンド＋Tauri emit（**新 command ゼロに反する**）。
  *
- * ⚠⚠ **値は nonce（時刻由来の文字列）だけで、エフェクトの中身は載せない。**
- * 出す内容はエフェクト窓側の**固定ダミー定数**から作る＝ **第三者のデータが localStorage に 1 バイトも載らない**
+ * ⚠⚠ **値は `<nonce>:<templateId>` で、エフェクトの中身は載せない。**
+ * 出す内容（名前・金額・種別ラベル）はエフェクト窓側の**固定ダミー定数**から作る＝
+ * **第三者のデータが localStorage に 1 バイトも載らない**
  * （§9 追補〔046a〕の対象外。廃止した `effectQueue` とはここが決定的に違う）。
  * ⚠ **毎回値を変える**こと。同じ値の `setItem` では `storage` イベントを飛ばさない実装があるため。
+ *
+ * ## ⚠⚠ 061h: `templateId` を載せた（§9 の新しい判断）
+ *
+ * 061b〜061g のあいだ、このキーの値は **nonce だけ**で「中身は使わない」ことが §9 の担保だった。
+ * 061h でテスト表示が「**テンプレート行ごと**に、そのテンプレートを出す」導線になったので、
+ * **どれを出すか**を伝える必要が生じた。載せてよいと判断した根拠:
+ *   1. 載るのは **nonce** と **Rust の `effect_template::service` が `Uuid::new_v4()` で採番した id** だけ。
+ *      ⚠ **第三者の個人データ（本文・表示名・金額・アバター）は 1 バイトも入らない**——
+ *      それらは相変わらずエフェクト窓側の固定ダミーから作る。
+ *   2. **`EFFECT_ASSIGNMENTS_KEY` が既に同じ id を保存している**＝ localStorage に載るデータの
+ *      **種類は 1 つも増えていない**（増えたのは「同じ種類の値を書く 2 本目のキー」だけ）。
+ *   3. ⚠⚠ **受け取る側で形を検証する**——エフェクト窓は `effectAssignments.ts` の
+ *      [`isEffectTemplateId`] を通してから使う。localStorage は他窓から書けるので**多層防御の 1 枚目**で、
+ *      実際には Rust の `is_template_id` も同じ形を要求する（2 層の強さが揃っている）。
+ * ⚠ **中身（名前・金額・本文）をここへ載せる変更は §9 の再評価が要る**（`effectQueue` を廃止した線）。
+ *
+ * ⚠⚠ **`docs/security.md` に追記していないのは、同ドキュメント自身のルールがそう定めているため**
+ * （061h レビューで裏取り）。「レビュー必須条件」→「取得コメント・視聴者情報の端末保存」の下位条件が
+ * **「ユーザー自身の UI 設定値（テーマ・フォント・トグル・チャンネル名等）を localStorage に置く変更は
+ * 従来どおり本項に該当しない」**と明示しており、テンプレート id はこれに当たる。
+ * 先例＝ **`OVERLAY_THEME_KEY`（060d・テーマ id）は security.md に 1 行も追記されていない**。
+ * ⚠ 逆に §9 追補が要ったのは 058a のデバイス ID だが、あれの理由は「id を保存すること」ではなく
+ * **デバイス名が配信者の環境を推測させるという中身の性質**なので、本キーの反例にはならない。
+ *
+ * ⚠ **このキーには削除経路が無い**（`EFFECT_ASSIGNMENTS_KEY` は「全部が既定ならキーごと削除」で消えるが、
+ * こちらは一度書いたら残る）。＝ **端末内保存データの一括削除・エクスポートを作るときの対象が 1 本増えた**
+ * （§9 追補〔046a〕の同趣旨の申し送りと同じ扱い）。⚠ 残るのは id 1 個なので §9 の線には触れない。
+ *
+ * ⚠⚠ **エフェクト窓はこの値を `storage` ハンドラの中でしか読まない（マウント時に `getItem` しない）。**
+ * ⚠ **ここを「マウント時にも読む」に変えないこと**——残存値で**再起動直後に無操作で配信画面へ出る**
+ * 経路になり、046b レビュー S-1（永続した値が無操作で配信面に出る）と同型の問題を作る。
  *
  * ⚠ 伝達は `storage` イベント（**別 webview 間の伝播はプラットフォーム依存でベストエフォート**）。
  * 届かなくても壊れ方は「**テストボタンが効かない**」という観測可能なものに留まり、本番の発火（WS 直結）には
@@ -124,22 +137,27 @@ export const EFFECT_MONETARY_ENABLED_KEY =
 export const EFFECT_TEST_FIRE_KEY =
   "stream-dock.comment-viewer.effect-test-fire";
 /**
- * 061d-2: **イベント種別 → エフェクトの割り当て**の保存キー（未保存＝全種別「組み込み」）。
+ * 061d-2: **イベント種別 → エフェクトの割り当て**の保存キー
+ * （未保存＝全種別「表示しない」。⚠ **061h までは「組み込み」だった**）。
  *
  * ⚠⚠ **接頭辞が `comment-viewer` なのは既存 8 本と揃えるため**（`obs-effects.*` という 2 つ目の
  * 名前空間を作らない）。この画面の設定はすべてこの接頭辞に載っている。
  *
  * ⚠ **値は「イベント種別（固定 6 値）」と「テンプレート id（uuid v4）」だけ**＝ ユーザー自身の
  * UI 設定値で、§9 追補（046a）が対象とする第三者の個人データ（本文・表示名・金額）は 1 バイトも入らない。
- * 既存の `EFFECT_MONETARY_ENABLED_KEY` 等と同種。
+ * 既存の `EFFECT_OVERLAY_ENABLED_KEY` 等の非機密トグル値と同種。
+ * ⚠ **061h の `EFFECT_TEST_FIRE_KEY` が同じ id を載せるようになった**根拠もここにある
+ * （＝ localStorage に載るデータの種類は増えていない）。
  *
  * ⚠⚠ **読み書きのロジックは `screens/obs-effects/effectAssignments.ts` が持つ**（⑩）。
  * ここに置くのはキーだけ——「localStorage のキーは本ファイルを grep すれば全部見える」という
  * §9 の監査上の性質を壊さないため（`load*` / `save*` の実体が別ファイルにあるのは本ファイルで初めて）。
  *
  * ⚠ **読み手はエフェクト窓（`EffectOverlayApp`）で、発火のたびに読み直す**
- * （`EFFECT_MONETARY_ENABLED_KEY` と同じ規律＝state にミラーしない・`storage` にも依存しない）。
- * `storage` イベントは**メディアの先読みを温めるためだけ**に使う（届かなくても壊れ方は「初回だけ組み込みで出る」）。
+ * （state にミラーしない・`storage` にも依存しない。⚠ 061b はこの規律を
+ * `EFFECT_MONETARY_ENABLED_KEY` にも適用していたが、あのキーは 061h で廃止した）。
+ * `storage` イベントは**メディアの先読みを温めるためだけ**に使う
+ * （届かなくても壊れ方は「そのテンプレートの初回だけ出ない」に留まる）。
  */
 export const EFFECT_ASSIGNMENTS_KEY =
   "stream-dock.comment-viewer.effect-assignments";
@@ -344,36 +362,26 @@ export function saveEffectOverlayGuidePending(pending: boolean): void {
   }
 }
 
-/** 061b: 「投げ銭でエフェクトを出す」ON/OFF を読み込む。未保存・例外は false（OFF）へフォールバック。 */
-export function loadEffectMonetaryEnabled(): boolean {
-  try {
-    return localStorage.getItem(EFFECT_MONETARY_ENABLED_KEY) === "true";
-  } catch {
-    return false;
-  }
-}
-
-/** 061b: 「投げ銭でエフェクトを出す」ON/OFF を保存する（ローカルのみ・非機密・外部送信しない）。 */
-export function saveEffectMonetaryEnabled(enabled: boolean): void {
-  try {
-    localStorage.setItem(EFFECT_MONETARY_ENABLED_KEY, String(enabled));
-  } catch {
-    // プライベートモード等で書けない場合は黙って無視する。
-  }
-}
-
 /**
- * 061b: **テスト発火の合図を出す**（main 窓の「テスト表示」ボタンから呼ぶ）。
+ * 061b/061h: **テスト表示の合図を出す**（main 窓のテンプレート行のボタンから呼ぶ）。
  *
- * ⚠⚠ **書くのは nonce だけ**（第三者のデータは 1 バイトも載せない・詳細は `EFFECT_TEST_FIRE_KEY` の JSDoc）。
+ * ⚠⚠ **書くのは nonce と `templateId` だけ**（第三者のデータは 1 バイトも載せない・
+ * §9 の判断の全文は `EFFECT_TEST_FIRE_KEY` の JSDoc）。
  * ⚠ **毎回必ず違う値**にする（同値の `setItem` では `storage` イベントを飛ばさない実装があるため）。
  * `Date.now()` は同一ミリ秒で衝突しうるので、プロセス内カウンタを併記して単調に増やす。
+ * ⚠ **区切りは `:` 1 文字**——nonce（数字とハイフン）にも uuid にも `:` は現れないので、
+ * 受け手は「最初の `:` の後ろ」を取れば必ず id になる。
+ * ⚠ **ここでは id の形を検査しない**（呼び出し元は一覧の record から渡すので細工の余地が無い）。
+ * 検査するのは**受け取る側**＝ localStorage を他窓から書かれうるエフェクト窓のほう。
  */
 let testFireSeq = 0;
-export function requestEffectTestFire(): void {
+export function requestEffectTestFire(templateId: string): void {
   try {
     testFireSeq += 1;
-    localStorage.setItem(EFFECT_TEST_FIRE_KEY, `${Date.now()}-${testFireSeq}`);
+    localStorage.setItem(
+      EFFECT_TEST_FIRE_KEY,
+      `${Date.now()}-${testFireSeq}:${templateId}`,
+    );
   } catch {
     // 書けない環境では**テストボタンが効かないだけ**（本番の発火は WS 直結なので影響しない）。
   }

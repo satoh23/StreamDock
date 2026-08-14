@@ -2,12 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   loadEffectObsAutoAdd,
   saveEffectObsAutoAdd,
-  loadEffectMonetaryEnabled,
-  saveEffectMonetaryEnabled,
   loadEffectOverlayEnabled,
   saveEffectOverlayEnabled,
   saveEffectOverlayGuidePending,
-  requestEffectTestFire,
 } from "../../features/comment-viewer/overlaySettings";
 import {
   closeEffectOverlayWindow,
@@ -29,6 +26,9 @@ import {
 // （docs/task-board.md の 061g に明文化してある）。
 import { ToggleSwitch } from "../../components/ToggleSwitch";
 import { Button } from "../../components/primitives";
+// ⚠ 061h: 「テスト表示」は**テンプレート行**（`EffectTemplateCard`）へ移した。
+//   この画面が持っているのは「エフェクト窓が開いているか」という前提ステータスだけなので、
+//   停止中の注記を出せるように `effectWindowOpen` をあちらへ渡す。
 import { EffectAssignmentCard } from "./EffectAssignmentCard";
 import { EffectTemplateCard } from "./EffectTemplateCard";
 import { useEffectTemplates } from "./useEffectTemplates";
@@ -44,6 +44,14 @@ import styles from "./ObsEffectsScreen.module.css";
  * ⚠ **061d-1 でテンプレートの取り込み・一覧・プレビュー（[`EffectTemplateCard`]）が加わった。**
  * イベント種別ごとの割り当てと、エフェクト窓でのテンプレート描画は **061d-2**。
  * ＝ **061d-1 の時点ではテンプレートを配信画面へ出すことはできない**（取り込んで中身を確かめるまで）。
+ *
+ * ⚠⚠ **061h で「投げ銭でエフェクトを出す」section を丸ごと削除した。** あのトグルの本体は
+ * 組み込み演出（「〇〇さんが ¥1,000」）の ON/OFF で、組み込みを廃止した時点で意味が無くなる。
+ * ⚠ さらに実機で破綻していた最大の原因が「**ON/OFF の軸が 3 つ（表示・投げ銭・割り当て）に割れ、
+ * どれか 1 つ忘れると黙って何も出ない**」だったので、軸を減らすこと自体が目的でもある
+ * （表示トグルの削除は 061i の担当）。
+ * ⚠ section の中にあった**テスト表示は [`EffectTemplateCard`] の各行へ移した**——
+ * 「どのエフェクトの位置合わせをしているのか」を選べないのが旧設計の弱点だったため。
  *
  * ⚠⚠ **この画面の設計を決めている構造上の制約**（061a の実装で判明した最大の論点。⚠ **061b で①②が変わった**）:
  *
@@ -88,10 +96,6 @@ export function ObsEffectsScreen() {
   // 起動時の窓復元は `App.tsx`（`MainWindowApp`）が担うので、ここはユーザー操作だけを見る。
   const [enabled, setEnabled] = useState(() => loadEffectOverlayEnabled());
   const [obsAutoAdd, setObsAutoAdd] = useState(() => loadEffectObsAutoAdd());
-  // 061b: 「投げ銭でエフェクトを出す」。⚠ **既定 false**（配信画面に出るものは既定で出さない）。
-  const [monetaryEnabled, setMonetaryEnabled] = useState(() =>
-    loadEffectMonetaryEnabled(),
-  );
 
   // ⚠⚠ 061d-2: テンプレート一覧と割り当ての state は**この画面が 1 つだけ持つ**（061d-1 レビュー Q-9）。
   //   削除は「一覧」と「割り当て」の両方を書き換えるので、2 つのカードが別々に持つと片方が古くなる。
@@ -169,29 +173,6 @@ export function ObsEffectsScreen() {
     saveEffectObsAutoAdd(next);
   };
 
-  /**
-   * 061b: 「投げ銭でエフェクトを出す」トグル。⚠⚠ **設定を立てるだけ**（窓も開かないし OBS へも繋がない）。
-   * 読み手はエフェクト窓（`EffectOverlayApp`）で、**発火のたびに localStorage を読み直す**ので
-   * `storage` の窓跨ぎ伝播に依存しない（＝この設定は必ず届く）。詳細は
-   * `EFFECT_MONETARY_ENABLED_KEY` の JSDoc。
-   */
-  const handleMonetaryToggle = (next: boolean) => {
-    setMonetaryEnabled(next);
-    saveEffectMonetaryEnabled(next);
-  };
-
-  /**
-   * 061b: テスト発火。⚠⚠ **localStorage へ書くのは nonce だけ**で、エフェクトの中身は
-   * エフェクト窓側の固定ダミーから作る（＝第三者のデータが localStorage を経由しない・§9）。
-   *
-   * ⚠ **「投げ銭でエフェクトを出す」が OFF でも動く**——これは OBS の位置合わせという明示操作のための
-   * 機能で、設定でゲートすると「トグルを ON にしないとセットアップできない」になる。
-   * ⚠ **エフェクト窓が開いていないと何も起きない**（送り先が存在しないため）。下の注記でユーザーへ明示する。
-   */
-  const handleTestFire = () => {
-    requestEffectTestFire();
-  };
-
   const handleOpenCommentViewer = () => {
     void openCommentViewerWindow()
       .then(refreshStatus)
@@ -251,46 +232,14 @@ export function ObsEffectsScreen() {
           </div>
         </section>
 
-        <section className={layout.panel}>
-          <div className={layout.panelHead}>
-            <h3>投げ銭でエフェクトを出す</h3>
-            <p>
-              スーパーチャットやサブスクなどを受け取ったときに、「〇〇さんが ¥1,000」を配信画面へ数秒だけ表示します。
-            </p>
-          </div>
-          <div className={layout.panelBody}>
-            <ToggleSwitch
-              label="投げ銭でエフェクトを出す"
-              checked={monetaryEnabled}
-              onChange={handleMonetaryToggle}
-            />
-            <p className={styles.note}>
-              コメントの本文とアイコンは表示しません（配信画面に映るのは、名前・金額・種類だけです）。金額の色はコメントビューアの投げ銭カードと同じです。
-            </p>
-            {/* ⚠ 「同時に 3 件まで・5 秒で消える・あふれた分は捨てる」は実装の定数（effectTrigger.ts）が正。
-                ここでは秒数や件数を断言せず、**溜まらない**という性質だけを伝える（値を変えても文言が嘘にならない）。 */}
-            <p className={styles.note}>
-              短い時間にたくさん届いたときは、いくつかは表示されません（あとからまとめて流れ続けないようにするためです）。
-            </p>
-
-            <div className={styles.testFire}>
-              <Button type="button" onClick={handleTestFire}>
-                テスト表示
-              </Button>
-              <p className={styles.note}>
-                エフェクトのウィンドウに見本を 1 つ出します。OBS
-                での位置合わせに使ってください（上の「投げ銭でエフェクトを出す」が OFF
-                でも出ます）。
-                {effectWindowOpen === false &&
-                  "エフェクトのウィンドウが停止中のため、いまは何も表示されません。"}
-              </p>
-            </div>
-          </div>
-        </section>
-
         {/* 061d-1: 取り込み・一覧・削除・プレビュー。⚠ 材料（テンプレート）→ 使い道（割り当て）
-            の順に並べる。⚠ **プレビューはこの画面の中だけ**で再生する（エフェクト窓へ出さない）。 */}
-        <EffectTemplateCard {...effectTemplates} />
+            の順に並べる。⚠ **プレビューはこの画面の中だけ**で再生する（エフェクト窓へ出さない）。
+            ⚠⚠ **061h: 「配信画面でテスト表示」がこのカードの各行に入った**（旧「投げ銭でエフェクトを出す」
+            section ごと廃止したため）。停止中の注記を出せるように前提ステータスを渡す。 */}
+        <EffectTemplateCard
+          {...effectTemplates}
+          effectWindowOpen={effectWindowOpen}
+        />
 
         {/* 061d-2: イベント種別ごとの割り当て。⚠ **材料の直後**に置く（テンプレートを取り込んでから
             割り当てる、という順に画面が並ぶ）。 */}

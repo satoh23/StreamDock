@@ -5,8 +5,9 @@
    ⚠ 生 hex を書かない（`theme.css` のトークンのみ）。⚠ **061b レビュー②**: この規約は
    `docs/security.md` には**書かれていない**（参照先が誤っていたので削除した）。詳細は下の `.effectCard`。 */
 
-/* 窓いっぱいの器。061b はこの中へエフェクトを描く（061a では空＋セットアップ用ガイドだけ）。
-   中央寄せにしてあるのは「〇〇さんが ¥1,000」を画面中央〜上部に大きく出す想定のため。 */
+/* 窓いっぱいの器。この中へエフェクト（テンプレート層）とセットアップ用ガイドを描く。
+   ⚠ 中央寄せは**セットアップ用ガイドのため**に残している（テンプレート層は絶対配置なので
+   flex の影響を受けない）。061b の組み込みカードの縦積みは 061h で廃止した。 */
 .root {
   /* ⚠⚠ **061d-2（穴 δ / 061d-1 レビュー Q-6）: この 1 行が `.templateLayer` の基準である。**
      無くても「窓＝ビューポート」なので*たまたま*正しく見えるが、それは初期包含ブロックに
@@ -25,10 +26,11 @@
 
 /* 061d-2: **テンプレートの絶対配置層**（⑥）。
    ⚠⚠ **`EffectTemplateView` をここ以外に置かないこと。** あの器は `position: absolute; inset: 0` で、
-   `.effectStack`（padding / gap を持つ縦積みの箱）の中へ入れると**その箱を無視して飛び出す**
+   padding / gap を持つ箱の中へ入れると**その箱を無視して飛び出す**
    （061d-1 レビュー Q-6 の罠）。この層は `position: absolute` なので、それ自身が
    子の包含ブロックになり、`.root` の `position: relative` に対して `inset: 0` が解決される。
-   ⚠ **背面に置く**（`.effectStack` が `z-index: 1` で手前に来る）。理由は `.effectStack` 側の注記。
+   ⚠⚠ **061h でこの窓の層は 1 枚になった**——組み込み意匠（`.effectStack` の縦積みカード）を
+   廃止したので、061d-2 の「2 層の前後関係（`z-index`）」という論点そのものが消えている。
    ⚠ 背景を塗らない（透過窓の規律）。⚠ 表示専用なので pointer-events も持たない
    （`EffectTemplateView` 側の `.root` が `pointer-events: none` を持っている）。 */
 .templateLayer {
@@ -53,108 +55,6 @@
   /* ⚠ ほぼ透明の下地。真っ黒/真っ白で塗らない（OBS 上で「窓が不透明」と誤解させないため）。 */
   background: var(--surface-subtle);
   text-align: center;
-}
-
-/* 061b: エフェクトの積み上げ。新しいものが下に積まれる。⚠ 件数の上限は tsx 側（EFFECT_MAX_CONCURRENT）が
-   保証しているので、ここでスクロールさせない（配信画面にスクロールバーを出さない）。 */
-.effectStack {
-  /* ⚠⚠ **061d-2（穴 δ）: 組み込みのカードはテンプレートより手前に描く。**
-     `.templateLayer` は絶対配置なので、位置指定の無い通常フローの要素より必ず前面に来てしまう。
-     ここで `position: relative` ＋ `z-index: 1` にして**明示的に前後を逆転させる**。
-     理由＝ ①組み込みは「誰がいくら」という**情報**、テンプレートは**装飾**で、装飾に情報を隠させない
-     ②組み込みは**テンプレートが壊れたときのフォールバック先**でもあるので、
-     フォールバックした瞬間に別のテンプレートの下敷きになると「直っていない」ように見える。 */
-  position: relative;
-  z-index: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  align-items: center;
-  width: 100%;
-}
-
-/* 061b: エフェクト 1 件のカード。⚠⚠ **配色は tone クラス（OverlayComment.module.css の .tier0 等）が
-   差し替える役割 var（--tone-bg / --tone-fg）をそのまま読む**＝ 043c/047b の `--tip-*` トークンに乗るので、
-   **配信画面のコメント欄と同じ額が同じ色**になる（新しい配色表を作らない＝ドリフトが起きない）。
-   ⚠ 生 hex を書かない（theme.css のトークンのみ・docs/security.md の規約）。
-   ⚠ カードは**不透明**（tone の背景色で塗る）。窓の透過は `.root` の外側が担うので壊れない
-   （`.bubble` / `.card` と同原理＝OBS のウィンドウキャプチャで背景は抜けカードだけ合成される）。 */
-.effectCard {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  max-width: 100%;
-  padding: 14px 28px;
-  border-radius: var(--radius);
-  background: var(--tone-bg);
-  color: var(--tone-fg);
-  /* ⚠ `filter: drop-shadow` にしない（060c 追修正⑤で WebKit の描画バグの真因だったもの）。
-     このカードは不透明な角丸矩形なので `box-shadow` で等価に描ける（`.card` と同じ判断）。
-     ⚠⚠ **061b レビュー②（修正不要・ガードの穴を明記）**: `check-css-guards.mjs` の (10-q)
-     （＝影を `filter` へ戻す変異を止める検査）は `OverlayComment.module.css` の `.card` しか見ておらず、
-     **このファイルは無防備**。ここを `filter` へ戻すと実機（WebKit・透過オーバーレイ窓）でのみ
-     カードが描かれなくなり、jsdom でもガードでも検出できない。今回ガードを広げなかったのは
-     061b のスコープ（frontend の発火と描画）を超えるため。
-     **再修正トリガー**＝この窓で「出ているはずのカードが見えない」報告が出たら、まずここを疑い、
-     同時に (10-q) の対象へ本ファイルの `.effectCard` を足すこと。
-     ⚠ 色は**トークン経由**（`--overlay-bubble-shadow` ＝映像上で輪郭を出すための黒 35%）。
-     生の `rgb()` / hex を書かない（`theme.css` のトークンのみ）。
-     ⚠⚠ **061b レビュー②（修正不要・要注意）**: この「生色を書かない」規約は
-     **`docs/security.md` には書かれておらず、`check:css` にも検査が 1 つも無い**
-     （hex も `rgb()` も `hsl()` も対象外＝実測）。＝**規約はレビューと本コメントだけが支えている**。
-     現状リポジトリ全体で違反 0 件なので今回は塞いでいない。
-     **再修正トリガー**＝生色の混入が実際に 1 件でも入ったら、(10-*) に
-     「`*.module.css` 全体で色リテラル禁止・`theme.css` のみ allow」を 1 検査足すこと。 */
-  box-shadow: 0 6px 18px var(--overlay-bubble-shadow);
-}
-
-/* 種別ラベル（「スーパーチャット」等）。金額より小さく、カード内で従になる。 */
-.effectLabel {
-  align-self: flex-start;
-  opacity: 0.85;
-  font-size: 14px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-}
-
-/* 「〇〇さんが ¥1,000」の 1 行。⚠ ベースラインを揃え、はみ出しは名前側だけで吸収する。 */
-.effectLine {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  min-width: 0;
-}
-
-/* ⚠⚠ 名前だけが縮む（`min-width: 0` ＋ 省略）。043c 追修正「名前が長い時に金額が見切れないように」と同じ要件。 */
-.effectName {
-  min-width: 0;
-  overflow: hidden;
-  font-size: 30px;
-  font-weight: 800;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.effectParticle {
-  flex: none;
-  font-size: 20px;
-  font-weight: 700;
-}
-
-/* ⚠ 金額は**絶対に縮めない・折り返さない**（`flex: none`）。ここが見切れると機能の意味が無くなる。 */
-.effectAmount {
-  flex: none;
-  font-size: 38px;
-  font-weight: 800;
-  letter-spacing: -0.01em;
-}
-
-/* 金額を持たない種別（サブスク/メンシプ/ギフト）の文。⚠ 長くなりうるので折り返しを許す。 */
-.effectMessage {
-  font-size: 26px;
-  font-weight: 800;
-  line-height: 1.35;
-  word-break: break-word;
 }
 
 .guideTitle {

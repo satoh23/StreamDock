@@ -28,7 +28,9 @@ describe("EffectTemplateVars ↔ EffectRequest の構造的互換（061d-2 の�
       message: null,
       eventLabel: "スーパーチャット",
       tone: "t3",
-      kind: "builtin-monetary",
+      // ⚠ 061h: `EffectKind` の variant は `template` だけになった（組み込みを廃止）。
+      kind: "template",
+      templateId: "93c76e02-1111-4222-8333-444455556666",
     };
 
     // (1) 変数をそのまま渡す（061d-2 のエフェクト窓が実際に書く形）。

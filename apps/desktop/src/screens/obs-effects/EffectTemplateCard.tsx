@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { EffectTemplateRecord } from "../../features/obs-effects/effectTemplateApi";
+import { requestEffectTestFire } from "../../features/comment-viewer/overlaySettings";
 import { Button } from "../../components/primitives";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { EFFECT_EVENT_LABEL } from "./effectEventRows";
@@ -29,8 +30,16 @@ import styles from "./ObsEffectsScreen.module.css";
  * ここに残るのは**案内文・取り込みボタン・一覧・削除確認・プレビューの開閉**だけ。
  *
  * ⚠⚠ **プレビューはこの画面の中だけで再生する。エフェクト窓へは出さない。**
- * ＝ この module も `EffectTemplatePreview` も `openEffectOverlayWindow` / `requestEffectTestFire` を
- * import しない（テストが「エフェクト窓向けの localStorage キーへ 1 バイトも書かない」ことを固定している）。
+ * ＝ **プレビュー導線は** `openEffectOverlayWindow` を呼ばず、**エフェクト窓向けの localStorage キーへ
+ * 1 バイトも書かない**（テストが固定している）。
+ *
+ * ⚠⚠ **061h で「配信画面でテスト表示」が各行に入り、この module は
+ * `requestEffectTestFire` を import するようになった。** ＝ 061d-1 の
+ * 「この module はエフェクト窓向けのキーへ書かない」という不変条件は
+ * **「プレビュー導線では書かない」へ限定された**（テスト表示は**明示操作で配信画面へ出すためのボタン**
+ * なので、書くのが仕様そのもの）。⚠ **プレビュー側の担保（061c security-review S-3 の緩和策が
+ * 配信へ漏れないこと）は 1 ミリも緩めていない**——書くのはボタンの `onClick` だけである。
+ * ⚠ 載せるのは **nonce と record の `id`** だけ（§9 の判断は `EFFECT_TEST_FIRE_KEY` の JSDoc が正）。
  */
 export function EffectTemplateCard({
   templates,
@@ -45,7 +54,16 @@ export function EffectTemplateCard({
   cancelDelete,
   runDelete,
   eventTypesUsing,
-}: UseEffectTemplates) {
+  effectWindowOpen,
+}: UseEffectTemplates & {
+  /**
+   * 061h: エフェクト窓が開いているか（`null` ＝ 未取得）。⚠ **前提ステータスの持ち主は
+   * `ObsEffectsScreen`**（2 秒ごとのポーリング）で、ここはそれを注記に使うだけ。
+   * ⚠ **省略可にしない**——既定値を持たせると、渡し忘れたときに
+   * 「窓が停止中でも注記が出ない＝黙って何も起きない」へ倒れる（061a 以来の規律）。
+   */
+  effectWindowOpen: boolean | null;
+}) {
   /** プレビュー中のテンプレート。⚠ **record をそのまま持つ**（一覧から `find` しない・S-2(a)）。 */
   const [preview, setPreview] = useState<EffectTemplateRecord | null>(null);
 
@@ -74,7 +92,8 @@ export function EffectTemplateCard({
   /**
    * 061d-2: 削除確認の**追加の 1 文**。⚠⚠ **割り当てに使われているときはその旨を出す**（(3) の指定）。
    *
-   * ⚠ 「解除されます」ではなく「**組み込みのエフェクトに戻ります**」と書く——実際そうなるため（⑪）。
+   * ⚠ **実際にそうなること**を書く——061d-2 は「組み込みのエフェクトに戻ります」だったが、
+   *   061h で戻し先が「表示しない」になったので文言も追随する（`clearEffectAssignmentsForTemplate`）。
    * ⚠ `message`（`<p>` 1 つ）ではなく `details` に載せるのは、`ConfirmDialog` の本文が改行を
    *   保持しない単一段落だから（060c が同じ理由で `details` を足している）。
    */
@@ -87,7 +106,7 @@ export function EffectTemplateCard({
     return (
       <p className={styles.errorText}>
         このテンプレートは「{labels}
-        」に割り当てられています。削除すると、その割り当ては組み込みのエフェクトに戻ります。
+        」に割り当てられています。削除すると、その割り当ては「表示しない」に戻ります。
       </p>
     );
   };
@@ -140,6 +159,18 @@ export function EffectTemplateCard({
                   {durationLabel(template.durationMs)}
                   {template.hasSound ? "・音あり" : ""}
                 </span>
+                {/* ⚠⚠ 061h: **配信画面（エフェクト窓）へ 1 回だけ出す。**
+                    ⚠ 隣の「プレビュー」とは**出す先が違う**——あちらはこの画面の中だけで再生し
+                    （061c security-review S-3 の緩和策）、こちらは OBS に映る窓へ出す。
+                    ⚠ **割り当てとは独立**（割り当てていないテンプレートでも位置合わせできる）。
+                    ⚠ 送るのは nonce と `template.id` だけで、中身はエフェクト窓側の固定ダミー（§9）。 */}
+                <Button
+                  type="button"
+                  onClick={() => requestEffectTestFire(template.id)}
+                  disabled={busy}
+                >
+                  配信画面でテスト表示
+                </Button>
                 <Button
                   type="button"
                   onClick={() => setPreview(template)}
@@ -157,6 +188,20 @@ export function EffectTemplateCard({
               </li>
             ))}
           </ul>
+        )}
+
+        {templates.length > 0 && (
+          // ⚠⚠ **「黙って何も起きない」を作らない**（061a 以来の規律）。エフェクト窓が閉じていると
+          //   `storage` の送り先が存在しないので、押しても本当に何も起きない。
+          // ⚠ 「窓を開く」導線はここに置かない——表示トグルを消して「条件が有効なら窓を開く」へ
+          //   変えるのは **061i** の担当で、そこでこのボタンから窓を開けるようにする。
+          <p className={styles.note}>
+            「配信画面でテスト表示」を押すと、そのエフェクトをエフェクトのウィンドウへ 1
+            回だけ出します。OBS
+            での位置合わせに使ってください（イベントへの割り当てとは関係なく出せます）。
+            {effectWindowOpen === false &&
+              "エフェクトのウィンドウが停止中のため、いまは何も表示されません。"}
+          </p>
         )}
 
         {preview !== null && (

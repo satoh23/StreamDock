@@ -8,6 +8,10 @@ import {
 } from "@testing-library/react";
 import type { EffectTemplateRecord } from "../../features/obs-effects/bindings/EffectTemplateRecord";
 import type { EffectTemplateMedia } from "../../features/obs-effects/bindings/EffectTemplateMedia";
+// ⚠ 061h レビュー Q-10: キー名は**定数を借りる**（`ObsEffectsScreen.test.tsx` と流儀を揃える）。
+//   ⚠ 一方で **wire の「値の形」は文字列リテラルで固定する**（下のケース）——あちらは
+//   定数化すると「実際に何が載るのか」がテストから読めなくなるので、意図的に生で書いている。
+import { EFFECT_TEST_FIRE_KEY } from "../../features/comment-viewer/overlaySettings";
 
 /**
  * 061d-1: テンプレートの取り込み・一覧・削除・プレビューの仕様テスト。
@@ -54,10 +58,19 @@ import { useEffectTemplates } from "./useEffectTemplates";
  * hook を差し替えると **分割の継ぎ目そのもの**（＝ 061d-2 で新しく壊れうる箇所）が検査されない。
  * 外部境界（Tauri invoke / dialog）は上でモック済みなので、これでも実 I/O は 1 つも起きない。
  */
-function Harness() {
+function Harness({
+  effectWindowOpen = true,
+}: {
+  effectWindowOpen?: boolean | null;
+}) {
   const templates = useEffectTemplates();
-  return <EffectTemplateCard {...templates} />;
+  // ⚠ 061h: 前提ステータス（エフェクト窓が開いているか）の持ち主は `ObsEffectsScreen`。
+  //   ここでは既定を「表示中」にしておき、停止中の注記を見るケースだけ明示的に false を渡す。
+  return <EffectTemplateCard {...templates} effectWindowOpen={effectWindowOpen} />;
 }
+
+/** ⚠ 061h: テスト表示の wire に載る id（Rust の `Uuid::new_v4()` と同じ形）。 */
+const UUID = "93c76e02-1111-4222-8333-444455556666";
 
 const record = (over: Partial<EffectTemplateRecord> = {}): EffectTemplateRecord => ({
   id: "t1",
@@ -220,8 +233,14 @@ describe("EffectTemplateCard", () => {
     fireEvent.click(screen.getByText("プレビュー"));
     await screen.findByTestId("effect-template");
 
-    // ⚠ この module は窓を開くコマンドもテスト発火も import していない（＝呼びようがない）。
-    //   ここでは「localStorage を通ってエフェクト窓へ届く経路を作っていない」を観測可能な形で固定する。
+    // ⚠ この module は窓を開くコマンドを import していない（＝呼びようがない）。
+    //   ここでは「**プレビュー導線が** localStorage を通ってエフェクト窓へ届く経路を作っていない」ことを
+    //   観測可能な形で固定する。
+    // ⚠⚠ **061h で不変条件の範囲が変わった**——同じ module に「配信画面でテスト表示」が入り、
+    //   あちらは `requestEffectTestFire` で**意図的にキーを書く**（それがボタンの仕事）。
+    //   ＝ 「1 バイトも書かない」のは**プレビューを押したときの話**であり、
+    //   **061c security-review S-3 の緩和策（プレビューが配信へ漏れない）は 1 ミリも緩んでいない**。
+    //   ⚠ このケースはテスト表示のボタンを**押さない**ことでその線を引いている。
     // ⚠⚠ **`for` ループだけにしない**（061d-1 レビュー P-2）——setItem が 0 回だと
     //   ループ本体が 1 度も走らず**自明に通る**（vacuous truth）ので、「1 バイトも書かない」ことを
     //   `not.toHaveBeenCalled()` で直接主張する。ループはキー名を落とさないための二重目として残す。
@@ -230,6 +249,82 @@ describe("EffectTemplateCard", () => {
       expect(String(call[0])).not.toMatch(/^stream-dock\.comment-viewer\.effect-/);
     }
     setItem.mockRestore();
+  });
+
+  // --- 061h: 配信画面でテスト表示 ----------------------------------------------------------------
+
+  it("⚠⚠ 「配信画面でテスト表示」が書くのは nonce と templateId だけ（§9 の新しい判断）", async () => {
+    // ⚠⚠ **ここが 061h で §9 の線を引き直したところ。** 061b 以来この wire は「nonce だけ・
+    //   中身は使わない」ことが担保だった。テスト表示がテンプレート行ごとになったので
+    //   **どれを出すか**を伝える必要が生じ、`<nonce>:<templateId>` にした。
+    //   載るのは nonce と **Rust の `Uuid::new_v4()` が採番した id** だけで、
+    //   **第三者の個人データ（本文・表示名・金額）は 1 バイトも入らない**——
+    //   出す中身はエフェクト窓側の固定ダミーから作る（`EFFECT_TEST_FIRE_KEY` の JSDoc が正）。
+    //   ⚠ `EFFECT_ASSIGNMENTS_KEY` が既に同じ id を保存しているので、**新しい種類のデータは増えない**。
+    // ⚠ id は**実物と同じ uuid の形**にする（Rust の `Uuid::new_v4()` が採番するもの）。
+    //   ⚠ 窓側はこの形を検証してから使う（多層防御の 1 枚目・`EffectOverlayApp` の storage ハンドラ）。
+    mocks.listEffectTemplates.mockResolvedValue([record({ id: UUID })]);
+    render(<Harness />);
+    await screen.findByText("きらきら演出");
+
+    fireEvent.click(screen.getByRole("button", { name: "配信画面でテスト表示" }));
+
+    const value = localStorage.getItem(EFFECT_TEST_FIRE_KEY);
+    expect(value).not.toBeNull();
+    // ⚠ 形そのものを固定する（nonce ＋ `:` ＋ uuid の形。名前・金額の類は 1 つも載らない）。
+    expect(value).toMatch(
+      /^\d+-\d+:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    );
+    expect(value).toContain(UUID);
+    expect(value).not.toContain(record().name);
+  });
+
+  it("⚠ テスト表示は連打のたびに違う値になる（同値だと storage イベントが飛ばない）", async () => {
+    mocks.listEffectTemplates.mockResolvedValue([record()]);
+    render(<Harness />);
+    await screen.findByText("きらきら演出");
+    const button = screen.getByRole("button", { name: "配信画面でテスト表示" });
+
+    fireEvent.click(button);
+    const first = localStorage.getItem(EFFECT_TEST_FIRE_KEY);
+    fireEvent.click(button);
+    const second = localStorage.getItem(EFFECT_TEST_FIRE_KEY);
+    expect(second).not.toBe(first);
+  });
+
+  it("⚠ 押したテンプレートの id を送る（行を取り違えない）", async () => {
+    mocks.listEffectTemplates.mockResolvedValue([
+      record(),
+      record({ id: "t2", name: "別の演出" }),
+    ]);
+    render(<Harness />);
+    await screen.findByText("別の演出");
+
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "配信画面でテスト表示" })[1],
+    );
+    expect(
+      localStorage.getItem(EFFECT_TEST_FIRE_KEY),
+    ).toMatch(/:t2$/);
+  });
+
+  it("⚠⚠ エフェクト窓が停止中なら、押しても何も出ないことを案内する", async () => {
+    // ⚠ 「黙って何も起きない」を作らないための注記（061a 以来の規律）。
+    //   ⚠ 窓を開く導線をここに置かないのは意図的で、**061i**（表示トグルを消して
+    //   「条件が有効なら窓を開く」へ変える）の担当。
+    mocks.listEffectTemplates.mockResolvedValue([record()]);
+    render(<Harness effectWindowOpen={false} />);
+    await screen.findByText("きらきら演出");
+    expect(
+      screen.getByText(/エフェクトのウィンドウが停止中のため/),
+    ).toBeInTheDocument();
+  });
+
+  it("エフェクト窓が表示中ならその注記は出さない", async () => {
+    mocks.listEffectTemplates.mockResolvedValue([record()]);
+    render(<Harness effectWindowOpen={true} />);
+    await screen.findByText("きらきら演出");
+    expect(screen.queryByText(/エフェクトのウィンドウが停止中のため/)).toBeNull();
   });
 
   // --- 描画ガード -------------------------------------------------------------------------------
