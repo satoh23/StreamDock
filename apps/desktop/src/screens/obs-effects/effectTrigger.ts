@@ -4,7 +4,6 @@ import {
   composeEventMessage,
   displayEventType,
   eventLabel,
-  isMonetaryEvent,
   monetaryTone,
   viewerIdOf,
   type MonetaryTone,
@@ -92,6 +91,24 @@ const BURST_MAX = EFFECT_MAX_CONCURRENT;
 const GIFT_FOLD_WINDOW_MS = 5_000;
 
 /**
+ * 061j（判断 7）: [`EffectTriggerState.lastConditionAt`] を掃除する上限。
+ *
+ * ⚠⚠ **これは「クールダウンの長さ」ではない。** 実際のクールダウンは matcher が返す
+ * [`EffectMatch.cooldownMs`] が正で、**条件ごとに違いうる**（イベント条件は `0`）。
+ * ＝ `Map<string, number>` には「その条件の窓」が残っていないので、
+ * **状態を増やし続けないための上限**としてここに 1 つだけ置く。
+ * ⚠⚠ **matcher が返しうる `cooldownMs` は必ずこの値以下でなければならない**——
+ * 超えると掃除が先に走って**クールダウンが黙って無効化される**。
+ * その整合は `effectTrigger.test.ts` の定数整合ケース（`KEYWORD_COOLDOWN_MS <= この値`）が固定している。
+ *
+ * ⚠ **`BURST_MAX` とは別軸である。** バーストは「**窓全体で** 5 秒に 3 件」、クールダウンは
+ * 「**その条件が** 10 秒に 1 件」。片方だけでは次を止められない:
+ *   - クールダウンだけ … 別々のキーワード 3 つが同時に来て 3 件同時に出る
+ *   - バーストだけ … 同じキーワードが 6 秒おきに来続けて出続ける
+ */
+export const CONDITION_COOLDOWN_MAX_MS = 60_000;
+
+/**
  * エフェクト 1 件を出すのに必要な**最小限**の情報。
  *
  * ⚠⚠ **`CommentViewDto` をそのまま持ち回らない。** 本文（`text`）もアバター（`author.avatar`）も
@@ -137,16 +154,53 @@ export type EffectRequest = EffectRequestBase & EffectKind;
 export type EffectKind = { kind: "template"; templateId: string };
 
 /**
- * 061d-2: イベント種別 → **どのエフェクトで出すか**を決める関数（`null` ＝ **1 件も出さない**）。
+ * 061j: 条件の照合に渡す**最小限**の入力。
  *
- * ⚠⚠ **これが「割り当て」を発火層へ持ち込む唯一の口である**（①）。本モジュールは
- * localStorage も `effectAssignments.ts` も import しない＝**純関数のまま**で、
- * 実体（`resolveEffectKind`）は呼び出し側が渡す。
- * ⚠ 引数は**生の `eventType`**（`displayEventType` を通したものではない）。
- * `isMonetaryEvent` と同じ値を使うことで、「ビッツは superchat に含まれる」という
- * `MONETARY_EVENT_TYPES` の前提が割り当て表とずれない（061b の穴②と同じ罠）。
+ * ⚠⚠ **`CommentViewDto` をそのまま渡さない**（§9・「必要ないものは持ち回らない」＝ 061b が
+ * [`EffectRequest`] に `text` / `avatar` を持たせなかったのと**同じ規律**。043a が `system_message` を
+ * 持ち回らないと決めた先例と同型）。渡すのは判定に要る 2 つだけ。
+ * ⚠ `eventType` は**生の値**（`displayEventType` を通したものではない）。
+ * 「ビッツは superchat に含まれる」という `MONETARY_EVENT_TYPES` の前提が条件表とずれない
+ * （061b の穴②と同じ罠）。⚠⚠ **`displayEventType` を呼ぶのに必要な `monetary` を渡していない**ので、
+ * 照合側は**この罠を踏みたくても踏めない**（型で塞いである）。
+ * ⚠ `text` は**必須の `string`**（`CommentViewDto.text` が optional ではない）。ただし
+ * **空文字はありうる**（サブスク／ギフト等は本文を持たない）ので、照合側はそれを前提に書くこと。
  */
-export type EffectKindResolver = (eventType: string) => EffectKind | null;
+export interface EffectMatchInput {
+  eventType: string;
+  text: string;
+}
+
+/**
+ * 061j: 当たった条件 1 件。
+ *
+ * ⚠⚠ **本文を載せない。** これが「第三者の本文が発火層より先へ 1 バイトも進まない」ことの担保で、
+ * `EffectRequest` が **8 キーのまま無改変**であることと対になっている（§9）。
+ * ⚠ `conditionId` は**ユーザー自身が作った条件の識別子**なので §9 の対象外だが、
+ * **`EffectRequest` には載せない**——クールダウンの判定は [`decideEffects`] の中で完結するので
+ * 載せる理由が無く、載せると「出すのに要る最小限」という 061b の規律が緩む。
+ * ⚠ `cooldownMs` を戻り値に載せることで、[`decideEffects`] の分岐は 1 つで済む
+ * （＝**発火層は「イベント条件かキーワード条件か」を知らない**・061b の「発火層は割り当てを知らない」の維持）。
+ */
+export interface EffectMatch {
+  effect: EffectKind;
+  conditionId: string;
+  /** `0` ＝ クールダウン無効。⚠ 実際の値の根拠は `effectAssignments.ts` の `KEYWORD_COOLDOWN_MS` が正。 */
+  cooldownMs: number;
+}
+
+/**
+ * 061d-2 / **061j**: コメント → **どの条件でどのエフェクトを出すか**（`null` ＝ **1 件も出さない**）。
+ *
+ * ⚠⚠ **これが「条件」を発火層へ持ち込む唯一の口である**（①）。本モジュールは
+ * localStorage も `effectAssignments.ts` も import しない＝**純関数のまま**で、
+ * 実体（`resolveEffectMatch`）は呼び出し側が渡す。
+ * ⚠⚠ **061j で課金判定（`isMonetaryEvent`）もこの向こう側へ移った**——キーワード条件は
+ * **通常チャットで発火するのが目的**なので、発火層でゲートすると永久に当たらないため。
+ * ＝ 本モジュールから `isMonetaryEvent` の import が消えたが、**層の向きは変わっていない**
+ * （`effectAssignments.ts` は元から `viewerFormat` を import している）。
+ */
+export type EffectMatcher = (input: EffectMatchInput) => EffectMatch | null;
 
 interface EffectRequestBase {
   /**
@@ -182,13 +236,28 @@ export interface EffectTriggerState {
   lastGiftAt: Map<string, number>;
   /** 直近に発火した時刻(ms)。バースト上限の判定に使う。 */
   recentFires: number[];
+  /**
+   * 061j（判断 7）: 直近に**その条件で**発火した時刻(ms)。
+   *
+   * ⚠ 既存 2 つと同じく [`decideEffects`] の先頭で時間窓の外を捨てる。
+   * ⚠ **記録は実際に出したときだけ**（`recentFires` / `lastGiftAt` と同じ規律。バーストで捨てた分まで
+   * 記録すると「1 度も出ない」が起きる）。
+   */
+  lastConditionAt: Map<string, number>;
 }
 
 export function createEffectTriggerState(): EffectTriggerState {
-  return { lastGiftAt: new Map(), recentFires: [] };
+  return { lastGiftAt: new Map(), recentFires: [], lastConditionAt: new Map() };
 }
 
-/** `CommentViewDto` → `EffectRequest`。⚠ **判定・文言・配色はすべて既存の共有関数**（2 実装に分けない）。 */
+/**
+ * `CommentViewDto` → `EffectRequest`。⚠ **判定・文言・配色はすべて既存の共有関数**（2 実装に分けない）。
+ *
+ * ⚠⚠ **061j: ここが「本文を落とす関門」である。** 入ってくる `c` は本文を持つが、
+ * 出ていく `EffectRequest` は **8 キー（id / name / amountText / message / eventLabel / tone /
+ * kind / templateId）だけ**で、`text` を書ける場所が型として無い。
+ * ⚠ **「便利だから」で `text` を足さないこと**（`effectTrigger.test.ts` がキー集合そのものを固定している）。
+ */
 function toEffectRequest(c: CommentViewDto, kind: EffectKind): EffectRequest {
   return {
     id: c.id,
@@ -216,27 +285,29 @@ function toEffectRequest(c: CommentViewDto, kind: EffectKind): EffectRequest {
  * @param updated `mergeComments` の `updated` 相当。⚠ **ここからは 1 件も出さない**
  * @param state   時間窓の状態（`createEffectTriggerState` で作る）
  * @param now     現在時刻(ms)。⚠ **引数で受ける**ので本関数は決定的（テストで時計を偽装しなくてよい）
- * @param resolveKind 061d-2: イベント種別 → **どのエフェクトで出すか**（`null` ＝ 出さない）。
+ * @param matchEffect 061d-2 / **061j**: コメント → **どの条件でどのエフェクトを出すか**（`null` ＝ 出さない）。
  *   ⚠⚠ **061h で既定値を外し、必須にした。** 061d-2 はここを
  *   `resolveKind: EffectKindResolver = () => BUILTIN_KIND` と既定つきにして
  *   「061b までの 21 ケースが 1 文字も書き換わらない＝発火判定に手が入っていないことを
  *   `git diff` で示せる」という担保を作っていたが、**それは 061d-2 のレビューのための足場**であり、
- *   役目は終わっている。⚠⚠ **既定を外したことで「割り当てを引かずにエフェクトが出る」経路が
+ *   役目は終わっている。⚠⚠ **既定を外したことで「条件を引かずにエフェクトが出る」経路が
  *   型として消えた**——本関数は「何を出すか」を**自分では 1 つも知らない**ので、
- *   呼び出し側が resolver を渡さない限り 1 件も発火しない。これが 061h の目的そのものである。
- *   ⚠ **ここに既定値を書き戻さないこと**（書き戻した瞬間に、割り当てを無視して出る経路が復活する）。
+ *   呼び出し側が matcher を渡さない限り 1 件も発火しない。これが 061h の目的そのものである。
+ *   ⚠ **ここに既定値を書き戻さないこと**（書き戻した瞬間に、条件を無視して出る経路が復活する）。
  *
- * 塞いでいる多重発火は 3 経路:
+ * 塞いでいる多重発火は **4 経路**（061j でクールダウンが 4 つ目として増えた）:
  * 1. **[043e] Jewels の combo 再送** … `updated` から出さない（下記）。
  * 2. **[043a] Twitch コミュニティギフトの N+1** … 同一投稿者の `gift` を `GIFT_FOLD_WINDOW_MS` 内で 1 件へ。
  * 3. **バースト** … `BURST_WINDOW_MS` に `BURST_MAX` 件まで。超過分は**捨てる**（キューに溜めない）。
+ * 4. **061j: 条件ごとのクールダウン** … 同じ条件は `match.cooldownMs` 内で 1 件まで
+ *    （＝視聴者が同じ単語を連呼しても画面が埋まらない）。
  */
 export function decideEffects(
   added: CommentViewDto[],
   updated: CommentViewDto[],
   state: EffectTriggerState,
   now: number,
-  resolveKind: EffectKindResolver,
+  matchEffect: EffectMatcher,
 ): EffectRequest[] {
   // ⚠⚠ **`updated` は意図的に 1 件も読まない。** [043e] の Jewels は「別メッセージが N 件届く」のではなく
   // 「**同じ 1 件が N 回更新される**」（公式 proto に "For giftEvents, the same ID may be reused to update
@@ -253,28 +324,46 @@ export function decideEffects(
   state.recentFires = state.recentFires.filter(
     (at) => now - at < BURST_WINDOW_MS,
   );
+  // 061j（判断 7）: 条件ごとのクールダウンも同じ場所で掃除する。
+  // ⚠ 窓は `CONDITION_COOLDOWN_MAX_MS`（＝**状態を増やし続けないための上限**であって
+  //   クールダウンの長さではない。あちらの JSDoc が正）。
+  for (const [conditionId, at] of state.lastConditionAt) {
+    if (now - at >= CONDITION_COOLDOWN_MAX_MS) {
+      state.lastConditionAt.delete(conditionId);
+    }
+  }
 
   const requests: EffectRequest[] = [];
   for (const c of added) {
-    // ⚠⚠ **`isMonetaryEvent(c.eventType)` であって `isMonetaryEvent(displayEventType(c))` ではない。**
-    // 061b タスクファイルは後者と書いているが**それは誤り**で、書くと**ビッツでエフェクトが出ない**——
-    // `displayEventType` は superchat＋`currency:"BITS"` を `"bits"` へ振り替えるが、`"bits"` は
-    // `MONETARY_EVENT_TYPES` に**無い**（あの Set は「ビッツは superchat に含まれる」前提＝
-    // **生の `eventType` に適用する述語**）。059b が通知音で同じ誤りを踏んで訂正しており、
-    // `CommentList` の本体一覧・047 ティッカー・049 読み上げ優先キュー・固定帯と**同一の式**がこれ。
-    if (!isMonetaryEvent(c.eventType)) continue;
+    // ⚠⚠ **061j: 課金判定（`isMonetaryEvent`）は matcher の中へ移した**（判断 5）。
+    //   ここに `if (!isMonetaryEvent(c.eventType)) continue;` を書き戻すと、
+    //   **キーワード条件が永久に当たらない**（通常チャットが 1 件もここを通らなくなる）。
+    //   ⚠ 移した先でも `displayEventType` を通していないこと（ビッツが superchat で届く罠）は
+    //   `EffectMatchInput` が `monetary` を持たないことで**型として**担保されている。
+    //
+    // ⚠⚠ **061d-2（穴 γ）: 条件の解決は「バースト検査より前」に置く。**
+    //   ⚠ **061j での正確な言い方**（061d-2 の説明を実装に合わせて訂正した）: この位置は
+    //   **振る舞いとしてはバースト検査・gift 畳み込みのどちらとも交換可能**である
+    //   ——後続の 2 つは `recentFires.length` と `lastGiftAt.has` を**読むだけ**で、
+    //   書き込む（`push` / `set`）のは**実際に出したときだけ**だから。
+    //   ⇒ **守っている不変条件は「順序」ではなく「出さないと決まったものは state に一切触らない」**
+    //   ほうである（`effectTrigger.test.ts` が state の 3 つのサイズを直接数えて固定している）。
+    //   ⚠⚠ **061j でこの不変条件の重みが桁で上がった**——061h までは非課金コメントが先頭の
+    //   ゲートで落ちていたが、いまは**全コメントがこのループを通る**。ここで `recentFires` を
+    //   1 件でも積むと、**キーワードに当たらない通常チャットが投げ銭を捨てる**（常時発生する）。
+    // ⚠ 手前に置く理由は 061d-2 のまま＝ `viewerIdOf` の計算を無駄にしないことと、
+    //   「出さないと決まったものは以降の状態に一切触らない」が**読んで分かる**こと。
+    const match = matchEffect({ eventType: c.eventType, text: c.text });
+    if (match === null) continue;
 
-    // ⚠⚠ **061d-2（穴 γ）: 割り当ての解決は「バースト検査より前」に置く。**
-    //   後ろに置くと「サブスクを『エフェクトを出さない』にしているのに、サブスクが 3 件届いただけで
-    //   **その直後のスーパーチャットが捨てられる**」が起きる＝ユーザーから見ると
-    //   「出さない設定にしたら、出るはずのものまで出なくなった」で設定の意味が反転する。
-    // ⚠ gift 畳み込みとの前後は**振る舞い上は等価**（`lastGiftAt` は実際に出したときにしか書かない）。
-    //   それでも手前に置くのは、`viewerIdOf` の計算を無駄にしないためと、
-    //   「出さないと決まったものは以降の状態に一切触らない」という読める規律にするため。
-    // ⚠ `effectTrigger.test.ts` の「出さない種別はバースト枠も畳み込み状態も消費しない」が
-    //   この位置を固定している（下へ動かす変異でレッドになる）。
-    const kind = resolveKind(c.eventType);
-    if (kind === null) continue;
+    // 061j（判断 7）: **同じ条件が続けて発火しない**ようにする。
+    // ⚠ 位置は「`match === null` の直後・**gift 畳み込みより前**」＝
+    //   「出さないと決まったものは状態に触らない」の一部。
+    // ⚠ `cooldownMs === 0`（イベント条件）は素通しする＝スパチャ 2 連投の 2 件目を落とさない。
+    if (match.cooldownMs > 0) {
+      const last = state.lastConditionAt.get(match.conditionId);
+      if (last !== undefined && now - last < match.cooldownMs) continue;
+    }
 
     // [043a] コミュニティギフトの N+1 を畳む（同一投稿者の gift は時間窓内で 1 件）。
     // ⚠ 判定キーは `viewerIdOf`（`provider:userId`）＝**表示名ではなく安定 ID**（改名や同名で崩れない）。
@@ -292,11 +381,17 @@ export function decideEffects(
     // ⚠ **捨てた件数はログに出さない**（§9。出すと第三者の課金の量が端末ログに残る）。
     if (state.recentFires.length >= BURST_MAX) continue;
 
-    requests.push(toEffectRequest(c, kind));
+    requests.push(toEffectRequest(c, match.effect));
     state.recentFires.push(now);
     // ⚠ **実際に出したときだけ**記録する。バーストで捨てた分まで記録すると、
     // 「1 件目が捨てられ、2 件目も畳まれて **1 回も出ない**」が起きる（出ないほうが害が大きい）。
     if (viewerId !== null) state.lastGiftAt.set(viewerId, now);
+    // ⚠⚠ **061j: クールダウンも「実際に出したときだけ」記録する。** 捨てたときにも記録すると、
+    //   バーストで 1 件目が捨てられた条件が**そのあとクールダウンぶん沈黙する**＝
+    //   「当たっているのに 1 回も出ない」が起きる（`lastGiftAt` と同じ罠の 2 例目）。
+    //   ⚠ **「何も出ない」だけを見るテストでは殺せない変異**なので、
+    //   `effectTrigger.test.ts` は**発火回数を数えて**固定している（061h の変異⑤の教訓）。
+    if (match.cooldownMs > 0) state.lastConditionAt.set(match.conditionId, now);
   }
   return requests;
 }

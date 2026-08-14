@@ -6,9 +6,13 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
-import { EFFECT_ASSIGNMENTS_KEY } from "../../features/comment-viewer/overlaySettings";
+import {
+  EFFECT_ASSIGNMENTS_KEY,
+  EFFECT_OVERLAY_ENABLED_KEY,
+} from "../../features/comment-viewer/overlaySettings";
 import type { EffectTemplateRecord } from "../../features/obs-effects/bindings/EffectTemplateRecord";
 import { MONETARY_EVENT_TYPES } from "../comment-viewer/viewerFormat";
+import { EFFECT_EVENT_LABEL, EFFECT_EVENT_ROWS } from "./effectEventRows";
 
 /**
  * 061d-2: イベント種別ごとの割り当て UI の仕様テスト。
@@ -20,6 +24,10 @@ import { MONETARY_EVENT_TYPES } from "../comment-viewer/viewerFormat";
  *   （061d-2 は「組み込み」として表示していた。⚠ **判定そのものは残っている**——
  *   `<select>` の value が選択肢に無いとブラウザが勝手に先頭を選ぶ、という理由は 061h でも生きており、
  *   **明示的に**落とす先を書く必要がある。061h が変えたのは落とす先だけ）。
+ *   ⚠⚠ **061j (0) で「落とす先の明示」を DOM の外で固定した**（061h 申し送り ⑦-c の返済）——
+ *   組み立てを `effectSelectValue` / `isEffectTemplateMissingFromList` へ切り出し、
+ *   **`<option>` を 1 つも描かずに**値を検査する describe を先頭に置いた。
+ *   ⚠ **選択肢の順序は 1 文字も変えていない**（061i の申し送りどおり、順序では解決しない）。
  * - ⚠⚠ **「すべて「表示しない」に戻す」が動く**——壊れたテンプレートで配信画面が
  *   読めなくなったときの**唯一の脱出路**（エフェクト窓は透過・最背面・非フォーカスで操作できない）。
  * - **テンプレート削除で、それを使っている割り当てが「表示しない」へ戻る**＋確認文にその旨が出る。
@@ -47,6 +55,13 @@ vi.mock("../../features/obs-effects/effectTemplateApi", () => ({
 import { EffectAssignmentCard } from "./EffectAssignmentCard";
 import { EffectTemplateCard } from "./EffectTemplateCard";
 import { useEffectTemplates } from "./useEffectTemplates";
+import type { EffectAssignment } from "./effectAssignments";
+import {
+  effectSelectValue,
+  isEffectTemplateMissingFromList,
+  NONE_VALUE,
+  TEMPLATE_PREFIX,
+} from "./effectSelectValue";
 
 const TEMPLATE_ID = "93c76e02-1111-4222-8333-444455556666";
 const TEMPLATE_ID2 = "0f0e0d0c-1111-4222-8333-444455556666";
@@ -98,8 +113,26 @@ function Harness({ openEffectOverlay = () => {} }: { openEffectOverlay?: () => v
 const selectFor = (label: string) =>
   screen.getByLabelText(`${label}のエフェクト`) as HTMLSelectElement;
 
-const stored = (): Record<string, { kind: string; templateId?: string }> =>
-  JSON.parse(localStorage.getItem(EFFECT_ASSIGNMENTS_KEY) ?? "{}");
+/**
+ * 061j: 保存値（**条件の配列**）を読む。⚠ 061i までの `Record<eventType, …>` から形が変わった。
+ *
+ * ⚠ **生の JSON を読む**（`loadEffectConditions()` を通さない）——「画面の操作が
+ * localStorage に何を書いたか」を見たいので、読み込み時の正規化を挟むと**書けていなくても通る**。
+ */
+interface StoredCondition {
+  id: string;
+  when: { type: string; eventType?: string; text?: string; match?: string };
+  effect: { kind: string; templateId?: string };
+}
+const stored = (): StoredCondition[] => {
+  const raw = localStorage.getItem(EFFECT_ASSIGNMENTS_KEY);
+  return raw === null ? [] : (JSON.parse(raw) as StoredCondition[]);
+};
+/** 条件 1 件を id で引く。 */
+const storedById = (id: string): StoredCondition | undefined =>
+  stored().find((c) => c.id === id);
+const storedKeywords = (): StoredCondition[] =>
+  stored().filter((c) => c.when.type === "keyword");
 
 /**
  * ⚠⚠ **061i レビュー Q-3（既知の弱さ・別タスクで直す）: このファイルの待ち合わせは弱い。**
@@ -125,6 +158,82 @@ const stored = (): Record<string, { kind: string; templateId?: string }> =>
  * ⚠ 1 か所ずつ直すと「直した所と直していない所」が混在し、次に落ちたときの切り分けが効かなくなる。
  */
 
+/**
+ * ⚠⚠ **061j (0): 061h 申し送り ⑦-c の返済。**
+ *
+ * 061h のミューテーション⑦-c（`notInList` の判定ごと削除）は**警告文が消えること**しか
+ * レッドにできていなかった。理由（`docs/progress.md` の 061h 節が正）:
+ * **`<select>` の `value` が選択肢に無いと、ブラウザも jsdom も "ask for a reset" で
+ * 先頭の `<option>` を選ぶ**——先頭がたまたま「エフェクトを出さない」なので、
+ * **判定を消しても `select.value` のアサーションが偶然通る**。
+ * ⚠ 061i は「選択肢の順序を変えない」ことで回避したが、**061j は保存形ごと変えるので回避できない**
+ * （061i 申し送り）。⚠ **選択肢の順序を変えて解決するのは「やらないこと」**なので、
+ * **DOM を経由しない形**＝ 組み立てを純関数へ切り出して直接固定する形にした。
+ *
+ * ⇒ ここの 6 ケースは **`<option>` を 1 つも描かずに**値を検査するので、
+ * **選択肢の先頭が何であっても**「落とす先を明示している」ことが固定される。
+ *
+ * ⚠ **正直な限界（過大な主張をしない）**: 固定できたのは
+ * **「`effectSelectValue` が正しいこと」**であって、**「画面がそれを使い続けること」ではない**。
+ * 画面側で `template:<id>` を直に組み立て直す変異は、ブラウザの既定と結果が一致するため
+ * 依然として DOM からは観測できない。⚠ ただし**落とす先を「先頭のテンプレート」等へ変える**変異は
+ * 下の「`<select>` の value は `effectSelectValue` と一致する」ケースが拾う。
+ */
+describe("061j (0): `<select>` の値の組み立て（純関数・DOM を経由しない）", () => {
+  const templates = [record(), record({ id: TEMPLATE_ID2, name: "紙吹雪" })];
+  const tpl = (templateId: string): EffectAssignment => ({
+    kind: "template",
+    templateId,
+  });
+
+  it("「エフェクトを出さない」はそのまま NONE_VALUE", () => {
+    expect(effectSelectValue({ kind: "none" }, templates)).toBe(NONE_VALUE);
+  });
+
+  it("一覧に在るテンプレートは `template:<id>`", () => {
+    expect(effectSelectValue(tpl(TEMPLATE_ID), templates)).toBe(
+      `${TEMPLATE_PREFIX}${TEMPLATE_ID}`,
+    );
+    expect(effectSelectValue(tpl(TEMPLATE_ID2), templates)).toBe(
+      `${TEMPLATE_PREFIX}${TEMPLATE_ID2}`,
+    );
+  });
+
+  it("⚠⚠ 一覧に無い id は **明示的に** NONE_VALUE へ落ちる（061h 申し送り ⑦-c の本体）", () => {
+    // ⚠⚠ **`!isEffectTemplateMissingFromList(...)` を外す変異は、この 1 行が必ずレッドにする。**
+    //   ⚠ ブラウザの「先頭を選ぶ」既定に一切依存していないのが要点
+    //   （選択肢を 1 つも描いていないので、先頭が何であっても結果は変わらない）。
+    expect(effectSelectValue(tpl(MISSING_ID), templates)).toBe(NONE_VALUE);
+    // ⚠ 落とす先は**先頭のテンプレート**でもない（061h で `BUILTIN_VALUE` → `NONE_VALUE` へ反転した先）。
+    expect(effectSelectValue(tpl(MISSING_ID), templates)).not.toBe(
+      `${TEMPLATE_PREFIX}${TEMPLATE_ID}`,
+    );
+  });
+
+  it("⚠ 一覧が届く前（空）でも判定は要る＝ NONE_VALUE へ落ちる", () => {
+    // ⚠ 「一覧が空だから警告は出さない」（下の `missing`）とは**別の判断**である。
+    //   受け皿の値は一覧の取得状況に関わらず必ず明示する。
+    expect(effectSelectValue(tpl(TEMPLATE_ID), [])).toBe(NONE_VALUE);
+  });
+
+  it("⚠⚠ `isEffectTemplateMissingFromList` は `listState` を見ない（警告の条件と混ぜない）", () => {
+    // ⚠ **表示の受け皿**（この述語）と**「無い」という断言**（警告）は別の判断で、
+    //   後者だけが `listState === "ready"` を要求する（061d-2 レビュー S-1）。
+    //   ⚠ ここに `listState` を持ち込む変異は、下の DOM ケース群と食い違って必ずどちらかが落ちる。
+    expect(isEffectTemplateMissingFromList(tpl(MISSING_ID), templates)).toBe(
+      true,
+    );
+    expect(isEffectTemplateMissingFromList(tpl(TEMPLATE_ID), templates)).toBe(
+      false,
+    );
+    expect(isEffectTemplateMissingFromList(tpl(TEMPLATE_ID), [])).toBe(true);
+  });
+
+  it("⚠ 「エフェクトを出さない」は『見つからない』にならない（警告を出す条件に混ぜない）", () => {
+    expect(isEffectTemplateMissingFromList({ kind: "none" }, [])).toBe(false);
+  });
+});
+
 describe("EffectAssignmentCard", () => {
   beforeEach(() => {
     localStorage.clear();
@@ -135,15 +244,24 @@ describe("EffectAssignmentCard", () => {
 
   // --- 行の集合 ---------------------------------------------------------------------------------
 
-  it("⚠⚠ 行は課金イベント種別ぶん最初から全部ある（「条件を追加」ボタンを作らない）", async () => {
+  it("⚠⚠ イベント条件の行は課金種別ぶん最初から全部ある（061d の (2) はここでは維持）", async () => {
     render(<Harness />);
     await waitFor(() =>
       expect(mocks.listEffectTemplates).toHaveBeenCalledTimes(1),
     );
-    const selects = screen.getAllByRole("combobox");
     // ⚠ `MONETARY_EVENT_TYPES` に 7 種別目が増えたら、この件数も自動で増える（行の作り方が機械的）。
-    expect(selects).toHaveLength(MONETARY_EVENT_TYPES.size);
-    expect(screen.queryByRole("button", { name: /条件を追加/ })).toBeNull();
+    for (const { eventType } of EFFECT_EVENT_ROWS) {
+      const label = EFFECT_EVENT_LABEL[eventType] ?? eventType;
+      expect(screen.getByLabelText(`${label}のエフェクト`)).toBeInTheDocument();
+    }
+    expect(EFFECT_EVENT_ROWS).toHaveLength(MONETARY_EVENT_TYPES.size);
+    // ⚠⚠ **イベント条件には「条件を追加」を作らない**（061d の (2)＝たぬえさ3 の逆をやる）。
+    //   ⚠ **061j でキーワード条件だけ追加ボタンを持つ**ようになったので、
+    //   「ボタンが 1 つも無い」ではなく「**イベント行が最初から全部並んでいる**」で固定する
+    //   （061d の狙いは「増やせないこと」ではなく「コピペで増やす手作業を作らないこと」）。
+    expect(screen.getAllByRole("combobox").length).toBeGreaterThanOrEqual(
+      MONETARY_EVENT_TYPES.size,
+    );
   });
 
   it("⚠⚠ スーパーチャットの行は「ビッツ」も含むと書く（wire 上 superchat で届くため）", async () => {
@@ -188,7 +306,7 @@ describe("EffectAssignmentCard", () => {
     fireEvent.change(selectFor("スーパーチャット・ビッツ"), {
       target: { value: `template:${TEMPLATE_ID}` },
     });
-    expect(stored().superchat).toEqual({
+    expect(storedById("event:superchat")?.effect).toEqual({
       kind: "template",
       templateId: TEMPLATE_ID,
     });
@@ -197,21 +315,33 @@ describe("EffectAssignmentCard", () => {
   it("「エフェクトを出さない」へ戻すと保存される", async () => {
     // ⚠ 061h: 既定が「出さない」になったので、**まずテンプレートを選んでから**戻す
     //   （既定のまま「出さない」を選んでも保存キーごと消える＝未保存と同じ状態に潰れる）。
+    // ⚠ 061j: 仕込む形も**条件の配列**になった。
     localStorage.setItem(
       EFFECT_ASSIGNMENTS_KEY,
-      JSON.stringify({
-        subscription: { kind: "template", templateId: TEMPLATE_ID },
-        gift: { kind: "template", templateId: TEMPLATE_ID },
-      }),
+      JSON.stringify([
+        {
+          id: "event:subscription",
+          when: { type: "event", eventType: "subscription" },
+          effect: { kind: "template", templateId: TEMPLATE_ID },
+        },
+        {
+          id: "event:gift",
+          when: { type: "event", eventType: "gift" },
+          effect: { kind: "template", templateId: TEMPLATE_ID },
+        },
+      ]),
     );
     render(<Harness />);
     await waitFor(() =>
       expect(mocks.listEffectTemplates).toHaveBeenCalledTimes(1),
     );
     fireEvent.change(selectFor("サブスク"), { target: { value: "none" } });
-    expect(stored().subscription).toEqual({ kind: "none" });
+    expect(storedById("event:subscription")?.effect).toEqual({ kind: "none" });
     // ⚠ 他の行は巻き添えにしない。
-    expect(stored().gift).toEqual({ kind: "template", templateId: TEMPLATE_ID });
+    expect(storedById("event:gift")?.effect).toEqual({
+      kind: "template",
+      templateId: TEMPLATE_ID,
+    });
   });
 
   // --- ⑪: 実在しない id ------------------------------------------------------------------------
@@ -228,10 +358,23 @@ describe("EffectAssignmentCard", () => {
       expect(mocks.listEffectTemplates).toHaveBeenCalledTimes(1),
     );
     // ⚠⚠ **「組み込み」へ倒す変異はこの 1 行がレッドにする**（061d-2 とは逆向き）。
-    expect(selectFor("スーパーチャット・ビッツ").value).toBe("none");
+    // ⚠⚠ **061j (0): この行だけでは「落とす先を明示している」ことは固定できない**——
+    //   判定を消しても `value` は選択肢に無い値になり、**ブラウザ（jsdom）が先頭を選ぶ**ので
+    //   たまたま "none" に一致する。それを固定しているのは上の純関数の describe である。
+    //   ⇒ ここは**画面が純関数と同じ規則を見ていること**を確かめる位置づけに変えた
+    //   （落とす先を「先頭のテンプレート」等へ変える変異は、選択肢に在る値になるのでここで落ちる）。
+    expect(selectFor("スーパーチャット・ビッツ").value).toBe(
+      effectSelectValue(
+        { kind: "template", templateId: MISSING_ID },
+        [record()],
+      ),
+    );
+    expect(selectFor("スーパーチャット・ビッツ").value).toBe(NONE_VALUE);
     // ⚠⚠ **この警告が、061h で「出さない側へ倒した」ことを観測可能にしている。**
     //   エフェクト窓は透過・最背面・非フォーカスで何も出せないので、
     //   「割り当てたのに出ない」に気付ける場所はここしかない（`fire()` の注記が前提として名指ししている）。
+    // ⚠ **値（上）と警告（下）は別々に見る**——前者は「表示の受け皿」、後者は
+    //   「無いという断言」で、成立条件が違う（後者だけ `listState === "ready"` を要求する）。
     expect(
       screen.getByText(
         /割り当てていたエフェクトが見つかりません。いまは何も表示されません。/,
@@ -256,8 +399,9 @@ describe("EffectAssignmentCard", () => {
       expect(mocks.listEffectTemplates).toHaveBeenCalledTimes(1),
     );
     expect(screen.queryByText(/割り当てていたエフェクトが見つかりません/)).toBeNull();
+    // ⚠ 実在する id なので受け皿へは落ちない（＝落とす判定が常に true になる変異でレッド）。
     expect(selectFor("スーパーチャット・ビッツ").value).toBe(
-      `template:${TEMPLATE_ID}`,
+      `${TEMPLATE_PREFIX}${TEMPLATE_ID}`,
     );
   });
 
@@ -284,22 +428,29 @@ describe("EffectAssignmentCard", () => {
     //   ⚠ **判定（`notInList`）を消してよい、という意味ではない**——選択肢に無い value を渡すと
     //   ブラウザが**勝手に**先頭を選ぶので、「たまたま先頭が『出さない』だから合っている」状態になる。
     //   061d-2 の判定はそのまま残し、落とす先だけを変えてある。
-    expect(selectFor("スーパーチャット・ビッツ").value).toBe("none");
+    //   ⚠⚠ **061j (0): その「たまたま」を潰したのは上の純関数の describe である**
+    //   （この行は依然としてブラウザの既定と区別が付かない＝ここでは固定できていない）。
+    expect(selectFor("スーパーチャット・ビッツ").value).toBe(
+      effectSelectValue({ kind: "template", templateId: TEMPLATE_ID }, []),
+    );
+    expect(selectFor("スーパーチャット・ビッツ").value).toBe(NONE_VALUE);
   });
 
   it("⚠ 実在しない id を見つけても保存値は書き換えない（一時的な取得失敗で設定が消えない）", async () => {
-    const raw = JSON.stringify({
-      superchat: { kind: "template", templateId: MISSING_ID },
-    });
+    const raw = JSON.stringify([
+      {
+        id: "event:superchat",
+        when: { type: "event", eventType: "superchat" },
+        effect: { kind: "template", templateId: MISSING_ID },
+      },
+    ]);
     localStorage.setItem(EFFECT_ASSIGNMENTS_KEY, raw);
     render(<Harness />);
     await waitFor(() =>
       expect(mocks.listEffectTemplates).toHaveBeenCalledTimes(1),
     );
-    expect(stored().superchat).toEqual({
-      kind: "template",
-      templateId: MISSING_ID,
-    });
+    // ⚠ **バイト単位で不変**（読んだだけでは書き戻さない・判断 8）。
+    expect(localStorage.getItem(EFFECT_ASSIGNMENTS_KEY)).toBe(raw);
   });
 
   // --- 復帰導線 ---------------------------------------------------------------------------------
@@ -441,5 +592,251 @@ describe("EffectAssignmentCard", () => {
     // ⚠ 別のテンプレートと「出さない」は巻き添えにしない。
     expect(selectFor("メンバーシップ").value).toBe(`template:${TEMPLATE_ID2}`);
     expect(selectFor("ギフト").value).toBe("none");
+  });
+
+  // --- 061j: キーワード条件（自由テキスト） ------------------------------------------------------
+
+  /** 一覧が届くまで待つ（`<option>` が生えてから操作する）。 */
+  const readyHarness = async (openEffectOverlay = () => {}) => {
+    render(<Harness openEffectOverlay={openEffectOverlay} />);
+    await screen.findAllByRole("option", { name: "きらきら演出" });
+  };
+
+  /** 「条件を追加」→ 未確定行のキーワード入力を返す。 */
+  const addRow = async () => {
+    fireEvent.click(screen.getByRole("button", { name: "条件を追加" }));
+    return screen.getByLabelText("キーワード 1") as HTMLInputElement;
+  };
+
+  it("⚠⚠ 穴 β: 「条件を追加」で行が生えるが、**空のままでは何も保存されない**", async () => {
+    await readyHarness();
+    const input = await addRow();
+    expect(input).toBeInTheDocument();
+    // ⚠⚠ **判断 9（空を保存しない）と「条件を追加」が両立していることの担保。**
+    //   素直に `addKeywordCondition()` を `commitConditions` へ通すと、保存層が空を落として
+    //   **行がその場で消える**（＝ボタンが動かない）。⇒ 未確定行はコンポーネント state に持つ。
+    expect(localStorage.getItem(EFFECT_ASSIGNMENTS_KEY)).toBeNull();
+    fireEvent.blur(input);
+    expect(localStorage.getItem(EFFECT_ASSIGNMENTS_KEY)).toBeNull();
+    // ⚠ 行は消えない（打ち直せる）。
+    expect(screen.getByLabelText("キーワード 1")).toBeInTheDocument();
+  });
+
+  it("⚠⚠ 穴 α: 打鍵ごとには保存せず、blur で 1 回だけ確定する（048 の先例）", async () => {
+    await readyHarness();
+    const input = await addRow();
+    fireEvent.change(input, { target: { value: "く" } });
+    fireEvent.change(input, { target: { value: "くさ" } });
+    fireEvent.change(input, { target: { value: "草" } });
+    // ⚠⚠ **ここが `onChange` 即 commit にする変異をレッドにする 1 行。**
+    //   打鍵ごとに書くと `EFFECT_ASSIGNMENTS_KEY` が毎回変わり、エフェクト窓の `storage` 購読が
+    //   `list_effect_templates` を**打鍵ごとに 1 本**投げる。
+    expect(localStorage.getItem(EFFECT_ASSIGNMENTS_KEY)).toBeNull();
+    fireEvent.blur(input);
+    expect(storedKeywords()).toHaveLength(1);
+    expect(storedKeywords()[0].when.text).toBe("草");
+  });
+
+  it("⚠ Enter でも確定する", async () => {
+    await readyHarness();
+    const input = await addRow();
+    fireEvent.change(input, { target: { value: "草" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(storedKeywords()).toHaveLength(1);
+  });
+
+  it("⚠⚠ 新規 10（UI 側）: 既存の行を空にして確定すると **直前の確定値へ戻る**", async () => {
+    await readyHarness();
+    const input = await addRow();
+    fireEvent.change(input, { target: { value: "草" } });
+    fireEvent.blur(input);
+    expect(storedKeywords()[0].when.text).toBe("草");
+
+    // 全部消して確定（＝打ち間違い）。⚠ 空を保存すると**全コメントに一致する**。
+    const saved = screen.getByLabelText("キーワード 1") as HTMLInputElement;
+    fireEvent.change(saved, { target: { value: "" } });
+    fireEvent.blur(saved);
+    expect(storedKeywords()[0].when.text).toBe("草");
+    // ⚠ 画面も直前値へ戻る（「消えたのか残ったのか」が分からない状態を作らない）。
+    expect((screen.getByLabelText("キーワード 1") as HTMLInputElement).value).toBe("草");
+  });
+
+  it("⚠⚠ 新規 10（UI 側）: 全角スペースだけを入力しても保存されない", async () => {
+    await readyHarness();
+    const input = await addRow();
+    // ⚠ 空白だけの入力は確定しない（`isUsableKeyword` が拾う）。
+    fireEvent.change(input, { target: { value: "　" } });
+    fireEvent.blur(input);
+    expect(localStorage.getItem(EFFECT_ASSIGNMENTS_KEY)).toBeNull();
+  });
+
+  it("⚠ 32 文字を超える入力は詰められ、**入力欄の表示も書き戻る**（048 の規律）", async () => {
+    await readyHarness();
+    const input = await addRow();
+    // ⚠ `maxLength` はブラウザの補助なので、`fireEvent` では効かない（＝確定時の整形を直接見られる）。
+    fireEvent.change(input, { target: { value: "あ".repeat(40) } });
+    fireEvent.blur(input);
+    expect([...storedKeywords()[0].when.text!]).toHaveLength(32);
+    expect(
+      [...(screen.getByLabelText("キーワード 1") as HTMLInputElement).value],
+    ).toHaveLength(32);
+  });
+
+  it("⚠ 当て方（含む / 完全一致）を選ぶと保存される", async () => {
+    await readyHarness();
+    const input = await addRow();
+    fireEvent.change(input, { target: { value: "草" } });
+    fireEvent.blur(input);
+    fireEvent.change(screen.getByLabelText("キーワード 1 の当て方"), {
+      target: { value: "exact" },
+    });
+    expect(storedKeywords()[0].when.match).toBe("exact");
+  });
+
+  it("⚠ 未確定行は削除ボタンで消せる（保存値に触らない）", async () => {
+    await readyHarness();
+    await addRow();
+    fireEvent.click(screen.getAllByRole("button", { name: "削除" })[1]);
+    expect(screen.queryByLabelText("キーワード 1")).toBeNull();
+    expect(localStorage.getItem(EFFECT_ASSIGNMENTS_KEY)).toBeNull();
+  });
+
+  it("⚠ 未確定行がある間は「条件を追加」を押せない（未確定が溜まらない）", async () => {
+    await readyHarness();
+    await addRow();
+    expect(screen.getByRole("button", { name: "条件を追加" })).toBeDisabled();
+  });
+
+  it("⚠⚠ 新規 16: キーワード条件の追加・削除で `EFFECT_OVERLAY_ENABLED_KEY` が追従する", async () => {
+    // ⚠⚠ **061i 判断 2（派生値の書き手を 1 か所に閉じる）が、新しい経路でも守られていること。**
+    //   ⚠ `addKeywordCondition` / `removeCondition` を `commitConditions` を通さずに書く変異は
+    //   ここがレッドにする。
+    const openEffectOverlay = vi.fn();
+    await readyHarness(openEffectOverlay);
+    expect(localStorage.getItem(EFFECT_OVERLAY_ENABLED_KEY)).not.toBe("true");
+
+    const input = await addRow();
+    fireEvent.change(input, { target: { value: "草" } });
+    fireEvent.blur(input);
+    // ⚠ **キーワードを打っただけでは条件に数えない**（エフェクト未選択＝ `kind === "none"`）。
+    expect(localStorage.getItem(EFFECT_OVERLAY_ENABLED_KEY)).not.toBe("true");
+    expect(openEffectOverlay).not.toHaveBeenCalled();
+
+    // エフェクトを選んだ瞬間に 0 → 1 件（＝窓が開く）。
+    fireEvent.change(screen.getByLabelText("キーワード 1 のエフェクト"), {
+      target: { value: `template:${TEMPLATE_ID}` },
+    });
+    expect(localStorage.getItem(EFFECT_OVERLAY_ENABLED_KEY)).toBe("true");
+    expect(openEffectOverlay).toHaveBeenCalledTimes(1);
+
+    // 消すと 0 件へ戻る（＝派生値も false）。
+    fireEvent.click(screen.getAllByRole("button", { name: "削除" })[1]);
+    expect(localStorage.getItem(EFFECT_OVERLAY_ENABLED_KEY)).toBe("false");
+  });
+
+  it("⚠⚠ 新規 14（UI 経由）: 削除しても id が再利用されない", async () => {
+    await readyHarness();
+    for (const text of ["あ", "い"]) {
+      fireEvent.click(screen.getByRole("button", { name: "条件を追加" }));
+      const input = screen.getByLabelText(
+        `キーワード ${storedKeywords().length + 1}`,
+      ) as HTMLInputElement;
+      fireEvent.change(input, { target: { value: text } });
+      fireEvent.blur(input);
+    }
+    expect(storedKeywords().map((c) => c.id)).toEqual(["kw:1", "kw:2"]);
+
+    // 1 件目を消して 1 件足す。⚠ **`kw:1` を再利用するとクールダウンを取り違える。**
+    fireEvent.click(screen.getAllByRole("button", { name: "削除" })[1]);
+    fireEvent.click(screen.getByRole("button", { name: "条件を追加" }));
+    const input = screen.getByLabelText("キーワード 2") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "う" } });
+    fireEvent.blur(input);
+    expect(storedKeywords().map((c) => c.id)).toEqual(["kw:2", "kw:3"]);
+  });
+
+  it("⚠⚠ 新規 15: キーワード条件が指すテンプレートの削除確認文に、そのキーワードが出る", async () => {
+    // ⚠⚠ **判断 13。** これが無いと「消したら知らないうちに条件が『表示しない』へ戻っていた」。
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify([
+        {
+          id: "kw:1",
+          when: { type: "keyword", text: "草", match: "contains" },
+          effect: { kind: "template", templateId: TEMPLATE_ID },
+        },
+      ]),
+    );
+    await readyHarness();
+    fireEvent.click(screen.getAllByRole("button", { name: "削除" })[0]);
+    const dialog = within(screen.getByRole("dialog"));
+    // ⚠ 当て方まで書く（「含む」と「完全一致」で意味が違う）。
+    expect(dialog.getByText(/「草」を含むコメント/)).toBeInTheDocument();
+    expect(dialog.getByText(/「表示しない」に戻ります/)).toBeInTheDocument();
+  });
+
+  it("⚠ 完全一致のキーワード条件は確認文でもそう書かれる", async () => {
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify([
+        {
+          id: "kw:1",
+          when: { type: "keyword", text: "草", match: "exact" },
+          effect: { kind: "template", templateId: TEMPLATE_ID },
+        },
+      ]),
+    );
+    await readyHarness();
+    fireEvent.click(screen.getAllByRole("button", { name: "削除" })[0]);
+    expect(
+      within(screen.getByRole("dialog")).getByText(
+        /「草」と完全に一致するコメント/,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("⚠⚠ 復帰導線を押しても、入力したキーワードは消えない（リセットではない）", async () => {
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify([
+        {
+          id: "kw:1",
+          when: { type: "keyword", text: "草", match: "contains" },
+          effect: { kind: "template", templateId: TEMPLATE_ID },
+        },
+      ]),
+    );
+    await readyHarness();
+    fireEvent.click(
+      screen.getByRole("button", { name: "すべて「表示しない」に戻す" }),
+    );
+    expect((screen.getByLabelText("キーワード 1") as HTMLInputElement).value).toBe("草");
+    expect(storedKeywords()[0].effect).toEqual({ kind: "none" });
+  });
+
+  // --- 文言（判断 11 / 12 / 7） ------------------------------------------------------------------
+
+  it("⚠⚠ 判断 11: 「1 コメントに出るのは 1 つだけ・上から順」を画面に書く", async () => {
+    await readyHarness();
+    expect(
+      screen.getByText(/上から順に最初に当てはまった条件だけが使われます/),
+    ).toBeInTheDocument();
+  });
+
+  it("⚠⚠ 判断 12: 「言葉で出したときは金額やイベント名の文字が出ない」を画面に書く", async () => {
+    // ⚠ 実コードの帰結（`amountText`/`message` が null・`eventLabel` が空 → 1 行も描かれない）を
+    //   仕様として受け入れたので、**画面で明示する**のが約束。
+    await readyHarness();
+    expect(
+      screen.getByText(/金額やイベント名の文字は出ません/),
+    ).toBeInTheDocument();
+  });
+
+  it("⚠ 判断 7: クールダウンを説明するが、**秒数は書かない**（定数が変わっても嘘にならない）", async () => {
+    await readyHarness();
+    const note = screen.getByText(/少し間隔を空けて反応します/);
+    expect(note).toBeInTheDocument();
+    // ⚠ 「10 秒」と書くと `KEYWORD_COOLDOWN_MS` を変えた瞬間に嘘になる（061a レビュー Q-1 の規律）。
+    expect(note.textContent).not.toMatch(/\d+\s*秒/);
   });
 });

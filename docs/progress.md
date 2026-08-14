@@ -20370,3 +20370,345 @@ commitAssignments(mutate):
     OBSエフェクト画面の前提案内の両方**が「ウィンドウを閉じる」を案内していること（§1 の導線）
 
 </details>
+
+## 061j キーワード条件（自由テキスト）の追加（2026-08-15）
+
+> base = `2808f4d`（061i はコミット済み）。⚠ **タスクファイルの判断 1〜13 は依頼者が確定させたもの**で、
+> 本節はその**実装上の帰結**と、着手前に潰した**前提の破れ**、実測結果を記録する。
+> ⚠ **行番号は書かない**（特定はシンボル名で行う）。
+
+### この段で解いた問題＝**条件がイベント種別 6 つに固定されていた**
+
+`EffectAssignments = Record<eventType, EffectAssignment>` では「〇〇という単語を含むコメント」を
+**表現する型が無かった**。⇒ 保存形を**条件の配列**（`{id, when, effect}[]`）へ変えた。
+⚠ **新しいデータ経路はゼロ**——エフェクト窓は 061b から `connectCommentStream` で `CommentViewDto[]` を
+全件受けており、本文マッチは**窓のメモリ内で完結**する（新規 IPC も新規 localStorage 経路も無い）。
+
+### ⚠⚠ 着手前に潰した「タスクファイルにも書かれていない穴」
+
+依頼者が挙げた穴 α〜ζ は**すべて実在した**（詳細は 061j タスクファイル）。⚠ そのうえで、
+**実コードを読んで見つけた前提の破れが 3 件**あり、これがこの段で最も価値のある発見だった。
+
+#### ⚠⚠ 追加穴 η: 「穴 γ の順序」は現行実装では**振る舞い等価**だった（変異④が GREEN）
+
+061d-2 以来「割り当ての解決はバースト検査より**前**に置く。後ろに置くと、出さない設定の種別が
+3 件届いただけで直後のスーパーチャットが捨てられる」と書かれ、テストもそれを固定しているつもりだった。
+⚠ **しかし `decideEffects` を実際に読むと、`match === null` より後ろの 2 つは読むだけである**:
+
+| 検査 | 実体 |
+|---|---|
+| `state.lastGiftAt.has(viewerId)` | 読み取り |
+| `state.recentFires.length >= BURST_MAX` | 読み取り |
+
+書き込み（`recentFires.push` / `lastGiftAt.set`）は**実際に出したときだけ**なので、
+**matcher の呼び出しをこの 2 つの後ろへ移しても出力も state も 1 バイトも変わらない**。
+⇒ **変異④は実測で GREEN（等価変異）**。既存の穴 γ 用ケース 2 本も、この変異では落ちない。
+
+⚠⚠ **守られている不変条件は「順序」ではなく「出さないと決まったものは state に一切触らない」ほう**である。
+⇒ 変異を **④'（`match === null` のとき `recentFires.push(now)` する＝非マッチが枠を食う）** へ置き換え、
+テストも **`recentFires` / `lastGiftAt` / `lastConditionAt` の 3 つのサイズを直接数える**形へ強化した
+（**④' は RED**）。⚠ **061j でこの不変条件の重みは桁で上がっている**——061h までは非課金コメントが
+先頭のゲートで落ちていたが、いまは**全コメントがループを通る**ので、ここで枠を積むと
+「キーワードに当たらない通常チャットが投げ銭を捨てる」が**常時**起きる。
+
+#### ⚠ 追加穴 θ: 判断 7 の `Map<string, number>` には「掃除の窓」が無い
+
+`lastGiftAt` は `GIFT_FOLD_WINDOW_MS`、`recentFires` は `BURST_WINDOW_MS` で掃除できるが、
+`lastConditionAt` の窓は**条件ごとの `cooldownMs`** であり Map に残っていない。
+⇒ `effectTrigger.ts` に **`CONDITION_COOLDOWN_MAX_MS = 60_000`**（＝**状態を増やし続けないための上限**で
+あってクールダウンの長さではない）を置き、**`KEYWORD_COOLDOWN_MS <= CONDITION_COOLDOWN_MAX_MS` を
+定数整合テストで固定**した（⑮-h が RED）。これが無いと、将来クールダウンを 60 秒超にしたとき
+**掃除が先に走ってクールダウンが黙って無効化される**。
+
+#### ⚠ 追加穴 ι: 先読みの対象が「最大 6 件」→「最大 26 件」になった
+
+`warmTemplates` の JSDoc が嘘になるので直した。⚠ 実害は無い（上限を守っているのは
+`effectMediaCache` の 20MiB ＋ LRU で、`cache.retain(wanted)` の形も不変）。
+
+### ⚠⚠ 実装中に判明した**自分の誤り**（起票時の想定が事実でなかった）
+
+計画段階で「⚠ 穴 ε への追記」として **「全角スペース `U+3000` は素の `trim()` では消えないので、
+空判定は NFKC の後で行わないと取りこぼす」**と書き、それを最も踏みやすい変異（⑮-b）として登録した。
+
+⚠⚠ **これは事実ではない。** JS の `String.prototype.trim` は Unicode の `Space_Separator` を
+すべて落とすので、`U+3000` も `U+00A0` も `U+FEFF` も**生の `trim()` で消える**（`node -e` で実測）。
+⇒ **⑮-b は等価変異として GREEN（生存）**。テストでは殺せない。
+
+⚠ **いまも空判定を正規化の後で行っているのは、理由が別にあるからである**——
+**判定する値と照合に使う値を 1 つに保つ**ため（`normalizeForMatch` の規則を将来変えても
+空判定が自動的に追従する）。⚠ **「取りこぼすから」という誤った理由を書き戻さないこと。**
+JSDoc・テストのコメント計 5 か所を訂正済み。
+
+### 判断 1〜13 の実装上の帰結
+
+- **判断 1・2**: 保存形は条件の配列 1 本。⚠ 代償（「スパチャに 2 つのエフェクト」が表現可能になる）は
+  **`parseConditions` が読み込み時に作り直す**ことで塞いだ＝**イベント条件は必ず 6 件ちょうど**
+  （`MONETARY_EVENT_TYPES` の挿入順・重複は**先勝ち**・欠けは `none`・未知 eventType は捨てる）。
+- **判断 3**: id は `event:<eventType>` / `kw:<単調増加の連番>`。⚠ **削除しても詰めない。**
+  ⚠ **受容した例外＝全部消したときだけ `kw:1` に戻る**（保存値がキーごと消えているので
+  引き継ぐ相手の条件が存在せず、実害は「追加直後の 1 回だけ出ない」に留まる）。
+- **判断 4・5**: `EffectMatchInput { eventType, text }` → `EffectMatch { effect, conditionId, cooldownMs }`。
+  ⚠⚠ **課金ゲートが matcher 側へ移り、`effectTrigger.ts` から `isMonetaryEvent` の import が消えた。**
+  ⚠ 罠 1（`displayEventType` を通すとビッツで出なくなる）は、**`EffectMatchInput` が `monetary` を
+  持たない**ので**踏みたくても踏めない**（型で塞いだ）。
+- **判断 6**: 正規化は `NFKC → toLowerCase → trim` の 1 本・持ち主は 1 か所（`grep` で実測）。
+  ⚠ **判断 6 の文言 1 か所を訂正した**——「キーワード側の正規化済み文字列は `loadEffectConditions()` が
+  計算して**載せる**」は、`EffectCondition` を**保存形そのもの**に保つ方針と衝突する
+  （`JSON.stringify` に計算結果が混ざる／UI が余計なフィールドを見る）。
+  ⇒ 非 export の内部型 **`MatchableCondition { condition, normalized }`** に載せ、
+  **空判定と照合が同じ 1 回の正規化を共有**する形にした（別々にすると 1 コメント 40 回になる）。
+- **判断 7**: クールダウンは条件 id 単位・`KEYWORD_COOLDOWN_MS = 10_000`（イベント条件は `0`）。
+  ⚠ 記録は**実際に出したときだけ**（変異⑤で実測）。
+- **判断 8**: 旧形式（Record）は `parseConditions` の入口で 1 回だけ変換。⚠ **読むだけでは書き戻さない**
+  （バイト一致をテストで固定）。⚠ キーは `EFFECT_ASSIGNMENTS_KEY` のまま。
+- **判断 9**: 空・32 コードポイント超・21 件目・制御文字・未知 `match`・形の壊れた id を落とす。
+  ⚠⚠ **保存時の検証も `parseConditions` を通す**ので、**保存と読み込みで規則が 1 つ**になった
+  （061d-2 レビュー S-4 の「検証を 2 か所に分けると片方だけ緩む」を構造的に回避）。
+- **判断 10・11・12**: UI は「イベント 6 行 ＋ キーワード可変」。文言 3 つ（1 件だけ出る／文字が出ない／
+  間隔を空ける）を追加。⚠ **秒数は書かない**（定数が変わっても嘘にならない・テストで固定）。
+- **判断 13**: `eventTypesUsing` → `conditionLabelsUsing`（ラベル化を hook へ移し、
+  `EffectTemplateCard` から `EFFECT_EVENT_LABEL` の import が消えた）。
+
+### ⚠⚠ 穴 α・β の答え＝**048 の 3 規則をそのまま持ってきた**
+
+- **文字入力欄だけ blur / Enter で確定**、`<select>` は `onChange` 即時（1 操作で確定するので打鍵問題が無い）。
+- **空で確定したら直前の確定値へ戻す**／**32 文字超は詰めて入力欄にも書き戻す**。
+- **未確定行はコンポーネント state に 1 本だけ**持つ（＝判断 9 と「条件を追加」の衝突を解く）。
+  ⚠ **未確定行は `effectConditionCount` にも `EFFECT_OVERLAY_ENABLED_KEY` にも数えない。**
+
+⚠⚠ **`onChange` 即 commit を却下した本当の理由**（派生値ではない）: `EFFECT_ASSIGNMENTS_KEY` が
+打鍵ごとに変わると、**エフェクト窓の `storage` 購読が `warmTemplates()` を回し
+`list_effect_templates` の invoke が打鍵ごとに 1 本飛ぶ**（＋ `clearFailures` / `retain` / `prime`）。
+⚠ 派生値のほうは**同値の `setItem` が `storage` を飛ばさない**ので実害が小さい（HTML の "set item" が
+`oldValue === value` で早期 return する）。
+
+### 命名（穴 γ の結論）
+
+- **据え置き**: ファイル名 `effectAssignments.ts` ／ キー `EFFECT_ASSIGNMENTS_KEY`
+  （`git log --follow` を切らない／旧ビルドへ戻しても `Array.isArray` で安全側へ倒れる）。
+- **「条件」へ改名**: `EffectCondition(s)` / `loadEffectConditions` / `saveEffectConditions` /
+  `clearAllEffectConditions` / `clearEffectConditionsForTemplate` / `resolveEffectMatch` /
+  hook の `conditions`。`effectConditionCount` / `hasEffectConditions` は**元から「条件」語彙なので無改変**。
+- **例外 1 つ**: `EffectAssignment` / `DEFAULT_EFFECT_ASSIGNMENT` は据え置き。
+  ⇒ 語彙の線＝ **「条件＝いつ出すか」／「割り当て＝何を出すか」**。
+
+### 穴 ζ の結論＝**判断 6 のまま（毎コメント読み直す）**
+
+⚠ **却下した案 (b)「`decideEffects` の 1 呼び出しにつき 1 回だけ読む」は、いまは 1 バイトも節約しない**
+——sidecar は `comments.append` を**1 件ずつ**送るので `added` は常に長さ 1 で、
+「1 バッチ 1 回」と「1 コメント 1 回」が**現状まったく同じ**だから（＝測っていない最適化になる）。
+⚠ **判断 6 の O(条件数 × コメント数) の警告が実際に指しているのは「本文側」である**——
+本文は 290 字級 × 20 件＝ 5,800 字、キーワードは 32 字上限 × 20 件＝ **640 字/コメントが上限**
+（判断 9 の「32 文字・20 件」がそのまま走査コストの上限になっている）。
+⇒ **寄せ先の具体形（`createEffectMatcher()` を返す factory）を `resolveEffectMatch` の JSDoc に残した。**
+
+### 実装
+
+**変更**（⚠ 行番号は書かない）
+
+| ファイル | 変更 |
+|---|---|
+| `effectAssignments.ts` | **本タスクの中心**。`parseConditions`（検証・正規化・作り直し・旧形式変換を行う唯一の関数）／`resolveEffectMatch`／変更 API 5 本（`setConditionEffect` / `addKeywordCondition` / `updateKeywordCondition` / `removeCondition` / `clearAll*`）／`sanitizeKeywordInput` / `isUsableKeyword` |
+| `effectTrigger.ts` | ⚠ **差分は 4 点に閉じた**: 型（`EffectMatchInput` / `EffectMatch` / `EffectMatcher`）／課金ゲートの削除／`lastConditionAt` ＋ 掃除／クールダウンの判定と記録。⚠ `toEffectRequest` / gift 畳み込み / バースト / **`EffectRequest` のキー集合（8 個）は無改変** |
+| `EffectAssignmentCard.tsx` | キーワード条件ブロック／`ConditionEffectSelect`（イベント行とキーワード行が **1 実装**を共有）／未確定行／文言 3 つ |
+| `useEffectTemplates.ts` | `conditions` へ改名／変更 API 5 本（**全部 `commitConditions` を通す**）／`conditionLabelsUsing` |
+| `EffectTemplateCard.tsx` | `conditionLabelsUsing` を使うだけになり、`EFFECT_EVENT_LABEL` の import が消えた |
+| `EffectOverlayApp.tsx` | ⚠ **4 か所 ＋ JSDoc**（import 名 2／`loadEffectConditions()`／`decideEffects` の第 5 引数／先読み件数の注記） |
+| `ObsEffectsScreen.tsx` | ⚠ **2 行だけ**（`effectConditionCount(effectTemplates.conditions)` と deps）。**import は無改変** |
+| `ObsEffectsScreen.module.css` | `.subHeading` / `.keywordList` / `.keywordRow` / `.keywordText` ＋ 警告の回り込み |
+| `effectSelectValue.ts`（**新規**） | (0) で切り出した `<select>` の値の組み立て（下記） |
+
+**⚠ (0)（061h 申し送り ⑦-c の返済）は先に単独で緑にしてから本体へ入った**（CLAUDE.md の
+「1 回の作業で複数機能をまとめない」）。⚠ **計画では `EffectAssignmentCard.tsx` から export する予定だったが、
+eslint の `react-refresh/only-export-components` が警告を出した**ので `effectSelectValue.ts` を新設した
+（`effectEventRows.ts` と同じ扱い）。⚠ **捨てる足場ではない**——061j 本体でイベント行とキーワード行の
+**両方**がこの 1 本を使う。
+
+⚠⚠ **⑦-c の返済が計画より 1 段強く効いた**: DOM ケースの `select.value` を
+**`effectSelectValue(...)` の再計算結果と突き合わせる**形にしたところ、
+`DOM は 'none'（ブラウザが先頭を選んだ結果）／規則は 'template:…'` という**食い違いそのもの**を
+捕まえるようになり、**DOM ケース 2 本もレッドになった**（計画では「DOM では固定できない」と書いていた）。
+
+### テスト（**1555 → 1625**・+70）
+
+- (0) で +6（純関数 6 ケース）／本体で +64。
+- ⚠ **書き換えたのは 4 ファイル**（`effectAssignments.test.ts` はほぼ全面・`effectTrigger.test.ts` は
+  matcher の形へ全面差し替え・`EffectAssignmentCard.test.tsx` は保存形と keyword ブロック・
+  `EffectOverlayApp.test.tsx` は +6 ケース）。
+- ⚠ **`ObsEffectsScreen.test.tsx` / `EffectTemplateCard.test.tsx` は 1 文字も書き換えていない**
+  （061i が「数え方を 1 か所に閉じた」効果と、`conditionLabelsUsing` が同じ `string[]` を返す形にした効果）。
+- ⚠ 既存ケースの多くが**旧形式（Record）を localStorage に仕込んだまま緑**である＝
+  **判断 8 の移行が効いていることの副次的な担保**になっている。
+
+### ⚠⚠ ミューテーション（25 件・**RED 23 / GREEN 2（どちらも等価変異）**）
+
+⚠ `git stash` ではなく**バックアップ → 復元**で実施し、復元後に `shasum` の**バイト一致を確認**した（4 ファイルとも一致）。
+
+| # | 変異 | 結果 | 備考 |
+|---|---|---|---|
+| ① | 空文字キーワードの検査を外す | **RED**(3) | 最も危険な失敗モード |
+| ② | 課金ゲートを先頭へ戻す | **RED**(13) | キーワードが永久に当たらなくなる |
+| ③ | ゲートに `displayEventType` 相当を噛ませる | **RED**(28) | ビッツで出なくなる |
+| ④ | matcher をバースト検査の後ろへ動かす | ⚠⚠ **GREEN（等価変異）** | 追加穴 η。後続 2 検査は読むだけ |
+| ④' | 当たらないコメントでもバースト枠を積む | **RED**(4) | ④ の代わりに置いた実効のある変異 |
+| ⑤ | クールダウンを「捨てたときも記録」に変える | **RED**(2) | ⚠ **発火回数を数えて**殺した |
+| ⑥ | `cooldownMs > 0` を外して全条件に効かせる | **RED**(17) | スパチャ 2 連投が 1 件になる |
+| ⑦ | イベント条件で return せず走査を続ける | **RED**(1) | 最後に当たったものが勝つ |
+| ⑧ | `kind === "none"` も「当たった」扱いにする | **RED**(1) | スパチャを出さないにするとキーワードが塞がる |
+| ⑨-a | 正規化から NFKC を外す | **RED**(1) | |
+| ⑨-b | 正規化から `toLowerCase` を外す | **RED**(2) | |
+| ⑩-a | イベント条件の重複を後勝ちにする | **RED**(1) | |
+| ⑩-b | 欠けているイベント条件を埋めない | **RED**(44) | |
+| ⑪ | 旧形式の変換を消す | **RED**(43) | ⚠ 061i の設定が全部消える |
+| ⑫ | キーワード追加を `commitConditions` を通さず保存 | **RED**(1) | 061i 判断 2 の維持 |
+| ⑬ | id の採番を「件数 + 1」にする | **RED**(2) | 削除で再利用される |
+| ⑭ | `conditionLabelsUsing` からキーワードを落とす | **RED**(2) | |
+| ⑮-a | 正規化から `trim` を外す | **RED**(5) | |
+| ⑮-b | 空判定を NFKC の**前**の `trim` にする | ⚠⚠ **GREEN（等価変異）** | **前提そのものが誤りだった**（上記） |
+| ⑮-c | キーワードが在ってもキーごと削除する | **RED**(25) | 打った文字列が消える |
+| ⑮-d | キーワード入力を `onChange` 即 commit にする | **RED**(1) | 穴 α |
+| ⑮-e | 空で確定したとき空で保存する | **RED**(1) | 穴 α・048 の規律 |
+| ⑮-f | `lastConditionAt` の掃除を外す | **RED**(1) | ⚠ **`size` を直接数えて**殺した |
+| ⑮-g | 走査順をキーワード → イベントへ入れ替える | **RED**(1) | 判断 11 |
+| ⑮-h | `KEYWORD_COOLDOWN_MS` を上限より大きくする | **RED**(1) | 追加穴 θ・定数整合 |
+
+⚠⚠ **061h の変異⑤／061i の変異⑨-b の教訓（「何も出ない」だけを見るアサーションでは殺せない）を
+先回りで適用した 3 か所**——⑤（**発火回数**を数える）／④'（**state の 3 サイズ**を数える）／
+⑮-f（**`size`** を直接見る）。**今回は初回から生存ゼロだった**（生存 2 件はどちらも等価変異）。
+
+### ⚠ 固定できていないもの（正直に書く）
+
+1. ⚠⚠ **変異④・⑮-b は等価変異なので、テストでは永久に殺せない。**
+   ④ が守っているのは「順序」ではなく「非マッチは state に触らない」（④' が殺す）。
+   ⑮-b が守っているのは「空判定と照合が同じ値を見る」という**構造**であって、振る舞いの差ではない。
+   ⚠ **どちらも「テストで固定できている」と書かないこと。**
+2. ⚠ **画面が `effectSelectValue` を使い続けること**は固定できていない（(0) の正直な限界）。
+   画面側で `template:<id>` を直に組み立て直す変異は、ブラウザの既定と結果が一致するため
+   DOM から観測できない。⚠ ただし**落とす先を「先頭のテンプレート」等へ変える**変異は拾える。
+3. **CSS の実効はテストで固定できない**（061d-2 / 061g / 061i と同じ）。`.keywordRow` の
+   折り返しと `.keywordText` の `min-width` は `check:css` の対象外で、担保は実機確認だけである。
+4. ⚠ `maxLength` は **UTF-16 コード単位**、こちらの上限は**コードポイント**なので、
+   絵文字では**ブラウザのほうが先に止める**（32 → 16 個）。⚠ 「reject 側へ厳しい」向きなので受容。
+   **再修正トリガー＝絵文字のキーワードを使いたいと言われたとき。**
+5. ⚠ `drafts`（入力中の下書き）は条件を削除しても残る。id が単調増加なので**再利用による誤適用は
+   起きない**が、長時間の編集でエントリが増える。実害が無いので受容。
+
+### 検証（すべて実測）
+
+- `pnpm --filter ./apps/desktop typecheck` / `lint` … 緑（⚠ **警告 0 件**）
+- `pnpm --filter ./apps/desktop test` … **67 files / 1625 tests 緑**
+  （`check:css` / `check:version` / `check:effect-contract` も OK）
+- `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml` … 緑（**Rust は 1 行も触っていない**）
+- **ゼロ拡大は実測で空**: `src-tauri/` ／ `apps/comment-sidecar/` ／ `.github/` ／ `package.json` ／
+  `pnpm-lock.yaml` ／ **`docs/security.md`** ／ `src/features/` ／ `App.tsx` ／ `CommentViewerApp.tsx` ／
+  `effectEventRows.ts` ／ `effectTemplateText.ts` ／ `EffectTemplateView.tsx`
+- **§9 の grep**:
+  - `effectTrigger.ts` の `text` は**コード上 2 か所だけ**（`EffectMatchInput.text` の定義と
+    `matchEffect({…, text: c.text})` の呼び出し）＝ **`EffectRequest` / `EffectRequestBase` には生えていない**
+  - `saveEffectOverlayEnabled` の実装側の呼び出しは **`useEffectTemplates` の 2 か所だけ**（061i のまま）
+  - `normalize("NFKC")` / `toLowerCase()` は **`effectAssignments.ts` の 1 か所だけ**
+  - `new RegExp` は **ヒットゼロ**（`includes` と `===` だけ）
+- **`docs/security.md` の差分ゼロは、実際に読み直してから主張している**:
+  - 「レビュー必須条件」の保存ポリシー項が **「ユーザー自身の UI 設定値（テーマ・フォント・トグル・
+    チャンネル名等）を localStorage に置く変更は従来どおり本項に該当しない」**と明示 ⇒ キーワードは非該当
+  - Capabilities 方針 061a 節の「**本文とアバターを描かない・state や localStorage に保存しない・
+    ログに出さない・エフェクトへ渡す値に本文とアバターを含めない**」…**すべて維持**
+    （本文は `EffectMatchInput` を通って真偽値になるだけで、戻り値にも DOM にも localStorage にもログにも出ない）
+  - §8 の 061c 節「変数を増やすときは §9 の観点で再評価」…**変数を増やさない**（判断 12）ので発動しない
+  - 新規 egress / capability / IPC / ファイル操作は**ゼロ**
+
+### ✅ 実機確認（**2026-08-15 実施**・macOS / `COMMENT_SIDECAR_MOCK=1 pnpm tauri dev`）
+
+⚠ **外部通信はゼロ**（sidecar は env ゲートのモックモード。ログに
+`MOCK MODE enabled (COMMENT_SIDECAR_MOCK=1; no real network egress)` を確認）。
+
+#### 観測手法（次回のためにそのまま残す）
+
+- ⚠⚠ **エフェクト窓の矩形を `screencapture -R` で撮らない**（透過なので背後の画面が写る・061f の教訓）。
+  `CGWindowListCreateImage(.optionIncludingWindow)` の**窓単位キャプチャ**で
+  **alpha>0 の画素数と bbox** を数値化した（＝「何か描かれているか」を目視に頼らず判定できる）。
+- **差し込み文面はアクセシビリティツリーの `AXStaticText`** から読んだ。
+  ⚠ これは同時に **「コメント本文が描かれていないこと」の直接の証拠**にもなる。
+- ⚠⚠ **`<img>` は AX に露出しない**ので、**テンプレートごとに固有の文面**（`[K1]` `[K2]` `[K3]` `[MSG]`）を
+  持つ検証用テンプレートを 4 件作り、**どの条件が当たったかを文面で識別**した。
+  ⚠ 検証用テンプレートと mock コメントは**後始末で完全に削除済み**（下記）。
+- **dev-mock の時刻表**（YouTube 単独／`CONNECT_DELAY_MS=600` ＋ `EMIT_INTERVAL_MS=1800`）を
+  `makeComment` の分岐から先に計算し、**観測が予測と一致するか**で判定した。
+
+#### ⚠⚠ GUI からのテキスト入力ができなかった（次回のために記録する）
+
+**WKWebView に合成キーイベントが入らない。** 実測した挙動:
+
+| 手段 | 結果 |
+|---|---|
+| `keystroke "…"` / `key code`（文字キー） | ❌ 届かない（DOM の値が変わらない） |
+| `key code 48`（Tab） | ✅ **届く**（フォーカスは移動する） |
+| `keystroke "v" using command down`（貼り付け） | ❌ 届かない |
+| AX の `set value of <AXTextField>` | ⚠ **DOM の値は変わるが React の state は変わらない**（`input` イベントが出ないため）＝確定しても保存されない |
+| `AXPress` / 座標クリック | ✅ 届く（ボタン・`<select>` はこれで操作できた） |
+
+⇒ **キーワードの「入力」だけは localStorage へ直接仕込む方式**に切り替えた。
+⚠ **UI 経路で実際に確認できたもの**は「条件を追加」ボタン・未確定行が生えること・
+**空のままでは 1 バイトも保存されないこと**（穴 β）・`<select>` によるエフェクト選択・削除確認ダイアログ・
+文言・イベント条件 6 行。
+⚠⚠ **確認できていないのは「文字入力の確定（blur / Enter・32 文字の詰め・空なら直前値へ戻す）」だけ**で、
+そこはコンポーネントテスト（`EffectAssignmentCard.test.tsx`）の担保に留まる。**過大に主張しない。**
+
+#### 結果
+
+| # | 項目 | 結果 |
+|---|---|---|
+| ① | キーワード条件にエフェクトを選ぶと窓が自動で開く | ✅ **`effect-overlay-enabled` が false → true**、同時にエフェクト窓が生成された。⚠ **キーワードを打っただけ（`effect` 未選択）では「表示する条件＝設定されていません」で窓は開かない**ことも併せて確認 |
+| ② | 通常チャットの「草」で出る（**061j の本命**） | ✅ 18.6s / 19.2s / 18.7s（3 構成で再現） |
+| ③ | `contains` で出る／`exact` では部分一致しない | ✅ 「こんばん」contains → 10.2s に発火。⚠ **exact に変えると 9.6s も 31.2s も無反応**（「こんばんは〜」に当たらない） |
+| ④ | 高頻度でカクつかない | ✅ **実測**（下記）。⚠ **限界あり**（下記） |
+| ⑤ | 連呼しても出続けない／別の単語なら続けて出る | ✅ **当たったコメント 6 件に対し発火は 3 件**（0.7s / 17.1s / 27.9s）＝クールダウン 10 秒が効いている。別条件は 8.0s → 10.2s と**2.2 秒差で連続発火** |
+| ⑥ | スパチャを「出さない」にしていても本文のキーワードで出る | ✅ 8.0s に `[K1] ずんだ好き 300 JPY` |
+| ⑦ | スパチャ本文にキーワードが入るとイベント条件が勝つ | ✅ 7.8s の発火は **`[K1]` ではなく回転リング側の文面**。⚠ **同時に 2 件出ていない**（判断 11） |
+| ⑧ | キーワードで出すと文字が出ない／`{name}` なら名前が出る | ✅ `{message}` テンプレートの通常チャット発火は **`draw=7285px` と描画はあるのに `AXStaticText` が 0 件**。`{name}` を書いたテンプレートでは名前が出る |
+| ⑨ | 旧形式（Record）からの移行 | ✅ **061i までの保存値そのもの**（`{"superchat":{...}}`）で起動し、**イベント条件 6 行＋スーパーチャット＝回転リングがそのまま残った**。⚠ **保存値は書き戻されていない**（読むだけでは副作用なし） |
+| ⑩ | 全角・半角カナ／大文字・小文字 | ✅ 半角カナ「ﾅｲｽ」→「ナイスプレイ👏」に当たる（2.8s）／全角小文字「ｇｇｗｐ」→ Twitch の「GGWP」に当たる（0.7s / 11.8s） |
+| ⑪ | テンプレート削除の確認文にキーワードが出る | ✅ **「「草」を含むコメント」に割り当てられています。削除すると、その条件は「表示しない」に戻ります。** ⚠ **キャンセルして削除していない** |
+| ⑫ | OBS キャプチャのカクつき（061d-2 からの持ち越し） | ⏳ **未実施**（下記の理由） |
+
+⚠ **§9 の実機での担保**: 全構成を通じて、エフェクト窓に描かれたのは
+**テンプレートの固定文言・投稿者の表示名・金額だけ**で、**コメント本文（「草」「ナイスプレイ👏」
+「こんばんは〜」）は 1 文字も現れなかった**。⚠ 本文が空のコメント（membership / gift ＝ `text: ""`）でも
+**誤爆は 1 件も起きていない**（穴 ε の実機での確認）。
+
+#### ④ の実測と、その限界
+
+| 条件 | CPU（stream-dock ＋ WebKit プロセス合計・1 秒間隔） |
+|---|---|
+| キーワード条件 **1 件**（対照） | 中央値 **4.7%** ／ 平均 6.4% ／ 最大 19.6% |
+| キーワード条件 **20 件**（上限＝最悪ケース） | 中央値 **6.0%** ／ 平均 7.1% ／ 最大 20.0% |
+
+いずれも 2 provider 同時・**40 秒で 48 件受信（≒1.2 件/秒）**。
+⇒ **走査を 1 件 → 20 件にした増分は中央値で +1.3 ポイント**。エフェクトの発火は予測時刻どおりで、
+取りこぼしも遅延も観測されなかった。
+
+⚠⚠ **正直な限界**: **dev-mock の下限は 2 provider 同時の ≒1.2 件/秒**で、
+`EMIT_INTERVAL_MS` を触ると `apps/comment-sidecar/` の差分ゼロ要件に触れる／実配信につなぐのは
+外部通信になるため、**「本当の高頻度（毎秒 10 件級）」は再現できていない**。
+測れたのは「**条件数を上限まで増やしても CPU の増分は 1 ポイント台**」までである。
+⚠ **穴 ζ の結論（毎コメント localStorage を読み直す）を覆す材料は出なかった**ので、
+`resolveEffectMatch` の JSDoc に残した寄せ先（`createEffectMatcher()`）はそのまま再修正トリガー扱いとする。
+
+#### ⑫ を実施しなかった理由（⚠ 勝手にやらない判断）
+
+OBS は**インストール済みだが起動していなかった**。実施するには
+①OBS を起動し ②「コメントをOBSに表示」を有効にする必要があるが、これは
+**`ensureOverlaySource` が依頼者の OBS のシーンにソースを自動追加する**（＝依頼者の配信設定を
+書き換える・元に戻しにくい）。⚠ **承認なしに行う範囲を超えている**ので実施しなかった。
+⚠ 061i も同じ項目を未実施のまま残しており、**061d-2 からの持ち越しは解消していない**。
+
+#### ⚠ 後始末（すべて実測で確認）
+
+- **`stream-dock.db` をバックアップから復元し、`shasum` のバイト一致を確認**
+  ⇒ 検証用テンプレート 4 件と、mock で記録された `viewer_comments` **466 件**（242 → 708 → **242**）が消えた
+- 検証用テンプレートのメディアディレクトリ 4 つを削除
+  （⚠ **依頼者の `6590f67b-…`（回転リング）は 1 バイトも触っていない**）
+- dev オリジンの localStorage を**バックアップから復元**（旧形式の Record ＋ `effect-overlay-enabled=true`）
+- クリップボードを元の状態（空）へ戻した
+- ⚠ **本番オリジン（`~/Library/WebKit/com.tetsuya.stream-dock/`）には一度も触れていない**
+- アプリと dev サーバは停止済み

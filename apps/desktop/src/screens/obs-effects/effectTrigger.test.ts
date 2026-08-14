@@ -1,11 +1,12 @@
 import { describe, it, expect } from "vitest";
 import type { CommentViewDto } from "../../features/comment-viewer/types";
 import {
+  CONDITION_COOLDOWN_MAX_MS,
   createEffectTriggerState,
   decideEffects,
   EFFECT_DISPLAY_MS,
   EFFECT_MAX_CONCURRENT,
-  type EffectKindResolver,
+  type EffectMatcher,
   type EffectRequest,
 } from "./effectTrigger";
 
@@ -43,10 +44,44 @@ const TEMPLATE_ID = "93c76e02-1111-4222-8333-444455556666";
  * ⚠ **ここに既定引数を復活させる変異は「型エラー」で落ちる**（`{ kind: "builtin-monetary" }` は
  * もう `EffectKind` ではない）。
  */
-const TPL: EffectKindResolver = () => ({
-  kind: "template",
-  templateId: TEMPLATE_ID,
+const KIND = { kind: "template", templateId: TEMPLATE_ID } as const;
+
+/**
+ * ⚠⚠ **061j: resolver は `EffectMatcher` になった**（`{eventType, text}` を受け、
+ * `{effect, conditionId, cooldownMs}` を返す）。**課金判定もこの向こう側へ移った**ので、
+ * このスタブは「どんなコメントでも出す」＝**発火層のロジックだけ**を裸で試せる形になっている。
+ * ⚠ 既定の `conditionId` は `"event:superchat"`（クールダウン無効＝ 061h までと同じ振る舞い）。
+ */
+const TPL: EffectMatcher = () => ({
+  effect: KIND,
+  conditionId: "event:superchat",
+  cooldownMs: 0,
 });
+
+/** ⚠ 課金種別だけ出す matcher（061h までの `decideEffects` 先頭のゲートを模す）。 */
+const MONETARY_ONLY: EffectMatcher = ({ eventType }) =>
+  MONETARY_TYPES.has(eventType)
+    ? { effect: KIND, conditionId: `event:${eventType}`, cooldownMs: 0 }
+    : null;
+
+const MONETARY_TYPES = new Set([
+  "superchat",
+  "subscription",
+  "membership",
+  "gift",
+  "donation",
+  "jewels",
+]);
+
+/** キーワード条件を模す matcher（クールダウンあり・本文で当てる）。 */
+const keywordMatcher = (
+  keyword: string,
+  conditionId = "kw:1",
+  cooldownMs = 10_000,
+): EffectMatcher => ({ text }) =>
+  text.includes(keyword)
+    ? { effect: KIND, conditionId, cooldownMs }
+    : null;
 
 const comment = (over: Partial<CommentViewDto> = {}): CommentViewDto => ({
   id: "c1",
@@ -77,15 +112,21 @@ describe("061b: decideEffects（発火層）", () => {
     expect(out[0].eventLabel).toBe("スーパーチャット");
   });
 
-  it("⚠ 非課金コメント（通常チャット）からは出さない", () => {
-    const out = decideEffects(
-      [comment({ eventType: "chat", monetaryAmount: undefined, monetary: undefined })],
-      [],
-      createEffectTriggerState(),
-      T0,
-      TPL,
-    );
-    expect(out).toEqual([]);
+  it("⚠⚠ 061j: 課金判定は matcher の責務になった（発火層は種別を 1 つも知らない）", () => {
+    const chat = comment({
+      eventType: "chat",
+      monetaryAmount: undefined,
+      monetary: undefined,
+    });
+    // ⚠ matcher が「課金だけ」と言えば通常チャットは出ない（061h までの振る舞い）。
+    expect(
+      decideEffects([chat], [], createEffectTriggerState(), T0, MONETARY_ONLY),
+    ).toEqual([]);
+    // ⚠⚠ **matcher が当てれば通常チャットでも出る**——これが 061j の本命
+    //   （ゲートを `decideEffects` の先頭へ戻す変異は、この 1 行がレッドにする）。
+    expect(
+      decideEffects([chat], [], createEffectTriggerState(), T0, TPL),
+    ).toHaveLength(1);
   });
 
   it("⚠⚠ ビッツで出る（`isMonetaryEvent(displayEventType(c))` と書くと出なくなる）", () => {
@@ -437,23 +478,30 @@ describe("061b: decideEffects（発火層）", () => {
   //   ⚠ **発火判定（課金判定・combo 再送・gift 畳み込み・バースト）のロジックは 061h でも 1 行も
   //   動いていない**。上のケースの差分が `TPL` の 1 引数だけであることが、その代わりの担保になる。
 
-  it("⚠⚠ 発火層は「何を出すか」を 1 つも知らない（resolver が返した kind がそのまま載る）", () => {
-    // ⚠ 061h: 既定引数を外したので、**渡した resolver の結果が唯一の答え**になる
+  it("⚠⚠ 発火層は「何を出すか」を 1 つも知らない（matcher が返した effect がそのまま載る）", () => {
+    // ⚠ 061h: 既定引数を外したので、**渡した matcher の結果が唯一の答え**になる
     //   （061d-2 の「省略すると全部『組み込み』」ケースは、この形へ置き換わった）。
     const out = decideEffects(
       [comment()],
       [],
       createEffectTriggerState(),
       T0,
-      () => ({ kind: "template", templateId: "0f0e0d0c-1111-4222-8333-444455556666" }),
+      () => ({
+        effect: { kind: "template", templateId: "0f0e0d0c-1111-4222-8333-444455556666" },
+        conditionId: "kw:9",
+        cooldownMs: 0,
+      }),
     );
     expect(out[0]).toMatchObject({
       kind: "template",
       templateId: "0f0e0d0c-1111-4222-8333-444455556666",
     });
+    // ⚠⚠ **`conditionId` は `EffectRequest` に載らない**（判断 4・「出すのに要る最小限」の維持）。
+    expect(out[0]).not.toHaveProperty("conditionId");
+    expect(out[0]).not.toHaveProperty("cooldownMs");
   });
 
-  it("⚠⚠ resolver が null を返す種別は 1 件も出ない（＝エフェクトを出さない）", () => {
+  it("⚠⚠ matcher が null を返すコメントは 1 件も出ない（＝エフェクトを出さない）", () => {
     const out = decideEffects(
       [comment()],
       [],
@@ -464,13 +512,17 @@ describe("061b: decideEffects（発火層）", () => {
     expect(out).toEqual([]);
   });
 
-  it("⚠ resolver がテンプレートを返すと kind と templateId が載る（キー集合は 8 個）", () => {
+  it("⚠ matcher がテンプレートを返すと kind と templateId が載る（キー集合は 8 個）", () => {
     const out = decideEffects(
       [comment()],
       [],
       createEffectTriggerState(),
       T0,
-      () => ({ kind: "template", templateId: "tpl-1" }),
+      () => ({
+        effect: { kind: "template", templateId: "tpl-1" },
+        conditionId: "event:superchat",
+        cooldownMs: 0,
+      }),
     );
     expect(out).toHaveLength(1);
     expect(Object.keys(out[0]).sort()).toEqual(
@@ -490,24 +542,96 @@ describe("061b: decideEffects（発火層）", () => {
     expect(dump).not.toContain("本文です");
   });
 
-  it("⚠ resolver は生の eventType を受け取る（ビッツは superchat として引ける）", () => {
-    const seen: string[] = [];
+  it("⚠ matcher は生の eventType と本文を受け取る（ビッツは superchat として引ける）", () => {
+    const seen: { eventType: string; text: string }[] = [];
     decideEffects(
-      [comment({ monetary: { amount: 300, currency: "BITS" } })],
+      [comment({ text: "Power-up 🎉", monetary: { amount: 300, currency: "BITS" } })],
       [],
       createEffectTriggerState(),
       T0,
-      (eventType) => {
-        seen.push(eventType);
-        return { kind: "template", templateId: TEMPLATE_ID };
+      (input) => {
+        seen.push(input);
+        return { effect: KIND, conditionId: "event:superchat", cooldownMs: 0 };
       },
     );
     // ⚠ `displayEventType` を通すと "bits" になるが、`MONETARY_EVENT_TYPES` に "bits" は無い
-    //   ＝ 割り当て表（スーパーチャットの行）と引き当てられなくなる（061b の穴②と同型の罠）。
-    expect(seen).toEqual(["superchat"]);
+    //   ＝ 条件表（スーパーチャットの行）と引き当てられなくなる（061b の穴②と同型の罠）。
+    expect(seen).toEqual([{ eventType: "superchat", text: "Power-up 🎉" }]);
+  });
+
+  it("⚠⚠ matcher に渡すのは `{eventType, text}` の 2 つだけ（§9・DTO を持ち回らない）", () => {
+    let received: Record<string, unknown> | null = null;
+    decideEffects(
+      [comment({ text: "本文です" })],
+      [],
+      createEffectTriggerState(),
+      T0,
+      (input) => {
+        received = input as unknown as Record<string, unknown>;
+        return null;
+      },
+    );
+    // ⚠ `CommentViewDto` をそのまま渡す変異は、このキー集合がレッドにする
+    //   （author / monetary / publishedAt 等が混ざる）。
+    expect(Object.keys(received ?? {}).sort()).toEqual(["eventType", "text"]);
   });
 
   // --- 穴 γ: 「出さない」の判定位置 -------------------------------------------------------------
+
+  it("⚠⚠ 新規 5: 当たらないコメントは state を 1 バイトも書き換えない（穴 γ の本体）", () => {
+    // ⚠⚠ **061j でこの不変条件の重みが桁で上がった。** 061h までは非課金コメントが
+    //   `decideEffects` 先頭のゲートで落ちていたが、いまは**全コメントがループを通る**ので、
+    //   ここで枠を 1 つでも積むと「キーワードに当たらない通常チャットが投げ銭を捨てる」が**常時**起きる。
+    // ⚠⚠ **「何も出ない」だけを見るアサーションでは殺せない**（061h の変異⑤ / 061i の変異⑨-b の教訓）
+    //   ——**その操作自身の副作用と、観測したい状態変化を分けて数える**。
+    const skipped = createEffectTriggerState();
+    for (let i = 0; i < 20; i++) {
+      decideEffects(
+        [
+          comment({
+            id: `n${i}`,
+            eventType: "chat",
+            text: "こんばんは〜",
+            monetaryAmount: undefined,
+            monetary: undefined,
+            author: { id: `u${i}`, name: `${i}` },
+          }),
+        ],
+        [],
+        skipped,
+        T0,
+        keywordMatcher("草"),
+      );
+    }
+    // ⚠⚠ **state の 3 つを直接数える**（`recentFires.push` を `match === null` の前へ動かす変異＝
+    //   「非マッチが枠を食う」を作る変異は、この 3 行がレッドにする）。
+    expect(skipped.recentFires).toHaveLength(0);
+    expect(skipped.lastGiftAt.size).toBe(0);
+    expect(skipped.lastConditionAt.size).toBe(0);
+  });
+
+  it("⚠⚠ 新規 5（続き）: 当たらないチャットが 20 件流れても、直後の投げ銭は全部出る", () => {
+    const state = createEffectTriggerState();
+    // 「草」を含まない通常チャットを 20 件（バースト上限 3 の 6 倍以上）。
+    for (let i = 0; i < 20; i++) {
+      decideEffects(
+        [comment({ id: `n${i}`, eventType: "chat", text: "こんばんは〜" })],
+        [],
+        state,
+        T0,
+        keywordMatcher("草"),
+      );
+    }
+    // ⚠ 直後の投げ銭が**上限ぶん全部**出る（＝キーワード条件を入れたせいで投げ銭が捨てられない）。
+    const out = feedOneByOne(
+      Array.from({ length: EFFECT_MAX_CONCURRENT }, (_, i) =>
+        comment({ id: `sc${i}` }),
+      ),
+      state,
+      T0,
+    );
+    expect(out).toHaveLength(EFFECT_MAX_CONCURRENT);
+  });
 
   it("⚠⚠ 「出さない」種別はバースト枠も gift 畳み込み状態も消費しない", () => {
     const state = createEffectTriggerState();
@@ -524,7 +648,7 @@ describe("061b: decideEffects（発火層）", () => {
       state,
       T0,
     );
-    // ⚠ ここは resolver 無しの呼び出しなので、まず「出す」状態を確認しておく。
+    // ⚠ まず「出す」状態を確認しておく（対照）。
     expect(state.recentFires.length).toBeGreaterThan(0);
 
     const skipped = createEffectTriggerState();
@@ -545,18 +669,18 @@ describe("061b: decideEffects（発火層）", () => {
         () => null,
       );
     }
-    // ⚠⚠ **判定をバースト検査の後ろへ移す変異は、この 2 行がレッドにする。**
     expect(skipped.recentFires).toHaveLength(0);
     expect(skipped.lastGiftAt.size).toBe(0);
+    expect(skipped.lastConditionAt.size).toBe(0);
   });
 
   it("⚠⚠ 「出さない」種別が枠を食って、出すはずの種別が捨てられることが無い", () => {
     const state = createEffectTriggerState();
-    // 「サブスクは出さない／スーパーチャットはテンプレート」という割り当て。
-    const resolve: EffectKindResolver = (eventType) =>
+    // 「サブスクは出さない／スーパーチャットはテンプレート」という条件。
+    const resolve: EffectMatcher = ({ eventType }) =>
       eventType === "subscription"
         ? null
-        : { kind: "template", templateId: TEMPLATE_ID };
+        : { effect: KIND, conditionId: `event:${eventType}`, cooldownMs: 0 };
 
     // サブスクをバースト上限より多く流す（全部「出さない」）。
     for (let i = 0; i < EFFECT_MAX_CONCURRENT + 2; i++) {
@@ -595,5 +719,118 @@ describe("061b: decideEffects（発火層）", () => {
     expect(
       decideEffects([comment({ id: "later" })], [], state, T0 + EFFECT_DISPLAY_MS, TPL),
     ).toHaveLength(1);
+  });
+
+  // --- 061j: 条件ごとのクールダウン（判断 7） ----------------------------------------------------
+
+  const COOLDOWN = 10_000;
+  /** 通常チャット 1 件（本文だけ変える）。 */
+  const chat = (id: string, text: string) =>
+    comment({ id, eventType: "chat", text, monetaryAmount: undefined, monetary: undefined });
+
+  it("⚠⚠ 新規 6-a: 同じ条件はクールダウン内で 1 回だけ出る", () => {
+    const state = createEffectTriggerState();
+    const m = keywordMatcher("草", "kw:1", COOLDOWN);
+    expect(decideEffects([chat("a", "草")], [], state, T0, m)).toHaveLength(1);
+    // 窓の内側（9.999 秒後）は出ない。
+    expect(
+      decideEffects([chat("b", "草")], [], state, T0 + COOLDOWN - 1, m),
+    ).toHaveLength(0);
+    // 窓を過ぎればまた出る（＝永久に止まらない）。
+    expect(
+      decideEffects([chat("c", "草")], [], state, T0 + COOLDOWN, m),
+    ).toHaveLength(1);
+  });
+
+  it("⚠⚠ 新規 6-b: 別の条件はクールダウンを共有しない", () => {
+    const state = createEffectTriggerState();
+    /** 「草」→ kw:1、「w」→ kw:2 という 2 条件。 */
+    const m: EffectMatcher = ({ text }) =>
+      text.includes("草")
+        ? { effect: KIND, conditionId: "kw:1", cooldownMs: COOLDOWN }
+        : text.includes("w")
+          ? { effect: KIND, conditionId: "kw:2", cooldownMs: COOLDOWN }
+          : null;
+    expect(decideEffects([chat("a", "草")], [], state, T0, m)).toHaveLength(1);
+    // ⚠ 直後でも**別の条件**なら出る（id をキーにしていないと落ちる）。
+    expect(decideEffects([chat("b", "www")], [], state, T0 + 1, m)).toHaveLength(1);
+    // 同じ条件の 2 件目は落ちる。
+    expect(decideEffects([chat("c", "草")], [], state, T0 + 2, m)).toHaveLength(0);
+  });
+
+  it("⚠⚠ 新規 7: イベント条件（`cooldownMs: 0`）にはクールダウンが効かない", () => {
+    // ⚠ 課金は 1 件ずつが重要（スパチャ 2 連投の 2 件目を落としたくない）。
+    const state = createEffectTriggerState();
+    const out = feedOneByOne(
+      [comment({ id: "s1" }), comment({ id: "s2" })],
+      state,
+      T0,
+    );
+    expect(out.map((r) => r.id)).toEqual(["s1", "s2"]);
+    // ⚠ `cooldownMs > 0` の判定を外して全条件に効かせる変異は、この 1 行がレッドにする。
+    expect(state.lastConditionAt.size).toBe(0);
+  });
+
+  it("⚠⚠ 変異⑤: クールダウンの記録は**実際に出したときだけ**（発火回数で数える）", () => {
+    // ⚠⚠ **「何も出ない」だけを見ても殺せない**（061h の変異⑤ / 061i の変異⑨-b の教訓）。
+    //   捨てたときにも記録する実装だと、**バーストで落ちた条件がそのあと沈黙する**。
+    //   ⇒ **バーストで捨てさせてから、窓が明けた時点の発火回数を数える。**
+    const state = createEffectTriggerState();
+    const m: EffectMatcher = ({ text }) =>
+      text.includes("草")
+        ? { effect: KIND, conditionId: "kw:1", cooldownMs: COOLDOWN }
+        : { effect: KIND, conditionId: "event:superchat", cooldownMs: 0 };
+
+    // ① バースト枠（3）を「草」以外で埋める。
+    for (let i = 0; i < EFFECT_MAX_CONCURRENT; i++) {
+      decideEffects([chat(`f${i}`, "こんばんは")], [], state, T0, m);
+    }
+    expect(state.recentFires).toHaveLength(EFFECT_MAX_CONCURRENT);
+
+    // ② 「草」はバーストで捨てられる（＝1 件も出ない）。
+    expect(decideEffects([chat("k1", "草")], [], state, T0, m)).toHaveLength(0);
+    // ⚠⚠ **ここが観測点**——捨てた分を記録していれば `kw:1` が載る。
+    expect(state.lastConditionAt.has("kw:1")).toBe(false);
+
+    // ③ バースト窓が明けた直後（クールダウンより短い）に「草」がもう一度来る。
+    const fired = decideEffects(
+      [chat("k2", "草")],
+      [],
+      state,
+      T0 + EFFECT_DISPLAY_MS,
+      m,
+    );
+    // ⚠ 捨てた分まで記録する変異だと、ここが **0 件**になる（＝1 回も出ない）。
+    expect(fired).toHaveLength(1);
+  });
+
+  it("⚠ クールダウンの状態は時間窓の外で捨てられる（長時間の配信で増え続けない）", () => {
+    const state = createEffectTriggerState();
+    const m = keywordMatcher("草", "kw:1", COOLDOWN);
+    decideEffects([chat("a", "草")], [], state, T0, m);
+    expect(state.lastConditionAt.size).toBe(1);
+    // ⚠ 出力では観測できないので **`size` を直接見る**（掃除を外す変異はここでしか殺せない）。
+    decideEffects([], [], state, T0 + CONDITION_COOLDOWN_MAX_MS, m);
+    expect(state.lastConditionAt.size).toBe(0);
+  });
+
+  it("⚠ クールダウンの判定は gift 畳み込みより前（落とした分で畳み込み状態を汚さない）", () => {
+    const state = createEffectTriggerState();
+    const gift = (id: string) =>
+      comment({
+        id,
+        eventType: "gift",
+        text: "草",
+        monetaryAmount: undefined,
+        monetary: undefined,
+      });
+    const m = keywordMatcher("草", "kw:1", COOLDOWN);
+    expect(decideEffects([gift("g1")], [], state, T0, m)).toHaveLength(1);
+    expect(state.lastGiftAt.size).toBe(1);
+    // ⚠ 2 件目はクールダウンで落ちる。⚠ このとき `lastGiftAt` が**更新されない**こと
+    //   （更新されると gift の畳み込み窓が延び続ける）。
+    const before = state.lastGiftAt.get("youtube:u1");
+    decideEffects([gift("g2")], [], state, T0 + 1_000, m);
+    expect(state.lastGiftAt.get("youtube:u1")).toBe(before);
   });
 });

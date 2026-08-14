@@ -14,8 +14,8 @@ import {
 import {
   assignedTemplateIds,
   isEffectTemplateId,
-  loadEffectAssignments,
-  resolveEffectKind,
+  loadEffectConditions,
+  resolveEffectMatch,
 } from "./effectAssignments";
 import type { SafeEffectMedia } from "./effectMedia";
 import { createEffectMediaCache } from "./effectMediaCache";
@@ -245,7 +245,8 @@ const effectDurationMs = (record: EffectTemplateRecord): number => {
  * ⚠ **この 3 つのどれかを緩めるなら、その前に security.md 061a 節を読み直すこと。**
  *
  * **061d-2 で足したもの**:
- *   - **割り当ての解決**＝`decideEffects` へ `resolveEffectKind` を resolver として渡す（発火判定は無改変）
+ *   - **割り当ての解決**＝`decideEffects` へ resolver を渡す（発火判定は無改変）。
+ *     ⚠ **061j でこれは `resolveEffectMatch`（条件の matcher）になり、課金判定も向こう側へ移った**
  *   - **先読み**＝レコード一覧（軽い）とメディア（重い）を、マウント時と `storage` で温める。
  *     ⚠ **発火の瞬間に `get_effect_template_media` を呼ばない**（061c 申し送り 6・実機確認⑧）
  *   - **2 層の描画**＝テンプレートは絶対配置層、組み込みは従来の縦積み（⑥）
@@ -256,7 +257,8 @@ const effectDurationMs = (record: EffectTemplateRecord): number => {
  *
  * この窓が描くのは**取り込んだテンプレートだけ**になった。反転した 3 つの判断:
  *   1. **`onComments` 先頭の `if (!loadEffectMonetaryEnabled()) return;` を削除**——
- *      発火するかどうかの関門を **`resolveEffectKind` 1 つに一本化**する（二重の関門を残さない。
+ *      発火するかどうかの関門を **resolver 1 つに一本化**する（⚠ 061j 以降の名前は
+ *      `resolveEffectMatch`。二重の関門を残さない。
  *      061b は「表示・投げ銭・割り当て」で ON/OFF の軸が 3 つに割れており、
  *      どれか 1 つ忘れると**黙って何も出ない**のが実機で破綻していた最大の原因だった）。
  *   2. **`fire()` のフォールバック除去**（穴 β 案 (c) の反転）——材料が揃わなければ
@@ -392,8 +394,10 @@ export function EffectOverlayApp() {
   /**
    * 061d-2（④）: **先読み**。マウント時と、割り当てが変わったとき（`storage`）に呼ぶ。
    *
-   * ⚠⚠ **温めるのは「割り当てに出てくる id」だけ**（最大 6 件・通常 1〜2 件）。一覧の全テンプレートを
+   * ⚠⚠ **温めるのは「条件に出てくる id」だけ**（⚠ **061j で上限が 6 件 → 26 件**＝イベント条件 6 ＋
+   * キーワード条件 20。通常は 1〜2 件）。一覧の全テンプレートを
    * 読むと、20MiB の予算を配信に出す予定のないもので使い切る。
+   * ⚠ **上限を守っているのは `effectMediaCache` の 20MiB ＋ LRU** なので、件数が増えても形は変えていない。
    * ⚠ **`storage` はキャッシュを温めるだけ**（061b と同じ位置づけ）。窓跨ぎ伝播はベストエフォートだが、
    * 届かなくても壊れ方は「そのテンプレートの**初回だけ出ない**」に留まる（061h で反転。
    * 061d-2 は「初回だけ組み込みで出る」だった）——**割り当てそのものは発火時に
@@ -405,10 +409,10 @@ export function EffectOverlayApp() {
     cache.clearFailures();
     missHandledRef.current.clear();
     await refreshRecords();
-    const wanted = assignedTemplateIds(loadEffectAssignments()).filter((id) =>
+    const wanted = assignedTemplateIds(loadEffectConditions()).filter((id) =>
       recordsRef.current.has(id),
     );
-    // 割り当てから外れたテンプレートは LRU 任せにせず即座に捨てる。
+    // 条件から外れたテンプレートは LRU 任せにせず即座に捨てる。
     // ⚠ **061d-2 レビュー Q-11（受容・修正不要）**: `wanted` は「一覧に載っている id」で絞るので、
     //   061c の「読めない行は黙って落とす」に当たると**温め済みのキャッシュも捨てる**
     //   ——保存値は書き換えないのに、キャッシュは捨てるという非対称になっている。
@@ -661,7 +665,7 @@ export function EffectOverlayApp() {
     const handle = connectCommentStream({
       onComments: (incoming) => {
         // ⚠⚠ **061h: ここにあった `if (!loadEffectMonetaryEnabled()) return;` を削除した。**
-        //   発火するかどうかの関門は **`resolveEffectKind` が `null` を返すこと**に一本化してある
+        //   発火するかどうかの関門は **`resolveEffectMatch` が `null` を返すこと**に一本化してある
         //   （二重の関門を残さない＝「トグルは ON なのに割り当てが無くて出ない」「割り当てはあるのに
         //   トグルが OFF で出ない」という**黙って何も起きない状態**を 2 通り作らない）。
         const seen = seenIdsRef.current;
@@ -679,15 +683,18 @@ export function EffectOverlayApp() {
 
         // ⚠ `updated` に `[]` を渡すのは「この窓は combo 更新を一切扱わない」の明示。
         //   `decideEffects` 側にも `updated` から出さない規則があり、**二重に守っている**。
-        // ⚠⚠ 061d-2: 第 5 引数が**割り当ての resolver**（①）。`resolveEffectKind` は
-        //   **呼ばれるたびに localStorage を読み直す**ので、main 窓で割り当てを変えた直後の
+        // ⚠⚠ 061d-2 / 061j: 第 5 引数が**条件の matcher**（①）。`resolveEffectMatch` は
+        //   **呼ばれるたびに localStorage を読み直す**ので、main 窓で条件を変えた直後の
         //   1 件目から効く（`storage` の窓跨ぎ伝播に依存しない）。
+        // ⚠⚠ **061j でここは「全コメント」で呼ばれるようになった**（061h までは課金コメントだけ）
+        //   ——課金判定が matcher の中へ移ったため（判断 5）。性能の見積もりと
+        //   **カクついたときの寄せ先**は `resolveEffectMatch` の JSDoc が正。
         const requests = decideEffects(
           fresh,
           [],
           triggerStateRef.current,
           Date.now(),
-          resolveEffectKind,
+          resolveEffectMatch,
         );
         for (const request of requests) fire(request);
       },

@@ -12,14 +12,19 @@ import {
   saveEffectOverlayEnabled,
 } from "../../features/comment-viewer/overlaySettings";
 import {
-  clearAllEffectAssignments,
-  clearEffectAssignmentsForTemplate,
+  addKeywordCondition as addKeywordConditionToStore,
+  clearAllEffectConditions,
+  clearEffectConditionsForTemplate,
   hasEffectConditions,
-  loadEffectAssignments,
-  saveEffectAssignments,
+  loadEffectConditions,
+  removeCondition as removeConditionFromStore,
+  setConditionEffect as setConditionEffectInStore,
+  updateKeywordCondition as updateKeywordConditionInStore,
   type EffectAssignment,
-  type EffectAssignments,
+  type EffectConditions,
+  type EffectKeywordMatch,
 } from "./effectAssignments";
+import { EFFECT_EVENT_LABEL } from "./effectEventRows";
 
 /**
  * 061d-2: main 窓の「OBSエフェクト」画面が持つ、**テンプレート一覧と割り当ての state**。
@@ -41,13 +46,18 @@ import {
  * ## ⚠⚠ 061i: **`EFFECT_OVERLAY_ENABLED_KEY` の唯一の書き手**になった（判断 2）
  *
  * 「エフェクトを配信画面に表示する」トグルを廃止し、あのフラグを
- * **「表示する条件が 1 件以上あるか」の派生値**にした。＝ 割り当てを保存する**すべての経路**が
- * [`commitAssignments`] を通り、そこだけが `saveEffectOverlayEnabled` を呼ぶ。
- * ⚠⚠ **経路は 3 本ある**（[`setAssignment`] / [`clearAllAssignments`] /
- * **テンプレート削除に伴う [`runDelete`]**）。⚠ **3 本目を忘れやすい**——忘れると
+ * **「表示する条件が 1 件以上あるか」の派生値**にした。＝ 条件を保存する**すべての経路**が
+ * [`commitConditions`] を通り、そこだけが `saveEffectOverlayEnabled` を呼ぶ。
+ * ⚠⚠ **061j で経路は 3 本 → 6 本になった**（[`setConditionEffect`] / [`addKeywordCondition`] /
+ * [`updateKeywordCondition`] / [`removeCondition`] / [`clearAllAssignments`] /
+ * **テンプレート削除に伴う [`runDelete`]**）。⚠ **`runDelete` を忘れやすい**——忘れると
  * 「最後のテンプレートを消したのにフラグが true のまま」＝ 条件が 0 件なのに OBS へ映り続ける。
  * ⚠ **フラグを触ってよいのはここだけ**（画面の「ウィンドウを閉じる」ボタンは窓を閉じるだけで
  * この値を触らない＝**設定と窓を混ぜない**）。
+ * ⚠⚠ **保存形の組み立ては 1 つも持たない**——`effectAssignments.ts` の変更関数
+ * （`setConditionEffect` / `addKeywordCondition` / …）が「読む → 変える → 保存 → 読み直す」を
+ * 完結させ、この hook はそれを [`commitConditions`] で包むだけである
+ * （＝ **id の採番も検証もここには無い**。2 か所に分けると片方だけ緩む）。
  *
  * ⚠ **061i レビュー S-3 で、このファイル内の `saveEffectOverlayEnabled` は 2 か所になった**——
  * [`commitAssignments`]（割り当ての保存経路）と、**マウント時の再計算**（アップグレードで
@@ -68,16 +78,43 @@ export interface UseEffectTemplates {
    * 開いた瞬間に閉じてしまう**。
    */
   lastDeletedId: string | null;
-  assignments: EffectAssignments;
+  /**
+   * 061j: 「エフェクトを表示する条件」の配列（**イベント条件 6 件 ＋ キーワード条件**）。
+   * ⚠ 061i までの `assignments: Record<eventType, …>` から改名した——**型が変わったのに
+   * 名前が同じだと誤読を生む**ため（保存キーとファイル名だけは互換のため据え置き）。
+   */
+  conditions: EffectConditions;
   startImport: () => Promise<void>;
   pendingDelete: EffectTemplateRecord | null;
   requestDelete: (template: EffectTemplateRecord) => void;
   cancelDelete: () => void;
   runDelete: (template: EffectTemplateRecord) => Promise<void>;
-  setAssignment: (eventType: string, assignment: EffectAssignment) => void;
+  /** 条件 1 件の**エフェクト**を変える（イベント条件・キーワード条件の共通 API）。 */
+  setConditionEffect: (id: string, effect: EffectAssignment) => void;
+  /** キーワード条件を 1 件足す。⚠ **空のキーワードでは呼ばないこと**（呼んでも保存層が落とす）。 */
+  addKeywordCondition: (
+    when: { text: string; match: EffectKeywordMatch },
+    effect: EffectAssignment,
+  ) => void;
+  /** キーワード条件の**キーワードと当て方**を変える。 */
+  updateKeywordCondition: (
+    id: string,
+    when: { text: string; match: EffectKeywordMatch },
+  ) => void;
+  /** 条件を 1 件消す。⚠ イベント条件の id を渡しても消えない（保存層が 6 行を作り直すため）。 */
+  removeCondition: (id: string) => void;
   clearAllAssignments: () => void;
-  /** 指定テンプレートを割り当てているイベント種別（削除確認文に出す）。 */
-  eventTypesUsing: (templateId: string) => string[];
+  /**
+   * 061j（判断 13）: 指定テンプレートを使っている条件の**表示ラベル**（削除確認文に出す）。
+   *
+   * ⚠⚠ **061i までの `eventTypesUsing`（イベント種別の配列）から変えた。** キーワード条件が
+   * そのテンプレートを指していると、**削除しても確認文に出ない**＝「消したら知らないうちに
+   * 条件が『表示しない』へ戻っていた」が起きるため。
+   * ⚠ **ラベル化の責務をここへ移した**——呼び出し側（`EffectTemplateCard`）がイベント種別を
+   * ラベルへ直す形だと、キーワード条件を**ラベルにする方法が呼び出し側に無い**。
+   * ⚠ キーワードは**ユーザー自身の入力**なので確認ダイアログに出してよい（§9）。
+   */
+  conditionLabelsUsing: (templateId: string) => string[];
 }
 
 /**
@@ -113,39 +150,43 @@ export function useEffectTemplates({
   const [pendingDelete, setPendingDelete] =
     useState<EffectTemplateRecord | null>(null);
   /**
-   * ⚠ **割り当ては localStorage が正**。ここは表示用のミラーで、書き込みのたびに保存関数の
-   * 戻り値（＝保存後の正規化済みの表）で置き換える（「保存したつもりの値」と state がずれない）。
+   * ⚠ **条件は localStorage が正**。ここは表示用のミラーで、書き込みのたびに保存関数の
+   * 戻り値（＝保存後の正規化済みの配列）で置き換える（「保存したつもりの値」と state がずれない）。
    */
-  const [assignments, setAssignments] = useState<EffectAssignments>(() =>
-    loadEffectAssignments(),
+  const [conditions, setConditions] = useState<EffectConditions>(() =>
+    loadEffectConditions(),
   );
 
   /**
-   * ⚠⚠ **061i（判断 2）: 割り当てを書き換える経路は全部ここを通る。**
+   * ⚠⚠ **061i（判断 2）: 条件を書き換える経路は全部ここを通る。**
    *
    * やることは 3 つで、**この順に固定**してある:
    *   1. **保存の「前」の状態を localStorage から読む**（state からではない。state は写しで、
-   *      同じレンダー中に複数回書き換わりうるため。`setAssignment` が基点を localStorage に
+   *      同じレンダー中に複数回書き換わりうるため。変更関数が基点を localStorage に
    *      置いているのと同じ理由）
-   *   2. 実際の書き換え（`mutate`）を走らせ、**保存関数が返す正規化済みの表**を state に置く
+   *   2. 実際の書き換え（`mutate`）を走らせ、**保存関数が返す正規化済みの配列**を state に置く
    *   3. **派生値 `EFFECT_OVERLAY_ENABLED_KEY` を立て直す**（＝リポジトリ全体で
    *      `saveEffectOverlayEnabled` を呼ぶ唯一の場所）
    *
    * そのうえで **0 件 → 1 件以上のときだけ窓を開く**。
    * ⚠ **「1 件以上のまま別の条件を変えた」ときに open を投げない**——投げても Rust 側は
-   * 既存窓を再利用するだけ（＝実害は無い）だが、**割り当てを触るたびに無駄な invoke が飛ぶ**のは
+   * 既存窓を再利用するだけ（＝実害は無い）だが、**条件を触るたびに無駄な invoke が飛ぶ**のは
    * 「発火の瞬間に IPC を呼ばない」という 061c 申し送り 6 と同じ向きの規律に反する。
    * ⚠⚠ **逆向き（条件が 0 件になったら閉じる）は作らない**（判断 1）。窓が消えると
    * **OBS のウィンドウキャプチャが真っ黒**になり、配信者は原因に気づけない。
    * OBS 側の表示が止まるのは、派生値が false になって `CommentViewerApp` が
    * `hideObs("effects")` を送るからで、**窓自体は開いたまま**である。
+   *
+   * ⚠⚠ **061j: キーワードを打っただけでは 0 → 1 件にならない**（`effectConditionCount` が
+   * 数えるのは `kind === "template"` の条件だけ）。＝ **窓が開くのはエフェクトを選んだ瞬間**で、
+   * イベント行と同じ規則である（「いつ窓が開くのか」の説明を 2 通りにしない）。
    */
-  const commitAssignments = useCallback(
-    (mutate: () => EffectAssignments) => {
-      const hadConditions = hasEffectConditions(loadEffectAssignments());
+  const commitConditions = useCallback(
+    (mutate: () => EffectConditions) => {
+      const hadConditions = hasEffectConditions(loadEffectConditions());
       const next = mutate();
       const hasConditions = hasEffectConditions(next);
-      setAssignments(next);
+      setConditions(next);
       saveEffectOverlayEnabled(hasConditions);
       if (hasConditions && !hadConditions) openEffectOverlay();
     },
@@ -172,9 +213,11 @@ export function useEffectTemplates({
    * **「ウィンドウを開く」ボタン**（同レビュー Q-2）が担う。
    * ⚠ **値が既に一致していれば書かない**——無駄な `storage` イベント（＝コメビュ窓の
    * `enableObs` / `hideObs`）を撒かないため。未保存（キー無し）は `false` として比較される。
+   * ⚠ **061j の移行（旧形式 Record → 条件の配列）もここを通る**——`loadEffectConditions()` が
+   * 読み込み時に変換するので、**旧形式のままでも条件数は正しく数えられる**（保存値は書き戻さない）。
    */
   useEffect(() => {
-    const shouldBeEnabled = hasEffectConditions(loadEffectAssignments());
+    const shouldBeEnabled = hasEffectConditions(loadEffectConditions());
     if (loadEffectOverlayEnabled() === shouldBeEnabled) return;
     saveEffectOverlayEnabled(shouldBeEnabled);
   }, []);
@@ -245,11 +288,12 @@ export function useEffectTemplates({
         //   組み込みを廃止したので戻し先が 1 つしか無い。呼ぶ関数は同じ
         //   （`clearEffectAssignmentsForTemplate` が `DEFAULT_EFFECT_ASSIGNMENT` を見ている）。
         //   ⚠ **削除が成功した後にだけ書き換える**（失敗したら割り当ては触らない）。
-        // ⚠⚠ **061i: この経路も `commitAssignments` を通す**（判断 2）。ここを直接
-        //   `setAssignments(...)` に戻すと、**最後のテンプレートを消して条件が 0 件になっても
+        // ⚠⚠ **061i: この経路も `commitConditions` を通す**（判断 2）。ここを直接
+        //   `setConditions(...)` に戻すと、**最後のテンプレートを消して条件が 0 件になっても
         //   `EFFECT_OVERLAY_ENABLED_KEY` が true のまま**残り、OBS へ映り続ける
-        //   （＝派生値の書き手が 1 か所に閉じていない状態。**最も忘れやすい 3 本目**）。
-        commitAssignments(() => clearEffectAssignmentsForTemplate(template.id));
+        //   （＝派生値の書き手が 1 か所に閉じていない状態。**6 本の中で最も忘れやすい**）。
+        // ⚠ 061j: キーワード条件が指している場合も同じく「表示しない」へ戻る。
+        commitConditions(() => clearEffectConditionsForTemplate(template.id));
         // 消したものをプレビューしたままにしない（取り直しに失敗して "failed" が出るだけになる）。
         setImported((prev) => (prev?.id === template.id ? null : prev));
         setLastDeletedId(template.id);
@@ -261,46 +305,80 @@ export function useEffectTemplates({
         setBusy(false);
       }
     },
-    [reload, commitAssignments],
+    [reload, commitConditions],
   );
 
-  const setAssignment = useCallback(
-    (eventType: string, assignment: EffectAssignment) => {
-      // ⚠⚠ **061d-2 レビュー Q-9: 保存を `setAssignments` の更新関数の中でやらない。**
-      //   更新関数は StrictMode で二重に呼ばれる（＝純粋であることが前提の場所）ので、
-      //   副作用を置くと「冪等だからたまたま無害」に依存した形になる。
-      // ⚠ 基点は state ではなく **localStorage（＝正）**——state はその写しなので結果は同じで、
-      //   かつ「保存 → 読み直し」が 1 本道になる（`clearEffectAssignmentsForTemplate` と同じ形）。
-      commitAssignments(() => {
-        saveEffectAssignments({
-          ...loadEffectAssignments(),
-          [eventType]: assignment,
-        });
-        // ⚠ 保存関数が正規化（未知キーを落とす・既定だけならキー削除）するので、
-        //   読み直した値を state に置く（画面と localStorage を必ず一致させる）。
-        return loadEffectAssignments();
-      });
+  /**
+   * ⚠⚠ **061d-2 レビュー Q-9: 保存を `setConditions` の更新関数の中でやらない。**
+   * 更新関数は StrictMode で二重に呼ばれる（＝純粋であることが前提の場所）ので、
+   * 副作用を置くと「冪等だからたまたま無害」に依存した形になる。
+   * ⚠ 基点は state ではなく **localStorage（＝正）**——state はその写しなので結果は同じで、
+   * かつ「保存 → 読み直し」が 1 本道になる（`effectAssignments.ts` の変更関数が全部この形）。
+   */
+  const setConditionEffect = useCallback(
+    (id: string, effect: EffectAssignment) => {
+      commitConditions(() => setConditionEffectInStore(id, effect));
     },
-    [commitAssignments],
+    [commitConditions],
+  );
+
+  const addKeywordCondition = useCallback(
+    (
+      when: { text: string; match: EffectKeywordMatch },
+      effect: EffectAssignment,
+    ) => {
+      commitConditions(() => addKeywordConditionToStore(when, effect));
+    },
+    [commitConditions],
+  );
+
+  const updateKeywordCondition = useCallback(
+    (id: string, when: { text: string; match: EffectKeywordMatch }) => {
+      commitConditions(() => updateKeywordConditionInStore(id, when));
+    },
+    [commitConditions],
+  );
+
+  const removeCondition = useCallback(
+    (id: string) => {
+      commitConditions(() => removeConditionFromStore(id));
+    },
+    [commitConditions],
   );
 
   /**
    * ⚠⚠ **復帰導線**。壊れたテンプレートで配信画面が読めなくなったときの唯一の脱出路
    * （060d の「既定のデザインに戻す」と同じ位置づけ）。**テストで固定する。**
+   * ⚠ 061j: **キーワード条件そのものは消さない**（`effect` だけ「表示しない」へ戻る）。
    */
   const clearAllAssignments = useCallback(() => {
     // ⚠ 061i: 条件が 0 件になるので派生値も false へ倒れる（＝OBS 側のソースが非表示になる）。
     //   ⚠ **窓は閉じない**（判断 1）。
-    commitAssignments(() => clearAllEffectAssignments());
-  }, [commitAssignments]);
+    commitConditions(() => clearAllEffectConditions());
+  }, [commitConditions]);
 
-  const eventTypesUsing = useCallback(
+  /**
+   * 061j（判断 13）: 削除確認文に出す**条件のラベル**。
+   *
+   * ⚠ **イベント条件は `EFFECT_EVENT_LABEL`**（コメント一覧・ティッカー・読み上げと同じ表）。
+   *   ここで新しい呼び名を発明しない。
+   * ⚠ **キーワード条件は当て方まで書く**——「含む」と「完全一致」で意味が違うので、
+   *   キーワードだけ出すと「なぜこれが当たるのか」が確認文から読めない。
+   */
+  const conditionLabelsUsing = useCallback(
     (templateId: string): string[] =>
-      Object.keys(assignments).filter((eventType) => {
-        const value = assignments[eventType];
-        return value !== undefined && value.kind === "template" && value.templateId === templateId;
-      }),
-    [assignments],
+      conditions
+        .filter(
+          (c) => c.effect.kind === "template" && c.effect.templateId === templateId,
+        )
+        .map((c) =>
+          c.when.type === "event"
+            ? (EFFECT_EVENT_LABEL[c.when.eventType] ?? c.when.eventType)
+            : c.when.match === "exact"
+              ? `「${c.when.text}」と完全に一致するコメント`
+              : `「${c.when.text}」を含むコメント`,
+        ),
+    [conditions],
   );
 
   return {
@@ -310,14 +388,17 @@ export function useEffectTemplates({
     error,
     imported,
     lastDeletedId,
-    assignments,
+    conditions,
     startImport,
     pendingDelete,
     requestDelete,
     cancelDelete,
     runDelete,
-    setAssignment,
+    setConditionEffect,
+    addKeywordCondition,
+    updateKeywordCondition,
+    removeCondition,
     clearAllAssignments,
-    eventTypesUsing,
+    conditionLabelsUsing,
   };
 }

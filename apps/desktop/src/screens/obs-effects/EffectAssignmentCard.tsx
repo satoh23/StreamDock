@@ -1,7 +1,22 @@
+import { useState } from "react";
 import { Button } from "../../components/primitives";
 import { Select } from "../../components/Select";
-import { DEFAULT_EFFECT_ASSIGNMENT } from "./effectAssignments";
-import { EFFECT_EVENT_ROWS } from "./effectEventRows";
+import {
+  DEFAULT_EFFECT_ASSIGNMENT,
+  isUsableKeyword,
+  KEYWORD_CONDITION_MAX,
+  KEYWORD_MAX_LENGTH,
+  sanitizeKeywordInput,
+  type EffectAssignment,
+  type EffectKeywordMatch,
+} from "./effectAssignments";
+import { EFFECT_EVENT_LABEL } from "./effectEventRows";
+import {
+  effectSelectValue,
+  isEffectTemplateMissingFromList,
+  NONE_VALUE,
+  TEMPLATE_PREFIX,
+} from "./effectSelectValue";
 import type { UseEffectTemplates } from "./useEffectTemplates";
 import layout from "../formLayout.module.css";
 import styles from "./ObsEffectsScreen.module.css";
@@ -45,17 +60,158 @@ import styles from "./ObsEffectsScreen.module.css";
  * **位置づけは不変**。むしろ**配信画面を完全に静かにできる**ようになったぶん強くなっている。
  */
 
-/** `<select>` の値。⚠ テンプレートは `template:<id>` で表す（`<option value>` は文字列しか持てない）。 */
-const NONE_VALUE = "none";
-const TEMPLATE_PREFIX = "template:";
+/**
+ * ⚠⚠ **061j (0): `<select>` の値の組み立ては [`effectSelectValue`] へ切り出した**
+ * （061h 申し送り ⑦-c の返済。理由の全文は `effectSelectValue.ts` の module JSDoc が正）。
+ * ⚠ **ここで `template:<id>` を組み立て直さないこと**——組み立てが 2 か所になると、
+ * 「選択肢に無い id を明示的に落とす」規則が片方だけ緩む（そして DOM からは観測できない）。
+ */
+
+/**
+ * 061j: 条件 1 行の「**どのエフェクトを出すか**」。
+ *
+ * ⚠⚠ **イベント条件の行とキーワード条件の行が 1 実装を共有する。** 選択肢の中身・順序・
+ * 値の意味を 2 か所に書くと、**片方だけ 061h ⑦-c の偶然に戻る**（そして DOM からは観測できない）。
+ * ⚠ **選択肢の中身と順序は 1 文字も変えていない**（061h 申し送り ⑦-c ／ 061i の判断）。
+ */
+function ConditionEffectSelect({
+  effect,
+  templates,
+  listState,
+  ariaLabel,
+  onChange,
+}: {
+  effect: EffectAssignment;
+  templates: UseEffectTemplates["templates"];
+  listState: UseEffectTemplates["listState"];
+  ariaLabel: string;
+  onChange: (effect: EffectAssignment) => void;
+}) {
+  // ⚠⚠ **警告を出すのは `listState === "ready"` のときだけ**（061d-2 レビュー S-1）。
+  //   `notInList` と分けてあるのが要点——**表示の受け皿**（`effectSelectValue`）と
+  //   **「無い」という断言**（この警告）は別の判断で、後者は一覧が読めて初めて成立する。
+  const missing =
+    isEffectTemplateMissingFromList(effect, templates) && listState === "ready";
+  return (
+    <>
+      <Select
+        value={effectSelectValue(effect, templates)}
+        ariaLabel={ariaLabel}
+        onChange={(e) => {
+          const next = e.target.value;
+          // ⚠ テンプレート以外はすべて「出さない」（061h：選択肢は 2 種類しかない）。
+          onChange(
+            next.startsWith(TEMPLATE_PREFIX)
+              ? {
+                  kind: "template",
+                  templateId: next.slice(TEMPLATE_PREFIX.length),
+                }
+              : { kind: "none" },
+          );
+        }}
+      >
+        {/* ⚠ 呼び方は「エフェクトを出さない」（「なし」にしない＝UX の決定）。
+            ⚠ 061h: 「組み込み（名前と金額）」の `<option>` を削除した。
+            ⚠⚠ **中身と順序を変えないこと**（061h ⑦-c ／ 061i の判断）。 */}
+        <option value={NONE_VALUE}>エフェクトを出さない</option>
+        {templates.map((template) => (
+          <option key={template.id} value={`${TEMPLATE_PREFIX}${template.id}`}>
+            {template.name}
+          </option>
+        ))}
+      </Select>
+      {missing && (
+        // ⚠⚠ **061h: これが「出さない側へ倒した」ことを観測可能にしている 1 文である。**
+        //   エフェクト窓は透過・最背面・非フォーカスで何も出せないので、
+        //   「割り当てたのに出ない」に気付ける場所はここしかない
+        //   （`EffectOverlayApp` の `fire()` の注記が、この警告を反転の前提として名指ししている）。
+        <p className={styles.errorText}>
+          割り当てていたエフェクトが見つかりません。いまは何も表示されません。
+        </p>
+      )}
+    </>
+  );
+}
+
+/**
+ * 061j: **未確定のキーワード行**（まだ localStorage に無い行）。
+ *
+ * ⚠⚠ **これがある理由＝判断 9（空文字を保存しない）と「条件を追加」ボタンの衝突を解くため。**
+ * 追加ボタンで生えた直後の行はキーワードが空なので、素直に保存すると**保存層がその場で落として
+ * 行が生えない**。⇒ **非空になって初めて永続化する**（048 の数値入力と同じ形）。
+ * ⚠ **同時に 1 本だけ**（2 本目を作れると「未確定が溜まる」状態ができる）。
+ */
+interface DraftKeywordRow {
+  text: string;
+  match: EffectKeywordMatch;
+  effect: EffectAssignment;
+}
 
 export function EffectAssignmentCard({
   templates,
   listState,
-  assignments,
-  setAssignment,
+  conditions,
+  setConditionEffect,
+  addKeywordCondition,
+  updateKeywordCondition,
+  removeCondition,
   clearAllAssignments,
 }: UseEffectTemplates) {
+  /**
+   * ⚠⚠ **061j（穴 α）: 入力中の生文字列はここに持ち、`onChange` では保存しない。**
+   *
+   * 048（読み上げ最大文字数）が同じ判断をしている:
+   * > **確定は blur と Enter のみ**（`onChange` 即時にしない）… 親 state が変わらない＝
+   * > **1 打鍵ごとに localStorage へ書かない**
+   *
+   * ⚠ **061j では代償が 048 より大きい**——`EFFECT_ASSIGNMENTS_KEY` が変わると
+   * **エフェクト窓の `storage` 購読が `warmTemplates()` を回し、`list_effect_templates` の invoke が
+   * 打鍵ごとに 1 本飛ぶ**（＋ キャッシュの `clearFailures` / `retain` / `prime` が毎回走る）。
+   * ⚠ `<select>`（当て方・エフェクト）は**1 操作で確定する**ので `onChange` 即時のままでよい
+   *   （イベント条件の行と同じ挙動＝規則を 2 通りにしない）。
+   */
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [draftRow, setDraftRow] = useState<DraftKeywordRow | null>(null);
+
+  const eventConditions = conditions.filter((c) => c.when.type === "event");
+  const keywordConditions = conditions.filter((c) => c.when.type === "keyword");
+  const canAddKeyword =
+    draftRow === null && keywordConditions.length < KEYWORD_CONDITION_MAX;
+
+  /**
+   * 既存のキーワード行を確定する。
+   *
+   * ⚠ **空になったら直前の確定値へ戻す**（048 の「空 / NaN は直前の確定値へ戻す」と同じ）。
+   *   ＝ 打ち間違いでユーザーの条件が消えない。⚠ **空を保存する経路をここで作らない。**
+   * ⚠ 空判定は [`isUsableKeyword`]（＝正規化の持ち主に聞く）。ここで `text.trim() === ""` と
+   *   書いても**いまは同じ結果**だが、空判定の規則を 2 か所に書かないために述語へ寄せている。
+   */
+  const commitKeyword = (id: string, match: EffectKeywordMatch) => {
+    const raw = drafts[id];
+    setDrafts((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    if (raw === undefined) return;
+    const text = sanitizeKeywordInput(raw);
+    if (!isUsableKeyword(text)) return;
+    updateKeywordCondition(id, { text, match });
+  };
+
+  /** 未確定行を確定する。⚠ **空のままなら永続化しない**（行はそのまま残るので打ち直せる）。 */
+  const commitDraftRow = () => {
+    if (draftRow === null) return;
+    const text = sanitizeKeywordInput(draftRow.text);
+    if (!isUsableKeyword(text)) {
+      // ⚠ 詰めた結果は入力欄へ書き戻す（「打ったら短くなった」が見える・048 の規律）。
+      setDraftRow({ ...draftRow, text });
+      return;
+    }
+    addKeywordCondition({ text, match: draftRow.match }, draftRow.effect);
+    setDraftRow(null);
+  };
+
   return (
     <section className={layout.panel}>
       <div className={layout.panelHead}>
@@ -124,71 +280,203 @@ export function EffectAssignmentCard({
           音があるテンプレートを選ぶと、その音はパソコンの既定のスピーカーから出ます。OBS で「デスクトップ音声」を取り込んでいる場合は、配信にも流れます（コメントの通知音とは別の音です）。
         </p>
 
+        {/* ⚠⚠ **061j（判断 11）: 1 コメントに出るのは 1 つだけ。** これを書かないと
+            「スパチャにキーワードも当たるのに 1 つしか出ない」が**黙って起きる**
+            （061a 以来の「黙って何かが起きる／起きない状態を作らない」）。
+            ⚠ 走査順（イベント → キーワード）がそのまま優先順位なので、画面の並びで説明できる。 */}
+        <p className={styles.note}>
+          1
+          つのコメントに複数の条件が当てはまるときは、上から順に最初に当てはまった条件だけが使われます（エフェクトは 1
+          つだけ出ます）。
+        </p>
+
         <div className={styles.assignmentList}>
-          {EFFECT_EVENT_ROWS.map(({ eventType, label }) => {
-            const assignment = assignments[eventType] ?? DEFAULT_EFFECT_ASSIGNMENT;
-            // ⚠⚠ **選択肢に無い id は「エフェクトを出さない」として表示する**（061h で反転）。
-            //   ⚠ **判定そのものは 061d-2 のまま残す**——`<select>` の value が選択肢に無いと
-            //   **ブラウザが勝手に先頭を選ぶ**という理由は 061h でも生きているので、
-            //   **明示的に**落とす先を書く必要がある（判定ごと消すと、たまたま先頭が
-            //   「エフェクトを出さない」であることに依存した形になる）。
-            //   ⚠ 061h で変えたのは**落とす先だけ**（`BUILTIN_VALUE` → `NONE_VALUE`）。
-            //   ⚠ **一覧が届く前も含めて**この判定は要る。
-            const notInList =
-              assignment.kind === "template" &&
-              !templates.some((t) => t.id === assignment.templateId);
-            // ⚠⚠ **警告を出すのは `listState === "ready"` のときだけ**（061d-2 レビュー S-1）。
-            //   `notInList` と分けてあるのが要点——**表示の受け皿**（上）と
-            //   **「無い」という断言**（下）は別の判断で、後者は一覧が読めて初めて成立する。
-            const missing = notInList && listState === "ready";
-            const value =
-              assignment.kind === "template" && !notInList
-                ? `${TEMPLATE_PREFIX}${assignment.templateId}`
-                : NONE_VALUE;
+          {eventConditions.map((condition) => {
+            const eventType =
+              condition.when.type === "event" ? condition.when.eventType : "";
+            const label = EFFECT_EVENT_LABEL[eventType] ?? eventType;
             return (
-              <div key={eventType} className={styles.assignmentRow}>
+              <div key={condition.id} className={styles.assignmentRow}>
                 <span className={styles.assignmentLabel}>{label}</span>
-                <Select
-                  value={value}
+                <ConditionEffectSelect
+                  effect={condition.effect}
+                  templates={templates}
+                  listState={listState}
                   ariaLabel={`${label}のエフェクト`}
-                  onChange={(e) => {
-                    const next = e.target.value;
-                    // ⚠ テンプレート以外はすべて「出さない」（061h：選択肢は 2 種類しかない）。
-                    if (next.startsWith(TEMPLATE_PREFIX)) {
-                      setAssignment(eventType, {
-                        kind: "template",
-                        templateId: next.slice(TEMPLATE_PREFIX.length),
-                      });
-                    } else {
-                      setAssignment(eventType, { kind: "none" });
-                    }
-                  }}
-                >
-                  {/* ⚠ 呼び方は「エフェクトを出さない」（「なし」にしない＝UX の決定）。
-                      ⚠ 061h: 「組み込み（名前と金額）」の `<option>` を削除した。 */}
-                  <option value={NONE_VALUE}>エフェクトを出さない</option>
-                  {templates.map((template) => (
-                    <option
-                      key={template.id}
-                      value={`${TEMPLATE_PREFIX}${template.id}`}
-                    >
-                      {template.name}
-                    </option>
-                  ))}
-                </Select>
-                {missing && (
-                  // ⚠⚠ **061h: これが「出さない側へ倒した」ことを観測可能にしている 1 文である。**
-                  //   エフェクト窓は透過・最背面・非フォーカスで何も出せないので、
-                  //   「割り当てたのに出ない」に気付ける場所はここしかない
-                  //   （`EffectOverlayApp` の `fire()` の注記が、この警告を反転の前提として名指ししている）。
-                  <p className={styles.errorText}>
-                    割り当てていたエフェクトが見つかりません。いまは何も表示されません。
-                  </p>
-                )}
+                  onChange={(effect) => setConditionEffect(condition.id, effect)}
+                />
               </div>
             );
           })}
         </div>
+
+        {/* --- 061j: キーワード条件（自由テキスト） ------------------------------------------ */}
+
+        <h4 className={styles.subHeading}>コメントの言葉で出す</h4>
+        {/* ⚠⚠ **061d の (2)（「条件を追加」ボタンで行を増やさない）は、イベント条件についてだけ維持する。**
+            キーワードは**本質的に可変長**なので追加ボタンが要る——061d が避けたかったのは
+            **「たぬえさ3 のタグをコピペで増やす手作業」**であって、「増やせること」そのものではない。 */}
+        <p className={styles.note}>
+          コメントに特定の言葉が入っていたらエフェクトを出します。投げ銭かどうかに関係なく、ふつうのコメントでも出ます。大文字・小文字や全角・半角の違いは区別しません。
+        </p>
+        {/* ⚠⚠ **判断 12: 通常チャットでは文字が出ない**（`amountText` も `message` も無く、
+            `eventLabel` が空になるので `effectTemplateLine` が 1 行も描かない）。
+            ⚠ **これは仕様として受け入れる**——`{text}`（コメント本文）を差し込み変数に足すと
+            **第三者の自由入力が配信画面に大写しになる**（§9・`docs/security.md` §8 の 061c 節が
+            変数追加時の再評価を要求している）。⇒ **画面で明示する。** */}
+        <p className={styles.note}>
+          言葉で出したエフェクトには、金額やイベント名の文字は出ません（テンプレートの絵や動画だけが出ます）。
+        </p>
+        {/* ⚠ 判断 7（クールダウン）。⚠⚠ **秒数を断言しない**——定数（`KEYWORD_COOLDOWN_MS`）が
+            変わっても文言が嘘にならない書き方にする（061a レビュー Q-1 の規律）。 */}
+        <p className={styles.note}>
+          同じ言葉が続けて書かれたときは、少し間隔を空けて反応します（連呼で画面が埋まらないようにするためです）。
+        </p>
+
+        <div className={styles.keywordList}>
+          {keywordConditions.map((condition, index) => {
+            if (condition.when.type !== "keyword") return null;
+            const { text, match } = condition.when;
+            const n = index + 1;
+            // ⚠ 入力中は下書き、確定後は保存値。⚠ **`??` で分ける**（空文字の下書きを保存値で
+            //   上書きしないため＝ `||` にすると「全部消して打ち直す」ができなくなる）。
+            const shown = drafts[condition.id] ?? text;
+            return (
+              <div key={condition.id} className={styles.keywordRow}>
+                <span className={`${layout.field} ${styles.keywordText}`}>
+                  <input
+                    type="text"
+                    value={shown}
+                    aria-label={`キーワード ${n}`}
+                    // ⚠ ブラウザの補助であって保証ではない（048 の `min` / `max` と同じ位置づけ）。
+                    //   実際の上限は確定時の `sanitizeKeywordInput` と保存層が担う。
+                    maxLength={KEYWORD_MAX_LENGTH}
+                    placeholder="例: 草"
+                    onChange={(e) =>
+                      setDrafts((prev) => ({
+                        ...prev,
+                        [condition.id]: e.target.value,
+                      }))
+                    }
+                    onBlur={() => commitKeyword(condition.id, match)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") commitKeyword(condition.id, match);
+                    }}
+                  />
+                </span>
+                <Select
+                  value={match}
+                  ariaLabel={`キーワード ${n} の当て方`}
+                  onChange={(e) => {
+                    // ⚠ `<select>` は 1 操作で確定するので即 commit（打鍵の問題が無い）。
+                    //   ⚠ 入力中の下書きがあれば**一緒に確定する**（当て方だけ保存されて
+                    //   キーワードが古いまま、というズレを作らない）。
+                    const nextMatch =
+                      e.target.value === "exact" ? "exact" : "contains";
+                    const raw = drafts[condition.id];
+                    const nextText =
+                      raw === undefined ? text : sanitizeKeywordInput(raw);
+                    if (raw !== undefined && isUsableKeyword(nextText)) {
+                      setDrafts((prev) => {
+                        const next = { ...prev };
+                        delete next[condition.id];
+                        return next;
+                      });
+                    }
+                    updateKeywordCondition(condition.id, {
+                      text: isUsableKeyword(nextText) ? nextText : text,
+                      match: nextMatch,
+                    });
+                  }}
+                >
+                  <option value="contains">この言葉を含む</option>
+                  <option value="exact">この言葉と完全に一致</option>
+                </Select>
+                <ConditionEffectSelect
+                  effect={condition.effect}
+                  templates={templates}
+                  listState={listState}
+                  ariaLabel={`キーワード ${n} のエフェクト`}
+                  onChange={(effect) => setConditionEffect(condition.id, effect)}
+                />
+                <Button
+                  type="button"
+                  onClick={() => removeCondition(condition.id)}
+                >
+                  削除
+                </Button>
+              </div>
+            );
+          })}
+
+          {draftRow !== null && (
+            // ⚠⚠ **未確定行**（まだ保存されていない）。⚠ 条件の件数にも派生値にも数えない。
+            <div className={styles.keywordRow}>
+              <span className={`${layout.field} ${styles.keywordText}`}>
+                <input
+                  type="text"
+                  value={draftRow.text}
+                  aria-label={`キーワード ${keywordConditions.length + 1}`}
+                  maxLength={KEYWORD_MAX_LENGTH}
+                  placeholder="例: 草"
+                  autoFocus
+                  onChange={(e) =>
+                    setDraftRow({ ...draftRow, text: e.target.value })
+                  }
+                  onBlur={commitDraftRow}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") commitDraftRow();
+                  }}
+                />
+              </span>
+              <Select
+                value={draftRow.match}
+                ariaLabel={`キーワード ${keywordConditions.length + 1} の当て方`}
+                onChange={(e) =>
+                  setDraftRow({
+                    ...draftRow,
+                    match: e.target.value === "exact" ? "exact" : "contains",
+                  })
+                }
+              >
+                <option value="contains">この言葉を含む</option>
+                <option value="exact">この言葉と完全に一致</option>
+              </Select>
+              <ConditionEffectSelect
+                effect={draftRow.effect}
+                templates={templates}
+                listState={listState}
+                ariaLabel={`キーワード ${keywordConditions.length + 1} のエフェクト`}
+                onChange={(effect) => setDraftRow({ ...draftRow, effect })}
+              />
+              <Button type="button" onClick={() => setDraftRow(null)}>
+                削除
+              </Button>
+            </div>
+          )}
+        </div>
+
+        <div className={styles.rowActions}>
+          <Button
+            type="button"
+            onClick={() =>
+              setDraftRow({
+                text: "",
+                match: "contains",
+                effect: DEFAULT_EFFECT_ASSIGNMENT,
+              })
+            }
+            disabled={!canAddKeyword}
+          >
+            条件を追加
+          </Button>
+        </div>
+        {/* ⚠ **「黙って何も起きない」を作らない**——押せない理由を必ず書く（061a 以来の規律）。 */}
+        <p className={styles.note}>
+          言葉の条件は{KEYWORD_CONDITION_MAX}個まで、1
+          つの言葉は{KEYWORD_MAX_LENGTH}文字までです。言葉を入力してエフェクトを選ぶと保存されます（入力欄から離れるか
+          Enter で確定します）。
+        </p>
 
         <div className={styles.rowActions}>
           {/* ⚠⚠ **復帰導線。no-op にする変異はテストがレッドにする。** */}
@@ -196,8 +484,11 @@ export function EffectAssignmentCard({
             すべて「表示しない」に戻す
           </Button>
         </div>
+        {/* ⚠⚠ **061j: 文言を実態へ合わせた。** 戻すのは「すべての条件」（イベント＋言葉）で、
+            ⚠ **入力した言葉そのものは消さない**（復帰導線であってリセットではない＝
+            テンプレートを削除しないのと同じ判断。ユーザーが打った文字列を勝手に捨てない）。 */}
         <p className={styles.note}>
-          すべてのイベントを「エフェクトを出さない」に戻します。テンプレートは削除されません。配信画面が読めなくなったときは、これで元に戻せます。
+          すべての条件を「エフェクトを出さない」に戻します。入力した言葉やテンプレートは削除されません。配信画面が読めなくなったときは、これで元に戻せます。
         </p>
       </div>
     </section>

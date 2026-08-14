@@ -244,3 +244,46 @@
 .assignmentRow > .errorText {
   flex-basis: 100%;
 }
+
+/* --- 061j: キーワード条件（自由テキスト） ------------------------------------------------------ */
+
+/* ⚠ ブロックの見出し。⚠ **新しい px / weight を発明しない**——`formLayout` の `.panelHead h3`（17px）と
+   `.field label`（12px/800）の間に相当するので、既にこのファイルにある `.statusValue`（800）と
+   `.assignmentLabel`（13px/600）の値だけで組む（061a の要件）。 */
+.subHeading {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-soft);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+/* ⚠ 行の並びは `.assignmentList` に倣う（同じ画面で 2 通りの間隔を作らない）。 */
+.keywordList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+/* 1 行＝「キーワード入力」「当て方」「エフェクト」「削除」。⚠ 警告文は行の下に回り込ませる。 */
+.keywordRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+/* ⚠⚠ **入力欄の意匠は `formLayout.module.css` の `.field input` が持つ**（新しい px を発明しない）。
+   あちらは子孫セレクタなので、入力欄だけを `.field` で包んでここでは**幅の振る舞いだけ**を足す。
+   ⚠ `min-width` が無いと、`.field input` の `width: 100%` と `flex: 1` が組み合わさって
+   狭い幅で入力欄が潰れる（`.templateName` と同じ理由の逆向き）。 */
+.keywordText {
+  flex: 1;
+  min-width: 160px;
+}
+
+.keywordRow > .errorText {
+  flex-basis: 100%;
+}

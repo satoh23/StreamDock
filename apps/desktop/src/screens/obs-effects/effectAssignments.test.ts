@@ -2,19 +2,34 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { EFFECT_ASSIGNMENTS_KEY } from "../../features/comment-viewer/overlaySettings";
 import { MONETARY_EVENT_TYPES } from "../comment-viewer/viewerFormat";
 import {
+  addKeywordCondition,
   assignedTemplateIds,
-  clearAllEffectAssignments,
-  clearEffectAssignmentsForTemplate,
-  loadEffectAssignments,
-  resolveEffectKind,
-  saveEffectAssignments,
+  clearAllEffectConditions,
+  clearEffectConditionsForTemplate,
+  effectConditionCount,
+  hasEffectConditions,
+  isUsableKeyword,
+  KEYWORD_CONDITION_MAX,
+  KEYWORD_COOLDOWN_MS,
+  KEYWORD_MAX_LENGTH,
+  loadEffectConditions,
+  removeCondition,
+  resolveEffectMatch,
+  sanitizeKeywordInput,
+  saveEffectConditions,
+  setConditionEffect,
+  updateKeywordCondition,
+  type EffectCondition,
+  type EffectConditions,
 } from "./effectAssignments";
+import { CONDITION_COOLDOWN_MAX_MS } from "./effectTrigger";
 
 /**
- * 061d-2 / 061h: イベント種別 → エフェクトの割り当ての仕様テスト。
+ * 061d-2 / 061h / **061j**: 「どんなコメントで、どのエフェクトを出すか」の仕様テスト。
  *
- * ⚠⚠ **この 1 ファイルが固定している最重要の不変条件＝「読み取れなかったら『出さない』へ倒れる」**
- * （⚠ **061h で 061d-2 の ⑪ を反転した**）。
+ * ⚠⚠ **この 1 ファイルが固定している最重要の不変条件は 2 つ。**
+ *
+ * **① 読み取れなかったら「出さない」へ倒れる**（⚠ **061h で 061d-2 の ⑪ を反転した**）。
  * 061d-2 は逆に「`{"kind":"none"}` 以外はすべて組み込みへ倒す」を固定していた——当時は
  * 組み込み意匠が既定の表示手段で、「アップデートしたら配信画面からエフェクトが消えた」が
  * 最悪の壊れ方だったため。⚠ **061h で組み込みを廃止したので前提ごと消えた**:
@@ -22,7 +37,13 @@ import {
  *   - 実害の向きが逆＝「**頼んでいない演出が黙って出る**」ほうが今の運用では大きい
  *   - 「出ない」は main 窓の警告で**観測できる**壊れ方である
  * ＝ **「出す」側へ倒れてよいのは、ユーザーが自分でテンプレートを選んだときだけ。**
- * ⚠ 下のケースはどれも「組み込み／テンプレートへ倒す」変異でレッドになる（ミューテーションで実測）。
+ *
+ * **② ⚠⚠ 061j: 空のキーワードが保存経路にも読み込み経路にも通らない。**
+ * `"".includes(…)` は**全コメントに一致する**＝配信画面がエフェクトで埋まる。
+ * **本タスクで最も危険な失敗モード**なので、保存時・読み込み時の**両方**を別々のケースで固定する。
+ * ⚠ 空白の判定は **照合に使う値（正規化後）** に対して行う。⚠⚠ **起票時の「生の `trim()` では
+ * 全角スペースを取りこぼす」は誤りだった**（JS の `trim()` は `U+3000` も落とす＝ミューテーション⑮-b が
+ * 等価変異として生存）。理由の全文は `effectAssignments.ts` の `normalizeForMatch` の訂正メモが正。
  *
  * localStorage 以外の外部境界は使わない（IPC も通信も無い純ロジック）。
  */
@@ -30,16 +51,52 @@ import {
 const NONE = { kind: "none" } as const;
 const UUID = "93c76e02-1111-4222-8333-444455556666";
 const UUID2 = "0f0e0d0c-1111-4222-8333-444455556666";
+const TPL = { kind: "template", templateId: UUID } as const;
 
-/** 全種別が「エフェクトを出さない」であること（＝ 061h 以降の既定の形）。 */
-const expectAllNone = (value: Record<string, unknown>) => {
-  expect(Object.keys(value).sort()).toEqual([...MONETARY_EVENT_TYPES].sort());
-  for (const eventType of MONETARY_EVENT_TYPES) {
-    expect(value[eventType]).toEqual(NONE);
-  }
+const EVENT_TYPES = [...MONETARY_EVENT_TYPES];
+
+/** 保存値をそのまま読む（＝「書き戻していない」ことの確認にも使う）。 */
+const raw = (): string | null => localStorage.getItem(EFFECT_ASSIGNMENTS_KEY);
+
+const eventRows = (conditions: EffectConditions) =>
+  conditions.filter((c) => c.when.type === "event");
+const keywordRows = (conditions: EffectConditions) =>
+  conditions.filter((c) => c.when.type === "keyword");
+
+/** キーワード条件 1 件（保存形と同じ形）。 */
+const kw = (
+  n: number,
+  text: string,
+  over: Partial<{ match: string; effect: unknown }> = {},
+): unknown => ({
+  id: `kw:${n}`,
+  when: { type: "keyword", text, match: over.match ?? "contains" },
+  effect: over.effect ?? TPL,
+});
+
+/** イベント条件 1 件（保存形と同じ形）。 */
+const ev = (eventType: string, effect: unknown = TPL): unknown => ({
+  id: `event:${eventType}`,
+  when: { type: "event", eventType },
+  effect,
+});
+
+/** ⚠ イベント条件が 6 件ちょうどで、`MONETARY_EVENT_TYPES` と同じ並びであること。 */
+const expectEventRowShape = (conditions: EffectConditions) => {
+  const rows = eventRows(conditions);
+  expect(rows.map((c) => (c.when.type === "event" ? c.when.eventType : ""))).toEqual(
+    EVENT_TYPES,
+  );
+  expect(rows.map((c) => c.id)).toEqual(EVENT_TYPES.map((t) => `event:${t}`));
 };
 
-describe("effectAssignments", () => {
+/** 全条件が「エフェクトを出さない」であること（＝ 061h 以降の既定の形）。 */
+const expectAllNone = (conditions: EffectConditions) => {
+  expectEventRowShape(conditions);
+  for (const c of conditions) expect(c.effect).toEqual(NONE);
+};
+
+describe("effectAssignments（061j: 条件の配列）", () => {
   beforeEach(() => {
     localStorage.clear();
   });
@@ -50,259 +107,574 @@ describe("effectAssignments", () => {
 
   // --- フォールバック（⚠ すべて「出さない」へ・061h） --------------------------------------------
 
-  it("⚠⚠ 未保存なら全種別が「エフェクトを出さない」（＝割り当てるまで配信画面に何も出ない）", () => {
-    expectAllNone(loadEffectAssignments());
+  it("⚠⚠ 未保存なら全種別が「エフェクトを出さない」（＝条件を作るまで配信画面に何も出ない）", () => {
+    expectAllNone(loadEffectConditions());
+    expect(keywordRows(loadEffectConditions())).toHaveLength(0);
   });
 
   it("⚠⚠ 不正な JSON は全種別「出さない」へ倒れる", () => {
-    localStorage.setItem(EFFECT_ASSIGNMENTS_KEY, "{ not json");
-    expectAllNone(loadEffectAssignments());
+    localStorage.setItem(EFFECT_ASSIGNMENTS_KEY, "{ broken");
+    expectAllNone(loadEffectConditions());
   });
 
   it("⚠⚠ localStorage が例外を投げても全種別「出さない」へ倒れる", () => {
     vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
-      throw new Error("blocked");
+      throw new Error("denied");
     });
-    expectAllNone(loadEffectAssignments());
+    expectAllNone(loadEffectConditions());
   });
 
-  it("⚠ ルートが配列でも全種別「出さない」へ倒れる（添字が拾われない）", () => {
-    localStorage.setItem(EFFECT_ASSIGNMENTS_KEY, JSON.stringify([1, 2, 3]));
-    expectAllNone(loadEffectAssignments());
+  it("⚠ ルートが文字列・数値・null でも全種別「出さない」へ倒れる", () => {
+    for (const value of ['"x"', "42", "null", "true"]) {
+      localStorage.setItem(EFFECT_ASSIGNMENTS_KEY, value);
+      expectAllNone(loadEffectConditions());
+    }
   });
 
-  it("⚠ ルートが文字列・null でも全種別「出さない」へ倒れる", () => {
-    localStorage.setItem(EFFECT_ASSIGNMENTS_KEY, JSON.stringify("none"));
-    expectAllNone(loadEffectAssignments());
-    localStorage.setItem(EFFECT_ASSIGNMENTS_KEY, JSON.stringify(null));
-    expectAllNone(loadEffectAssignments());
-  });
-
-  it("⚠ 未知のイベント種別キーは無視する（読み込み結果に載らない）", () => {
-    // ⚠⚠ **061d-2 レビュー Q-6: `__proto__` は生の文字列で書く。**
-    //   `JSON.stringify({ __proto__: … })` はプロトタイプ設定として解釈されて**キーごと消える**ので、
-    //   オブジェクトリテラルで書くとこのケースは 1 度も実行されない（実測）。
-    //   `JSON.parse` は `__proto__` を own property として作るため、こちらが本物の検査になる。
+  it("⚠ 配列の要素が非オブジェクト・`when` が壊れていても、その 1 件だけ落ちる", () => {
     localStorage.setItem(
       EFFECT_ASSIGNMENTS_KEY,
-      '{"chat":{"kind":"none"},"__proto__":{"kind":"none"}}',
+      JSON.stringify([null, 42, "x", { when: null }, { when: { type: "??" } }, ev("gift")]),
     );
-    expectAllNone(loadEffectAssignments());
-    // ⚠ プロトタイプが汚染されていないこと（既知キーしか引かない実装の担保）。
-    expect(({} as Record<string, unknown>).kind).toBeUndefined();
-  });
-
-  it("⚠ 既知キーでも値が非オブジェクトなら、その行だけ「出さない」", () => {
-    localStorage.setItem(
-      EFFECT_ASSIGNMENTS_KEY,
-      JSON.stringify({
-        superchat: "template",
-        subscription: { kind: "template", templateId: UUID },
-      }),
-    );
-    const loaded = loadEffectAssignments();
-    expect(loaded.superchat).toEqual(NONE);
-    expect(loaded.subscription).toEqual({ kind: "template", templateId: UUID });
+    const conditions = loadEffectConditions();
+    expectEventRowShape(conditions);
+    expect(conditions.find((c) => c.id === "event:gift")?.effect).toEqual(TPL);
   });
 
   it("⚠⚠ 未知の kind（063 の gacha を古いビルドが読んだ場合）は「出さない」へ倒れる", () => {
     localStorage.setItem(
       EFFECT_ASSIGNMENTS_KEY,
-      JSON.stringify({ superchat: { kind: "gacha", tableId: UUID } }),
+      JSON.stringify([ev("superchat", { kind: "gacha", tableId: "x" })]),
     );
-    expect(loadEffectAssignments().superchat).toEqual(NONE);
+    expect(
+      loadEffectConditions().find((c) => c.id === "event:superchat")?.effect,
+    ).toEqual(NONE);
   });
 
-  it("⚠⚠ 061h の移行: 旧 `builtin-monetary` の保存値は「出さない」へ倒れる（変換コードを書かない）", () => {
-    // ⚠⚠ **これが 061h の移行仕様そのもの。** 061d〜061g のユーザーの localStorage には
-    //   `{"superchat":{"kind":"builtin-monetary"}}` が残っている。組み込みを廃止した以上
-    //   他に倒しようが無く、**「未知の kind は安全側へ倒す」という既存の前方互換がそのまま正しく働く**ので、
-    //   移行専用の分岐は 1 つも足していない（同じことを 2 通りに書かない）。
-    //   ⇒ **アップデート後、組み込みに割り当てていた種別は「表示しない」になる**（意図した仕様変更）。
-    localStorage.setItem(
-      EFFECT_ASSIGNMENTS_KEY,
-      JSON.stringify({
-        superchat: { kind: "builtin-monetary" },
-        subscription: { kind: "template", templateId: UUID },
-      }),
-    );
-    const loaded = loadEffectAssignments();
-    expect(loaded.superchat).toEqual(NONE);
-    // ⚠ 同じ保存値の中のテンプレート指定は**巻き添えにしない**（行ごとに独立して読む）。
-    expect(loaded.subscription).toEqual({ kind: "template", templateId: UUID });
-  });
-
-  it("⚠⚠ templateId が uuid v4 の形でなければ「出さない」へ倒れる（IPC まで届かせない）", () => {
-    for (const templateId of ["", "../../etc/passwd", "t1", 123, null]) {
+  it("⚠⚠ templateId が uuid の形でなければ「出さない」へ倒れる（IPC まで届かせない）", () => {
+    for (const bad of ["../x", "", "not-a-uuid", `${UUID}/x`]) {
       localStorage.setItem(
         EFFECT_ASSIGNMENTS_KEY,
-        JSON.stringify({ superchat: { kind: "template", templateId } }),
+        JSON.stringify([ev("superchat", { kind: "template", templateId: bad })]),
       );
-      expect(loadEffectAssignments().superchat).toEqual(NONE);
+      expect(
+        loadEffectConditions().find((c) => c.id === "event:superchat")?.effect,
+      ).toEqual(NONE);
     }
   });
 
-  it("⚠⚠ 「出す」側へ倒れるのはテンプレートを明示的に選んだときだけ", () => {
+  // --- 新規 13: 判断 2（イベント条件を読み込み時に作り直す） --------------------------------------
+
+  it("⚠⚠ イベント条件は必ず 6 件ちょうど・`MONETARY_EVENT_TYPES` と同じ並びになる", () => {
+    // 1 件だけ保存されていても 6 件へ復元される（欠けは「出さない」で埋める）。
+    localStorage.setItem(EFFECT_ASSIGNMENTS_KEY, JSON.stringify([ev("gift")]));
+    const conditions = loadEffectConditions();
+    expectEventRowShape(conditions);
+    expect(eventRows(conditions)).toHaveLength(6);
+    for (const c of eventRows(conditions)) {
+      expect(c.effect).toEqual(c.id === "event:gift" ? TPL : NONE);
+    }
+  });
+
+  it("⚠⚠ イベント条件が重複していたら **先勝ち**で 1 件に潰れる（画面の並びと使う値を一致させる）", () => {
+    // ⚠ 「後勝ち」だと**画面（最初の行を描く）と実際に使われる値が食い違う**。
     localStorage.setItem(
       EFFECT_ASSIGNMENTS_KEY,
-      JSON.stringify({ membership: { kind: "template", templateId: UUID } }),
+      JSON.stringify([
+        ev("superchat", { kind: "template", templateId: UUID }),
+        ev("superchat", { kind: "template", templateId: UUID2 }),
+      ]),
     );
-    const loaded = loadEffectAssignments();
-    expect(loaded.membership).toEqual({ kind: "template", templateId: UUID });
-    // ⚠ 触っていない種別は既定のまま（出さない）。
-    expect(loaded.superchat).toEqual(NONE);
+    const conditions = loadEffectConditions();
+    expect(eventRows(conditions)).toHaveLength(6);
+    expect(
+      conditions.find((c) => c.id === "event:superchat")?.effect,
+    ).toEqual({ kind: "template", templateId: UUID });
   });
 
-  // --- 保存 -------------------------------------------------------------------------------------
-
-  it("保存した割り当てを読み戻せる", () => {
-    saveEffectAssignments({
-      ...loadEffectAssignments(),
-      superchat: { kind: "template", templateId: UUID },
-      gift: { kind: "none" },
-    });
-    const loaded = loadEffectAssignments();
-    expect(loaded.superchat).toEqual({ kind: "template", templateId: UUID });
-    expect(loaded.gift).toEqual(NONE);
-    expect(loaded.jewels).toEqual(NONE);
-  });
-
-  it("⚠ 全部が既定（出さない）ならキーごと消す（未保存と同じ状態に潰す）", () => {
-    // ⚠ 061h: 既定が「出さない」になったので、**非既定を作るにはテンプレートを選ぶしかない**
-    //   （061d-2 のこのケースは `{kind:"none"}` を入れて非既定を作っていた）。
-    saveEffectAssignments({
-      ...loadEffectAssignments(),
-      superchat: { kind: "template", templateId: UUID },
-    });
-    expect(localStorage.getItem(EFFECT_ASSIGNMENTS_KEY)).not.toBeNull();
-    saveEffectAssignments(loadEffectAssignments0());
-    expect(localStorage.getItem(EFFECT_ASSIGNMENTS_KEY)).toBeNull();
-    expectAllNone(loadEffectAssignments());
-  });
-
-  it("⚠ 未知のイベント種別キーは保存もしない", () => {
-    saveEffectAssignments({
-      ...loadEffectAssignments(),
-      superchat: { kind: "template", templateId: UUID },
-      chat: { kind: "template", templateId: UUID },
-    });
-    const raw = localStorage.getItem(EFFECT_ASSIGNMENTS_KEY) ?? "{}";
-    // ⚠ 部分文字列で見ない（"superchat" が "chat" を含むので偽陽性になる）。キー集合で見る。
-    expect(Object.keys(JSON.parse(raw) as object).sort()).toEqual(
-      [...MONETARY_EVENT_TYPES].sort(),
+  it("⚠⚠ 未知の eventType の条件は捨てられる（UI に行が無い＝表現できない条件を残さない）", () => {
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      // ⚠ "bits" は `MONETARY_EVENT_TYPES` に**無い**（ビッツは superchat に含まれる）。
+      JSON.stringify([ev("bits"), ev("__proto__"), ev("chat")]),
     );
+    const conditions = loadEffectConditions();
+    expectEventRowShape(conditions);
+    expect(conditions.every((c) => c.effect.kind === "none")).toBe(true);
+  });
+
+  // --- 新規 12: 判断 8（旧形式からの移行） -------------------------------------------------------
+
+  it("⚠⚠ 旧形式（Record）の保存値がイベント条件 6 件へ変換される", () => {
+    // 061i までの保存形。⚠ 変換しないと **061i で設定した条件が全部消える**
+    //   （ルートの形が Object → Array に変わったため、061h の前方互換の仕組みが効かない）。
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify({
+        superchat: { kind: "template", templateId: UUID },
+        subscription: { kind: "none" },
+        bits: { kind: "template", templateId: UUID2 },
+      }),
+    );
+    const conditions = loadEffectConditions();
+    expectEventRowShape(conditions);
+    expect(conditions.find((c) => c.id === "event:superchat")?.effect).toEqual(TPL);
+    expect(conditions.find((c) => c.id === "event:subscription")?.effect).toEqual(NONE);
+    // ⚠ 旧形式の未知キー（"bits"）も捨てる。
+    expect(conditions.some((c) => c.id === "event:bits")).toBe(false);
+    expect(keywordRows(conditions)).toHaveLength(0);
+  });
+
+  it("⚠⚠ 旧形式は**読んだだけでは書き戻さない**（読み込みが副作用を持たない）", () => {
+    const before = JSON.stringify({ superchat: { kind: "template", templateId: UUID } });
+    localStorage.setItem(EFFECT_ASSIGNMENTS_KEY, before);
+    loadEffectConditions();
+    loadEffectConditions();
+    expect(raw()).toBe(before);
+  });
+
+  it("⚠ 旧形式でも `builtin-monetary`（061h で廃止）は「出さない」へ倒れる", () => {
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify({ superchat: { kind: "builtin-monetary" } }),
+    );
+    expectAllNone(loadEffectConditions());
+  });
+
+  // --- 新規 10: ⚠⚠ 空キーワード（本タスク最大の失敗モード） --------------------------------------
+
+  it("⚠⚠ 空文字・空白のみのキーワードは **保存されない**", () => {
+    // ⚠ 全角スペース（U+3000）や半角スペースだけの値も落ちること。
+    //   ⚠ コメントに全角スペースそのものは書かない（`no-irregular-whitespace`）。文字列の中は許される。
+    for (const text of ["", " ", "　", " 　 "]) {
+      localStorage.clear();
+      saveEffectConditions([
+        { id: "kw:1", when: { type: "keyword", text, match: "contains" }, effect: TPL },
+      ]);
+      expect(keywordRows(loadEffectConditions())).toHaveLength(0);
+      // ⚠ 条件が 1 件も残らないので、キーごと消えている（未保存＝既定と同じ状態）。
+      expect(raw()).toBeNull();
+    }
+  });
+
+  it("⚠⚠ 空のキーワードが保存値に混ざっていても **読み込みで落ちる**（手編集への 2 枚目）", () => {
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify([kw(1, ""), kw(2, "　"), kw(3, "草")]),
+    );
+    const rows = keywordRows(loadEffectConditions());
+    expect(rows).toHaveLength(1);
+    expect(rows[0].when.type === "keyword" && rows[0].when.text).toBe("草");
+  });
+
+  it("⚠⚠ 空のキーワードが混ざっていても **全コメントに一致しない**（失敗モードそのものの否定）", () => {
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify([kw(1, ""), kw(2, "　")]),
+    );
+    // ⚠ 「読み込みで落ちる」だけでなく、**照合の結果**として何も当たらないことを別に見る
+    //   （落とし方を変えても、この 1 行が失敗モードの再発を止める）。
+    for (const text of ["", "こんばんは", "草", "a"]) {
+      expect(resolveEffectMatch({ eventType: "chat", text })).toBeNull();
+    }
+  });
+
+  it("⚠ `isUsableKeyword` は照合に使う値で空を判定する（UI と保存層が同じ規則を見る）", () => {
+    expect(isUsableKeyword("")).toBe(false);
+    expect(isUsableKeyword(" ")).toBe(false);
+    // ⚠ 全角スペースだけの値も false。⚠⚠ **これは `text.trim()` でも同じ結果になる**
+    //   （起票時は「生の trim では取りこぼす」と想定していたが誤りだった＝⑮-b は等価変異）。
+    expect(isUsableKeyword("　")).toBe(false);
+    expect(isUsableKeyword("草")).toBe(true);
+    expect(isUsableKeyword(" 草 ")).toBe(true);
+  });
+
+  // --- 新規 11: 判断 9 のその他の制限 ------------------------------------------------------------
+
+  it("⚠ 32 文字を超えるキーワードは落ちる（境界ちょうどは通る）", () => {
+    const ok = "あ".repeat(KEYWORD_MAX_LENGTH);
+    const ng = "あ".repeat(KEYWORD_MAX_LENGTH + 1);
+    localStorage.setItem(EFFECT_ASSIGNMENTS_KEY, JSON.stringify([kw(1, ok), kw(2, ng)]));
+    const rows = keywordRows(loadEffectConditions());
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe("kw:1");
+  });
+
+  it("⚠ 文字数は**コードポイント**で数える（絵文字 1 文字を 2 と数えない）", () => {
+    // 32 個の絵文字＝ UTF-16 では 64 コード単位。⚠ `String.length` で数える実装だと落ちる。
+    const emoji = "😀".repeat(KEYWORD_MAX_LENGTH);
+    localStorage.setItem(EFFECT_ASSIGNMENTS_KEY, JSON.stringify([kw(1, emoji)]));
+    expect(keywordRows(loadEffectConditions())).toHaveLength(1);
+  });
+
+  it("⚠ 制御文字を含むキーワードは落ちる", () => {
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify([kw(1, "草\u0000"), kw(2, "草\u007f"), kw(3, "草")]),
+    );
+    const rows = keywordRows(loadEffectConditions());
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe("kw:3");
+  });
+
+  it("⚠ 21 件目以降のキーワード条件は落ちる（走査コストの上限）", () => {
+    const many = Array.from({ length: KEYWORD_CONDITION_MAX + 5 }, (_, i) =>
+      kw(i + 1, `w${i}`),
+    );
+    localStorage.setItem(EFFECT_ASSIGNMENTS_KEY, JSON.stringify(many));
+    expect(keywordRows(loadEffectConditions())).toHaveLength(KEYWORD_CONDITION_MAX);
+  });
+
+  it("⚠ 未知の `match` は落とす（`contains` へ倒すと「完全一致のつもりが部分一致で出る」）", () => {
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify([kw(1, "草", { match: "regex" }), kw(2, "草", { match: "exact" })]),
+    );
+    const rows = keywordRows(loadEffectConditions());
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe("kw:2");
+  });
+
+  it("⚠ id が `kw:<数字>` の形でないキーワード条件は落ちる（クールダウンのキーの形を保つ）", () => {
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify([
+        { id: "x", when: { type: "keyword", text: "草", match: "contains" }, effect: TPL },
+        { id: "kw:a", when: { type: "keyword", text: "草", match: "contains" }, effect: TPL },
+        kw(7, "草"),
+      ]),
+    );
+    const rows = keywordRows(loadEffectConditions());
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe("kw:7");
+  });
+
+  it("⚠ id が重複したキーワード条件は先勝ちで 1 件に潰れる", () => {
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify([kw(1, "あ"), kw(1, "い")]),
+    );
+    const rows = keywordRows(loadEffectConditions());
+    expect(rows).toHaveLength(1);
+    expect(rows[0].when.type === "keyword" && rows[0].when.text).toBe("あ");
+  });
+
+  it("⚠ `sanitizeKeywordInput` は制御文字を落として 32 コードポイントで詰める（UI 側の整形）", () => {
+    expect(sanitizeKeywordInput("草\u0000生")).toBe("草生");
+    expect([...sanitizeKeywordInput("あ".repeat(40))]).toHaveLength(KEYWORD_MAX_LENGTH);
+    // ⚠ サロゲートペアを割らない。
+    expect([...sanitizeKeywordInput("😀".repeat(40))].every((c) => c === "😀")).toBe(true);
+  });
+
+  // --- 保存・削除条件（⑥） ----------------------------------------------------------------------
+
+  it("保存した条件を読み戻せる（イベント・キーワードの両方）", () => {
+    saveEffectConditions([
+      { id: "event:superchat", when: { type: "event", eventType: "superchat" }, effect: TPL },
+      { id: "kw:1", when: { type: "keyword", text: "草", match: "exact" }, effect: TPL },
+    ]);
+    const conditions = loadEffectConditions();
+    expect(conditions.find((c) => c.id === "event:superchat")?.effect).toEqual(TPL);
+    const rows = keywordRows(conditions);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].when).toEqual({ type: "keyword", text: "草", match: "exact" });
+  });
+
+  it("⚠ イベント条件が全部「出さない」かつキーワード 0 件ならキーごと消す（未保存と同じ状態に潰す）", () => {
+    localStorage.setItem(EFFECT_ASSIGNMENTS_KEY, JSON.stringify([ev("gift")]));
+    saveEffectConditions(loadEffectConditions().map((c) => ({ ...c, effect: NONE })));
+    expect(raw()).toBeNull();
+  });
+
+  it("⚠⚠ キーワード条件が 1 件でも在ればキーを消さない（打った文字列を勝手に捨てない）", () => {
+    // ⚠ **エフェクトが「出さない」でも消さない**のが要点——キーワードは**ユーザーのデータ**である。
+    saveEffectConditions([
+      { id: "kw:1", when: { type: "keyword", text: "草", match: "contains" }, effect: NONE },
+    ]);
+    expect(raw()).not.toBeNull();
+    const rows = keywordRows(loadEffectConditions());
+    expect(rows).toHaveLength(1);
+    expect(rows[0].effect).toEqual(NONE);
   });
 
   it("⚠ 保存できない環境でも例外を投げない（表示は既定で続く）", () => {
     vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
-      throw new Error("blocked");
+      throw new Error("quota");
     });
     expect(() =>
-      saveEffectAssignments({
-        ...loadEffectAssignments(),
-        superchat: { kind: "template", templateId: UUID },
-      }),
+      saveEffectConditions([
+        { id: "event:gift", when: { type: "event", eventType: "gift" }, effect: TPL },
+      ]),
     ).not.toThrow();
+  });
+
+  // --- 変更 API（すべて「読む → 変える → 保存 → 読み直す」） -------------------------------------
+
+  it("`setConditionEffect` はイベント条件にもキーワード条件にも効く", () => {
+    addKeywordCondition({ text: "草", match: "contains" }, NONE);
+    setConditionEffect("event:superchat", TPL);
+    setConditionEffect("kw:1", { kind: "template", templateId: UUID2 });
+    const conditions = loadEffectConditions();
+    expect(conditions.find((c) => c.id === "event:superchat")?.effect).toEqual(TPL);
+    expect(conditions.find((c) => c.id === "kw:1")?.effect).toEqual({
+      kind: "template",
+      templateId: UUID2,
+    });
+  });
+
+  it("`updateKeywordCondition` はキーワードと当て方を差し替える", () => {
+    addKeywordCondition({ text: "草", match: "contains" }, TPL);
+    updateKeywordCondition("kw:1", { text: "こんばん", match: "exact" });
+    expect(keywordRows(loadEffectConditions())[0].when).toEqual({
+      type: "keyword",
+      text: "こんばん",
+      match: "exact",
+    });
+  });
+
+  it("⚠ `removeCondition` にイベント条件の id を渡してもイベント行は消えない（構造で守る）", () => {
+    setConditionEffect("event:gift", TPL);
+    removeCondition("event:gift");
+    const conditions = loadEffectConditions();
+    // ⚠ 6 行は必ず作り直されるので「イベント条件が 5 行になる」状態は作れない。
+    expectEventRowShape(conditions);
+    // ⚠ ただし effect は消える（保存値から落ちるため）＝ 呼び出し側でガードを書かなくてよい。
+    expect(conditions.find((c) => c.id === "event:gift")?.effect).toEqual(NONE);
+  });
+
+  // --- 新規 14: 判断 3（id の採番） --------------------------------------------------------------
+
+  it("⚠⚠ キーワード条件の id は単調増加で、削除しても再利用されない", () => {
+    addKeywordCondition({ text: "あ", match: "contains" }, TPL);
+    addKeywordCondition({ text: "い", match: "contains" }, TPL);
+    expect(keywordRows(loadEffectConditions()).map((c) => c.id)).toEqual([
+      "kw:1",
+      "kw:2",
+    ]);
+    // ⚠ **1 件目を消しても詰めない**——`kw:1` を再利用すると、消した条件のクールダウンを
+    //   別の条件が引き継ぐ（`lastConditionAt` のキーが id だから）。
+    removeCondition("kw:1");
+    addKeywordCondition({ text: "う", match: "contains" }, TPL);
+    expect(keywordRows(loadEffectConditions()).map((c) => c.id)).toEqual([
+      "kw:2",
+      "kw:3",
+    ]);
   });
 
   // --- 復帰導線 ---------------------------------------------------------------------------------
 
-  it("⚠⚠ 「すべて「表示しない」に戻す」で全種別が「出さない」へ戻る（復帰導線）", () => {
-    // ⚠⚠ **これが唯一の脱出路**（壊れたテンプレートで配信画面が読めなくなったとき）。
-    //   ⚠ 061h で文言と戻し先が変わったが、**no-op にする変異でレッドになる**という担保は不変。
-    saveEffectAssignments({
-      superchat: { kind: "template", templateId: UUID },
-      subscription: { kind: "none" },
-      membership: { kind: "template", templateId: UUID2 },
-      gift: { kind: "none" },
-      donation: { kind: "none" },
-      jewels: { kind: "none" },
-    });
-    const cleared = clearAllEffectAssignments();
-    expectAllNone(cleared);
-    // ⚠ 戻り値だけでなく**保存も**されていること（画面だけ戻って次回起動で復活しない）。
-    expectAllNone(loadEffectAssignments());
+  it("⚠⚠ 「すべて「表示しない」に戻す」で全条件が「出さない」へ戻る（復帰導線）", () => {
+    setConditionEffect("event:superchat", TPL);
+    addKeywordCondition({ text: "草", match: "contains" }, TPL);
+    const next = clearAllEffectConditions();
+    for (const c of next) expect(c.effect).toEqual(NONE);
+    expect(effectConditionCount(next)).toBe(0);
+    expect(hasEffectConditions(next)).toBe(false);
   });
 
-  it("⚠⚠ テンプレート削除時、それを使っている行だけが「出さない」へ戻る", () => {
-    saveEffectAssignments({
-      ...loadEffectAssignments(),
-      superchat: { kind: "template", templateId: UUID },
-      membership: { kind: "template", templateId: UUID2 },
-      gift: { kind: "none" },
-    });
-    const next = clearEffectAssignmentsForTemplate(UUID);
-    expect(next.superchat).toEqual(NONE);
-    // ⚠ 別のテンプレートと「出さない」は巻き添えにしない。
-    expect(next.membership).toEqual({ kind: "template", templateId: UUID2 });
-    expect(next.gift).toEqual(NONE);
-    expect(loadEffectAssignments().superchat).toEqual(NONE);
+  it("⚠⚠ 復帰導線でも**キーワードそのものは消さない**（リセットではない）", () => {
+    addKeywordCondition({ text: "草", match: "exact" }, TPL);
+    clearAllEffectConditions();
+    const rows = keywordRows(loadEffectConditions());
+    expect(rows).toHaveLength(1);
+    expect(rows[0].when).toEqual({ type: "keyword", text: "草", match: "exact" });
+    expect(rows[0].effect).toEqual(NONE);
   });
 
-  // --- 先読みの対象 -----------------------------------------------------------------------------
-
-  it("⚠ 先読みの対象は「割り当てに出てくる id」だけ（重複は畳む）", () => {
-    const ids = assignedTemplateIds({
-      ...loadEffectAssignments(),
-      superchat: { kind: "template", templateId: UUID },
-      subscription: { kind: "template", templateId: UUID },
-      membership: { kind: "template", templateId: UUID2 },
-      gift: { kind: "none" },
-    });
-    expect(ids.sort()).toEqual([UUID2, UUID].sort());
-  });
-
-  // --- resolver ---------------------------------------------------------------------------------
-
-  it("⚠⚠ resolver: 「エフェクトを出さない」は null（＝decideEffects が 1 件も出さない）", () => {
-    saveEffectAssignments({
-      ...loadEffectAssignments(),
-      superchat: { kind: "none" },
-    });
-    expect(resolveEffectKind("superchat")).toBeNull();
-  });
-
-  it("⚠⚠ resolver: 未保存（既定）も null（＝割り当てを引かずに出る経路が無い）", () => {
-    // ⚠ 061h の本命。061d-2 はここが `{kind:"builtin-monetary"}` を返しており、
-    //   **条件を 1 つも設定していない状態で投げ銭が来ると演出が出た**。
-    expect(resolveEffectKind("superchat")).toBeNull();
-  });
-
-  it("resolver: テンプレート指定は template + templateId", () => {
-    saveEffectAssignments({
-      ...loadEffectAssignments(),
-      superchat: { kind: "template", templateId: UUID },
-    });
-    expect(resolveEffectKind("superchat")).toEqual({
+  it("⚠⚠ テンプレート削除時、それを使っている条件だけが「出さない」へ戻る（キーワードも対象）", () => {
+    setConditionEffect("event:superchat", TPL);
+    setConditionEffect("event:gift", { kind: "template", templateId: UUID2 });
+    addKeywordCondition({ text: "草", match: "contains" }, TPL);
+    const next = clearEffectConditionsForTemplate(UUID);
+    expect(next.find((c) => c.id === "event:superchat")?.effect).toEqual(NONE);
+    expect(next.find((c) => c.id === "kw:1")?.effect).toEqual(NONE);
+    // ⚠ 他のテンプレートを指す条件は巻き添えにしない。
+    expect(next.find((c) => c.id === "event:gift")?.effect).toEqual({
       kind: "template",
-      templateId: UUID,
+      templateId: UUID2,
     });
   });
 
-  it("⚠ resolver: 未知のイベント種別も null（061h で「組み込みへ倒す」から反転）", () => {
-    expect(resolveEffectKind("chat")).toBeNull();
+  // --- 数え方と先読み ----------------------------------------------------------------------------
+
+  it("⚠ 数えるのは「エフェクトを出す設定になっている条件」の**行数**（重複を潰さない）", () => {
+    setConditionEffect("event:superchat", TPL);
+    setConditionEffect("event:gift", TPL);
+    addKeywordCondition({ text: "草", match: "contains" }, TPL);
+    const conditions = loadEffectConditions();
+    expect(effectConditionCount(conditions)).toBe(3);
+    // ⚠ `assignedTemplateIds` は**重複を潰した id 集合**（先読みの対象）＝別物。
+    expect(assignedTemplateIds(conditions)).toEqual([UUID]);
   });
 
-  it("⚠⚠ resolver は呼ばれるたびに読み直す（main 窓で変えた直後の 1 件目から効く）", () => {
-    saveEffectAssignments({
-      ...loadEffectAssignments(),
-      superchat: { kind: "template", templateId: UUID },
+  it("⚠⚠ キーワードを打っただけでは条件に数えない（エフェクトを選んで初めて 1 件）", () => {
+    // ⚠ これが「窓がいつ開くか」の説明を 1 本にしている（イベント行と同じ規則）。
+    addKeywordCondition({ text: "草", match: "contains" }, NONE);
+    expect(effectConditionCount(loadEffectConditions())).toBe(0);
+    setConditionEffect("kw:1", TPL);
+    expect(effectConditionCount(loadEffectConditions())).toBe(1);
+  });
+
+  it("⚠ 先読みの対象はキーワード条件のテンプレートも含む", () => {
+    addKeywordCondition({ text: "草", match: "contains" }, { kind: "template", templateId: UUID2 });
+    expect(assignedTemplateIds(loadEffectConditions())).toEqual([UUID2]);
+  });
+
+  // --- resolveEffectMatch（判断 4・5・11） -------------------------------------------------------
+
+  it("⚠⚠ 新規 1: キーワードを含む**通常チャット**でエフェクトが出る（課金ゲートの移動）", () => {
+    addKeywordCondition({ text: "草", match: "contains" }, TPL);
+    const match = resolveEffectMatch({ eventType: "chat", text: "これは草だな" });
+    expect(match).toEqual({
+      effect: TPL,
+      conditionId: "kw:1",
+      cooldownMs: KEYWORD_COOLDOWN_MS,
     });
-    expect(resolveEffectKind("superchat")).toEqual({
-      kind: "template",
-      templateId: UUID,
+  });
+
+  it("⚠⚠ 新規 2: ビッツ（`superchat` ＋ BITS）でイベント条件が効く（`displayEventType` を通さない）", () => {
+    setConditionEffect("event:superchat", TPL);
+    // ⚠ wire 上ビッツは `eventType === "superchat"` で届く。`displayEventType` を通すと "bits" になり、
+    //   `MONETARY_EVENT_TYPES` に無いので**エフェクトが出なくなる**（061b の穴②と同型）。
+    //   ⚠ 本関数は `monetary` を受け取らないので、そもそも `displayEventType` を呼べない。
+    expect(resolveEffectMatch({ eventType: "superchat", text: "Power-up 🎉" })).toEqual({
+      effect: TPL,
+      conditionId: "event:superchat",
+      cooldownMs: 0,
     });
-    saveEffectAssignments({
-      ...loadEffectAssignments(),
-      superchat: { kind: "none" },
+  });
+
+  it("⚠⚠ 新規 3: `exact` は部分一致では当たらない／`contains` は当たる", () => {
+    updateKeywordCondition("kw:1", { text: "こんばん", match: "contains" });
+    addKeywordCondition({ text: "こんばん", match: "contains" }, TPL);
+    expect(resolveEffectMatch({ eventType: "chat", text: "こんばんは〜" })).not.toBeNull();
+    updateKeywordCondition("kw:1", { text: "こんばん", match: "exact" });
+    expect(resolveEffectMatch({ eventType: "chat", text: "こんばんは〜" })).toBeNull();
+    expect(resolveEffectMatch({ eventType: "chat", text: "こんばん" })).not.toBeNull();
+  });
+
+  it("⚠ `exact` は前後の空白を無視する（両側 trim・規則を片方だけ変えない）", () => {
+    addKeywordCondition({ text: "草", match: "exact" }, TPL);
+    expect(resolveEffectMatch({ eventType: "chat", text: " 草 " })).not.toBeNull();
+    expect(resolveEffectMatch({ eventType: "chat", text: "　草　" })).not.toBeNull();
+  });
+
+  it("⚠⚠ 新規 4-a: 全角で登録したキーワードが半角のコメントに当たる（NFKC）", () => {
+    addKeywordCondition({ text: "ＯＢＳ", match: "contains" }, TPL);
+    expect(resolveEffectMatch({ eventType: "chat", text: "obs すごい" })).not.toBeNull();
+    // 半角カナ → 全角カナも同じ 1 本の規則で当たる。
+    updateKeywordCondition("kw:1", { text: "ﾅｲｽ", match: "contains" });
+    expect(resolveEffectMatch({ eventType: "chat", text: "ナイスプレイ👏" })).not.toBeNull();
+  });
+
+  it("⚠⚠ 新規 4-b: 大文字で登録したキーワードが小文字のコメントに当たる（toLowerCase）", () => {
+    addKeywordCondition({ text: "GGWP", match: "contains" }, TPL);
+    expect(resolveEffectMatch({ eventType: "chat", text: "ggwp!" })).not.toBeNull();
+    expect(resolveEffectMatch({ eventType: "chat", text: "GGWP" })).not.toBeNull();
+  });
+
+  it("⚠⚠ 新規 8: 複数当たってもイベント条件が先に勝つ（走査順がそのまま優先順位）", () => {
+    setConditionEffect("event:superchat", TPL);
+    addKeywordCondition({ text: "草", match: "contains" }, { kind: "template", templateId: UUID2 });
+    // スパチャの本文にキーワードが入っている。⚠ **投げ銭のほうが重要度が高い。**
+    expect(resolveEffectMatch({ eventType: "superchat", text: "草" })).toEqual({
+      effect: TPL,
+      conditionId: "event:superchat",
+      cooldownMs: 0,
     });
-    // ⚠ モジュールを再読み込みしていないのに変わる＝ state にミラーしていないことの担保。
-    expect(resolveEffectKind("superchat")).toBeNull();
+  });
+
+  it("⚠ 複数のキーワードに当たっても、保存順で最初の 1 件だけ", () => {
+    addKeywordCondition({ text: "草", match: "contains" }, TPL);
+    addKeywordCondition({ text: "w", match: "contains" }, { kind: "template", templateId: UUID2 });
+    expect(resolveEffectMatch({ eventType: "chat", text: "草www" })?.conditionId).toBe("kw:1");
+  });
+
+  it("⚠⚠ 新規 9: `kind === \"none\"` の条件は走査をスキップする", () => {
+    // スーパーチャットを「出さない」にしていても、本文のキーワードでは出る。
+    setConditionEffect("event:superchat", NONE);
+    addKeywordCondition({ text: "草", match: "contains" }, TPL);
+    expect(resolveEffectMatch({ eventType: "superchat", text: "草" })).toEqual({
+      effect: TPL,
+      conditionId: "kw:1",
+      cooldownMs: KEYWORD_COOLDOWN_MS,
+    });
+  });
+
+  it("⚠ キーワードに当たらない通常チャットは `null`（＝1 件も出さない）", () => {
+    addKeywordCondition({ text: "草", match: "contains" }, TPL);
+    expect(resolveEffectMatch({ eventType: "chat", text: "こんばんは" })).toBeNull();
+  });
+
+  it("⚠ 本文が空でも安全側（キーワードは当たらない・イベント条件は当たる）", () => {
+    // サブスク／ギフトは本文を持たない（dev-mock も `text: ""` を送る）。
+    setConditionEffect("event:gift", TPL);
+    addKeywordCondition({ text: "草", match: "contains" }, { kind: "template", templateId: UUID2 });
+    expect(resolveEffectMatch({ eventType: "chat", text: "" })).toBeNull();
+    expect(resolveEffectMatch({ eventType: "gift", text: "" })?.conditionId).toBe("event:gift");
+  });
+
+  it("⚠ 課金以外のイベント種別ではイベント条件が当たらない（ゲートが効いている）", () => {
+    setConditionEffect("event:superchat", TPL);
+    expect(resolveEffectMatch({ eventType: "chat", text: "x" })).toBeNull();
+    expect(resolveEffectMatch({ eventType: "raid", text: "x" })).toBeNull();
+  });
+
+  it("⚠⚠ 正規表現として解釈しない（041b の規律）", () => {
+    addKeywordCondition({ text: ".*", match: "contains" }, TPL);
+    // ⚠ 正規表現なら全部に当たる。`includes` なので当たらない。
+    expect(resolveEffectMatch({ eventType: "chat", text: "こんばんは" })).toBeNull();
+    expect(resolveEffectMatch({ eventType: "chat", text: "a.*b" })).not.toBeNull();
+  });
+
+  it("⚠⚠ 発火のたびに読み直す（main 窓で変えた直後の 1 件目から効く）", () => {
+    addKeywordCondition({ text: "草", match: "contains" }, TPL);
+    expect(resolveEffectMatch({ eventType: "chat", text: "草" })).not.toBeNull();
+    // 別窓が localStorage を書き換えた状況を模す（`storage` は購読していない）。
+    localStorage.setItem(EFFECT_ASSIGNMENTS_KEY, JSON.stringify([kw(1, "花")]));
+    expect(resolveEffectMatch({ eventType: "chat", text: "草" })).toBeNull();
+    expect(resolveEffectMatch({ eventType: "chat", text: "花" })).not.toBeNull();
+  });
+
+  // --- 定数の整合（追加穴 θ） --------------------------------------------------------------------
+
+  it("⚠⚠ `KEYWORD_COOLDOWN_MS` は `CONDITION_COOLDOWN_MAX_MS` 以下でなければならない", () => {
+    // ⚠ 超えると `decideEffects` の先頭の掃除が先に走り、**クールダウンが黙って無効化される**。
+    //   ⚠ 片方だけ動かす変異はここでしか殺せない（振る舞いの差が「たまに 1 件多く出る」だけなので）。
+    expect(KEYWORD_COOLDOWN_MS).toBeLessThanOrEqual(CONDITION_COOLDOWN_MAX_MS);
+  });
+
+  // --- §9 ---------------------------------------------------------------------------------------
+
+  it("⚠⚠ 照合の戻り値に本文が 1 バイトも含まれない（§9・型の担保をテストでも固定）", () => {
+    addKeywordCondition({ text: "草", match: "contains" }, TPL);
+    const match = resolveEffectMatch({
+      eventType: "chat",
+      text: "草 これは第三者の本文です",
+    });
+    expect(match).not.toBeNull();
+    expect(Object.keys(match as object).sort()).toEqual([
+      "conditionId",
+      "cooldownMs",
+      "effect",
+    ]);
+    expect(JSON.stringify(match)).not.toContain("第三者");
+  });
+
+  it("⚠⚠ 照合しても localStorage に本文が書かれない（§9）", () => {
+    addKeywordCondition({ text: "草", match: "contains" }, TPL);
+    resolveEffectMatch({ eventType: "chat", text: "草 これは第三者の本文です" });
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      expect(localStorage.getItem(key ?? "")).not.toContain("第三者");
+    }
   });
 });
 
-/** 既定の表（`loadEffectAssignments` の初期状態）を作るだけのヘルパ。 */
-function loadEffectAssignments0() {
-  localStorage.removeItem(EFFECT_ASSIGNMENTS_KEY);
-  return loadEffectAssignments();
-}
+/** ⚠ 型テスト: 保存形に計算結果（正規化済み文字列）が混ざらないこと。 */
+const _shape: EffectCondition = {
+  id: "kw:1",
+  when: { type: "keyword", text: "草", match: "contains" },
+  effect: { kind: "none" },
+};
+void _shape;

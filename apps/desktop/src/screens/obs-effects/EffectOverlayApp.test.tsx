@@ -423,6 +423,103 @@ describe("061a/061b: EffectOverlayApp", () => {
     expect(container.innerHTML).not.toContain("data:image/png;base64,AAAA");
   });
 
+  // --- 061j: キーワード条件（この窓が「通常チャットでも発火する」ようになった） --------------------
+
+  /** 通常チャット 1 件（⚠ 課金の情報を持たない＝ 061h までは 1 件も出せなかった種別）。 */
+  const chat = (text: string): CommentViewDto => ({
+    id: `chat-${text}`,
+    source: "youtube",
+    author: { id: "u2", name: THIRD_PARTY_NAME, avatar: "data:image/png;base64,AAAA" },
+    text,
+    publishedAt: "2026-08-15T00:00:00Z",
+    eventType: "chat",
+  });
+
+  /** キーワード条件 1 件だけを保存し、一覧とキャッシュを温めた窓を描く。 */
+  const renderWithKeyword = async (
+    text: string,
+    match: "contains" | "exact" = "contains",
+  ) => {
+    assignKeyword(text, match);
+    mocks.listEffectTemplates.mockResolvedValue([templateRecord()]);
+    return renderWarmed();
+  };
+
+  /** キーワード条件 1 件だけを保存した状態にする。 */
+  const assignKeyword = (text: string, match: "contains" | "exact" = "contains") =>
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify([
+        {
+          id: "kw:1",
+          when: { type: "keyword", text, match },
+          effect: { kind: "template", templateId: TEMPLATE_ID },
+        },
+      ]),
+    );
+
+  it("⚠⚠ 新規 1: キーワードを含む**通常チャット**でエフェクトが出る（061j の本命）", async () => {
+    // ⚠⚠ **061h まではこの窓が通常チャットで発火する経路は 1 本も無かった**
+    //   （`decideEffects` の先頭で課金判定に落ちていた）。課金ゲートを matcher 側へ移した
+    //   ことの結線を、**窓の側から**固定する（`resolveEffectMatch` の単体テストとは別の担保）。
+    const { container } = await renderWithKeyword("草");
+    emitComments([chat("これは草だな")]);
+    await screen.findByTestId("effect-template");
+    // ⚠ メディアは出る。
+    expect(container.querySelector("img")).toHaveAttribute("src", PNG.media);
+  });
+
+  it("⚠ キーワードに当たらない通常チャットでは何も出ない", async () => {
+    await renderWithKeyword("草");
+    emitComments([chat("こんばんは〜")]);
+    expect(screen.queryByTestId("effect-template")).toBeNull();
+  });
+
+  it("⚠⚠ 新規 17: **キーワードで発火したときも**本文を描かない（§9）", async () => {
+    // ⚠⚠ **061j で第三者の本文が新しい層（`effectAssignments.ts` の照合）を通るようになった。**
+    //   ⚠ 「当たった本文をそのまま出す」実装は自然に書けてしまう（キーワードが当たっている以上、
+    //   本文は手元にある）ので、**発火した状態で**描かれないことを固定する。
+    //   ⚠ 判断 12 のとおり、キーワード発火では**文字が 1 行も出ない**のが仕様である。
+    const { container } = await renderWithKeyword("草");
+    emitComments([chat(`草 ${THIRD_PARTY_TEXT}`)]);
+    await screen.findByTestId("effect-template");
+
+    expect(container.textContent).not.toContain(THIRD_PARTY_TEXT);
+    // ⚠ 投稿者名も出ない（既定テンプレートの `templateWithoutAmount` は `{message}` だけで、
+    //   通常チャットでは `message` が null ＝ 1 行も描かれない・判断 12）。
+    expect(container.textContent).not.toContain(THIRD_PARTY_NAME);
+    // ⚠ アバターも描かない（`<img>` はテンプレートのメディア 1 枚だけ）。
+    expect(container.querySelectorAll("img")).toHaveLength(1);
+    expect(container.innerHTML).not.toContain("data:image/png;base64,AAAA");
+  });
+
+  it("⚠⚠ キーワードで発火しても、本文が localStorage にも console にも出ない（§9）", async () => {
+    const logs = spyConsole();
+    await renderWithKeyword("草");
+    emitComments([chat(`草 ${THIRD_PARTY_TEXT}`)]);
+    await screen.findByTestId("effect-template");
+
+    const dump = Object.keys(localStorage)
+      .map((k) => localStorage.getItem(k) ?? "")
+      .join("|");
+    expect(dump).not.toContain(THIRD_PARTY_TEXT);
+    expect(dump).not.toContain(THIRD_PARTY_NAME);
+    const consoleDump = logs
+      .flatMap((spy) => spy.mock.calls.flat())
+      .map((a) => String(a))
+      .join("|");
+    expect(consoleDump).not.toContain(THIRD_PARTY_TEXT);
+    expect(consoleDump).not.toContain(THIRD_PARTY_NAME);
+  });
+
+  it("⚠ 同じキーワードが連続しても、クールダウンの間は 1 件しか出ない（判断 7 の結線）", async () => {
+    await renderWithKeyword("草");
+    emitComments([chat("草1")]);
+    emitComments([chat("草2")]);
+    // ⚠ `Date.now()` は実時間なので、2 件は必ずクールダウン（10 秒）の内側に入る。
+    expect(await screen.findAllByTestId("effect-template")).toHaveLength(1);
+  });
+
   it("⚠⚠ 受け取ったコメントを localStorage へ保存しない（046a と同じ規律）", async () => {
     await renderAssigned();
     emitComments([superchat()]);

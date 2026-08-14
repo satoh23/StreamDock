@@ -236,8 +236,8 @@ export function ObsEffectsScreen() {
 
   /** 061i: 前提ステータスに出す「表示する条件」の件数。⚠ 数え方の持ち主は `effectAssignments.ts`。 */
   const conditionCount = useMemo(
-    () => effectConditionCount(effectTemplates.assignments),
-    [effectTemplates.assignments],
+    () => effectConditionCount(effectTemplates.conditions),
+    [effectTemplates.conditions],
   );
 
   /**

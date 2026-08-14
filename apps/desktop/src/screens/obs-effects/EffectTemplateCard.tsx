@@ -7,7 +7,6 @@ import {
 } from "../../features/comment-viewer/overlaySettings";
 import { Button } from "../../components/primitives";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
-import { EFFECT_EVENT_LABEL } from "./effectEventRows";
 import { EffectTemplatePreview } from "./EffectTemplatePreview";
 import type { UseEffectTemplates } from "./useEffectTemplates";
 import layout from "../formLayout.module.css";
@@ -79,7 +78,7 @@ export function EffectTemplateCard({
   requestDelete,
   cancelDelete,
   runDelete,
-  eventTypesUsing,
+  conditionLabelsUsing,
   effectWindowOpen,
   openEffectOverlay,
 }: UseEffectTemplates & {
@@ -146,23 +145,27 @@ export function EffectTemplateCard({
     Number.isFinite(durationMs) ? `${(durationMs / 1000).toFixed(1)}秒` : "—";
 
   /**
-   * 061d-2: 削除確認の**追加の 1 文**。⚠⚠ **割り当てに使われているときはその旨を出す**（(3) の指定）。
+   * 061d-2: 削除確認の**追加の 1 文**。⚠⚠ **条件に使われているときはその旨を出す**（(3) の指定）。
    *
    * ⚠ **実際にそうなること**を書く——061d-2 は「組み込みのエフェクトに戻ります」だったが、
-   *   061h で戻し先が「表示しない」になったので文言も追随する（`clearEffectAssignmentsForTemplate`）。
+   *   061h で戻し先が「表示しない」になったので文言も追随する（`clearEffectConditionsForTemplate`）。
    * ⚠ `message`（`<p>` 1 つ）ではなく `details` に載せるのは、`ConfirmDialog` の本文が改行を
    *   保持しない単一段落だから（060c が同じ理由で `details` を足している）。
+   *
+   * ⚠⚠ **061j（判断 13）: ラベル化は hook（`conditionLabelsUsing`）が持つ。**
+   *   061i までは `eventTypesUsing` が返すイベント種別をここで `EFFECT_EVENT_LABEL` に通していたが、
+   *   **キーワード条件をラベルにする方法がこちら側に無い**（保存形を知らないため）。
+   *   ⇒ ここは**受け取った文字列を並べるだけ**になり、`EFFECT_EVENT_LABEL` の import も消えた。
+   * ⚠ キーワードは**ユーザー自身の入力**なので確認ダイアログに出してよい（§9）。
+   *   ⚠ **React のテキストノードとして描く**（`details` は `ReactNode`・`dangerouslySetInnerHTML` は使わない）。
    */
   const deleteDetails = (template: EffectTemplateRecord) => {
-    const used = eventTypesUsing(template.id);
+    const used = conditionLabelsUsing(template.id);
     if (used.length === 0) return undefined;
-    const labels = used
-      .map((eventType) => EFFECT_EVENT_LABEL[eventType] ?? eventType)
-      .join("・");
     return (
       <p className={styles.errorText}>
-        このテンプレートは「{labels}
-        」に割り当てられています。削除すると、その割り当ては「表示しない」に戻ります。
+        このテンプレートは「{used.join("・")}
+        」に割り当てられています。削除すると、その条件は「表示しない」に戻ります。
       </p>
     );
   };
