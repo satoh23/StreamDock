@@ -76,13 +76,19 @@ const record = (
  * **一覧と割り当てが 1 つの hook を共有していること**そのものが仕様なので、
  * 差し替えるとその継ぎ目（＝061d-2 で新しく壊れうる箇所）が検査されない。
  */
-function Harness() {
-  const templates = useEffectTemplates();
+function Harness({ openEffectOverlay = () => {} }: { openEffectOverlay?: () => void }) {
+  // ⚠ 061i: 「条件が 0 → 1 件になったら窓を開く」の**判断は hook**、**invoke は `ObsEffectsScreen`**。
+  //   このファイルは判断の側だけを見るので、呼ばれたことが分かるモックを差し込める形にしてある。
+  const templates = useEffectTemplates({ openEffectOverlay });
   return (
     <>
-      {/* ⚠ 061h: `effectWindowOpen`（前提ステータス）は `ObsEffectsScreen` が渡す props。
-          このファイルが見るのは割り当て側なので、値は固定でよい。 */}
-      <EffectTemplateCard {...templates} effectWindowOpen={true} />
+      {/* ⚠ 061h/061i: `effectWindowOpen`（前提ステータス）と `openEffectOverlay` は
+          `ObsEffectsScreen` が渡す props。このファイルが見るのは割り当て側なので、値は固定でよい。 */}
+      <EffectTemplateCard
+        {...templates}
+        effectWindowOpen={true}
+        openEffectOverlay={openEffectOverlay}
+      />
       <EffectAssignmentCard {...templates} />
     </>
   );
@@ -94,6 +100,30 @@ const selectFor = (label: string) =>
 
 const stored = (): Record<string, { kind: string; templateId?: string }> =>
   JSON.parse(localStorage.getItem(EFFECT_ASSIGNMENTS_KEY) ?? "{}");
+
+/**
+ * ⚠⚠ **061i レビュー Q-3（既知の弱さ・別タスクで直す）: このファイルの待ち合わせは弱い。**
+ *
+ * 各ケースが使っている `await waitFor(() => expect(listEffectTemplates).toHaveBeenCalledTimes(1))`
+ * が待っているのは「**IPC が呼ばれたこと**」であって「**`<option>` が描画されたこと**」ではない。
+ * `vi.fn(async …)` の呼び出し回数は**呼んだ瞬間**に 1 になるので、解決 → 再レンダーより前に
+ * `waitFor` が満たされうる。`<option>` が未描画のまま `fireEvent.change` すると値が反映されず、
+ * `stored()` のアサーションが落ちる。
+ *
+ * ⚠ **061i の変異検証中に 1 度だけ観測された「無関係なケースの失敗」の実因はこれ**である
+ * （progress.md の 061i 節では当初「負荷由来の flake」と記録していたが、負荷は**引き金**であって
+ * 原因ではない。この待ち合わせが正しければ負荷では落ちない）。
+ *
+ * ⚠ **061i では直さない**——同じ形が本ファイルに 16 か所あり、061i のスコープ（画面の再構成）から
+ * 外れるため（CLAUDE.md「1 回の作業で複数機能をまとめない」）。⚠ 061i が**新しく書いた**
+ * `ObsEffectsScreen.test.tsx` は `await screen.findAllByText("きらきら演出")` と
+ * **描画を待っている**ので、新しい形のほうが正しい。
+ *
+ * **再修正トリガー＝このファイルのケースが再び落ちたとき／本ファイルを本格的に触るとき。**
+ * そのときは `waitFor(呼び出し回数)` を `await screen.findByRole("option", { name: … })` 相当
+ * （＝描画の完了を待つ形）へ**16 か所まとめて**置き換えること。
+ * ⚠ 1 か所ずつ直すと「直した所と直していない所」が混在し、次に落ちたときの切り分けが効かなくなる。
+ */
 
 describe("EffectAssignmentCard", () => {
   beforeEach(() => {

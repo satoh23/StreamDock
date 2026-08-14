@@ -94,7 +94,24 @@ export interface EffectMediaCache {
   retain(templateIds: readonly string[]): void;
   /** 描画時にデコードが失敗した id を「もう試さない」側へ倒す（`onMediaError` から呼ぶ）。 */
   markFailed(templateId: string): void;
-  /** 失敗の記録を捨てて再挑戦できるようにする（割り当てが変わったときに呼ぶ）。 */
+  /**
+   * 061i（判断 5）: **その id だけ**失敗の記録を捨てて再挑戦できるようにする。
+   *
+   * ⚠⚠ **[`markFailed`] の対称形として 061i で足した**——061h の `fireTest` は
+   * 「id 単位の解除 API が無い」ので [`clearFailures`]（全 id）を呼んでおり、
+   * その JSDoc に **「再修正トリガー＝ id 単位の `clearFailure(id)` が要る場面が出たとき（そのときは
+   * `markFailed` の対称形として `effectMediaCache.ts` に足し、ここだけ寄せる）」**と書いてあった。
+   * 061i で「テスト表示を受け取ったら失敗の固着を解除する」を**発火の前に必ず通る位置**へ移したので、
+   * 押していない id の失敗まで巻き添えで消す理由が無くなった（＝トリガーが発火した）。
+   * ⚠ **`failed` を触るのはこのモジュールの中だけ**という線（061d-2）を保つために API にしてある
+   * ——`EffectOverlayApp` から `Set` を直接いじらせない。
+   */
+  clearFailed(templateId: string): void;
+  /**
+   * 失敗の記録を**全部**捨てて再挑戦できるようにする（割り当てが変わったときに呼ぶ）。
+   * ⚠ 広いのが正しい場面＝**ユーザーが割り当てを触った**とき（`warmTemplates`）。
+   * ⚠ 明示操作 1 件に対する解除は [`clearFailed`] を使うこと。
+   */
   clearFailures(): void;
 }
 
@@ -180,9 +197,12 @@ export function createEffectMediaCache(
         .catch(() => {
           // ⚠ 失敗の詳細（id・パス・エラー文言）は握りつぶす（§9・`no-console`）。
           //   削除済みテンプレートを指す割り当てはここへ来る＝⚠ **061h 以後、その id は何も出ない**
-          //   （組み込みへ落ちない）。⚠⚠ 解除は [`clearFailures`] だけなので、
-          //   **その id はセッション中ずっと無音になりうる**（module doc の 061h 節・
+          //   （組み込みへ落ちない）。⚠ **本番の発火（`fire`）はこの記録を解除しない**ので、
+          //   **その id は次の解除契機まで無音のままである**（module doc の 061h 節・
           //   `EffectOverlayApp` の `fire` の「観測できない無音」注記が正）。
+          //   ⚠⚠ **061i で解除契機が 3 つになった**: ①割り当ての変更（`warmTemplates` → [`clearFailures`]）
+          //   ②窓のマウント（同上）③**テスト表示（[`clearFailed`]＝その id だけ）**。
+          //   ③が「壊れて出ない」に対してユーザーが自力で試せる唯一の復帰手段である（判断 5）。
           failed.add(templateId);
         })
         .finally(() => {
@@ -207,6 +227,10 @@ export function createEffectMediaCache(
       if (media === undefined) return;
       entries.delete(templateId);
       totalChars -= weigh(media);
+    },
+
+    clearFailed(templateId) {
+      failed.delete(templateId);
     },
 
     clearFailures() {

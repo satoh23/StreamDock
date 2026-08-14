@@ -5,6 +5,7 @@ import {
   EFFECT_ASSIGNMENTS_KEY,
   EFFECT_OVERLAY_GUIDE_PENDING_KEY,
   EFFECT_TEST_FIRE_KEY,
+  EFFECT_TEST_FIRE_PENDING_KEY,
 } from "../../features/comment-viewer/overlaySettings";
 import type { CommentViewDto } from "../../features/comment-viewer/types";
 import { MONETARY_EVENT_TYPES } from "../comment-viewer/viewerFormat";
@@ -21,8 +22,12 @@ import { EFFECT_DISPLAY_MS, EFFECT_MAX_CONCURRENT } from "./effectTrigger";
  *   ⚠⚠ 061a レビュー（Q-1）で条件が 1 つ増えた。旧実装は**無条件に出していた**ため、
  *   `App.tsx` の起動時復元（＝アプリ起動のたびに窓が開く経路。061a が同時に新設した）でも出てしまい、
  *   「配信直前に StreamDock を起動」で 30 秒間 OBS のキャプチャに映っていた。
- *   いまは `EFFECT_OVERLAY_GUIDE_PENDING_KEY`（`ObsEffectsScreen` の表示トグル ON だけが立てる
- *   ワンショット旗）が立っているときだけ出し、マウント時に旗を倒す。
+ *   いまは `EFFECT_OVERLAY_GUIDE_PENDING_KEY`（**明示操作だけが立てる**ワンショット旗）が
+ *   立っているときだけ出し、マウント時に旗を倒す。
+ *   ⚠ **061i で起点が移った**——「`ObsEffectsScreen` の表示トグル ON」→
+ *   「`EffectTemplateCard` のテスト表示で**停止中の窓を開いたとき**」（判断 3）。
+ *   ⚠ **条件を編集して窓が自動で開いたときは立たない**（起点側のケースは `EffectTemplateCard.test.tsx` と
+ *   `ObsEffectsScreen.test.tsx` が固定する。この窓が見るのは「旗があれば出す・読んだら倒す」だけ）。
  * - ⚠⚠ **061b で 061a の決定を反転した**: 旧テストは「**WS へ接続しない**」を固定していたが、
  *   いまは **`connectCommentStream` を 1 回だけ呼ぶ**（`OverlayApp` と同じ読み取り専用接続）。
  *   その代償として第三者のコメント本文がこの窓に流れ込むので、**受け取っても描かない・保存しない・
@@ -269,7 +274,7 @@ describe("061a/061b: EffectOverlayApp", () => {
     document.documentElement.removeAttribute("data-overlay");
   });
 
-  /** 明示操作（`ObsEffectsScreen` の表示トグル ON）で窓が開いた状況を作る。 */
+  /** 明示操作（⚠ 061i 以降は「停止中の窓をテスト表示で開いた」）で窓が開いた状況を作る。 */
   const armGuide = () =>
     localStorage.setItem(EFFECT_OVERLAY_GUIDE_PENDING_KEY, "true");
 
@@ -287,6 +292,22 @@ describe("061a/061b: EffectOverlayApp", () => {
     expect(
       screen.getByText(/この枠にエフェクトが表示されます/),
     ).toBeInTheDocument();
+  });
+
+  it("⚠⚠ 061i: ガイドの本文が「いつ出るか」を実装どおりに書いている（廃止したトグルを名指ししない）", () => {
+    // ⚠⚠ **061i の実機確認で見つかった退行の回帰テスト。** 061h まで本文は
+    //   「このガイドは、**表示を ON にした直後**だけ出て自動的に消えます。」と書いていたが、
+    //   061i でそのトグルは**廃止**され、起点は「停止中の窓をテスト表示で開いたとき」へ移った。
+    // ⚠⚠ **この 1 文だけは OBS のキャプチャに数十秒そのまま映る**＝画面内の案内文より嘘の害が大きい
+    //   （配信を見ている視聴者にも読める）。061a レビュー Q-1「約束できることだけ書く」の最も重い適用先。
+    // ⚠ 起点を変えるときは `ObsEffectsScreen` の案内文・`EFFECT_OVERLAY_GUIDE_PENDING_KEY` の
+    //   JSDoc とあわせて **3 か所**直すこと。
+    armGuide();
+    render(<EffectOverlayApp />);
+    expect(
+      screen.getByText(/「配信画面でテスト表示」で開いた直後だけ出て/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/表示を ON にした直後/)).toBeNull();
   });
 
   it("⚠ 旗が立っていなければガイドを出さない（起動時の窓復元では配信画面を汚さない）", () => {
@@ -715,6 +736,157 @@ describe("061a/061b: EffectOverlayApp", () => {
     expect(screen.getAllByTestId("effect-template").length).toBeLessThanOrEqual(
       EFFECT_MAX_CONCURRENT,
     );
+  });
+
+  // --- 061i（判断 4）: 保留旗（窓が停止中に押されたテスト表示） ------------------------------------
+  //
+  // ⚠⚠ **`storage` では渡せないから旗にした。** main 窓が「open を await → nonce を書く」と実装すると、
+  //   `open_effect_overlay_window` の解決は**窓生成の完了**であって**この窓が `storage` リスナーを
+  //   登録し終えたこと**ではないため、**登録前に飛んだぶんが消える**（押しても何も出ない）。
+  //   ＝ `EFFECT_OVERLAY_GUIDE_PENDING_KEY` と同じワンショット旗で渡し、**マウント時に読む**。
+
+  it("⚠⚠ 061i: マウント時に保留旗を読んで 1 回だけ発火し、旗を消す", async () => {
+    mocks.listEffectTemplates.mockResolvedValue([templateRecord()]);
+    localStorage.setItem(EFFECT_TEST_FIRE_PENDING_KEY, TEMPLATE_ID);
+
+    const { unmount } = await renderWarmed();
+    // ⚠ 材料が冷えていれば `fireTest` が待つ経路に入るので、解決を流し切ってから見る。
+    await act(async () => {});
+    expect(screen.getByText(templateLine("テスト"))).toBeInTheDocument();
+    // ⚠⚠ **読んだら消す**（消さないと窓を開くたびに同じエフェクトが出る＝無操作で配信画面へ出る経路）。
+    expect(localStorage.getItem(EFFECT_TEST_FIRE_PENDING_KEY)).toBeNull();
+
+    // 窓を開き直しても（旗が立て直されていなければ）出ない。
+    unmount();
+    const { container } = await renderWarmed();
+    await act(async () => {});
+    expect(container.textContent).not.toContain("テスト");
+  });
+
+  it("⚠ 061i: 保留旗が無ければマウントだけでは何も出ない", async () => {
+    mocks.listEffectTemplates.mockResolvedValue([templateRecord()]);
+    const { container } = await renderWarmed();
+    await act(async () => {});
+    expect(container.textContent).not.toContain("テスト");
+  });
+
+  it("⚠⚠ 061i: 形の壊れた保留旗では発火せず、IPC も起こさない", async () => {
+    // ⚠⚠ **061h の変異⑤が最初に生存した理由をここで塞ぐ。** 「何も出ない」だけを見ると、
+    //   **形の壊れた id はどのみち `recordsRef` に載っていない**ので、検証を素通しにしても
+    //   画面には何も出ない（描画側の照合が偶然カバーしてしまう）。
+    //   ⚠ **検証の実効は「その値を持って IPC を起こさない」こと**なので、
+    //   `list_effect_templates` の呼び出し回数が増えないことを見る。
+    mocks.listEffectTemplates.mockResolvedValue([templateRecord()]);
+    localStorage.setItem(EFFECT_TEST_FIRE_PENDING_KEY, "../../etc/passwd");
+
+    const { container } = await renderWarmed();
+    await act(async () => {});
+
+    expect(container.textContent).not.toContain("テスト");
+    // 先読み（`warmTemplates`）の 1 回だけ。⚠ 検証を外すと `fireTest` が取り直しに走って 2 回になる。
+    expect(mocks.listEffectTemplates).toHaveBeenCalledTimes(1);
+    expect(mocks.getEffectTemplateMedia).not.toHaveBeenCalled();
+    // ⚠ 旗は消す（壊れた値を残すと、次に窓を開くたびに同じ判定を繰り返す）。
+    expect(localStorage.getItem(EFFECT_TEST_FIRE_PENDING_KEY)).toBeNull();
+  });
+
+  it("⚠ 061i: 保留旗の経路でもセットアップ用ガイドは main 窓の旗に従う（この窓は勝手に出さない）", async () => {
+    // ⚠ ガイドを出すかどうかの判断は main 窓（明示操作かどうかを知っているのはあちらだけ）。
+    //   ⚠ 保留旗が立っていること自体をガイドの根拠にしない（＝旗を 2 つに分けている理由）。
+    mocks.listEffectTemplates.mockResolvedValue([templateRecord()]);
+    localStorage.setItem(EFFECT_TEST_FIRE_PENDING_KEY, TEMPLATE_ID);
+    await renderWarmed();
+    expect(screen.queryByText("StreamDock エフェクト")).toBeNull();
+  });
+
+  // --- 061i（判断 5）: テスト表示が「失敗の固着」を解除する ----------------------------------------
+
+  it("⚠⚠ 061i: 一度 `failed` に載ったテンプレートが、テスト表示（`storage`）で再試行される", async () => {
+    // ⚠⚠ **061h レビュー Q-1 への回答の片方。** `safeEffectMedia` に弾かれた／取得に失敗した id は
+    //   `failed` に載り、**`warmTemplates`（割り当ての変更か窓のマウント）まで無音のまま**だった
+    //   ＝ 壊れたテンプレートを**取り込み直してもアプリを再起動するまで復活しない**。
+    //   ⚠ テスト表示の入口で解除するようにしたので、**明示操作で再試行できる**。
+    mocks.listEffectTemplates.mockResolvedValue([templateRecord()]);
+    mocks.getEffectTemplateMedia.mockRejectedValueOnce(new Error("failed"));
+    assignAllToTemplate();
+    await renderWarmed();
+
+    // 先読みが失敗している＝この時点では本番の発火でも何も出ない（＝観測できない無音）。
+    emitComments([superchat()]);
+    expect(screen.queryByTestId("effect-template")).toBeNull();
+
+    // ⚠ ここが本命。テスト表示で失敗記録が消え、取り直して出る。
+    mocks.getEffectTemplateMedia.mockResolvedValue(PNG);
+    fireTestFrom();
+    await act(async () => {});
+    await act(async () => {});
+    expect(screen.getByText(templateLine("テスト"))).toBeInTheDocument();
+  });
+
+  it("⚠⚠ 061i: テスト表示は `missHandledRef` も解除する（本番の発火経路がもう一度取り直せる）", async () => {
+    // ⚠⚠ **`failed` だけ消しても足りない。** 本番の発火（`fire`）はキャッシュミスの後始末を
+    //   **1 id につき 1 回だけ**に絞っている（`missHandledRef`）ので、そこが立ったままだと
+    //   **次の投げ銭では一覧の取り直しすら走らない**＝ 明示操作をしても本番経路は固着したままになる。
+    // ⚠⚠ **観測点の選び方がこのケースの肝**（⚠ 最初に書いた版は**空振りしていた**——
+    //   「テスト表示のあとに `get_effect_template_media` が増えること」を見ていたが、
+    //   その増分は **`fireTest` 自身の取り直し**なので、解除を消しても緑のまま生存した。
+    //   ＝ 061h の変異⑤と同型の罠を**自分でもう一度踏んだ**）。
+    //   ⇒ **テスト表示が終わった時点で数え直し**、そのあとの**投げ銭**で
+    //   `list_effect_templates` が増えるかを見る（＝本番経路の後始末が動いたかどうか）。
+    // ⚠ 一覧に載っていない id（削除済み／一覧の取得が失敗した状態）を使うのは、
+    //   `handleCacheMiss` の中で**一覧の取り直しが走る**＝ IPC として観測できる経路だから。
+    mocks.listEffectTemplates.mockResolvedValue([]);
+    assignAllToTemplate();
+    await renderWarmed();
+
+    emitComments([superchat()]); // → `handleCacheMiss` が 1 回だけ走る
+    await act(async () => {});
+    const callsAfterFirst = mocks.listEffectTemplates.mock.calls.length;
+    // ⚠ 2 件目では走らない（`missHandledRef` が絞っている＝この仕組みが生きていることの確認。
+    //   ここが増えると下の観測が「絞りが効いていないだけ」で通ってしまう）。
+    emitComments([{ ...superchat(), id: "sc-2" }]);
+    await act(async () => {});
+    expect(mocks.listEffectTemplates.mock.calls.length).toBe(callsAfterFirst);
+
+    // ⚠ 明示操作（テスト表示）。⚠ **この操作自身の取り直しを数えないよう、終わってから数え直す。**
+    fireTestFrom();
+    await act(async () => {});
+    await act(async () => {});
+    const callsAfterTest = mocks.listEffectTemplates.mock.calls.length;
+
+    // ⚠ ここが本命: 解除されていれば、次の投げ銭で**もう一度**後始末（一覧の取り直し）が走る。
+    emitComments([{ ...superchat(), id: "sc-3" }]);
+    await act(async () => {});
+    expect(mocks.listEffectTemplates.mock.calls.length).toBeGreaterThan(
+      callsAfterTest,
+    );
+  });
+
+  it("⚠⚠ 061i: 失敗の解除は**押した id だけ**（他の id は巻き添えにしない）", async () => {
+    // ⚠ 061h は `clearFailures()`（全 id）を呼んでいた——`EffectMediaCache` に id 単位の解除が
+    //   無かったため。061i で `markFailed` の対称形 `clearFailed(id)` を足し、その再修正トリガーを消化した。
+    //   ⚠ 押していない id まで再挑戦させると、**壊れたテンプレートを割り当てているだけで
+    //   投げ銭のたびに 6.7M 文字の IPC が走る**（`failed` を持つ理由そのもの）状態へ近づく。
+    mocks.listEffectTemplates.mockResolvedValue([
+      templateRecord(),
+      templateRecord({ id: TEMPLATE_ID2, name: "別の演出" }),
+    ]);
+    mocks.getEffectTemplateMedia.mockRejectedValue(new Error("failed"));
+    setAssignments({
+      superchat: { kind: "template", templateId: TEMPLATE_ID },
+      subscription: { kind: "template", templateId: TEMPLATE_ID2 },
+    });
+    await renderWarmed();
+    mocks.getEffectTemplateMedia.mockClear();
+
+    // TEMPLATE_ID だけテスト表示する。
+    fireTestFrom(TEMPLATE_ID);
+    await act(async () => {});
+    await act(async () => {});
+
+    const primed = mocks.getEffectTemplateMedia.mock.calls.map((c) => c[0]);
+    expect(primed).toContain(TEMPLATE_ID);
+    expect(primed).not.toContain(TEMPLATE_ID2);
   });
 
   // --- 061b-2: ガイドとの共存 --------------------------------------------------------------------

@@ -5,6 +5,7 @@ import {
   EFFECT_TEST_FIRE_KEY,
   loadEffectOverlayGuidePending,
   saveEffectOverlayGuidePending,
+  takeEffectTestFirePending,
 } from "../../features/comment-viewer/overlaySettings";
 import {
   listEffectTemplates,
@@ -270,8 +271,10 @@ const effectDurationMs = (record: EffectTemplateRecord): number => {
  */
 export function EffectOverlayApp() {
   // ⚠ 061a レビュー（Q-1）: 初期値は**ワンショット旗の有無**で決める（旧実装は無条件 true だった）。
-  // 旗を立てるのは `ObsEffectsScreen` の表示トグル ON だけなので、
-  //   - 明示操作で開いた窓 → 出る（「表示 OFF → ON で出し直せる」も維持される）
+  // 旗を立てるのは**明示操作 1 つだけ**（⚠ 061i で起点が「表示トグル ON」から
+  // 「テスト表示で停止中の窓を開いたとき」＝`EffectTemplateCard` へ移った・判断 3）なので、
+  //   - 明示操作で開いた窓 → 出る（「もう一度出したい」は窓を閉じてテスト表示を押せばよい）
+  //   - ⚠ **条件を編集して自動で開いた窓 → 出ない**（061i で増えた経路。編集のたびに映るのを避ける）
   //   - `App.tsx` の起動時復元で開いた窓 → **出ない**（＝配信直前にアプリを起動しても配信画面を汚さない）
   // ⚠ **読むのは初期化子・倒すのは下の effect** と分けてある。初期化子で消すと StrictMode の
   // 二重レンダーで 2 回目が旗を見失い、dev だけガイドが出なくなる（実装時に踏みうる罠）。
@@ -455,14 +458,25 @@ export function EffectOverlayApp() {
    *   - (c) `get_effect_template_media` が一時的に失敗 … ❌ 警告なし・`failed` に載る
    *   - (d) 描画時のデコード失敗（[`handleMediaError`]） … ❌ 警告なし・`markFailed`
    *   - (e) 先読み前の初回発火 … ❌ 警告なし。⚠ ただし**2 件目から出る**（自己回復する）
-   * ⚠⚠ **(b)(c)(d) は `warmTemplates`（割り当ての `storage` か窓のマウント）まで無音のままである**
-   * ——061d-2 は同じ失敗が「組み込みが出る」に倒れており、少なくとも配信画面上で異常が見えていた。
-   * **その可視化は 061h で失われ、代替は (a) にしか用意していない**（受容。判断の全文は
+   * ⚠⚠ **(b)(c)(d) は依然として「出ない」ことが main 窓の警告に出ない**——061d-2 は同じ失敗が
+   * 「組み込みが出る」に倒れており、少なくとも配信画面上で異常が見えていた。
+   * **その可視化は 061h で失われ、警告としての代替は (a) にしか用意していない**（受容。判断の全文は
    * docs/progress.md の 061h 節「⚠ 固定できていないもの」）。
-   * **再修正トリガー＝実機で「割り当てたのに出ない」が起きたとき**——そのときは
-   * `failed` / `missHandledRef` の解除契機を増やす（テスト表示の `storage` でも `missHandledRef` を
-   * 捨てる等）か、main 窓側で割り当て済みテンプレートのメディアが読めるかを検証して警告に載せる
-   * （どちらも 061i の「条件が 1 つでも有効なら窓を開く」と同時にやるのが安い）。
+   *
+   * ⚠⚠ **061i（判断 5）で「安い方だけ」手当てした**（061h レビュー Q-1 への回答）:
+   *   1. **[`fireTest`] の入口で `failed` / `missHandledRef` を解除する**＝ (b)(c)(d) が
+   *      `warmTemplates`（割り当ての変更か窓のマウント）まで**固着しなくなった**
+   *      ——壊れたテンプレートを取り込み直して**テスト表示を押せば、その場で復活する**。
+   *   2. **テスト表示が窓を開けるようになった**（窓が停止中でも押せる）＝
+   *      **「壊れていればその場で出ないと分かる」**という観測手段そのものになった。
+   *      main 窓の `EffectAssignmentCard` は「割り当てる前にテスト表示で確かめられる」と常時案内する。
+   * ⚠ **採らなかったのは 2 つ**（061i の性格＝画面構成の作り直しから外れ、CLAUDE.md の
+   * 「1 回の作業で複数機能をまとめない」に触れるため）: **main 窓で割り当て済みテンプレートの
+   * メディアを自動検証して警告に載せる案**（割り当て済み全件の data URI を自動で取りに行く＝
+   * **新規 IPC とメモリ負荷**）と、**この窓 → main 窓へ「壊れた」を返す逆向きの wire**
+   * （061a/061e が慎重に避けてきた線）。
+   * ⇒ ⚠ **残る穴＝「割り当て済みのテンプレートが**あとから**壊れた場合、テスト表示を押すまで気づけない」**。
+   * **再修正トリガー＝実機で「割り当てたのに出ない」が実際に起きたとき**（そのとき上の 2 案を検討する）。
    * ⚠ **`handleCacheMiss` は残す**（＝次回に備えて温める）。ここを一緒に消すと
    * 「一度冷えたら二度と出ない」になる。
    * ⚠ **ここで `await` しない**（＝発火の瞬間に IPC を呼ばない・061c 申し送り 6／実機確認⑧）。
@@ -511,9 +525,27 @@ export function EffectOverlayApp() {
    * **位置合わせは割り当てより前にやりたい**のが普通だから。
    * ⚠ 温まっていれば**同期で出す**（`storage` ハンドラから同期で呼ばれる形を保つ）。
    * ⚠ 失敗（レコードが無い／メディアが読めない）は**黙って何も出さない**（§9・`no-console`）。
+   *
+   * ## ⚠⚠ 061i（判断 5）: **入口で「失敗の固着」を解除する**
+   *
+   * `fire()` の JSDoc が列挙している無音の 5 経路のうち **(b)(c)(d) は `failed` / `missHandledRef` に
+   * 載ったまま `warmTemplates`（＝割り当ての変更か窓のマウント）まで固着する**。
+   * ＝ **壊れたテンプレートを取り込み直しても、アプリを再起動するまで復活しない**。
+   * ⚠ ここで 2 行解除するだけで「**一度失敗したものを明示操作で再試行できる**」になる
+   * （ユーザーが自力で試せる唯一の復帰手段。061h レビュー Q-1 への回答の片方）。
+   * ⚠⚠ **解除は `storage` 経由・保留旗経由の両方に効かせる必要がある**ので、
+   * **両方が必ず通るこの関数の入口**に置いてある（呼び出し側 2 か所に書かない）。
+   * ⚠ **061h の「全 id を消す `clearFailures()`」から「その id だけ」へ狭めた**——
+   * あちらの JSDoc が「再修正トリガー＝ id 単位の解除が要る場面が出たとき（`markFailed` の対称形として
+   * `effectMediaCache.ts` に足し、ここだけ寄せる）」と書いており、061i がその場面である。
+   * 押していない id の失敗まで巻き添えで消す理由は、解除がここへ来た時点で無くなった。
    */
   const fireTest = useCallback(
     (templateId: string) => {
+      // ⚠ **発火の前**に解除する（`prime` は失敗記録が残っていると再挑戦しないので、順序が逆だと効かない）。
+      cacheRef.current.clearFailed(templateId);
+      // ⚠ `handleCacheMiss` の「1 id につき 1 回だけ」も解除する（＝本番の発火経路も温め直せる）。
+      missHandledRef.current.delete(templateId);
       const request: EffectRequest = {
         ...TEST_FIRE_REQUEST_BASE,
         kind: "template",
@@ -536,18 +568,9 @@ export function EffectOverlayApp() {
         if (!recordsRef.current.has(templateId)) await refreshRecords();
         const found = recordsRef.current.get(templateId);
         if (found === undefined) return;
-        // ⚠ 一度失敗した id は `prime` が再挑戦しないので、ユーザーの明示操作では失敗を忘れる
-        //   （`warmTemplates` が割り当て変更時に `clearFailures` するのと同じ考え方）。
-        // ⚠⚠ **これは「その id だけ」ではなく全 id の失敗記録を消す**（`EffectMediaCache` に
-        //   id 単位の解除 API が無いため）。⚠ **広いままにしてある**理由は 2 つ:
-        //   ①実害＝他 id が次に `prime` される機会（`warmTemplates` / `handleCacheMiss`）で
-        //   高々 1 度だけ取り直すことだけで、`handleCacheMiss` は `missHandledRef` が絞っている
-        //   ②`fire()` の注記にある「(b)(c)(d) の無音は警告に出ない」に対して、
-        //   **テスト表示を押せば失敗記録が消えて本番経路も復活する**＝ユーザーが自力で試せる
-        //   唯一の復帰手段になっている（広いことがここでは利点になる）。
-        //   **再修正トリガー＝ id 単位の `clearFailure(id)` が要る場面が出たとき**（そのときは
-        //   `markFailed` の対称形として `effectMediaCache.ts` に足し、ここだけ寄せる）。
-        cacheRef.current.clearFailures();
+        // ⚠ 失敗記録の解除は**この関数の入口**で済ませてある（061i・上の JSDoc）。
+        //   ⚠ **ここへ戻さないこと**——`storage` 経由でキャッシュに載っている（＝この非同期経路へ
+        //   来ない）ケースで `missHandledRef` が解除されず、本番経路が固着したままになる。
         await cacheRef.current.prime(templateId);
         const primed = cacheRef.current.get(templateId);
         if (primed === undefined) return;
@@ -563,9 +586,37 @@ export function EffectOverlayApp() {
 
   // ⚠ 旗は**一度読んだら倒す**（次に開く窓では出ない）。同じ値の上書きなので StrictMode の
   // 二重実行でも冪等で、cleanup は要らない（旗を立て直すのは main 窓の明示操作だけ）。
+  //
+  // ⚠⚠ **061i（判断 4）: 保留中のテスト表示もここで受け取る**（＝**旗を読む処理を 2 か所に散らさない**）。
+  //   main 窓は「窓が停止中のときのテスト表示」を `storage` ではなく**旗**で渡してくる——
+  //   `open_effect_overlay_window` の解決は**窓生成の完了**であって、
+  //   **この窓の React が `storage` リスナーを登録し終えたこと**ではないので、
+  //   `storage` で渡すと**登録前に飛んだ分が消えて「押しても何も出ない」**が確率的に起きる。
+  //   ⚠ **読んだら消える**（`takeEffectTestFirePending`）ので、窓を開き直しても再発火しない。
+  //   ⚠⚠ **値は使う前に形を検証する**（`isEffectTemplateId`）——localStorage は**他窓から書ける**ので
+  //   ここは多層防御の 1 枚目である。⚠ **検証の実効は「その値を持って IPC を起こさない」こと**で、
+  //   「何も出ない」だけでは観測できない（061h の変異⑤が最初に生存した理由そのもの）。
+  //   ⚠ 検証は `effectAssignments.ts` の `isEffectTemplateId` を借りる＝**正規表現の持ち主を増やさない**。
+  //
+  // ⚠⚠ **ガイドとの関係（判断 3 と `showEffect` の規律が同時に効く）**: main 窓は停止中のテスト表示で
+  //   **ガイド旗と保留旗の両方**を立てるので、この窓は「ガイドを出しつつ 1 件出す」状態で始まる。
+  //   ⚠ `showEffect` が**エフェクトが出た瞬間にガイドを畳む**ので、実際の見え方は
+  //   「ガイド → （材料が揃い次第）エフェクト」になる。**これが意図した順序である**——
+  //   ①材料が冷えていれば `fireTest` が IPC を待つ間ガイドが窓の位置を示す
+  //   ②**テンプレートが壊れていて何も出ないときはガイドが残る**（＝窓は在るのに何も出ない、が見える）
+  //   ③出たあとは実物のほうが位置合わせの材料として優れている（破線枠と同居させない）。
   useEffect(() => {
     saveEffectOverlayGuidePending(false);
-  }, []);
+    const pending = takeEffectTestFirePending();
+    if (pending !== null && isEffectTemplateId(pending)) fireTest(pending);
+    // ⚠ `fireTest` は安定な `useCallback` の連鎖（`refreshRecords` / `showEffect` とも deps 空）なので、
+    //   この effect はマウント時 1 回だけ走る。
+    // ⚠⚠ **061i レビュー Q-6: ただし「1 回だけ」に正しさを預けていない。** 仮に将来
+    //   `fireTest` の依存が不安定になってこの effect が再実行されても、**旗は既に消えている**ので
+    //   二重発火しない（`saveEffectOverlayGuidePending(false)` も冪等）＝
+    //   **正しさを担保しているのは `take*`（読んだら消す）のほうで、安定性は性能の話**である。
+    //   ⚠ だから `take*` を `load*` へ変えると、この effect の安全性ごと崩れる。
+  }, [fireTest]);
 
   // ⚠ アンマウントで撤去タイマーを全部止める（StrictMode の二重実行でも残らない）。
   useEffect(() => {
@@ -766,9 +817,15 @@ export function EffectOverlayApp() {
             ウィンドウの一覧から「StreamDock エフェクト」を指定してください。
           </p>
           {/* ⚠ 061a レビュー（Q-1）: 旧文言「配信中には表示されません」は、起動時の窓復元経路があるため
-              約束できない断言だった。ガイドが出る条件（＝明示操作の直後だけ）をそのまま書く。 */}
+              約束できない断言だった。ガイドが出る条件（＝明示操作の直後だけ）をそのまま書く。
+              ⚠⚠ **061i レビュー（実機確認で発見）: 「表示を ON にした直後」は 061i で嘘になった。**
+              あのトグルは廃止済みで、いまの起点は「**ウィンドウが停止中のときにテスト表示を押したとき**」
+              （判断 3）。⚠ **この文だけは OBS のキャプチャに数十秒そのまま映る**ので、
+              画面内の案内文より嘘の害が大きい（配信を見ている視聴者にも読める）。
+              ⚠ 起点を変えるときは**必ずこの 1 文も直すこと**——`ObsEffectsScreen` の案内文・
+              `EFFECT_OVERLAY_GUIDE_PENDING_KEY` の JSDoc とあわせて **3 か所**ある。 */}
           <p className={styles.guideBody}>
-            このガイドは、表示を ON にした直後だけ出て自動的に消えます。
+            このガイドは、停止中のウィンドウを「配信画面でテスト表示」で開いた直後だけ出て、自動的に消えます。
           </p>
         </div>
       )}

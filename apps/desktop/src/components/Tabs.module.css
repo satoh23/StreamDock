@@ -1,0 +1,45 @@
+/* 061i: `components/Tabs.tsx` の意匠（判断 6）。
+
+   ⚠ **新しい px / weight を発明しない**——値は `screens/add-tool/AddToolScreen.module.css` の
+   `.kindToggle` / `.kindOption` / `.kindActive`（既存のタブ idiom）と同じものを使う。
+   ⚠⚠ **あちらの複製ではない**（クラス名も用途も別物＝あちらは「値の選択」、こちらは
+   「コンテンツの切替」）。統合するときは意味論のほうから決めること（`Tabs.tsx` の JSDoc）。
+
+   ⚠ 色はすべて `theme.css` のトークンで書く（生の 16 進表記や色関数リテラルを持ち込まない・
+   docs/security.md の規約）。⚠ この注記に禁止対象を**そのままの字面で**書かないこと
+   ——061i の検証で使う残骸 grep が**コメント自身に引っかかって空にならなくなる**。
+   ⚠⚠ **`--text-faint` は使わない。** あれは「押せない」を意味する濃度で **`:disabled` 専用**であり、
+   `scripts/check-css-guards.mjs` の (6-b) が `components/` 配下の `*.module.css` を
+   **再帰で全部走査している**ので、非活性でないタブの文字色に使うと検査が落ちる
+   （＝新設ファイルでも検査に穴が開かないよう 061g レビューでディレクトリ走査化されている）。
+   非選択タブは `--muted`（可読な補助色）を使う。 */
+
+.tabs {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 12px;
+  background: var(--control-bg);
+  border: 1px solid var(--border-soft);
+}
+
+.tab {
+  min-width: 88px;
+  height: 32px;
+  padding: 0 16px;
+  border-radius: 9px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+/* 選択中のタブ。⚠ **色だけで伝えない**——`aria-selected` が付いているので支援技術には状態が伝わり、
+   見た目でも「面が持ち上がる」（背景＋枠）ことで色覚に依存せず区別できる。 */
+.tabActive {
+  background: var(--surface);
+  color: var(--text);
+  border-color: var(--elev-border);
+}

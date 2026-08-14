@@ -148,6 +148,13 @@ const TOGGLE_CSS = "src/components/ToggleSwitch.module.css";
 const SELECT_CSS = "src/components/Select.module.css";
 const CONFIRM_CSS = "src/components/ConfirmDialog.module.css";
 const BUTTONS_CSS = "src/components/compactButtons.module.css";
+// 061i: `components/` の 5 枚目（**移設ではなく新設**の共通部品＝タブ）。
+// ⚠ (6-b) の faint 走査は `COMPONENTS_DIR` のディレクトリ走査なので**自動で対象になる**（追記は不要）。
+// ⚠ ここへ足すのは (11-b)「移設先に意匠が実在する」検査のため——(11) のリストのコメントが
+// 「`components/` へ 4 本目の部品を出したときは、ここへも足すこと（足し忘れは検査の縮小になる）」と
+// 指示している。⚠ **新設なので (11-a)（VIEWER_CSS に複製が無いこと）は自明に通る**が、
+// 逆に「あちらに `.tab` を書けば複製になる」ことは今後も真なので、両方向とも意味がある。
+const TABS_CSS = "src/components/Tabs.module.css";
 
 const failures = [];
 const fail = (msg) => failures.push(msg);
@@ -2098,6 +2105,11 @@ for (const rel of [VIEWER_CSS, OVERLAY_CSS]) {
       ],
     ],
     [BUTTONS_CSS, [".btn", ".btnGhost", ".dangerBtn"]],
+    // 061i: **新設**の共通部品（タブ）。⚠ 移設ではないので (11-a) は自明に通るが、(11-b) が要る
+    //   ——`.tabActive` をルールごと消しても**選択中のタブが「ただのボタン」に見えるだけ**で、
+    //   jsdom はレイアウトも色も解決しないため**テストは全部緑のまま通る**
+    //   （`.dangerBtn` の実測と同型の穴。意匠ではなく「いまどれを見ているか」が消える）。
+    [TABS_CSS, [".tabs", ".tab", ".tabActive"]],
   ];
   const movedClasses = MOVED.flatMap(([, sels]) => sels);
   // `.btn` が `.btnGhost` / `.dangerBtn` に誤ヒットしないよう、クラス名の直後が識別子文字でないことを見る。

@@ -33,14 +33,36 @@ export const OBS_AUTO_ADD_KEY = "stream-dock.comment-viewer.obs-auto-add";
 export const PINNED_OVERLAY_ENABLED_KEY =
   "stream-dock.comment-viewer.pinned-overlay-enabled";
 /**
- * 061a: 「エフェクトを配信画面に表示する」ON/OFF の保存キー（既定 OFF）＝エフェクト専用オーバーレイ窓
- * （label `effect-overlay`）を出すか。`PINNED_OVERLAY_ENABLED_KEY` と同種の**ユーザー自身の UI 設定値**で、
+ * 061a: エフェクト専用オーバーレイ窓（label `effect-overlay`）を出すかの保存キー（既定 OFF）。
+ * ⚠ **061h までの意味＝「エフェクトを配信画面に表示する」トグルの状態**／
+ * ⚠⚠ **061i 以降の意味＝「エフェクトを表示する条件が 1 件以上あるか」の派生値**（下記）。
+ * `PINNED_OVERLAY_ENABLED_KEY` と同種の**ユーザー自身の UI 設定値**で、
  * §9 追補（046a）が対象とする第三者の個人データではない。
  *
  * ⚠⚠ **このキーは 061a で初めて「窓をまたいで役割が分かれる」設定になった。**
- *   - **書き手＝main 窓**（`ObsEffectsScreen` の表示トグル。窓の open/close も main 窓が直接 invoke する）
+ *   - **書き手＝main 窓**（⚠ **061i でトグルから派生値へ変わった**。下記）
  *   - **読み手＝コメビュ窓**（`CommentViewerApp`）。**`obs-enable` を送れる WS ハンドルを持つのは
  *     コメビュ窓だけ**なので、OBS への自動反映はコメビュ窓が代行する。
+ *
+ * ## ⚠⚠ 061i: ユーザーが触るトグルは消え、**割り当ての保存時に立てる派生値**になった（判断 2）
+ *
+ * 「エフェクトを配信画面に表示する」トグルは**二度手間**（条件を設定した時点で出したいことは自明なのに、
+ * 別に ON にしないと何も出ない）だったので廃止した。いまの意味は
+ * **「エフェクトを表示する条件が 1 件以上あるか」**で、書き手は
+ * **`useEffectTemplates` の割り当て保存経路ただ 1 か所**（`saveEffectOverlayEnabled` の呼び出しは
+ * リポジトリ全体でそこだけ＝`grep` で確認できる）。
+ *
+ * ⚠⚠ **キーを廃止して「割り当てから導出する」案は却下した**（判断 2 の (b)）。理屈は綺麗だが、
+ * `CommentViewerApp` の `storage` 購読は **`e.key === EFFECT_OVERLAY_ENABLED_KEY` とキー名で分岐**しており、
+ * 購読先を変えると **045c / 061e が固めた「OBS 反映の契機」の実装に手が入る**。
+ * 派生値にしておけば `effectOverlayRestore.ts` / `CommentViewerApp.tsx` / `windowApi.ts` / `App.tsx` は
+ * **差分ゼロ**で済む（061i の成果物として実測した不変条件）。
+ * ⚠ **再修正トリガー＝061k で出力窓が 2 本になり、窓ごとに「開くべきか」を持つ必要が出たとき。**
+ * そのとき (b) へ寄せるか、窓ごとにキーを持つかを決め直すこと。
+ *
+ * ⚠ **帰結（意図した新しい挙動）**: 条件を全部「エフェクトを出さない」に戻すとこの値は false になり、
+ * `CommentViewerApp` の既存分岐が `hideObs("effects")` を送って **OBS 側のソースが非表示になる**
+ * （⚠ **窓は閉じない**——自動 close は作らない・判断 1）。条件が無いのに OBS へ映り続けるほうが筋が悪い。
  * 伝達は 046a/046b と同じ**二段構え**（保証ベースライン＝コメビュ窓のマウント時に読み直す／
  * 即時反映＝`storage` 購読・ベストエフォート）。⚠ **コメビュ窓が閉じている間は誰も送れない**ので、
  * その事実は `ObsEffectsScreen` の前提ステータスでユーザーに明示する（黙って何も起きない状態を作らない）。
@@ -70,9 +92,18 @@ export const EFFECT_OBS_AUTO_ADD_KEY =
  * そのとき破線枠とセットアップ文言が 30 秒間 OBS のキャプチャに映る（ユーザー向け文言「配信中には
  * 表示されません」が守れない）。
  *
- * **書き手＝`ObsEffectsScreen` の表示トグル ON だけ**（＝明示操作）。**読み手＝`EffectOverlayApp`** で、
+ * **書き手＝明示操作 1 つだけ**（⚠ **061i で起点が移った**。下記）。**読み手＝`EffectOverlayApp`** で、
  * マウント時に読み、直後に false へ倒す（次に開くときは出ない）。起動時の窓復元（`App.tsx`）は
- * **この旗を立てない**ので、復元経路ではガイドが出ない。表示 OFF → ON で立て直されるので「出し直せる」は不変。
+ * **この旗を立てない**ので、復元経路ではガイドが出ない。
+ *
+ * ## ⚠⚠ 061i: 起点を「テスト表示で窓を開いたとき」へ移した（判断 3）
+ *
+ * 061a〜061h の起点は **`ObsEffectsScreen` の表示トグル ON** だったが、**061i でそのトグルを廃止した**
+ * ので起点が消える。新しい起点は **「配信画面でテスト表示」で窓が停止中だったとき**＝
+ * **OBS の位置合わせをしている最中**という、ガイドが最も要る瞬間そのもの（かつ明示操作）。
+ * ⚠⚠ **条件を編集して窓が自動で開いたときは立てない**——立てると**条件を 1 つ足すたびに**
+ * ガイドが 30 秒 OBS へ映る。上の Q-1 の規律（明示操作のときだけ）はここでも同じである。
+ * ⚠ 「出し直せる」も不変（窓を閉じて、もう一度テスト表示を押せば出る）。
  *
  * ⚠ **fail 方向は「余分に 1 回出る」側に倒してある**（窓の open が失敗して旗が残ると、次回起動で 1 度だけ出る）。
  * 逆側（旗が消えてガイドが二度と出ない）に倒すとセットアップ不能になるため、この向きを選んでいる。
@@ -129,6 +160,22 @@ export const EFFECT_OVERLAY_GUIDE_PENDING_KEY =
  * ⚠ **ここを「マウント時にも読む」に変えないこと**——残存値で**再起動直後に無操作で配信画面へ出る**
  * 経路になり、046b レビュー S-1（永続した値が無操作で配信面に出る）と同型の問題を作る。
  *
+ * ⚠⚠ **061i の [`EFFECT_TEST_FIRE_PENDING_KEY`] は「マウント時に読む」が、これと矛盾しない。**
+ * 違いは 2 つ:
+ *   1. あちらは**読んだ瞬間に消える**（`take*`）＝ 残存値が積み上がらない。
+ *      このキーは**一度書いたら残り続ける**ので、マウント時に読むと**毎回**出る。
+ *   2. あちらを書くのは「**窓が停止中**のときのテスト表示」だけ＝ **書いた直後に必ず窓が開く**
+ *      （＝押した本人が見ている）。残っても**次に窓が開いたとき 1 回だけ**出る
+ *      （＝ガイド旗と同じ「余分に 1 回」の向き）。
+ *      ⚠⚠ **061i レビュー S-4 で訂正**: 当初ここは「**残るのは open が失敗したときだけ**」と
+ *      書いていたが、**それは真ではない**——旗を書くかどうかの判定に使う `effectWindowOpen` は
+ *      2 秒ポーリングの値なので、**「実は既に開いていた」瞬間にも旗が書かれうる**
+ *      （既存窓は `show()` されるだけで**再マウントしない**＝旗を読み直さない＝残骸になる）。
+ *      ⚠ 露出窓は「窓の React がマウントし終えてから `is_effect_overlay_open` が解決するまで」に
+ *      限られ、`ObsEffectsScreen` が **`openEffectOverlay` の時点で `effectWindowOpen` を
+ *      楽観的に true にする**ことで塞いである（同レビューの対応）。
+ * ⚠ 逆に言うと、**あちらを「読んでも消さない」に変えた瞬間にこの区別が崩れる**（窓を開くたびに出る）。
+ *
  * ⚠ 伝達は `storage` イベント（**別 webview 間の伝播はプラットフォーム依存でベストエフォート**）。
  * 届かなくても壊れ方は「**テストボタンが効かない**」という観測可能なものに留まり、本番の発火（WS 直結）には
  * 影響しない。**再修正トリガー**＝実機で効かないと分かったら、エフェクト窓側でこのキーだけを
@@ -136,6 +183,40 @@ export const EFFECT_OVERLAY_GUIDE_PENDING_KEY =
  */
 export const EFFECT_TEST_FIRE_KEY =
   "stream-dock.comment-viewer.effect-test-fire";
+/**
+ * 061i（判断 4）: **エフェクト窓が停止中のときのテスト表示を、窓が開いた「後で」渡すためのワンショット旗**。
+ * 値は **`templateId` 1 個だけ**（nonce は要らない＝`storage` イベントに乗せないため）。
+ *
+ * ⚠⚠ **なぜ必要か（061i で最も取りこぼしやすいところ）**: 061i でテスト表示は
+ * 「窓が停止中なら**開いてから**出す」になった（＝条件を 1 つも作らずに OBS の位置合わせができる）。
+ * ここで素直に **「`open_effect_overlay_window` を await → `EFFECT_TEST_FIRE_KEY` を書く」**と実装すると
+ * **確率的に取りこぼす**——あのコマンドの解決は**窓生成の完了**であって、
+ * **エフェクト窓の React がマウントして `storage` リスナーを登録し終えたこと**ではない。
+ * `storage` は**登録前に飛んだ分を後から拾えない**ので、「押しても何も出ない」が起きる。
+ *
+ * ⇒ **`EFFECT_OVERLAY_GUIDE_PENDING_KEY` と同じ idiom**（旗を立てる → 窓がマウント時に読んで倒す）に
+ * 寄せた。**実績のある形なので新しい仕組みを発明しない**（ポーリングも ready 通知も足さない）。
+ *   - **書き手＝main 窓（`EffectTemplateCard`）で、窓が停止中のときだけ**。
+ *     ⚠⚠ **窓が開いているときは旗を使わない**（従来どおり [`requestEffectTestFire`] の `storage` 発火）。
+ *     **2 経路を混ぜないこと**——開いている窓は旗を読み直さないので、旗を立てても
+ *     **消えない残骸**になり、次に窓を開いた瞬間に無操作でエフェクトが出る
+ *     （`EFFECT_TEST_FIRE_KEY` の JSDoc が戒めている 046b レビュー S-1 と同型の問題）。
+ *   - **読み手＝`EffectOverlayApp` のマウント時 1 回だけ**（[`takeEffectTestFirePending`]＝**読んだら消す**）。
+ *     ⚠ 値は `isEffectTemplateId()` で検証してから使う（061h が作った検証を再利用＝
+ *     正規表現の持ち主を増やさない。localStorage は他窓から書けるので多層防御の 1 枚目）。
+ *
+ * ⚠ **fail 方向は「余分に 1 回出る」側**（窓の open が失敗して旗が残ると、次に窓が開いたとき 1 度だけ出る）。
+ * 逆側（旗が消えて押しても永久に出ない）に倒すと**位置合わせが不能になる**ので、この向きを選んでいる
+ * （＝`EFFECT_OVERLAY_GUIDE_PENDING_KEY` と同じ判断）。
+ *
+ * ⚠ §9: 載るのは **Rust の `effect_template::service` が `Uuid::new_v4()` で採番した id** だけで、
+ * 第三者の個人データは 1 バイトも入らない＝ **061h で `EFFECT_TEST_FIRE_KEY` について決着済みの判断の延長**
+ * （localStorage に載るデータの**種類は 1 つも増えていない**。判断の全文は同キーの JSDoc）。
+ * ⚠ **一括削除・エクスポートを作るときの対象が 1 本増えた**（`EFFECT_TEST_FIRE_KEY` と同じ扱い。
+ * ⚠ ただしこちらは**読まれた時点で消える**ので、残り続けるのは「窓が開かなかった」ときだけ）。
+ */
+export const EFFECT_TEST_FIRE_PENDING_KEY =
+  "stream-dock.comment-viewer.effect-test-fire-pending";
 /**
  * 061d-2: **イベント種別 → エフェクトの割り当て**の保存キー
  * （未保存＝全種別「表示しない」。⚠ **061h までは「組み込み」だった**）。
@@ -301,7 +382,11 @@ export function savePinnedOverlayEnabled(enabled: boolean): void {
   }
 }
 
-/** 061a: 「エフェクトを配信画面に表示する」ON/OFF を読み込む。未保存・例外は false（OFF）へフォールバック。 */
+/**
+ * 061a: エフェクト窓を出すか（未保存・例外は false へフォールバック）。
+ * ⚠ **061i でこの値の意味は「表示する条件が 1 件以上あるか」になった**（トグルは廃止・上の JSDoc）。
+ * 読み手は `effectOverlayRestore.ts`（起動時の窓復元）と `CommentViewerApp`（OBS 反映の代行）。
+ */
 export function loadEffectOverlayEnabled(): boolean {
   try {
     return localStorage.getItem(EFFECT_OVERLAY_ENABLED_KEY) === "true";
@@ -310,7 +395,19 @@ export function loadEffectOverlayEnabled(): boolean {
   }
 }
 
-/** 061a: 「エフェクトを配信画面に表示する」ON/OFF を保存する（ローカルのみ・非機密・外部送信しない）。 */
+/**
+ * 061a: エフェクト窓を出すかを保存する（ローカルのみ・非機密・外部送信しない）。
+ *
+ * ⚠⚠ **061i: 呼んでよいのは `useEffectTemplates` の中だけ**（判断 2 の「2 つの真実」対策）。
+ * ほかの module から呼ばれた瞬間に「割り当て」と「このフラグ」が同期を外しうるので、
+ * **`grep -rn "saveEffectOverlayEnabled" src` の実装側のヒットが本定義と `useEffectTemplates` に
+ * 限られる**ことが不変条件である（＋本関数自身の単体テスト `overlaySettings.effects.test.ts`）。
+ * ⚠ **061i レビュー S-3 で `useEffectTemplates` 内の呼び出しは 2 か所になった**——
+ * ①割り当ての保存経路（`commitAssignments`）②**マウント時の再計算**
+ * （アップグレードで持ち越した値を実態＝割り当てへ合わせ直す。値が一致していれば書かない）。
+ * どちらも「割り当てが正」という同じ規則で書いており、**規律は不変**。
+ * ⚠ 窓の open/close とは別物（設定が正・窓が従。「ウィンドウを閉じる」ボタンはこの値を触らない）。
+ */
 export function saveEffectOverlayEnabled(enabled: boolean): void {
   try {
     localStorage.setItem(EFFECT_OVERLAY_ENABLED_KEY, String(enabled));
@@ -384,6 +481,46 @@ export function requestEffectTestFire(templateId: string): void {
     );
   } catch {
     // 書けない環境では**テストボタンが効かないだけ**（本番の発火は WS 直結なので影響しない）。
+  }
+}
+
+/**
+ * 061i（判断 4）: **窓が停止中のときのテスト表示を「次に開く窓」へ渡す**（ワンショット旗を立てる）。
+ *
+ * ⚠ 呼ぶのは `EffectTemplateCard` の **`effectWindowOpen === false` のときだけ**。
+ * ⚠⚠ **窓が開いているときに呼ばないこと**（残骸になる。理由は `EFFECT_TEST_FIRE_PENDING_KEY` の JSDoc）。
+ * ⚠ **窓を開く invoke より先に書く**（窓のマウントは invoke の解決より後なので順序は保証されるが、
+ * その保証に依存しないため先に書く＝`saveEffectOverlayGuidePending` と同じ作法）。
+ * ⚠ 書けない環境（プライベートモード等）では**テスト表示が出ないだけ**で、配信画面は汚さない側に倒れる。
+ */
+export function saveEffectTestFirePending(templateId: string): void {
+  try {
+    localStorage.setItem(EFFECT_TEST_FIRE_PENDING_KEY, templateId);
+  } catch {
+    // プライベートモード等で書けない場合は黙って無視する。
+  }
+}
+
+/**
+ * 061i（判断 4）: **保留中のテスト表示を受け取り、同時に消す**（`EffectOverlayApp` のマウント時に 1 回）。
+ *
+ * ⚠⚠ **`load*` ではなく `take*` にしてあるのは「読むと消える」ことを呼び出し側に見せるため。**
+ * このファイルの他の `load*` はすべて副作用が無く、旗を倒すのは
+ * `saveEffectOverlayGuidePending(false)` という**別の呼び出し**である。同じ顔で片方だけ消すと、
+ * 「もう一度読めば同じ値が返る」と誤読されて **2 回発火する**実装を招く。
+ * ⚠ **読んだら必ず消すこと**——消さないと**窓を開くたびに同じエフェクトが出る**
+ * （＝無操作で配信画面へ出る経路になる）。
+ * ⚠ **値の形はここでは検査しない**（検査するのは受け取って使う `EffectOverlayApp` 側＝
+ * `isEffectTemplateId`。正規表現の持ち主を増やさないため。`requestEffectTestFire` と同じ役割分担）。
+ */
+export function takeEffectTestFirePending(): string | null {
+  try {
+    const raw = localStorage.getItem(EFFECT_TEST_FIRE_PENDING_KEY);
+    // ⚠ 無いときに `removeItem` を呼ばない（`storage` イベントを他窓へ撒かないため）。
+    if (raw !== null) localStorage.removeItem(EFFECT_TEST_FIRE_PENDING_KEY);
+    return raw;
+  } catch {
+    return null;
   }
 }
 

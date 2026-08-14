@@ -148,13 +148,21 @@ describe("061b: メイン画面・内蔵コメントビューアの「停止」"
 
   it("⚠ 取得を止める方法も併せて伝える（§1「その止め方を明示する導線を必ず保つこと」）", async () => {
     // ⚠ 「続いています」とだけ言って放り出すと、ユーザーは止める手段に到達できない。
-    //   止め方は 2 つ（エフェクトの表示を OFF にする／コメビュを開いて取得を停止する）。
+    //   止め方は 2 つ（OBSエフェクト画面で「ウィンドウを閉じる」／コメビュを開いて取得を停止する）。
+    // ⚠⚠ **061i レビュー S-1 でここを書き換えた。** 旧アサーションは
+    //   `toContain("エフェクトの表示を OFF")` で**061i が廃止したトグルの名前を固定していた**ため、
+    //   「案内が存在しない操作を指している」という退行を**テストが守ってしまっていた**。
+    //   ⚠ **画面名まで見る**——この文が出るのはツール管理画面で、ボタンはそこに無いので、
+    //   「どこへ行けばよいか」が落ちると §1 の導線として成立しない。
     mocks.isEffectOverlayOpen.mockResolvedValue(true);
     await openThenStop();
 
     const feedback = await screen.findByText(/コメントの取得は続いています/);
-    expect(feedback.textContent).toContain("エフェクトの表示を OFF");
+    expect(feedback.textContent).toContain("OBSエフェクト");
+    expect(feedback.textContent).toContain("ウィンドウを閉じる");
     expect(feedback.textContent).toContain("取得を停止");
+    // ⚠ 廃止したトグル名が「親切だから」で戻ってこないようにする。
+    expect(feedback.textContent).not.toContain("エフェクトの表示を OFF");
   });
 
   it("⚠ 窓の状態軸は増やさない（どちらの場合もツール行は「停止済み」になる）", async () => {

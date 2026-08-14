@@ -1,10 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   loadEffectObsAutoAdd,
   saveEffectObsAutoAdd,
-  loadEffectOverlayEnabled,
-  saveEffectOverlayEnabled,
-  saveEffectOverlayGuidePending,
 } from "../../features/comment-viewer/overlaySettings";
 import {
   closeEffectOverlayWindow,
@@ -26,11 +23,15 @@ import {
 // （docs/task-board.md の 061g に明文化してある）。
 import { ToggleSwitch } from "../../components/ToggleSwitch";
 import { Button } from "../../components/primitives";
+// ⚠ 061i: タブ部品は **`components/` に新設**した（061g の規律＝画面を跨ぐ部品は最初からあちらへ。
+//   061l で「配信イベント」の一覧／詳細が入ると確実に生き続けるので、ここへ置いて後から移さない）。
+import { Tabs, type TabItem } from "../../components/Tabs";
 // ⚠ 061h: 「テスト表示」は**テンプレート行**（`EffectTemplateCard`）へ移した。
 //   この画面が持っているのは「エフェクト窓が開いているか」という前提ステータスだけなので、
 //   停止中の注記を出せるように `effectWindowOpen` をあちらへ渡す。
 import { EffectAssignmentCard } from "./EffectAssignmentCard";
 import { EffectTemplateCard } from "./EffectTemplateCard";
+import { effectConditionCount } from "./effectAssignments";
 import { useEffectTemplates } from "./useEffectTemplates";
 import layout from "../formLayout.module.css";
 import styles from "./ObsEffectsScreen.module.css";
@@ -53,6 +54,27 @@ import styles from "./ObsEffectsScreen.module.css";
  * ⚠ section の中にあった**テスト表示は [`EffectTemplateCard`] の各行へ移した**——
  * 「どのエフェクトの位置合わせをしているのか」を選べないのが旧設計の弱点だったため。
  *
+ * ## ⚠⚠ 061i でこの画面は「タブ 2 枚 ＋ 共通の下部」になり、表示トグルが消えた
+ *
+ * - **タブ**（[`Tabs`]）… 「コメントで出すエフェクト」＝テンプレートと条件／「配信イベント」＝**061l まで枠だけ**。
+ *   ⚠ **`ComingSoonScreen` は流用しない**（あれは画面まるごと用のダミーページで、ヘッダー導線の意味論を持つ）。
+ * - **共通の下部**（両タブの外）… 「配信画面に表示」（OBS への取り込み手順）／「OBS へ自動で反映」／前提ステータス。
+ *   ⚠ **どちらのタブで使うエフェクトも同じ窓・同じ OBS ソースに出る**ので、タブの中に入れると
+ *   「タブごとに別の窓がある」と読めてしまう。⚠ **061k で出力窓が 2 本になったらここを見直す。**
+ * - ⚠⚠ **「エフェクトを配信画面に表示する」トグルを廃止した**（判断 1・2）。**二度手間**だったため
+ *   ——条件を設定した時点で「配信画面に出したい」ことは自明なのに、別に ON にしないと何も出なかった。
+ *   ⚠ **061h で既定が「出さない」になったから初めてこの自動化が成立する**（既定が組み込みのままだと
+ *   「条件が 1 つでも有効」が常に真になり、トグルを消しても意味が無い）。
+ *   | 契機 | 挙動 |
+ *   |---|---|
+ *   | 条件が **0 件 → 1 件以上** | **窓を開く**（`useEffectTemplates` が判断し、この画面が invoke する） |
+ *   | 条件が 1 件以上のまま起動 | **窓を復元する**（`App.tsx` → `restoreEffectOverlayWindow`・**無改変**） |
+ *   | 条件が**全部「出さない」** | ⚠ **窓は閉じない**。OBS 側のソースだけ非表示になる（派生値が false → コメビュ窓が `hideObs`） |
+ *   | 明示的に閉じたい | 前提ステータスの**「ウィンドウを閉じる」ボタン**（＝トグルではなくアクション） |
+ *   ⚠⚠ **自動 close は作らない**（判断 1）。配信中に窓が消えると **OBS のウィンドウキャプチャが
+ *   真っ黒**になり、配信者は原因に気づけない（親 046 の規律＝`effectOverlayRestore.ts` の JSDoc）。
+ *   ⚠ ユーザーの不満は「**毎回の**二度手間」であって「閉じられること」ではないので、**脱出路は残す**。
+ *
  * ⚠⚠ **この画面の設計を決めている構造上の制約**（061a の実装で判明した最大の論点。⚠ **061b で①②が変わった**）:
  *
  * `obs-enable` を sidecar へ送れるのは **コメビュ窓だけ**である。理由:
@@ -73,8 +95,11 @@ import styles from "./ObsEffectsScreen.module.css";
  *     視聴者メモリの削除導線・テーマの「既定に戻す」）なので、同じ受容はしない。
  *
  * したがってこの画面の役割分担はこうなっている:
- *   - **表示トグル**（窓の open/close）＝**この画面が直接 invoke する**。コメビュ窓に依存しない。
+ *   - **窓の open/close** ＝**この画面が直接 invoke する**。コメビュ窓に依存しない。
  *     アプリ定義コマンドは ACL 対象外なので main 窓からそのまま呼べる（`default.json` は差分ゼロ）。
+ *     ⚠⚠ **061i: 契機は 3 つになったが、invoke するのは相変わらずこの画面 1 か所だけ**
+ *     （条件の自動 open ／ テスト表示の open ／ 「ウィンドウを閉じる」）。
+ *     判断は他所（hook・テンプレートカード）にあり、**実行と直列化はここに集約**してある。
  *   - **OBS 自動反映トグル**＝**localStorage に設定を書くだけ**。実際の `enableObs("effects")` は
  *     コメビュ窓（`CommentViewerApp`）が 046b と同じ二段構え（マウント時の reconcile ＋ `storage` 購読）で代行する。
  *     ⚠ これは 045c の「自動反映トグルは設定を立てるだけ・反映の契機は表示 ON」という規律とも一致する
@@ -91,15 +116,21 @@ import styles from "./ObsEffectsScreen.module.css";
 /** 前提ステータスを取り直す間隔（ミリ秒）。⚠ 窓の開閉は他窓の操作でも起きるので、画面を開いている間だけ追う。 */
 const STATUS_POLL_INTERVAL_MS = 2000;
 
-export function ObsEffectsScreen() {
-  // 表示トグル（＝エフェクト窓を出すか）。**永続値が正・窓が従**（046b の `pinnedOverlayEnabled` と同じ扱い）。
-  // 起動時の窓復元は `App.tsx`（`MainWindowApp`）が担うので、ここはユーザー操作だけを見る。
-  const [enabled, setEnabled] = useState(() => loadEffectOverlayEnabled());
-  const [obsAutoAdd, setObsAutoAdd] = useState(() => loadEffectObsAutoAdd());
+/**
+ * 061i: タブの定義（判断 6・(2)）。
+ * ⚠ **「配信イベント」は 061l まで中身が無い**が、**枠はここで用意する**——
+ * 用途の違う 2 種類（コメント条件に反応する演出／視聴者参加型の配信イベント）を分ける器が無いと、
+ * 061l で画面が「条件の表の下にイベント一覧がぶら下がる」形になってしまう。
+ */
+const EFFECT_TABS: readonly TabItem[] = [
+  { id: "comment", label: "コメントで出すエフェクト" },
+  { id: "event", label: "配信イベント" },
+];
 
-  // ⚠⚠ 061d-2: テンプレート一覧と割り当ての state は**この画面が 1 つだけ持つ**（061d-1 レビュー Q-9）。
-  //   削除は「一覧」と「割り当て」の両方を書き換えるので、2 つのカードが別々に持つと片方が古くなる。
-  const effectTemplates = useEffectTemplates();
+export function ObsEffectsScreen() {
+  const [obsAutoAdd, setObsAutoAdd] = useState(() => loadEffectObsAutoAdd());
+  /** いま出しているタブ。⚠ 061i: **状態はこの画面が持つ**（`Tabs` は表示専用）。 */
+  const [tab, setTab] = useState<string>(EFFECT_TABS[0].id);
 
   // 前提ステータス。null = 未取得。
   const [effectWindowOpen, setEffectWindowOpen] = useState<boolean | null>(null);
@@ -141,27 +172,73 @@ export function ObsEffectsScreen() {
   }, []);
 
   /**
-   * 表示トグル。**窓の open/close はこの画面が直接 invoke する**（コメビュ窓に依存しない）。
+   * 061i: **エフェクト窓の開閉要求を 1 本のキューに流す**（判断 1）。
    *
-   * ⚠ **OBS へは一切繋がない。** 反映はコメビュ窓が `storage` 購読で代行する（上のクラス JSDoc）。
-   * ⚠ state と永続値を invoke の**前に**同期で立てるのは 046b と同じ判断——この state は実窓のミラーではなく
-   * **永続設定**なので、成否に依らず即座にユーザーの意思を記録する。失敗しても次回起動時の復元 effect
-   * （`MainWindowApp`）が実窓を設定へ追いつかせる（＝設定が正・窓が従で一貫する）。
+   * ⚠⚠ **061a の表示トグルが消えても直列化は残す**——契機はむしろ増えた（条件の自動 open／
+   * テスト表示の open／「ウィンドウを閉じる」）ので、**別々に `void invoke()` すると
+   * 「close が『窓なし＝no-op』で先に流れ、その後 open が窓を作る」順序が起こりうる**。
+   * この機能は**自動 close 経路を持たない**ため、その状態は**セッション中に解消せず**
+   * 「閉じたはずのエフェクト窓が OBS に映り続ける」になる（046b レビューの連打レース対策と同型）。
+   * ⚠ **判断（いつ開閉するか）は呼び出し側にあり、ここは実行と直列化だけ**を担う。
+   * ⚠ `.catch` はキューを詰まらせないための握りつぶし（reject を伝播させると以降の要求が全て死ぬ）。
+   * ⚠ 完了後に `refreshStatus` を挟むので、前提ステータス（「表示中」／注記）が実態へ追いつく。
    */
-  const handleEnabledToggle = (next: boolean) => {
-    setEnabled(next);
-    saveEffectOverlayEnabled(next);
-    // ⚠ 061a レビュー（Q-1）: **ここが「セットアップ用ガイドを出してよい」唯一の起点**（＝明示操作）。
-    // `App.tsx` の起動時復元は旗を立てないので、配信直前にアプリを起動してもガイドは出ない。
-    // 旗は窓側（`EffectOverlayApp`）がマウント時に読んで倒す。詳細は
-    // `EFFECT_OVERLAY_GUIDE_PENDING_KEY` の JSDoc。⚠ **open を投げる前に立てる**
-    //（窓のマウントは invoke の解決より後なので順序は保証されるが、依存させないため先に書く）。
-    if (next) saveEffectOverlayGuidePending(true);
-    effectOverlayOpRef.current = effectOverlayOpRef.current
-      .then(() => (next ? openEffectOverlayWindow() : closeEffectOverlayWindow()))
-      .then(refreshStatus)
-      .catch(() => {});
-  };
+  const runEffectOverlayOp = useCallback(
+    (op: () => Promise<void>) => {
+      effectOverlayOpRef.current = effectOverlayOpRef.current
+        .then(op)
+        .then(refreshStatus)
+        .catch(() => {});
+    },
+    [refreshStatus],
+  );
+
+  /**
+   * 061i: **窓を開く**（条件が 0 → 1 件になったとき・テスト表示で停止中だったとき）。
+   *
+   * ⚠ **`EFFECT_OVERLAY_ENABLED_KEY` はここでは書かない**（判断 2）——あの値の書き手は
+   * `useEffectTemplates` の割り当て保存経路**だけ**である（＝「2 つの真実」を作らない）。
+   * ⚠ **セットアップ用ガイドの旗もここでは立てない**（判断 3）。立てるのは
+   * 「配信画面でテスト表示」で窓を開いたとき**だけ**で、その判断は `EffectTemplateCard` にある
+   * ——ここで立てると**条件を編集して自動で開くたび**にガイドが 30 秒 OBS へ映る（061a Q-1 の再発）。
+   *
+   * ⚠⚠ **061i レビュー S-4: 前提ステータスを楽観的に「表示中」へ倒す。**
+   * `effectWindowOpen` は 2 秒ポーリングの値なので、**自動 open の直後は「停止中」のまま**である。
+   * その隙間に「配信画面でテスト表示」を押すと `EffectTemplateCard` が**旗経路**へ倒れるが、
+   * 既存窓は `show()` されるだけで**再マウントしない**＝旗を読み直さないので、
+   * **保留旗とガイド旗が消えない残骸になる**（次に窓が開いた瞬間＝アプリ再起動時の復元で、
+   * **無操作でエフェクトが 1 回出て、ガイドが 30 秒 OBS へ映る**＝061a Q-1 が最も嫌った形）。
+   * ⚠ **close 側は楽観更新しない**（非対称なのは意図的）——close 中に押した場合の壊れ方は
+   * 「押しても出ない」で、旗の残骸より軽いほうへ倒れるため。
+   * ⚠ open が失敗しても `refreshStatus`（完了時＋2 秒ポーリング）が実態へ引き戻す。
+   */
+  const openEffectOverlay = useCallback(() => {
+    setEffectWindowOpen(true);
+    runEffectOverlayOp(openEffectOverlayWindow);
+  }, [runEffectOverlayOp]);
+
+  /**
+   * 061i: **窓を閉じる**（前提ステータスの「ウィンドウを閉じる」＝明示操作だけ・判断 1）。
+   *
+   * ⚠⚠ **設定（`EFFECT_OVERLAY_ENABLED_KEY`）は false にしない。** これは「条件を消す」操作ではなく
+   * 「いま出ている窓を片付ける」操作で、**条件はそのまま残る**（＝アプリを開き直せばまた開く）。
+   * 混ぜると「窓を閉じたら条件も無効になった」という、旧トグルと同じ二度手間へ戻る。
+   */
+  const closeEffectOverlay = useCallback(() => {
+    runEffectOverlayOp(closeEffectOverlayWindow);
+  }, [runEffectOverlayOp]);
+
+  // ⚠⚠ 061d-2: テンプレート一覧と割り当ての state は**この画面が 1 つだけ持つ**（061d-1 レビュー Q-9）。
+  //   削除は「一覧」と「割り当て」の両方を書き換えるので、2 つのカードが別々に持つと片方が古くなる。
+  // ⚠ 061i: 「条件が 0 → 1 件になったら窓を開く」の**判断はこの hook**（割り当ての保存経路を
+  //   全部知っているのはあちらだけ）。**invoke と直列化はこの画面**（上の `runEffectOverlayOp`）。
+  const effectTemplates = useEffectTemplates({ openEffectOverlay });
+
+  /** 061i: 前提ステータスに出す「表示する条件」の件数。⚠ 数え方の持ち主は `effectAssignments.ts`。 */
+  const conditionCount = useMemo(
+    () => effectConditionCount(effectTemplates.assignments),
+    [effectTemplates.assignments],
+  );
 
   /**
    * OBS 自動反映トグル。⚠⚠ **設定を立てるだけ**（045c の規律。窓も開かないし OBS へも繋がない）。
@@ -195,13 +272,67 @@ export function ObsEffectsScreen() {
       <div className={layout.top}>
         <div className={`${layout.title} ${layout.pageTitle}`}>
           <h2>OBSエフェクト</h2>
+          {/* ⚠ 061i: 旧文（「投げ銭などに合わせて…」）はタブ 2 種を踏まえると狭い。
+              ⚠ 061a レビュー Q-1 の規律＝**約束できることだけ書く**ので、「配信イベント」は
+              まだ中身が無いことを踏まえて「これから足す」とは書かない（枠の説明に留める）。 */}
           <p>
-            投げ銭などに合わせて配信画面へエフェクトを出すための、専用ウィンドウを用意します。
+            コメントに反応して出すエフェクトと、視聴者参加型の配信イベントを、配信画面用の専用ウィンドウへ出します。
           </p>
         </div>
       </div>
 
       <div className={styles.stack}>
+        {/* 061i（判断 6）: 用途の違う 2 種類を分ける器。⚠ 状態はこの画面が持つ（`Tabs` は表示専用）。 */}
+        <Tabs
+          items={EFFECT_TABS}
+          activeId={tab}
+          onChange={setTab}
+          ariaLabel="エフェクトの種類"
+        />
+
+        {tab === "comment" ? (
+          // ⚠ `role="tabpanel"` は呼び出し側（ここ）が付ける（`Tabs` は中身を包まない）。
+          <div className={styles.stack} role="tabpanel">
+            {/* 061d-1: 取り込み・一覧・削除・プレビュー。⚠ 材料（テンプレート）→ 使い道（条件）
+                の順に並べる。⚠ **プレビューはこの画面の中だけ**で再生する（エフェクト窓へ出さない）。
+                ⚠⚠ **061h: 「配信画面でテスト表示」がこのカードの各行に入った**（旧「投げ銭でエフェクトを出す」
+                section ごと廃止したため）。停止中の注記を出せるように前提ステータスを渡す。
+                ⚠⚠ **061i: 窓が停止中ならこのボタンが窓を開く**（＝条件を 1 つも作らずに OBS の
+                位置合わせができる）。invoke は上の直列化キューを通す（判断 4）。 */}
+            <EffectTemplateCard
+              {...effectTemplates}
+              effectWindowOpen={effectWindowOpen}
+              openEffectOverlay={openEffectOverlay}
+            />
+
+            {/* 061d-2: イベント種別ごとの割り当て（＝061i 以降の呼び方は「エフェクトを表示する条件」）。
+                ⚠ **材料の直後**に置く（テンプレートを取り込んでから条件を決める、という順に画面が並ぶ）。 */}
+            <EffectAssignmentCard {...effectTemplates} />
+          </div>
+        ) : (
+          <div className={styles.stack} role="tabpanel">
+            <section className={layout.panel}>
+              <div className={layout.panelHead}>
+                <h3>配信イベント</h3>
+                <p>視聴者が参加できるイベントを配信画面に出す機能です。</p>
+              </div>
+              <div className={layout.panelBody}>
+                {/* ⚠⚠ **061l まで枠だけ**（タスクファイルの (2)）。⚠ `ComingSoonScreen` は
+                    「画面まるごとが未実装」を表すダミーページなので流用しない
+                    （ヘッダーのセクション導線の意味論を持っており、`headerSections` の
+                    「OBSエフェクトは準備中ページを出さない」という担保と衝突する）。
+                    ⚠ 061a Q-1 の規律で**約束できることだけ書く**＝時期も内容も断言しない。 */}
+                <p className={styles.note}>
+                  この機能は準備中です。コメントに反応して出すエフェクトは、左のタブから設定できます。
+                </p>
+              </div>
+            </section>
+          </div>
+        )}
+
+        {/* ⚠⚠ 061i: ここから下は**両タブの外**（画面下部の共通領域）。
+            どちらのタブで使うエフェクトも**同じ窓・同じ OBS ソース**に出るため、タブの中に入れると
+            「タブごとに別の窓がある」と読めてしまう。⚠ **061k で出力窓が 2 本になったら見直す。** */}
         <section className={layout.panel}>
           <div className={layout.panelHead}>
             <h3>配信画面に表示</h3>
@@ -210,11 +341,9 @@ export function ObsEffectsScreen() {
             </p>
           </div>
           <div className={layout.panelBody}>
-            <ToggleSwitch
-              label="エフェクトを配信画面に表示する"
-              checked={enabled}
-              onChange={handleEnabledToggle}
-            />
+            {/* ⚠⚠ **061i: 「エフェクトを配信画面に表示する」トグルを廃止した**（判断 1・2）。
+                ⚠ **OBS への取り込み手順（下の注記）は残す**——あれは「どうやって OBS に取り込むか」の
+                唯一の説明で、トグルとは独立した情報である。 */}
             <p className={styles.note}>
               ウィンドウは枠なし・最背面・透明で開くため、配信者の操作を邪魔しません。OBS では
               「ソースを追加 →
@@ -222,28 +351,15 @@ export function ObsEffectsScreen() {
               エフェクト」を指定してください。
             </p>
             {/* ⚠ 061a レビュー（Q-1）: 旧文言は「（配信中には表示されません）」と断言していたが、
-                起動時の窓復元経路があるため約束できなかった。ガイドは**このトグルを ON にした直後だけ**
-                出る（アプリ起動時の自動復元では出ない）ので、その条件をそのまま書く。 */}
+                起動時の窓復元経路があるため約束できなかった。ガイドが出る条件をそのまま書く。
+                ⚠⚠ **061i（判断 3）で起点が変わった**——表示トグルが消えたので、ガイドを出すのは
+                「配信画面でテスト表示」でウィンドウを開いたときだけ。**条件を設定して自動で開いたときは
+                出さない**（＝条件を足すたびにガイドが OBS へ映るのを避ける）。 */}
             <p className={styles.note}>
-              このトグルを ON にした直後だけ、位置を確認するためのガイドが数十秒表示され、そのあと自動的に消えます
-              （アプリの起動時にウィンドウが復元されたときは表示されません）。もう一度出したいときは、このトグルを一度
-              OFF にしてから ON に戻してください。
+              ウィンドウが停止中のときに「配信画面でテスト表示」を押すと、ウィンドウを開いたうえで、位置を確認するためのガイドが数十秒表示され、そのあと自動的に消えます（条件を設定してウィンドウが自動で開いたときや、アプリの起動時に復元されたときは表示されません）。
             </p>
           </div>
         </section>
-
-        {/* 061d-1: 取り込み・一覧・削除・プレビュー。⚠ 材料（テンプレート）→ 使い道（割り当て）
-            の順に並べる。⚠ **プレビューはこの画面の中だけ**で再生する（エフェクト窓へ出さない）。
-            ⚠⚠ **061h: 「配信画面でテスト表示」がこのカードの各行に入った**（旧「投げ銭でエフェクトを出す」
-            section ごと廃止したため）。停止中の注記を出せるように前提ステータスを渡す。 */}
-        <EffectTemplateCard
-          {...effectTemplates}
-          effectWindowOpen={effectWindowOpen}
-        />
-
-        {/* 061d-2: イベント種別ごとの割り当て。⚠ **材料の直後**に置く（テンプレートを取り込んでから
-            割り当てる、という順に画面が並ぶ）。 */}
-        <EffectAssignmentCard {...effectTemplates} />
 
         <section className={layout.panel}>
           <div className={layout.panelHead}>
@@ -298,16 +414,55 @@ export function ObsEffectsScreen() {
             </p>
 
             <div className={styles.statusList}>
+              {/* ⚠⚠ 061i: **「表示する条件」行**（(3)）。表示トグルを消した以上、
+                  「条件が 0 件だから何も出ない」という状態を**ここでしか観測できない**
+                  ——061a 以来の規律「黙って何も起きない状態を作らない」の維持である。
+                  ⚠ 数え方の持ち主は `effectAssignments.ts`（061j で保存形が変わってもここは無改変）。 */}
+              <div className={styles.statusRow}>
+                <span className={styles.statusLabel}>表示する条件</span>
+                <span
+                  className={`${styles.statusValue} ${conditionCount === 0 ? styles.blocked : ""}`}
+                >
+                  {conditionCount === 0
+                    ? "設定されていません"
+                    : `${conditionCount} 件`}
+                </span>
+              </div>
               <div className={styles.statusRow}>
                 <span className={styles.statusLabel}>エフェクトのウィンドウ</span>
-                <span
-                  className={`${styles.statusValue} ${effectWindowOpen === false ? styles.blocked : ""}`}
-                >
-                  {effectWindowOpen === null
-                    ? "確認中…"
-                    : effectWindowOpen
-                      ? "表示中"
-                      : "停止中"}
+                <span className={styles.statusValueGroup}>
+                  <span
+                    className={`${styles.statusValue} ${effectWindowOpen === false ? styles.blocked : ""}`}
+                  >
+                    {effectWindowOpen === null
+                      ? "確認中…"
+                      : effectWindowOpen
+                        ? "表示中"
+                        : "停止中"}
+                  </span>
+                  {/* ⚠⚠ 061i（判断 1）: **閉じるのは明示操作だけ**——「条件が全部『出さない』に
+                      なったら自動で閉じる」は作らない（窓が消えると OBS のウィンドウキャプチャが
+                      真っ黒になる・親 046 の規律）。⚠ トグルではなく**アクション**にしてあるのが要点で、
+                      押しても**条件（設定）は消えない**＝アプリを開き直せばまた開く。
+                      ⚠ 表示中のときだけ出す（停止中に「閉じる」を出しても押せることが無い）。 */}
+                  {effectWindowOpen === true && (
+                    <Button type="button" onClick={closeEffectOverlay}>
+                      ウィンドウを閉じる
+                    </Button>
+                  )}
+                  {/* ⚠⚠ 061i レビュー Q-2: **「閉じる」だけあって「開く」が無い**非対称を埋める。
+                      自動 open の契機は **0 → 1 件の遷移だけ**なので、条件が既に 1 件以上ある状態では
+                      **何をしても窓が開かない**（アプリを再起動するか、テスト表示を押すしかない）。
+                      ⚠ 061h から「条件あり・表示トグル OFF」で持ち越したユーザー（＝061i が
+                      救おうとしている当のユーザー）は、まさにこの状態で画面に入ってくる。
+                      ⚠ **条件が 0 件のときは出さない**——出しても「開いたのに何も出ない」窓を
+                      作るだけで、そのときの正しい行動は条件を設定すること（上のカードへ誘導する）。
+                      ⚠ **ガイド旗は立てない**（判断 3 の起点は「テスト表示」だけに保つ）。 */}
+                  {effectWindowOpen === false && conditionCount > 0 && (
+                    <Button type="button" onClick={openEffectOverlay}>
+                      ウィンドウを開く
+                    </Button>
+                  )}
                 </span>
               </div>
               <div className={styles.statusRow}>
@@ -357,9 +512,17 @@ export function ObsEffectsScreen() {
                   コメントビューアが閉じているあいだは、OBS
                   への反映は行われません。コメントビューアを開くと、そのときに反映されます。
                 </p>
+                {/* ⚠⚠ **061i レビュー S-1: 停止手段の名前が変わったので書き換えた。**
+                    旧文は「エフェクトの表示を OFF にしてください」と書いていたが、そのトグルは
+                    **061i で廃止した**——docs/security.md §1「取得の停止条件」が
+                    「取得が続いていることと**その止め方**を明示する導線を必ず保つこと」を要求しており、
+                    **存在しない操作を案内するのはその導線を壊すのと同じ**である
+                    （061a Q-1「約束できることだけ書く」の、より強い形の違反）。
+                    ⚠ 新しい止め方＝**すぐ上の「エフェクトのウィンドウ」行の「ウィンドウを閉じる」**。
+                    ⚠ 同じ文言をツール管理側（`MainScreen` の停止フィードバック）も持っているので、
+                    **片方だけ直さないこと**（§1 が導線として名指ししているのは 2 か所ある）。 */}
                 <p className={styles.prerequisiteText}>
-                  エフェクトのウィンドウを表示したままコメントビューアを閉じた場合は、エフェクトの表示とコメントの取得がそのまま続きます。取得を止めたいときは、コメントビューアを開いて取得を停止するか、エフェクトの表示を
-                  OFF にしてください。
+                  エフェクトのウィンドウを表示したままコメントビューアを閉じた場合は、エフェクトの表示とコメントの取得がそのまま続きます。取得を止めたいときは、コメントビューアを開いて取得を停止するか、上の「エフェクトのウィンドウ」にある「ウィンドウを閉じる」を押してください。
                 </p>
                 <p className={styles.prerequisiteText}>
                   エフェクトのウィンドウを表示していない状態でコメントビューアを閉じたときは、コメントの取得も止まります（取得の開始はコメントビューアから行います）。

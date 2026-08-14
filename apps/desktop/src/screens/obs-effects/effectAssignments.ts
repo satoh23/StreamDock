@@ -243,6 +243,40 @@ export function clearEffectAssignmentsForTemplate(
   return next;
 }
 
+/**
+ * 061i: **「エフェクトを表示する条件」の数**＝エフェクトを出す設定になっているイベント種別の数。
+ *
+ * ⚠⚠ **`assignedTemplateIds().length` とは違う**（あちらは**重複を潰した id の数**＝先読みの対象）。
+ * ここが数えるのは**行の数**なので、6 種別すべてに同じテンプレートを割り当てたら 6 である
+ * （前提ステータスの「表示する条件」に出す値が「1 件」だと嘘になる）。
+ *
+ * ⚠ **061i の派生値（`EFFECT_OVERLAY_ENABLED_KEY`）と画面表示の両方がこの 1 か所を見る**——
+ * 「条件があるか」の定義を 2 通りに書かないため（判断 2 の「2 つの真実」を増やさない）。
+ * ⚠⚠ **061j でここが変わる**: 保存形が `Record<eventType, Assignment>` から**条件の配列**になると、
+ * 数えるものは「配列の長さ（有効なもの）」になる。**そのとき直すのはこの関数だけで済む**ように、
+ * 呼び出し側（`useEffectTemplates` / `ObsEffectsScreen`）には数え方を持たせていない。
+ */
+export function effectConditionCount(assignments: EffectAssignments): number {
+  let count = 0;
+  for (const eventType of MONETARY_EVENT_TYPES) {
+    const value = assignments[eventType];
+    if (value !== undefined && value.kind === "template") count += 1;
+  }
+  return count;
+}
+
+/**
+ * 061i: **条件が 1 件以上あるか**（＝エフェクト窓を出すべきか＝`EFFECT_OVERLAY_ENABLED_KEY` の値）。
+ *
+ * ⚠ **「一覧に無い id を指している条件」も 1 件として数える。** 保存値は
+ * `list_effect_templates` の成否で書き換えない（上の `clearEffectAssignmentsForTemplate` の注記）ので、
+ * 一覧が一時的に読めないだけでフラグが false へ倒れると **OBS のソースが黙って消える**。
+ * 「割り当てたのに出ない」は `EffectAssignmentCard` の警告のほうで観測する。
+ */
+export function hasEffectConditions(assignments: EffectAssignments): boolean {
+  return effectConditionCount(assignments) > 0;
+}
+
 /** 割り当てに出てくるテンプレート id（重複なし）。⚠ **先読みの対象はこれだけ**（一覧全部ではない）。 */
 export function assignedTemplateIds(
   assignments: EffectAssignments,

@@ -8,8 +8,13 @@ import {
 } from "../../features/obs-effects/effectTemplateApi";
 import { toErrorMessage } from "../../features/tools/useTools";
 import {
+  loadEffectOverlayEnabled,
+  saveEffectOverlayEnabled,
+} from "../../features/comment-viewer/overlaySettings";
+import {
   clearAllEffectAssignments,
   clearEffectAssignmentsForTemplate,
+  hasEffectConditions,
   loadEffectAssignments,
   saveEffectAssignments,
   type EffectAssignment,
@@ -32,6 +37,22 @@ import {
  * ⚠ **この hook は描画も IPC の生値も持たない**——`invoke` はすべて `effectTemplateApi.ts` 経由で、
  * メディア（data URI）はここでは 1 バイトも扱わない（プレビューは `EffectTemplatePreview` の役目）。
  * ⚠ **テンプレート名・パス・エラーの詳細を `console.*` へ出さない**（§9・`no-console`）。
+ *
+ * ## ⚠⚠ 061i: **`EFFECT_OVERLAY_ENABLED_KEY` の唯一の書き手**になった（判断 2）
+ *
+ * 「エフェクトを配信画面に表示する」トグルを廃止し、あのフラグを
+ * **「表示する条件が 1 件以上あるか」の派生値**にした。＝ 割り当てを保存する**すべての経路**が
+ * [`commitAssignments`] を通り、そこだけが `saveEffectOverlayEnabled` を呼ぶ。
+ * ⚠⚠ **経路は 3 本ある**（[`setAssignment`] / [`clearAllAssignments`] /
+ * **テンプレート削除に伴う [`runDelete`]**）。⚠ **3 本目を忘れやすい**——忘れると
+ * 「最後のテンプレートを消したのにフラグが true のまま」＝ 条件が 0 件なのに OBS へ映り続ける。
+ * ⚠ **フラグを触ってよいのはここだけ**（画面の「ウィンドウを閉じる」ボタンは窓を閉じるだけで
+ * この値を触らない＝**設定と窓を混ぜない**）。
+ *
+ * ⚠ **061i レビュー S-3 で、このファイル内の `saveEffectOverlayEnabled` は 2 か所になった**——
+ * [`commitAssignments`]（割り当ての保存経路）と、**マウント時の再計算**（アップグレードで
+ * 持ち越した値を実態へ合わせ直す。下の `useEffect`）。⚠ **どちらも「割り当てが正」**という
+ * 同じ規則で書いており、**hook の外から書かない**という不変条件は変わっていない。
  */
 export interface UseEffectTemplates {
   templates: EffectTemplateRecord[];
@@ -59,7 +80,28 @@ export interface UseEffectTemplates {
   eventTypesUsing: (templateId: string) => string[];
 }
 
-export function useEffectTemplates(): UseEffectTemplates {
+/**
+ * 061i: この hook に注入する「窓を開く」操作（判断 1・2）。
+ *
+ * ⚠⚠ **hook は「いつ開くか」だけを決め、`invoke` は自分でしない。** 実際に
+ * `open_effect_overlay_window` を投げるのは `ObsEffectsScreen` で、あちらは
+ * **`effectOverlayOpRef` で開閉を直列化している**（046b レビューの連打レース対策）。
+ * ここから直接 invoke すると、その直列化と**別のキュー**になり、
+ * 「『ウィンドウを閉じる』を押した直後に条件を足す」等で
+ * **close と open の順序が入れ替わりうる**（＝自動 close 経路が無いので、
+ * 「閉じたはずなのに OBS へ映り続ける」がセッション中解消しない）。
+ * ⚠ **省略可にしない**——既定値を持たせると、渡し忘れたときに
+ * 「条件を設定したのに窓が開かない＝黙って何も起きない」へ倒れる（061a 以来の規律。
+ * `EffectTemplateCard` の `effectWindowOpen` を必須にしたのと同じ理由）。
+ */
+export interface UseEffectTemplatesOptions {
+  /** ⚠ 呼ばれるのは**条件が 0 件 → 1 件以上になった瞬間だけ**（毎回の保存では呼ばない）。 */
+  openEffectOverlay: () => void;
+}
+
+export function useEffectTemplates({
+  openEffectOverlay,
+}: UseEffectTemplatesOptions): UseEffectTemplates {
   const [templates, setTemplates] = useState<EffectTemplateRecord[]>([]);
   const [listState, setListState] = useState<"loading" | "ready" | "failed">(
     "loading",
@@ -77,6 +119,65 @@ export function useEffectTemplates(): UseEffectTemplates {
   const [assignments, setAssignments] = useState<EffectAssignments>(() =>
     loadEffectAssignments(),
   );
+
+  /**
+   * ⚠⚠ **061i（判断 2）: 割り当てを書き換える経路は全部ここを通る。**
+   *
+   * やることは 3 つで、**この順に固定**してある:
+   *   1. **保存の「前」の状態を localStorage から読む**（state からではない。state は写しで、
+   *      同じレンダー中に複数回書き換わりうるため。`setAssignment` が基点を localStorage に
+   *      置いているのと同じ理由）
+   *   2. 実際の書き換え（`mutate`）を走らせ、**保存関数が返す正規化済みの表**を state に置く
+   *   3. **派生値 `EFFECT_OVERLAY_ENABLED_KEY` を立て直す**（＝リポジトリ全体で
+   *      `saveEffectOverlayEnabled` を呼ぶ唯一の場所）
+   *
+   * そのうえで **0 件 → 1 件以上のときだけ窓を開く**。
+   * ⚠ **「1 件以上のまま別の条件を変えた」ときに open を投げない**——投げても Rust 側は
+   * 既存窓を再利用するだけ（＝実害は無い）だが、**割り当てを触るたびに無駄な invoke が飛ぶ**のは
+   * 「発火の瞬間に IPC を呼ばない」という 061c 申し送り 6 と同じ向きの規律に反する。
+   * ⚠⚠ **逆向き（条件が 0 件になったら閉じる）は作らない**（判断 1）。窓が消えると
+   * **OBS のウィンドウキャプチャが真っ黒**になり、配信者は原因に気づけない。
+   * OBS 側の表示が止まるのは、派生値が false になって `CommentViewerApp` が
+   * `hideObs("effects")` を送るからで、**窓自体は開いたまま**である。
+   */
+  const commitAssignments = useCallback(
+    (mutate: () => EffectAssignments) => {
+      const hadConditions = hasEffectConditions(loadEffectAssignments());
+      const next = mutate();
+      const hasConditions = hasEffectConditions(next);
+      setAssignments(next);
+      saveEffectOverlayEnabled(hasConditions);
+      if (hasConditions && !hadConditions) openEffectOverlay();
+    },
+    [openEffectOverlay],
+  );
+
+  /**
+   * ⚠⚠ **061i レビュー S-3（移行）: マウント時に派生値を実態へ合わせ直す。**
+   *
+   * `commitAssignments` は「割り当てを触ったとき」しか走らないので、**061h からの
+   * アップグレードで持ち越した `EFFECT_OVERLAY_ENABLED_KEY` が実態とずれたまま**になっていた。
+   * ずれは 2 方向とも壊れ方がはっきりしている:
+   *   - **条件あり ＋ フラグ false**（＝061h で条件だけ設定し、表示トグルは OFF のままだった人
+   *     ＝**061i が救おうとしている当のユーザー**）… 起動時復元が走らず窓が開かない。しかも
+   *     条件を編集しても `hadConditions` が既に true なので open は投げられず、
+   *     **フラグだけ true になって OBS ソースが有効化される**（窓が無いのでキャプチャは真っ黒）
+   *   - **条件なし ＋ フラグ true**（＝061h で表示トグルを ON にしていた人）… 毎起動で空の窓が開き、
+   *     「ウィンドウを閉じる」はフラグを触らないので**次回起動でまた開く**＝止める手段が実質無い
+   *
+   * ⚠ **書き手を 1 か所に閉じる規律を壊さないよう、ここ（hook の中）に置く**
+   * （`saveEffectOverlayEnabled` の呼び出しは本ファイルの 2 か所だけで、どちらも割り当てが正）。
+   * ⚠⚠ **窓は開かない。** 開くと「閉じたのに画面を開き直すたび復活する」＝判断 1 の脱出路を潰す。
+   * 条件があるのに窓が無い状態からの復帰は、**起動時復元**と `ObsEffectsScreen` の
+   * **「ウィンドウを開く」ボタン**（同レビュー Q-2）が担う。
+   * ⚠ **値が既に一致していれば書かない**——無駄な `storage` イベント（＝コメビュ窓の
+   * `enableObs` / `hideObs`）を撒かないため。未保存（キー無し）は `false` として比較される。
+   */
+  useEffect(() => {
+    const shouldBeEnabled = hasEffectConditions(loadEffectAssignments());
+    if (loadEffectOverlayEnabled() === shouldBeEnabled) return;
+    saveEffectOverlayEnabled(shouldBeEnabled);
+  }, []);
 
   const reload = useCallback(async () => {
     try {
@@ -144,7 +245,11 @@ export function useEffectTemplates(): UseEffectTemplates {
         //   組み込みを廃止したので戻し先が 1 つしか無い。呼ぶ関数は同じ
         //   （`clearEffectAssignmentsForTemplate` が `DEFAULT_EFFECT_ASSIGNMENT` を見ている）。
         //   ⚠ **削除が成功した後にだけ書き換える**（失敗したら割り当ては触らない）。
-        setAssignments(clearEffectAssignmentsForTemplate(template.id));
+        // ⚠⚠ **061i: この経路も `commitAssignments` を通す**（判断 2）。ここを直接
+        //   `setAssignments(...)` に戻すと、**最後のテンプレートを消して条件が 0 件になっても
+        //   `EFFECT_OVERLAY_ENABLED_KEY` が true のまま**残り、OBS へ映り続ける
+        //   （＝派生値の書き手が 1 か所に閉じていない状態。**最も忘れやすい 3 本目**）。
+        commitAssignments(() => clearEffectAssignmentsForTemplate(template.id));
         // 消したものをプレビューしたままにしない（取り直しに失敗して "failed" が出るだけになる）。
         setImported((prev) => (prev?.id === template.id ? null : prev));
         setLastDeletedId(template.id);
@@ -156,7 +261,7 @@ export function useEffectTemplates(): UseEffectTemplates {
         setBusy(false);
       }
     },
-    [reload],
+    [reload, commitAssignments],
   );
 
   const setAssignment = useCallback(
@@ -166,12 +271,17 @@ export function useEffectTemplates(): UseEffectTemplates {
       //   副作用を置くと「冪等だからたまたま無害」に依存した形になる。
       // ⚠ 基点は state ではなく **localStorage（＝正）**——state はその写しなので結果は同じで、
       //   かつ「保存 → 読み直し」が 1 本道になる（`clearEffectAssignmentsForTemplate` と同じ形）。
-      saveEffectAssignments({ ...loadEffectAssignments(), [eventType]: assignment });
-      // ⚠ 保存関数が正規化（未知キーを落とす・既定だけならキー削除）するので、
-      //   読み直した値を state に置く（画面と localStorage を必ず一致させる）。
-      setAssignments(loadEffectAssignments());
+      commitAssignments(() => {
+        saveEffectAssignments({
+          ...loadEffectAssignments(),
+          [eventType]: assignment,
+        });
+        // ⚠ 保存関数が正規化（未知キーを落とす・既定だけならキー削除）するので、
+        //   読み直した値を state に置く（画面と localStorage を必ず一致させる）。
+        return loadEffectAssignments();
+      });
     },
-    [],
+    [commitAssignments],
   );
 
   /**
@@ -179,8 +289,10 @@ export function useEffectTemplates(): UseEffectTemplates {
    * （060d の「既定のデザインに戻す」と同じ位置づけ）。**テストで固定する。**
    */
   const clearAllAssignments = useCallback(() => {
-    setAssignments(clearAllEffectAssignments());
-  }, []);
+    // ⚠ 061i: 条件が 0 件になるので派生値も false へ倒れる（＝OBS 側のソースが非表示になる）。
+    //   ⚠ **窓は閉じない**（判断 1）。
+    commitAssignments(() => clearAllEffectAssignments());
+  }, [commitAssignments]);
 
   const eventTypesUsing = useCallback(
     (templateId: string): string[] =>

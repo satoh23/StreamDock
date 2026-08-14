@@ -11,7 +11,11 @@ import type { EffectTemplateMedia } from "../../features/obs-effects/bindings/Ef
 // ⚠ 061h レビュー Q-10: キー名は**定数を借りる**（`ObsEffectsScreen.test.tsx` と流儀を揃える）。
 //   ⚠ 一方で **wire の「値の形」は文字列リテラルで固定する**（下のケース）——あちらは
 //   定数化すると「実際に何が載るのか」がテストから読めなくなるので、意図的に生で書いている。
-import { EFFECT_TEST_FIRE_KEY } from "../../features/comment-viewer/overlaySettings";
+import {
+  EFFECT_OVERLAY_GUIDE_PENDING_KEY,
+  EFFECT_TEST_FIRE_KEY,
+  EFFECT_TEST_FIRE_PENDING_KEY,
+} from "../../features/comment-viewer/overlaySettings";
 
 /**
  * 061d-1: テンプレートの取り込み・一覧・削除・プレビューの仕様テスト。
@@ -60,13 +64,27 @@ import { useEffectTemplates } from "./useEffectTemplates";
  */
 function Harness({
   effectWindowOpen = true,
+  openEffectOverlay = () => {},
 }: {
   effectWindowOpen?: boolean | null;
+  openEffectOverlay?: () => void;
 }) {
-  const templates = useEffectTemplates();
+  // ⚠ 061i: hook は「条件が 0 → 1 件になったら窓を開く」を判断するだけで invoke はしない
+  //   （実行と直列化は `ObsEffectsScreen`）。このファイルは割り当てを触らないので hook 側は発火しない。
+  // ⚠ 061i レビュー Q-4: 当初ここは `{ openEffectOverlay: () => {} }` と**引数を無視して
+  //   別の匿名関数**を渡していた。挙動は同じだが「同名の引数を受けながら片方だけ捨てる」形は
+  //   読み手を迷わせ、かつ**毎レンダー新しい参照**になるので「安定参照であること」という
+  //   実装契約（`ObsEffectsScreen` 側では `useCallback` で安定）をハーネスが崩していた。
+  const templates = useEffectTemplates({ openEffectOverlay });
   // ⚠ 061h: 前提ステータス（エフェクト窓が開いているか）の持ち主は `ObsEffectsScreen`。
-  //   ここでは既定を「表示中」にしておき、停止中の注記を見るケースだけ明示的に false を渡す。
-  return <EffectTemplateCard {...templates} effectWindowOpen={effectWindowOpen} />;
+  //   ここでは既定を「表示中」にしておき、停止中の経路を見るケースだけ明示的に false を渡す。
+  return (
+    <EffectTemplateCard
+      {...templates}
+      effectWindowOpen={effectWindowOpen}
+      openEffectOverlay={openEffectOverlay}
+    />
+  );
 }
 
 /** ⚠ 061h: テスト表示の wire に載る id（Rust の `Uuid::new_v4()` と同じ形）。 */
@@ -226,16 +244,21 @@ describe("EffectTemplateCard", () => {
 
   it("⚠⚠ プレビューはエフェクト窓へ出ない（窓を開かない・エフェクト窓向けのキーへ書かない）", async () => {
     const setItem = vi.spyOn(Storage.prototype, "setItem");
+    const openEffectOverlay = vi.fn();
     mocks.listEffectTemplates.mockResolvedValue([record()]);
 
-    render(<Harness />);
+    render(<Harness openEffectOverlay={openEffectOverlay} />);
     await screen.findByText("きらきら演出");
     fireEvent.click(screen.getByText("プレビュー"));
     await screen.findByTestId("effect-template");
 
-    // ⚠ この module は窓を開くコマンドを import していない（＝呼びようがない）。
+    // ⚠ この module は窓を開くコマンドを import していない（＝ invoke は呼びようがない）。
+    //   ⚠⚠ **061i で「窓を開く」導線が props として入った**ので、`openEffectOverlay` を
+    //   **プレビューでは呼ばない**ことも直接見る（061c security-review S-3 の緩和策＝
+    //   プレビューが配信へ漏れないことは 1 ミリも緩めない）。
     //   ここでは「**プレビュー導線が** localStorage を通ってエフェクト窓へ届く経路を作っていない」ことを
     //   観測可能な形で固定する。
+    expect(openEffectOverlay).not.toHaveBeenCalled();
     // ⚠⚠ **061h で不変条件の範囲が変わった**——同じ module に「配信画面でテスト表示」が入り、
     //   あちらは `requestEffectTestFire` で**意図的にキーを書く**（それがボタンの仕事）。
     //   ＝ 「1 バイトも書かない」のは**プレビューを押したときの話**であり、
@@ -308,23 +331,103 @@ describe("EffectTemplateCard", () => {
     ).toMatch(/:t2$/);
   });
 
-  it("⚠⚠ エフェクト窓が停止中なら、押しても何も出ないことを案内する", async () => {
+  it("⚠⚠ エフェクト窓が停止中なら「ウィンドウを開いてから表示する」と案内する（061i で挙動が変わった）", async () => {
     // ⚠ 「黙って何も起きない」を作らないための注記（061a 以来の規律）。
-    //   ⚠ 窓を開く導線をここに置かないのは意図的で、**061i**（表示トグルを消して
-    //   「条件が有効なら窓を開く」へ変える）の担当。
+    // ⚠⚠ **061h の文言（「いまは何も表示されません」）は 061i で嘘になった**——
+    //   停止中でも**開いてから出す**ようになったため。約束できることだけ書く（061a Q-1）。
     mocks.listEffectTemplates.mockResolvedValue([record()]);
     render(<Harness effectWindowOpen={false} />);
     await screen.findByText("きらきら演出");
     expect(
-      screen.getByText(/エフェクトのウィンドウが停止中のため/),
+      screen.getByText(/ウィンドウを開いてから表示します/),
     ).toBeInTheDocument();
+    // ⚠ 旧文言が「親切だから」で戻ってこないようにする（挙動と食い違う案内の復活を止める）。
+    expect(screen.queryByText(/いまは何も表示されません/)).toBeNull();
   });
 
   it("エフェクト窓が表示中ならその注記は出さない", async () => {
     mocks.listEffectTemplates.mockResolvedValue([record()]);
     render(<Harness effectWindowOpen={true} />);
     await screen.findByText("きらきら演出");
-    expect(screen.queryByText(/エフェクトのウィンドウが停止中のため/)).toBeNull();
+    expect(screen.queryByText(/ウィンドウを開いてから表示します/)).toBeNull();
+  });
+
+  // --- 061i（判断 3・4）: テスト表示が窓を開く -----------------------------------------------------
+
+  it("⚠⚠ 窓が停止中のテスト表示は「保留旗を立てて窓を開く」（`storage` は使わない）", async () => {
+    // ⚠⚠ **判断 4 の本体。** `open_effect_overlay_window` の解決は**窓生成の完了**であって、
+    //   **エフェクト窓の React が `storage` リスナーを登録し終えたこと**ではない。
+    //   「open を await → nonce を書く」だと**登録前に飛んだ分が消えて確率的に取りこぼす**ので、
+    //   `EFFECT_OVERLAY_GUIDE_PENDING_KEY` と同じ**ワンショット旗**で渡す。
+    // ⚠ ここで `EFFECT_TEST_FIRE_KEY`（`storage` の wire）を**書かない**ことが要点——
+    //   2 経路を混ぜると、窓側は旗でも `storage` でも発火するので**二重に出る**。
+    const openEffectOverlay = vi.fn();
+    mocks.listEffectTemplates.mockResolvedValue([record({ id: UUID })]);
+    render(
+      <Harness effectWindowOpen={false} openEffectOverlay={openEffectOverlay} />,
+    );
+    await screen.findByText("きらきら演出");
+
+    fireEvent.click(screen.getByRole("button", { name: "配信画面でテスト表示" }));
+
+    expect(localStorage.getItem(EFFECT_TEST_FIRE_PENDING_KEY)).toBe(UUID);
+    expect(localStorage.getItem(EFFECT_TEST_FIRE_KEY)).toBeNull();
+    expect(openEffectOverlay).toHaveBeenCalledTimes(1);
+  });
+
+  it("⚠⚠ 窓が開いているときは従来どおり `storage` で発火する（保留旗を残さない）", async () => {
+    // ⚠⚠ **開いている窓は保留旗を読み直さない**ので、ここで旗を立てると**消えない残骸**になり、
+    //   次に窓を開いた瞬間に**無操作でエフェクトが出る**（`EFFECT_TEST_FIRE_KEY` の JSDoc が
+    //   戒めている 046b レビュー S-1 と同型）。⚠ **窓も開き直さない**（既に開いている）。
+    const openEffectOverlay = vi.fn();
+    mocks.listEffectTemplates.mockResolvedValue([record({ id: UUID })]);
+    render(
+      <Harness effectWindowOpen={true} openEffectOverlay={openEffectOverlay} />,
+    );
+    await screen.findByText("きらきら演出");
+
+    fireEvent.click(screen.getByRole("button", { name: "配信画面でテスト表示" }));
+
+    expect(localStorage.getItem(EFFECT_TEST_FIRE_KEY)).toContain(UUID);
+    expect(localStorage.getItem(EFFECT_TEST_FIRE_PENDING_KEY)).toBeNull();
+    expect(openEffectOverlay).not.toHaveBeenCalled();
+  });
+
+  it("⚠ 前提ステータスが未取得（null）のときは `storage` 側へ倒す", async () => {
+    // ⚠ 壊れ方の質で選んでいる: 「実は開いていた」のに旗経路へ倒すと**残骸が残る**（上のケース）が、
+    //   こちらの壊れ方は「押しても出ない」＝ 061h までと同じ。ポーリングは画面のマウント直後に
+    //   1 回走るので、人間の操作では踏まない。
+    const openEffectOverlay = vi.fn();
+    mocks.listEffectTemplates.mockResolvedValue([record({ id: UUID })]);
+    render(
+      <Harness effectWindowOpen={null} openEffectOverlay={openEffectOverlay} />,
+    );
+    await screen.findByText("きらきら演出");
+
+    fireEvent.click(screen.getByRole("button", { name: "配信画面でテスト表示" }));
+
+    expect(localStorage.getItem(EFFECT_TEST_FIRE_KEY)).toContain(UUID);
+    expect(localStorage.getItem(EFFECT_TEST_FIRE_PENDING_KEY)).toBeNull();
+    expect(openEffectOverlay).not.toHaveBeenCalled();
+  });
+
+  it("⚠⚠ セットアップ用ガイドの旗は「テスト表示で窓を開いたとき」だけ立つ（判断 3）", async () => {
+    // ⚠⚠ **061a レビュー Q-1 の規律を新しい起点へ移したもの。** 旧起点（表示トグル ON）は
+    //   061i で消えたので、明示操作＝**停止中の窓をテスト表示で開いたとき**が新しい起点になる。
+    //   ⚠ **窓が開いているときは立てない**——ガイドは「窓の位置が分からない」ときのもので、
+    //   既に開いている窓に対して出しても OBS のキャプチャを汚すだけ。
+    mocks.listEffectTemplates.mockResolvedValue([record({ id: UUID })]);
+    const { unmount } = render(<Harness effectWindowOpen={false} />);
+    await screen.findByText("きらきら演出");
+    fireEvent.click(screen.getByRole("button", { name: "配信画面でテスト表示" }));
+    expect(localStorage.getItem(EFFECT_OVERLAY_GUIDE_PENDING_KEY)).toBe("true");
+
+    unmount();
+    localStorage.removeItem(EFFECT_OVERLAY_GUIDE_PENDING_KEY);
+    render(<Harness effectWindowOpen={true} />);
+    await screen.findByText("きらきら演出");
+    fireEvent.click(screen.getByRole("button", { name: "配信画面でテスト表示" }));
+    expect(localStorage.getItem(EFFECT_OVERLAY_GUIDE_PENDING_KEY)).toBeNull();
   });
 
   // --- 描画ガード -------------------------------------------------------------------------------

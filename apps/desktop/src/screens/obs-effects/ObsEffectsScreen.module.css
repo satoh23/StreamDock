@@ -41,6 +41,16 @@
   color: var(--muted);
 }
 
+/* 061i: 値と「ウィンドウを閉じる」ボタンを右側にまとめる器（判断 1 の脱出路）。
+   ⚠ `.statusRow` は `justify-content: space-between` なので、値とボタンを素で並べると
+   **3 つの子が等間隔に散る**（ラベルと値の対応が崩れる）。ここで 1 つにまとめて右端へ寄せる。
+   ⚠ ボタンが無い行では子が 1 つなので、見た目は従来と 1px も変わらない。 */
+.statusValueGroup {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .statusValue {
   color: var(--text);
   font-weight: 800;
