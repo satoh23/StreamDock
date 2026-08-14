@@ -10,6 +10,14 @@ import { ConfirmDialog } from "./ConfirmDialog";
  * - open が false→true になったら "実際にモーダル表示される"（＝showModal 済み・dialog.open=true）。
  *   これはレビュー #1（[] 依存で showModal が二度と呼ばれず削除確認が出なかった不具合）の回帰ガード。
  * - 「確認」で onConfirm、「キャンセル」/Esc で onCancel。busy 中は両ボタンを無効化して二重実行を防ぐ。
+ *
+ * 061g レビュー（2026-08-14）で追加した 2 件（**意匠ではなく安全性の要件**なのに、どの層も検査していなかった）:
+ * - 既定フォーカスは**キャンセル側**（060c）。外部 `@import` の同意ダイアログで「うっかり Enter で
+ *   取得してしまう」が実害になるため、DOM の並び順に依存せず `autoFocus` で明示している。
+ *   ⚠ 並び順を入れ替えただけで既定が反転するので、**並び順ではなくフォーカスそのもの**を見る。
+ * - `danger` で実行ボタンが危険色（`dangerBtn`）に切り替わること。⚠ 色そのものは jsdom で解決されない
+ *   ので、ここでは**どのクラスが当たっているか**だけを見る（色の実体は check-css-guards.mjs の (11-b)、
+ *   分岐の実在は同 (11-d) が守る＝3 つで 1 組）。
  */
 
 const baseProps = {
@@ -69,6 +77,24 @@ describe("ConfirmDialog", () => {
     fireEvent.click(cancel);
     expect(onConfirm).not.toHaveBeenCalled();
     expect(onCancel).not.toHaveBeenCalled();
+  });
+
+  it("既定フォーカスはキャンセル側（060c: うっかり Enter で実行してしまうのを防ぐ）", () => {
+    render(<ConfirmDialog open {...baseProps} />);
+    expect(screen.getByRole("button", { name: "キャンセル" })).toHaveFocus();
+    expect(screen.getByRole("button", { name: "削除" })).not.toHaveFocus();
+  });
+
+  it("danger で実行ボタンが危険色クラスに切り替わる（破壊的操作の見分け）", () => {
+    const { rerender } = render(<ConfirmDialog open danger {...baseProps} />);
+    expect(screen.getByRole("button", { name: "削除" }).className).toMatch(
+      /dangerBtn/,
+    );
+
+    rerender(<ConfirmDialog open {...baseProps} />);
+    expect(screen.getByRole("button", { name: "削除" }).className).not.toMatch(
+      /dangerBtn/,
+    );
   });
 
   it("Esc（cancel イベント）で onCancel を呼ぶ（既定 close を止めて state 経由で閉じる）", () => {

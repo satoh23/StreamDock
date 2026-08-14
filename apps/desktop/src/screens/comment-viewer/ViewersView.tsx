@@ -4,8 +4,8 @@ import {
   deleteViewer,
 } from "../../features/viewer-memory/viewerMemoryApi";
 import type { ViewerRecord, ViewerSort } from "../../features/viewer-memory/types";
-import { Select } from "./Select";
-import { ConfirmDialog } from "./ConfirmDialog";
+import { Select } from "../../components/Select";
+import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { ViewerDetailPanel } from "./ViewerDetailPanel";
 import {
   providerLabel,
@@ -14,6 +14,9 @@ import {
   fmtSuperchat,
 } from "./viewerFormat";
 import styles from "./CommentViewerApp.module.css";
+// 061g: ボタンの意匠は `components/compactButtons.module.css` へ移した（`ConfirmDialog` が
+// `components/` へ出たため）。⚠ 寸法・配色はこの窓の 6 ファイル計 25 箇所と `ConfirmDialog` の共有。
+import btnStyles from "../../components/compactButtons.module.css";
 
 /**
  * 038b: 視聴者メモリ（038a が端末内 SQLite に保存・集計したデータ）を配信者だけが見るコメビュ窓で閲覧する
@@ -184,7 +187,7 @@ export function ViewersView({ onBack }: ViewersViewProps) {
         </Select>
         <button
           type="button"
-          className={styles.btnGhost}
+          className={btnStyles.btnGhost}
           onClick={() => void loadList()}
           disabled={loading}
         >
@@ -199,7 +202,7 @@ export function ViewersView({ onBack }: ViewersViewProps) {
           </span>
           <button
             type="button"
-            className={styles.dangerBtn}
+            className={btnStyles.dangerBtn}
             onClick={() => setPending([...selectedIds])}
           >
             選択した {fmtNumber(selectedIds.size)} 件を削除

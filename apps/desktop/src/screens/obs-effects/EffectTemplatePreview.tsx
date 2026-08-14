@@ -4,7 +4,7 @@ import {
   type EffectTemplateRecord,
 } from "../../features/obs-effects/effectTemplateApi";
 import { Button } from "../../components/primitives";
-import { ToggleSwitch } from "../comment-viewer/ToggleSwitch";
+import { ToggleSwitch } from "../../components/ToggleSwitch";
 import { safeEffectMedia, type SafeEffectMedia } from "./effectMedia";
 import type { EffectTemplateVars } from "./effectTemplateText";
 import { EffectTemplateView } from "./EffectTemplateView";

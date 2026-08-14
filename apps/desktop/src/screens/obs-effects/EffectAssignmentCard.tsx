@@ -1,5 +1,5 @@
 import { Button } from "../../components/primitives";
-import { Select } from "../comment-viewer/Select";
+import { Select } from "../../components/Select";
 import { DEFAULT_EFFECT_ASSIGNMENT } from "./effectAssignments";
 import { EFFECT_EVENT_ROWS } from "./effectEventRows";
 import type { UseEffectTemplates } from "./useEffectTemplates";

@@ -1,4 +1,4 @@
-import styles from "./CommentViewerApp.module.css";
+import styles from "./ToggleSwitch.module.css";
 
 /**
  * 033c: ON/OFF トグル（アクセシブルな role="switch" ボタン）。テーマ設定の role="radio" aria-checked パターンに倣う。

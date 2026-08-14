@@ -1,5 +1,5 @@
 import type { ChangeEvent, ReactNode } from "react";
-import styles from "./CommentViewerApp.module.css";
+import styles from "./Select.module.css";
 
 /**
  * 034(UI刷新): コメビュ設定ビューの選択 UI を統一する自作スタイルの選択ボックス。native `<select>` を

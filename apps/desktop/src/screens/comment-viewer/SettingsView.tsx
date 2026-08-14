@@ -17,11 +17,14 @@ import {
   TTS_MAX_LENGTH_MIN,
   clampTtsMaxLength,
 } from "../../features/comment-viewer/ttsPrefs";
-import { ToggleSwitch } from "./ToggleSwitch";
-import { Select } from "./Select";
+import { ToggleSwitch } from "../../components/ToggleSwitch";
+import { Select } from "../../components/Select";
 import { OverlayThemeCard } from "./OverlayThemeCard";
 import { useHostOs } from "../../features/platform/useHostOs";
 import styles from "./CommentViewerApp.module.css";
+// 061g: ボタンの意匠は `components/compactButtons.module.css` へ移した（`ConfirmDialog` が
+// `components/` へ出たため）。⚠ 寸法・配色はこの窓の 6 ファイル計 25 箇所と `ConfirmDialog` の共有。
+import btnStyles from "../../components/compactButtons.module.css";
 
 /**
  * 033b: コメビュ窓内の「設定ビュー」。本体（comment ビュー）から歯車ボタンで切り替えて表示し、Twitch/YouTube の
@@ -396,7 +399,7 @@ export function SettingsView({
                   onPreview を呼ぶだけ（別導線を増やさない）。前の再生中なら中断して鳴らし直す。 */}
               <button
                 type="button"
-                className={styles.btnGhost}
+                className={btnStyles.btnGhost}
                 onClick={() => onPreview(selectedSpeakerId)}
                 title="選択中の声のサンプルをもう一度再生します"
               >
@@ -455,7 +458,7 @@ export function SettingsView({
           <div className={styles.voicevoxRow}>
             <button
               type="button"
-              className={styles.btnGhost}
+              className={btnStyles.btnGhost}
               onClick={onPreviewCommentSound}
               disabled={
                 selectedAudioOutputDeviceId === NO_AUDIO_OUTPUT_DEVICE ||
@@ -487,7 +490,7 @@ export function SettingsView({
           <div className={styles.voicevoxRow}>
             <button
               type="button"
-              className={styles.btnGhost}
+              className={btnStyles.btnGhost}
               onClick={onPreviewMonetarySound}
               disabled={
                 selectedAudioOutputDeviceId === NO_AUDIO_OUTPUT_DEVICE ||
@@ -541,7 +544,7 @@ export function SettingsView({
                     （enum から消すと docs/security.md のレビュー必須条件に該当するため）。 */}
                 <button
                   type="button"
-                  className={styles.btnGhost}
+                  className={btnStyles.btnGhost}
                   onClick={onReloadAudioOutputDevices}
                   disabled={audioOutputListState === "loading"}
                   title="接続中の音声出力デバイスを取得し直します"
@@ -752,7 +755,7 @@ export function SettingsView({
                 />
                 <button
                   type="button"
-                  className={styles.btn}
+                  className={btnStyles.btn}
                   disabled={obsPasswordInput.trim().length === 0}
                   onClick={() => {
                     onSetObsPassword(obsPasswordInput);
@@ -763,7 +766,7 @@ export function SettingsView({
                 </button>
                 <button
                   type="button"
-                  className={styles.btnGhost}
+                  className={btnStyles.btnGhost}
                   onClick={() => {
                     onClearObsPassword();
                     setObsPasswordInput("");

@@ -1,0 +1,89 @@
+/* 061g: `ToggleSwitch.tsx` の意匠。**`screens/comment-viewer/CommentViewerApp.module.css` から本文そのまま移動**
+   （複製ではない＝あちらには 1 ルールも残していない）。
+
+   ■ なぜここにあるか
+   ToggleSwitch は 3 画面（コメビュ本体ツールバー / コメビュ設定 / OBSエフェクト）から使う。
+   意匠がコメビュ窓の CSS に同居していると「コメビュの CSS を整理するだけで他画面の見た目が変わる」ため、
+   061g で部品ごと `components/` へ出した。⚠ **画面を跨ぐ部品は最初から `components/` に置くこと**
+   （後追いの移設を繰り返さないため。docs/task-board.md に明文化してある）。
+
+   ■ ⚠⚠ `.toggleLabel` は 054「3 段規則」の**基準側**である
+   規則の**正の宣言は `screens/comment-viewer/CommentViewerApp.module.css` の先頭**にある（移していない。
+   あれは「あの窓のタイポグラフィの正」で、当事者の `.fieldLabel` / `.note` / `.pastTime` 等は全部あちらに残る）。
+   `.toggleLabel` の font-size / font-weight / color を動かすと、静的ガード
+   `scripts/check-css-guards.mjs` の **(6-a)** が `.fieldLabel`（あちら側）との不一致で**ファイルを跨いで**落ちる。
+   ⚠ 動かしたい場合は `.fieldLabel` も一緒に動かし、**3 画面すべてのトグル表示**を実機で確認すること
+   （影響は設定画面に閉じない）。
+   ⚠ このファイルは (6-b)（`color: var(--text-faint)` を無効状態専用に限定する全走査）の**検査対象**でもある。 */
+
+/* 033c: ラベル（左）＋トグル（右）の全幅 1 行（設定ビュー向け）。 */
+.toggleRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+/* 034(UI刷新): ラベルとトグルを隣接させる幅可変のコンパクト版（メイン画面ツールバー右クラスタ向け）。 */
+.toggleRowInline {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.toggleLabel {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+/* 033c: role="switch" のトグル本体。OFF=control-bg トラック / ON=primary-soft。役割トークンのみで両テーマ追従。 */
+.switch {
+  position: relative;
+  width: 40px;
+  height: 22px;
+  flex: none;
+  border-radius: 999px;
+  background: var(--control-bg);
+  border: 1px solid var(--border-soft);
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.switchOn {
+  background: var(--primary-soft);
+  border-color: var(--primary-soft-border);
+}
+
+/* つまみ。OFF は左端、ON は右へスライド（色も muted→primary へ）。 */
+.knob {
+  position: absolute;
+  top: 50%;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--muted);
+  transform: translateY(-50%);
+  transition:
+    transform 0.15s ease,
+    background 0.15s ease;
+}
+
+.switchOn .knob {
+  background: var(--primary);
+  transform: translate(18px, -50%);
+}
+
+/* 035c: 無効トグル（source 別読み上げが VOICEVOX 読み上げ OFF で操作不可のとき）。
+   `.btn:disabled`（061g で `components/compactButtons.module.css` へ移動）と同じく
+   「押せそうなのに無反応」を避けるため、行を dim し switch を not-allowed にする。役割トークンのみで両テーマ追従。 */
+.toggleRowDisabled {
+  opacity: 0.5;
+}
+
+.switch:disabled {
+  cursor: not-allowed;
+}

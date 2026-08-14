@@ -1,0 +1,88 @@
+/* 061g: コメビュ窓とその確認ダイアログで使う「詰まったボタン」3 種。
+   **`screens/comment-viewer/CommentViewerApp.module.css` から本文そのまま移動**（複製ではない）。
+
+   ■ ⚠⚠ `primitives.module.css` の `.btn` とは**別物**
+   あちらの `.btn` は `font-family: inherit` と `:disabled { cursor: not-allowed }` の 2 行だけで、
+   実体は `.primary`（height: 38px / radius 11px / 13px）と `.secondary`。**アプリ本体のボタン**である。
+   こちらは padding 6px 12px / radius 8px / 12px / 700 の**詰まったボタン**で、実高が約 10px 低い。
+   CSS Modules はファイル単位でハッシュするので技術的な衝突は起きないが、**同じ `.btn` でも寸法が違う**ので
+   取り違えないこと。⚠ こちらを `primitives` の `Button` へ寄せてはいけない——寸法が変わるうえ、
+   `Button` には **danger バリアントが存在しない**（`variant?: "primary" | "secondary"`）ので、
+   削除確認ダイアログの危険色が消える。
+   ⚠ ただし「`components/` に意味の違う `.btn` が 2 つある」状態が恒久的な正解ではない。**終着点は
+   `primitives` の `Button` に `size?: "compact"` と `variant: "danger"` を足して 1 本に畳むこと**で、
+   そのとき初めてクラス名を変えられる（061g はクラス名変更を禁じられていたのでここまで）。
+   ⇒ **再修正トリガー＝ボタンの意匠を触る別タスクが立ったとき**に統合を検討する（061g 単独ではやらない）。
+
+   ■ なぜ `components/` にあるか
+   `ConfirmDialog`（061g で `components/` へ移設・破壊的操作の最後の確認 UI）がこの 3 クラスを使う。
+   意匠を `screens/comment-viewer/` に置いたままだと `components/` → `screens/` の**逆向き import** が必要になり、
+   いまより悪い依存になるため、意匠ごとこちらへ出した。
+   ⚠ 利用者は `components/ConfirmDialog.tsx` と、`screens/comment-viewer/` の
+   `CommentViewerApp` / `OverlayThemeCard` / `SettingsView` / `ViewersView` / `ViewerDetailPanel` /
+   `MonetaryDetailDialog`（計 25 箇所）。**寸法・配色を動かすとその全部に効く。**
+
+   ■ ⚠ `:disabled` の 3 ルールは 054「3 段規則」の**無効状態の実体**である
+   規則の正の宣言は `screens/comment-viewer/CommentViewerApp.module.css` の先頭にある（移していない）。
+   `--text-faint` は「押せない」を意味する濃度で**無効状態専用**——可読テキストへ戻さないこと。
+   ⚠ このファイルは静的ガード (6-b)（faint の全走査）の**検査対象**で、`:disabled` だから通っている。 */
+
+.btn {
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--btn-primary-fg);
+  background: var(--btn-primary-bg);
+}
+
+.btnGhost {
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--btn-ghost-fg);
+  background: var(--btn-ghost-bg);
+}
+
+/* 032c-b: 非活性の明示アフォーダンス（primitives.module.css の .primary:disabled と同方式の role トークン）。
+   これが無いと disabled ボタンが通常色のまま「押せそうなのに無反応」に見え、sidecar 未接続
+   （streamConnected=false）や未ログイン（linked=false）時に 032c-b の無反応バグと同型の混乱を招く。
+   button 要素の :disabled にのみ効き、有効時の見た目は不変。 */
+.btn:disabled,
+.btnGhost:disabled {
+  background: var(--control-bg);
+  color: var(--text-faint);
+  cursor: not-allowed;
+}
+
+/* 危険色ボタン（個別削除・一括削除の実行）。.btn:disabled と同じく非活性アフォーダンスを持たせる。
+   ⚠⚠ **このルールが消えると、破壊的操作の確認ダイアログから危険色が無音で消える。** 061g レビューで
+   `.dangerBtn` をルールごと削除する変異を実測したところ、当時は静的ガードも 1520 件のテストも**緑のまま
+   通った**（CSS Modules は存在しないキーにも文字列を返すため）。⇒ 2026-08-14 に 3 段で塞いだ:
+     - **(11-b)**（`scripts/check-css-guards.mjs`）… このルールの実在
+     - **(11-c)** … `ConfirmDialog.tsx` の `btnStyles.dangerBtn` 参照が CSS に着地していること
+     - **(11-d)** … `danger ? btnStyles.dangerBtn : btnStyles.btn` の分岐そのものが生きていること
+   ⚠ `border` と `cursor: pointer` は意匠ではなく必須: `theme.css` の `button { border: 0 }` リセットを
+   打ち消しているので、この 2 行を落とすと危険色の枠が消える（⚠ **宣言の中身は (11) の守備範囲外**なので、
+   ここを触るときは削除確認ダイアログを実機で見ること）。 */
+.dangerBtn {
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--danger-text);
+  background: var(--danger-soft);
+  border: 1px solid var(--danger-border);
+  cursor: pointer;
+}
+
+.dangerBtn:hover {
+  border-color: var(--danger-border-strong);
+}
+
+.dangerBtn:disabled {
+  background: var(--control-bg);
+  color: var(--text-faint);
+  cursor: not-allowed;
+}

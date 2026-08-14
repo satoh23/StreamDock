@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { EffectTemplateRecord } from "../../features/obs-effects/effectTemplateApi";
 import { Button } from "../../components/primitives";
-import { ConfirmDialog } from "../comment-viewer/ConfirmDialog";
+import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { EFFECT_EVENT_LABEL } from "./effectEventRows";
 import { EffectTemplatePreview } from "./EffectTemplatePreview";
 import type { UseEffectTemplates } from "./useEffectTemplates";

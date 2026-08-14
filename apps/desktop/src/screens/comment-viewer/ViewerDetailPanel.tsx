@@ -5,7 +5,7 @@ import {
   deleteViewer,
 } from "../../features/viewer-memory/viewerMemoryApi";
 import type { ViewerDetail } from "../../features/viewer-memory/types";
-import { ConfirmDialog } from "./ConfirmDialog";
+import { ConfirmDialog } from "../../components/ConfirmDialog";
 import {
   providerLabel,
   eventLabel,
@@ -15,6 +15,9 @@ import {
   commentAmount,
 } from "./viewerFormat";
 import styles from "./CommentViewerApp.module.css";
+// 061g: ボタンの意匠は `components/compactButtons.module.css` へ移した（`ConfirmDialog` が
+// `components/` へ出たため）。⚠ 寸法・配色はこの窓の 6 ファイル計 25 箇所と `ConfirmDialog` の共有。
+import btnStyles from "../../components/compactButtons.module.css";
 
 /**
  * 038b フォローアップ: 視聴者「詳細」（集計・配信者メモ・過去コメント・個別削除）を描く再利用コンポーネント。
@@ -202,7 +205,7 @@ export function ViewerDetailPanel({
               <div className={styles.memoActions}>
                 <button
                   type="button"
-                  className={styles.btn}
+                  className={btnStyles.btn}
                   onClick={() => void saveNote()}
                   disabled={noteSaving || note === v.note}
                 >
@@ -253,7 +256,7 @@ export function ViewerDetailPanel({
             <div className={styles.cardBody}>
               <button
                 type="button"
-                className={styles.dangerBtn}
+                className={btnStyles.dangerBtn}
                 onClick={() => setPendingDelete(true)}
               >
                 この視聴者の情報を削除する

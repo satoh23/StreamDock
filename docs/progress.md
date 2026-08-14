@@ -19365,3 +19365,262 @@ main 窓の位置も復元、クリップボードも退避・復元した。⚠
   「鳴らないときの切り分け手順」は、**`EffectOverlayApp.tsx` の `<audio>` の JSDoc**（疑う順序）と
   **061f タスクファイルの「再燃したときの入口」**（3 か所の対・autoplay を疑い直さないこと）へ
   **分けて要約した**。⇒ **切り分け手順を探すならこの 2 か所**。
+
+## 061g 画面を跨ぐ共通部品 3 本を `components/` へ移す（2026-08-14）
+
+**061d-1 が張った再修正トリガーの後始末。** 「`ConfirmDialog` と `ToggleSwitch` で跨ぎ部品が 2 本。
+3 本目が跨いだら 2 本まとめて `components/` へ移す」が 061d-2 の `Select` で発火していた。
+⚠⚠ **振る舞い・props・DOM 構造・意匠・クラス名は 1mm も変えていない。** 変えたのは「どのファイルに置くか」だけ。
+
+### 着手前に依頼者が挙げた「穴 A〜F」の追認 or 訂正
+
+| 穴 | 判定 | 実測 |
+|---|---|---|
+| **A** `ConfirmDialog` の意匠は移動できない | ⚠⚠ **追認** | `.confirmDialog` / `.confirmBody` / `.confirmTitle` / `.confirmActions` は `MonetaryDetailDialog` と**共有**。`.confirmMessage` のみ専有＝**5 中 4 が共有** |
+| **B** `.btn` / `.btnGhost` / `.dangerBtn` は実際に広く共有 | ⚠⚠ **追認 ＋ 2 点訂正** | 下表 |
+| **C** (6-b) の走査範囲も `VIEWER_CSS` 固定 | ⚠ **追認** | 移設対象に faint は 1 つも無い（(6-b) は無傷）が、「新設モジュールは検査外」の穴は実在した |
+| **D** CSS 先頭の宣言が `.toggleLabel` を名指し | ⚠ **追認** | 加えて**宙に浮く参照コメントを 9 箇所**発見（`.switch`×3 / `.selectCustom`×2 / `.toggleLabel`×2 / `.confirmDialog`×2） |
+| **E** `ToggleSwitch` / `Select` は専有クラス | ⚠ **追認 ＋ 補強** | 下記「(a) を安全にした実測」 |
+| **F** 跨ぎの数と難易度が逆 | ⚠ **追認** | `ToggleSwitch`=2 / `Select`=1 / `ConfirmDialog`=1 |
+
+**穴 B の訂正 2 点**（`grep -o` の出現数。どちらも指摘を**強める**方向）:
+
+| ファイル | `.btn` | `.btnGhost` | `.dangerBtn` | 計 |
+|---|---|---|---|---|
+| `CommentViewerApp.tsx` | 5 | 2 | 0 | 7 |
+| `OverlayThemeCard.tsx` | 3 | 4 | 0 | 7 |
+| **`SettingsView.tsx`** | 1 | **5** | 0 | **6**（依頼者の提示は 2） |
+| `ViewersView.tsx` | 0 | 1 | 1 | 2 |
+| **`ViewerDetailPanel.tsx`** | 1 | 0 | 1 | **2**（依頼者の一覧から漏れていた） |
+| `MonetaryDetailDialog.tsx` | 0 | 1 | 0 | 1 |
+| `ConfirmDialog.tsx` | 1 | 1 | 1 | 3 |
+
+⇒ `ConfirmDialog` 以外で **25 箇所**。
+
+### ⚠ (a) 案を安全にした実測（これが無いと「1mm も変えていない」と言えない）
+
+1. **複合 `className` に `.btn` 系が混ざる箇所はゼロ**——全 25 箇所が `className={styles.btn}` の**単独指定**。
+2. CSS 内に `.btn` / `.confirm*` を含む**子孫・複合セレクタは存在しない**（`.switchOn .knob` のみ・同集合内で閉じる）。
+3. `composes:` はリポジトリ全体で **0 件**。
+4. `ToggleSwitch` / `Select` / `ConfirmDialog` は **`className` prop を受け取らない**
+   ＝呼び出し側が別モジュールのクラスを同じ要素に足すことが**構造的に起きない**。
+5. `MonetaryDetailDialog` の `.confirmDialog` ＋ tone クラスの併記が成立する根拠:
+   **複合セレクタ `.confirmDialog.toneT*` が存在しない**／tone クラスは `--tone-bg` / `--tone-fg` の
+   **カスタムプロパティしか宣言しない**ので `.confirmDialog` とプロパティが 1 つも重ならない。
+6. `CommentViewerApp.module.css` を**実際に import している**のは `screens/comment-viewer/` の 15 ファイルだけ
+   （`ObsEffectsScreen` / `cssScope.ts` / 他 CSS の一致は**すべてコメント**だった）。
+7. `@media (max-width: 600px)` の中身は `.detailPane` のみ／`.cardBody > * + .note` は `*` なので所属モジュールに依存しない。
+
+⇒ **モジュールを割ってもカスケード順に依存しない＝描画結果は同一。**
+
+### ①〜⑤ の判断と根拠
+
+- **① 穴 A・B → (a) を採用**（依頼者の決定）。(a) 単独では穴 B が残る（`ConfirmDialog` は `.btn` 系も要る）ので、
+  **`.btn` / `.btnGhost` / `.dangerBtn` も同時に `components/` へ出した**。
+  - **(c) 却下**: `MonetaryDetailDialog` は `viewerFormat` / `monetaryTone` / `.meta` / `.badge` / `.tipAvatar` /
+    `.tipAmount` / `.eventMessage` / `.text` / `.monetaryDialog*` に依存。移すと全部連れて行くか逆向き import になり**悪化する**。
+  - **(d) 却下**: 二重定義。`.btn` 系は 25 箇所が使い「片方だけ直す」事故が最も起きやすいクラスそのもの。
+  - **`primitives` の `Button` へ寄せる案も却下**（実測）: viewer `.btn` は padding 6px 12px / radius 8px / 12px / 700、
+    primitives `.primary` は **height 38px** / radius 11px / 13px / 太さ指定なし。さらに `Button` の型は
+    `variant?: "primary" | "secondary"` で **danger バリアントが無い**＝削除確認の危険色が消える。
+- **② `.btn` 系の置き場所** = `components/compactButtons.module.css`。**クラス名は変えず**（`.btn` のまま）、
+  **ファイル名で用途を分けた**。`viewerButtons` にしなかったのは `ConfirmDialog` 経由で OBSエフェクト画面からも
+  使うため（「viewer」が今日から嘘になる）。`primitives.module.css` にも `.btn` があるが、あちらは
+  `font-family: inherit` の 2 行だけで**別物**——両モジュールの先頭に相互参照コメントを置いた。
+- **③ ガードと規則宣言**:
+  - **(6-a)** をファイル跨ぎの突き合わせへ。⚠ **突き合わせの意味も対象プロパティ（font-size / font-weight / color）も
+    変えていない**——読み先だけ直した。失敗メッセージは**常に両方の rel を出す**。
+  - **(6-b)** の走査先を **5 枚**（`VIEWER_CSS` ＋ 新設 4 枚）へ拡大。⚠ 条件は**一切緩めていない**
+    （`:disabled` と `FAINT_ALLOWED` 以外は落ちる）。走査範囲が広がるだけ。
+  - `readCssGuarded()` を追加（(9) の `readSource` と同じ idiom・**fail-close**）。移設先が改名されたとき
+    `node:fs` の生スタックで死なず、ガードの失敗として真因を出す。
+  - **3 段規則の宣言は `CommentViewerApp.module.css` に残した**。あれは「**この窓のタイポグラフィの正**」で、
+    当事者の `.fieldLabel` / `.note` / `.obsPasswordHelp` / `.pastTime` / `.speakerField` / `.cardBody` は全部残る。
+    かつ宣言自身が「13px/700 をこの窓の外へ持ち出さないこと」と書いており、`components/` へ移すと矛盾する。
+    ⇒ 表の「実体」欄に**移設先のファイル名を書き足し**、移設先 2 枚の先頭に**逆参照**を置いた。
+- **④ CSS モジュールは 4 枚**。3 本は互いの意匠を共有していないため（`components/` の既存作法も 1 部品 1 モジュール）。
+  `.btn` 系だけは部品ではなく複数部品に跨る意匠なので、`primitives` / `formLayout` と同じ小文字の共有モジュール名。
+- **⑤ スコープ = 3 本すべて**（段は割らない）。
+
+### 移したクラス / 残したクラス
+
+| 移設先 | クラス（**本文は 1 文字も変えていない**） |
+|---|---|
+| `components/ToggleSwitch.module.css` | `.toggleRow` / `.toggleRowInline` / `.toggleLabel` / `.switch` / `.switchOn` / `.knob` / `.switchOn .knob` / `.toggleRowDisabled` / `.switch:disabled`（9） |
+| `components/Select.module.css` | `.selectWrap` / `.selectCustom` / `:hover` / `:focus-visible` / `.chevron`（5） |
+| `components/ConfirmDialog.module.css` | `.confirmDialog` / `::backdrop` / `.confirmBody` / `.confirmTitle` / `.confirmMessage` / `.confirmActions`（6） |
+| `components/compactButtons.module.css` | `.btn` / `.btnGhost` / `.btn:disabled, .btnGhost:disabled` / `.dangerBtn` / `:hover` / `:disabled`（6） |
+
+**計 26 ルール。** `CommentViewerApp.module.css` には**複製を 1 つも残していない**（grep で確認）。
+
+**残したもの**と根拠: `.fieldLabel` / `.note` / `.speakerField` / `.cardBody`（054・054 追補の当事者でガード
+(6-a)(6-c)(7) の検査対象）／`.pastTime`（(6-b) の `FAINT_ALLOWED` 唯一の例外）／`.monetaryDialogHeader` /
+`.monetaryDialogName` / `.monetaryDialogTime` / `.toneT*` 一式（`MonetaryDetailDialog` 専用・tone 表はガード (4) が
+`monetaryTone.ts` と突き合わせている）。
+
+### ⚠⚠ (6-a)(6-b) の変異検証（**実測結果**）
+
+| # | 変異 | 結果 |
+|---|---|---|
+| ① | `components/ToggleSwitch.module.css` の `.toggleLabel` font-size 13px→12px | ✅ **FAILED**「設定項目名の書式が 2 つに割れています（054・(6-a)）: … `.fieldLabel`（13px）が … `.toggleLabel`（12px）と一致しません」＝**両ファイル名が出た** |
+| ② | `CommentViewerApp.module.css` の `.fieldLabel` font-size 13px→12px | ✅ **FAILED**（同じメッセージの逆向き） |
+| ③ | `components/ToggleSwitch.module.css` の `.toggleLabel` を `color: var(--text-faint)` へ | ✅ **FAILED 2 件**（(6-a) の color 不一致 ＋ **(6-b) が新設モジュールで発火**）＝**走査拡大が実際に効いている** |
+| ④ | `components/ToggleSwitch.module.css` を改名 | ✅ **FAILED**「… を読めません（リネーム / 移動しましたか？）。(6-a) の基準側 `.toggleLabel` を読めないため…」＝**生スタックではない** |
+
+全変異を revert 後、backup と**バイト単位で一致**することを `diff -q` で確認済み。
+
+### 検証（実測・2026-08-14）
+
+| コマンド | 結果 |
+|---|---|
+| `pnpm --filter ./apps/desktop typecheck` | ✅ 緑 |
+| `pnpm --filter ./apps/desktop lint` | ✅ 緑 |
+| `pnpm --filter ./apps/desktop test` | ✅ **66 files / 1520 tests passed**（061f と同数＝新規テストなし・削除なし）＋ check:css / check:version / check:effect-contract すべて OK |
+| 跨ぎ `grep`（`../comment-viewer/{ConfirmDialog,ToggleSwitch,Select}`） | ✅ **ヒットゼロ** |
+| 二重定義 `grep`（`.toggleLabel` / `.selectCustom` / `.confirmDialog`） | ✅ `components/` 側にのみ出現 |
+| `^\.btn` / `^\.btnGhost` / `^\.dangerBtn` in `CommentViewerApp.module.css` | ✅ **ヒットゼロ**（移設先に 1 度だけ存在） |
+| `components/` → `screens/` の逆向き import | ✅ **ヒットゼロ** |
+| `src-tauri/` / `capabilities/` / `tauri.conf.json` / sidecar / 依存 / `docs/security.md` | ✅ **差分ゼロ** |
+| テストファイルの差分 | ✅ **rename のみ・内容差分 `0 0`**（`git diff -M --numstat`） |
+
+### ⚠ 061g で残していること（ガード化の候補）
+
+**`MonetaryDetailDialog` が `components/ConfirmDialog.module.css` の 4 クラスに依存している**という事実は、
+本チェッカーの前文が戒める「**コメントはファイル境界を越えない**」ハザードそのものである
+（`.confirmDialog` の寸法を `ConfirmDialog` の都合で動かすと、課金ダイアログが無音で変わる）。
+本タスクは移設に閉じるため**検査は足さなかった**。代わりに次の 3 か所へ名指しで書いてある:
+`components/ConfirmDialog.module.css` の先頭／`MonetaryDetailDialog.tsx` の import と JSDoc／
+`CommentViewerApp.module.css` の移設跡コメント。
+⚠⚠ **2026-08-14 独立レビューで、この予告の書き方が誤りだと判明したので訂正する。**
+「TSX の `confirmStyles.X` 参照が CSS に実在するか」という (4) 同型の静的検査は、
+**上で恐れている「寸法を動かして課金ダイアログが無音で変わる」を捕まえない**（レビューの変異実測:
+`.confirmDialog` の `max-width` を 360px → 640px にする変異は静的ガードもテストも素通りした）。
+その検査で捕まるのは**削除・改名だけ**である（`.confirmMessage` 削除の変異も素通りしたので、
+存在検査を足す価値自体はある）。⚠ 値をベタ書きの期待値で守るのは (6-a) が避けた**二重管理**なので採らない。
+⇒ **①削除・改名は 2026-08-14 に (11-b) / (11-c) で塞いだ**（存在検査＋ TSX→CSS の突き合わせ）。
+⇒ **②寸法・余白の変更はいまも機械では守れない。** `.confirm*` を動かすときは
+   `MonetaryDetailDialog` を**実機で見る**（下記の実機確認⑨と同じ手順）。**ここが最後の手作業。**
+
+### ⚠ 061g レビュー（2026-08-14・独立実施）で確認できたこと／残った穴
+
+**確認できたこと**（依頼者側で独立に再現された）:
+`HEAD` の viewer CSS と現在の viewer CSS ＋ 新設 4 枚を `セレクタ → 正規化宣言列` の Map で突き合わせ、
+**196 ルール（＝ 実装者の 194 ＋ `@layer` / `@media` のネスト 2）が完全一致・消失 0・追加 0・変更 0・重複 0**。
+移設先の内訳 9 / 5 / 6 / 6 も申告どおり。カスケード前提 7 点も独立検証で成立。
+⇒ **「1mm も変えていない」に静的な反証は無い**（＝残るリスクは実機のみ）。
+
+**見つかった穴と、その場で塞いだもの（2026-08-14）**。⚠ **いずれも 061g の退行ではなく、移設前から
+同じ穴**（＝ 061g が作ったのではなく、061g が可視化した）。依頼者の指示で**塞げるものは全部塞いだ**。
+
+| 穴 | 変異 | 塞ぐ前 | 対応 | 塞いだ後 |
+|---|---|---|---|---|
+| **複製ゼロが非ガード**（061g の安全性の議論が全部これに乗っている） | VIEWER_CSS へ `.btn` を書き戻す | ❌ 素通り | **(11-a) 新設**＝移設した 18 クラスが VIEWER_CSS のセレクタに 1 つでも現れたら落ちる | ✅ FAILED。⚠ **束ねた形 `.btn, .foo {}` でも捕まる**（`ruleBody` の否定ではなくセレクタ全走査にしたため。(6-c) が塞いだ fail-open と同型の罠を避けた） |
+| **`FAINT_SCANNED` が手書き 5 枚** | `components/` に新設モジュールを足して faint 誤用 | ❌ 素通り | **(6-b) をディレクトリ走査へ**＝`components/` 配下の `*.module.css` を**再帰で**全部見る | ✅ FAILED。⚠ `components/tutorial/` に置いた変異も捕まる（サブディレクトリまで歩く） |
+| **`.dangerBtn` の存在が非ガード**（消えると破壊的操作の危険色が無音で消える） | ルールごと削除 | ❌ 素通り | **(11-b) 新設**＝移設先に 18 クラスが実在すること | ✅ FAILED（(11-c) も同時に発火＝2 件） |
+| **`.confirm*` の削除・改名が非ガード** | `.confirmMessage` 削除 ／ `confirmStyles.confirmBdy` へ打ち間違え | ❌ 素通り | **(11-b) / (11-c) 新設**（(11-c) は TSX → CSS の向き＝ (4)(6-d) と同型） | ✅ どちらも FAILED |
+| **`danger` 分岐が非検査** | `danger ? dangerBtn : btn` を `btn` に潰す | ❌ 素通り | **(11-d) 新設** ＋ テスト 1 件 | ✅ ガードもテストも FAILED |
+| **既定フォーカス（`autoFocus`）が非検査** | `autoFocus` を外す | ❌ 素通り | **テスト 1 件**（並び順ではなく**フォーカスそのもの**を見る） | ✅ FAILED |
+
+**塞げなかったもの（＝機械では守れないと結論した）**:
+
+- ⚠⚠ **`.confirm*` の「値の変更」**（`max-width` 360→640px など）。(11-b)(11-c) が捕まえるのは
+  **削除・改名だけ**。値をベタ書きの期待値で守るのは **(6-a) が避けた二重管理**なので採らない。
+  ⇒ **`.confirm*` の寸法・余白・配色を動かすときは `MonetaryDetailDialog` を実機で見る**しかない
+  （名指しは `ConfirmDialog.module.css` 先頭／`MonetaryDetailDialog.tsx` の import と JSDoc／
+  `CommentViewerApp.module.css` の移設跡の 3 か所）。
+- `read(VIEWER_CSS)` の非ガード（改名すると生スタック）。⚠ **これは fail-open ではない**（落ちる。
+  メッセージが読みにくいだけ）。かつ VIEWER_CSS は (1)〜(5) も `read` で読むので**ここだけ包んでも
+  他が生スタックのまま**＝意味が薄い。⇒ トリガー＝VIEWER_CSS を移動・改名するとき、全 `read` を一括で寄せる。
+
+### 追加した検査の一覧（2026-08-14・独立レビュー対応）
+
+| 検査 | 何を守るか | 殺せる変異（実測） |
+|---|---|---|
+| **(11-a)** 複製ゼロ | 移設した 18 クラスが VIEWER_CSS に無いこと | `.btn` の書き戻し／束ねた形／子孫セレクタ |
+| **(11-b)** 移設先に実体 | 18 クラスが `components/` の 4 枚に実在すること | `.dangerBtn` 削除／`.confirmMessage` 削除／改名／カンマ束ね |
+| **(11-c)** TSX → CSS | `btnStyles.X` / `confirmStyles.X` の全参照が CSS に着地すること | `confirmStyles.confirmBdy` の打ち間違い |
+| **(11-d)** 危険色の分岐 | `danger ? btnStyles.dangerBtn : btnStyles.btn` が生きていること | 分岐を `btnStyles.btn` へ潰す |
+| **(6-b) 走査のディレクトリ化** | `components/` 配下**全部**の faint 誤用 | 新設モジュール（直下・`tutorial/` 配下とも） |
+| **テスト 2 件** | 既定フォーカス＝キャンセル側／`danger` のクラス切り替え | `autoFocus` 削除／分岐潰し |
+
+⚠ **(11-a) と (11-b) は対**（あちらに在り、こちらに無い）で、片方だけでは「両方に在る」状態を許してしまう。
+⚠ `components/` へ 4 本目の部品を出すときは **(11) の `MOVED` へも足すこと**（足し忘れは検査の縮小）。
+⚠ (6-b) はディレクトリ走査なので**足し忘れが起きない**——同型の穴を 2 度踏まないため、意図的に形を変えてある。
+⚠ **`src` 全体へのグロブは不可**（`formLayout` / `RakurakuTools` / `ComingSoon` が faint を可読テキストに
+使っており、広げると**正しい CSS で fail する**＝(5-b) が戒めた失敗）。**3 段規則の適用単位は
+「このコメビュ窓 ＋ 共通部品」**であって全画面ではない。広げたいならまず宣言（VIEWER_CSS 先頭の表）から。
+
+### ⚠⚠ 実機確認は **不要と判断した**（2026-08-14・依頼者の判断＋静的検査の結論）
+
+**理由: 描画結果を変えうる機構が 1 つも残っていないことを静的に示せたため。** 6 点の実測が根拠:
+
+1. **宣言集合が同一** — HEAD の viewer CSS と、現在の viewer CSS ＋ 新設 4 枚を
+   `セレクタ → 正規化宣言列` の Map（`@media` / `@layer` のネスト文脈込み）で突き合わせ、
+   **196 ルールが完全一致・消失 0・追加 0・変更 0・重複 0**。
+2. **同一要素に 2 モジュールが載るのは 1 箇所だけ** — `MonetaryDetailDialog` の
+   `.confirmDialog` ＋ tone クラス。tone クラスは `--tone-bg` / `--tone-fg` の**カスタムプロパティのみ**で、
+   `.confirmDialog` の 7 プロパティと**重なりゼロ** ⇒ カスケード順に依存しない。
+   （3 部品は `className` prop を受け取らないので、呼び出し側が別モジュールのクラスを足せない。）
+3. **グローバル CSS（`theme.css`）は要素セレクタのみ** — `button {}` / `select {}` の (0,0,1) で、
+   クラス (0,1,0) に**必ず負ける** ⇒ モジュールが変わっても解決順は不変。
+4. **`:global` は overlay 窓（`html[data-overlay="1"]` / `[data-comment-scroll]`）限定** ⇒
+   移設した 3 部品には届かない（overlay 窓はこの 3 部品を描かない）。
+5. **`composes:` は 0 件** ／ 移設 18 クラスの子孫・複合セレクタは
+   `.confirmDialog::backdrop` / `.switchOn .knob` / `.btn:disabled, .btnGhost:disabled` の 3 つだけで
+   **全部が同一ファイル内で閉じている**。
+6. **`vite.config.ts` に `css.modules` の設定が無い**＝ `generateScopedName` は Vite 既定の
+   **ファイル単位ハッシュ** ⇒ `primitives.module.css` と `compactButtons.module.css` の
+   **2 つの `.btn` は衝突しない**（クラス名を変えずにファイルで分けた判断が成立する根拠）。
+   ⚠ **既定を上書きして `[local]` 等にすると、この前提は消える。**
+
+⇒ 残る差はカスケードの**順序**だけだが、(2)(3)(5) より**同一詳細度・同一プロパティの衝突が存在しない**ので、
+バンドル順は結果に影響しない。振る舞い（JS / DOM / props）は 1522 件のテストが担保している。
+
+⚠ **例外的に手作業が残るのは 1 つだけ**: `.confirm*` の**寸法・余白・配色を今後動かすとき**は、
+`MonetaryDetailDialog`（課金コメントの全文ダイアログ）を必ず見ること。**値の変更は (11) でも守れない**。
+
+<details>
+<summary>もし念のため見るなら、この順（元の 16 項目・優先順）</summary>
+
+1. コメビュ設定の**トグル**（読み上げ ON/OFF・自動連携・source 別読み上げの**無効表示**）が変わっていない
+2. コメビュ**本体ツールバー**の inline トグル（`toggleRowInline`）が変わっていない
+3. コメビュ設定の**選択ボックス**（話者・スタイル・フォント）と視聴者ビューの並び替え select が変わっていない
+4. OBSエフェクト画面の**トグル**（画面上部・テンプレートプレビュー内）が変わっていない
+5. OBSエフェクト画面の**選択ボックス**（エフェクト割り当て）が変わっていない
+6. ⚠ **テンプレート削除の確認ダイアログ**（danger 表示・Esc・**既定フォーカスはキャンセル側**）が変わっていない
+7. ⚠ **視聴者メモリの削除確認ダイアログ**（個別削除・まとめて削除の両方）が変わっていない
+8. ⚠ **カスタム CSS テーマの削除確認ダイアログ**（＋外部 `@import` の同意ダイアログ）が変わっていない
+9. ⚠⚠ **課金コメントの詳細ダイアログ（`MonetaryDetailDialog`）が変わっていない**——穴 A の当事者。
+   枠・余白・見出し・「閉じる」に加え、**金額ティアの配色（ヘッダ帯）が乗ったまま**であることを確認する
+10. コメビュ設定・視聴者ビューの**通常ボタン**（`.btn` / `.btnGhost` / `.dangerBtn`）の見た目と
+    **無効時の表示**が変わっていない（25 箇所を書き換えたため）
+
+⚠⚠ **11〜16 は 2026-08-14 の独立レビューで「1〜10 に抜けている」と指摘された分**（移設で壊れる可能性が
+高い順に並べてある）。1〜10 は「移設した部品を 1 回ずつ見る」網羅で、**モジュールを割ったこと自体が
+効く箇所**が落ちていた。
+
+11. ⚠ **ライト / ダーク両テーマで切り替えて 1〜10 をもう一度見る。** 新設 4 枚は生 hex ゼロで
+    役割トークンのみだが、**テーマ追従は jsdom で一切検証できない**。1 項目で最も広く効く。
+12. ⚠ **狭窓（560px＝`lib.rs` の `min_inner_size`）まで縮めて、コメビュ本体ツールバーを折り返させる。**
+    `.switch` の `flex: none` が `components/ToggleSwitch.module.css` へ移り、それを前提にしている
+    `.toolbarActions`（`flex-wrap: wrap`）と `.toolbarError`（`flex: none`）は viewer CSS に残った
+    ＝ **flex の縮み挙動がファイルを跨いだ唯一の箇所**（045c がわざわざコメントを書いた相互作用）。
+13. ⚠ **確認ダイアログの backdrop（背景が暗くなること）を見る。** `.confirmDialog::backdrop`
+    （`--tutorial-dim`）が別モジュールへ移った。jsdom は `showModal()` をモックしており backdrop を
+    一切描画しないので、テストの緑は何も言っていない。
+14. ⚠⚠ **外部 `@import` の同意ダイアログを、長いホスト名の URL で開く。** `details` に渡るのは
+    **ユーザー CSS 由来の未署名文字列**（clamp 済み）で、`.confirmMessage` の `word-break: break-word` が
+    移設先で効いていないと**長い URL がダイアログをはみ出して取得先の判別が難しくなる**
+    （060b review② S-6 の表示偽装対策そのもの）。8 の括弧書きから独立させた。
+15. ⚠⚠ **削除確認が出た直後に Enter を押して、削除されずに閉じることを確かめる。**
+    「既定フォーカスはキャンセル側」（060c）は目視では確認しづらい。**`autoFocus` も `danger` 分岐も
+    テストが検査していない**ので、ここが唯一の検証点（`ConfirmDialog.tsx` の該当 JSX 直上に記載）。
+16. 10 の「無効時」を出す経路を名指しで踏む: **sidecar 未接続（`streamConnected=false`）／
+    未ログイン（`linked=false`）／視聴者未選択**。`.btn:disabled` / `.btnGhost:disabled` /
+    `.dangerBtn:disabled` は移設対象の中で**唯一 `--text-faint` を持つ 3 ルール**で、
+    経路を書いておかないと無効状態を 1 度も見ずに終わる。
+
+⚠ ⑮（削除確認で Enter を押す）と `danger` の色分けは **2026-08-14 にテスト＋ (11-d) で機械化した**ので、
+実機で見る必要はなくなった。⑨（課金ダイアログ）だけは上記のとおり**値を触るときの手順**として残る。
+
+</details>

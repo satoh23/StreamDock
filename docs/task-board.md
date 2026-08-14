@@ -610,7 +610,7 @@
     - ⚠ **「すべての割り当てを解除」を必ず置く**（壊れたテンプレートからの脱出路）／**メディア読み込み失敗は組み込みへフォールバック**（無反応にしない）
     - ⚠⚠ **割り当ての既定は全「組み込み」**（⑪。タスクファイルの「全なし」から意図的にずらした＝全「なし」だと **061d のリリースで既存ユーザーの組み込みエフェクトが黙って止まる**）。**実在しない id も組み込みへフォールバック＋UI で警告**（`effectMedia.ts` の「弾かれたら組み込みへ」と同じ壊れ方に 2 種類の答えを持たせない）
     - ⚠ **穴 H の逆向きのリスク（061d-1 で判明）**: エフェクト窓は `focused(false)` でクリックを受けられないので、**autoplay policy が `<audio>` を拒否して「鳴らない」可能性がある**（`<video muted>` は許可される）。jsdom では検出不能＝**実機確認⑪（新設）で見る**。fail する向きとしては安全（`effectMedia.ts` が「音が鳴らないことは配信を壊さない」と明記）。⚠⚠ **061d-1 レビューで範囲が macOS / WKWebView だけに絞られた**——Windows / WebView2 は `lib.rs` の `SHARED_BROWSER_ARGS` が `--autoplay-policy=no-user-gesture-required` を**全 5 窓へバイト一致で渡している**ので既に対策済み（実測）。⚠⚠ **2026-08-12 訂正: macOS 側も既に無効化されている**（wry の `autoplay` 既定 `true` → `setMediaTypesRequiringUserActionForPlayback(None)`）＝ **⑪ が fail しても原因は autoplay policy ではない**。詳細は [061f](tasks/061f-macos-effect-audio-autoplay.md)
-    - ⚠ **`ConfirmDialog` を跨いで使うのは 061d-1 が初めて**（実体は `screens/comment-viewer/`・意匠は `CommentViewerApp.module.css`）。`ToggleSwitch` と合わせて**跨ぎ部品が 2 本**になった。**再修正トリガー＝3 本目が跨いだら 2 本まとめて `components/` へ移す**（呼び出し側 5 箇所＋CSS の改修）。⚠⚠ **061d-2 でこのトリガーは発火した**（レビュー Q-2 で訂正）——`EffectAssignmentCard` が `screens/comment-viewer/Select` を import したので**跨ぎ部品は 3 本**（`ConfirmDialog` / `ToggleSwitch` / `Select`）。⚠ **移設は 061d-2 では行わない**（仕様にない大規模リファクタになるため）＝ **未着手の作業として下記 061g に立てる**
+    - ⚠ **`ConfirmDialog` を跨いで使うのは 061d-1 が初めて**（実体は `screens/comment-viewer/`・意匠は `CommentViewerApp.module.css`）。`ToggleSwitch` と合わせて**跨ぎ部品が 2 本**になった。**再修正トリガー＝3 本目が跨いだら 2 本まとめて `components/` へ移す**（呼び出し側 5 箇所＋CSS の改修）。⚠⚠ **061d-2 でこのトリガーは発火した**（レビュー Q-2 で訂正）——`EffectAssignmentCard` が `screens/comment-viewer/Select` を import したので**跨ぎ部品は 3 本**（`ConfirmDialog` / `ToggleSwitch` / `Select`）。⚠ **移設は 061d-2 では行わない**（仕様にない大規模リファクタになるため）＝ **未着手の作業として下記 061g に立てる**。⚠⚠ **061g は 2026-08-14 に完了した**（3 本とも `components/` へ移設・意匠 26 ルールも移動）。**このトリガーはもう使わない**——以後は「**画面を跨ぐ部品は最初から `components/` に置く**」が規律（下記 061g 参照）
   - ✅ **061e 実装済み（2026-08-12・未コミット・実機確認まで完了）** OBS 連携の結果を観測できるようにする（[docs/tasks/061e-obs-result-visibility.md](tasks/061e-obs-result-visibility.md)・2026-08-12 起票・**061a から移設**／**独立レビュー実施済み〔外部〕＝ security-review「問題なし」・修正必須 0 件／品質 6 件〔要修正 3・コメントのみ 3〕対応済み**／frontend **1501 → 1519**〔新規 18 ケース〕。⚠ **Rust / sidecar / capabilities / `tauri.conf.json` / 依存 / `commentStream.ts`〔wire〕/ `docs/security.md` は差分ゼロ**〔実測〕。判断の根拠は [docs/progress.md](progress.md) の 061e 節が正）
     - ⚠⚠ **実機確認で実バグ（Bug-1）を検出し、061e の中で直した**——**マウント時 reconcile の `enableObs` が
       WS 未接続で `send` に黙って捨てられ、`obsState` が `connecting` のまま永久固着**していた
@@ -694,16 +694,67 @@
       ③**docs の古い許可リスト 2 か所**（061c / 親 061）を訂正。残りは受容をコードと docs にコメント化。
       ⚠ **ぶら下がっている未完了はもう無い**（061e が確立した「✅ に未完了をぶら下げない」規律）
     - ⚠ **`rodio` にデコーダを足す／`SHARED_BROWSER_ARGS` を変えるのは禁止**（§10・058a／033f 追修正③）＝**維持**
-  - ⏳ **061g 画面を跨ぐ共通部品 3 本を `components/` へ移す**（[docs/tasks/061g-shared-primitives-extraction.md](tasks/061g-shared-primitives-extraction.md)・2026-08-12 起票・**061d-2 レビュー Q-2 で
-    既存の再修正トリガーが発火した**／⚠ **軽レビュー**〔移設のみ・振る舞いを変えない〕）
-    - 対象＝ `ConfirmDialog` / `ToggleSwitch` / `Select`（いずれも実体は `screens/comment-viewer/`・
-      意匠は `CommentViewerApp.module.css`）。**3 本目の `Select` が 061d-2 で跨いだ**
-      （`EffectAssignmentCard` → `screens/comment-viewer/Select`）
-    - ⚠ **061d-2 では移設しない**と判断した（仕様にない大規模リファクタになるため）＝
-      **未完了として独立させる**（✅ のタスクにぶら下げない＝ 061e と同じ規律）
-    - ⚠ 作業量＝ 呼び出し側の import 書き換え ＋ **CSS の切り出し**（3 本の意匠が
-      `CommentViewerApp.module.css` に同居しているので、移設先の CSS モジュールを作る必要がある）
-    - ⚠ **振る舞いを 1 mm も変えないこと**（既存テストが全部緑のままであることが完了条件）
+  - ✅ **061g 画面を跨ぐ共通部品 3 本を `components/` へ移す**（[docs/tasks/061g-shared-primitives-extraction.md](tasks/061g-shared-primitives-extraction.md)・2026-08-12 起票・**2026-08-14 実装完了**・
+    **061d-2 レビュー Q-2 で既存の再修正トリガーが発火した**／⚠ **軽レビュー**〔移設のみ・振る舞いを変えない〕
+    **＋独立レビュー実施済み〔外部・2026-08-14〕＝ security-review「問題なし」・修正必須 0 件／品質も修正必須 0 件
+    〔要対応 2・軽微 4〕対応済み**。⚠⚠ **依頼者側で「196 ルールが完全一致（消失 0・追加 0・変更 0・重複 0）」と
+    カスケード前提 7 点を独立に再現**＝「1mm も変えていない」に静的な反証は無い〔残るリスクは実機のみ〕）
+    - 対象＝ `ConfirmDialog` / `ToggleSwitch` / `Select`（いずれも実体が `screens/comment-viewer/`・
+      意匠が `CommentViewerApp.module.css` にあった）。**3 本目の `Select` が 061d-2 で跨いだ**のが起票理由
+    - ⚠⚠⚠ **この作業が残した規律＝「画面を跨ぐ部品は `components/` に置く」。**
+      **⚠ 後追いのトリガーはもう作らない**（「また 3 本目が跨いだら」という形にしない）——
+      **次からは跨ぐ時点で `components/` へ置くこと。** `screens/A/` の部品を `screens/B/` から import した
+      時点でそれは共通部品であり、置き場所の問題は先送りするほど高くつく（今回、後追いにしたせいで
+      **意匠 26 ルールの切り出しと `className` 29 トークンの書き換え**が必要になった）。
+      ⚠ 意匠も一緒に出すこと——**部品だけ移して CSS を元の画面に残すと逆向き import になる**（今回の穴 B）
+    - **実装結果**（詳細と根拠は [docs/progress.md](progress.md) の 061g 節）
+      - 部品 3 本 ＋ `ConfirmDialog.test.tsx` を `components/` へ（テストは**内容差分 0 行**の rename のみ）
+      - 意匠 **26 ルール**を新設 4 枚（`ToggleSwitch` / `Select` / `ConfirmDialog` / **`compactButtons`**）へ
+        **移動**（複製なし）。⚠ `.btn` / `.btnGhost` / `.dangerBtn` も出した——`ConfirmDialog` が使うので
+        残すと `components/` → `screens/` の逆向き import になるため（`className` 25 箇所を書き換え）
+      - ⚠ `.confirm*` 4 クラスは **`MonetaryDetailDialog` と共有**していたので、あちらが
+        `components/ConfirmDialog.module.css` から読む形にした（`screens/` → `components/` ＝正しい向き）
+      - 静的ガード **(6-a)** を**ファイル跨ぎの突き合わせ**へ（意味・対象プロパティは不変）、
+        **(6-b)** の走査先を **5 枚**へ拡大（条件は一切緩めていない）。**変異 4 種で FAILED を実測済み**
+      - ⚠ **054 の 3 段規則の宣言は `CommentViewerApp.module.css` の先頭に残した**（あれは「この窓の正」）。
+        実体が別ファイルへ出た分は、表に移設先を書き足し ＋ 移設先から逆参照を張って埋めた
+    - ⚠ **見送った部分は無い**（3 本とも移設済み・跨ぎ `grep` はヒットゼロ）＝再開条件なし
+    - ⚠⚠ **独立レビューが変異で見つけた穴 6 件は、その場で塞いだ**（2026-08-14・依頼者の指示）。
+      **どれも 061g の退行ではなく移設前から同じ穴**（061g が可視化した）。実測表は progress.md の 061g 節
+      - **静的ガードに (11) を新設** — (11-a) **複製ゼロ**（移設 18 クラスが VIEWER_CSS に無い。
+        ⚠ 束ねた形 `.btn, .foo {}` や子孫セレクタでも捕まる）／(11-b) **移設先に実体**（`.dangerBtn` /
+        `.confirmMessage` の削除を殺す）／(11-c) **TSX → CSS**（`btnStyles.X` / `confirmStyles.X` の
+        全参照が CSS に着地。(4)(6-d) と同型）／(11-d) **危険色の分岐**（`danger ? dangerBtn : btn` を
+        潰す変更を殺す）。⚠ **(11-a) と (11-b) は対**で、片方だけでは「両方に在る」を許してしまう
+      - **(6-b) の走査を手書きリストからディレクトリ走査へ** — `components/` 配下の `*.module.css` を
+        **再帰で**全部見る（`tutorial/` のようなサブディレクトリも）。⚠⚠ **手書きリストは「新しい
+        モジュールを作れば素通り」という同型の穴を必ず作る**ので、形ごと変えた。
+        ⚠ `src` 全体へのグロブは**不可**（`formLayout` / `RakurakuTools` / `ComingSoon` が faint を
+        可読テキストに使っており、正しい CSS で fail する）＝ **適用単位は「この窓 ＋ 共通部品」**
+      - **`ConfirmDialog.test.tsx` に 2 ケース追加** — 既定フォーカス＝キャンセル側（060c）／
+        `danger` で危険色クラスに切り替わること。⚠ **061g の「新しいテストを足さない」から外れるが、
+        実機確認をやらない方針にした以上、この 2 つは機械で押さえる必要がある**ため足した
+      - ⚠ **8 変異すべてで FAILED を実測**（書き戻し／束ね形／`.dangerBtn` 削除／`.confirmMessage` 削除／
+        打ち間違い／分岐潰し／新設モジュールの faint 誤用／サブディレクトリ）
+    - ⚠⚠ **塞げなかった 1 件（機械では守れないと結論）**: `.confirm*` の**値の変更**
+      （`max-width` 360→640px 等）。(11) が捕まえるのは**削除・改名だけ**で、値をベタ書きの期待値で
+      守るのは (6-a) が避けた**二重管理**なので採らない。
+      ⇒ **`.confirm*` の寸法・余白・配色を動かすときは `MonetaryDetailDialog` を実機で見ること**
+      （名指しは `ConfirmDialog.module.css` 先頭／`MonetaryDetailDialog.tsx`／移設跡コメントの 3 か所）
+    - ⚠ **将来の統合候補（061g 単独ではやらない）**: `components/` に意味の違う `.btn` が 2 つある状態
+      （`primitives.module.css` ＝アプリ本体 38px ／ `compactButtons.module.css` ＝詰まった 28px）は
+      恒久的な正解ではない。**終着点は `primitives` の `Button` に `size?: "compact"` と `variant: "danger"` を
+      足して 1 本に畳むこと**で、そのとき初めてクラス名を変えられる（061g はクラス名変更を禁じられていた）
+    - ⚠⚠ **実機確認は「不要」と判断した**（2026-08-14・依頼者の判断＋静的検査の結論。根拠 6 点は
+      progress.md の 061g 節）。要点＝**描画結果を変えうる機構が 1 つも残っていない**:
+      196 ルール完全一致／2 モジュールが載る唯一の要素はプロパティ非重複（tone はカスタムプロパティのみ）／
+      `theme.css` は要素セレクタのみでクラスに必ず負ける／`:global` は overlay 窓限定で 3 部品に届かない／
+      `composes:` 0 件・子孫セレクタは全部モジュール内で閉じる／
+      ⚠ **`vite.config.ts` に `css.modules` 設定が無く `generateScopedName` は Vite 既定のファイル単位ハッシュ**
+      ＝ `primitives` と `compactButtons` の**2 つの `.btn` は衝突しない**（クラス名を変えずファイルで
+      分けた判断の根拠。**既定を上書きするとこの前提が消える**）
+    - ⚠ **061g の完了条件だった「新しいテストを足さない」からは意図的に外れた**（上記 2 ケース）。
+      実機確認をやらない方針にした以上、`autoFocus` と `danger` は機械で押さえる必要があるため
   - ⚠⚠ **親 061 のクローズ条件**＝ **061d-2 の実機確認の残り 2 つだけ**（⑧ の **OBS のカクつき**／⑩ **金額なしの経路**）。
     ⚠ **061f の `security-review` は 2026-08-13 に完了**したのでクローズ条件から外れた（実機確認も同日に完了）。
     ⚠ **10 / 11 / ⑪ と ⑧ の先読み部分は 2026-08-12 の実機 E2E で合格済み**／
@@ -725,7 +776,7 @@
       **節は書き換えず、ここで一括訂正する**。⚠ **未コミットなのは 061f ぶんだけ**
     - ⚠⚠ **コミット状態は `git log` を正とすること。** 盤面に「未コミット」と書くと**コミットした瞬間に腐り**、
       次のレビューの base 判定を誤らせる（今回まさにこれを踏んだ）。**新しく書かないこと**
-    - ⚠ **061g はクローズ条件に含めない**（配信機能ではなく置き場所の整理で、061 の要望⑦の達成には関係しないため）。⚠ ただし**未完了として盤面に残す**（✅ にぶら下げない）
+    - ⚠ **061g はクローズ条件に含めない**（配信機能ではなく置き場所の整理で、061 の要望⑦の達成には関係しないため）。⚠⚠ **2026-08-14 に実装完了**（実機確認のみ残・依頼者の環境で実施）
 
 - 062 配信サマリー（集計・保存・フィルタ・レイド）（親設計 [docs/tasks/062-stream-summary.md](tasks/062-stream-summary.md)／要望⑤＋⑥・配信終わりに総コメント数/総課金額/課金回数/サブスク件数/**誰がいくら**〔マスト〕/**誰がレイドしたか**〔マスト・Twitch のみ〕を出し、配信ごとに保存してフィルタできる）
   - 実装順: 062a → 062b → 062c → 062d

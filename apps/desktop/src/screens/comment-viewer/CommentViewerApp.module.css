@@ -6,16 +6,28 @@
 
    | 役割         | 色                | サイズ | 太さ | 実体                                        |
    | ------------ | ----------------- | ----- | ---- | ------------------------------------------- |
-   | 設定項目名   | var(--text)       | 13px  | 700  | .toggleLabel / .fieldLabel                  |
+   | 設定項目名   | var(--text)       | 13px  | 700  | .toggleLabel（⚠ components/ToggleSwitch.module.css）/ .fieldLabel |
    | 補助説明     | var(--muted)      | 12px  | 400  | .note / .obsPasswordHelp（line-height:1.5） |
-   | 無効状態     | var(--text-faint) |   ―   |  ―   | .btn:disabled / .btnGhost:disabled / .dangerBtn:disabled |
+   | 無効状態     | var(--text-faint) |   ―   |  ―   | .btn:disabled / .btnGhost:disabled / .dangerBtn:disabled（⚠ components/compactButtons.module.css） |
 
    ⚠ **この表は「設定項目名／補助説明／無効状態」の 3 役割だけの正**で、この窓の書式を網羅してはいない
    （下の「■ 別段のもの」に、表の対象外として意図的に別書式を持つクラスを列挙してある）。
 
+   ■ ⚠⚠ 061g: **宣言（この表）はここ、実体の一部は別ファイル**という形になった
+     061g で画面を跨ぐ部品 3 本（ToggleSwitch / Select / ConfirmDialog）を `components/` へ移したため、
+     **基準側の .toggleLabel と無効状態の 3 ルールがこのファイルから出た**（上表の ⚠ 参照）。
+     宣言をここに残したのは、この表が「**この窓のタイポグラフィの正**」であって部品の仕様ではないから
+     ——当事者の .fieldLabel / .note / .obsPasswordHelp / .pastTime / .speakerField / .cardBody は全部この窓に残る。
+     かつ下の「13px/700 という実値をこの窓の外へ持ち出さないこと」は `components/` に置くと矛盾する。
+     ⚠ **規則の宣言と実体がファイルを跨いだ**ので、担保は次のとおり:
+       - (6-a) が `.toggleLabel`（components/ToggleSwitch.module.css）と `.fieldLabel`（このファイル）を
+         **ファイルを跨いで**突き合わせる。失敗メッセージは両方のファイル名を出す。
+       - (6-b) は VIEWER_CSS ＋ 新設 4 モジュールの **計 5 枚**を走査する。
+       - 移設先の各モジュール先頭に**この宣言への逆参照**を置いてある（コメントはファイル境界を越えないため）。
+
    ■ 基準を .toggleLabel（13px/700）に置いた理由
-     ToggleSwitch は設定画面だけでなく**本体コメントビューのツールバー**でも使うため、値を動かすと
-     設定画面の外へ波及する＝動かせない。一方お手本になるアプリ本体側の値は互いに揃っていない
+     ToggleSwitch は設定画面だけでなく**本体コメントビューのツールバー**、さらに 061a 以降は
+     **OBSエフェクト画面**でも使うため、値を動かすと設定画面の外へ波及する＝動かせない。一方お手本になるアプリ本体側の値は互いに揃っていない
      （formLayout.module.css の .field label = 12px/800、SettingsScreen.module.css の .optionLabel = 14px/800）ので、
      「アプリ全体で 1 値」はそもそも成立しない。よって**統一の単位は「このコメビュ窓の中」**とし、
      動かせない .toggleLabel を正にして .fieldLabel をそれに一致させる。
@@ -27,7 +39,8 @@
    ■ --text-faint の用途限定
      --text-faint は theme.css で --muted をさらに 72% まで薄めた色＝**「押せない」を意味する濃度**。
      **無効状態（:disabled）専用**で、**可読テキスト（設定項目名・補助説明）には使わない**。
-     - 正しい用法として現存: .btn:disabled / .btnGhost:disabled / .dangerBtn:disabled。
+     - 正しい用法として現存: .btn:disabled / .btnGhost:disabled / .dangerBtn:disabled
+       （⚠ 061g で components/compactButtons.module.css へ移動。(6-b) はあちらも走査している）。
      - .pastTime（視聴者詳細の過去コメント時刻）は**設定画面外のメタ情報**として据え置く（054 の対象外）。
        ガード (6-b) の FAINT_ALLOWED に理由付きで登録してある**唯一の例外**。
      - プレースホルダは**この窓では該当なし**（このモジュールに ::placeholder ルールは 1 つも無い。
@@ -43,7 +56,8 @@
 
    この規則の実在は scripts/check-css-guards.mjs のガード (6) が守る（色・太さ・サイズは jsdom で解決されず、
    CSS モジュールは存在しないキーでも文字列を返すため、コンポーネントのテストでは検出できない）。
-   (6-a)=.fieldLabel が .toggleLabel と一致 ／ (6-b)=faint の全走査＋許可リスト ／
+   (6-a)=.fieldLabel（このファイル）が .toggleLabel（components/ToggleSwitch.module.css）と一致
+   ＝**ファイル跨ぎの突き合わせ**（061g） ／ (6-b)=faint の全走査＋許可リスト・**走査先は 5 枚**（061g） ／
    (6-c)=.speakerField はレイアウト専用 ／ (6-d)=SettingsView が styles.fieldLabel を参照。
    =========================================================================== */
 
@@ -83,7 +97,8 @@
    045c: flex-wrap を追加。045b で表示トグルを足した時点では右クラスタ ≈470px で最小幅 560px（lib.rs の
    min_inner_size）に収まり、溢れても親 .toolbar の flex-wrap がクラスタごと 2 行目へ落として吸収できていた。
    045c で OBS エラー表示（「OBSに接続できませんでした」≈182px）が加わるとクラスタ単体で行幅を超えうるが、
-   子は .switch も .toolbarError も flex: none で縮まないため、ここが nowrap のままだと横溢れする。
+   子は .switch（061g で components/ToggleSwitch.module.css へ移動）も .toolbarError も flex: none で
+   縮まないため、ここが nowrap のままだと横溢れする。
    クラスタ内でも折り返せるようにし、折り返した行も右寄せのままにする（右クラスタとしての見えを保つ）。
    045c レビュー（効き方の正確な記述）: 560px では実際にはここより先に親 .toolbar の flex-wrap がクラスタごと
    2 行目へ落とすため、クラスタ内の折り返しは**さらに狭い場合の二段目の保険**。また「先頭挿入なので既存トグルの
@@ -100,8 +115,8 @@
 /* 045c: ツールバーの OBS 連携エラー（接続失敗）。設定ビューの .errorText は margin: 8px 16px 0 を持つカード用で
    インラインには使えないため、専用クラスを置く。トグル label（13px/700）より一段小さくして状態表示だと分かる
    ようにしつつ、太字で埋もれないようにする。色は役割トークンのみ＝両テーマ追従。
-   .switch と同じく flex: none で、狭窓の squeeze でも文字が潰れないようにする（溢れる分は .toolbarActions の
-   flex-wrap: wrap が受ける）。
+   .switch（components/ToggleSwitch.module.css）と同じく flex: none で、狭窓の squeeze でも文字が潰れない
+   ようにする（溢れる分は .toolbarActions の flex-wrap: wrap が受ける）。
    進行中（connecting）用の対になるクラスは置かない: 一度は .toolbarStatus として出したが、成功時はほぼ一瞬で
    消えチラつきにしかならないため撤回した（詳細と再修正トリガーは CommentViewerApp.tsx の該当箇所）。 */
 .toolbarError {
@@ -147,7 +162,8 @@
 }
 
 /* レビュー(L1): テキスト無しゴーストボタンはキーボードフォーカスが hover 色変化だけだと分かりづらいため、
-   .selectCustom と同じ role トークンでフォーカスリングを明示する（UA 既定リング頼みにしない）。
+   .selectCustom（061g で components/Select.module.css へ移動）と同じ role トークンでフォーカスリングを
+   明示する（UA 既定リング頼みにしない）。
    再修正トリガー＝設定ボタンをアイコン以外（ラベル付き等）に戻し、別のフォーカス表現へ変える場合。 */
 .settingsBtn:focus-visible {
   outline: 2px solid var(--primary-soft-border);
@@ -256,34 +272,17 @@
   white-space: nowrap;
 }
 
-.btn {
-  padding: 6px 12px;
-  border-radius: 8px;
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--btn-primary-fg);
-  background: var(--btn-primary-bg);
-}
-
-.btnGhost {
-  padding: 6px 12px;
-  border-radius: 8px;
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--btn-ghost-fg);
-  background: var(--btn-ghost-bg);
-}
-
-/* 032c-b: 非活性の明示アフォーダンス（primitives.module.css の .primary:disabled と同方式の role トークン）。
-   これが無いと disabled ボタンが通常色のまま「押せそうなのに無反応」に見え、sidecar 未接続
-   （streamConnected=false）や未ログイン（linked=false）時に 032c-b の無反応バグと同型の混乱を招く。
-   button 要素の :disabled にのみ効き、有効時の見た目は不変。 */
-.btn:disabled,
-.btnGhost:disabled {
-  background: var(--control-bg);
-  color: var(--text-faint);
-  cursor: not-allowed;
-}
+/* 061g: `.btn` / `.btnGhost` / `.btn:disabled, .btnGhost:disabled` は
+   **`components/compactButtons.module.css` へ移動した**（`ConfirmDialog` が `components/` へ出たため。
+   ここに残すと `components/` → `screens/` の逆向き import が要る）。
+   ⚠ この窓の 6 ファイル（`CommentViewerApp` / `OverlayThemeCard` / `SettingsView` / `ViewersView` /
+   `ViewerDetailPanel` / `MonetaryDetailDialog`）は `btnStyles.*` としてあちらから読んでいる（計 25 箇所）。
+   ⚠⚠ **ここへ `.btn` 系を「複製」で書き戻さないこと。** 書き戻すと `styles.btn` が再び実在するクラスへ
+   解決し、compactButtons 側と別々の見た目で共存する（CSS Modules は存在しないキーにも文字列を返すので
+   typecheck も vitest も緑のまま通る＝ (6-d) が塞いだ打ち間違いと同型の穴）。
+   ⚠ この「複製ゼロ」は静的ガード **(11-a)** が守る（移設した 18 クラスがこのファイルのセレクタに
+   1 つでも現れたら落ちる。束ねた形 `.btn, .foo {}` や子孫 `.card .btn` も捕まる）。
+   この窓だけの別意匠が要るなら、**別のクラス名**を付けること。 */
 
 /* 補助説明文（3 段規則の 2 段目）。054: 11px/--text-faint（＝無効色）から --muted/12px へ。
    旧値は .speakerField と完全に同一で、「読み上げの文字数上限」というラベルとその直下の説明文が
@@ -295,7 +294,8 @@
      - CommentViewerApp の YouTube 接続カード内の <span>。**これはツールバーの中ではなく
        ConnectionCard の children＝.connPopover の中**（position:absolute / top:calc(100% + 6px) / z-index:40 で
        ピルの下に重ねる・open のときだけマウント）。したがって **.toolbar の高さにも折り返しにも影響しない**
-       （.toolbar / .toolbarActions の flex-wrap も .toolbarError / .switch の flex:none もこの件とは無関係）。
+       （.toolbar / .toolbarActions の flex-wrap も .toolbarError / .switch（components/ToggleSwitch.module.css）
+       の flex:none もこの件とは無関係）。
        代わりに見るべきは次の 2 点:
          (a) .connPopover には max-height も overflow も無いので、11px→12px＋line-height:1.5 のぶん
              ポップオーバーが縦に伸びる。狭いコメビュ窓で下端からはみ出さないか。
@@ -653,7 +653,8 @@
 }
 
 /* 054 追補（E2E フィードバック）: 縦の余白は **2 段**。
-   054 で設定項目名（.fieldLabel / .toggleLabel）と補助説明（.note）の**書式**は分離したが、ここが
+   054 で設定項目名（.fieldLabel / .toggleLabel＝components/ToggleSwitch.module.css）と
+   補助説明（.note）の**書式**は分離したが、ここが
    `gap: 10px` の一律だったため「項目名 → その説明」も「説明 → 次の項目」も同じ 10px で、
    **ブロックの切れ目と中身の区別が付かない**＝書式だけ変えても「どこからどこまでが 1 つの設定か」が
    読み取れなかった（実機で確認された症状）。ブロック内だけを詰めて階層を作る。
@@ -907,8 +908,10 @@
    <span className={styles.fieldLabel}> で包んで使う。
    値は .toggleLabel と**一致させる**こと（同じカードにトグルの label と縦積みフィールドの label が並ぶため、
    書式が割れると「どこが項目名か読み取れない」状態に戻る）。.toggleLabel 側は ToggleSwitch が本体ツールバー
-   でも使うので動かせない＝こちらを合わせる。一致（font-size / font-weight / color の 3 つ）はガード (6-a) が
-   値の突き合わせで守るので、**片方だけ動かすと必ず落ちる**。落ちたら 2 つを揃えて直すこと（片方だけ直して
+   でも OBSエフェクト画面でも使うので動かせない＝こちらを合わせる。
+   ⚠ 061g 以降 **.toggleLabel は components/ToggleSwitch.module.css にある**（このファイルには無い）。
+   一致（font-size / font-weight / color の 3 つ）はガード (6-a) が**ファイルを跨いだ**値の突き合わせで
+   守るので、**片方だけ動かすと必ず落ちる**。落ちたら 2 つを揃えて直すこと（片方だけ直して
    通そうとしない）。SettingsView 側の参照は (6-d) が見ている（クラス名を打ち間違えても CSS モジュールは
    文字列を返すため typecheck も vitest も緑のまま通るので、静的検査でしか捕まらない）。
    ⚠ **この 13px/700 はコメビュ窓ローカルの結論**。メインウィンドウ（055c 以降）へ実値をコピーしないこと
@@ -953,117 +956,13 @@
   color: var(--text);
 }
 
-/* 034(UI刷新): 自作スタイルの選択ボックス（Select.tsx）。native select を appearance:none で素の見た目だけ消し、
-   文字グリフ ▾ を重ねる（画像/data-URI なし＝CSP 安全）。話者・スタイル・フォントで共用し、アプリのトークン
-   （角丸・枠・配色）で統一する。native select 維持でキーボード/OS ポップアップ/アクセシビリティはそのまま。 */
-.selectWrap {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-}
-
-.selectCustom {
-  appearance: none;
-  -webkit-appearance: none;
-  min-width: 140px;
-  padding: 6px 28px 6px 10px;
-  border-radius: 8px;
-  font-size: 12px;
-  color: var(--text);
-  background: var(--surface);
-  border: 1px solid var(--border-soft);
-  cursor: pointer;
-}
-
-.selectCustom:hover {
-  border-color: var(--primary-soft-border);
-}
-
-.selectCustom:focus-visible {
-  outline: 2px solid var(--primary-soft-border);
-  outline-offset: 1px;
-}
-
-/* シェブロン。native の矢印を消した分を文字グリフで補う（クリックは下の select へ透過）。 */
-.chevron {
-  position: absolute;
-  right: 10px;
-  font-size: 10px;
-  line-height: 1;
-  color: var(--muted);
-  pointer-events: none;
-}
-
-/* 033c: ラベル（左）＋トグル（右）の全幅 1 行（設定ビュー向け）。 */
-.toggleRow {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-/* 034(UI刷新): ラベルとトグルを隣接させる幅可変のコンパクト版（メイン画面ツールバー右クラスタ向け）。 */
-.toggleRowInline {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.toggleLabel {
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--text);
-}
-
-/* 033c: role="switch" のトグル本体。OFF=control-bg トラック / ON=primary-soft。役割トークンのみで両テーマ追従。 */
-.switch {
-  position: relative;
-  width: 40px;
-  height: 22px;
-  flex: none;
-  border-radius: 999px;
-  background: var(--control-bg);
-  border: 1px solid var(--border-soft);
-  cursor: pointer;
-  transition:
-    background 0.15s ease,
-    border-color 0.15s ease;
-}
-
-.switchOn {
-  background: var(--primary-soft);
-  border-color: var(--primary-soft-border);
-}
-
-/* つまみ。OFF は左端、ON は右へスライド（色も muted→primary へ）。 */
-.knob {
-  position: absolute;
-  top: 50%;
-  left: 2px;
-  width: 16px;
-  height: 16px;
-  border-radius: 999px;
-  background: var(--muted);
-  transform: translateY(-50%);
-  transition:
-    transform 0.15s ease,
-    background 0.15s ease;
-}
-
-.switchOn .knob {
-  background: var(--primary);
-  transform: translate(18px, -50%);
-}
-
-/* 035c: 無効トグル（source 別読み上げが VOICEVOX 読み上げ OFF で操作不可のとき）。.btn:disabled と同じく
-   「押せそうなのに無反応」を避けるため、行を dim し switch を not-allowed にする。役割トークンのみで両テーマ追従。 */
-.toggleRowDisabled {
-  opacity: 0.5;
-}
-
-.switch:disabled {
-  cursor: not-allowed;
-}
+/* 061g: 選択ボックス（`.selectWrap` / `.selectCustom` ＋ `:hover` / `:focus-visible` / `.chevron`）は
+   **`components/Select.module.css` へ移動した**（`Select` は OBSエフェクト画面からも使う＝画面を跨ぐ部品）。
+   トグル（`.toggleRow` / `.toggleRowInline` / `.toggleLabel` / `.switch` / `.switchOn` / `.knob` /
+   `.switchOn .knob` / `.toggleRowDisabled` / `.switch:disabled`）は
+   **`components/ToggleSwitch.module.css` へ移動した**（同上）。
+   ⚠⚠ `.toggleLabel` は上の 3 段規則の**基準側**なので、静的ガード (6-a) が
+   `.fieldLabel`（このファイル）と**ファイルを跨いで**突き合わせている。 */
 
 /* VOICEVOX クレジット表記（必須・033d で選択話者名に追従）。034(UI刷新): 全文 danger 赤の壁から、danger-soft の
    枠付き通知カードへ。必須表記としての存在感は見出しの danger 色で保ちつつ、本文は --text で可読性を上げ圧迫感を下げる。 */
@@ -1317,27 +1216,8 @@
   }
 }
 
-/* 危険色ボタン（個別削除・一括削除の実行）。.btn:disabled と同じく非活性アフォーダンスを持たせる。 */
-.dangerBtn {
-  padding: 6px 12px;
-  border-radius: 8px;
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--danger-text);
-  background: var(--danger-soft);
-  border: 1px solid var(--danger-border);
-  cursor: pointer;
-}
-
-.dangerBtn:hover {
-  border-color: var(--danger-border-strong);
-}
-
-.dangerBtn:disabled {
-  background: var(--control-bg);
-  color: var(--text-faint);
-  cursor: not-allowed;
-}
+/* 061g: `.dangerBtn` / `.dangerBtn:hover` / `.dangerBtn:disabled` も
+   **`components/compactButtons.module.css` へ移動した**（`.btn` / `.btnGhost` と同じ理由）。 */
 
 /* 視聴者テーブル。ヘッダ行と各行を同じ 7 列グリッドで揃える（<table> 用スタイルは既存に無いため grid で構成）。
    数値列は minmax(0, ...) で縮められるようにし、名前/最終列は ellipsis で溢れを防ぐ（横スクロールを出さない）。 */
@@ -1488,48 +1368,11 @@
   color: var(--text-faint);
 }
 
-/* 038b: 削除確認ダイアログ（ConfirmDialog）。ネイティブ <dialog> をトークンでスタイル。backdrop は
-   theme.css の scrim トークン（--tutorial-dim）を流用し、生 rgba を持ち込まない。 */
-.confirmDialog {
-  padding: 0;
-  max-width: 360px;
-  width: calc(100% - 48px);
-  color: var(--text);
-  background: var(--surface);
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius);
-}
-
-.confirmDialog::backdrop {
-  background: var(--tutorial-dim);
-}
-
-.confirmBody {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 16px;
-}
-
-.confirmTitle {
-  font-size: 14px;
-  font-weight: 800;
-  color: var(--text);
-}
-
-.confirmMessage {
-  font-size: 13px;
-  line-height: 1.6;
-  color: var(--text);
-  word-break: break-word;
-}
-
-.confirmActions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  margin-top: 4px;
-}
+/* 061g: 確認ダイアログの意匠（`.confirmDialog` / `::backdrop` / `.confirmBody` / `.confirmTitle` /
+   `.confirmMessage` / `.confirmActions`）は **`components/ConfirmDialog.module.css` へ移動した**
+   （`ConfirmDialog` は `obs-effects/EffectTemplateCard` からも使う＝画面を跨ぐ部品）。
+   ⚠⚠ **このファイルの `MonetaryDetailDialog` は 4 クラス（`.confirmMessage` 以外）をあちらから読んでいる**
+   ——`confirmStyles.*` として import している。あちらを触るときは課金ダイアログも一緒に見ること。 */
 
 /* 038b フォローアップ: 流れるコメントをクリック→視聴者詳細をスプリット表示。 */
 
@@ -1883,7 +1726,8 @@
 }
 
 /* 047b: 全文ダイアログのティア色ヘッダ帯。ピルが塗りつぶしになったので、開いた先が無彩色だと繋がりが切れる。
-   .confirmDialog は padding: 0 なので帯がダイアログ幅いっぱいに出る（.confirmBody 側が内側の余白を持つ）。 */
+   .confirmDialog（061g で components/ConfirmDialog.module.css へ移動）は padding: 0 なので帯がダイアログ幅
+   いっぱいに出る（.confirmBody 側が内側の余白を持つ）。 */
 .monetaryDialogHeader {
   display: flex;
   align-items: center;
@@ -1904,7 +1748,8 @@
   color: inherit;
 }
 
-/* 047: 全文ダイアログの受信時刻。枠は .confirmDialog 一式を流用しており、ここだけ既存に対応するクラスが無い。 */
+/* 047: 全文ダイアログの受信時刻。枠は .confirmDialog 一式（061g で components/ConfirmDialog.module.css へ移動）を
+   流用しており、ここだけ既存に対応するクラスが無い。 */
 .monetaryDialogTime {
   font-size: 11px;
   color: var(--muted);
@@ -1990,7 +1835,8 @@
   border-radius: 8px;
 }
 
-/* フォーカス表現は既存 3 か所（.searchInput / .connPill / .selectCustom）と同じトークンで揃える。 */
+/* フォーカス表現は既存 3 か所（.searchInput / .connPill / .selectCustom＝061g で
+   components/Select.module.css へ移動）と同じトークンで揃える。 */
 .themeCssInput:focus-visible {
   outline: 2px solid var(--primary-soft-border);
   outline-offset: 1px;

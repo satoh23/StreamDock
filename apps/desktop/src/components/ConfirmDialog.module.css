@@ -1,0 +1,76 @@
+/* 061g: `ConfirmDialog.tsx` の意匠。**`screens/comment-viewer/CommentViewerApp.module.css` から本文そのまま移動**
+   （複製ではない＝あちらには 1 ルールも残していない）。
+
+   ■ ⚠⚠ 利用者は 2 本ある（このファイルを触る前に必ず両方を見ること）
+   1. `components/ConfirmDialog.tsx` … 破壊的操作（視聴者メモリ削除・テーマ削除・テンプレート削除）の
+      最後の確認 UI。5 クラス全部を使う。
+   2. `screens/comment-viewer/MonetaryDetailDialog.tsx` … 課金コメントの全文ダイアログ。
+      ⚠ **`.confirmDialog` / `.confirmBody` / `.confirmTitle` / `.confirmActions` の 4 つを共有している**
+      （`.confirmMessage` だけが ConfirmDialog 専有）。あちらは `ConfirmDialog` を props 拡張して流用せず
+      「CSS だけ流用する」形なので、**ここを動かすと課金ダイアログも一緒に動く**。
+   ⚠ コメントはファイル境界を越えないので、片方だけ見て寸法を変えないこと。
+
+   ■ ⚠⚠ この結合を**機械が守れる範囲と守れない範囲**（061g レビューで変異実測して線を引いた）
+     - ✅ **削除・改名は捕まる**（2026-08-14 に追加）: `scripts/check-css-guards.mjs` の
+       **(11-b)** がこの 5 クラスの実在を、**(11-c)** が TSX 側の `confirmStyles.X` /
+       `btnStyles.X` が CSS に着地していることを検査する（`.confirmMessage` 削除・
+       `confirmStyles.confirmBdy` の打ち間違いを殺せることを実測済み）。
+     - ❌ **値の変更は捕まらない**: `.confirmDialog` の `max-width` を 360px → 640px にする変異は
+       いまも素通りする。**ベタ書きの期待値で守るのは (6-a) が避けた二重管理**なので採らない。
+   ⇒ ⚠⚠ **寸法・余白・配色を動かすときは、機械に頼らず `MonetaryDetailDialog` を実機で見ること。**
+   名指しは 3 か所にある: このファイルの先頭／`MonetaryDetailDialog.tsx` の import と JSDoc／
+   `CommentViewerApp.module.css` の移設跡コメント。
+
+   ■ ⚠ `MonetaryDetailDialog` は `.confirmDialog` に **`monetaryTone.ts` の tone クラス**
+   （`CommentViewerApp.module.css` 側）を**併記**する＝1 要素に 2 モジュールのクラスが載る。
+   これが成立するのは次の 2 点による（061g で実測して確認した）:
+     - `.confirmDialog.toneT0` のような**複合セレクタが存在しない**
+     - tone クラスは `--tone-bg` / `--tone-fg` の**カスタムプロパティしか宣言していない**ので、
+       `.confirmDialog` の padding / max-width / width / color / background / border / border-radius と
+       **プロパティが 1 つも重ならない**＝カスケード順（モジュールの読み込み順）に依存しない
+   ⚠ どちらかが崩れたら（tone クラスに実プロパティを足す・複合セレクタを作る）この前提は消える。
+
+   ⚠ このファイルは静的ガード (6-b)（`color: var(--text-faint)` の全走査）の**検査対象**。 */
+
+/* 038b: 削除確認ダイアログ（ConfirmDialog）。ネイティブ <dialog> をトークンでスタイル。backdrop は
+   theme.css の scrim トークン（--tutorial-dim）を流用し、生 rgba を持ち込まない。 */
+.confirmDialog {
+  padding: 0;
+  max-width: 360px;
+  width: calc(100% - 48px);
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+}
+
+.confirmDialog::backdrop {
+  background: var(--tutorial-dim);
+}
+
+.confirmBody {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+}
+
+.confirmTitle {
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--text);
+}
+
+.confirmMessage {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text);
+  word-break: break-word;
+}
+
+.confirmActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 4px;
+}

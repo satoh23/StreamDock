@@ -80,6 +80,27 @@ function collectTsSources(relDir) {
   return out;
 }
 
+/**
+ * 061g レビュー: `src/components` 配下の `*.module.css` を**再帰で全部**集める。
+ *
+ * (6-b) の走査先を**手書きのリストにしないため**にある。手書きだと「新しい意匠モジュールを作って
+ * そこで faint を誤用すれば素通りする」——061g レビューの変異実測でこれが生存した
+ *（denylist を走査型へ変えたときと**同型の穴**で、当時の教訓は「規則そのものを守れ」だった）。
+ * ⚠ `components/tutorial/` のようなサブディレクトリも拾う（1 階層に閉じない）。
+ */
+function collectModuleCss(relDir) {
+  const out = [];
+  const walk = (rel) => {
+    for (const entry of readdirSync(join(root, rel), { withFileTypes: true })) {
+      const child = `${rel}/${entry.name}`;
+      if (entry.isDirectory()) walk(child);
+      else if (entry.name.endsWith(".module.css")) out.push(child);
+    }
+  };
+  walk(relDir);
+  return out.sort();
+}
+
 const VIEWER_CSS = "src/screens/comment-viewer/CommentViewerApp.module.css";
 const OVERLAY_CSS = "src/screens/comment-viewer/OverlayComment.module.css";
 const TONE_TS = "src/screens/comment-viewer/monetaryTone.ts";
@@ -113,9 +134,39 @@ const THEME_CARD_TSX = "src/screens/comment-viewer/OverlayThemeCard.tsx";
 // 055c: 本チェッカー初のメインウィンドウ側 CSS（それまでは comment-viewer 配下 4 本のみが対象だった）。
 const HEADER_CSS = "src/components/Header.module.css";
 const UPDATE_CSS = "src/screens/app-update/UpdateScreen.module.css";
+// 061g: 画面を跨ぐ共通部品 3 本（ToggleSwitch / Select / ConfirmDialog）を `components/` へ移したので、
+// 意匠も `CommentViewerApp.module.css` から出た。⚠⚠ **これで 054 の 3 段規則は宣言（VIEWER_CSS の先頭）と
+// 実体（下の 4 枚）がファイルを跨いだ**——(6-a) はその突き合わせを、(6-b) は faint の走査を、
+// **VIEWER_CSS だけでなくここも見る**必要がある（見ないと「新しい CSS モジュールへ移すだけで検査が消える」）。
+// ⚠ 本チェッカー冒頭の記録どおり、3 回目の再発は「別 CSS モジュールへ意匠を移した際にコメントが付いてこなかった」
+// ために起きた。**部品を `components/` へ足すときは、意匠のモジュールもここへ足すこと。**
+// ⚠⚠ **061g の「移設であって複製ではない」は (11) が守る**（2026-08-14・独立レビューの指摘で追加）。
+// それまでこの不変条件はどのガードも見ておらず、VIEWER_CSS の末尾へ `.btn { … }` を書き戻す変異が
+// **本チェッカーも 1520 件のテストも素通り**した。移設先のファイル名を足すのはここ、検査は (11)。
+const COMPONENTS_DIR = "src/components";
+const TOGGLE_CSS = "src/components/ToggleSwitch.module.css";
+const SELECT_CSS = "src/components/Select.module.css";
+const CONFIRM_CSS = "src/components/ConfirmDialog.module.css";
+const BUTTONS_CSS = "src/components/compactButtons.module.css";
 
 const failures = [];
 const fail = (msg) => failures.push(msg);
+
+/**
+ * 061g: コメントを剥がした CSS を**読めなかったときに落ちる**形で読む（(9) の `readSource` と同じ idiom）。
+ *
+ * 移設で対象が別ファイルになった以上、リネーム / 移動で `node:fs` の**生スタックトレース**が出ると
+ * 真因が読めない（(5-b) の「メッセージが真因と一致する」原則から外れる）。
+ * ⚠ **fail-open にはしない**——`null` を返した側は必ず fail() 済みなので、呼び出し側は `continue` してよい。
+ */
+const readCssGuarded = (rel, why) => {
+  try {
+    return read(rel);
+  } catch {
+    fail(`${rel} を読めません（リネーム / 移動しましたか？）。${why}`);
+    return null;
+  }
+};
 
 /**
  * セレクタのルール本体（`{ … }`）を取り出す。CSS パーサは持ち込まない（依存ゼロが本スクリプトの前提）ので、
@@ -348,17 +399,32 @@ for (const rel of [VIEWER_CSS, OVERLAY_CSS]) {
 //     jsdom が解決しないので、規則の実在は CSS 原文の静的検査でしか守れない。
 // ---------------------------------------------------------------------------
 {
+  // ⚠ 061g レビュー: ここだけ `readCssGuarded` を通していない（＝ VIEWER_CSS を改名すると `node:fs` の
+  //   生スタックが出る）。基準の片側だけ守られている非対称だが、**VIEWER_CSS は (6)(7) 以外の多数の
+  //   ガードが `read(VIEWER_CSS)` で読んでおり、ここだけ包んでも他が生スタックのままで意味が薄い**。
+  //   ⇒ 再修正トリガー＝ VIEWER_CSS を移動・改名する変更が来たとき。そのときは本スクリプト全体の
+  //   `read(...)` を一括で `readCssGuarded` に寄せる（1 か所だけ直すと非対称が別の場所へ移るだけ）。
   const css = read(VIEWER_CSS);
 
   // (6-a) 設定項目名の書式は 1 種類。基準は `.toggleLabel`（ToggleSwitch は設定画面だけでなく
-  //   **本体コメントビューのツールバー**でも使うので値を動かせない）で、`.fieldLabel` をそれに**一致**させる。
+  //   **本体コメントビューのツールバー**でも **OBSエフェクト画面**でも使うので値を動かせない）で、
+  //   `.fieldLabel` をそれに**一致**させる。
   //   値をベタ書きで二重管理せず突き合わせにしているので、将来 `.toggleLabel` を動かしたときは
   //   `.fieldLabel` も一緒に動かさないとここで落ちる（＝規則が割れたまま進めない）。
   //   **落ちたときにやること**: どちらか一方に寄せて 2 つを揃える（片方だけ直して通そうとしない）。
-  //   `.toggleLabel` を動かしたい場合は、本体ツールバーのトグル表示も一緒に動くことを実機で確認する。
+  //   `.toggleLabel` を動かしたい場合は、3 画面すべてのトグル表示が一緒に動くことを実機で確認する。
   //   `font-size` も突き合わせる: これが無いと `.fieldLabel` だけ 11px に戻せてしまい、`.note`（12px）より
   //   項目名が小さい＝**054 が直した症状そのもの**が緑のまま通る（レビュー実測で生存を確認したため追加）。
+  //
+  //   ⚠⚠ **061g で 2 つの実体がファイルを跨いだ**（`.toggleLabel` は `components/ToggleSwitch.module.css`、
+  //   `.fieldLabel` は `VIEWER_CSS`）。突き合わせの**意味も対象プロパティも変えていない**——読み先だけを
+  //   直した。移設で「ruleBody が null を返して検査が空回りする」形にはしていない（下の 2 段の fail を参照）。
+  //   ⚠ 失敗メッセージは**どちらのファイルを見ればよいか**が分かるよう、常に両方の rel を出す。
   const fieldLabel = ruleBody(css, ".fieldLabel");
+  const toggleCss = readCssGuarded(
+    TOGGLE_CSS,
+    "(6-a) の基準側 `.toggleLabel` を読めないため、設定項目名の書式が 1 種類であることを検査できません。",
+  );
   if (fieldLabel === null) {
     fail(
       `${VIEWER_CSS}: \`.fieldLabel\` のルールがありません（054）。` +
@@ -367,29 +433,44 @@ for (const rel of [VIEWER_CSS, OVERLAY_CSS]) {
         `コンポーネントのテストでは検出できません）。セレクタをカンマで束ねた場合もここに来るので、` +
         `束ねたのならこのガードの取り出し方も一緒に直すこと。`,
     );
-  } else {
-    const toggleLabel = ruleBody(css, ".toggleLabel");
-    for (const prop of ["font-size", "font-weight", "color"]) {
-      const expected = declValue(toggleLabel, prop);
-      if (expected === null) {
-        fail(
-          `${VIEWER_CSS}: \`.toggleLabel\` に ${prop} がありません（054 の基準側）。` +
-            `設定項目名の書式はこのルールを正として .fieldLabel と突き合わせています。`,
-        );
-        continue;
-      }
-      // 値どうしを直接比べる（`hasDecl` の前方一致だと `.fieldLabel` 側にだけ `!important` が付いた場合に
-      // 素通りし、`background-color` にも一致してしまうため）。
-      const actual = declValue(fieldLabel, prop);
-      if (actual !== expected) {
-        fail(
-          `${VIEWER_CSS}: \`.fieldLabel\` の ${prop}（${actual ?? "宣言なし"}）が ` +
-            `\`.toggleLabel\`（${expected}）と一致しません（054）。` +
-            `同じカードにトグルの label と縦積みフィールドの label が並ぶため、書式が割れると 054 以前の` +
-            `「どこが項目名で、どこが説明なのか読み取れない」状態に戻ります。サイズ・太さ・色は jsdom で` +
-            `解決されないため、コンポーネントのテストでは検出できません。` +
-            `直すときは片方だけでなく 2 つを揃えること。`,
-        );
+  } else if (toggleCss !== null) {
+    const toggleLabel = ruleBody(toggleCss, ".toggleLabel");
+    if (toggleLabel === null) {
+      // ルールごと消えた / クラス名が変わった / セレクタをカンマで束ねた場合。
+      // 3 プロパティぶんの「宣言がありません」を並べるより真因が読める。
+      fail(
+        `${TOGGLE_CSS}: \`.toggleLabel\` のルールを取り出せません（054・(6-a) の基準側）。` +
+          `削除したか、クラス名を変えたか、セレクタをカンマで束ねた可能性があります。` +
+          `このルールは ${VIEWER_CSS} の \`.fieldLabel\` と突き合わせる**正**なので、` +
+          `無いと「設定項目名の書式は 1 種類」を機械で守れなくなります` +
+          `（束ねたのならこのガードの取り出し方も一緒に直してください）。`,
+      );
+    } else {
+      for (const prop of ["font-size", "font-weight", "color"]) {
+        const expected = declValue(toggleLabel, prop);
+        if (expected === null) {
+          fail(
+            `${TOGGLE_CSS}: \`.toggleLabel\` に ${prop} がありません（054 の基準側）。` +
+              `設定項目名の書式はこのルールを正として ${VIEWER_CSS} の \`.fieldLabel\` と突き合わせています。`,
+          );
+          continue;
+        }
+        // 値どうしを直接比べる（`hasDecl` の前方一致だと `.fieldLabel` 側にだけ `!important` が付いた場合に
+        // 素通りし、`background-color` にも一致してしまうため）。
+        const actual = declValue(fieldLabel, prop);
+        if (actual !== expected) {
+          fail(
+            `設定項目名の書式が 2 つに割れています（054・(6-a)）: ` +
+              `${VIEWER_CSS} の \`.fieldLabel\` の ${prop}（${actual ?? "宣言なし"}）が ` +
+              `${TOGGLE_CSS} の \`.toggleLabel\`（${expected}）と一致しません。` +
+              `⚠ 直すファイルは**この 2 つ**です（061g で部品を components/ へ移したため、` +
+              `基準側は screens/ ではなく components/ にあります）。` +
+              `同じカードにトグルの label と縦積みフィールドの label が並ぶため、書式が割れると 054 以前の` +
+              `「どこが項目名で、どこが説明なのか読み取れない」状態に戻ります。サイズ・太さ・色は jsdom で` +
+              `解決されないため、コンポーネントのテストでは検出できません。` +
+              `直すときは片方だけでなく 2 つを揃えること。`,
+          );
+        }
       }
     }
   }
@@ -401,6 +482,9 @@ for (const rel of [VIEWER_CSS, OVERLAY_CSS]) {
   //   「今あるもの」しか守らない——**新しいクラスを足して faint を誤用しても素通りする**
   //   （レビュー実測: 新設 `.fieldHint { color: var(--text-faint) }` を足す変異が生存した）。
   //   CSS 先頭で「この窓の正」として 3 段規則を宣言した以上、規則そのものを守る走査型にする。
+  //   ⚠ 061g 以降、その宣言は VIEWER_CSS の先頭に残っているが**実体の一部は components/ にある**。
+  //   走査先は下の FAINT_SCANNED（VIEWER_CSS ＋ `components/` 配下の `*.module.css` **全部**）。
+  //   ⚠⚠ **手書きのリストにしないこと**——下のコメントを参照（同型の穴を 2 度踏まないため）。
   //
   //   走査型にすると `.pastTime`（視聴者詳細の過去コメント時刻＝**設定画面外のメタ情報**・054 の対象外で
   //   据え置くとタスクが明示指示）が**正しい CSS のまま落ちる**。(5-b) の「正しい CSS で fail させない・
@@ -409,22 +493,54 @@ for (const rel of [VIEWER_CSS, OVERLAY_CSS]) {
   const FAINT_ALLOWED = new Map([
     [".pastTime", "視聴者詳細の過去コメント時刻＝設定画面外のメタ情報（054 タスク (1) の明示指示で据え置き）"],
   ]);
+  //   ⚠⚠ **061g で走査先を広げ、2026-08-14（独立レビュー）にディレクトリ走査へ変えた。**
+  //   061g までは VIEWER_CSS 1 枚だけを見ており、061g では移設先 4 枚を**手で足した**。どちらの形でも
+  //   「**新しい CSS モジュールを作ってそこで faint を誤用すれば素通りする**」穴が残る
+  //   （変異実測: `components/NewThing.module.css` に `.newHint { color: var(--text-faint) }` を足す →
+  //   手書きリスト版では**生存した**）。これは denylist を走査型へ変えたときと**同型の穴**で、
+  //   当時の教訓は「規則そのものを守れ」だった。**リストの保守を人間に委ねた時点で同じ穴が開く**ので、
+  //   `components/` はディレクトリごと走査する（＝部品を足しても検査に穴が開かない）。
+  //   ⚠ 条件は**一切緩めていない**（`:disabled` と FAINT_ALLOWED 以外は落ちる）。走査範囲が広がるだけ。
+  //   ⚠ `components/compactButtons.module.css` の `.btn:disabled` / `.btnGhost:disabled` /
+  //   `.dangerBtn:disabled` と `primitives.module.css` の `.primary:disabled` は faint を使うが
+  //   `:disabled` なので通る（＝正しい用法。走査対象を広げても既存は緑のまま＝実測）。
+  //
+  //   ⚠⚠ **`src` 全体へのグロブは不可**（意図的に `components/` ＋ VIEWER_CSS に限っている）:
+  //   `formLayout.module.css`（`.field input::placeholder`）/ `RakurakuToolsScreen.module.css`
+  //   （`.componentNote` / `.componentUrl`）/ `ComingSoonScreen.module.css`（`.note`）が faint を
+  //   可読テキストに使っており、広げると**正しい CSS で fail する**（(5-b) が戒めた失敗）。
+  //   ＝ **3 段規則の適用単位は「このコメビュ窓 ＋ 共通部品」**であって全画面ではない
+  //   （CSS 先頭の宣言が「13px/700 をこの窓の外へ持ち出さないこと」と書いているのと同じ線引き）。
+  //   ⇒ 適用単位を広げたくなったら、**まず宣言（VIEWER_CSS 先頭の表）を書き換えてから**ここを広げること。
+  const FAINT_SCANNED = [
+    [VIEWER_CSS, css],
+    ...collectModuleCss(COMPONENTS_DIR).map((rel) => [
+      rel,
+      // (6-a) で読んだ分は使い回す（同じファイルで fail を 2 回出さないため）。
+      rel === TOGGLE_CSS
+        ? toggleCss
+        : readCssGuarded(rel, "(6-b) の faint 走査ができません。"),
+    ]),
+  ];
   // ルールを素朴に列挙する（CSS パーサは持ち込まない）。`[^{}]+` はブレースを跨げないので、
   // 直前の `}` / `{` から次の `{` までが自然にセレクタになる。`@media` 自体は本体にブレースを含むため
   // マッチせず、その**中のルールは 1 件ずつ拾える**（＝将来 faint をメディアクエリ内で誤用しても捕まる）。
-  for (const m of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-    const selector = m[1].replace(/\s+/g, " ").trim();
-    if (selector.startsWith("@") || selector === "") continue;
-    if (!hasDecl(m[2], "color", "var\\(--text-faint\\)")) continue;
-    const parts = selector.split(",").map((s) => s.trim());
-    if (parts.every((p) => p.includes(":disabled") || FAINT_ALLOWED.has(p))) continue;
-    fail(
-      `${VIEWER_CSS}: \`${selector}\` が \`color: var(--text-faint)\` を使っています（054）。` +
-        `--text-faint は「押せない」を意味する濃度で**無効状態（:disabled）専用**です。` +
-        `可読テキスト（設定項目名・補助説明）なら \`var(--muted)\` を使い、無効表現なら \`:disabled\` に付け、` +
-        `それ以外の意図的な例外なら本スクリプトの FAINT_ALLOWED に理由付きで追加してください` +
-        `（色は jsdom で解決されないため、コンポーネントのテストでは検出できません）。`,
-    );
+  for (const [rel, source] of FAINT_SCANNED) {
+    if (source === null) continue; // 読めない旨は readCssGuarded が既に fail 済み（fail-open ではない）。
+    for (const m of source.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      const selector = m[1].replace(/\s+/g, " ").trim();
+      if (selector.startsWith("@") || selector === "") continue;
+      if (!hasDecl(m[2], "color", "var\\(--text-faint\\)")) continue;
+      const parts = selector.split(",").map((s) => s.trim());
+      if (parts.every((p) => p.includes(":disabled") || FAINT_ALLOWED.has(p))) continue;
+      fail(
+        `${rel}: \`${selector}\` が \`color: var(--text-faint)\` を使っています（054）。` +
+          `--text-faint は「押せない」を意味する濃度で**無効状態（:disabled）専用**です。` +
+          `可読テキスト（設定項目名・補助説明）なら \`var(--muted)\` を使い、無効表現なら \`:disabled\` に付け、` +
+          `それ以外の意図的な例外なら本スクリプトの FAINT_ALLOWED に理由付きで追加してください` +
+          `（色は jsdom で解決されないため、コンポーネントのテストでは検出できません）。`,
+      );
+    }
   }
 
   // (6-c) `.speakerField` は縦積みの器＝**レイアウト専用**へ戻したので typography を持たない。
@@ -1939,6 +2055,159 @@ for (const rel of [VIEWER_CSS, OVERLAY_CSS]) {
         );
       }
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// (11) 061g の不変条件: 画面を跨ぐ共通部品 3 本の意匠は **`components/` の 4 枚にだけ在る**。
+//     061g は「置き場所だけを変え、描画は 1mm も変えない」タスクで、その安全性の議論は全部
+//     **「移設であって複製ではない」**＝ VIEWER_CSS に 1 ルールも残っていないことに乗っている。
+//     ⚠⚠ ところが 061g 時点では**その不変条件をどのガードも検査していなかった**
+//     （2026-08-14 の独立レビューが変異で実測: VIEWER_CSS の末尾へ `.btn { … }` を書き戻す変異が
+//     **本チェッカーも 1520 件のテストも素通り**した）。通ってしまうと `styles.btn` が再び実在クラスへ
+//     解決し、`btnStyles.btn` と**別々の見た目で共存する**——(6-d) が塞いだ「打ち間違いが黙って通る」
+//     と同型の穴。CSS モジュールは存在しないキーにも文字列を返すので、どの層も気づけない。
+//     ⚠ **祖先の教訓**: このリポジトリは「別 CSS モジュールへ意匠を移したのにコメント/検査が
+//     付いてこなかった」失敗を 3 回再発させている。移設そのものを不変条件にしたのがこの (11)。
+// ---------------------------------------------------------------------------
+{
+  // 移設した意匠の一覧。**移設先ごとに「あちらに在り、こちらに無い」を両方向から見る。**
+  // ⚠ `components/` へ 4 本目の部品を出したときは、ここへも足すこと（足し忘れは検査の縮小になる）。
+  const MOVED = [
+    [
+      TOGGLE_CSS,
+      [
+        ".toggleRow",
+        ".toggleRowInline",
+        ".toggleLabel",
+        ".switch",
+        ".switchOn",
+        ".knob",
+        ".toggleRowDisabled",
+      ],
+    ],
+    [SELECT_CSS, [".selectWrap", ".selectCustom", ".chevron"]],
+    [
+      CONFIRM_CSS,
+      [
+        ".confirmDialog",
+        ".confirmBody",
+        ".confirmTitle",
+        ".confirmMessage",
+        ".confirmActions",
+      ],
+    ],
+    [BUTTONS_CSS, [".btn", ".btnGhost", ".dangerBtn"]],
+  ];
+  const movedClasses = MOVED.flatMap(([, sels]) => sels);
+  // `.btn` が `.btnGhost` / `.dangerBtn` に誤ヒットしないよう、クラス名の直後が識別子文字でないことを見る。
+  const classToken = (name) =>
+    new RegExp(`${name.replace(/\./g, "\\.")}(?![A-Za-z0-9_-])`);
+
+  // (11-a) **複製ゼロ**: VIEWER_CSS に移設クラスが 1 つも残っていないこと。
+  //   `ruleBody` の否定ではなく**セレクタの全走査**にするのは、`ruleBody` が「行頭のセレクタ直後が `{`」
+  //   の形しか拾わず、`.btn, .other { … }` と束ねられると**黙って素通りする**ため（(6-c) が塞いだ
+  //   fail-open と同型）。子孫セレクタ（`.card .btn`）も拾う。
+  const viewerSource = readCssGuarded(
+    VIEWER_CSS,
+    "(11-a) の「移設した意匠が元の窓に残っていないこと」を検査できません。",
+  );
+  if (viewerSource !== null) {
+    for (const m of viewerSource.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      const selector = m[1].replace(/\s+/g, " ").trim();
+      if (selector.startsWith("@") || selector === "") continue;
+      for (const name of movedClasses) {
+        if (!classToken(name).test(selector)) continue;
+        const [dest] = MOVED.find(([, sels]) => sels.includes(name));
+        fail(
+          `${VIEWER_CSS}: ` +
+            (selector === name
+              ? `\`${name}\` のルールがここにあります`
+              : `\`${selector}\` が \`${name}\` を含んでいます`) +
+            `（061g・(11-a)）。` +
+            `このクラスは **${dest} へ移設済み**で、ここに書くと**複製**になります。` +
+            `複製が在ると \`styles${name}\` が再び実在クラスへ解決し、\`btnStyles${name}\` / ` +
+            `\`confirmStyles${name}\` と**別々の見た目で共存**します（CSS モジュールは存在しないキーにも` +
+            `文字列を返すので typecheck も vitest も緑のまま通る＝ (6-d) が塞いだ穴と同型）。` +
+            `⚠ 意匠を変えたいなら **${dest} 側を直すこと**（この窓に書き戻さない）。` +
+            `この窓だけの別意匠が要るなら、**別のクラス名**を付けてください。`,
+        );
+      }
+    }
+  }
+
+  // (11-b) **移設先に実体が在る**こと。⚠ 消えても誰も気づかない——独立レビューの変異実測で
+  //   `.dangerBtn` をルールごと削除しても `.confirmMessage` を削除しても**緑のまま通った**。
+  //   `.dangerBtn` が消えると**破壊的操作（削除確認）の危険色が無音で消える**＝意匠ではなく安全性の退行。
+  for (const [rel, sels] of MOVED) {
+    const src = readCssGuarded(
+      rel,
+      "(11-b) の「移設先に意匠が実在するか」を検査できません。",
+    );
+    if (src === null) continue;
+    for (const sel of sels) {
+      if (ruleBody(src, sel) !== null) continue;
+      fail(
+        `${rel}: \`${sel}\` のルールを取り出せません（061g・(11-b)）。` +
+          `削除したか、クラス名を変えたか、セレクタをカンマで束ねた可能性があります。` +
+          (sel === ".dangerBtn"
+            ? `⚠⚠ \`.dangerBtn\` は**破壊的操作（視聴者メモリ削除・テーマ削除・テンプレート削除）の` +
+              `実行ボタンの危険色**です。消えると確認ダイアログの危険色が無音で消えます。`
+            : `このクラスは ${rel} の利用者（\`components/\` の部品と、それを使う各画面）が参照しています。`) +
+          `束ねたのならこのガードの取り出し方も一緒に直してください` +
+          `（黙って検査が無効になるのを防ぐため fail します）。`,
+      );
+    }
+  }
+
+  // (11-c) **TSX → CSS の向きを閉じる**（(4) の tone 表 / (6-d) と同型）。(11-b) は「CSS にルールが在る」
+  //   ことしか見ないので、TSX 側で `btnStyles.dangerBtn` を `btnStyles.danger` に打ち間違えても、
+  //   あるいは `danger` 分岐そのものを消しても素通りする。CSS モジュールは存在しないキーにも文字列を
+  //   返すため typecheck も vitest も緑（`vite/client` の宣言が `Record<string, string>`）。
+  //   ⚠ `styles.` ではなく **`btnStyles.` / `confirmStyles.` という別名でしか参照されない**ので、
+  //   (6-d) が避けた `sp.styles.some(…)` のような誤検出は起きない（別名は 061g が導入した専用の名前）。
+  const ALIASED = new Map([
+    ["btnStyles", BUTTONS_CSS],
+    ["confirmStyles", CONFIRM_CSS],
+  ]);
+  for (const [rel, src] of collectTsSources("src")) {
+    for (const [alias, cssRel] of ALIASED) {
+      const cssSource = readCssGuarded(
+        cssRel,
+        `(11-c) の「TSX の \`${alias}.X\` が CSS に実在するか」を検査できません。`,
+      );
+      if (cssSource === null) continue;
+      for (const m of src.matchAll(
+        new RegExp(`\\b${alias}\\.([A-Za-z0-9_]+)`, "g"),
+      )) {
+        const key = m[1];
+        if (ruleBody(cssSource, `.${key}`) !== null) continue;
+        fail(
+          `${rel}: \`${alias}.${key}\` が参照されていますが、${cssRel} に \`.${key}\` がありません` +
+            `（061g・(11-c)）。クラス名の打ち間違い、または CSS 側の削除・改名です。` +
+            `CSS モジュールは存在しないキーでも文字列を返すため、typecheck も vitest も緑のまま通り、` +
+            `**該当要素だけ意匠が当たらない**状態になります（jsdom は CSS を解決しないので気づけません）。`,
+        );
+      }
+    }
+  }
+
+  // (11-d) **危険色の分岐が生きている**こと。(11-b)(11-c) は「クラスが在る／参照が正しい」までで、
+  //   `danger ? btnStyles.dangerBtn : btnStyles.btn` を `btnStyles.btn` に潰す変更は捕まえられない
+  //   （どちらも実在するクラスなので）。⚠ これは 060c の「うっかり Enter で実行してしまう」対策と対で、
+  //   **削除確認が普通のボタンに見える**ことになる＝意匠ではなく安全性の退行。
+  //   ⚠ 既定フォーカス（`autoFocus` がキャンセル側）は `ConfirmDialog.test.tsx` が検査する
+  //   （DOM で見えるものはテストの担当・CSS で見えないものが本チェッカーの担当、という切り分け）。
+  const CONFIRM_TSX = "src/components/ConfirmDialog.tsx";
+  const confirmTsx = stripTsComments(readRaw(CONFIRM_TSX));
+  if (!/danger\s*\?\s*btnStyles\.dangerBtn\s*:\s*btnStyles\.btn/.test(confirmTsx)) {
+    fail(
+      `${CONFIRM_TSX}: 実行ボタンの \`danger ? btnStyles.dangerBtn : btnStyles.btn\` が見つかりません` +
+        `（061g・(11-d)）。**破壊的操作（削除確認）の危険色はこの分岐だけが担保**しています` +
+        `（消えると削除ボタンが通常色になり、取り消せない操作が普通の操作に見えます）。` +
+        `分岐の書き方を変えるなら、このガードの検査方法も一緒に直してください` +
+        `（色は jsdom で解決されないため、コンポーネントのテストでは検出できません）。`,
+    );
   }
 }
 

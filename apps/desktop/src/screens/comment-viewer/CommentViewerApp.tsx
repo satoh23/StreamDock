@@ -124,8 +124,11 @@ import { trackFirstOfStream } from "./firstOfStream";
 import { isMonetaryEvent, viewerIdOf } from "./viewerFormat";
 import { composeSpeechText } from "./speechText";
 import { ConnectionCard } from "./ConnectionCard";
-import { ToggleSwitch } from "./ToggleSwitch";
+import { ToggleSwitch } from "../../components/ToggleSwitch";
 import styles from "./CommentViewerApp.module.css";
+// 061g: ボタンの意匠は `components/compactButtons.module.css` へ移した（`ConfirmDialog` が
+// `components/` へ出たため）。⚠ 寸法・配色はこの窓の 6 ファイル計 25 箇所と `ConfirmDialog` の共有。
+import btnStyles from "../../components/compactButtons.module.css";
 
 /**
  * 032c-a/032c-c: 内蔵コメントビューア（別ウィンドウ label `comment-viewer`）の描画本体。
@@ -1918,7 +1921,7 @@ export function CommentViewerApp() {
                 <div className={styles.connActions}>
                   <button
                     type="button"
-                    className={styles.btn}
+                    className={btnStyles.btn}
                     onClick={handleTwitchConnect}
                     disabled={!streamConnected || linked}
                   >
@@ -1926,7 +1929,7 @@ export function CommentViewerApp() {
                   </button>
                   <button
                     type="button"
-                    className={styles.btn}
+                    className={btnStyles.btn}
                     onClick={handleStartSession}
                     disabled={
                       !streamConnected || !linked || channel.trim() === ""
@@ -1936,7 +1939,7 @@ export function CommentViewerApp() {
                   </button>
                   <button
                     type="button"
-                    className={styles.btnGhost}
+                    className={btnStyles.btnGhost}
                     onClick={handleStopSession}
                     disabled={!streamConnected}
                   >
@@ -1989,7 +1992,7 @@ export function CommentViewerApp() {
                 <div className={styles.connActions}>
                   <button
                     type="button"
-                    className={styles.btn}
+                    className={btnStyles.btn}
                     onClick={handleYouTubeConnect}
                     disabled={!streamConnected || youtubeLinked}
                   >
@@ -1997,7 +2000,7 @@ export function CommentViewerApp() {
                   </button>
                   <button
                     type="button"
-                    className={styles.btn}
+                    className={btnStyles.btn}
                     onClick={handleYouTubeStartSession}
                     disabled={!streamConnected || !youtubeLinked}
                   >
@@ -2005,7 +2008,7 @@ export function CommentViewerApp() {
                   </button>
                   <button
                     type="button"
-                    className={styles.btnGhost}
+                    className={btnStyles.btnGhost}
                     onClick={handleYouTubeStopSession}
                     disabled={!streamConnected}
                   >
@@ -2185,7 +2188,7 @@ export function CommentViewerApp() {
               </span>
               <button
                 type="button"
-                className={styles.btn}
+                className={btnStyles.btn}
                 onClick={() => void launchEngine()}
                 disabled={launching || launchRequested}
               >

@@ -1,7 +1,8 @@
 /* 061a: main 窓の「OBSエフェクト」画面。
    ⚠ 骨格（見出し・パネル・パネル見出し/本文）は `screens/formLayout.module.css` を使い、
-   トグルは `screens/comment-viewer/ToggleSwitch` を再利用する。**このファイルは前提ステータスの
-   並びだけ**を持つ＝新しい px / weight を発明しない（061a の要件）。
+   トグルは `components/ToggleSwitch` を再利用する（⚠ 061g で `screens/comment-viewer/` から移設済み。
+   意匠も `components/ToggleSwitch.module.css` にあり、この画面はコメビュ窓の CSS に依存していない）。
+   **このファイルは前提ステータスの並びだけ**を持つ＝新しい px / weight を発明しない（061a の要件）。
    ⚠ 生 hex を書かない（`theme.css` のトークンのみ・docs/security.md の規約）。 */
 
 .stack {

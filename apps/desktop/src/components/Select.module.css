@@ -1,0 +1,52 @@
+/* 061g: `Select.tsx` の意匠。**`screens/comment-viewer/CommentViewerApp.module.css` から本文そのまま移動**
+   （複製ではない＝あちらには 1 ルールも残していない）。
+
+   ■ なぜここにあるか
+   Select はコメビュ設定・視聴者ビュー・OBSエフェクト画面（エフェクト割り当て）から使う＝**画面を跨ぐ**。
+   意匠がコメビュ窓の CSS に同居していると、あちらを整理するだけで他画面の見た目が変わる。
+   ⚠ **画面を跨ぐ部品は最初から `components/` に置くこと**（docs/task-board.md に明文化してある）。
+
+   ⚠ フォーカスリングのトークン列は `CommentViewerApp.module.css` の `.searchInput` / `.connPill` /
+   `.themeCssInput` と揃えてある（片方だけ動かさないこと）。
+   ⚠ このファイルは静的ガード (6-b)（`color: var(--text-faint)` を無効状態専用に限定する全走査）の**検査対象**。 */
+
+/* 034(UI刷新): 自作スタイルの選択ボックス（Select.tsx）。native select を appearance:none で素の見た目だけ消し、
+   文字グリフ ▾ を重ねる（画像/data-URI なし＝CSP 安全）。話者・スタイル・フォントで共用し、アプリのトークン
+   （角丸・枠・配色）で統一する。native select 維持でキーボード/OS ポップアップ/アクセシビリティはそのまま。 */
+.selectWrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.selectCustom {
+  appearance: none;
+  -webkit-appearance: none;
+  min-width: 140px;
+  padding: 6px 28px 6px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  cursor: pointer;
+}
+
+.selectCustom:hover {
+  border-color: var(--primary-soft-border);
+}
+
+.selectCustom:focus-visible {
+  outline: 2px solid var(--primary-soft-border);
+  outline-offset: 1px;
+}
+
+/* シェブロン。native の矢印を消した分を文字グリフで補う（クリックは下の select へ透過）。 */
+.chevron {
+  position: absolute;
+  right: 10px;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--muted);
+  pointer-events: none;
+}

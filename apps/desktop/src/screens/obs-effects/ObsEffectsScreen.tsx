@@ -20,15 +20,14 @@ import {
   detectObsWebsocketConfig,
   type ObsWsConfig,
 } from "../../features/comment-viewer/obsApi";
-// ⚠ ディレクトリ跨ぎの再利用。トグルは `role="switch"` の a11y ごと既製なので、main 窓のために
+// 共通部品の再利用。トグルは `role="switch"` の a11y ごと既製なので、main 窓のために
 // 別実装を起こすと**新しい px / weight を発明する**ことになる（061a の要件に反する）。
-// ⚠⚠ **061d で跨いでいる部品が 2 本になった**（`ToggleSwitch` ＋ `EffectTemplateCard` が使う
-// `ConfirmDialog`）。どちらも実体は `screens/comment-viewer/` にあり、意匠を
-// `CommentViewerApp.module.css` から取っている。
-// **再修正トリガー＝3 本目が跨いだとき。** そのときは 2 本まとめて `components/` へ移すこと
-// （意匠を `CommentViewerApp.module.css` から切り出す作業を含む＝`ConfirmDialog` は
-// 既に 4 箇所から使われているので、移動は呼び出し側 5 箇所 ＋ CSS の改修になる）。
-import { ToggleSwitch } from "../comment-viewer/ToggleSwitch";
+// ⚠ **061g で移設済み**（発火した再修正トリガーの後始末）。`ToggleSwitch` / `Select` / `ConfirmDialog` は
+// `screens/comment-viewer/` ではなく **`components/`** にあり、意匠も `CommentViewerApp.module.css` から
+// 切り出して `components/*.module.css` へ移した＝**この画面はもうコメビュ窓の CSS に依存していない**。
+// ⚠⚠ **以後は「跨いだら移す」という後追いをしない**——**画面を跨ぐ部品は最初から `components/` に置くこと**
+// （docs/task-board.md の 061g に明文化してある）。
+import { ToggleSwitch } from "../../components/ToggleSwitch";
 import { Button } from "../../components/primitives";
 import { EffectAssignmentCard } from "./EffectAssignmentCard";
 import { EffectTemplateCard } from "./EffectTemplateCard";

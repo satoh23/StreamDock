@@ -4,6 +4,12 @@ import type {
   CommentViewDto,
 } from "../../features/comment-viewer/types";
 import styles from "./CommentViewerApp.module.css";
+// 061g: `ConfirmDialog` が `components/` へ出たので、流用している意匠もそちらへ移った。
+// ⚠⚠ **このダイアログは `.confirmDialog` / `.confirmBody` / `.confirmTitle` / `.confirmActions` の
+// 4 クラスを `ConfirmDialog` と共有している**（`.confirmMessage` だけがあちらの専有）。
+// あちらの寸法を触るとこの画面も動くので、`components/ConfirmDialog.module.css` 先頭の注記も読むこと。
+import confirmStyles from "../../components/ConfirmDialog.module.css";
+import btnStyles from "../../components/compactButtons.module.css";
 import { TONE_CLASS } from "./monetaryTone";
 import {
   authorInitial,
@@ -31,8 +37,10 @@ import {
  *
  * `ConfirmDialog` を props 拡張して流用しないのは confirm/cancel の意味論が違うため。**CSS は流用する**
  *（`.confirmDialog` / `.confirmBody` / `.confirmTitle` / `.confirmActions` / `.btnGhost`）。
+ * ⚠ 061g 以降、この 5 クラスは `components/ConfirmDialog.module.css` と `components/compactButtons.module.css`
+ * にある（`confirmStyles` / `btnStyles`）。`screens/` → `components/` は正しい向きの依存。
  * 文言整形は `viewerFormat.ts`、メタ行の意匠はコメント行（`.meta` / `.badge` / `.author` / `.amount` /
- * `.eventMessage` / `.text`）を流用する（重複実装しない）。
+ * `.eventMessage` / `.text`）を流用する（重複実装しない＝こちらは `styles`＝この窓の CSS のまま）。
  *
  * 表示専用。開閉 state は呼び出し側（`MonetaryTicker`）が持つ。
  */
@@ -82,7 +90,14 @@ export function MonetaryDetailDialog({
   return (
     <dialog
       ref={ref}
-      className={`${styles.confirmDialog} ${TONE_CLASS[monetaryTone(comment)]}`}
+      // ⚠ 061g: **2 つの CSS モジュールのクラスを 1 要素に並べている**（枠＝components/ 側、
+      // ティア色＝この窓の monetaryTone.ts 側）。成立する根拠は実測した次の 2 点:
+      //   ① `.confirmDialog.toneT0` のような**複合セレクタが存在しない**
+      //   ② tone クラスは `--tone-bg` / `--tone-fg` の**カスタムプロパティしか宣言していない**ので、
+      //      `.confirmDialog` の padding / max-width / width / color / background / border / border-radius と
+      //      **プロパティが 1 つも重ならない**＝モジュールの読み込み順（カスケード順）に依存しない
+      // ⚠ どちらかが崩れたら（tone クラスに実プロパティを足す・複合セレクタを作る）この前提は消える。
+      className={`${confirmStyles.confirmDialog} ${TONE_CLASS[monetaryTone(comment)]}`}
       // Esc（cancel イベント）はブラウザ既定の close を止め、state 経由で閉じる（open の不整合を防ぐ）。
       onCancel={(e) => {
         e.preventDefault();
@@ -109,8 +124,8 @@ export function MonetaryDetailDialog({
           <span className={styles.tipAmount}>{comment.monetaryAmount}</span>
         )}
       </div>
-      <div className={styles.confirmBody}>
-        <h2 className={styles.confirmTitle}>{typeLabel || "課金コメント"}</h2>
+      <div className={confirmStyles.confirmBody}>
+        <h2 className={confirmStyles.confirmTitle}>{typeLabel || "課金コメント"}</h2>
         <div className={styles.meta}>
           <span className={`${styles.badge} ${SOURCE_CLASS[comment.source]}`}>
             {providerLabel(comment.source)}
@@ -132,8 +147,8 @@ export function MonetaryDetailDialog({
         <p className={styles.monetaryDialogTime}>
           {fmtDateTime(comment.publishedAt)}
         </p>
-        <div className={styles.confirmActions}>
-          <button type="button" className={styles.btnGhost} onClick={onClose}>
+        <div className={confirmStyles.confirmActions}>
+          <button type="button" className={btnStyles.btnGhost} onClick={onClose}>
             閉じる
           </button>
         </div>

@@ -30,9 +30,9 @@ import type {
   ThemeImportFetchResult,
 } from "../../features/comment-viewer/commentStream";
 import { toErrorMessage } from "../../features/tools/useTools";
-import { ConfirmDialog } from "./ConfirmDialog";
+import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { CommentList } from "./CommentList";
-import { ToggleSwitch } from "./ToggleSwitch";
+import { ToggleSwitch } from "../../components/ToggleSwitch";
 import {
   baseName,
   clampDisplayText,
@@ -46,6 +46,9 @@ import {
 } from "./overlayThemeCard.helpers";
 import { useThemeImport } from "./useThemeImport";
 import styles from "./CommentViewerApp.module.css";
+// 061g: ボタンの意匠は `components/compactButtons.module.css` へ移した（`ConfirmDialog` が
+// `components/` へ出たため）。⚠ 寸法・配色はこの窓の 6 ファイル計 25 箇所と `ConfirmDialog` の共有。
+import btnStyles from "../../components/compactButtons.module.css";
 
 /**
  * 060d: 設定ビューの「コメントのデザイン」カード。ユーザーが用意した CSS を取り込み、名前を付けて保存し、
@@ -496,7 +499,7 @@ export function OverlayThemeCard({
                   </label>
                   <button
                     type="button"
-                    className={styles.btnGhost}
+                    className={btnStyles.btnGhost}
                     onClick={() => startRename(theme)}
                     disabled={busy}
                   >
@@ -504,7 +507,7 @@ export function OverlayThemeCard({
                   </button>
                   <button
                     type="button"
-                    className={styles.btnGhost}
+                    className={btnStyles.btnGhost}
                     onClick={() => setPendingDelete(theme)}
                     disabled={busy}
                   >
@@ -531,7 +534,7 @@ export function OverlayThemeCard({
         <div className={styles.voicevoxRow}>
           <button
             type="button"
-            className={styles.btn}
+            className={btnStyles.btn}
             onClick={() => select(null)}
             title="StreamDock 標準のデザインに戻します"
           >
@@ -615,7 +618,7 @@ export function OverlayThemeCard({
               />
               <button
                 type="button"
-                className={styles.btn}
+                className={btnStyles.btn}
                 onClick={submitForm}
                 disabled={busy || nameError !== null || cssError !== null}
               >
@@ -640,7 +643,7 @@ export function OverlayThemeCard({
             <div className={styles.voicevoxRow}>
               <button
                 type="button"
-                className={styles.btnGhost}
+                className={btnStyles.btnGhost}
                 onClick={() => void startImport()}
                 disabled={busy}
               >
@@ -669,7 +672,7 @@ export function OverlayThemeCard({
               />
               <button
                 type="button"
-                className={styles.btn}
+                className={btnStyles.btn}
                 onClick={submitForm}
                 disabled={busy || nameError !== null}
               >
@@ -677,7 +680,7 @@ export function OverlayThemeCard({
               </button>
               <button
                 type="button"
-                className={styles.btnGhost}
+                className={btnStyles.btnGhost}
                 onClick={backToPasteForm}
                 disabled={busy}
               >

@@ -1,12 +1,19 @@
 import { useEffect, useRef, type ReactNode } from "react";
-import styles from "./CommentViewerApp.module.css";
+import styles from "./ConfirmDialog.module.css";
+import btnStyles from "./compactButtons.module.css";
 
 /**
  * 038b: 破壊的操作（視聴者の個別削除・複数選択のまとめて削除）の前に必ず挟む確認ダイアログ。
  *
  * 新規依存を増やさないため、ネイティブの HTML `<dialog>` 要素＋`showModal()` を使う（focus trap・Esc で閉じる・
- * backdrop・モーダル化がブラウザ標準で付く）。見た目は CommentViewerApp.module.css の役割トークンで統一し、
+ * backdrop・モーダル化がブラウザ標準で付く）。見た目は役割トークンで統一し、
  * 外部リソース・画像・data-URI は使わない（CSP 安全）。表示専用で、削除の実処理・state は呼び出し側が持つ。
+ *
+ * 061g: `screens/comment-viewer/` から `components/` へ移設した（`obs-effects/EffectTemplateCard` も使う＝
+ * 画面を跨ぐ部品）。⚠ 意匠は 2 モジュールに分かれている:
+ *   - `ConfirmDialog.module.css` … 枠・本文・見出し・操作行。**`MonetaryDetailDialog` と 4 クラス共有**
+ *   - `compactButtons.module.css` … `.btn` / `.btnGhost` / `.dangerBtn`。**コメビュ側 25 箇所と共有**
+ * どちらも「このダイアログ専用」ではないので、寸法や配色を動かす前に各モジュール先頭の注記を読むこと。
  */
 
 interface ConfirmDialogProps {
@@ -91,10 +98,17 @@ export function ConfirmDialog({
           {/* ⚠⚠ **既定フォーカスはキャンセル側**（060c）。`<dialog>.showModal()` は autofocus が
               無ければ「最初のフォーカス可能な要素」を選ぶので DOM 順でも結果は同じだが、
               **並び順を入れ替えただけで既定が反転する**のは危うい（外部取得の同意ダイアログでは
-              「うっかり Enter で取得してしまう」が実害になる）。明示しておく。 */}
+              「うっかり Enter で取得してしまう」が実害になる）。明示しておく。
+              ⚠ 061g レビューまで**この `autoFocus` も下の `danger` 分岐もどの層も検査していなかった**ので、
+              2026-08-14 に守りを足した（並び順を入れ替える／分岐を潰す変更を実際に殺せることを変異で実測）:
+                - `ConfirmDialog.test.tsx`「既定フォーカスはキャンセル側」… **フォーカスそのもの**を見る
+                  （DOM の並び順ではなく。並び順に依存させないためにこの `autoFocus` がある）
+                - `ConfirmDialog.test.tsx`「danger で危険色クラスに切り替わる」… 当たるクラス名を見る
+                - `scripts/check-css-guards.mjs` (11-b)(11-c)(11-d) … 危険色の**実体と分岐**
+                  （色は jsdom が解決しないのでテストでは殺せない＝3 つで 1 組） */}
           <button
             type="button"
-            className={styles.btnGhost}
+            className={btnStyles.btnGhost}
             onClick={onCancel}
             disabled={busy}
             autoFocus
@@ -103,7 +117,7 @@ export function ConfirmDialog({
           </button>
           <button
             type="button"
-            className={danger ? styles.dangerBtn : styles.btn}
+            className={danger ? btnStyles.dangerBtn : btnStyles.btn}
             onClick={onConfirm}
             disabled={busy}
           >
