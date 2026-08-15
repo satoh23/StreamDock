@@ -1594,6 +1594,24 @@
   - 063c ガチャ演出（[docs/tasks/063c-gacha-presentation.md](tasks/063c-gacha-presentation.md)／**抽選中 → 結果**の 2 段・抽選中テンプレートは任意・**軽レビュー**）
     - ⚠ **抽選のタイミングを演出に合わせて遅らせない**（バースト上限・クールダウンとの整合が崩れる）＝**結果が決まった後に決まっていないふりをする**のが演出
     - ⚠ **抽選中に景品名を漏らさない**（`{prize}` を空にする）／⚠ **投げ銭通知音（059b）＋抽選中の音＋結果の音の重なりは実機でしか分からない**ので必ず確認する
+- 065 わんコメ リスナー記録の引き継ぎ（親設計 [docs/tasks/065-onecomme-viewer-import.md](tasks/065-onecomme-viewer-import.md)／**最優先**・わんコメで積み上げた視聴者の来訪回数・コメント数・メモを StreamDock へ移す。**いちばんの実利は累積数ではなく「常連さんに初見バッジが出る」の解消**〔038c は `viewers` 行の存在有無だけで判定するので、行さえ作れば直る＝移行の障壁そのもの〕・**起票のみ／実装未着手・2026-08-16**）
+  - **経路は公式 CSV エクスポート 1 本に限定**（[リスナー記録機能](https://onecomme.com/docs/feature/listener-list)）。⚠ **HTTP API（`/api/listeners`）経由の自動同期と `onecomme.db` の直読みは対象外**——直読みは[利用規約](https://onecomme.com/terms)の禁止 2「逆コンパイル・リバースエンジニアリング」に正面衝突する（公式 CSV がある以上リスクを取る理由がゼロ）
+  - ⚠⚠ **規約リスクは残っている**。禁止 18「取得したデータの一部または全部を**無断で**外部保存する行為」と各連携サービス条項「当アプリ・サービス以外での二次利用を目的とした保存は認められません」に素直に読むと当たる。**本人の判断（2026-08-16）＝開発元への許諾確認は行わず CSV のみで進める**（根拠＝CSV 出力は公式機能でありユーザーの明示操作で始まる。⚠ **この整理が正しい保証はなくリスク受容**）。**HTTP API へ広げたくなったら許諾確認を先に行うこと**
+  - ⚠⚠ **最大の設計上の障害＝`RECOMPUTE_VIEWER_AGGREGATES_SQL`**。038a は集計列を**毎回 `viewer_comments` から再計算**するので、`viewers` に引き継ぎ値を書いても**その人が次に 1 回コメントした瞬間に消える**。⇒ `imported_*` 列を足して再計算 SQL 側で `COUNT(...) + COALESCE(imported_*, 0)` に加算する。**疑似コメント行の捏造は却下**（詳細画面が破綻する）
+  - **実物の CSV（61 名・2 回エクスポート）で検証済み**: ⚠⚠ **列順は固定ではない**（`screenName` が 6 列目 → 19 列目へ移動した）＝**位置で読む実装は将来必ず壊れる。ヘッダ名で引き、必須列が欠けたら fail-closed**／突合キーは成立（わんコメ `yt-UC...` ⇔ StreamDock `youtube:UC...`＝YouTube の `author.id` は `author_details.channel_id`）／UTF-8・BOM なし・LF・RFC4180 標準クォート（`badges` 列が実証）
+  - **引き継げないもの**＝初回来訪日時（⚠ `interval` 仮説を除く）・表示名（`username` は `@handle`）・サブスク/メンシプ有無・`amount` の通貨・ニコ生等の視聴者。⚠ **`amount` は単位不明**（5/6/7/10/160/320/1000＝Jewels の可能性）なので **`superchat_amount` / `bits_amount` に混ぜない**（「1000 円」と「1000 jewels」が加算される）
+  - ⚠ **`interval` は仮説のまま採用**（本人判断）。`lcts − interval` を初回来訪日とするが、「直近 2 件の間隔」という解釈も同じデータで成立し**区別できていない**。⇒ **必ず `imported_first_seen_at` の独立列に置く**（解釈が外れたらその 1 列を NULL にするだけで戻せる。`first_seen_at` へ直接書くと実測値と混ざって二度と分離できない）
+  - **新テーブルはゼロ**（当初案の `viewer_labels` / `viewer_name_history` は不要）。実データで `label` は単一値（わんコメ UI 上も 1 つしか設定できないことを本人が確認）、`nameHistory` は要素の形が不明なので**生 JSON 文字列のまま保管**する
+  - **ファイル取り込みは 060b（`import_overlay_theme`）と完全に同型**＝`plugin-dialog` の `open()` の生パスを Rust が受けて検証 → `fs::read`。**`dialog:allow-open` は付与済み・`fs:*` はゼロ**なので**新規プラグイン・新規 capability ゼロ**。⚠ UNC 拒否を拡張子チェックより**前**に置くこと（060b の S-4）
+  - ⚠ **別件で起票が要る**: [YouTube API Developer Policies](https://developers.google.com/youtube/terms/developer-policies) の**保存期間 30 日ルール**（無期限保存が許されるのは channelId 等の ID 系のみ）に対し、**038a は YouTube のコメント本文と表示名を無期限保存している**。⚠ **本タスクとは独立に既に存在する論点**だが、065 は保存量を増やす方向なので遅かれ早かれ向き合う必要がある
+  - 実装順: 065a（データ層・**security-review 必須**）→ 065b（UI・軽レビュー）
+  - 065a Rust データ層（[docs/tasks/065a-onecomme-csv-import-data-layer.md](tasks/065a-onecomme-csv-import-data-layer.md)／`viewers` に列追加〔`ensure_column`〕・再計算 SQL 改訂・CSV パース・`import_viewer_memory_csv` 1 本・security.md 改訂）
+    - ⚠ **新規依存は `csv` crate の 1 つだけ**（理由＝列順が可変なのでヘッダ名で引く必要がある／メモは自由記入で引用フィールド内の改行が来る／pure-Rust・外部通信なし・**同期 API**）。⚠ **async/HTTP 系を持ち込まない**
+    - ⚠ **再インポートは `imported_*` だけ「上書き」・属性（`name`/`note`/`nickname`/`label`）は「CSV が非空かつ StreamDock 側が空のときだけ書く」非破壊マージ**。⚠ **`name` を無条件で上書きすると `display_name` が `@handle` へ退化する**
+    - ⚠ **`gift_count` の集合に `raid` と `chat` を入れない**（`raid` は課金ではない＝062a の決定）
+  - 065b UI（[docs/tasks/065b-onecomme-import-ui.md](tasks/065b-onecomme-import-ui.md)／視聴者一覧に導線 1 か所・取り込み結果の 4 件数表示・一覧/詳細への新項目反映・**軽レビュー**）
+    - ⚠ **frontend はファイルを読む手段を持たない**（`open()` はパス文字列しか返さず `fs:*` は無い）＝**取り込み前プレビューは実装できない**
+    - ⚠ **`skipped_unsupported` は正常系でも 0 にならない**（わんコメにはニコ生等の視聴者が居る）＝エラー表現にしないこと。⚠ **`imported_gift_amount` に通貨記号を付けない**（`fmtSuperchat` を流用した瞬間に嘘になる）
 
 ## 保留
 
