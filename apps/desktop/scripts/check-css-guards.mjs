@@ -1991,12 +1991,19 @@ for (const rel of [VIEWER_CSS, OVERLAY_CSS]) {
 //   ⚠⚠ **jsdom はカスケードもレイアウトも解決しない**ので、DOM 構造は
 //   `EffectOverlayApp.test.tsx` が固定できても、**CSS だけを壊す変更は 1 件も止まらない**
 //   （061d-2 のミューテーションで実測＝10 件中この 1 件だけが SURVIVED した）。
+//   ⚠⚠ **061l で層が 2 枚になった**（`.eventLayer`＝配信イベント / `.templateLayer`＝エフェクト）。
+//   **同じ理由がそのまま当てはまる**ので、イベント層の 2 宣言もここで固定する——
+//   ⚠ こちらを外すと、イベントが `.root` の flex（中央寄せ）に巻き込まれて
+//   **セットアップ用ガイドやテンプレートと重なる**が、**コンポーネントテストは全部緑のまま**である。
+//   ⚠ **層を増やしたらここへ足すこと**（(10-d) の「窓を増やすたびに足す」と同じ運用）。
 {
   const effectCss = read(EFFECT_OVERLAY_CSS);
   const expectations = [
-    [".root", "position", "relative", "テンプレート層の基準（無いと窓に解決される）"],
+    [".root", "position", "relative", "テンプレート層とイベント層の基準（無いと窓に解決される）"],
     [".templateLayer", "position", "absolute", "テンプレートを通常フローの外へ出す層"],
     [".templateLayer", "inset", "0", "層を窓いっぱいに広げる（`EffectTemplateView` の器の基準）"],
+    [".eventLayer", "position", "absolute", "配信イベントを通常フローの外へ出す層（061l・判断 7）"],
+    [".eventLayer", "inset", "0", "層を窓いっぱいに広げる（061l・判断 7）"],
   ];
   for (const [selector, prop, valuePattern, role] of expectations) {
     const body = ruleBody(effectCss, selector);

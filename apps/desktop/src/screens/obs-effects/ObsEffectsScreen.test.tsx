@@ -7,7 +7,10 @@ import {
   STAGE_OVERLAY_ENABLED_KEY,
   EFFECT_OBS_AUTO_ADD_KEY,
   EFFECT_OVERLAY_GUIDE_PENDING_KEY,
+  STREAM_EVENT_ROUND_KEY,
+  STREAM_EVENT_SELECTED_KEY,
 } from "../../features/comment-viewer/overlaySettings";
+import { STREAM_EVENT_REGISTRY } from "../../features/obs-effects/streamEventRegistry";
 // 型のみの import（コンパイル時に消えるので vi.hoisted / vi.mock の巻き上げと競合しない）。
 // ⚠ 明示的に型を付けないと `vi.fn(async () => null)` の戻り値が `Promise<null>` に推論され、
 // 検出できたケース（`mockResolvedValue({...})`）が typecheck で落ちる。
@@ -135,6 +138,13 @@ const outputSelect = (label: string) =>
 const conditionStatus = () =>
   screen.getByText("表示する条件").parentElement?.textContent ?? "";
 
+/** 061l: 「開催中のイベント」行の値（判断 10）。 */
+const roundStatus = () =>
+  screen.getByText("開催中のイベント").parentElement?.textContent ?? "";
+
+/** 061l: 同梱イベント（見本 1 本）の id。⚠ レジストリから引く（id を 2 か所へ書かない）。 */
+const EVENT_ID = STREAM_EVENT_REGISTRY[0].id;
+
 /**
  * 061k: **出力先ごとの「エフェクトのウィンドウ」行**の値（「表示中」/「停止中」/「確認中…」）。
  * ⚠ 窓が 2 本になったので `getByText("停止中")` は**必ず 2 件ヒットする**——行を特定して読む。
@@ -197,11 +207,18 @@ describe("061a: ObsEffectsScreen", () => {
     ).toBeInTheDocument();
   });
 
-  it("⚠ 061i: 「配信イベント」タブは準備中の案内だけ（061l まで枠だけ）", async () => {
-    render(<ObsEffectsScreen />);
+  it("⚠⚠ 061l: 「配信イベント」タブにイベントの一覧と開催の器が出る（061i の準備中を置き換えた）", async () => {
+    // ⚠ 061i はここに「準備中」の 1 文しか無く、061l がその中身を入れた。
+    //   **「準備中」の文言が戻ってこないこと**も同時に固定する（枠だけの状態への逆戻り）。
+    const { container } = render(<ObsEffectsScreen />);
     fireEvent.click(screen.getByRole("tab", { name: "配信イベント" }));
 
-    expect(screen.getByText(/この機能は準備中です/)).toBeInTheDocument();
+    expect(container.textContent).not.toContain("この機能は準備中です");
+    expect(screen.getByRole("heading", { name: "イベントの開催" })).toBeInTheDocument();
+    expect(screen.getByText("みんなでコメントカウント")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "詳細を見る →" }),
+    ).toBeInTheDocument();
     // ⚠ タブを切り替えるとコメント側のカードは出ない（＝本当に入れ替わっている）。
     expect(
       screen.queryByRole("heading", { name: "エフェクトを表示する条件" }),
@@ -925,5 +942,159 @@ describe("061a: ObsEffectsScreen", () => {
     // ⚠ 自動反映トグルでも立てない（窓を開かないので）。
     fireEvent.click(autoAddToggle());
     expect(localStorage.getItem(EFFECT_OVERLAY_GUIDE_PENDING_KEY)).toBeNull();
+  });
+
+  // --- 061l: 配信イベントの開催（判断 5・6・10・11） ---------------------------------------------
+
+  /** 061l: 「配信イベント」タブを開いて、適用済みの状態にする（＝「開始」が出る状態）。 */
+  const openEventTabWithApplied = () => {
+    localStorage.setItem(STREAM_EVENT_SELECTED_KEY, EVENT_ID);
+    const view = render(<ObsEffectsScreen />);
+    fireEvent.click(screen.getByRole("tab", { name: "配信イベント" }));
+    return view;
+  };
+
+  it("⚠⚠ 新規 5: 「開始」は開催キーを書き、**ステージ窓だけ**を開く", async () => {
+    openEventTabWithApplied();
+    fireEvent.click(screen.getByRole("button", { name: "開始" }));
+
+    // ① 開催キーが書かれる（`endsAt` は `defaultDurationMs` から決まる絶対時刻）。
+    const saved = JSON.parse(
+      localStorage.getItem(STREAM_EVENT_ROUND_KEY) as string,
+    ) as { eventId: string; startedAt: number; endsAt: number };
+    expect(saved.eventId).toBe(EVENT_ID);
+    expect(saved.endsAt - saved.startedAt).toBe(5 * 60_000);
+
+    // ② ⚠⚠ **ステージ窓だけ**（コーナー窓は開かない＝イベントはステージにしか出ない・判断 7）。
+    await waitFor(() =>
+      expect(mocks.openStageOverlayWindow).toHaveBeenCalledTimes(1),
+    );
+    expect(mocks.openEffectOverlayWindow).not.toHaveBeenCalled();
+    // ③ ⚠ 派生値（窓を出すか）は触らない——あれの意味は「その出力先の条件が 1 件以上あるか」で、
+    //    書き手は `useEffectTemplates` だけ（061i 判断 2・061k 判断 6 の不変条件）。
+    expect(localStorage.getItem(STAGE_OVERLAY_ENABLED_KEY)).toBeNull();
+    expect(localStorage.getItem(EFFECT_OVERLAY_ENABLED_KEY)).toBeNull();
+  });
+
+  it("⚠⚠ 新規 6: 「終了」は開催キーを消すが、**窓は 1 つも閉じない**（親 046 の規律）", async () => {
+    openEventTabWithApplied();
+    fireEvent.click(screen.getByRole("button", { name: "開始" }));
+    await waitFor(() =>
+      expect(mocks.openStageOverlayWindow).toHaveBeenCalledTimes(1),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "終了" }));
+    expect(localStorage.getItem(STREAM_EVENT_ROUND_KEY)).toBeNull();
+
+    // ⚠⚠ **`close` 系 IPC が 1 度も呼ばれていないこと**（「何も出ない」では殺せない変異②の本体）。
+    await act(async () => {});
+    expect(mocks.closeStageOverlayWindow).not.toHaveBeenCalled();
+    expect(mocks.closeEffectOverlayWindow).not.toHaveBeenCalled();
+  });
+
+  it("⚠⚠ 新規 14: 前提ステータスの「開催中のイベント」行が 2 状態とも正しい", async () => {
+    openEventTabWithApplied();
+    expect(roundStatus()).toContain("開催していません");
+
+    fireEvent.click(screen.getByRole("button", { name: "開始" }));
+    // ⚠ 残りは**分まで**（秒を出すと毎秒再描画になる・判断 10）。
+    expect(roundStatus()).toContain("みんなでコメントカウント");
+    expect(roundStatus()).toContain("残り 5 分");
+    expect(roundStatus()).not.toContain("開催していません");
+
+    fireEvent.click(screen.getByRole("button", { name: "終了" }));
+    expect(roundStatus()).toContain("開催していません");
+    await act(async () => {});
+  });
+
+  it("⚠ 新規 14: 開催中の保存値はマウント時に読む（画面を開き直しても続いている）", async () => {
+    const now = Date.now();
+    localStorage.setItem(STREAM_EVENT_SELECTED_KEY, EVENT_ID);
+    localStorage.setItem(
+      STREAM_EVENT_ROUND_KEY,
+      JSON.stringify({ eventId: EVENT_ID, startedAt: now, endsAt: now + 120_000 }),
+    );
+    render(<ObsEffectsScreen />);
+    expect(roundStatus()).toContain("みんなでコメントカウント");
+    // ⚠⚠ **窓は開き直さない**（開くのは「開始」の操作だけ＝画面を開くたびに窓が増えない）。
+    await act(async () => {});
+    expect(mocks.openStageOverlayWindow).not.toHaveBeenCalled();
+  });
+
+  it("⚠⚠ 期限切れの保存値は「開催していません」になるが、**掃除はされずに残る**（受容の裏取り）", async () => {
+    // ⚠⚠ **061l レビュー Q-1 でテスト名を訂正した。** 旧名は「掃除される（best-effort）」だったが、
+    //   本体は掃除を 1 行も検査しておらず、**実際にも掃除されない**（レビューで `toBeNull()` を
+    //   足すと RED になることを実測）。マウント時点で期限切れなら `round` は最初から `null` ＝
+    //   **tick を張らない**ので `clearStreamEventRound` に到達しないためである。
+    //   ⇒ これは progress.md 061l 節が受容事項として書いている挙動そのものなので、
+    //   **受容している側を機械で固定する**形へ直した（名前だけ直して未検査のままにしない）。
+    localStorage.setItem(
+      STREAM_EVENT_ROUND_KEY,
+      JSON.stringify({ eventId: EVENT_ID, startedAt: 0, endsAt: 1 }),
+    );
+    render(<ObsEffectsScreen />);
+    expect(roundStatus()).toContain("開催していません");
+    await act(async () => {});
+    // ⚠⚠ **残ることが正しい**——正しさは `parseStreamEventRound` が持っており（読む側が必ず落とす）、
+    //   掃除は「開催中に main 窓がこの画面を開いているとき」の best-effort に留めてある（判断 5）。
+    //   ⚠ 帰結＝**期限切れキーは再起動をまたいで残る**ので、
+    //   **端末内データの一括削除を作るときの対象**になる（`overlaySettings.ts` の申し送りが正）。
+    expect(localStorage.getItem(STREAM_EVENT_ROUND_KEY)).not.toBeNull();
+  });
+
+  it("⚠⚠ 期限前の tick では掃除しない（開催が勝手に終わらない）", async () => {
+    // ⚠⚠ **変異 ⑭-e（掃除の条件を外す）を殺すのはこのケースだけ**——期限切れ側のケースは
+    //   「最後には消えている」ことしか見ておらず、**10 秒で勝手に終わる**実装でも緑になる。
+    vi.useFakeTimers();
+    localStorage.setItem(STREAM_EVENT_SELECTED_KEY, EVENT_ID);
+    render(<ObsEffectsScreen />);
+    fireEvent.click(screen.getByRole("tab", { name: "配信イベント" }));
+    fireEvent.click(screen.getByRole("button", { name: "開始" }));
+
+    // tick を何周期か回しても、期限（5 分）までは開催が続く。
+    // ⚠ `act` で包む——包まないと**最後の 1 テックの state 更新が DOM へ反映される前**に読んでしまい、
+    //   残り時間が 1 テックぶん古く見える（実測で踏んだ）。
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(roundStatus()).toContain("みんなでコメントカウント");
+    expect(localStorage.getItem(STREAM_EVENT_ROUND_KEY)).not.toBeNull();
+    // ⚠ 残りは分で減っていく（時計が 1 つ＝`nowMs` が tick で進んでいる）。
+    expect(roundStatus()).toContain("残り 4 分");
+  });
+
+  it("⚠⚠ 新規 13: 期限が来たら表示が消えて掃除が走り、アンマウントで tick が止まる", async () => {
+    vi.useFakeTimers();
+    localStorage.setItem(STREAM_EVENT_SELECTED_KEY, EVENT_ID);
+    const { unmount } = render(<ObsEffectsScreen />);
+    fireEvent.click(screen.getByRole("tab", { name: "配信イベント" }));
+    fireEvent.click(screen.getByRole("button", { name: "開始" }));
+    expect(roundStatus()).toContain("残り 5 分");
+
+    // 5 分を越えると、tick が期限切れに気づいて表示を落とし、保存値も掃除する。
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5 * 60_000 + 10_000);
+    });
+    expect(roundStatus()).toContain("開催していません");
+    expect(localStorage.getItem(STREAM_EVENT_ROUND_KEY)).toBeNull();
+
+    // ⚠ 本命: 開催中にアンマウントしても tick が残らない（配信中にタイマーを残さない）。
+    fireEvent.click(screen.getByRole("button", { name: "開始" }));
+    expect(localStorage.getItem(STREAM_EVENT_ROUND_KEY)).not.toBeNull();
+    unmount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+    });
+    // ⚠ アンマウント後の tick が走っていれば、掃除で消えてしまう＝残っていることが「止まった」証拠。
+    expect(localStorage.getItem(STREAM_EVENT_ROUND_KEY)).not.toBeNull();
+  });
+
+  it("⚠ 「開催中のイベント」行は共通領域にある（どちらのタブでも見える）", async () => {
+    localStorage.setItem(STREAM_EVENT_SELECTED_KEY, EVENT_ID);
+    render(<ObsEffectsScreen />);
+    // 既定タブ（コメントで出すエフェクト）でも出る。
+    expect(screen.getByText("開催中のイベント")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "配信イベント" }));
+    expect(screen.getByText("開催中のイベント")).toBeInTheDocument();
   });
 });

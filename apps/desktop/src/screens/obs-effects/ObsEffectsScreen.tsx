@@ -34,6 +34,18 @@ import { Tabs, type TabItem } from "../../components/Tabs";
 //   停止中の注記を出せるように `effectWindowOpen` をあちらへ渡す。
 import { EffectAssignmentCard } from "./EffectAssignmentCard";
 import { EffectTemplateCard } from "./EffectTemplateCard";
+// ⚠ 061l: 「配信イベント」タブの中身（061i から枠だけだった場所）。
+//   ⚠⚠ **開催状態はこの画面が持ち、タブへ渡す**（前提ステータスの行と同じ値を出すため・下の JSDoc）。
+import { StreamEventTab } from "./StreamEventTab";
+import { findStreamEvent } from "../../features/obs-effects/streamEventRegistry";
+import {
+  clearStreamEventRound,
+  loadStreamEventRound,
+  saveStreamEventRound,
+  startStreamEventRound,
+  streamEventRemainingLabel,
+  type StreamEventRound,
+} from "../../features/obs-effects/streamEventRound";
 import {
   effectConditionCount,
   EFFECT_OUTPUT_LABEL,
@@ -65,7 +77,8 @@ import styles from "./ObsEffectsScreen.module.css";
  *
  * ## ⚠⚠ 061i でこの画面は「タブ 2 枚 ＋ 共通の下部」になり、表示トグルが消えた
  *
- * - **タブ**（[`Tabs`]）… 「コメントで出すエフェクト」＝テンプレートと条件／「配信イベント」＝**061l まで枠だけ**。
+ * - **タブ**（[`Tabs`]）… 「コメントで出すエフェクト」＝テンプレートと条件／「配信イベント」＝
+ *   ⚠⚠ **061l で中身が入った**（[`StreamEventTab`]＝一覧 → 詳細 → 適用 → 開始/終了）。
  *   ⚠ **`ComingSoonScreen` は流用しない**（あれは画面まるごと用のダミーページで、ヘッダー導線の意味論を持つ）。
  * - **共通の下部**（両タブの外）… 「配信画面に表示」（OBS への取り込み手順）／「OBS へ自動で反映」／前提ステータス。
  *   ⚠ **どちらのタブで使うエフェクトも同じ 2 つの出力窓へ出る**ので、タブの中に入れると
@@ -142,10 +155,22 @@ import styles from "./ObsEffectsScreen.module.css";
 const STATUS_POLL_INTERVAL_MS = 2000;
 
 /**
+ * 061l: **開催中の配信イベントの残り時間を見直す間隔**（ミリ秒）。
+ *
+ * ⚠ **秒ではなく 10 秒**にしてあるのは、この窓が出すのが「残り N 分」だから（判断 10＝
+ * 前提ステータスとタブを毎秒再描画しない）。⚠ **期限切れに気づくのも最大 10 秒遅れる**が、
+ * **配信画面の表示はステージ窓が自分の時計で消す**ので、遅れるのは main 窓の表示と掃除だけである。
+ * ⚠⚠ **開催していない間はタイマーを張らない**（061a 以来「配信中にタイマーを残さない」）。
+ */
+const STREAM_EVENT_TICK_MS = 10_000;
+
+/**
  * 061i: タブの定義（判断 6・(2)）。
- * ⚠ **「配信イベント」は 061l まで中身が無い**が、**枠はここで用意する**——
- * 用途の違う 2 種類（コメント条件に反応する演出／視聴者参加型の配信イベント）を分ける器が無いと、
- * 061l で画面が「条件の表の下にイベント一覧がぶら下がる」形になってしまう。
+ * ⚠ 用途の違う 2 種類（コメント条件に反応する演出／視聴者参加型の配信イベント）を分ける器で、
+ * これが無いと画面が「条件の表の下にイベント一覧がぶら下がる」形になる。
+ * ⚠⚠ **061l で「配信イベント」側に中身（[`StreamEventTab`]）が入った。**
+ * ⚠ **どちらのタブも同じ 2 つの出力窓へ出る**（窓を分けた軸は「タブ別」ではなく**用途別**）ので、
+ * 共通の下部（配信画面に表示／OBS へ自動で反映／前提ステータス）は**両タブの外**のままである。
  */
 const EFFECT_TABS: readonly TabItem[] = [
   { id: "comment", label: "コメントで出すエフェクト" },
@@ -156,6 +181,26 @@ export function ObsEffectsScreen() {
   const [obsAutoAdd, setObsAutoAdd] = useState(() => loadEffectObsAutoAdd());
   /** いま出しているタブ。⚠ 061i: **状態はこの画面が持つ**（`Tabs` は表示専用）。 */
   const [tab, setTab] = useState<string>(EFFECT_TABS[0].id);
+
+  /**
+   * 061l: **開催中の配信イベント**（`null`＝開催していない・判断 5）。
+   *
+   * ⚠⚠ **状態の持ち主をこの画面にしてある**（`StreamEventTab` ではない）。理由は 2 つ:
+   *   1. **前提ステータスの「開催中のイベント」行**（判断 10）が同じ値を出すので、
+   *      タブと画面が別々に持つと**片方が古くなる**（061d-2 レビュー Q-9 と同型）。
+   *   2. ⚠⚠ **開始でステージ窓を開く invoke は、この画面の `stage` 用キュー**を通す（061k 判断 11）。
+   * ⚠ **マウント時に localStorage から読む**（`storage` に依存しない＝判断 5）。期限切れはここで落ちる。
+   * ⚠⚠ **開催キーを書く（消す）のはこの画面の 2 つのハンドラと下の掃除だけ**
+   *    ——ステージ窓は**読むだけ**である（061i 判断 2 の「書き手を 1 か所に閉じる」規律）。
+   */
+  const [round, setRound] = useState<StreamEventRound | null>(() =>
+    loadStreamEventRound(Date.now()),
+  );
+  /**
+   * 061l: 残り時間を計算するための「いま」。⚠⚠ **時計は 1 つ**（判断 5）——
+   * 前提ステータスの行とタブが別々に `Date.now()` を呼ぶと、同じ画面で 1 テック分ずれた値が並ぶ。
+   */
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   // 前提ステータス。null = 未取得。
   // ⚠⚠ 061k: **窓ごとに 1 つずつ持つ**（片方の値でもう片方を代表させない）。
@@ -288,6 +333,79 @@ export function ObsEffectsScreen() {
     [runOverlayOp],
   );
 
+  /**
+   * 061l（判断 5・6）: **開催を始める**。
+   *
+   * 3 つを同時にやる: ①開催キーを書く ②画面の状態を進める ③**ステージ窓を開く**。
+   * ⚠⚠ **コーナー窓は開かない**（イベントはステージ窓にしか出ない・判断 7）。
+   * ⚠ 窓を開くのは既存の `openEffectOverlay("stage")`＝**この画面のキューを通る**（061k 判断 11）ので、
+   *   **新しい invoke の経路も新しいキューも増えていない**。
+   * ⚠ **`EFFECT_OVERLAY_ENABLED_KEY` / `STAGE_OVERLAY_ENABLED_KEY` は書かない**——
+   *   あの 2 本の意味は「**その出力先の条件が 1 件以上あるか**」で、書き手は `useEffectTemplates` だけ
+   *   （061i 判断 2・061k 判断 6 の不変条件）。⚠ 帰結＝**開催中にアプリを再起動しても窓は復元されない**
+   *   （条件が無ければ）。⚠ **これは意図した挙動**で、開催そのものも期限切れで復活しない。
+   *   ⚠⚠ **裏返しの経路は在る**（061l レビュー S-2・受容）——**ステージ出力の条件が 1 件以上ある**状態で
+   *   **期限内の開催を残したままアプリを再起動する**と、`effectOverlayRestore` が
+   *   （061a 以来の既存挙動として）ステージ窓を開き直し、その窓が**マウント時に開催キーを読んで
+   *   ユーザー操作ゼロでイベントを描く**。⚠ **受容する**——描くのは
+   *   **自前のイベント名と `0` と残り時間だけ**（第三者データは 1 バイトも無い＝046b S-1 が問題にした
+   *   「永続した第三者の個人データが無操作で配信面に出る」には当たらない）で、
+   *   最長でも `defaultDurationMs`（5 分）で自然に消える。
+   *   ⚠ **再修正トリガー＝イベントの描画が第三者データを持つようになったとき**
+   *   （＝`StreamEventProgress` にキーを足すとき）。そのときは 046b S-1 と同じ議論をやり直すこと。
+   */
+  const handleStartRound = useCallback(
+    (eventId: string) => {
+      const event = findStreamEvent(eventId);
+      // ⚠ 未知 id は何もしない（レジストリから消えた id を掴んだ状態でボタンが押されうる）。
+      if (event === null) return;
+      const now = Date.now();
+      const next = startStreamEventRound(event, now);
+      saveStreamEventRound(next);
+      setRound(next);
+      setNowMs(now);
+      openEffectOverlay("stage");
+    },
+    [openEffectOverlay],
+  );
+
+  /**
+   * 061l（判断 5）: **開催を終える**。
+   *
+   * ⚠⚠ **窓は閉じない。** 「開くのは自動・閉じるのは明示」（061i 判断 1）であり、
+   * 配信中に窓が消えると **OBS のウィンドウキャプチャが真っ黒**になる（親 046 の規律）。
+   * ⚠ **ここに `closeStageOverlayWindow` を足さないこと**（新規 6 と変異②が固定している）。
+   */
+  const handleEndRound = useCallback(() => {
+    clearStreamEventRound();
+    setRound(null);
+  }, []);
+
+  /**
+   * 061l（判断 5）: 開催中だけ回る tick。**残り時間の表示を進め、期限切れなら掃除する。**
+   *
+   * ⚠⚠ **掃除（`clearStreamEventRound`）は「main 窓がこの画面を開いているときの best-effort」**である。
+   * ⚠ **正しさをここに預けていない**——`parseStreamEventRound` が期限切れを必ず落とすので、
+   *   掃除が走らなくても「終了時刻を過ぎたら開催していない」は成立する
+   *   （＝「main 窓が閉じていると消えない」「両窓が競合して 2 回消す」を作らない・判断 5）。
+   * ⚠ **開催していない間はタイマーを張らない**／⚠ **アンマウントで必ず止める**（判断 11 の対称）。
+   */
+  useEffect(() => {
+    if (round === null) return;
+    const timer = window.setInterval(() => {
+      const now = Date.now();
+      if (now >= round.endsAt) {
+        clearStreamEventRound();
+        setRound(null);
+        return;
+      }
+      setNowMs(now);
+    }, STREAM_EVENT_TICK_MS);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [round]);
+
   // ⚠⚠ 061d-2: テンプレート一覧と割り当ての state は**この画面が 1 つだけ持つ**（061d-1 レビュー Q-9）。
   //   削除は「一覧」と「割り当て」の両方を書き換えるので、2 つのカードが別々に持つと片方が古くなる。
   // ⚠ 061i: 「条件が 0 → 1 件になったら窓を開く」の**判断はこの hook**（割り当ての保存経路を
@@ -354,6 +472,17 @@ export function ObsEffectsScreen() {
 
   // ⚠ 「未検出（null）」と「検出したが無効（enabled=false）」を同じ扱いにするのは `SettingsView` と同じ判断
   // （どちらも「OBS 側で WebSocket サーバーを有効にする」という同一の対処になるため）。
+  /**
+   * 061l（判断 10）: 前提ステータスの「開催中のイベント」行の値。
+   * ⚠ 未知 id（アプリ更新でレジストリから消えた）のときは「開催していません」へ倒す
+   * ——`parseStreamEventRound` が既に落としているので通常は到達しないが、**表示側でも同じ側へ倒す**。
+   */
+  const runningEvent = round === null ? null : findStreamEvent(round.eventId);
+  const roundStatusText =
+    round === null || runningEvent === null
+      ? "開催していません"
+      : `${runningEvent.title}（${streamEventRemainingLabel(round, nowMs)}）`;
+
   const obsWsUsable = obsConfig !== null && obsConfig.enabled;
   const obsStatusText = !obsConfigLoaded
     ? "確認中…"
@@ -371,8 +500,11 @@ export function ObsEffectsScreen() {
           {/* ⚠ 061i: 旧文（「投げ銭などに合わせて…」）はタブ 2 種を踏まえると狭い。
               ⚠ 061a レビュー Q-1 の規律＝**約束できることだけ書く**ので、「配信イベント」は
               まだ中身が無いことを踏まえて「これから足す」とは書かない（枠の説明に留める）。 */}
+          {/* ⚠⚠ 061l（教訓 E-2）: **「ウィンドウ」を単数で書かない**——出力窓は用途別に 2 つある。
+              061k は実機で 3 件・外部レビューで 4 件目の言い落としを踏んでいる。 */}
           <p>
-            コメントに反応して出すエフェクトと、視聴者参加型の配信イベントを、配信画面用の専用ウィンドウへ出します。
+            コメントに反応して出すエフェクトと、視聴者参加型の配信イベントを、配信画面用の専用ウィンドウ（用途別に
+            2 つ）へ出します。
           </p>
         </div>
       </div>
@@ -408,22 +540,17 @@ export function ObsEffectsScreen() {
           </div>
         ) : (
           <div className={styles.stack} role="tabpanel">
-            <section className={layout.panel}>
-              <div className={layout.panelHead}>
-                <h3>配信イベント</h3>
-                <p>視聴者が参加できるイベントを配信画面に出す機能です。</p>
-              </div>
-              <div className={layout.panelBody}>
-                {/* ⚠⚠ **061l まで枠だけ**（タスクファイルの (2)）。⚠ `ComingSoonScreen` は
-                    「画面まるごとが未実装」を表すダミーページなので流用しない
-                    （ヘッダーのセクション導線の意味論を持っており、`headerSections` の
-                    「OBSエフェクトは準備中ページを出さない」という担保と衝突する）。
-                    ⚠ 061a Q-1 の規律で**約束できることだけ書く**＝時期も内容も断言しない。 */}
-                <p className={styles.note}>
-                  この機能は準備中です。コメントに反応して出すエフェクトは、左のタブから設定できます。
-                </p>
-              </div>
-            </section>
+            {/* ⚠⚠ **061l: 061i から枠だけだった場所の中身**（一覧 → 詳細 → 適用 → 開始/終了の器）。
+                ⚠ `ComingSoonScreen` は流用しない（「画面まるごとが未実装」を表すダミーページで、
+                ヘッダーのセクション導線の意味論を持っており、`headerSections` の
+                「OBSエフェクトは準備中ページを出さない」という担保と衝突する）。
+                ⚠⚠ **開催状態はこの画面が持つ**（上の `round` の JSDoc）。タブは表示と操作だけを担う。 */}
+            <StreamEventTab
+              round={round}
+              nowMs={nowMs}
+              onStartRound={handleStartRound}
+              onEndRound={handleEndRound}
+            />
           </div>
         )}
 
@@ -610,6 +737,17 @@ export function ObsEffectsScreen() {
                   </span>
                 </div>
               ))}
+              {/* ⚠⚠ 061l（判断 10）: **「開催中のイベント」行を 1 本**。
+                  061a 以来の規律「黙って何も起きない状態を作らない」——「開始したのにステージ窓が停止中」を
+                  **観測できる場所**が要る。⚠ **行は 1 本だけ**（061k で既に 4 行あるので増やしすぎない）。
+                  ⚠⚠ **ここで「ステージ窓が停止中」を二重に警告しない**——**すぐ上の
+                  「エフェクトのウィンドウ（全画面（ステージ））」行が既に「停止中」を語っている**。
+                  ⚠ `.blocked` を付けないのも同じ理由（「開催していません」は不足ではなく通常の状態）。
+                  ⚠ 残りは**分まで**（秒を出すと毎秒再描画になる・判断 10）。 */}
+              <div className={styles.statusRow}>
+                <span className={styles.statusLabel}>開催中のイベント</span>
+                <span className={styles.statusValue}>{roundStatusText}</span>
+              </div>
               <div className={styles.statusRow}>
                 <span className={styles.statusLabel}>コメントビューア</span>
                 <span

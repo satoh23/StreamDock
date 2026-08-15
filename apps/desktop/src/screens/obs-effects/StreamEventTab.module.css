@@ -1,0 +1,169 @@
+/* 061l 配信イベントタブの意匠。⚠ 色は必ず var(--role-token) 経由（生 hex / rgba() は書かない）。
+   ⚠ `--text-faint` は `:disabled` 専用なので使わない（`check-css-guards.mjs` (6-b) の規約）。
+   ⚠ 形は `RakurakuToolsScreen.module.css` のカード（左タイル・右本文・右下アクション）を借りている
+   （判断 2＝**部品は `components/` へ出さない**ので、意匠もこの画面に閉じる）。 */
+
+/* --- 開催の制御（適用済み / 開催中のカード） --- */
+.roundBox {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.roundHead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.roundTitle {
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+/* 開催中の残り時間。⚠ 分までしか出さない（判断 10＝毎秒再描画しない）。 */
+.roundRemaining {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--ok-soft);
+  border: 1px solid var(--ok-border);
+  color: var(--ok);
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.roundApplied {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-soft-border);
+  color: var(--accent-text);
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.roundActions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+/* --- 一覧 --- */
+.list {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+}
+.card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.cardBody {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+.cardTitle {
+  color: var(--text);
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+.cardSummary {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.cardApplied {
+  align-self: flex-start;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-soft-border);
+  color: var(--accent-text);
+  font-size: 11px;
+  font-weight: 800;
+}
+.cardAction {
+  flex: none;
+  display: flex;
+  align-items: center;
+}
+
+/* サムネイル（判断 3）。画像が無いイベントは絵文字タイルへ落ちる。
+   ⚠ 画像があるときは色付きタイルを消して画像だけを見せる（`primitives.module.css` の 018 と同じ手）。 */
+.thumb {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  border-radius: 14px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-soft-border);
+  font-size: 30px;
+  line-height: 1;
+  overflow: hidden;
+}
+.thumb:has(img) {
+  background: transparent;
+  border-color: transparent;
+}
+.thumbImg {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border-radius: inherit;
+}
+
+/* --- 詳細 --- */
+.detailTitleWrap {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+.detailText {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+.detailSubTitle {
+  margin-top: 16px;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 800;
+}
+.bullets {
+  margin-top: 8px;
+  padding-left: 18px;
+  list-style: disc;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.8;
+}
+.ctaArea {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.ctaNote {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* 画面内の補足文（`ObsEffectsScreen.module.css` の `.note` と同じ役割・同じ見た目）。 */
+.note {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+}

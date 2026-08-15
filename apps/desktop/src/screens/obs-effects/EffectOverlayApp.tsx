@@ -3,11 +3,22 @@ import { connectCommentStream } from "../../features/comment-viewer/commentStrea
 import {
   EFFECT_ASSIGNMENTS_KEY,
   EFFECT_TEST_FIRE_KEY,
+  STREAM_EVENT_ROUND_KEY,
   loadEffectOverlayGuidePending,
   saveEffectOverlayGuidePending,
   takeEffectTestFirePending,
   takeStageTestFirePending,
 } from "../../features/comment-viewer/overlaySettings";
+import { findStreamEvent } from "../../features/obs-effects/streamEventRegistry";
+import {
+  formatStreamEventClock,
+  isSameStreamEventRound,
+  loadStreamEventRound,
+  parseStreamEventRound,
+  streamEventRemainingMs,
+  type StreamEventProgress,
+  type StreamEventRound,
+} from "../../features/obs-effects/streamEventRound";
 import {
   listEffectTemplates,
   type EffectTemplateRecord,
@@ -113,6 +124,49 @@ const TEST_FIRE_REQUEST_BASE = {
   eventLabel: "スーパーチャット",
   tone: "t3",
 } as const;
+
+/**
+ * 061l: **開催中のイベントの残り時間を進める間隔**（ミリ秒）。
+ *
+ * ⚠ この窓は**秒まで**出す（配信画面のカウントダウンは秒が動いていないと止まって見える）。
+ * ⚠ **判断 10 の「秒を出さない」は main 窓の前提ステータスの話**で、この窓には及ばない。
+ * ⚠⚠ **開催していない間はタイマーを張らない**（061a 以来「配信中にタイマーを残さない」＝判断 11）。
+ */
+const STREAM_EVENT_TICK_MS = 1000;
+
+/**
+ * 061l（判断 8）: **配信イベントの描画**。⚠⚠ **受け取るのは `{ count, remainingMs }` と、
+ * 同梱レジストリのタイトルだけ**である。
+ *
+ * ⚠⚠ **第三者の本文・表示名・アバター・金額を渡さない。** 061b が `EffectRequest` に
+ * `text` / `avatar` を持たせなかったのと**同じ手**で、`StreamEventProgress` の 2 キーに絞ることで
+ * **渡せるものを構造的に存在させない**（§9 の線を「気をつける」ではなく型で引く）。
+ * ⚠ `title` の出所は `streamEventRegistry.ts` の**静的な同梱データ**だけ（コメント由来の文字列ではない）。
+ * ⚠ **`console.*` にも出さない**（`eslint.config.js` の `no-console` が `src/screens/obs-effects/**` に効いている）。
+ *
+ * ⚠ **玉入れ大会（次タスク）はここを置き換える**——器として通っているのは
+ * 「コメント受信 → 開催中か判定 → 数を増やす → この関数へ渡す」という経路までである。
+ */
+function StreamEventView({
+  title,
+  progress,
+}: {
+  title: string;
+  progress: StreamEventProgress;
+}) {
+  return (
+    <div className={styles.eventCard}>
+      <p className={styles.eventTitle}>{title}</p>
+      <p className={styles.eventCount}>
+        <span className={styles.eventCountValue}>{progress.count}</span>
+        <span className={styles.eventCountUnit}>コメント</span>
+      </p>
+      <p className={styles.eventRemaining}>
+        残り {formatStreamEventClock(progress.remainingMs)}
+      </p>
+    </div>
+  );
+}
 
 /**
  * 061d-2: いま画面に出ているテンプレート 1 件ぶんの描画材料。
@@ -273,6 +327,18 @@ const effectDurationMs = (record: EffectTemplateRecord): number => {
  *
  * ⚠ **足さないもの**: エラー表示・再試行の可視化（この窓に何かを出せば OBS にそのまま映る）／
  *   `console.*`（§9・eslint の `no-console`）／テンプレートの取り込み・削除（main 窓の役目）。
+ *
+ * ## ⚠⚠ 061l でこの窓に「配信イベント」の層が増えた（ステージ窓のときだけ）
+ *
+ * - **層は 2 枚**になった。⚠ **イベント層が DOM 順で前＝下**、エフェクト層が後＝上（判断 7）。
+ * - **開催状態は localStorage の 1 キー**を**マウント時に読む ＋ `storage` で更新**（判断 5）。
+ *   ⚠⚠ **この窓は書かない・消さない**（書き手は main 窓だけ）。
+ * - **件数は `onComments` の中で `fresh.length` を足すだけ**で、
+ *   ⚠⚠ **`decideEffects` を 1 度も通さない**（通すとイベントがエフェクトのバースト枠と
+ *   クールダウンを食う＝061j 追加穴 η と同型で 4 例目になる）。
+ * - ⚠⚠ **イベントの描画へ渡すのは `{ count, remainingMs }` と同梱レジストリのタイトルだけ**
+ *   （`StreamEventProgress`＝§9 の線を型で引く。061b が `EffectRequest` でやったのと同じ手）。
+ * - ⚠ **コーナー窓では何もしない**（読まない・張らない・描かない）。
  */
 /**
  * 061k: この窓が担当する**出力先**（判断 9）。
@@ -311,6 +377,14 @@ export function EffectOverlayApp({ output }: EffectOverlayAppProps) {
    * Rust の `frontend_window_title_table_matches_overlay_titles` が実タイトルとのバイト一致を固定している。
    */
   const windowTitle = EFFECT_OUTPUT_WINDOW_TITLE[output];
+  /**
+   * 061l（判断 7）: **配信イベントを描くのはステージ窓だけ**。
+   *
+   * ⚠⚠ コーナー窓では**開催状態を読みもしないし、リスナーもタイマーも張らない**
+   * （＝「描かないが数えてはいる」という中途半端な状態を作らない）。
+   * 061k がステージ窓を「全画面演出用」として分けた軸そのものである。
+   */
+  const isStage = output === "stage";
   // ⚠ 061a レビュー（Q-1）: 初期値は**ワンショット旗の有無**で決める（旧実装は無条件 true だった）。
   // 旗を立てるのは**明示操作 1 つだけ**（⚠ 061i で起点が「表示トグル ON」から
   // 「テスト表示で停止中の窓を開いたとき」＝`EffectTemplateCard` へ移った・判断 3）なので、
@@ -347,6 +421,44 @@ export function EffectOverlayApp({ output }: EffectOverlayAppProps) {
    *   配信に載るのはこちらだけ。畳むには窓を跨ぐ相互排他（新しい IPC か localStorage 経路）が要る。
    */
   const [sound, setSound] = useState<{ key: number; src: string } | null>(null);
+
+  /**
+   * 061l（判断 5）: **開催中の配信イベント**（`null`＝開催していない）。
+   *
+   * ⚠⚠ **マウント時に localStorage から読む**のが取りこぼさないことの担保である
+   * （061i 判断 4 の「ワンショット旗」と違い、開催状態は**永続状態**なので読み直せば必ず復元できる）。
+   * `storage` は「**開催中にすでにこの窓が開いている**」ときに即座に反映するためだけの経路で、
+   * 届かなくても**次のマウントで回復する**（061d-2 の「`storage` は速くするためだけ」と同じ位置づけ）。
+   * ⚠⚠ **この窓は開催キーを 1 バイトも書かない・消さない**（書き手は main 窓だけ・判断 5）。
+   */
+  const [round, setRound] = useState<StreamEventRound | null>(() =>
+    isStage ? loadStreamEventRound(Date.now()) : null,
+  );
+  /** 061l: 残り時間を計算するための「いま」。⚠ 下の tick が進める（`Date.now()` を描画中に呼ばない）。 */
+  const [eventNowMs, setEventNowMs] = useState(() => Date.now());
+  /**
+   * 061l（判断 4）: **開催中に届いたコメントの件数**。⚠⚠ **数だけ**（§9）。
+   *
+   * ⚠⚠ **永続しない**（穴 δ の結論）。⇒ **開催中にこの窓を閉じて開き直すと 0 に戻る**／
+   * **開始より後にこの窓を開くとその時点から数える**。受容した理由:
+   *   - 壊れ方が「件数が 0 から数え直しになる」だけで、**開催そのものは永続なので復活する**
+   *     （＝黙って壊れない。窓が消えること自体が親 046 の規律では異常事態）。
+   *   - localStorage に持つと**コメントが届くたびに全窓へ `storage` を撒く**ことになり、
+   *     `EFFECT_OVERLAY_GUIDE_PENDING_KEY` の JSDoc が「数秒ごとの localStorage 書込が
+   *     全窓へ `storage` を撒くので割に合わない」として**既に却下した形**と同じになる。
+   * ⚠ **再修正トリガー＝次タスク（玉入れ大会）で「失うと配信が成立しない状態（スコア）」を持つとき。**
+   *   そのとき書込頻度の間引き（秒 1 回など）まで含めて設計し直すこと。
+   */
+  const [eventCount, setEventCount] = useState(0);
+  /**
+   * 061l: `onComments`（マウント時 1 回だけ張るハンドラ）から読むための開催状態のミラー。
+   *
+   * ⚠⚠ **state を直接読むと閉包が古くなる**（ハンドラは張り直さない＝WS を切らないため）。
+   * ⚠⚠ **「開催中か」の判定元を state 1 つに保つ**のが要点——ここで localStorage を読み直す形にすると、
+   *   **画面に出ていないのに数えている**（あるいはその逆）という食い違いが作れてしまう。
+   *   ⇒ 届かなかったときの壊れ方は「**出ないし数えない**」に揃い、次のマウントで両方回復する。
+   */
+  const roundRef = useRef<StreamEventRound | null>(round);
 
   // ⚠ 発火済み id と時間窓の状態は **ref**（再レンダーで作り直さない・WS の張り直しでも失われない）。
   const seenIdsRef = useRef<Set<string>>(new Set());
@@ -730,6 +842,25 @@ export function EffectOverlayApp({ output }: EffectOverlayAppProps) {
           }
         }
 
+        // ⚠⚠ **061l（判断 4・8）: 配信イベントの件数はここで数える。**
+        //
+        //   ⚠⚠ **`incoming` ではなく `fresh` を数える。** 043e（YouTube Jewels の combo 更新）は
+        //     **同一 id を金額違いで再送**するので、`incoming` で数えると
+        //     **視聴者 1 人の 1 コメントが 2 件に化ける**（`seenIds` はまさにそれを落とすために在る）。
+        //     ⚠ 代償＝`SEEN_EFFECT_IDS_MAX` を溢れた id が再送されると 1 回余計に数えるが、
+        //     それは**同キーの JSDoc が既に受容している再発火とまったく同じ穴**である（新しい受容を増やさない）。
+        //   ⚠⚠ **`decideEffects` を通さない。** 通すと**イベントがエフェクトのバースト枠と
+        //     クールダウン（`recentFires` / `lastConditionAt` / `lastGiftAt`）を食う**
+        //     ——061j 追加穴 η・061d-2 穴 γ・061k と同型で **4 例目**になる。
+        //     ⇒ ここは **`fresh.length` を足すだけ**で、発火層の state に 1 バイトも触れない。
+        //   ⚠ **開催中かどうかは `roundRef`（＝画面に出しているのと同じ state）で判定する**——
+        //     ここで localStorage を読み直すと「画面に出ていないのに数えている」が作れる。
+        //   ⚠ `endsAt` をここでも見るので、tick が来る前でも**期限を過ぎた瞬間から数えない**。
+        const activeRound = roundRef.current;
+        if (activeRound !== null && Date.now() < activeRound.endsAt) {
+          setEventCount((prev) => prev + fresh.length);
+        }
+
         // ⚠ `updated` に `[]` を渡すのは「この窓は combo 更新を一切扱わない」の明示。
         //   `decideEffects` 側にも `updated` から出さない規則があり、**二重に守っている**。
         // ⚠⚠ 061d-2 / 061j: 第 5 引数が**条件の matcher**（①）。`createEffectMatcher` が返す関数は
@@ -825,6 +956,95 @@ export function EffectOverlayApp({ output }: EffectOverlayAppProps) {
     };
   }, [fireTest]);
 
+  // --- 061l: 配信イベント（判断 5・7・8・11） -------------------------------------------------
+
+  /**
+   * 開催状態を差し替える。⚠ **本当に変わったときだけ** state を進める（`isSameStreamEventRound`）。
+   * ⚠⚠ これが無いと、`storage` が届くたびに**同じ内容の新しいオブジェクト**で再描画が走り、
+   *   下のミラー effect（件数を 0 に戻す）が**開催中に件数を消す**。
+   */
+  const applyRound = useCallback((next: StreamEventRound | null) => {
+    setRound((prev) => (isSameStreamEventRound(prev, next) ? prev : next));
+  }, []);
+
+  /**
+   * 開催が変わったら、①ハンドラ用のミラーを更新し ②**件数を 0 に戻し** ③時計を合わせる。
+   *
+   * ⚠⚠ **②が「増やす側」に対する「戻す側」である**（判断 11 の対称）。これが無いと
+   *   **2 回目の開催が前回の件数から始まる**（変異 ⑭-c）。
+   */
+  useEffect(() => {
+    roundRef.current = round;
+    setEventCount(0);
+    setEventNowMs(Date.now());
+  }, [round]);
+
+  /**
+   * 開催状態の即時反映（main 窓 → この窓の一方通行）。⚠ **ステージ窓だけが張る**（判断 7）。
+   *
+   * ⚠ `storage` は**他窓での書換**でのみ発火する。⚠ `clear()`（`e.key === null`）では反応しない
+   *   （既存の 2 つの `storage` ハンドラと同じ扱い）。
+   * ⚠ 「終了」は `removeItem`＝`e.newValue === null` で届き、`parseStreamEventRound` が `null` を返す。
+   * ⚠⚠ **張ったら必ず外す**（判断 11・教訓 E-1）。
+   */
+  useEffect(() => {
+    if (!isStage) return;
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== STREAM_EVENT_ROUND_KEY) return;
+      applyRound(parseStreamEventRound(e.newValue, Date.now()));
+    };
+    window.addEventListener("storage", onStorage);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+    };
+  }, [isStage, applyRound]);
+
+  /**
+   * 開催中だけ回る tick。**残り時間を進め、期限が来たら表示をやめる。**
+   *
+   * ⚠⚠ **この窓は localStorage を触らない**（`removeItem` しない・判断 5）——
+   *   掃除は main 窓の best-effort で、**正しさは `parseStreamEventRound` が持っている**。
+   * ⚠ ここで表示を消すので、**main 窓が閉じていても「終了時刻を過ぎたら表示が消える」は成立する**
+   *   （実機確認 5）。⚠⚠ **窓は閉じない**（親 046 の規律）。
+   * ⚠ 開催していない間は張らない／⚠ アンマウントで必ず止める（判断 11）。
+   *
+   * ⚠⚠ **`isStage` をガードに含めるのは「対称のため」である**（061l レビュー Q-5）。
+   *   コーナー窓では `round` が `null` のままなので**今は `round === null` だけでも同じ結果**だが、
+   *   それは「`setRound` の呼び出し元が上の `storage` リスナーとこの tick しかない」という
+   *   **不変条件に寄りかかった安全**である。上の `storage` は `!isStage` で弾いているのに
+   *   こちらだけ弾いていないと、**将来 `setRound` の経路が 1 本増えた時点でコーナー窓でも tick が回る**。
+   *   ⇒ 2 つの effect の条件を揃えておく（教訓 E-1 の「張る側と取り消す側を数える」と同じ発想）。
+   */
+  useEffect(() => {
+    if (!isStage || round === null) return;
+    const timer = window.setInterval(() => {
+      const now = Date.now();
+      if (now >= round.endsAt) {
+        setRound(null);
+        return;
+      }
+      setEventNowMs(now);
+    }, STREAM_EVENT_TICK_MS);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [isStage, round]);
+
+  /**
+   * いま描くイベント（`null` ＝ 何も描かない）。
+   * ⚠ 未知 id は描かない（`parseStreamEventRound` が既に落としているので通常は到達しない）。
+   */
+  const eventView = useMemo(() => {
+    if (!isStage || round === null) return null;
+    const event = findStreamEvent(round.eventId);
+    if (event === null) return null;
+    const progress: StreamEventProgress = {
+      count: eventCount,
+      remainingMs: streamEventRemainingMs(round, eventNowMs),
+    };
+    return { title: event.title, progress };
+  }, [isStage, round, eventCount, eventNowMs]);
+
   // セットアップ用ガイドを一定時間で畳む（上の SETUP_GUIDE_VISIBLE_MS の JSDoc が判断の根拠）。
   // ⚠ cleanup で必ず取り消す（StrictMode の二重実行でもタイマーが残らない）。
   useEffect(() => {
@@ -839,6 +1059,19 @@ export function EffectOverlayApp({ output }: EffectOverlayAppProps) {
 
   return (
     <div className={styles.root}>
+      {/* ⚠⚠ 061l（判断 7）: **イベント層はエフェクト層より DOM 順で前＝下に描かれる。**
+          エフェクトは**一瞬出て消える**もので、常時出ているイベントに隠れると意味が無いため。
+          ⚠⚠ **この順序を入れ替えないこと**（変異⑪）。`EffectOverlayApp.test.tsx` が
+          `compareDocumentPosition` で DOM 順を固定しているが、**実際の重なりの見え方は
+          jsdom では確かめられない**（`z-index` を使わず塗り順に任せているため）。
+          ⚠ `.eventLayer` の `position: absolute; inset: 0` は
+          **`scripts/check-css-guards.mjs` の (10-r) が固定している**（`.templateLayer` と同じ理由＝
+          jsdom はレイアウトを解決しないので、CSS だけを壊す変更を止められるのはあちらだけ）。 */}
+      {eventView !== null && (
+        <div className={styles.eventLayer}>
+          <StreamEventView title={eventView.title} progress={eventView.progress} />
+        </div>
+      )}
       {effects.length > 0 && (
         // ⚠⚠ **061d-2（穴 δ / Q-6）: テンプレートは専用の絶対配置層に置く。**
         //   `EffectTemplateView` の器は `position: absolute; inset: 0` なので、

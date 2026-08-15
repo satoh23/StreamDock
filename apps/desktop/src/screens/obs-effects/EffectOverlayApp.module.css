@@ -38,6 +38,65 @@
   inset: 0;
 }
 
+/* 061l: **配信イベントの絶対配置層**（判断 7）。
+   ⚠⚠ **`.templateLayer` より DOM 順で前に置く**＝ `z-index` を使わず塗り順で「イベントが下・
+   エフェクトが上」を作っている（エフェクトは一瞬しか出ないので、常時出ているイベントに隠れると意味が無い）。
+   ⚠⚠ **この 2 宣言は意匠ではなく要件**で、`scripts/check-css-guards.mjs` の (10-r) が固定している
+   （`.templateLayer` とまったく同じ理由＝ jsdom はレイアウトを解決しないので、
+   CSS だけを壊す変更を止められるのはあちらだけ。061d-2 で実際に生存した変異と同型）。
+   ⚠ 背景を塗らない（透過窓の規律）。⚠ 表示専用なのでクリックも受けない。 */
+.eventLayer {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 5% 24px;
+  pointer-events: none;
+}
+
+/* イベントの中身。⚠ 生 hex / rgba() を書かない（`theme.css` のトークンのみ）。
+   ⚠ `--text-faint` は `:disabled` 専用なので使わない。 */
+.eventCard {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 16px 28px;
+  border-radius: var(--radius);
+  /* ⚠ ほぼ透明の下地。真っ黒/真っ白で塗らない（配信画面に載るので、背景を隠さない）。 */
+  background: var(--surface-subtle);
+  text-align: center;
+}
+.eventTitle {
+  color: var(--text);
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+.eventCount {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.eventCountValue {
+  color: var(--accent-text);
+  font-size: 96px;
+  font-weight: 900;
+  line-height: 1.1;
+  letter-spacing: -0.04em;
+}
+.eventCountUnit {
+  color: var(--text);
+  font-size: 24px;
+  font-weight: 800;
+}
+.eventRemaining {
+  color: var(--muted);
+  font-size: 20px;
+  font-weight: 700;
+}
+
 /* セットアップ用ガイド。OBS で「ウィンドウキャプチャ」を追加するときに**この窓がどこにあるか**を
    目で確認するためだけの表示で、窓のマウントから一定時間で自動的に消える（理由は tsx 側の JSDoc）。
    破線の枠は「ここがキャプチャ範囲」を示すためのもので、意匠ではない。 */

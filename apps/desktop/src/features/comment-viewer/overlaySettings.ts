@@ -289,6 +289,65 @@ export const STAGE_TEST_FIRE_PENDING_KEY =
 export const EFFECT_ASSIGNMENTS_KEY =
   "stream-dock.comment-viewer.effect-assignments";
 /**
+ * 061l: **適用中の配信イベント**の id（未保存＝まだ選んでいない）。
+ *
+ * ⚠⚠ **「適用」と「開始」は別の操作である**（判断 6）。このキーは「**このイベントを使う**」だけを表し、
+ * **窓は開かないし、配信画面には何も出ない**。実際に開催を始めるのは [`STREAM_EVENT_ROUND_KEY`] のほう。
+ * 分けた理由＝「配信前に選んでおく」と「配信中に走らせる」は違うタイミングの操作だから
+ * （混ぜると「詳細画面を開いた瞬間に配信画面へ出る」になる）。
+ *
+ * ⚠ **値は同梱レジストリ（`features/obs-effects/streamEventRegistry.ts`）の id 1 個だけ**＝
+ * **ユーザー自身の UI 設定値**で、§9 追補（046a）が対象とする第三者の個人データ
+ * （コメント本文・表示名・金額）は 1 バイトも入らない。`OVERLAY_THEME_KEY`（テーマ id）と同種。
+ * ⚠ **読み書きのロジックは `features/obs-effects/streamEventRound.ts` が持つ**——
+ * ここに置くのは**キーだけ**（[`EFFECT_ASSIGNMENTS_KEY`] と同じ役割分担で、
+ * 「localStorage のキーは本ファイルを grep すれば全部見える」という §9 の監査上の性質を壊さないため）。
+ * ⚠ **書き手は main 窓（`StreamEventTab` の「適用」）だけ**で、ステージ窓はこのキーを読みも書きもしない
+ * （ステージ窓が見るのは開催キーだけ＝「適用しただけでは配信画面に何も出ない」の担保）。
+ */
+export const STREAM_EVENT_SELECTED_KEY =
+  "stream-dock.comment-viewer.stream-event-selected";
+/**
+ * 061l: **開催中の配信イベント 1 回ぶん**（未保存＝開催していない）。
+ * 値は `{ eventId: string; startedAt: number; endsAt: number }` の JSON。
+ *
+ * ## ⚠⚠ 「セッション」と呼ばないこと（判断 1）
+ *
+ * `session` は**すでに埋まっている**——sidecar の wire（`start-session` / `session.state`）と
+ * DB（`viewer_comments.session_id`）が**コメント取得**のセッションを指しており、
+ * ⚠ **062b が `stream_sessions` テーブルを作る予定**である。
+ * ⇒ イベントの 1 回ぶんは **「開催」**、コード上の識別子は **`round`**。
+ * ⚠ **画面に出す語は「開始」「終了」**（ユーザーに `round` の語は見せない）。
+ *
+ * ## ⚠⚠ `endsAt` は絶対時刻（epoch ms）で持つ（判断 5）
+ *
+ * 「残り N 秒」を main 窓とステージ窓が**別々に数えると必ずずれる**ので、
+ * **両窓が同じ `endsAt` から `Date.now()` で計算する**（＝時計は 1 つ）。
+ * ⚠ 判定そのものは純関数（`parseStreamEventRound(raw, now)`）に閉じてあり、テストで時計を偽装しない。
+ *
+ * ## ⚠⚠ 終了は「期限切れの保存値を『開催していない』と読む」ことで表す
+ *
+ * ⚠ **`removeItem` する主体を決めない**——決めると「main 窓が閉じていると消えない」
+ * 「両窓が競合して 2 回消す」が生まれる。⇒ **掃除は main 窓が
+ * 「OBSエフェクト」画面を開いているときの best-effort に留める**（`ObsEffectsScreen`）。
+ * ⚠⚠ **正しさは掃除に依存しない**（`parseStreamEventRound` が期限切れを必ず落とす）。
+ * ⚠⚠ **ステージ窓はこのキーを 1 バイトも書かない・消さない**（読むだけ）。
+ *
+ * ⚠ **061i 判断 4 の「取りこぼし」は起きない**——あれは**ワンショットの旗**（`take*`）だったので
+ * 「窓のリスナー登録前に飛んだ分が消える」問題があったが、開催状態は**永続状態**なので
+ * **ステージ窓がマウント時に読めば取りこぼさない**。`storage` は「開催中にすでに窓が開いている」ときに
+ * 即座に反映するためだけの経路で、届かなくても**次のマウントで回復する**
+ * （061d-2 の「`storage` は速くするためだけ」と同じ位置づけ）。
+ *
+ * ⚠ §9: 載るのは**同梱レジストリの id 1 個と時刻 2 つ**だけ＝ **ユーザー自身の操作の結果**であり、
+ * 第三者データではない（`docs/security.md`「レビュー必須条件」の保存ポリシー項が明示的に除外している
+ * 「ユーザー自身の UI 設定値」に当たる）。⚠⚠ **開催中に数えるコメント件数はここに保存しない**
+ * （穴 δ の結論＝ステージ窓のメモリだけに持つ。理由は `EffectOverlayApp` の件数 state の JSDoc が正）。
+ * ⚠ **一括削除・エクスポートを作るときの対象が 2 本増えた**（本キーと [`STREAM_EVENT_SELECTED_KEY`]）。
+ */
+export const STREAM_EVENT_ROUND_KEY =
+  "stream-dock.comment-viewer.stream-event-round";
+/**
  * 060d: 選択中のカスタム CSS テーマ（`overlay_themes` の id）の保存キー。**未保存＝`null`＝既定意匠**。
  *
  * ⚠ **CSS 本文はここに置かない**（Rust が `app_data_dir/themes/<id>.css` に持ち、
