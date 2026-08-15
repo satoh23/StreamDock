@@ -14,6 +14,8 @@ import {
   monetaryTone,
   avatarDataUri,
   authorInitial,
+  // 062a: 「レイドを課金扱いしない」を集合そのもので固定するために引く。
+  MONETARY_EVENT_TYPES,
 } from "./viewerFormat";
 
 /**
@@ -381,5 +383,33 @@ describe("avatarDataUri / authorInitial 036a のガード", () => {
     // サロゲートペア（charAt(0) だと孤立サロゲート「�」になる）。
     expect(authorInitial("😀ねこ")).toBe("😀");
     expect(authorInitial("   ")).toBe("?");
+  });
+});
+
+/**
+ * 062a: レイドは「ラベルは持つが課金ではない」という、既存にない組み合わせの種別。
+ * ⚠ `MONETARY_EVENT_TYPES` に足すと、コメビュ本体のティア色カード・オーバーレイの投げ銭カード・
+ * 課金ティッカー・読み上げの優先キュー・061 のエフェクト条件（`effectAssignments` はこの集合から
+ * イベント条件の行を作る）が**いっせいに**発火する。ここはその境界を固定する。
+ */
+describe("062a レイドの表示上の位置づけ", () => {
+  it("ラベルは「レイド」", () => {
+    expect(eventLabel("raid")).toBe("レイド");
+  });
+
+  it("⚠⚠ 課金種別ではない（MONETARY_EVENT_TYPES に入れない）", () => {
+    expect(isMonetaryEvent("raid")).toBe(false);
+    expect(MONETARY_EVENT_TYPES.has("raid")).toBe(false);
+  });
+
+  it("⚠ 金額を持たない課金種別の日本語文（composeEventMessage）は作らない＝読み上げ対象外の実体", () => {
+    // null が返ることで speechText が `c.text`（レイドでは空）へ落ち、ttsQueue の空判定で読まれない。
+    expect(
+      composeEventMessage({
+        eventType: "raid",
+        source: "twitch",
+        author: { name: "RaiderChannel" },
+      }),
+    ).toBeNull();
   });
 });

@@ -15,4 +15,9 @@ viewerId: string,
 /**
  * 取得セッションのローカル id（配信の束）。
  */
-sessionId: string, source: string, text: string, eventType: string, amount?: number, currency?: string, monetaryAmount?: string, publishedAt: string, createdAt: string, };
+sessionId: string, source: string, text: string, eventType: string, amount?: number, currency?: string, monetaryAmount?: string, 
+/**
+ * 062a: レイド人数（`event_type='raid'` の行のみ・それ以外は None）。
+ * 062c（配信サマリーのレイド一覧）が読むためここまで通す。
+ */
+raidViewerCount?: number, publishedAt: string, createdAt: string, };

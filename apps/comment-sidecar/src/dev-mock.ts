@@ -218,6 +218,26 @@ function makeComment(source: Provider, seq: number): CanonicalComment {
     comment.eventType = "gift";
     comment.text = ""; // 表示側が「〇〇さんがメンバーシップギフトを5件贈りました」を組み立てる。
     comment.giftCount = 5;
+  } else if (seq % 20 === 16 && source === "twitch") {
+    // 062a: Twitch のレイド（合成のみ）。実機で「レイド 42人」のバッジ・**課金扱いされないこと**・
+    //   **読み上げられないこと**・**視聴者メモリの subscription_count が増えないこと**を目視するため。
+    //   周期に 16 を選んだ理由: 既存の設計原則「%5 ≠ 0 で superchat 枠と衝突しない」に従いつつ、
+    //   未使用の値（1/3/7/9/11/12/13/14/17/19 と %5===0 が使用済み）から選んだ。
+    //
+    // ⚠⚠ **このモックで確認できないもの（穴 F・誤った安心をしないこと）**:
+    //   本ファイルは `CanonicalComment` を**直接**組んでおり、**`wire.ts` を通らない**
+    //   （060i のコメントが同じことを書いている＝本番だけ桁区切りが無かった罠の原因）。
+    //   したがってこの合成では **vendor の mapper（`comment.mapper.ts`）と `wire.ts` の
+    //   `EVENT_TYPE_MAP` / `raidViewerCount` の詰め替えを 1 バイトも検証していない。**
+    //   それらの担保は `scripts/test-twitch-mapper.mjs` と `scripts/test-comment-relay.mjs` にある。
+    //   ここで確認できるのは「wire から先」（frontend の表示・読み上げ・Rust の保存と集計）だけである。
+    //
+    // ⚠ author は**レイド元の配信者**（実データでは `raid.user_*`）。§9 のとおりアバター URL は持たない。
+    // ⚠ 本文は空（実データのレイドは本文を持たず、`system_message` へフォールバックしない）。
+    comment.eventType = "raid";
+    comment.text = "";
+    comment.author = { id: `mock-twitch-raider`, name: "RaiderChannel" };
+    comment.raidViewerCount = 42;
   } else if (seq % 20 === 17 && source === "twitch") {
     comment.eventType = "subscription";
     comment.text = "いつも応援してます！"; // 視聴者が添えた自由コメント（要約の下に表示される）。

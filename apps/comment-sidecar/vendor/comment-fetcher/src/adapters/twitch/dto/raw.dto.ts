@@ -188,6 +188,15 @@ export type TwitchChatNotificationEventDto = {
   prime_paid_upgrade?: TwitchPrimePaidUpgradeDetailsDto;
   // 043a(拡張): チャリティ実金銭ドネーション。amount を金額として拾う（charity_name は団体名＝PII でない）。
   charity_donation?: TwitchCharityDonationDetailsDto;
+  // 062a: レイド（他チャンネルからの視聴者流入）。**収益ではない**が「誰がレイドしてくれたか」を記録する。
+  // ⚠ 公式は `raid` を「Null if notice_type is not raid」と定義しており、共有チャット由来
+  //   （notice_type=shared_chat_raid）では `raid` が null で `shared_chat_raid` 側に**同形**で載る。
+  //   043a は shared_* の付随オブジェクトを未モデル化にして「数値内訳だけ undefined へ劣化・分類は維持」と
+  //   したが、**レイドではその規律をそのまま踏襲できない**——付随オブジェクトが `author` そのもの
+  //   （レイド元の user_id/user_name）を持つため、劣化すると「名前も ID も無いレイド行」になり行が成立しない。
+  //   ＝劣化の質が違う（数値欠落 vs 主体の消失）ので、ここだけ shared 版も同一 DTO で受ける。
+  raid?: TwitchRaidDetailsDto;
+  shared_chat_raid?: TwitchRaidDetailsDto;
 };
 
 /**
@@ -222,7 +231,11 @@ export type TwitchBitsUseEventDto = {
  * 043a: sub/resub/sub_gift/community_sub_gift/pay_it_forward（従来）。
  * 043a(拡張): charity_donation（実金銭ドネーション）・gift_paid_upgrade / prime_paid_upgrade（有料化）を追加。
  *   共有チャット中は同じ収益イベントが `shared_chat_*` の別 notice_type で届くため、mapper が接頭辞を剥がして
- *   同一に分類する（取りこぼし防止）。非収益（raid/announcement 等）は mapper 側で null に落とす。
+ *   同一に分類する（取りこぼし防止）。非収益（announcement 等）は mapper 側で null に落とす。
+ * 062a: **raid を明示的に収載する**（`(string & {})` のフォールバックに頼らない）。
+ *   ⚠ **`unraid` は別の値であって raid ではない**（公式の notice_type 一覧に独立して存在する）。
+ *   ここに収載しないことと、mapper の `RAID_NOTICE_TYPES` が**完全一致の Set**であることの二段で落とす。
+ *   ⚠ その他の非収益（announcement / bits_badge_tier / watch_streak / modiversary / unknown）も従来どおり落とす。
  */
 export type TwitchChatNoticeType =
   | "sub"
@@ -233,6 +246,7 @@ export type TwitchChatNoticeType =
   | "gift_paid_upgrade"
   | "prime_paid_upgrade"
   | "charity_donation"
+  | "raid"
   | `shared_chat_${string}`
   | (string & {});
 
@@ -289,6 +303,34 @@ export type TwitchCharityDonationDetailsDto = {
     decimal_places: number;
     currency: string;
   };
+};
+
+/**
+ * notice_type=raid / shared_chat_raid の付随情報（062a）。
+ *
+ * 公式（EventSub リファレンス Channel Chat Notification Event）の `raid` オブジェクトは
+ * **`user_id` / `user_name` / `user_login` / `viewer_count` / `profile_image_url` の 5 つ**を持ち、
+ * user 系はいずれも「the broadcaster raiding this channel」＝**レイド元の配信者**と明記されている。
+ * そのうち本 DTO が宣言するのは **3 つだけ**。
+ *
+ * ⚠⚠ **`profile_image_url` は「無い」のではなく「在るが取らない」**（§9）。043a が
+ * `sub_gift` / `community_sub_gift` の受贈者（`recipient_user_*`）・贈与者（`gifter_user_*`）について
+ * 「ペイロードに存在するが §9 配慮で意図的にモデル化・消費しない」と決めたのと**同じ形**である。
+ * アバターの取得は 036b/036c の基盤（Helix で解決 → allow-list ホストから fetch → data URI 化）に限り、
+ * ここから別経路で URL を持ち出すと **CSP・§9 の論点が新しく生える**（`gift_url` を 043d が
+ * 意図的に除外したのと同じ理由）。**視聴者メモリにアバターを保存しない**方針も不変。
+ * 再修正トリガー: レイド元のアイコンを出したくなったら、036b/036c と同様に
+ * allow-list 追加＋data URI 化＋再 security-review を通してから解禁する。
+ *
+ * ⚠ `user_login` も宣言しない（表示にも保存にも使わないため。表示名は `user_name` で足りる）。
+ */
+export type TwitchRaidDetailsDto = {
+  /** レイド元配信者のユーザー ID（"The user ID of the broadcaster raiding this channel."）。 */
+  user_id: string;
+  /** レイド元配信者の表示名（"The user name of the broadcaster raiding this channel."）。 */
+  user_name: string;
+  /** レイド人数（"The number of viewers in the raid."）。 */
+  viewer_count: number;
 };
 
 /** message.fragments の1要素。 */

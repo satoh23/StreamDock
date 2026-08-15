@@ -593,6 +593,18 @@
   border-color: var(--info-border);
 }
 
+/* 062a: レイドの種別バッジ（「レイド 42人」）。
+   ⚠ **あえて muted（無彩色）にしている。** レイドは課金ではないので、投げ銭カードのティア配色や
+   初見（--ok）／久しぶり（--info）の判定バッジと**色で競合させない**——配信者が一覧を見たときに
+   「色が付いている＝お金かユーザー判定」という既存の読み方を壊さないため。
+   ⚠ 課金として強調したくなっても、`MONETARY_EVENT_TYPES` に足すのではなくここの配色を変えること
+   （あちらに足すと読み上げ・ティッカー・オーバーレイ・061 のエフェクトまで一斉に発火する）。 */
+.badgeRaid {
+  color: var(--muted);
+  background: var(--muted-soft);
+  border-color: var(--muted-border);
+}
+
 .author {
   font-size: 12px;
   font-weight: 700;

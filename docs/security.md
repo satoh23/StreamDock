@@ -1613,6 +1613,17 @@ loopback WS で受信済みの値を Tauri コマンドで渡すだけ＝sidecar
 ため、不変性を前提にする機能（エクスポート・監査・差分同期等）を作る場合はこの例外を必ず考慮すること。
 詳細と限定の根拠は⑪の 043e 節。
 
+**追補の追補（062a・レイドの保存項目）**: 視聴者メモリに保存するコメント種別に **`raid`**（Twitch のレイド）を含める。
+保存するのは **レイド元チャンネルの表示名・配信元ユーザー ID**（既存の `viewers.name` / `provider_user_id` と
+`viewer_comments.viewer_id` に載る＝**保存項目の種類は増えない**）と、**レイド人数**
+（`viewer_comments.raid_viewer_count`・INTEGER・NULL 許容＝**新規に増える唯一の列**）の 2 つのみ。
+**保存しないもの**: `system_message`（Twitch が生成する英語の自動文で受贈者名を含みうる）／
+**`profile_image_url`（レイド元のアバター URL。⚠ ペイロードに存在するが取り込まない**——アバターの取得は
+036b/036c の allow-list＋data URI 化の基盤に限り、`viewer_comments` にアバターを保存しない方針は不変）／受贈者情報。
+金額列（`amount` / `currency` / `monetary_amount`）は **レイドでは常に NULL**（レイドは金銭ではない）。
+レイド行は `subscription_count` / `is_member` / `last_subscription_at` の集計対象に**含めない**。
+削除手段（`delete_viewer` / `clear_viewers`）は新テーブルが無く列追加のみのため、取り残しゼロで有効なまま。
+
 **追補（046a・固定コメントの端末内 localStorage 保存＝端末内保存の 2 つ目の限定解禁・2026-07-28）**:
 「流れるコメントを見失わないよう右クリックで上部に固定する」機能に**限り**、**ユーザーが明示的に固定操作した
 コメント（既定で最大 1 件）**を **viewer webview の localStorage** に保存する。038a が SQLite について定めた
@@ -3015,6 +3026,32 @@ distill（vendor）したもので、keyring・`open`・hono/zod・dotenv・goog
         `× max(combo_count, 1)` を入れ、**金額が変わるため再度 security-review** を通す（フェーズ2・再開トリガーはタスクファイル）。
       - **ログ非露出は不変**（追加経路にログ出力を入れない・本文／金額をログに出さない＝§9）。削除手段（`delete_viewer` /
         `clear_viewers`）も新テーブル・新列が無いため取り残しゼロで有効なまま。
+    - **（062a・Twitch レイドの取り込み＝受信済みイベントの分類拡張・security-review 必須）**
+      既に購読済みの `channel.chat.notification` に届く `notice_type = "raid"` / `"shared_chat_raid"` の通知を、
+      新種別 **`raid`** として取り込む。
+      - **新規購読ゼロ・新規 OAuth スコープゼロ・新規宛先ゼロ・新規依存ゼロ。** `channel.raid` の別購読は
+        **不要**——レイド元チャンネルとレイド人数は `channel.chat.notification` の `raid` オブジェクト
+        （`user_id` / `user_name` / `user_login` / `viewer_count` / `profile_image_url`）に載る
+        （出典: Twitch EventSub リファレンス Channel Chat Notification Event）。よって **既存ユーザーの
+        再ログインは発生しない**（043a で `bits:read` を追加したときとは異なる）。二層 fail-closed・
+        env ピン留め・gRPC チャネルガード・`csp: null`・capabilities はいずれも不変。
+      - **受信して持ち回るのは 3 つだけ**＝レイド元の `user_id` / `user_name` と `viewer_count`（整数）。
+        **`profile_image_url` は同じオブジェクトに存在するが DTO に宣言せず、消費もしない**
+        （宣言しないことをテストで固定する）。**`system_message` は持ち回らない**（043a の規律と同じ）。
+        受贈者情報はレイドの payload に存在しない。
+      - **`author` はレイド元（`raid.user_*`）とする。** 公式が「the broadcaster raiding this channel」と
+        明記している唯一のフィールドで、`chatter_user_*` が raid notice で誰を指すかは公式から確定できない。
+        `shared_chat_raid` では `raid` が null になり `shared_chat_raid` オブジェクト（同形）に載るため
+        両方を見る。**どちらも取れない場合は行を作らない**（根拠のない人物をレイド元として保存しない）。
+      - **レイドは課金として扱わない**＝`MONETARY_EVENT_TYPES` に入れない。オーバーレイの投げ銭カード・
+        課金ティッカー・エフェクトの発火条件（061）・読み上げの優先キューはいずれも対象外。
+      - **集計の意味論は不変**＝`subscription_count` / `is_member` / `last_subscription_at` に `raid` を
+        混ぜない。`viewer_comments` に **`raid_viewer_count`（INTEGER・NULL 許容）を 1 列足す**のみで、
+        既存列の定義は変えない（`total_comments` は `COUNT(*)` のままレイド行も数える）。
+        列追加は `ensure_column` による冪等追加で、識別子はコンパイル時定数のみ・値はパラメータバインド（§8）。
+      - **ログにレイド元チャンネル名・レイド人数を出さない**（§9）。
+      - ⚠ **`channel.raid` の購読が必要になった場合は新規 OAuth スコープ＝既存ユーザーの再ログインが
+        発生する**ので、本項の前提が変わる。その時点で必ず再レビューすること。
   - **プライバシー**: 第三者の氏名・発言・投げ銭履歴を端末に保存するため、**削除手段**を必須とする＝`delete_viewer`
     （個別・FK CASCADE で当該コメントも削除）／`clear_viewers`（全消去）。**アバター（data URI）は保存しない**
     （アイコンは overlay 意匠のみ・§9）。入力（コメント本文・視聴者名・メモ・session_id）は Rust 側で **trim/制御文字拒否**

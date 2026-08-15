@@ -15,7 +15,11 @@ export type CanonicalCommentEventType =
   | "subscription"
   | "gift"
   | "donation"
-  | "jewels";
+  | "jewels"
+  // 062a: Twitch のレイド。⚠ sidecar 語彙（`normal`/`super_chat`）と Rust 語彙（`Chat`/`Superchat`）は
+  // 綴りがずれているが、**raid だけは両者とも "raid"** で一致する（Rust の `CommentEventType` は
+  // `#[serde(rename_all = "lowercase")]` なので `Raid` → `"raid"`）。
+  | "raid";
 
 export interface CanonicalCommentAuthor {
   id: string;
@@ -47,6 +51,22 @@ export interface CanonicalComment {
   // monthCount 等と同じく**表示用途で通すのみ・端末保存しない**。整数のみで個人情報を含まない（§9）。
   // フェーズ1 では金額計算に使わない（単価か累計かを実機で判別するための観測値）。
   comboCount?: number;
+  /**
+   * 062a: レイド人数（Rust `CommentViewDto.raidViewerCount` と同形）。
+   *
+   * ⚠⚠ **上の 4 つと違い、この値は端末に保存される**（`viewer_comments.raid_viewer_count`）。
+   * 「配信終わりに誰がレイドしてくれたか」を見返すのが目的なので、表示のためだけの値ではない。
+   * 整数のみで個人情報を含まない（§9）。
+   *
+   * ⚠⚠ **任意フィールドなので型では守られない。** すぐ下の `toCanonicalComment` で明示的に詰め替えており、
+   * その 1 行を落とすと**型検査もテストも通るのに値だけが静かに消える**——`avatar` について
+   * 上の `CanonicalCommentAuthor` が書いている 036b の事故（この wire 型に無く落としていた）と**同型**である。
+   * さらに悪いことに、`eventType` の写像を落とした場合は `?? "chat"` に落ちて**普通のコメントとして
+   * 保存される**（種別ごと消える）。前者は `scripts/test-comment-relay.mjs` の
+   * `RELAYED_NUMERIC_FIELDS`（converter → wire の 2 段を通す）、後者は `EVENT_TYPE_MAP` の
+   * `Record<Union, …>` による型強制がそれぞれ担保する。
+   */
+  raidViewerCount?: number;
 }
 
 const EVENT_TYPE_MAP: Record<
@@ -63,6 +83,11 @@ const EVENT_TYPE_MAP: Record<
   donation: "donation",
   // 043a(拡張): YouTube Jewels。取得は 043d（現状 dev-mock のみ発行）。語彙は通しておく。
   jewels: "jewels",
+  // 062a: Twitch のレイド。⚠ この行を落とすと `?? "chat"` のフォールバックに落ち、レイドが
+  // **普通のコメントとして保存される**（静かな誤動作）。ただし本 Record は
+  // `Record<OsareviewCommentViewDto["eventType"], …>` なので、`comment-types.ts` の union に
+  // "raid" がある限り**キー不足でコンパイルが落ちる**＝構造的に落とせない。
+  raid: "raid",
 };
 
 /**
@@ -132,6 +157,10 @@ export function toCanonicalComment(
     tier: dto.tier,
     // 043e: combo 回数もそのまま通す（undefined は JSON 直列化時に落ちる＝Rust 側 None）。
     comboCount: dto.comboCount,
+    // 062a: レイド人数もそのまま通す。⚠⚠ **この 1 行が落ちると Rust へ人数が届かず、
+    //   `raid_viewer_count` が NULL のレイド行だけが残る**（画面は「レイド」と出るのに人数が無い＝
+    //   036b の avatar と同型の静かな欠落）。`test-comment-relay.mjs` が固定している。
+    raidViewerCount: dto.raidViewerCount,
   };
   if (dto.monetaryAmount) {
     const { currency, amount } = dto.monetaryAmount;

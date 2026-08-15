@@ -39,6 +39,18 @@ const DONATION_NOTICE_TYPES: ReadonlySet<TwitchChatNoticeType> = new Set([
   "charity_donation",
 ]);
 
+/**
+ * 062a: レイド（他チャンネルからの視聴者流入）の notice_type。
+ *
+ * ⚠⚠ **`unraid` を入れてはならない**。公式の notice_type 一覧には `raid` と `unraid` が
+ * **独立した値**として存在し、`unraid` は「レイドの取り消し」で記録すべきイベントではない。
+ * ⚠ 判定に `Set.has`（**完全一致**）を使うのが担保の実体である——`noticeType.includes("raid")` や
+ * `endsWith("raid")` のような部分一致に書き換えると **`unraid` が黙って当たる**
+ * （`stripSharedChatPrefix` は `shared_chat_` しか剥がさないので `unraid` は `unraid` のまま来る）。
+ * `test-twitch-mapper.mjs` が `unraid` を落とすことを固定している。
+ */
+const RAID_NOTICE_TYPES: ReadonlySet<TwitchChatNoticeType> = new Set(["raid"]);
+
 const SHARED_CHAT_PREFIX = "shared_chat_";
 
 /**
@@ -114,10 +126,48 @@ function mapTwitchChatEventToComment(
     const isDonation = DONATION_NOTICE_TYPES.has(noticeType);
     const isGift = GIFT_NOTICE_TYPES.has(noticeType);
     const isSubscription = SUBSCRIPTION_NOTICE_TYPES.has(noticeType);
+    // 062a: レイドは収益ではないが「誰がレイドしてくれたか」の記録のために取り込む。
+    const isRaid = RAID_NOTICE_TYPES.has(noticeType);
 
-    // 収益に関係しない notice（raid / announcement / bits_badge_tier 等）は取り込まない。
-    if (!isDonation && !isGift && !isSubscription) {
+    // 収益にもレイドにも関係しない notice（announcement / bits_badge_tier / unraid /
+    // watch_streak / modiversary / unknown 等）は取り込まない。
+    if (!isDonation && !isGift && !isSubscription && !isRaid) {
       return null;
+    }
+
+    if (isRaid) {
+      // 062a: レイドの主体は **`raid` オブジェクト**に載る（chatter ではない）。公式は
+      //   `raid.user_id` / `user_name` を「the broadcaster raiding this channel」と明記する一方、
+      //   `chatter_user_*` は「the user that sent the message」としか書いておらず、raid notice で
+      //   誰を指すかは**公式から確定できない**。「誰がレイドしてくれたか」として確実に正しいのは前者。
+      // ⚠ 共有チャット由来（notice_type=shared_chat_raid）では公式定義どおり `raid` が null になり、
+      //   同形の `shared_chat_raid` 側に載るため両方を見る（raw.dto.ts の該当コメントが理由の正）。
+      const raid = event.raid ?? event.shared_chat_raid;
+      // ⚠⚠ **fail-closed。`chatter_user_*` へフォールバックしない。** どちらの付随オブジェクトも
+      //   無いのに chatter を採ると、**根拠のない人物を「レイドしてくれた人」として端末に保存する**
+      //   ことになる（§9・保存する情報は確定した出典を持つものだけにする）。行を作らない方を採る。
+      if (!raid) {
+        return null;
+      }
+      return {
+        id: event.message_id,
+        source: COMMENT_SOURCES.TWITCH,
+        author: {
+          id: raid.user_id,
+          name: raid.user_name,
+          // ⚠ **アバターを解決しない**（`resolveAvatar` を呼ばない）。ペイロードの
+          //   `profile_image_url` を取らないと決めた判断（raw.dto.ts）と、Helix で引き直すのは
+          //   同じことなので、経路を変えて実質的に解禁するのは筋が通らない。§9 の線引きを守る。
+        },
+        // 043a と同じ規律: 本文は視聴者が添えたメッセージのみで、`system_message`（Twitch が生成する
+        // 英語の自動文。受贈者名を含みうる）へは**フォールバックしない**。レイドでは通常空文字になる。
+        text: event.message.text,
+        publishedAt: new Date(),
+        eventType: COMMENT_EVENT_TYPES.RAID,
+        raidViewerCount: raid.viewer_count,
+        // monetaryAmount は**付けない**（レイドは金銭ではない）。`viewer_comments` の
+        // amount / currency / monetary_amount は常に NULL になり、課金系の集計にも入らない。
+      };
     }
 
     // 043a: ギフト（他者贈与）は gift、チャリティは donation、それ以外

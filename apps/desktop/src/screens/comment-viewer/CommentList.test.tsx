@@ -1563,3 +1563,66 @@ describe("CommentList 060a オーバーレイのセレクタ契約", () => {
     expect(container.querySelector("[data-sd-tone]")).toBeNull();
   });
 });
+
+/**
+ * 062a: レイド行の描画仕様。
+ *
+ * ⚠⚠ **レイドは `MONETARY_EVENT_TYPES` に入れない**（課金ではない）ので、`renderDefaultItem` の
+ * **chat 分岐**へ落ちる。ところがあの分岐は設計上 `typeLabel` を描かない（課金種別の追加漏れを
+ * 一覧が隠さないための意図的な設計）ので、**名指しの分岐を足さないとレイドは「配信元バッジ＋名前だけの
+ * 空行」になる**。ここはその 1 点を固定する。
+ *
+ * ⚠ 併せて「配信画面（overlay）には出さない」ことも固定する。落とし忘れると**空の吹き出しが
+ * 配信に映る**（062a の取り込みが作りうる表示欠陥で、062a 以前の配信画面には出ていなかった）。
+ */
+describe("CommentList 062a レイド", () => {
+  const raid = (over: Partial<CommentViewDto> = {}): CommentViewDto =>
+    makeComment({
+      id: "r1",
+      eventType: "raid",
+      text: "",
+      author: { id: "raider", name: "RaiderChannel" },
+      raidViewerCount: 42,
+      ...over,
+    });
+
+  it("本体の一覧に「レイド」ラベルと人数が出る", () => {
+    render(<CommentList comments={[raid()]} />);
+    expect(screen.getByText("レイド 42人")).toBeTruthy();
+    expect(screen.getByText("RaiderChannel")).toBeTruthy();
+  });
+
+  it("人数が 4 桁以上なら桁区切りが入る（fmtNumber を通している）", () => {
+    render(<CommentList comments={[raid({ raidViewerCount: 12345 })]} />);
+    expect(screen.getByText("レイド 12,345人")).toBeTruthy();
+  });
+
+  it("⚠ 人数が欠けていてもラベルだけは出る（空行にならない）", () => {
+    render(<CommentList comments={[raid({ raidViewerCount: undefined })]} />);
+    expect(screen.getByText("レイド")).toBeTruthy();
+  });
+
+  it("⚠ レイドは課金カード（ティア色）にならない", () => {
+    const { container } = render(<CommentList comments={[raid()]} />);
+    // 課金カードなら TONE_CLASS のいずれかが当たる。レイドではどれも当たってはいけない。
+    for (const cls of Object.values(TONE_CLASS)) {
+      expect(container.querySelector(`.${cls}`)).toBeNull();
+    }
+    // 金額バッジも出ない（レイドは monetaryAmount を持たない）。
+    expect(container.textContent).not.toContain("JPY");
+  });
+
+  it("⚠⚠ 配信画面（variant=overlay）にはレイド行を出さない（空の吹き出しを映さない）", () => {
+    const { container } = render(
+      <CommentList
+        comments={[raid(), makeComment({ id: "c1", text: "hello" })]}
+        variant="overlay"
+      />,
+    );
+    // 通常チャットは出る。
+    expect(screen.getByText("hello")).toBeTruthy();
+    // レイドは行ごと出ない（名前も吹き出しも無い）。
+    expect(screen.queryByText("RaiderChannel")).toBeNull();
+    expect(container.querySelectorAll("li").length).toBe(1);
+  });
+});

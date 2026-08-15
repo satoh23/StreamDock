@@ -531,12 +531,38 @@ describe("059b 投げ銭通知音の排他（CommentViewerApp の配線）", () 
     // ⚠ キャストしているのは、`CommentEventType` が**今の**wire 契約（ts-rs 生成）だから。
     // 上流（sidecar / 配信サービス）が新しい種別を送ってくる状況＝型が知らない値の到来を再現している。
     // `isMonetaryEvent` の引数が `string` なのも同じ理由（未知の値が来うる前提の述語）。
+    //
+    // ⚠⚠ **062a: フィクスチャを `"raid"` から `"poll"` へ差し替えた。** 062a で raid が
+    //   **既知の種別**になったため、`"raid" as CommentEventType` は「型が知らない値」を
+    //   もはや再現しない——にもかかわらず raid は課金ではないので**テストは緑のまま通り続け、
+    //   表明の意味だけが静かに死ぬ**（このリポジトリが繰り返し警戒している形）。
+    //   未知の値の到来を再現するには、**wire 契約に存在しない値**でなければならない。
+    //   再修正トリガー: `poll` が本当に実装されたら、また別の未実装値へ差し替えること。
     setUpSounds({ comment: true, monetary: true });
     render(<CommentViewerApp />);
 
     receive([
-      comment({ id: "u1", eventType: "raid" as CommentEventType, text: "" }),
+      comment({ id: "u1", eventType: "poll" as CommentEventType, text: "" }),
     ]);
+
+    expect(mocks.requestNotificationSound).toHaveBeenCalledWith(
+      "comment",
+      DEVICE_ID,
+    );
+    expect(mocks.requestNotificationSound).not.toHaveBeenCalledWith(
+      "monetary",
+      DEVICE_ID,
+    );
+  });
+
+  it("⚠ 062a: レイドは課金扱いにしない（コメント音が鳴り、投げ銭音は鳴らない）", () => {
+    // 上のケースが担っていた表明を、**既知の非課金種別**として明示的に持ち直したもの。
+    // レイドを `MONETARY_EVENT_TYPES` に足すと、ここと viewerFormat 側の両方が落ちる
+    // （＝「レイドを課金として扱わない」という 062a の決定を機械で固定している）。
+    setUpSounds({ comment: true, monetary: true });
+    render(<CommentViewerApp />);
+
+    receive([comment({ id: "r1", eventType: "raid", text: "" })]);
 
     expect(mocks.requestNotificationSound).toHaveBeenCalledWith(
       "comment",

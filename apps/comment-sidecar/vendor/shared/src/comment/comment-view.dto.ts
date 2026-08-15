@@ -28,4 +28,8 @@ export type CommentViewDto = {
   // 043e: Jewels の combo（連続ギフト）回数。表示用の観測値で**金額計算には使わない**（フェーズ1）。
   /** combo 回数（YouTube Jewels の combo_count・単発/未設定は undefined）。 */
   comboCount?: number;
+  // 062a: レイド人数。他の付随数値と違い**端末保存する**（`viewer_comments.raid_viewer_count`）＝
+  // 「誰がレイドしてくれたか」を配信後に見返すのが 062 の要望のため。整数のみで個人情報を含まない（§9）。
+  /** レイド人数（Twitch raid の viewer_count・raid 以外は undefined）。 */
+  raidViewerCount?: number;
 };

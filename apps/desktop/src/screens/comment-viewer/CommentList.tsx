@@ -15,6 +15,7 @@ import {
   composeEventMessage,
   displayEventType,
   eventLabel,
+  fmtNumber,
   isMonetaryEvent,
   monetaryTone,
 } from "./viewerFormat";
@@ -293,6 +294,23 @@ export function CommentList({
                 {SOURCE_LABEL[c.source]}
               </span>
               {judgementBadge}
+              {/* 062a: レイドの種別バッジ（「レイド 42人」）。
+                  ⚠⚠ **この 1 箇所が無いと、レイド行は「配信元バッジ＋名前だけの空行」になる。**
+                  レイドは課金ではない＝`MONETARY_EVENT_TYPES` に入れないので上のティア色カード分岐に
+                  入らず、この chat 分岐は（上のコメントのとおり）`typeLabel` を**構造的に描かない**ため。
+                  ⚠ ここで `typeLabel`（＝`eventLabel(displayEventType(c))`）を汎用に描き始めない**こと。
+                  上のコメントが説明しているとおり、chat 分岐が種別ラベルを持たないのは意図的な設計
+                  （「課金種別の追加漏れを一覧が隠してしまう」のを防ぐため）で、汎用に描くとその防御が消える。
+                  レイドだけを名指しで描くのは、**レイドが「課金ではないのに種別ラベルが要る」唯一の種別**
+                  だからである。次に同じ性質の種別（例: announcement）を足すときは、ここを汎用化するのではなく
+                  同じ形で名指しを増やすか、`NON_MONETARY_LABELED_TYPES` のような集合を作ること。 */}
+              {c.eventType === "raid" && (
+                <span className={`${styles.badge} ${styles.badgeRaid}`}>
+                  {c.raidViewerCount != null
+                    ? `${eventLabel("raid")} ${fmtNumber(c.raidViewerCount)}人`
+                    : eventLabel("raid")}
+                </span>
+              )}
               <span className={styles.author}>{c.author.name}</span>
             </div>
             {c.text && <p className={styles.text}>{c.text}</p>}
@@ -418,6 +436,28 @@ export function CommentList({
 
     // 043c: chat は従来の LINE 風吹き出しのまま。chat 以外（投げ銭）は下の YouTube スパチャ風カードで描く。
     const dtype = displayEventType(c);
+
+    // ⚠⚠ 062a: **レイドは配信画面（OBS オーバーレイ）には出さない。**
+    //
+    //   レイドは課金ではない＝`MONETARY_EVENT_TYPES` に無いので、素のままだと下の chat 分岐へ落ちる。
+    //   ところがレイドの `text` は**通常は空文字**（`system_message` へフォールバックしないため）なので、
+    //   **「名前だけの空の吹き出し」が配信画面に出てしまう**——062a の取り込みが作った表示上の欠陥で、
+    //   062a より前の配信画面には（そもそも受信していないので）レイドは 1 件も出ていなかった。
+    //   ＝ ここで落とすのは新しい判断ではなく、**配信画面を 062a 以前の状態に保つ**ことである。
+    //
+    //   ⚠ 043e が `comboCount` について「オーバーレイには出さない＝配信画面に出す情報を増やさない」と
+    //   決めたのと同じ規律。配信画面に何を出すかは意匠と配信者の意思決定が要る領分なので、
+    //   取得層のタスク（062a）が黙って増やさない。
+    //   ⚠ **本体のコメビュ窓（`renderDefaultItem`）には出る**（「レイド 42人」のバッジ付き）。
+    //   記録も従来どおり行われる（この分岐は描画だけで、`recordComments` の経路には一切触れない）。
+    //
+    //   **再修正トリガー＝「レイドも配信画面に出したい」と言われたとき。** そのときは
+    //   この早期 return を消すのではなく、専用の意匠（「〇〇さんが N 人でレイド！」のカード等）を
+    //   決めてから出すこと（空の吹き出しに戻さない）。
+    if (c.eventType === "raid") {
+      return null;
+    }
+
     if (dtype === "chat") {
       return (
         // 060a: chat には `data-sd-tone` を**付けない**。`monetaryTone()` は chat を "t0" へ無害劣化

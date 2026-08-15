@@ -268,6 +268,10 @@ const SPEECH_KIND: Record<CommentViewDto["eventType"], "summary" | "body-only"> 
     subscription: "summary",
     gift: "summary",
     jewels: "summary",
+    // 062a: レイドは**読み上げ対象外**（決定⑦）。`composeEventMessage` に raid 分岐を足さないので
+    //   null が返り `c.text`（実データでは空文字）へ落ち、`ttsQueue.enqueue` の空判定で読まれない。
+    //   ＝「何もしない」ことが実装そのもの。理由と再修正トリガーは `speechText.ts` の JSDoc を正とする。
+    raid: "body-only",
   };
 
 describe("composeSpeechText: 種別の網羅（新種別の追従漏れで無音に戻らないこと）", () => {

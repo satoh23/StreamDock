@@ -92,6 +92,27 @@ const runYouTube = (count) => {
   return { source, emitted };
 };
 
+/**
+ * 062a: Twitch 単独でモックを起動し、合成コメントを seq=1..count まで集める。
+ * （`runYouTube` と同型。seq は provider 共通カウンタなので単独接続で seq = 出力順になる。）
+ */
+const runTwitch = (count) => {
+  const emitted = [];
+  const source = createMockCommentSource({
+    output: {
+      broadcastMessage(message) {
+        if (message?.type === "comments.append") emitted.push(message.payload.comment);
+      },
+    },
+    sendSessionState: () => {},
+    logInfo: () => {},
+  });
+  source.handleControl({ type: "start-session", service: "twitch" });
+  flushTimeouts(); // connected + 1 件目（seq=1）
+  tick(count - 1); // seq=2..count
+  return { source, emitted };
+};
+
 // ---- A. combo 更新は「同一 id の再送」（seq%20===9 と 12 が対になる）----
 {
   const { source, emitted } = runYouTube(60);
@@ -185,6 +206,36 @@ const runYouTube = (count) => {
   ok("dev-mock(S-6): stop→start 後の seq=12 は combo にならない", seq12.eventType, "chat");
   ok("dev-mock(S-6): 前セッションの jewels と id が一致しない", seq12.id === emitted[8].id, false);
   ok("dev-mock(S-6): comboCount も付かない", seq12.comboCount, undefined);
+  source.stopAll();
+}
+
+// ---- F. 062a: レイド（Twitch・seq%20===16）----
+// ⚠⚠ **このモックが検証できる範囲を取り違えないこと。** dev-mock は `CanonicalComment` を
+//   **直接**組んでおり `wire.ts` を通らない（dev-mock.ts の該当コメントが正）。よってここで
+//   固定できるのは「合成が正しい形で出ること」だけで、**vendor mapper と wire.ts の詰め替えは
+//   1 バイトも通らない**（そちらは test-twitch-mapper.mjs / test-comment-relay.mjs が担保）。
+{
+  const { source, emitted } = runTwitch(40);
+  const at = (seq) => emitted[seq - 1];
+
+  const raids = emitted.filter((c) => c.eventType === "raid");
+  ok("dev-mock(062a): raid は 2 件（seq=16, 36）", raids.length, 2);
+  ok("dev-mock(062a): seq=16 は raid", at(16).eventType, "raid");
+  ok("dev-mock(062a): レイド人数が入る", at(16).raidViewerCount, 42);
+  ok("dev-mock(062a): 本文は空（system_message を持ち回らない）", at(16).text, "");
+  ok("dev-mock(062a): 金額は付かない（課金扱いしない）", at(16).monetaryAmount, undefined);
+  ok("dev-mock(062a): 数値 monetary も付かない", at(16).monetary, undefined);
+  ok("dev-mock(062a): author はレイド元チャンネル", at(16).author.name, "RaiderChannel");
+  ok("dev-mock(062a): アバターは持たない（§9）", at(16).author.avatar, undefined);
+
+  // ⚠ 既存の設計原則: 投げ銭の周期は %5 ≠ 0（superchat 枠を奪わない）。レイドも同じ原則に従う。
+  ok("dev-mock(062a): raid の周期は %5 ≠ 0（superchat 枠を奪わない）", 16 % 5 === 0, false);
+  // ⚠ 既存の周期（13=gift / 17=subscription / 11=power-up / 3=donation）を踏まない。
+  ok("dev-mock(062a): seq=13 は gift のまま", at(13).eventType, "gift");
+  ok("dev-mock(062a): seq=17 は subscription のまま", at(17).eventType, "subscription");
+  ok("dev-mock(062a): seq=11 は superchat(bits) のまま", at(11).eventType, "superchat");
+  ok("dev-mock(062a): seq=3 は donation のまま", at(3).eventType, "donation");
+
   source.stopAll();
 }
 

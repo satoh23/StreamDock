@@ -30,4 +30,13 @@ export type Comment = {
    * 表示用の観測値で**金額計算には使わない**（フェーズ1）。
    */
   comboCount?: number;
+  /**
+   * 062a: レイド人数（Twitch `raid.viewer_count`・raid 以外は undefined）。
+   *
+   * ⚠⚠ **ここから wire までの中継 3 層（converter → CommentViewDto → wire.ts）はいずれも
+   * フィールドを明示列挙して詰め替える**ので、1 箇所でも書き漏らすと**型検査もテストも通るのに
+   * 値だけが静かに消える**（036b の `avatar` と同じ落ち方）。取りこぼしゼロは
+   * `scripts/test-comment-relay.mjs` の `RELAYED_NUMERIC_FIELDS` が固定している。
+   */
+  raidViewerCount?: number;
 };

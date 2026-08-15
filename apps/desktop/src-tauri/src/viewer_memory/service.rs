@@ -70,6 +70,9 @@ pub fn record_comment(
         amount,
         currency,
         monetary_amount: comment.monetary_amount,
+        // 062a: レイド人数はそのまま通す（検証不要の整数・raid 以外は None）。⚠ ここを落とすと
+        //   レイド行は保存されるのに人数だけ NULL になる（sidecar 側の中継 2 段と同じ性質の落とし穴）。
+        raid_viewer_count: comment.raid_viewer_count,
         published_at: comment.published_at,
     };
 
@@ -160,6 +163,7 @@ mod tests {
             gift_count: None,
             tier: None,
             combo_count: None,
+            raid_viewer_count: None,
         }
     }
 
@@ -255,6 +259,60 @@ mod tests {
             update_note(&conn, "twitch:u1", "a\nb".to_string()).unwrap_err().code,
             ErrorCode::ValidationError
         );
+    }
+
+    // ---- 062a: レイドを service 経由で通したときの仕様 ----
+
+    // 062a: `CommentEventType::Raid` は `as_str()` で "raid"（serde の lowercase と一致＝wire の値と同じ）に
+    //   なり、`raidViewerCount` が `viewer_comments.raid_viewer_count` まで届く。
+    //   ⚠ ここが落ちるのは「Rust の語彙が wire とずれた」か「service が人数を渡し忘れた」ときだけ。
+    #[test]
+    fn raid_passes_through_service_with_viewer_count() {
+        let conn = test_conn();
+        let mut d = dto();
+        d.id = "r1".to_string();
+        d.author = CommentAuthor {
+            // レイドの author は**レイド元の配信者**（mapper が raid.user_* を採る）。
+            id: "raider".to_string(),
+            name: "RaiderChannel".to_string(),
+            avatar: None,
+        };
+        d.text = String::new();
+        d.event_type = CommentEventType::Raid;
+        d.raid_viewer_count = Some(42);
+        record_comment(&conn, d, "sess-1".to_string()).unwrap();
+
+        let detail = get(&conn, "twitch:raider").unwrap();
+        assert_eq!(detail.comments.len(), 1);
+        assert_eq!(detail.comments[0].event_type, "raid", "wire と同じ綴りで保存される");
+        assert_eq!(detail.comments[0].raid_viewer_count, Some(42));
+        assert_eq!(detail.comments[0].amount, None, "レイドは金額を持たない");
+        assert_eq!(detail.viewer.subscription_count, 0, "サブスク集計に混ざらない");
+        assert!(!detail.viewer.is_member);
+    }
+
+    // 062a(§9): レイド元のアバター URL・system_message は wire にも DTO にも無いので、保存行のどこにも
+    //   現れない。`CommentViewDto` に avatar は存在するが**視聴者メモリには元から保存しない**（038a）ため、
+    //   仮に sidecar 側の判断が緩んで avatar が載っても DB へは漏れないことを併せて固定する。
+    #[test]
+    fn raid_row_carries_no_avatar_or_system_message() {
+        let conn = test_conn();
+        let mut d = dto();
+        d.id = "r1".to_string();
+        d.author = CommentAuthor {
+            id: "raider".to_string(),
+            name: "RaiderChannel".to_string(),
+            // ⚠ わざと入れる（sidecar 側が緩んだ場合の多層防御を見る）。
+            avatar: Some("https://static-cdn.jtvnw.net/raider.png".to_string()),
+        };
+        d.text = String::new();
+        d.event_type = CommentEventType::Raid;
+        d.raid_viewer_count = Some(42);
+        record_comment(&conn, d, "sess-1".to_string()).unwrap();
+
+        let saved = format!("{:?}", get(&conn, "twitch:raider").unwrap());
+        assert!(!saved.contains("jtvnw"), "アバター取得元 URL は保存されない（§9）");
+        assert!(!saved.contains("http"), "URL そのものが保存行に現れない");
     }
 
     // ---- 043e: combo 更新を service 経由で通したときの仕様（§8 検証・非保存・削除手段の非退行）----

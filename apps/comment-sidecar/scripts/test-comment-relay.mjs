@@ -79,12 +79,63 @@ const relay = async (c) => toCanonicalComment(await convertCommentToViewDto(c));
 
 // 付随数値の**取りこぼしゼロ**を 1 本のアサートでも表明する（将来フィールドが増えたときの網）。
 // **仕様**: 「通すと決めた付随数値」の集合は中継の前後で一致する。片側だけ増やすと落ちる。
+// ⚠⚠ 062a: `raidViewerCount` をこの配列に足したことが、差 A（wire.ts が対象から抜けていた問題）の
+//   担保の実体である。中継は converter → wire の 2 段あり、**どちらの明示列挙を落としてもここが落ちる**。
 {
-  const RELAYED_NUMERIC_FIELDS = ["monthCount", "giftCount", "tier", "comboCount"];
-  const source = { monthCount: 1, giftCount: 2, tier: 3, comboCount: 4 };
+  const RELAYED_NUMERIC_FIELDS = [
+    "monthCount",
+    "giftCount",
+    "tier",
+    "comboCount",
+    "raidViewerCount",
+  ];
+  const source = { monthCount: 1, giftCount: 2, tier: 3, comboCount: 4, raidViewerCount: 5 };
   const c = await relay(comment({ eventType: "jewels", ...source }));
   const dropped = RELAYED_NUMERIC_FIELDS.filter((k) => c[k] !== source[k]);
   ok("relay: 付随数値の取りこぼしゼロ（落ちたフィールド名の一覧が空）", dropped, []);
+}
+
+// ---- F. 062a: レイドが wire まで正しい形で到達する ----
+// **仕様**: mapper が作ったレイドは `eventType: "raid"` のまま wire へ届き、人数も落ちない。
+//
+// ⚠⚠ **ここが差 A の本丸である。** Rust が受け取るのは vendor の `CommentViewDto` ではなく
+//   `wire.ts` の `CanonicalComment` で、この中継は**フィールドを明示列挙して詰め替える**。
+//   - `eventType` を落とすと `EVENT_TYPE_MAP[...] ?? "chat"` のフォールバックに落ち、
+//     **レイドが「普通のコメント」として保存される**（静かな誤動作）。
+//   - `raidViewerCount` を落とすと、画面は「レイド」と出るのに**人数だけ NULL** になる
+//     （`CanonicalCommentAuthor` の JSDoc が記録している 036b の avatar 事故と同型）。
+//   ⚠ dev-mock は `CanonicalComment` を直接組んで **`wire.ts` を通らない**ので、
+//     実機のモック確認ではこの経路を 1 バイトも検証できない。**ここでしか守れない。**
+{
+  const c = await relay(
+    comment({
+      source: "twitch",
+      eventType: "raid",
+      text: "",
+      raidViewerCount: 42,
+    }),
+  );
+  ok("relay(062a): eventType 写像（raid → raid・?? \"chat\" に落ちない）", c.eventType, "raid");
+  ok("relay(062a): raidViewerCount が wire まで到達する", c.raidViewerCount, 42);
+  ok("relay(062a): レイドに金額は付かない", c.monetaryAmount, undefined);
+  ok("relay(062a): 数値 monetary も付かない", c.monetary, undefined);
+}
+
+// **仕様（境界）**: レイド以外では人数が付かない（0 やキー生成へ劣化しない＝Rust 側 None）。
+{
+  const c = await relay(comment({ eventType: "normal" }));
+  ok("relay(062a・境界): 非レイドの raidViewerCount は undefined のまま", c.raidViewerCount, undefined);
+}
+
+// **仕様（§9）**: レイド行にも取得元 URL・受贈者情報は現れない
+//   （レイド元の `profile_image_url` は mapper が DTO に宣言せず取り込まないため、ここまで来ない）。
+{
+  const c = await relay(
+    comment({ source: "twitch", eventType: "raid", text: "", raidViewerCount: 42 }),
+  );
+  const asJson = JSON.stringify(c);
+  ok("relay(062a・§9): 出力に http(s) URL が現れない", /https?:\/\//.test(asJson), false);
+  ok("relay(062a・§9): gifter/recipient 等の語が現れない", /gifter|recipient|受贈/.test(asJson), false);
 }
 
 // ---- B. 境界: 未設定は最後まで undefined（0 やキー生成へ劣化しない）----

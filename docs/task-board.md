@@ -1521,11 +1521,20 @@
   - ⚠⚠ **062a と 062b は他の親タスクより優先して着手する価値がある**＝**取得層と境界の記録は遡れない**（着手が遅れるほど、その間の配信のレイドと「いつの配信か」が永久に失われる）
   - ⚠ **土台は半分できている**: `viewer_comments` は既に `session_id` 列と `idx_viewer_comments_session` を持つ。⚠ **ただし `session_id` は「1 配信」ではない**（`sessionIdRef` が**コメビュ窓のマウント単位**で採番＝開き直すと分裂／開きっぱなしだと 2 日ぶんが混ざる）
   - ⚠ **既知の歪み 3 つを隠さず注記する**（数字が売りの機能なので、限界を隠すと配信者が誤った数字を信じる）: ①043a の**コミュニティギフト N+1**〔サブスク件数が水増し〕 ②043e の**Jewels の単位未確定**〔**総課金額に合算しない**・件数のみ〕 ③**通貨の混在**〔換算せず通貨ごとに並べる。外部レート取得＝§1 違反／固定レート＝すぐ古くなる〕
-  - 062a Twitch レイドの取り込み（[docs/tasks/062a-twitch-raid-ingestion.md](tasks/062a-twitch-raid-ingestion.md)／sidecar mapper＋wire DTO＋Rust model＋binding・**security-review 必須**〔受信面拡張・§9〕）
-    - ⚠ **現状 mapper が明示的に捨てている**（`if (!isDonation && !isGift && !isSubscription) return null;`）。`channel.chat.notification` は**既に購読済み**なので raid は受信経路に載っている
-    - ⚠ **(1) 既存購読で足りるかを最初に確認する**。`channel.raid` の別購読が要ると**新規スコープ＝既存ユーザーの再ログイン**（043a の `bits:read` の先例）→ **その時点で本人に確認**
-    - ⚠ **`RECOMPUTE_VIEWER_AGGREGATES_SQL` の `subscription_count`/`is_member` に `raid` を足さない**（レイドはサブスクではない）／**`MONETARY_EVENT_TYPES` にも足さない**（課金ではない＝ティア色カード・ティッカー・読み上げ・エフェクトを発火させない）
-    - ⚠ **sidecar と Rust で語彙がずれている**（`normal`↔`Chat` / `super_chat`↔`Superchat`）。両方に足して serde rename と wire の実値の一致を確認する
+  - 062a Twitch レイドの取り込み（[docs/tasks/062a-twitch-raid-ingestion.md](tasks/062a-twitch-raid-ingestion.md)／sidecar mapper＋wire DTO＋Rust model＋binding・**security-review 必須**〔受信面拡張・§9〕）— ✅ **実装完了（2026-08-16・security-review 済／⏳ 実機確認だけ未実施）**。判断の全文は progress.md の 062a 節が正
+    - ✅ **(1) は公式ドキュメントで決着＝新規購読ゼロ・新規スコープゼロ・再ログイン不要**。レイド元とレイド人数は `channel.chat.notification` の `raid` オブジェクト（`user_id`/`user_name`/`user_login`/`viewer_count`/`profile_image_url`）に載る。⚠ **`channel.raid` は不要**
+    - ⚠⚠ **`author` は `raid.user_*`（chatter ではない）**。公式は前者だけを「the broadcaster raiding this channel」と明記し、raid notice の `chatter_user_*` が誰を指すかは**確定できない**。⚠ `shared_chat_raid` では `raid` が **null** になり同形の `shared_chat_raid` に載るので**両方を見る**／どちらも無ければ**行を作らない**（fail-closed）
+    - ⚠ **`unraid` は `raid` とは別の notice_type**。判定は**完全一致の Set**（`endsWith`/`includes` にしない）
+    - ✅ **集計 SQL は 1 文字も変えていない**（`subscription_count`/`is_member`/`last_subscription_at` に `raid` は入らない）／**`MONETARY_EVENT_TYPES` にも入れていない**（ティア色カード・ティッカー・読み上げ・061 のエフェクト条件は発火しない）
+    - ✅ **語彙のズレは raid では起きない**——Rust の `CommentEventType` は `#[serde(rename_all = "lowercase")]` なので `Raid` → `"raid"` で wire と一致する
+  - ⚠⚠ **062b / 062c への申し送り（062a で判明・同じ落とし穴を踏みうる）**
+    - ⚠⚠⚠ **`apps/comment-sidecar/src/wire.ts` という層が存在する。** Rust が受け取るのは vendor の `CommentViewDto` ではなく **`wire.ts` の `CanonicalComment`**。⚠ **さらに手前に `comment-delivery` の `comment-to-view.converter.ts` がある**＝ sidecar の値を Rust まで通すには**明示列挙の詰め替えが 2 か所**あり、**任意フィールドは型で守られない**（書き漏らすと型検査もテストも通るのに値だけ静かに消える＝036b の `avatar` 事故）。⚠ **取りこぼしゼロの網は `scripts/test-comment-relay.mjs` の `RELAYED_NUMERIC_FIELDS`**——新しい付随値を通すときは**必ずこの配列に足す**
+    - ⚠ **`eventType` の写像だけは型で守られている**（`EVENT_TYPE_MAP` が `Record<Union, …>`）。落とすと `?? "chat"` に倒れるが、コンパイルが先に落ちる
+    - **レイド人数の在り処＝`viewer_comments.raid_viewer_count`（INTEGER・NULL 許容）**。`ViewerCommentRecord`（ts-rs binding）まで通してあるので **062c はそのまま読める**。⚠ レイド一覧は **`event_type = 'raid'` で直接引く**こと
+    - **`total_comments` は `COUNT(*)` のままでレイド行も数える**（決定 (a)）。⚠⚠ **`event_type <> 'raid'` に変えたくなっても、`first_seen_at`/`last_comment_at` を揃えると `TEXT NOT NULL` 制約に当たって `record_comment` が丸ごとロールバックする**（＝レイドが 1 件も保存されなくなる）。理由の全文は `RECOMPUTE_VIEWER_AGGREGATES_SQL` の doc コメント
+    - ⚠ **レイド元は `viewers` に「視聴者」として行ができる**（`viewer_comments.viewer_id` は FK NOT NULL なので他に選択肢が無い）。視聴者一覧に配信者が並び「初コメ」バッジも付く＝**受容した副作用**。062c の貢献者一覧を作るときは**レイドだけの視聴者が混ざる**ことを前提にすること
+    - ⚠ **レイドは配信画面（OBS オーバーレイ）には出していない**（`renderOverlayItem` で早期 return）。`text` が空なので出すと**空の吹き出しが配信に映る**ため。出したくなったら専用の意匠を決めてから
+    - ⚠ **固定コメント（046a）にレイドを固定すると人数が落ちる**（`PinnedComment` に `raidViewerCount` が無い）。スキーマ追加は §9 追補 046a の変更＝**別レビューが要る**
   - 062b 配信セッションの記録（[docs/tasks/062b-stream-session-recording.md](tasks/062b-stream-session-recording.md)／`stream_sessions` テーブル＋境界の確定＋`sessionIdRef` の置き換え・**security-review 必須**〔§9 保存データ種別の変更〕）
     - **境界の推奨＝接続開始/全切断＋猶予（例 30 分）。猶予中の再接続は同一セッションを継続**（配信中の一時的な切断で記録が割れないように）／起動時に閉じ忘れを回収する
     - ⚠ **`viewer_comments.session_id` に FK を張らない**（既存データに対応行が無く、`PRAGMA foreign_keys = ON` で**既存 DB が壊れる**）／**バックフィルもしない**（セッションを捏造しない・過去の配信が一覧に出ない旨を UI に出す）

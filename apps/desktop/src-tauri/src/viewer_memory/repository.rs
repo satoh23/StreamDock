@@ -16,7 +16,7 @@ const VIEWER_COLUMNS: &str = "id, provider, provider_user_id, name, first_seen_a
 /// SELECT で取得する viewer_comments テーブルの全カラム。
 const VIEWER_COMMENT_COLUMNS: &str =
     "id, viewer_id, session_id, source, text, event_type, amount, currency, monetary_amount, \
-    published_at, created_at";
+    raid_viewer_count, published_at, created_at";
 
 /// ある視聴者（?1）の集計を `viewer_comments` から**全再計算**する（?2 = updated_at）。
 ///
@@ -35,6 +35,22 @@ const VIEWER_COMMENT_COLUMNS: &str =
 /// 【043e】新規挿入時（step3）と、jewels の combo 更新で既存行を UPDATE した後の 2 箇所から呼ぶため定数化した
 ///   （SQL 本文は 043a 時点から 1 文字も変えていない）。combo 更新でも「行から全再計算」なので、
 ///   total_comments = COUNT(*) は変わらず、置き換わった amount だけが集計へ反映される。
+/// 【062a】レイド（`event_type='raid'`）を取り込んだが、**この SQL は 1 文字も変えていない**。
+///   - `subscription_count` / `is_member` / `last_subscription_at` に `'raid'` を**足さない**
+///     （レイドはサブスクではない）。`raid_is_not_counted_in_any_existing_aggregation` が固定する。
+///   - `bits_*` / `superchat_*` にも入らない（レイド行は amount/currency が常に NULL）。
+///   - ⚠⚠ **`total_comments = COUNT(*)` はそのままでレイド行も数える**（決定 (a)）。当初案は
+///     `event_type <> 'raid'` に変える (b) だったが採らなかった。理由は 3 つ:
+///     ①`first_seen_at` / `last_comment_at` も揃えて除外する案 (c) は、両列が **`TEXT NOT NULL`** なので
+///       レイドしかしていない視聴者で `MIN/MAX` が NULL を返し **NOT NULL 制約違反 → トランザクション
+///       全体がロールバック → レイドが 1 件も保存されない**（本タスクの最優先＝記録は遡れない、を壊す）
+///     ②(b) だけを採ると「総コメント数 0 なのに最終コメント日時がある」視聴者が生まれ、038 の視聴者一覧で
+///       読めない状態になる。しかも `ViewerSort::TotalComments`（総コメント数順）で 0 として沈み、
+///       **レイドしてくれた人が一覧から実質見えなくなる**
+///     ③062c の配信サマリーは `event_type='raid'` で直接引くので `total_comments` の定義に依存しない
+///     ＝ 実害は「レイド元配信者の総コメント数が 1 増える」だけ（レイド元は通常その配信の視聴者ではない）。
+///     【再修正トリガ】「総コメント数」にレイドが混ざるのが実運用で問題になったら、(b) 単独ではなく
+///     `first_seen_at` / `last_comment_at` の NOT NULL をどう扱うかまで含めて 038 側の課題として起票する。
 const RECOMPUTE_VIEWER_AGGREGATES_SQL: &str = "UPDATE viewers SET
             total_comments = (SELECT COUNT(*) FROM viewer_comments WHERE viewer_id = ?1),
             bits_count = (SELECT COUNT(*) FROM viewer_comments WHERE viewer_id = ?1 AND currency = 'BITS'),
@@ -106,6 +122,13 @@ pub fn init(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_viewer_comments_viewer ON viewer_comments(viewer_id);
         CREATE INDEX IF NOT EXISTS idx_viewer_comments_session ON viewer_comments(session_id);",
     )?;
+    // 062a: レイド人数（`event_type='raid'` の行のみ・それ以外は NULL）。既存 DB にも後付けできるよう
+    //   `ensure_column` で冪等に追加する（マイグレーション基盤が無く各 init() が冪等 DDL、という既存流儀）。
+    //   ⚠ 識別子（テーブル名・カラム名・型宣言）は**すべてコンパイル時定数**でユーザー入力を渡さない（§8）。
+    //   ⚠ 062a で増える保存項目はこの 1 列だけ。既存列の意味論は 1 つも変えていない
+    //     （`total_comments` は `COUNT(*)` のままレイド行も数える＝穴 G の決定 (a)。理由は
+    //      `RECOMPUTE_VIEWER_AGGREGATES_SQL` の doc コメントを正とする）。
+    crate::util::ensure_column(conn, "viewer_comments", "raid_viewer_count", "INTEGER")?;
     Ok(())
 }
 
@@ -143,6 +166,7 @@ fn row_to_comment(row: &rusqlite::Row<'_>) -> rusqlite::Result<ViewerCommentReco
         amount: row.get("amount")?,
         currency: row.get("currency")?,
         monetary_amount: row.get("monetary_amount")?,
+        raid_viewer_count: row.get("raid_viewer_count")?,
         published_at: row.get("published_at")?,
         created_at: row.get("created_at")?,
     })
@@ -223,8 +247,8 @@ pub fn record_comment(conn: &Connection, c: &NewViewerComment) -> rusqlite::Resu
     //    更新のみ残るが、集計は既存値のまま正しい）。親を先に作ってあるので FK 違反にはならない。
     let inserted = tx.execute(
         "INSERT OR IGNORE INTO viewer_comments
-            (id, viewer_id, session_id, source, text, event_type, amount, currency, monetary_amount, published_at, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            (id, viewer_id, session_id, source, text, event_type, amount, currency, monetary_amount, raid_viewer_count, published_at, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         rusqlite::params![
             c.comment_id,
             c.viewer_id,
@@ -235,6 +259,11 @@ pub fn record_comment(conn: &Connection, c: &NewViewerComment) -> rusqlite::Resu
             c.amount,
             c.currency,
             c.monetary_amount,
+            // 062a: レイド人数（raid 以外は None＝NULL）。⚠ 043e の combo 更新の SET 句には**足さない**
+            //   （更新対象は amount/currency/monetary_amount/text の 4 列のまま・jewels 限定なので
+            //    レイド行には到達しない。列を増やすと frontend `hasComboPayloadChanged` の比較キーとの
+            //    不変条件「比較キー ⊇ 更新列」を壊す）。
+            c.raid_viewer_count,
             c.published_at,
             now,
         ],
@@ -444,8 +473,22 @@ mod tests {
             amount,
             currency: currency.map(|s| s.to_string()),
             monetary_amount: None,
+            // 062a: レイド人数は raid のケースだけ後から差し替える（既定 None＝既存ケースの挙動は不変）。
+            raid_viewer_count: None,
             published_at: published_at.to_string(),
         }
+    }
+
+    /// 062a: レイド 1 件の内部入力（レイド元＝別の viewer_id・金額なし・人数つき）。
+    fn raid(comment_id: &str, viewer_id: &str, viewers: u32, published_at: &str) -> NewViewerComment {
+        let mut c = nc(comment_id, viewer_id, "raid", None, None, published_at);
+        // レイドの author は**レイド元の配信者**（chatter ではない）＝ mapper が raid.user_* を採る。
+        c.provider_user_id = viewer_id.trim_start_matches("twitch:").to_string();
+        c.name = "RaiderChannel".to_string();
+        // レイドは本文を持たないのが通常（system_message へはフォールバックしない＝§9）。
+        c.text = String::new();
+        c.raid_viewer_count = Some(viewers);
+        c
     }
 
     /// 043e: 保存済みコメント 1 行を id で引く（combo 更新の検証用）。
@@ -578,6 +621,132 @@ mod tests {
         assert_eq!(v.superchat_count, 1); // JPY superchat のみ（jewels は入らない）
         assert_eq!(v.subscription_count, 0); // jewels は subscription 系にも入らない
         assert_eq!(v.total_comments, 3); // jewels も総数には数える
+    }
+
+    // ---- 062a: レイド（Twitch）----
+
+    // 062a: レイド行は**既存のどの集計にも入らない**。レイドはサブスクでも投げ銭でもないので
+    //   subscription_count / is_member / last_subscription_at / bits_* / superchat_* のいずれにも
+    //   混ざってはいけない（RECOMPUTE_VIEWER_AGGREGATES_SQL に 'raid' を足す変異でレッドになる）。
+    #[test]
+    fn raid_is_not_counted_in_any_existing_aggregation() {
+        let conn = test_conn();
+        record_comment(&conn, &raid("r1", "twitch:raider", 42, "2026-01-01T00:00:00Z")).unwrap();
+        let v = viewer(&conn, "twitch:raider");
+        assert_eq!(v.subscription_count, 0, "レイドはサブスクではない");
+        assert!(!v.is_member, "レイドでメンバー扱いにしない");
+        assert_eq!(v.last_subscription_at, None, "レイドはサブスク時刻を更新しない");
+        assert_eq!(v.bits_count, 0);
+        assert_eq!(v.bits_amount, 0);
+        assert_eq!(v.superchat_count, 0);
+        assert_eq!(v.superchat_amount, 0.0);
+        assert_eq!(v.superchat_currency, None);
+    }
+
+    // 062a: サブスクとレイドが同じ視聴者に混在しても、レイドはサブスク集計を 1 つも増やさない
+    //   （集計 SQL の IN 句に 'raid' を足す変異は、上のテストより先にここで落ちる）。
+    #[test]
+    fn raid_does_not_inflate_subscription_count_when_mixed() {
+        let conn = test_conn();
+        record_comment(&conn, &nc("c1", "twitch:u1", "subscription", None, None, "2026-01-01T00:00:00Z")).unwrap();
+        record_comment(&conn, &raid("r1", "twitch:u1", 7, "2026-01-02T00:00:00Z")).unwrap();
+        record_comment(&conn, &nc("c2", "twitch:u1", "membership", None, None, "2026-01-03T00:00:00Z")).unwrap();
+        let v = viewer(&conn, "twitch:u1");
+        assert_eq!(v.subscription_count, 2, "subscription+membership の 2 件だけ（raid は入らない）");
+        assert_eq!(
+            v.last_subscription_at.as_deref(),
+            Some("2026-01-03T00:00:00Z"),
+            "raid（1/2）ではなく membership（1/3）が最終サブスク時刻"
+        );
+    }
+
+    // 062a（穴 G・決定 (a)）: `total_comments` は `COUNT(*)` のままなので**レイド行も数える**。
+    //   ⚠ このテストは「そう決めた」ことの記録である。`event_type <> 'raid'` へ変える変異はここで落ちる。
+    //   決定理由（NOT NULL 制約・038 一覧の可読性・062c は非依存）は
+    //   RECOMPUTE_VIEWER_AGGREGATES_SQL の doc コメントを正とする。
+    #[test]
+    fn raid_is_counted_in_total_comments_by_design() {
+        let conn = test_conn();
+        record_comment(&conn, &nc("c1", "twitch:u1", "chat", None, None, "2026-01-01T00:00:00Z")).unwrap();
+        record_comment(&conn, &raid("r1", "twitch:u1", 42, "2026-01-02T00:00:00Z")).unwrap();
+        let v = viewer(&conn, "twitch:u1");
+        assert_eq!(v.total_comments, 2, "決定 (a): レイド行も総コメント数に数える");
+        // ⚠ (b)（total だけ除外）を採らなかったことの裏返し: first/last は全行対象のままなので、
+        //   「総コメント数 0 なのに最終コメント日時がある」という読めない状態は生まれない。
+        assert_eq!(v.first_seen_at, "2026-01-01T00:00:00Z");
+        assert_eq!(v.last_comment_at, "2026-01-02T00:00:00Z");
+    }
+
+    // 062a: レイド人数が保存され、読み戻せる（service→repository→SELECT の往復）。
+    //   金額列は常に NULL（レイドは金銭ではない）。
+    #[test]
+    fn raid_viewer_count_is_persisted_and_read_back() {
+        let conn = test_conn();
+        record_comment(&conn, &raid("r1", "twitch:raider", 42, "2026-01-01T00:00:00Z")).unwrap();
+        let row = comment_row(&conn, "r1");
+        assert_eq!(row.event_type, "raid");
+        assert_eq!(row.raid_viewer_count, Some(42), "レイド人数が保存されて読み戻せる");
+        assert_eq!(row.amount, None, "レイドは金額を持たない");
+        assert_eq!(row.currency, None);
+        assert_eq!(row.monetary_amount, None);
+        assert_eq!(row.text, "", "system_message へフォールバックしないので本文は空のまま");
+    }
+
+    // 062a: レイド以外の行では raid_viewer_count は NULL のまま（他種別に混入しない）。
+    #[test]
+    fn non_raid_rows_keep_null_raid_viewer_count() {
+        let conn = test_conn();
+        record_comment(&conn, &nc("c1", "twitch:u1", "chat", None, None, "2026-01-01T00:00:00Z")).unwrap();
+        assert_eq!(comment_row(&conn, "c1").raid_viewer_count, None);
+    }
+
+    // 062a: `raid_viewer_count` 列は**冪等**に追加される。init() を繰り返し呼んでも落ちず、
+    //   既に列がある DB でも ALTER TABLE を撃たない（`ensure_column` の契約）。
+    #[test]
+    fn raid_viewer_count_column_is_added_idempotently() {
+        let conn = test_conn();
+        init(&conn).unwrap();
+        init(&conn).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('viewer_comments') WHERE name = 'raid_viewer_count'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "列は 1 つだけ（重複追加されない）");
+        // 既存行が残ったまま列が足されること（後付けマイグレーションとして成立すること）も見る。
+        record_comment(&conn, &raid("r1", "twitch:raider", 5, "2026-01-01T00:00:00Z")).unwrap();
+        assert_eq!(comment_row(&conn, "r1").raid_viewer_count, Some(5));
+    }
+
+    // 062a: 043e の combo 更新経路は**レイドに一切効かない**。同一 id の raid 再送は現行の冪等契約どおり
+    //   0 行・集計非更新で、`raid_viewer_count` も書き換わらない（更新できるのは jewels 行だけ）。
+    #[test]
+    fn raid_row_is_not_updatable_by_resend() {
+        let conn = test_conn();
+        record_comment(&conn, &raid("r1", "twitch:raider", 42, "2026-01-01T00:00:00Z")).unwrap();
+        let r = record_comment(&conn, &raid("r1", "twitch:raider", 999, "2026-01-01T00:00:00Z")).unwrap();
+        assert!(!r.first_time && !r.long_absence, "再送で判定を再点灯させない");
+        assert_eq!(
+            comment_row(&conn, "r1").raid_viewer_count,
+            Some(42),
+            "レイドは同一 id 再送で書き換わらない（更新が許されるのは jewels 行だけ）"
+        );
+        assert_eq!(count_comments(&conn, "twitch:raider"), 1);
+    }
+
+    // 062a: レイド行も delete_viewer の FK CASCADE で取り残しなく消える
+    //   （security.md「削除手段は新テーブル・新列ゼロのため取り残しゼロ」の 062a 版の担保）。
+    #[test]
+    fn deleting_viewer_removes_raid_comment() {
+        let conn = test_conn();
+        record_comment(&conn, &raid("r1", "twitch:raider", 42, "2026-01-01T00:00:00Z")).unwrap();
+        delete(&conn, "twitch:raider").unwrap();
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM viewer_comments", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(remaining, 0, "レイド行も CASCADE で消える");
     }
 
     // ---- 043e: jewels の combo 更新（同一 id 再送で既存行を差し替える。他種別は現行どおり）----

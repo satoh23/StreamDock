@@ -1,6 +1,80 @@
 # 062a Twitch レイドの取り込み（受信面拡張）
 
-> 状態: **未着手（実装サブタスク）**。分割・線引きは親 [062](062-stream-summary.md) を正とする。
+> 状態: ✅ **実装完了（2026-08-16・security-review 済）／⏳ 実機確認のみ未実施**。
+> **判断と実測の全文は [`docs/progress.md`](../progress.md) の 062a 節が正**（本ファイルは着手前の計画で、
+> 下記の「⚠ 実装で判明した前提の訂正」だけを後から反映してある）。分割・線引きは親 [062](062-stream-summary.md) を正とする。
+
+## ⚠⚠ 実装で判明した前提の訂正（着手前の記述と食い違う点）
+
+着手前に公式ドキュメント（`https://dev.twitch.tv/docs/eventsub/eventsub-reference/` の
+Channel Chat Notification Event）と実コードを当たった結果、本ファイルの記述に**誤りと欠落**があった。
+以下は訂正で、**本文より優先する**。
+
+### 1. ⚠⚠⚠ 対象ファイルに `wire.ts` と converter が抜けていた（最大の穴）
+
+**Rust が受け取るのは vendor の `CommentViewDto` ではなく
+[`apps/comment-sidecar/src/wire.ts`](../../apps/comment-sidecar/src/wire.ts) の `CanonicalComment`。**
+本ファイルが「語彙が sidecar と Rust でずれている」と書いたそのズレを吸収しているのがこのファイルである。
+さらに手前に
+[`comment-to-view.converter.ts`](../../apps/comment-sidecar/vendor/comment-delivery/src/adapters/presenters/converters/comment-to-view.converter.ts)
+という**同じ性質の明示列挙層がもう 1 枚**ある。
+⇒ 任意フィールド（`raidViewerCount`）は**この 2 か所で型に守られずに静かに消えうる**（036b の `avatar` 事故と同型）。
+担保は `scripts/test-comment-relay.mjs` の `RELAYED_NUMERIC_FIELDS`。
+
+### 2. ⚠ (1) は公式ドキュメントで決着した（実測不要だった）
+
+`notice_type = "raid"` のとき `raid` オブジェクトが載り、フィールドは **5 つ**（`user_id` / `user_name` /
+`user_login` / `viewer_count` / `profile_image_url`）。⇒ **既存購読だけで足り、新規購読・新規スコープ・
+既存ユーザーの再ログインはいずれも不要。** `channel.raid` は要らない。
+
+### 3. ⚠⚠ (3) の `author` は誤り
+
+本文は `author` = `chatter_user_id` / `chatter_user_name` と書いているが、公式は
+**`raid.user_*` を「the broadcaster raiding this channel」と明記**する一方、`chatter_user_*` は
+"the user that sent the message" としか書いておらず **raid notice で誰を指すかは確定できない**。
+⇒ **`author` は `raid.user_*`** を採る。
+⚠ `shared_chat_raid` では公式定義どおり **`raid` が null** になり同形の `shared_chat_raid` に載るため
+**両方を見る**（043a の「shared 版は未モデル化＝数値だけ劣化」の規律は、レイドでは付随オブジェクトが
+`author` 本体を持つため踏襲できない）。**どちらも取れなければ行を作らない**（fail-closed）。
+
+### 4. ⚠ (2) の「アバター URL は持たない」は「**在るが取らない**」
+
+`profile_image_url` は**ペイロードに実在する**。⇒ `raw.dto.ts` に**名指しで「宣言せず消費もしない」**と
+書いた（043a が受贈者・贈与者について書いた形と同型）。`resolveAvatar` も呼ばない（Helix で引き直す抜け道も塞ぐ）。
+
+### 5. ⚠ (7) の「拾いすぎない担保」に `unraid` が抜けていた
+
+`notice_type` には **`unraid` が独立した値として存在する**（`raid` と字面が似ているだけの別イベント）。
+判定は**完全一致の `Set(["raid"])`**（`endsWith` / `includes` にすると `unraid` が黙って当たる）。
+⚠ なお **`shared_chat_unraid` は公式の値としては存在しない**。
+
+### 6. ⚠⚠ (4) の `total_comments` の推奨 (b) は採れない
+
+`viewers` の `first_seen_at` / `last_comment_at` は **`TEXT NOT NULL`**。これらも raid 除外に揃えると
+`MIN/MAX` が NULL を返して**制約違反 → トランザクション全体がロールバック → レイドが 1 件も保存されない**。
+(b) 単独でも「総コメント数 0 なのに最終コメント日時がある」視聴者が生まれ 038 の一覧が読めなくなる。
+⇒ **決定は (a)「何も変えない」**（依頼者決定）。062c のレイド一覧は `event_type='raid'` で直接引くので非依存。
+
+### 7. ⚠ (5) は `viewerFormat.ts` だけでは画面に何も出ない
+
+`CommentList.tsx` の chat 分岐は**設計上 `typeLabel` を描かない**（047b の意図的な判断）。
+レイドを `MONETARY_EVENT_TYPES` に入れない以上、`EVENT_LABEL` に足すだけでは
+**「配信元バッジ＋名前だけの空行」**になる。⇒ `CommentList.tsx` にレイド専用のバッジを名指しで足した。
+⚠ **さらに、配信画面（OBS オーバーレイ）にはレイドを出さない**（`text` が空なので
+**空の吹き出しが配信に映る**ため。043e が `comboCount` について決めたのと同じ規律）。
+
+### 8. ⚠ (7) のテスト追加は `package.json` に差分を生む
+
+`scripts/test-twitch-mapper.mjs` を `scripts.test` へ繋がないと `pnpm test` で 1 度も実行されない。
+⇒ **`dependencies` / `devDependencies` / `pnpm-lock.yaml` は差分ゼロ**のまま、`scripts.test` の 1 行だけ変わる。
+
+### 9. ⚠ 型で強制された箇所が 2 つあった（安全側）
+
+`speechText.test.ts` の `SPEECH_KIND` と `pinnedComments.ts` の `EVENT_TYPES` はどちらも
+`Record<CommentEventType, …>` なので、binding 再生成で**キー不足でコンパイルが落ち**、
+「読み上げをどうするか」「固定コメントで許すか」の判断を強制される（049 / 046a が張った網）。
+
+---
 >
 > **必読前提**: 親 [062](062-stream-summary.md)、
 > **mapper [`comment.mapper.ts`](../../apps/comment-sidecar/vendor/comment-fetcher/src/adapters/twitch/mapper/comment.mapper.ts)（raid を明示的に捨てている箇所）**、

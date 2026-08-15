@@ -70,6 +70,10 @@ pub struct ViewerCommentRecord {
     pub currency: Option<String>,
     #[ts(optional)]
     pub monetary_amount: Option<String>,
+    /// 062a: レイド人数（`event_type='raid'` の行のみ・それ以外は None）。
+    /// 062c（配信サマリーのレイド一覧）が読むためここまで通す。
+    #[ts(optional)]
+    pub raid_viewer_count: Option<u32>,
     pub published_at: String,
     pub created_at: String,
 }
@@ -143,5 +147,7 @@ pub struct NewViewerComment {
     pub amount: Option<f64>,
     pub currency: Option<String>,
     pub monetary_amount: Option<String>,
+    /// 062a: レイド人数（raid 以外は None）。⚠ この 1 列だけが 062a で増える保存項目。
+    pub raid_viewer_count: Option<u32>,
     pub published_at: String,
 }

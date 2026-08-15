@@ -6,6 +6,9 @@ export type CommentSource = "youtube" | "twitch";
 // 明確に分離し、金額は monetaryAmount 経由で通す（団体名は本文以外で持ち回らない＝§9）。
 // 043a(拡張): jewels（YouTube 縦型ライブの Jewels ギフト）を表示語彙として追加。**取得（ingestion）は 043d**
 // （gRPC proto のフィールド番号が非公開のため未受信）で、現状は dev-mock のみが発行する（実データは 043d 後）。
+// 062a: raid（Twitch のレイド）を追加。**収益種別ではない**（金額を持たず、視聴者メモリの
+// subscription_count 等にも入らず、MONETARY_EVENT_TYPES にも入れない）が、「誰がレイドして
+// くれたか」を配信後に見返すために取り込む。YouTube に相当機能は無く Twitch 限定。
 export type CommentEventType =
   | "normal"
   | "super_chat"
@@ -13,7 +16,8 @@ export type CommentEventType =
   | "membership"
   | "gift"
   | "donation"
-  | "jewels";
+  | "jewels"
+  | "raid";
 
 export const COMMENT_SOURCES = {
   YOUTUBE: "youtube",
@@ -28,4 +32,5 @@ export const COMMENT_EVENT_TYPES = {
   GIFT: "gift",
   DONATION: "donation",
   JEWELS: "jewels",
+  RAID: "raid",
 } as const satisfies Record<string, CommentEventType>;

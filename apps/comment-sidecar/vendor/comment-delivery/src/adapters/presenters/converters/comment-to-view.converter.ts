@@ -27,5 +27,9 @@ export const convertCommentToViewDto = async (
     tier: comment.tier,
     // 043e: Jewels の combo 回数（表示用の観測値・金額計算には使わない）。
     comboCount: comment.comboCount,
+    // 062a: レイド人数。⚠⚠ **この詰め替えは明示列挙**なので、書き漏らすと型検査もテストも通るのに
+    //   値だけが静かに消える（`wire.ts` の `toCanonicalComment` と対になる中継 2 段の 1 段目）。
+    //   `scripts/test-comment-relay.mjs` が converter → wire の 2 段を実運用と同じ順で通して固定している。
+    raidViewerCount: comment.raidViewerCount,
   };
 };

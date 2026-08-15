@@ -25,6 +25,11 @@ export const EVENT_LABEL: Record<string, string> = {
   donation: "ドネーション",
   // 043a(拡張): YouTube Jewels（取得は 043d・現状 dev-mock のみ）。空ラベルを回避。
   jewels: "ジュエル",
+  // 062a: Twitch のレイド。⚠ **課金ではない**ので下の `MONETARY_EVENT_TYPES` には入れない
+  //   （入れるとティア色カード・投げ銭ティッカー・オーバーレイの課金カード・061 のエフェクト条件が
+  //    いっせいに発火する）。ラベルだけを持つのは、視聴者詳細の過去コメント一覧と本体コメント一覧で
+  //   「空ラベルの行」にしないため。
+  raid: "レイド",
 };
 
 /** 既知の provider は日本語表示名、未知はそのまま（fallback）。 */

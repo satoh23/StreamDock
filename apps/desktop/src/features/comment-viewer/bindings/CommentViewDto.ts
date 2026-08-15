@@ -57,4 +57,12 @@ tier?: number,
  * 043e: Jewels の combo（連続ギフト）回数（jewels 時のみ・単発は None）。**非保存**（月数/件数と同じ扱い）。
  * 表示（コメント行の「×N」）だけに使い、**金額計算には使わない**（フェーズ1）。整数のみで個人情報を含まない。
  */
-comboCount?: number, };
+comboCount?: number, 
+/**
+ * 062a: レイド人数（raid 時のみ・それ以外は None）。⚠ **月数/件数/階級/combo と違い端末保存する**
+ * （`viewer_comments.raid_viewer_count`）。「配信終わりに誰がレイドしてくれたか」を見返すのが目的で、
+ * 表示のためだけの値ではない。整数のみで個人情報を含まない（§9）。
+ * ⚠ レイド元のアバター URL（Twitch のペイロードに `profile_image_url` として存在する）は
+ * **sidecar が DTO に宣言せず取り込まない**ため、ここにも DB にも来ない。
+ */
+raidViewerCount?: number, };

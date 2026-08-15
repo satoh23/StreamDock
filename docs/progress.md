@@ -22468,3 +22468,228 @@ macOS では再生できるが、**Windows の WebView2 は既定で HEVC デコ
 ⏳ **未実施**: 実機確認（mp4 / mov が実際に出るか・100MB 級の重さ）と **security-review**
 （⚠ **必須**＝新規コマンド 2 本・パスを受け取る 3 本目・取り込めるファイル種別とサイズ上限の変更。
 観点は docs/security.md §5 の 061q 追補に書き出してある）。
+
+## 062a Twitch レイドの取り込み（2026-08-16・**受信面の拡張・新規購読ゼロ**）
+
+> base = `f20e750`。タスクファイル [062a](tasks/062a-twitch-raid-ingestion.md)／親 [062](tasks/062-stream-summary.md)。
+> ⚠ **security-review 必須**（受信面の拡張・§9 保存データ種別の変更）→ 実施済み・**問題なし**。
+> ⚠⚠ **記録は遡れない**（取り込みが遅れた配信ぶんのレイドは永久に失われる）ため 062 系の最優先。
+
+### ⚠⚠ 最大の穴は「タスクファイルの対象ファイル一覧」だった（差 A）
+
+タスクファイルは `wire.ts` を対象に挙げていなかった。**Rust が受け取るのは vendor の `CommentViewDto`
+ではなく `wire.ts` の `CanonicalComment`** で、タスクファイルが「語彙が sidecar と Rust でずれている
+（`normal`↔`Chat`）」と書いたそのズレを吸収しているのがこのファイルである。
+
+さらに調べると、**同じ性質の明示列挙層はもう 1 枚あった**——`comment-delivery` の
+`comment-to-view.converter.ts`。⇒ `raidViewerCount` が静かに消えうる箇所は **2 か所**:
+
+| # | 層 | 型で守られるか |
+|---|---|---|
+| ★1 | `comment-to-view.converter.ts` の詰め替え | **守られない**（任意フィールド） |
+| ★2 | `wire.ts` の `toCanonicalComment` | **守られない**（任意フィールド） |
+
+⚠ `EVENT_TYPE_MAP` と `CanonicalCommentEventType` は `Record<Union, …>` なので**型で必ず落ちる**
+（変異④はテスト以前にコンパイルエラーになった）。落とすと `?? "chat"` へ倒れて
+**レイドが「普通のコメント」として保存される**ので、ここが型で守られているのは大きい。
+
+**手当ては新機構を作らず、043e が既に張っていた網に足した**——`test-comment-relay.mjs` の
+`RELAYED_NUMERIC_FIELDS` に `raidViewerCount` を 1 語足すだけで、`relay()` が converter → wire の
+2 段を実運用と同じ順で通すため **★1★2 の両方が同時に固定される**（変異②③で実証）。
+
+### 差 B: 公式ドキュメントを当たった結果、**新規購読ゼロ・新規スコープゼロ**が確定した
+
+出典 `https://dev.twitch.tv/docs/eventsub/eventsub-reference/` の Channel Chat Notification Event。
+
+**`raid` オブジェクトのフィールド（公式の全 5 つ・verbatim）**
+
+| フィールド | 公式の記述 | 本実装 |
+|---|---|---|
+| `user_id` | "The user ID of the broadcaster raiding this channel." | **採る** |
+| `user_name` | "The user name of the broadcaster raiding this channel." | **採る** |
+| `user_login` | "The login name of the broadcaster raiding this channel." | 宣言しない（表示にも保存にも使わない） |
+| `viewer_count` | "The number of viewers in the raid." | **採る** |
+| `profile_image_url` | "Profile image URL of the broadcaster raiding this channel." | ⚠ **在るが取らない**（穴 D） |
+
+`raid` 自体の定義は **"Information about the raid event. Null if `notice_type` is not `raid`"**。
+
+`notice_type` の取りうる値は公式に **25 個**列挙されており、**`raid` と `unraid` は独立した別の値**。
+shared 版は 10 個（`shared_chat_raid` は在るが **`shared_chat_unraid` は無い**）。
+
+⇒ `subscribeChatEvents` は `channel.chat.notification` を必須 2 種の 1 つとして**既に購読済み**なので、
+**新規購読ゼロ・新規スコープゼロ・新規宛先ゼロ・既存ユーザーの再ログイン不要**。
+⚠ 043d の教訓（公式ドキュメントを一次情報として当たれば実データ収集が要らなくなる）がそのまま効いた。
+
+### 差 C: `author` は `chatter_user_*` ではなく `raid.user_*`
+
+タスクファイルは `author` = `chatter_user_id` / `chatter_user_name` と書いていたが**誤り**。
+公式は `raid.user_*` を「the broadcaster raiding this channel」と明記する一方、`chatter_user_id` は
+"The user ID of the user that sent the message." としか書いておらず、**raid notice で誰を指すかは
+ドキュメントから確定できない**。実測ではおそらく同一だが、**根拠のない推測で保存項目を決めない**。
+
+⚠ **`shared_chat_raid` で 043a の規律をそのまま踏襲できないことが分かった**。公式定義どおり
+shared 版では `raid` が **null** になり `shared_chat_raid`（**同形**）に載る。043a は shared_* を
+未モデル化にして「数値内訳だけ undefined へ劣化・分類は維持」としたが、**レイドでは付随オブジェクトが
+`author` 本体を持つ**ため、劣化させると「名前も ID も無いレイド行」になり**行が成立しない**。
+⇒ 劣化の質が違う（数値欠落 vs 主体の消失）ので、**ここだけ shared 版も同一 DTO で受ける**。
+⇒ さらに **どちらも取れなければ `return null`（fail-closed）**。`chatter_user_*` へフォールバックすると
+**根拠のない人物を「レイドしてくれた人」として端末に保存する**ことになる（§9）。
+
+### 穴 D〜H の結論
+
+| 穴 | 結論 |
+|---|---|
+| D `profile_image_url` | **追認**。実在する⇒「無い」ではなく「**在るが取らない**」と名指しで `raw.dto.ts` に書いた（043a が受贈者・贈与者について書いた形と同型）。`resolveAvatar` も呼ばない＝**Helix で引き直す抜け道も塞いだ** |
+| E `unraid` | **追認**、ただし **`shared_chat_unraid` は公式に存在しない**（依頼文の前提を訂正）。`(string & {})` で来ても落ちることはテストで固定 |
+| F dev-mock | **追認**。raid は 0 件で、かつ `CanonicalComment` を直接組み **`wire.ts` を通らない**。⇒ 足したうえで「**この確認では ★1★2 を 1 バイトも検証していない**」をファイルに明記 |
+| G `total_comments` | **追認＋(b)(c) に決定的な障害を発見**（下記） |
+| H `viewers` 行 | **追認**。`viewer_comments.viewer_id` は FK NOT NULL なので**「行を作らない」は構造上あり得ない**。差 C とセットで「レイド元を viewers に作る」に決定 |
+
+### ⚠⚠ 穴 G: 集計を揃える案は **DB 制約で壊れる**ので (a) を採った（依頼者決定）
+
+`viewers` の DDL は **`first_seen_at TEXT NOT NULL` / `last_comment_at TEXT NOT NULL`**。
+
+- **(c) first/last も raid 除外** … レイドしかしていない視聴者で `MIN/MAX` が NULL を返し
+  **NOT NULL 制約違反 → トランザクション全体がロールバック → レイドが 1 件も保存されない**。
+  ⚠⚠ **「集計の整合を取ろうとして、本タスクの最優先（記録は遡れない）を壊す」**形になる。
+- **(b) `total_comments` だけ除外** … 「総コメント数 0 なのに最終コメント日時がある」視聴者が生まれ、
+  038 の一覧で読めない。しかも `ViewerSort::TotalComments` で 0 として沈み、
+  **レイドしてくれた人が視聴者一覧から実質見えなくなる**。
+- **(a) 何も変えない**（採用）… 実害は「レイド元の総コメント数が 1 増える」だけ。レイド元は通常その
+  配信の視聴者ではないので他の数字は全部ゼロ。**062c のレイド一覧は `event_type='raid'` で直接引く**ので
+  `total_comments` の定義に依存しない。
+
+⇒ タスクファイルの推奨（(b)）から**変更**した。理由は `RECOMPUTE_VIEWER_AGGREGATES_SQL` の
+doc コメントに全文を残してある（再修正トリガーつき）。**集計 SQL は 1 文字も変えていない。**
+
+### タスクファイルにも依頼文にも無かった穴 5 件（I〜M）
+
+| 穴 | 内容 | 性質 |
+|---|---|---|
+| **I** | `CommentList.tsx` の chat 分岐は**種別ラベルを描かない**（047b の意図的な設計）。⇒ レイドを `MONETARY_EVENT_TYPES` に入れない以上、`EVENT_LABEL` に足すだけでは**画面に何も出ない**（配信元バッジ＋名前だけの空行になる） | **黙って壊れる** |
+| **J** | `speechText.test.ts` の `SPEECH_KIND: Record<CommentEventType, …>` が**キー不足でコンパイルを落とす** | 安全側（049 が張った網） |
+| **K** | `pinnedComments.ts` の `EVENT_TYPES: Record<CommentEventType, true>` も同様 | 安全側 |
+| **L** | `CommentViewerApp.notificationSound.test.tsx` が **`"raid" as CommentEventType` を「型が知らない値」のフィクスチャに使っていた**。raid が既知になった瞬間、**テストは緑のまま通り続けるのに表明の意味だけが死ぬ** | **黙って壊れる** |
+| **M** | 依頼文の「`package.json` 差分ゼロ」の担保と、新規テストを `scripts.test` へ繋ぐことが**矛盾**する | 手順の矛盾 |
+
+⇒ **I** は `CommentList.tsx` にレイド専用のバッジを名指しで足した（汎用に `typeLabel` を描き始めると
+047b の「課金種別の追加漏れを一覧が隠さない」防御が消えるので、**あえて名指し**）。
+⇒ **L** はフィクスチャを `"poll"` へ差し替え、**レイド専用のケースを別に足した**（後者が変異⑩で赤くなる）。
+⇒ **M** は `dependencies` / `devDependencies` / `pnpm-lock.yaml` を**差分ゼロ**に保ち、
+`scripts.test` の **1 行だけ**差分を出す形にした（新規依存ゼロは維持）。
+
+### ⚠⚠ 段 2 で見つけた表示欠陥: レイドが**配信画面に空の吹き出しで出る**
+
+段 1（受信〜保存）だけを入れた時点で、`OverlayApp`（OBS 用の配信画面）は raid を chat 分岐で描く。
+レイドの `text` は**空文字**（`system_message` へフォールバックしないため）なので、
+**「名前だけの空の吹き出し」が配信に映る**。⚠ 062a より前の配信画面にはレイドは 1 件も出ていなかった
+（そもそも受信していない）ので、これは **062a が作った表示欠陥**である。
+
+⇒ `renderOverlayItem` の先頭で **raid を早期 return（描かない）**。043e が `comboCount` について
+「オーバーレイには出さない＝**配信画面に出す情報を増やさない**」と決めたのと同じ規律で、
+**配信画面を 062a 以前の状態に保つ**判断（新機能ではない）。本体のコメビュ窓には出る。
+**再修正トリガー＝「レイドも配信画面に出したい」と言われたとき**（そのときは空の吹き出しに戻すのではなく
+専用の意匠を決めてから出す）。
+
+### 決めたこと（一覧）
+
+| # | 決定 |
+|---|---|
+| `author` | **`raid.user_*`**（`shared_chat_raid` も同形で受ける・どちらも無ければ行を作らない） |
+| `viewers` | **レイド元の行を作る**（FK 上そうするしかない）。副作用＝視聴者一覧に配信者が並び「初コメ」バッジも付く＝受容 |
+| `unraid` | `RAID_NOTICE_TYPES` は **完全一致の `Set(["raid"])`**。`endsWith` / `includes` にしない |
+| 保存先 | `ensure_column` で **`raid_viewer_count INTEGER`**（NULL 許容）。`ViewerCommentRecord` まで通して 062c が読めるようにした |
+| `total_comments` | **(a) 変更なし**（穴 G） |
+| 読み上げ | **対象外**。`composeEventMessage` に raid 分岐を足さない ⇒ `c.text`（空）へ落ち `ttsQueue` の空判定で無音＝**「何もしない」ことが実装**。優先キューも `isMonetaryEvent` なので対象外 |
+| 課金扱い | **しない**（`MONETARY_EVENT_TYPES` に足さない）⇒ ティア色カード・投げ銭ティッカー・オーバーレイの課金カード・061 のエフェクト条件はいずれも発火しない |
+| 段割り | **2 段**（段1＝取得〜保存／段2＝表示）。段1 の中間状態は「**記録されているのに素っ気なく見える**」＝差 A が警戒する向きの**逆**なので安全 |
+
+### 機械で固定したこと（変異で実効性を確認）
+
+**13 変異すべてレッド**（④のみコンパイルエラー）:
+
+| 変異 | 結果 |
+|---|---|
+| ① 集計 SQL の `IN` 句に `'raid'` | RED 3 |
+| ② `wire.ts` から `raidViewerCount` を落とす | RED 2（差 A の本丸） |
+| ③ **converter** から落とす | RED 2（★1） |
+| ④ `EVENT_TYPE_MAP` から `raid` を外す | **コンパイルエラー** |
+| ⑤ `RAID_NOTICE_TYPES` に `unraid` / ⑤' `has`→`endsWith` | RED 1 |
+| ⑥ `author` を `chatter_user_*` に戻す | RED 5 |
+| ⑦ `profile_image_url` を宣言して通す | RED 3 |
+| ⑧ `text` を `system_message` へフォールバック | RED 2 |
+| ⑨ `raid_viewer_count` を service / INSERT で落とす | RED 1 / 4 |
+| ⑩ `MONETARY_EVENT_TYPES` に `raid` | RED 3（うち 2 件は 061 のエフェクト条件側） |
+| ⑪ 本体一覧のレイドバッジを消す | RED 3（穴 I） |
+| ⑫ overlay の raid 早期 return を消す | RED 1（配信画面の空吹き出し） |
+| ⑬ `EVENT_LABEL` から `raid` を消す | RED 4 |
+
+#### ⚠⚠ 変異で判明した「固定できていなかったこと」（テストを直した）
+
+**⑤ を殺しているのは 1 ケースだけだった。** レイドの取り込みは 2 層で縛られている:
+
+1. `RAID_NOTICE_TYPES.has(noticeType)` … **受信した notice_type 側**の限定
+2. `if (!raid) return null` … **付随オブジェクトが在るか**の fail-closed
+
+最初に書いた「`unraid` / `announcement` / `watch_streak` … を落とす」一覧は **(2) だけでも落ちる**ため、
+(1) に `"unraid"` を足す変異を撃っても**緑のまま通ってしまった**。(1) を単独で検証できるのは
+「**`unraid` なのに `raid` オブジェクトが付いている**」という形だけ。
+⇒ その 1 ケースを足し、**どの層を単独で見ているか**をテストのコメントに明記した
+（043e が二重の縛りに対して 2 本のテストを置いたのと同じ考え方）。
+
+#### ⚠ いまも固定できていないこと（過大に主張しない）
+
+- **実データのペイロード形**。協力者なしでは検証不能で、**公式ドキュメントが唯一の根拠**。
+- **`chatter_user_*` が raid notice で誰を指すか**。公式から確定できない⇒**使わない**という形でしか対処していない。
+- **dev-mock 経由の実機確認は ★1★2 を通らない**（穴 F）。`wire.ts` の担保はテスト側にしか無い。
+- **固定コメント（046a）にレイドを固定すると人数が落ちる**（`PinnedComment` に `raidViewerCount` が無い）。
+  スキーマ追加は §9 追補 046a の変更＝別レビューが要るので**本タスクでは足さず既知の劣化として記録**。
+
+### セキュリティ面（docs/security.md の 062a 追記が正）
+
+- **§1**: 宛先・購読・スコープ**すべて差分ゼロ**（`host-guard.ts` / `twitch-config.ts` / `client/` /
+  `infrastructure/` は無改変）。二層 fail-closed・env ピン留め・`csp: null`・capabilities も不変。
+- **§9**: 増える保存項目は **`raid_viewer_count` の 1 列だけ**。`system_message` /
+  `profile_image_url` / 受贈者情報は**持ち回らない**（⑦⑧の変異で固定）。ログ出力の追加ゼロ。
+- **§8**: `ensure_column` の 3 引数はコンパイル時定数、INSERT は `?12` まで全てバインド。
+- **集計**: `RECOMPUTE_VIEWER_AGGREGATES_SQL` は **1 文字も変更していない**。
+- **脅威モデル**: 未認証 loopback WS 経由でローカルの第三者が `raid_viewer_count` に整数を書けるが、
+  ①同じ相手は**以前から任意コメントを INSERT できた**ので特権昇格ではない ②`Option<u32>` なので
+  範囲外・浮動小数・文字列は `record_comment` **全体のデシリアライズが失敗**して fail-closed
+  （`combo_count` と同一設計）③レイド行は既存のどの集計にも入らない。⇒ 043e の受容範囲を出ない。
+
+⇒ **security-review 判定: 問題なし。** ⚠ 「受信面の拡張がゼロだから軽レビュー」とは判定せず、
+**§9 保存データ種別の変更（列追加）に該当する**ものとして通した（058a / 059a / 046a の教訓）。
+
+### 検証
+
+- desktop `pnpm typecheck` / `lint` 緑／`pnpm test` **67 files・1612 tests 緑**
+  （`check:css` / `check:version` OK）／`pnpm check:bindings` 緑。
+- sidecar `pnpm typecheck` 緑／`pnpm test` **533 PASS・FAIL 0**。
+- `cargo check` 緑／`cargo test` **294 件緑**。
+- ⚠ **ゼロ拡大**: `capabilities/` ・ `tauri.conf.json` ・ `.github/` ・ `pnpm-lock.yaml` ・
+  `apps/desktop/package.json` ・ ルート `package.json` は**すべて差分ゼロ**。
+  `apps/comment-sidecar/package.json` のみ **`scripts.test` の 1 行**（新規依存ゼロ・穴 M）。
+- ⚠ **binding**: `gen:bindings` を 2 回続けて回して出力が同一であることを確認したうえで、
+  binding 3 ファイルを `git add` して `check:bindings` を通した（`git diff --exit-code` は
+  作業ツリー vs インデックスを見るため。⚠ `git add -N` は未追跡ファイル用で、今回の 3 つは
+  **既存ファイルの変更**なので効かない）。**commit / push はしていない。**
+
+⏳ **未実施**: **実機確認**（下記の手順を依頼者の環境で実施）。
+
+### 実機確認の手順（⚠ 何が検証できて、何ができないか）
+
+| # | 手順 | ✅ 検証できる | ❌ 検証**できない** |
+|---|---|---|---|
+| 1 | dev-mock（twitch・`seq%20===16`）でレイド行に「レイド 42人」が出る | 表示・Rust の保存/集計・binding の整合 | ⚠⚠ **vendor mapper と `wire.ts`（★1★2）を 1 バイトも通らない** |
+| 2 | スパチャ風ティア色カードにならない | 課金非扱い | 同上 |
+| 3 | 読み上げされない | 読み上げ対象外の決定 | 同上 |
+| 4 | 通知音は**コメント音**（投げ銭音ではない） | 音の分岐 | 同上 |
+| 5 | 視聴者詳細で `subscription_count` が増えていない | 集計の意味論 | 同上 |
+| 6 | 視聴者一覧にレイド元が並び、`total_comments` が +1 される | 穴 G(a)・穴 H の受容した副作用 | 同上 |
+| 7 | ⚠ **OBS の配信画面にレイドが出ない**（空の吹き出しも出ない） | 段 2 の表示欠陥対応 | 同上 |
+| 8 | **実配信でレイドを受ける**（協力者が要る） | ⚠⚠ **★1★2 を含む全経路を通す唯一の確認** | — |
+| 9 | `lsof -i` で外部 ESTABLISHED が sidecar PID 下でしか増えない | 差 B（新規購読ゼロ）の実証 | — |
+
+⚠ **後始末**: DB・localStorage をバックアップから復元し `shasum` で照合する。
+⚠ バックアップの sqlite を読むときは **必ず `file:...?mode=ro`** を付けること（061 系の教訓）。

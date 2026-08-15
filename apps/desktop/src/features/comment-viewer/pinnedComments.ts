@@ -64,6 +64,11 @@ const EVENT_TYPES: Record<CommentEventType, true> = {
   gift: true,
   donation: true,
   jewels: true,
+  // 062a: レイド。⚠ **`PinnedComment` のスキーマに `raidViewerCount` は無い**ので、レイド行を固定すると
+  //   ラベルは残るが**人数だけ落ちる**（既知の劣化）。足さないのは、保存項目の追加＝§9 追補 046a
+  //   （固定コメントの localStorage 保存範囲）の変更にあたり、別途 security-review が要るため。
+  //   再修正トリガー: 固定帯にレイド人数を出したくなったら、046a の追補としてスキーマ追加を起票する。
+  raid: true,
 };
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>

@@ -49,6 +49,12 @@ pub enum CommentEventType {
     Donation,
     /// 043a(拡張): YouTube Jewels ギフト。取得（ingestion）は 043d（proto 拡張要）で、現状は dev-mock のみ発行。
     Jewels,
+    /// 062a: Twitch のレイド（他チャンネルからの視聴者流入）。**課金ではない**——視聴者メモリの
+    /// `subscription_count` / `is_member` / `last_subscription_at` にも、frontend の
+    /// `MONETARY_EVENT_TYPES`（ティア色カード・投げ銭ティッカー・061 のエフェクト条件）にも入れない。
+    /// ⚠ この variant が無いと wire の `"raid"` は**未知 variant としてデシリアライズ全体を失敗**させ、
+    /// `record_comment` は fire-and-forget なので**レイドが黙って 1 件も保存されない**（YouTube に相当機能は無い）。
+    Raid,
 }
 
 impl CommentEventType {
@@ -62,6 +68,7 @@ impl CommentEventType {
             CommentEventType::Gift => "gift",
             CommentEventType::Donation => "donation",
             CommentEventType::Jewels => "jewels",
+            CommentEventType::Raid => "raid",
         }
     }
 }
@@ -123,6 +130,13 @@ pub struct CommentViewDto {
     //   再修正トリガー: この乖離が実際に観測されたら、フィールド単位で None へ劣化させる（deserialize_with）を検討。
     #[ts(optional)]
     pub combo_count: Option<u32>,
+    /// 062a: レイド人数（raid 時のみ・それ以外は None）。⚠ **月数/件数/階級/combo と違い端末保存する**
+    /// （`viewer_comments.raid_viewer_count`）。「配信終わりに誰がレイドしてくれたか」を見返すのが目的で、
+    /// 表示のためだけの値ではない。整数のみで個人情報を含まない（§9）。
+    /// ⚠ レイド元のアバター URL（Twitch のペイロードに `profile_image_url` として存在する）は
+    /// **sidecar が DTO に宣言せず取り込まない**ため、ここにも DB にも来ない。
+    #[ts(optional)]
+    pub raid_viewer_count: Option<u32>,
 }
 
 /// 038a: 投げ銭の数値内訳（回数/合計額の正確な集計用）。
