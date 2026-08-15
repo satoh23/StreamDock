@@ -105,26 +105,40 @@ loopback 例外を、合成＋ローカル再生に限定して（再）定義�
   ブラウザ shell-out（`open`）はしない。`csp: null` は当面維持（TODO：将来 viewer CSP を効かせる際は `connect-src` に
   `https://id.twitch.tv https://api.twitch.tv wss://eventsub.wss.twitch.tv wss://*.wss.twitch.tv ws://127.0.0.1:*` を許可する）。
 
-**取得の停止条件（⚠⚠ 061b で変わった。032c-d の YouTube 取得にも等しく適用する）**:
+**取得の停止条件（⚠⚠ 061b で変わった。⚠ 061k で延命する窓が 3 つになった。032c-d の YouTube 取得にも等しく適用する）**:
 この例外は「いつ始まるか」（＝ユーザーの明示接続）だけでなく、**「いつ終わるか」でも範囲が決まる**。
 
 - 取得セッションが止まるのは次の 2 つだけ: ①ユーザーの明示操作（`stop-session`）
-  ②**sidecar プロセスの停止**（＝`comment-viewer` と `effect-overlay` の**どちらも無くなったとき**／アプリ終了。
+  ②**sidecar プロセスの停止**（＝`comment-viewer` / `effect-overlay` / `stage-overlay` の
+  **どれも無くなったとき**／アプリ終了。
   詳細は下記「Tauri Permissions / Capabilities 方針」の 061a 節「sidecar の停止条件」）。
   **WS クライアント（窓）が 0 になっても取得は止まらない**——sidecar 側は接続数を見ていない。
 - ⚠⚠ **061b 以前は「コメビュ窓を閉じる＝sidecar を kill＝取得が必ず止まる」だったが、いまは同値ではない。**
-  **エフェクト窓が開いている間はコメビュ窓を閉じても取得（インターネット通信）が続く。** これは
-  「一度取得を開始すればコメビュ窓を閉じてもエフェクトが出続ける」という 061b の仕様の裏返しであり、意図した挙動。
+  **エフェクトの出力窓（コーナー／ステージ）のどちらか 1 つでも開いている間は、コメビュ窓を閉じても
+  取得（インターネット通信）が続く。** これは「一度取得を開始すればコメビュ窓を閉じてもエフェクトが
+  出続ける」という 061b の仕様の裏返しであり、意図した挙動。
+- ⚠⚠ **延命する窓を足してよい条件（＝本例外の再評価の基準）。次の 3 点を「すべて」満たす窓だけを
+  `SIDECAR_CONSUMER_LABELS` へ入れること:**
+  ①その窓が**それ自体で第三者のコメントを受け取り、配信画面へ出す**
+    （＝配信中に閉じずに使い続ける理由がある窓である）
+  ②その窓は sidecar を**起動しない**（起動契機は `open_comment_viewer_window` の 1 箇所のまま）
+  ③その窓の開閉と現在の状態が、**下記の導線 2 か所に必ず反映される**
+  ⚠ `comment-overlay` / `pinned-overlay` は①を満たさない（表示専用・コメビュ窓からしか開けない）ので
+  入れない。⚠ **窓を 1 つ足すたびに「ユーザーが知らないうちに外部通信が続く」経路が 1 本増える**ので、
+  上の 3 点への当てはめを毎回やり直すこと（「前の窓で許したから」を理由にしない）。
 - ⚠⚠ **だからこそ「取得が続いていること」と「その止め方」をユーザーへ明示する導線を必ず保つこと。**
   取得中であることを示す UI はコメビュ窓にしかなく、`close_comment_viewer_window`（＝ツール管理の「停止」ボタン）は
   **窓を閉じるだけで、それ自体は取得を止めない**（`stop-session` を送らない）。
-  ⚠ **このボタンで取得が止まるのは「その close で sidecar が落ちるとき」＝エフェクト窓も無いときだけ**で、
-  エフェクト窓が開いていれば取得は続く（条件付きであることを落とさずに書くこと。無条件に「取得は止めない」と
-  書くと、エフェクト窓を使っていないユーザーにとって嘘になり、`ObsEffectsScreen` の案内文とも矛盾する）。
-  明示は `ObsEffectsScreen` の前提案内と、ツール管理の停止フィードバック文言（`MainScreen` が
-  `is_effect_overlay_open` を見て分岐する）が担う。
+  ⚠ **このボタンで取得が止まるのは「その close で sidecar が落ちるとき」＝エフェクトの出力窓が
+  1 つも無いときだけ**で、どちらかが開いていれば取得は続く（条件付きであることを落とさずに書くこと。
+  無条件に「取得は止めない」と書くと、エフェクトを使っていないユーザーにとって嘘になり、
+  `ObsEffectsScreen` の案内文とも矛盾する）。
+  ⚠⚠ **明示する導線は 2 か所ある。片方だけ直さないこと**（061i レビュー S-1）:
+  **`ObsEffectsScreen` の前提案内**と、**ツール管理の停止フィードバック文言**
+  （`MainScreen` が**エフェクトの出力窓が 1 つでも開いているか**を見て分岐する）。
   ⚠ **この導線を消す／`SIDECAR_CONSUMER_LABELS` に窓を足して sidecar をさらに延命する変更は、
   「ユーザーが知らないうちに外部通信が続く」を広げる方向なので本例外の再評価が必要**（レビュー必須条件の「外部通信」）。
+  ⚠ **再評価とは、上の 3 点への当てはめを書き残すことである。**
 
 ### 例外（032c-d・コメントビューアの YouTube コメント取得）
 
@@ -1653,8 +1667,9 @@ sidecar の spawn は Rust の `app.shell().sidecar()` から行い IPC を通�
   **登録しない**ので、この窓を閉じても sidecar は落ちない。`close_pinned_overlay_window` は自アプリのウィンドウを
   閉じるだけで、**PID kill・プロセス名 kill は行わない**（§6 の PID kill はそもそも発生しない）。
   ⚠ **061b で「no-orphan kill 契機は不変」ではなくなった**（061b レビュー②S-4）。kill 契機は
-  `comment-viewer` / `effect-overlay` の 2 点（下記 061a 節「sidecar の停止条件」）へ広がっている。
-  ただし**この窓はそこに入っていない**ので、上記「閉じても落ちない／開いていても延命しない」は 046b から真のまま。
+  `comment-viewer` / `effect-overlay` / `stage-overlay`（061k）の **3 点**（下記 061a 節「sidecar の停止条件」）へ
+  広がっている。ただし**この窓はそこに入っていない**ので、上記「閉じても落ちない／開いていても延命しない」は
+  046b から真のまま。
 - **窓タイトルは `StreamDock 固定コメント`**。044a の自動ソース追加は窓名の `includes` 一致で対象窓を探すため、
   **2 つの窓名が互いに部分文字列にならない**ことが必須条件（「StreamDock 固定コメント」は
   「StreamDock コメントオーバーレイ」を含まない＝取り違えない）。
@@ -1794,8 +1809,8 @@ Rust の `app.updater_builder()` から行い IPC を通らないため、**4 �
     ——「経路ができた」と「実際に踏む」は別の判断である。
   ⚠⚠ **失効条件の最終判定（この節を読む人が最初に知るべき結論）**:
   - **「5 窓いずれもローカルバンドルしか読み込まず、外部コンテンツを踏む経路がゼロ」という
-    本節の前提は、もはや真ではない。** `main` 窓（テンプレートのプレビュー）と
-    **`effect-overlay` 窓（配信へ出るテンプレート描画）の両方**が、ユーザーがローカルから
+    本節の前提は、もはや真ではない。** `main` 窓（テンプレートのプレビュー）と、
+    **エフェクトの出力窓（`effect-overlay` ／ 061k の `stage-overlay`）**が、ユーザーがローカルから
     取り込んだ第三者由来のバイト列を `<img>` / `<video>` / `<audio>` の `src` に載せる。
     ＝ 本節の受容根拠のうち「外部コンテンツを踏む経路ゼロ」の一文は**使えない**。
   - **いま実際に受容根拠になっているのは、次の 3 つが構造的に閉じていることだけである**
@@ -1845,11 +1860,11 @@ Rust の `app.updater_builder()` から行い IPC を通らないため、**4 �
   **`record_comment` 等の DB 経路へ流さない**。
   ⚠ **マウント時に過去のエフェクトを再生する経路を作らないこと**（何も永続しないので再生する対象が
   存在しない、という構造で担保する）。**061c/061d で永続層を足すときは、この前提を必ず再評価すること。**
-- **sidecar の停止条件（⚠⚠ 061b で拡張した）**: sidecar を止めるのは次の 2 つ。
-  ①**`comment-viewer` と `effect-overlay` のどちらも存在しなくなったとき**
+- **sidecar の停止条件（⚠⚠ 061b で拡張し、⚠ 061k で 3 窓へ広げた）**: sidecar を止めるのは次の 2 つ。
+  ①**`comment-viewer` / `effect-overlay` / `stage-overlay` のいずれも存在しなくなったとき**
   （判定は Rust 側で `get_webview_window` により**実窓**を見る。frontend の設定値は信用しない＝§8）
   ②**アプリ終了（`RunEvent::Exit`・無条件）**。
-  **起動契機は `open_comment_viewer_window` の 1 箇所のまま**（エフェクト窓は sidecar を起動しない）。
+  **起動契機は `open_comment_viewer_window` の 1 箇所のまま**（エフェクトの出力窓は sidecar を起動しない）。
   ⚠⚠ **①の判定では「閉じようとしている窓」を必ずラベルで除外すること。** Tauri v2 の実装では
   `CloseRequested` のハンドラが走る時点で**自窓はまだ `get_webview_window` に居る**（`Destroyed` では既に居ない）。
   除外を外して「実窓を見ればよい」と単純化すると、**どの窓を閉じても sidecar が落ちなくなる**（＝孤児が残る）。
@@ -1861,14 +1876,26 @@ Rust の `app.updater_builder()` から行い IPC を通らないため、**4 �
   `CloseRequested`／`Destroyed` を配送しない）、**無条件のまま維持すること**。
   sidecar 側の ppid 監視 self-exit を担保に数えないこと。
   `comment-overlay` / `pinned-overlay` は**この判定に含めない**（含めると停止条件が緩む＝孤児が残る方向）。
-  `close_effect_overlay_window` は自アプリのウィンドウを閉じるのみで、**PID kill・プロセス名 kill は行わない**。
-- **窓タイトルは `StreamDock エフェクト`**。044a/046d の自動ソース追加は窓名の `includes` 一致で対象窓を
-  探すため、**3 つの窓名が互いに部分文字列にならない**ことが**機能要件**（壊れると `ensureOverlaySource` の
-  M2 フォールバックで `"reused"`＝成功として返り、UI は成功表示・OBS は真っ黒という静かな失敗になる）。
+  ⚠ **`stage-overlay` を含めるのは、あの窓が `effect-overlay` と同じく自前で loopback WS を張り、
+  第三者のコメントを受けて配信画面へ出すから**である（§1「取得の停止条件」の 3 点基準）。
+  **表示専用の窓をここへ足さないこと。**
+  `close_effect_overlay_window` / `close_stage_overlay_window` は自アプリのウィンドウを閉じるのみで、
+  **PID kill・プロセス名 kill は行わない**。
+- **窓タイトルは `StreamDock エフェクト`**（⚠ 061k で `stage-overlay` の
+  **`StreamDock ステージ演出`** が 4 つ目になった）。044a/046d の自動ソース追加は窓名の `includes` 一致で
+  対象窓を探すため、**4 つの窓名が互いに部分文字列にならない**ことが**機能要件**（壊れると
+  `ensureOverlaySource` の M2 フォールバックで `"reused"`＝成功として返り、UI は成功表示・OBS は真っ黒という
+  静かな失敗になる）。
   `lib.rs` の `#[cfg(test)] mod overlay_window_contract`（**046d の `pinned_overlay_contract` から改名**）が
   **総当たりループ**で固定している＝窓を増やしても組み合わせを取りこぼさない。
-- **`ObsOverlayKind` は固定 union のまま**（`"comments" | "pinned" | "effects"`）。viewer からは識別子しか
-  渡せず、実ソース名／窓名は sidecar 内の `OBS_OVERLAYS` に閉じている（§3/§8）。
+  ⚠⚠ **既存の窓名は 1 バイトも変えないこと。** 新しい窓名を足すのは安全だが、既存の名前を変えると
+  **既に OBS にソースを作ったユーザーだけ**が上記 M2 経路で静かに壊れる（変更する場合は移行を設計すること）。
+  ⚠ **窓名の写しは 3 つある**——Rust の `.title` ／ sidecar の `OBS_OVERLAYS` ／
+  **frontend がユーザーへ案内する文字列**（`screens/obs-effects/effectAssignments.ts` の
+  `EFFECT_OUTPUT_WINDOW_TITLE` 1 か所に寄せてある）。3 つ目がずれると
+  **ユーザーが OBS のウィンドウ一覧で窓を見つけられない**ので、同じ契約テストが突き合わせている。
+- **`ObsOverlayKind` は固定 union のまま**（⚠ 061k で 4 値へ＝`"comments" | "pinned" | "effects" | "stage"`）。
+  viewer からは識別子しか渡せず、実ソース名／窓名は sidecar 内の `OBS_OVERLAYS` に閉じている（§3/§8）。
   ⚠ 046d の `parseOverlayKind`（未検証 JSON を固定 union へ落とす allow-list＝**実質的な唯一の
   セキュリティ制御**。loopback WS は未認証なので同一 PC の任意プロセスが制御フレームを送れる）は
   `index.ts` から `obs/obs-client.ts` へ移し、**`OBS_OVERLAYS` から導出する形**にした。
@@ -1921,6 +1948,49 @@ Rust の `app.updater_builder()` から行い IPC を通らないため、**4 �
   - 後回し可 S-3（上記の失効条件・追記済み）／ S-4（loopback WS 未認証。061a で姿勢は不変・記録のみ）。
   - ⚠ コード上のセキュリティ欠陥は **0 件**（新規宛先ゼロ・fail-closed 層の差分ゼロ・capability 最小・
     `parseOverlayKind` の allow-list が fail-closed・§9 該当なしを、いずれも実差分で確認済み）。
+
+⚠ **061k 追補（2026-08-15・6 つ目のウィンドウ `stage-overlay`＝エフェクトの全画面／ステージ側の出力窓）**:
+本節の記述は **`stage-overlay` にもそのまま適用する**（下記だけが 061k 固有）。
+
+- **新 capability は `capabilities/stage-overlay.json` の 1 枚のみ**（`effect-overlay.json` と同型・
+  `windows:["stage-overlay"]`・`permissions:["core:default"]`）。**既存 5 枚は差分ゼロ**
+  （`default.json` / `comment-viewer.json` / `comment-overlay.json` / `pinned-overlay.json` /
+  `effect-overlay.json`）。`csp: null`・`macOSPrivateApi`・`tauri.conf.json` 不変・**新規依存ゼロ**。
+- ⚠⚠ **「capability だけを見て『この窓は無害』と判断しない」の適用対象は 6 窓**になった
+  （アプリ定義コマンドは ACL 対象外＝根拠は本節の上記のとおり）。
+- **新 command は単一目的の 3 つのみ**（§3）: `open_stage_overlay_window` /
+  `close_stage_overlay_window` / `is_stage_overlay_open`。いずれも**引数は `AppHandle` のみ**
+  （ラベルは Rust 内のリテラル）。任意ラベル・任意オプションの汎用窓生成は露出しない。
+- **描画・接続は `effect-overlay` と完全に同じ**（同じ `EffectOverlayApp` を prop 違いで使う）＝
+  loopback WS への読み取り専用接続のみ・制御フレームは送らない。
+  **新規宛先・新規 WS プロトコル・新規描画ファイル・新規 IPC はゼロ**なので、上記
+  「失効条件の最終判定」の 3 点（許可 MIME / `innerHTML` 系不使用 / `blob:`・`<iframe>`・外部 URL を
+  作らない）は**同じ経路を通り、1 バイトも緩んでいない**。
+- **sidecar の停止条件に入る**（§1「取得の停止条件」の 3 点基準を満たす）。⚠ **起動はしない。**
+- **新規 localStorage キー 2 本**（`...stage-overlay-enabled` / `...stage-test-fire-pending`）は
+  **ユーザー自身の UI 設定値**と **Rust が `Uuid::new_v4()` で採番したテンプレート id** で、
+  `pinned-overlay-enabled` / `effect-test-fire-pending` と同種。§9 追補（046a）が対象とする
+  第三者の個人データではないため、「レビュー必須条件」の localStorage 追補には**該当しない**。
+- **新規ウィンドウ＋新規 capability＋新規 command＋sidecar の停止条件の変更のため security-review 実施**
+  （2026-08-15・**外部レビュー**・判定「**軽微な懸念あり**」・修正必須 1 件〔コード・対応済み〕ほかに
+  リポジトリ状態 2 件）。**「レビュー必須条件」の 3 項（外部通信 / Tauri capabilities / process 停止処理）に
+  該当すると明記して実施**（058a / 059a / 046a が 3 度踏んだ「下位条件で自分を免除する」誤りは踏んでいない）。
+  - 修正必須 **S-1**（コード）＝ **`EFFECT_OBS_AUTO_ADD_KEY` の OFF 分岐が `clearObsEnableTimer("stage")` を
+    呼んでいなかった**。⚠ **本節ではなく §1 の違反**——猶予（1.2 秒）中に自動反映を OFF にしても
+    stage のタイマーが生き残り、**ユーザーが OFF にしたあとに `enableObs("stage")` が飛ぶ**
+    （045c が塞いだ回帰の、種別追加による再発）。**対応済み**（1 行追加 ＋ 同型テスト 1 本）。
+    ⚠ **教訓＝OBS 種別を足したら「張る側」だけでなく「取り消す側」も同数あるかを数えること。**
+  - ⚠ 後回し可 **S-4** ＝ 停止フィードバックの `is*Open().catch(() => false)` が **fail-open 方向**
+    （判定不能時に「停止しました」へ倒れる）。**受容**（reject 経路が実質無い読み取り専用 invoke であり、
+    起こり得ない失敗のために常時の体験を悪くしない）。再修正トリガーはコード側コメントが正。
+  - ⚠ **コード上のその他のセキュリティ欠陥は 0 件**（新規宛先ゼロ・fail-closed 層の差分ゼロ・
+    capability 最小・既存 5 枚と `csp: null` は差分ゼロ・`parseOverlayKind` の allow-list 無改変・
+    `EffectRequest` は 8 キーのまま・`ensure_started` は 1 箇所・`RunEvent::Exit` 無条件、をいずれも実差分で確認済み）。
+  - ⚠⚠ **リポジトリ状態の指摘 2 件（コードではない）**: ①本 capability ファイルが**未追跡**なので
+    `git commit -a` では取り込まれない ②`check:sidecar` は **mtime 比較**なので、バイナリを
+    バックアップから復元すると**古いバイナリのまま素通りする**（＝ 4 値目を知らない sidecar が走り、
+    `parseOverlayKind("stage")` が `"comments"` へ落ちて**別の窓のソースを触りに行く**）。
+    ⚠ **実機を動かす前に必ずリビルドすること。**
 
 ## CSP方針
 

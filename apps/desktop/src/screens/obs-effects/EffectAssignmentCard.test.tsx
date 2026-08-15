@@ -55,7 +55,7 @@ vi.mock("../../features/obs-effects/effectTemplateApi", () => ({
 import { EffectAssignmentCard } from "./EffectAssignmentCard";
 import { EffectTemplateCard } from "./EffectTemplateCard";
 import { useEffectTemplates } from "./useEffectTemplates";
-import type { EffectAssignment } from "./effectAssignments";
+import type { EffectAssignment, EffectOutput } from "./effectAssignments";
 import {
   effectSelectValue,
   isEffectTemplateMissingFromList,
@@ -91,7 +91,11 @@ const record = (
  * **一覧と割り当てが 1 つの hook を共有していること**そのものが仕様なので、
  * 差し替えるとその継ぎ目（＝061d-2 で新しく壊れうる箇所）が検査されない。
  */
-function Harness({ openEffectOverlay = () => {} }: { openEffectOverlay?: () => void }) {
+function Harness({
+  openEffectOverlay = () => {},
+}: {
+  openEffectOverlay?: (output: EffectOutput) => void;
+}) {
   // ⚠ 061i: 「条件が 0 → 1 件になったら窓を開く」の**判断は hook**、**invoke は `ObsEffectsScreen`**。
   //   このファイルは判断の側だけを見るので、呼ばれたことが分かるモックを差し込める形にしてある。
   const templates = useEffectTemplates({ openEffectOverlay });
@@ -102,6 +106,7 @@ function Harness({ openEffectOverlay = () => {} }: { openEffectOverlay?: () => v
       <EffectTemplateCard
         {...templates}
         effectWindowOpen={true}
+        stageWindowOpen={true}
         openEffectOverlay={openEffectOverlay}
       />
       <EffectAssignmentCard {...templates} />
@@ -234,6 +239,18 @@ describe("061j (0): `<select>` の値の組み立て（純関数・DOM を経由
   });
 });
 
+/**
+ * 061k: **エフェクトの `<select>` だけ**を集める（出力先の `<select>` を混ぜない）。
+ * ⚠ `getAllByRole("combobox")` は 061k 以降**出力先・キーワードの当て方**も拾うので、
+ * 「全部の combobox が `none`」というアサーションは意味が変わってしまう。
+ */
+const effectSelects = (): HTMLSelectElement[] =>
+  screen
+    .getAllByRole("combobox")
+    .filter((el): el is HTMLSelectElement =>
+      (el.getAttribute("aria-label") ?? "").endsWith("のエフェクト"),
+    );
+
 describe("EffectAssignmentCard", () => {
   beforeEach(() => {
     localStorage.clear();
@@ -293,8 +310,8 @@ describe("EffectAssignmentCard", () => {
     await waitFor(() =>
       expect(mocks.listEffectTemplates).toHaveBeenCalledTimes(1),
     );
-    for (const select of screen.getAllByRole("combobox")) {
-      expect((select as HTMLSelectElement).value).toBe("none");
+    for (const select of effectSelects()) {
+      expect(select.value).toBe("none");
     }
   });
 
@@ -480,8 +497,8 @@ describe("EffectAssignmentCard", () => {
     );
 
     // ⚠⚠ **no-op にする変異はこの 2 つがレッドにする**（画面と保存の両方を見る）。
-    for (const select of screen.getAllByRole("combobox")) {
-      expect((select as HTMLSelectElement).value).toBe("none");
+    for (const select of effectSelects()) {
+      expect(select.value).toBe("none");
     }
     expect(localStorage.getItem(EFFECT_ASSIGNMENTS_KEY)).toBeNull();
   });

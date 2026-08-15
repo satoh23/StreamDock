@@ -71,12 +71,12 @@ eq("isWgc: 'BitBlt (Windows 7 and up)' → false（BitBlt は WGC ではない�
 eq("isWgc: 非文字列（数値）→ false", isWgcMethodName(2), false);
 eq("isWgc: null → false", isWgcMethodName(null), false);
 
-// --- OBS_OVERLAYS レジストリ（061a: 2 種 → 3 種）---
+// --- OBS_OVERLAYS レジストリ（061a: 2 種 → 3 種／061k: 3 種 → 4 種）---
 // 種別の集合そのものを固定する（増減に必ず気付く。並び順には依存しない）。
 eq(
-  "OBS_OVERLAY_KINDS: comments / pinned / effects の 3 種",
+  "OBS_OVERLAY_KINDS: comments / pinned / effects / stage の 4 種",
   [...OBS_OVERLAY_KINDS].sort(),
-  ["comments", "effects", "pinned"],
+  ["comments", "effects", "pinned", "stage"],
 );
 // 044a からの慣習: OBS に作るソース名はキャプチャ対象の窓名と同じにする（OBS 上で対応が分かる）。
 for (const kind of OBS_OVERLAY_KINDS) {
@@ -90,7 +90,9 @@ for (const kind of OBS_OVERLAY_KINDS) {
 // どれかの窓名が他の窓名を部分文字列として含むと、そのソースが**別の窓を掴む**。
 // しかも `ensureOverlaySource` の M2 フォールバックにより既存ソースがあれば "reused"＝成功で返るため、
 // UI は成功表示・OBS のソースは別の窓、という静かな壊れ方をする。
-// ⚠ **総当たりで回す**（2 種のときの手書き比較を 3 種へ増やす形にしない）。4 種目を足しても自動で守られる。
+// ⚠ **総当たりで回す**（2 種のときの手書き比較を 3 種へ増やす形にしない）。
+// ⚠⚠ **061k で 4 種目（stage）を足したが、このループは 1 行も変えていない**＝総当たり化が意図どおり効いた。
+//   `"StreamDock エフェクト（全画面）"` のような名前を選ぶと**ここが落ちる**（既存の effects を含むため）。
 for (const a of OBS_OVERLAY_KINDS) {
   for (const b of OBS_OVERLAY_KINDS) {
     if (a === b) continue;

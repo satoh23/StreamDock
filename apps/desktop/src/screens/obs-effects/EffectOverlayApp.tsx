@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { connectCommentStream } from "../../features/comment-viewer/commentStream";
 import {
   EFFECT_ASSIGNMENTS_KEY,
@@ -6,6 +6,7 @@ import {
   loadEffectOverlayGuidePending,
   saveEffectOverlayGuidePending,
   takeEffectTestFirePending,
+  takeStageTestFirePending,
 } from "../../features/comment-viewer/overlaySettings";
 import {
   listEffectTemplates,
@@ -13,9 +14,11 @@ import {
 } from "../../features/obs-effects/effectTemplateApi";
 import {
   assignedTemplateIds,
+  createEffectMatcher,
+  EFFECT_OUTPUT_WINDOW_TITLE,
   isEffectTemplateId,
   loadEffectConditions,
-  resolveEffectMatch,
+  type EffectOutput,
 } from "./effectAssignments";
 import type { SafeEffectMedia } from "./effectMedia";
 import { createEffectMediaCache } from "./effectMediaCache";
@@ -271,7 +274,43 @@ const effectDurationMs = (record: EffectTemplateRecord): number => {
  * ⚠ **足さないもの**: エラー表示・再試行の可視化（この窓に何かを出せば OBS にそのまま映る）／
  *   `console.*`（§9・eslint の `no-console`）／テンプレートの取り込み・削除（main 窓の役目）。
  */
-export function EffectOverlayApp() {
+/**
+ * 061k: この窓が担当する**出力先**（判断 9）。
+ *
+ * ⚠⚠ **省略可にしない。** 既定値を持たせると、渡し忘れが
+ * 「黙って片方の窓にだけ出る／両方が同じ条件を拾う」へ倒れる（061i / 061h の規律＝
+ * `useEffectTemplates` の `openEffectOverlay` や `EffectTemplateCard` の `effectWindowOpen` と同じ理由）。
+ * ⚠ 束縛するのは `App.tsx` のルーティング 1 か所だけ（窓ラベル → `output`）。
+ */
+export interface EffectOverlayAppProps {
+  output: EffectOutput;
+}
+
+export function EffectOverlayApp({ output }: EffectOverlayAppProps) {
+  /**
+   * 061k: **この窓の出力先で束縛した matcher**（判断 5）。
+   * ⚠ `useMemo` は「毎レンダーで `connectCommentStream` を張り直さない」ためだけのもので、
+   * **返す関数は呼ばれるたびに localStorage を読む**（＝読み直しの規律は 061j から不変）。
+   */
+  const matchEffect = useMemo(() => createEffectMatcher(output), [output]);
+  /**
+   * 061k: **この窓の保留旗を読む関数**（判断 8）。
+   * ⚠⚠ **相手の旗を触らない**ことが要件なので、窓ごとに 1 本だけ束縛する。
+   */
+  const takePending = useMemo(
+    () =>
+      output === "stage" ? takeStageTestFirePending : takeEffectTestFirePending,
+    [output],
+  );
+  /**
+   * 061k（判断 2・9）: **セットアップ用ガイドに出す窓名**。
+   * ⚠⚠ **窓名を直書きしないこと**——ユーザーは OBS のウィンドウ一覧を**この文字列で探す**ので、
+   * ずれると窓が見つからない。しかも**ガイド本文は OBS のキャプチャに数十秒そのまま映る**ので、
+   * 誤りが配信を見ている視聴者にも読める（061i の実機確認で実際に踏んだ）。
+   * ⇒ 出所は `effectAssignments.ts` の `EFFECT_OUTPUT_WINDOW_TITLE` 1 か所で、
+   * Rust の `frontend_window_title_table_matches_overlay_titles` が実タイトルとのバイト一致を固定している。
+   */
+  const windowTitle = EFFECT_OUTPUT_WINDOW_TITLE[output];
   // ⚠ 061a レビュー（Q-1）: 初期値は**ワンショット旗の有無**で決める（旧実装は無条件 true だった）。
   // 旗を立てるのは**明示操作 1 つだけ**（⚠ 061i で起点が「表示トグル ON」から
   // 「テスト表示で停止中の窓を開いたとき」＝`EffectTemplateCard` へ移った・判断 3）なので、
@@ -409,7 +448,11 @@ export function EffectOverlayApp() {
     cache.clearFailures();
     missHandledRef.current.clear();
     await refreshRecords();
-    const wanted = assignedTemplateIds(loadEffectConditions()).filter((id) =>
+    // ⚠⚠ **061k（判断 9）: 温めるのは「この窓の出力先の条件」が指す id だけ。**
+    //   ⚠ ここから `output` を落とすと、**2 窓それぞれが全 26 件を抱える**＝
+    //   20MiB の先読み予算を**もう一方の窓のぶん**で使い切る（＝自分の窓のテンプレートが
+    //   LRU で押し出されて「初回だけ出ない」が増える）。
+    const wanted = assignedTemplateIds(loadEffectConditions(), output).filter((id) =>
       recordsRef.current.has(id),
     );
     // 条件から外れたテンプレートは LRU 任せにせず即座に捨てる。
@@ -421,7 +464,7 @@ export function EffectOverlayApp() {
     //   読めないテンプレートで抱え込む。**再修正トリガー＝一覧が間欠的に行を落とす事象が実機で出たとき。**
     cache.retain(wanted);
     for (const id of wanted) void cache.prime(id);
-  }, [refreshRecords]);
+  }, [refreshRecords, output]);
 
   /**
    * 061d-2（穴 β の案 (c)）: キャッシュミスの後始末。**その回の表示には間に合わせない。**
@@ -609,9 +652,15 @@ export function EffectOverlayApp() {
   //   ①材料が冷えていれば `fireTest` が IPC を待つ間ガイドが窓の位置を示す
   //   ②**テンプレートが壊れていて何も出ないときはガイドが残る**（＝窓は在るのに何も出ない、が見える）
   //   ③出たあとは実物のほうが位置合わせの材料として優れている（破線枠と同居させない）。
+  //
+  // ⚠⚠ **061k（判断 8）: 保留旗は窓ごとに 2 本あり、各窓は「自分の旗」だけを take する。**
+  //   テスト表示は**2 つの窓の両方へ出す**（位置合わせの対象が 2 ソースあるため）ので、
+  //   main 窓は停止中の窓ぶんだけ旗を立てる。⚠⚠ **相手の旗を消さないこと**——消すと
+  //   「先にマウントした窓が両方の旗を食い、もう片方が無反応」になり、判断 8 が半分だけ効く。
   useEffect(() => {
     saveEffectOverlayGuidePending(false);
-    const pending = takeEffectTestFirePending();
+    // ⚠ **自分の出力先の旗だけ**（`takePending` は下の `useMemo` で束縛済み）。
+    const pending = takePending();
     if (pending !== null && isEffectTemplateId(pending)) fireTest(pending);
     // ⚠ `fireTest` は安定な `useCallback` の連鎖（`refreshRecords` / `showEffect` とも deps 空）なので、
     //   この effect はマウント時 1 回だけ走る。
@@ -620,7 +669,7 @@ export function EffectOverlayApp() {
     //   二重発火しない（`saveEffectOverlayGuidePending(false)` も冪等）＝
     //   **正しさを担保しているのは `take*`（読んだら消す）のほうで、安定性は性能の話**である。
     //   ⚠ だから `take*` を `load*` へ変えると、この effect の安全性ごと崩れる。
-  }, [fireTest]);
+  }, [fireTest, takePending]);
 
   // ⚠ アンマウントで撤去タイマーを全部止める（StrictMode の二重実行でも残らない）。
   useEffect(() => {
@@ -683,18 +732,23 @@ export function EffectOverlayApp() {
 
         // ⚠ `updated` に `[]` を渡すのは「この窓は combo 更新を一切扱わない」の明示。
         //   `decideEffects` 側にも `updated` から出さない規則があり、**二重に守っている**。
-        // ⚠⚠ 061d-2 / 061j: 第 5 引数が**条件の matcher**（①）。`resolveEffectMatch` は
+        // ⚠⚠ 061d-2 / 061j: 第 5 引数が**条件の matcher**（①）。`createEffectMatcher` が返す関数は
         //   **呼ばれるたびに localStorage を読み直す**ので、main 窓で条件を変えた直後の
         //   1 件目から効く（`storage` の窓跨ぎ伝播に依存しない）。
         // ⚠⚠ **061j でここは「全コメント」で呼ばれるようになった**（061h までは課金コメントだけ）
         //   ——課金判定が matcher の中へ移ったため（判断 5）。性能の見積もりと
-        //   **カクついたときの寄せ先**は `resolveEffectMatch` の JSDoc が正。
+        //   **カクついたときの寄せ先**は `createEffectMatcher` の JSDoc が正。
+        // ⚠⚠ **061k（判断 5）: matcher は「この窓の出力先」で束縛されている**（`matchEffect`）。
+        //   ⚠ **絞り込みを matcher の中でやることが要点**——`EffectRequest` に `output` を載せて
+        //   ここで捨てる形にすると、**捨てる前に `decideEffects` がバースト枠とクールダウンを
+        //   消費してしまう**（＝もう一方の窓の条件がこの窓の枠を食う）。理由の全文は
+        //   `createEffectMatcher` の JSDoc が正。
         const requests = decideEffects(
           fresh,
           [],
           triggerStateRef.current,
           Date.now(),
-          resolveEffectMatch,
+          matchEffect,
         );
         for (const request of requests) fire(request);
       },
@@ -703,7 +757,9 @@ export function EffectOverlayApp() {
       handle.disconnect();
     };
     // ⚠ **マウント時 1 回だけ**張る（`fire` は安定な `useCallback` の連鎖なので張り直らない）。
-  }, [fire]);
+    // ⚠ 061k: `matchEffect` も `useMemo(…, [output])` で安定（`output` は窓ごとに固定＝一生変わらない）。
+    //   ⚠ **ここに不安定な値を足さないこと**——張り直すと WS が切れて再接続し、その間のコメントを落とす。
+  }, [fire, matchEffect]);
 
   // 061d-2（④）: **先読み**。マウント時に 1 回だけ温める。
   // ⚠ StrictMode の二重実行でも `prime` が in-flight を畳むので IPC は 1 本で済む。
@@ -815,13 +871,14 @@ export function EffectOverlayApp() {
       {guideVisible && (
         // ⚠ 破線の枠は「ここがキャプチャ範囲」を示すためのもので、061b のエフェクトの意匠ではない。
         <div className={styles.guide}>
-          <p className={styles.guideTitle}>StreamDock エフェクト</p>
+          {/* ⚠⚠ 061k: **窓名は表から引く**（直書きすると 2 窓のどちらかが必ず嘘になる）。 */}
+          <p className={styles.guideTitle}>{windowTitle}</p>
           <p className={styles.guideBody}>
             この枠にエフェクトが表示されます。
             <br />
             OBS で「ソースを追加 → ウィンドウキャプチャ」を選び、
             <br />
-            ウィンドウの一覧から「StreamDock エフェクト」を指定してください。
+            ウィンドウの一覧から「{windowTitle}」を指定してください。
           </p>
           {/* ⚠ 061a レビュー（Q-1）: 旧文言「配信中には表示されません」は、起動時の窓復元経路があるため
               約束できない断言だった。ガイドが出る条件（＝明示操作の直後だけ）をそのまま書く。

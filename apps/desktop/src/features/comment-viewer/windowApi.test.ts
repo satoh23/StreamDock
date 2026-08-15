@@ -32,6 +32,9 @@ import {
   openPinnedOverlayWindow,
   closePinnedOverlayWindow,
   isPinnedOverlayOpen,
+  openStageOverlayWindow,
+  closeStageOverlayWindow,
+  isStageOverlayOpen,
 } from "./windowApi";
 
 const mockInvoke = vi.mocked(invoke);
@@ -59,6 +62,12 @@ const WRAPPERS: ReadonlyArray<readonly [() => Promise<unknown>, string]> = [
   [openPinnedOverlayWindow, "open_pinned_overlay_window"],
   [closePinnedOverlayWindow, "close_pinned_overlay_window"],
   [isPinnedOverlayOpen, "is_pinned_overlay_open"],
+  // 061k: ステージ演出（全画面）オーバーレイ窓＝エフェクトの 2 本目の出力窓。
+  // ⚠ Rust 側の登録漏れは `window_commands_used_by_the_frontend_are_registered` が止める
+  //   （このテストは「ラッパがその名前を呼ぶこと」までしか見られない）。
+  [openStageOverlayWindow, "open_stage_overlay_window"],
+  [closeStageOverlayWindow, "close_stage_overlay_window"],
+  [isStageOverlayOpen, "is_stage_overlay_open"],
 ];
 
 describe("windowApi: command 名の固定", () => {
@@ -79,9 +88,12 @@ describe("windowApi: command 名の固定", () => {
     }
   });
 
-  it("⚠ 12 本の command 名がすべて異なる（コピペで別の窓を操作してしまわない）", () => {
+  it("⚠ 15 本の command 名がすべて異なる（コピペで別の窓を操作してしまわない）", () => {
     const names = WRAPPERS.map(([, command]) => command);
     expect(new Set(names).size).toBe(names.length);
+    // ⚠⚠ **本数そのものも固定する**（061k で 12 → 15）。集合の一意性だけだと、
+    //   ラッパを 1 本まるごと消す変異が緑のまま通る（＝Rust 側の下限 `found >= 15` と対になる検査）。
+    expect(names).toHaveLength(15);
   });
 });
 
@@ -91,6 +103,7 @@ describe("windowApi: is* は Rust の戻り値を透過する", () => {
     [isCommentViewerOpen, "is_comment_viewer_open"],
     [isCommentOverlayOpen, "is_comment_overlay_open"],
     [isPinnedOverlayOpen, "is_pinned_overlay_open"],
+    [isStageOverlayOpen, "is_stage_overlay_open"],
   ];
 
   it.each(READERS)("%o は true/false をそのまま返す（%s）", async (fn) => {

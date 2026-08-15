@@ -9,20 +9,25 @@ import {
 import { toErrorMessage } from "../../features/tools/useTools";
 import {
   loadEffectOverlayEnabled,
+  loadStageOverlayEnabled,
   saveEffectOverlayEnabled,
+  saveStageOverlayEnabled,
 } from "../../features/comment-viewer/overlaySettings";
 import {
   addKeywordCondition as addKeywordConditionToStore,
   clearAllEffectConditions,
   clearEffectConditionsForTemplate,
+  EFFECT_OUTPUTS,
   hasEffectConditions,
   loadEffectConditions,
   removeCondition as removeConditionFromStore,
   setConditionEffect as setConditionEffectInStore,
+  setConditionOutput as setConditionOutputInStore,
   updateKeywordCondition as updateKeywordConditionInStore,
   type EffectAssignment,
   type EffectConditions,
   type EffectKeywordMatch,
+  type EffectOutput,
 } from "./effectAssignments";
 import { EFFECT_EVENT_LABEL } from "./effectEventRows";
 
@@ -91,6 +96,11 @@ export interface UseEffectTemplates {
   runDelete: (template: EffectTemplateRecord) => Promise<void>;
   /** 条件 1 件の**エフェクト**を変える（イベント条件・キーワード条件の共通 API）。 */
   setConditionEffect: (id: string, effect: EffectAssignment) => void;
+  /**
+   * 061k: 条件 1 件の**出力先**（コーナー／全画面）を変える。
+   * ⚠⚠ **061j 申し送りの「条件を書き換える経路は全部 `commitConditions` を通す」の 7 本目**。
+   */
+  setConditionOutput: (id: string, output: EffectOutput) => void;
   /** キーワード条件を 1 件足す。⚠ **空のキーワードでは呼ばないこと**（呼んでも保存層が落とす）。 */
   addKeywordCondition: (
     when: { text: string; match: EffectKeywordMatch },
@@ -132,9 +142,29 @@ export interface UseEffectTemplates {
  * `EffectTemplateCard` の `effectWindowOpen` を必須にしたのと同じ理由）。
  */
 export interface UseEffectTemplatesOptions {
-  /** ⚠ 呼ばれるのは**条件が 0 件 → 1 件以上になった瞬間だけ**（毎回の保存では呼ばない）。 */
-  openEffectOverlay: () => void;
+  /**
+   * ⚠ 呼ばれるのは**その出力先の条件が 0 件 → 1 件以上になった瞬間だけ**（毎回の保存では呼ばない）。
+   * ⚠ 061k: **引数で窓を指定する**（コーナー／ステージ）。⚠ 呼び出し側は
+   * `ObsEffectsScreen` で、**窓ごとに別のキュー**へ流す（1 本に混ぜると片方の open が
+   * もう片方の close の完了を待つ・判断 11）。
+   */
+  openEffectOverlay: (output: EffectOutput) => void;
 }
+
+/**
+ * 061k: 派生値の**読み書きを出力先で振り分ける**（判断 6）。
+ *
+ * ⚠⚠ **`Record` の表にしないで `if` で書いているのは、`saveEffectOverlayEnabled` /
+ * `saveStageOverlayEnabled` という「名前」が `grep` で追えることに担保を置いているため**
+ * （`overlaySettings.ts` の JSDoc が「実装側のヒットが本ファイルと `useEffectTemplates` に
+ * 限られること」を不変条件にしている）。表に畳むと呼び出し名が消えて grep が効かなくなる。
+ */
+const loadOverlayEnabled = (output: EffectOutput): boolean =>
+  output === "stage" ? loadStageOverlayEnabled() : loadEffectOverlayEnabled();
+const saveOverlayEnabled = (output: EffectOutput, enabled: boolean): void => {
+  if (output === "stage") saveStageOverlayEnabled(enabled);
+  else saveEffectOverlayEnabled(enabled);
+};
 
 export function useEffectTemplates({
   openEffectOverlay,
@@ -183,12 +213,23 @@ export function useEffectTemplates({
    */
   const commitConditions = useCallback(
     (mutate: () => EffectConditions) => {
-      const hadConditions = hasEffectConditions(loadEffectConditions());
+      const before = loadEffectConditions();
       const next = mutate();
-      const hasConditions = hasEffectConditions(next);
       setConditions(next);
-      saveEffectOverlayEnabled(hasConditions);
-      if (hasConditions && !hadConditions) openEffectOverlay();
+      // ⚠⚠ **061k（判断 6）: 派生値は窓ごとに 2 本立てる。**
+      //   ⚠ **2 キーを必ず対で書くこと**——片方だけ書くと「stage 条件を作ったのにステージ窓が
+      //   開かない」／「条件を全部消したのに OBS へ映り続ける」が黙って起きる。
+      //   ⚠ 判定は `effectConditionCount(conditions, output) > 0`＝**出力先ごと**であり、
+      //   合計で判定すると「コーナー条件しか無いのにステージ窓が開く」＝
+      //   **開いたのに何も出ない窓**を作る（061i が避けた形）。
+      for (const output of EFFECT_OUTPUTS) {
+        const had = hasEffectConditions(before, output);
+        const has = hasEffectConditions(next, output);
+        saveOverlayEnabled(output, has);
+        // ⚠ **0 件 → 1 件以上の遷移だけ**開く（「1 件以上のまま別の条件を変えた」では投げない）。
+        //   ⚠ 逆向き（0 件になったら閉じる）は作らない（判断 1・窓が消えると OBS が真っ黒）。
+        if (has && !had) openEffectOverlay(output);
+      }
     },
     [openEffectOverlay],
   );
@@ -217,9 +258,15 @@ export function useEffectTemplates({
    * 読み込み時に変換するので、**旧形式のままでも条件数は正しく数えられる**（保存値は書き戻さない）。
    */
   useEffect(() => {
-    const shouldBeEnabled = hasEffectConditions(loadEffectConditions());
-    if (loadEffectOverlayEnabled() === shouldBeEnabled) return;
-    saveEffectOverlayEnabled(shouldBeEnabled);
+    const conditions = loadEffectConditions();
+    // ⚠ 061k: **2 キーとも**実態へ合わせ直す（片方だけだと移行が半分しか効かない）。
+    //   ⚠ **061j → 061k のアップグレードでは stage 側が必ず false へ倒れる**（`output` の無い
+    //   保存値は全部 corner なので）＝ **既存ユーザーの見え方が 1 ミリも変わらない**ことの担保でもある。
+    for (const output of EFFECT_OUTPUTS) {
+      const shouldBeEnabled = hasEffectConditions(conditions, output);
+      if (loadOverlayEnabled(output) === shouldBeEnabled) continue;
+      saveOverlayEnabled(output, shouldBeEnabled);
+    }
   }, []);
 
   const reload = useCallback(async () => {
@@ -322,6 +369,18 @@ export function useEffectTemplates({
     [commitConditions],
   );
 
+  /**
+   * 061k: 出力先の変更。⚠⚠ **必ず `commitConditions` を通す**（7 本目の経路）——
+   * 通さないと**派生値 2 キーが追従しない**＝「stage へ移したのにステージ窓が開かない」
+   * （あるいは「コーナーから全部移したのにコーナー窓の OBS ソースが有効なまま」）が黙って起きる。
+   */
+  const setConditionOutput = useCallback(
+    (id: string, output: EffectOutput) => {
+      commitConditions(() => setConditionOutputInStore(id, output));
+    },
+    [commitConditions],
+  );
+
   const addKeywordCondition = useCallback(
     (
       when: { text: string; match: EffectKeywordMatch },
@@ -395,6 +454,7 @@ export function useEffectTemplates({
     cancelDelete,
     runDelete,
     setConditionEffect,
+    setConditionOutput,
     addKeywordCondition,
     updateKeywordCondition,
     removeCondition,

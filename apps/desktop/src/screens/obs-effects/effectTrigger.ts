@@ -194,7 +194,10 @@ export interface EffectMatch {
  *
  * ⚠⚠ **これが「条件」を発火層へ持ち込む唯一の口である**（①）。本モジュールは
  * localStorage も `effectAssignments.ts` も import しない＝**純関数のまま**で、
- * 実体（`resolveEffectMatch`）は呼び出し側が渡す。
+ * 実体（`createEffectMatcher(output)` が返す関数）は呼び出し側が渡す。
+ * ⚠ **061k で実体が「出力先で束縛された matcher」になったが、この型も `decideEffects` も無改変**
+ * ——**発火層は「どの窓に出すか」を知らない**（＝`EffectRequest` に `output` が載らない）。
+ * 絞り込みを発火層へ持ち込むと、**もう一方の窓の条件がバースト枠を食う**（あちらの JSDoc が正）。
  * ⚠⚠ **061j で課金判定（`isMonetaryEvent`）もこの向こう側へ移った**——キーワード条件は
  * **通常チャットで発火するのが目的**なので、発火層でゲートすると永久に当たらないため。
  * ＝ 本モジュールから `isMonetaryEvent` の import が消えたが、**層の向きは変わっていない**

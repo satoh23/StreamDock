@@ -5,10 +5,13 @@ import {
 } from "../../features/comment-viewer/overlaySettings";
 import {
   closeEffectOverlayWindow,
+  closeStageOverlayWindow,
   isCommentViewerOpen,
   isEffectOverlayOpen,
+  isStageOverlayOpen,
   openCommentViewerWindow,
   openEffectOverlayWindow,
+  openStageOverlayWindow,
 } from "../../features/comment-viewer/windowApi";
 import {
   detectObsWebsocketConfig,
@@ -31,7 +34,13 @@ import { Tabs, type TabItem } from "../../components/Tabs";
 //   停止中の注記を出せるように `effectWindowOpen` をあちらへ渡す。
 import { EffectAssignmentCard } from "./EffectAssignmentCard";
 import { EffectTemplateCard } from "./EffectTemplateCard";
-import { effectConditionCount } from "./effectAssignments";
+import {
+  effectConditionCount,
+  EFFECT_OUTPUT_LABEL,
+  EFFECT_OUTPUT_WINDOW_TITLE,
+  EFFECT_OUTPUTS,
+  type EffectOutput,
+} from "./effectAssignments";
 import { useEffectTemplates } from "./useEffectTemplates";
 import layout from "../formLayout.module.css";
 import styles from "./ObsEffectsScreen.module.css";
@@ -59,8 +68,24 @@ import styles from "./ObsEffectsScreen.module.css";
  * - **タブ**（[`Tabs`]）… 「コメントで出すエフェクト」＝テンプレートと条件／「配信イベント」＝**061l まで枠だけ**。
  *   ⚠ **`ComingSoonScreen` は流用しない**（あれは画面まるごと用のダミーページで、ヘッダー導線の意味論を持つ）。
  * - **共通の下部**（両タブの外）… 「配信画面に表示」（OBS への取り込み手順）／「OBS へ自動で反映」／前提ステータス。
- *   ⚠ **どちらのタブで使うエフェクトも同じ窓・同じ OBS ソースに出る**ので、タブの中に入れると
- *   「タブごとに別の窓がある」と読めてしまう。⚠ **061k で出力窓が 2 本になったらここを見直す。**
+ *   ⚠ **どちらのタブで使うエフェクトも同じ 2 つの出力窓へ出る**ので、タブの中に入れると
+ *   「タブごとに別の窓がある」と読めてしまう。
+ *   ⚠⚠ **061k で見直した結果＝共通の下部のまま**（窓が 2 本になったのは「用途別（コーナー／全画面）」
+ *   という軸であって「タブ別」ではない。061l の配信イベントも同じ 2 窓へ出る）。
+ *   ⇒ 変わったのは**前提ステータスの「エフェクトのウィンドウ」行が 2 本になった**ことだけ。
+ *
+ * ## ⚠⚠ 061k: 出力窓が用途別に 2 本になった
+ *
+ * - **窓の open/close は窓ごとに別のキュー**（判断 11）。1 本に混ぜると片方の open がもう片方の
+ *   close の完了を待つ（061i がキューを作った理由は「**同じ窓**への close/open の順序」だけ）。
+ * - **前提ステータスは「エフェクトのウィンドウ（コーナー）／（全画面）」の 2 行**。
+ *   各行に「ウィンドウを閉じる」「ウィンドウを開く」があり、**開く判定はその出力先の件数**である
+ *   （合計で判定すると「コーナー条件しか無いのにステージ窓を開く」＝**開いたのに何も出ない窓**になる）。
+ * - **「表示する条件」は合計 1 行のまま**（判断 11）。⚠ ただし**内訳を添える**——
+ *   テスト表示は条件が無くても 2 窓を開く（判断 8）ので、「ステージ窓は表示中なのに
+ *   ステージ条件が 0 件」が普通に起きる。061a 以来の「黙って何も起きない状態を作らない」を守るため。
+ * - ⚠⚠ **`docs/security.md` §1 の停止導線はここと `MainScreen` の 2 か所**で、
+ *   061k では「**2 つとも**閉じないと取得は止まらない」へ書き換えた。**片方だけ直さないこと。**
  * - ⚠⚠ **「エフェクトを配信画面に表示する」トグルを廃止した**（判断 1・2）。**二度手間**だったため
  *   ——条件を設定した時点で「配信画面に出したい」ことは自明なのに、別に ON にしないと何も出なかった。
  *   ⚠ **061h で既定が「出さない」になったから初めてこの自動化が成立する**（既定が組み込みのままだと
@@ -133,7 +158,9 @@ export function ObsEffectsScreen() {
   const [tab, setTab] = useState<string>(EFFECT_TABS[0].id);
 
   // 前提ステータス。null = 未取得。
+  // ⚠⚠ 061k: **窓ごとに 1 つずつ持つ**（片方の値でもう片方を代表させない）。
   const [effectWindowOpen, setEffectWindowOpen] = useState<boolean | null>(null);
+  const [stageWindowOpen, setStageWindowOpen] = useState<boolean | null>(null);
   const [viewerOpen, setViewerOpen] = useState<boolean | null>(null);
   const [obsConfig, setObsConfig] = useState<ObsWsConfig | null>(null);
   const [obsConfigLoaded, setObsConfigLoaded] = useState(false);
@@ -144,10 +171,26 @@ export function ObsEffectsScreen() {
   // 順序が起こりうる。この機能も自動 close 経路を持たないため、その状態は**セッション中に解消せず**
   // 「設定 OFF なのにエフェクト窓が OBS に映り続ける」になる。前の要求の完了後に次を流す。
   // `.catch` はキューを詰まらせないための握りつぶし（reject を伝播させると以降の開閉要求が全て死ぬ）。
+  //
+  // ⚠⚠ **061k（判断 11）: キューは窓ごとに 1 本ずつ持つ。**
+  // 1 本に混ぜると **片方の窓の open が、もう片方の close の完了を待つ**——061i がこのキューを
+  // 作った理由は「**同じ窓**への close と open の順序が入れ替わる」ことであって、
+  // **別の窓を直列化する理由は無い**（待たされている間に「ステージ窓を開いたのに出ない」が起きる）。
+  // ⚠ **Rust 側の窓生成は `WINDOW_OPEN_LOCK` で全窓共有＝どのみち直列**だが、それとは別の話である
+  // （あちらは窓生成の排他、ここは同一窓に対する要求の順序）。
   const effectOverlayOpRef = useRef<Promise<void>>(Promise.resolve());
+  const stageOverlayOpRef = useRef<Promise<void>>(Promise.resolve());
 
+  // ⚠ 061k レビュー S-6（受容・修正不要）: **`.then` に `.catch` を付けていない**（033f/061a から同じ形）。
+  //   意図＝ここで拾えるのは「引数なしの読み取り専用 invoke が reject した」だけで、**握りつぶすと
+  //   前提ステータスが「確認中…」のまま固まる**（＝黙って何も起きない）。未処理 rejection として
+  //   dev の console に出るほうが、この 3 本の性質（登録済みコマンド・引数なし・reject 経路が実質無い）に
+  //   照らして観測しやすい。⚠ 落ちても 2 秒ポーリングが次の周期で実態へ引き戻す。
+  //   **再修正トリガー**＝実機でこの reject が観測されたとき（そのときは「確認できません」という
+  //   第 3 の表示を足す。`null`＝未取得と混ぜないこと）。
   const refreshStatus = useCallback(() => {
     void isEffectOverlayOpen().then(setEffectWindowOpen);
+    void isStageOverlayOpen().then(setStageWindowOpen);
     void isCommentViewerOpen().then(setViewerOpen);
   }, []);
 
@@ -183,9 +226,11 @@ export function ObsEffectsScreen() {
    * ⚠ `.catch` はキューを詰まらせないための握りつぶし（reject を伝播させると以降の要求が全て死ぬ）。
    * ⚠ 完了後に `refreshStatus` を挟むので、前提ステータス（「表示中」／注記）が実態へ追いつく。
    */
-  const runEffectOverlayOp = useCallback(
-    (op: () => Promise<void>) => {
-      effectOverlayOpRef.current = effectOverlayOpRef.current
+  const runOverlayOp = useCallback(
+    (output: EffectOutput, op: () => Promise<void>) => {
+      // ⚠ 061k: **窓ごとに別の ref**（上の注記）。
+      const ref = output === "stage" ? stageOverlayOpRef : effectOverlayOpRef;
+      ref.current = ref.current
         .then(op)
         .then(refreshStatus)
         .catch(() => {});
@@ -212,10 +257,19 @@ export function ObsEffectsScreen() {
    * 「押しても出ない」で、旗の残骸より軽いほうへ倒れるため。
    * ⚠ open が失敗しても `refreshStatus`（完了時＋2 秒ポーリング）が実態へ引き戻す。
    */
-  const openEffectOverlay = useCallback(() => {
-    setEffectWindowOpen(true);
-    runEffectOverlayOp(openEffectOverlayWindow);
-  }, [runEffectOverlayOp]);
+  const openEffectOverlay = useCallback(
+    (output: EffectOutput) => {
+      // ⚠ 061k: 楽観更新も**その窓の state だけ**（もう片方を巻き添えに true へ倒さない）。
+      if (output === "stage") {
+        setStageWindowOpen(true);
+        runOverlayOp("stage", openStageOverlayWindow);
+        return;
+      }
+      setEffectWindowOpen(true);
+      runOverlayOp("corner", openEffectOverlayWindow);
+    },
+    [runOverlayOp],
+  );
 
   /**
    * 061i: **窓を閉じる**（前提ステータスの「ウィンドウを閉じる」＝明示操作だけ・判断 1）。
@@ -224,9 +278,15 @@ export function ObsEffectsScreen() {
    * 「いま出ている窓を片付ける」操作で、**条件はそのまま残る**（＝アプリを開き直せばまた開く）。
    * 混ぜると「窓を閉じたら条件も無効になった」という、旧トグルと同じ二度手間へ戻る。
    */
-  const closeEffectOverlay = useCallback(() => {
-    runEffectOverlayOp(closeEffectOverlayWindow);
-  }, [runEffectOverlayOp]);
+  const closeEffectOverlay = useCallback(
+    (output: EffectOutput) => {
+      runOverlayOp(
+        output,
+        output === "stage" ? closeStageOverlayWindow : closeEffectOverlayWindow,
+      );
+    },
+    [runOverlayOp],
+  );
 
   // ⚠⚠ 061d-2: テンプレート一覧と割り当ての state は**この画面が 1 つだけ持つ**（061d-1 レビュー Q-9）。
   //   削除は「一覧」と「割り当て」の両方を書き換えるので、2 つのカードが別々に持つと片方が古くなる。
@@ -234,11 +294,47 @@ export function ObsEffectsScreen() {
   //   全部知っているのはあちらだけ）。**invoke と直列化はこの画面**（上の `runEffectOverlayOp`）。
   const effectTemplates = useEffectTemplates({ openEffectOverlay });
 
-  /** 061i: 前提ステータスに出す「表示する条件」の件数。⚠ 数え方の持ち主は `effectAssignments.ts`。 */
+  /**
+   * 061i: 前提ステータスに出す「表示する条件」の件数。⚠ 数え方の持ち主は `effectAssignments.ts`。
+   *
+   * ⚠⚠ **061k: 行は 1 本のまま（判断 11）だが、内訳を添える。**
+   * 出力窓が 2 本になったので、合計だけだと
+   * **「ステージ窓は表示中なのにステージ条件が 0 件」がどこにも出ない**——
+   * テスト表示は条件が無くても 2 窓を開く（判断 8）ので、この状態は普通に発生する。
+   * 061a 以来の「**黙って何も起きない状態を作らない**」を守るために内訳を出す。
+   * ⚠ 行を 2 本に割らないのは、ユーザーが最初に確かめたいのが「条件を作ったか」だから（判断 11）。
+   */
   const conditionCount = useMemo(
     () => effectConditionCount(effectTemplates.conditions),
     [effectTemplates.conditions],
   );
+  /** 061k: 出力先ごとの件数（窓を開く判定と、上の内訳表示に使う）。 */
+  const countByOutput = useMemo(
+    () =>
+      Object.fromEntries(
+        EFFECT_OUTPUTS.map((o) => [
+          o,
+          effectConditionCount(effectTemplates.conditions, o),
+        ]),
+      ) as Record<EffectOutput, number>,
+    [effectTemplates.conditions],
+  );
+  /**
+   * 061k: 前提ステータスの「エフェクトのウィンドウ」2 行ぶんの材料。
+   *
+   * ⚠ 061k レビュー Q-4（受容・修正不要）: **すぐ上の 2 つと違って `useMemo` にしていない。**
+   * 意図＝これは JSX へ直接流す 2 要素の並べ替えにすぎず、上の 2 つのように**別の計算の入力になる
+   * 派生値ではない**（`countByOutput` を memo したのは `effectConditionCount` を 2 回回すため）。
+   * 2 要素の object 生成は毎レンダーやっても測れる差にならず、memo すると
+   * 「依存に `stageWindowOpen` / `effectWindowOpen` / `countByOutput` を並べる」ぶん**取りこぼしの面が増える**。
+   * **再修正トリガー**＝この配列を `useEffect` の依存や `React.memo` した子へ渡すようになったとき
+   * （そのとき参照の同一性が意味を持つので memo 化する）。
+   */
+  const windowRows = EFFECT_OUTPUTS.map((output) => ({
+    output,
+    open: output === "stage" ? stageWindowOpen : effectWindowOpen,
+    count: countByOutput[output],
+  }));
 
   /**
    * OBS 自動反映トグル。⚠⚠ **設定を立てるだけ**（045c の規律。窓も開かないし OBS へも繋がない）。
@@ -302,6 +398,7 @@ export function ObsEffectsScreen() {
             <EffectTemplateCard
               {...effectTemplates}
               effectWindowOpen={effectWindowOpen}
+              stageWindowOpen={stageWindowOpen}
               openEffectOverlay={openEffectOverlay}
             />
 
@@ -336,19 +433,41 @@ export function ObsEffectsScreen() {
         <section className={layout.panel}>
           <div className={layout.panelHead}>
             <h3>配信画面に表示</h3>
+            {/* ⚠ 061k: 用途別に 2 つ開く（コーナー＝小さめ／全画面＝ステージ）。 */}
             <p>
-              エフェクト専用の透明なウィンドウを開きます。OBS では「ウィンドウキャプチャ」で取り込みます。
+              エフェクト専用の透明なウィンドウを、用途別に 2
+              つ開きます。OBS では「ウィンドウキャプチャ」でそれぞれ取り込みます。
             </p>
           </div>
           <div className={layout.panelBody}>
             {/* ⚠⚠ **061i: 「エフェクトを配信画面に表示する」トグルを廃止した**（判断 1・2）。
                 ⚠ **OBS への取り込み手順（下の注記）は残す**——あれは「どうやって OBS に取り込むか」の
                 唯一の説明で、トグルとは独立した情報である。 */}
+            {/* ⚠⚠ 061k（判断 2・9）: **ウィンドウは用途別に 2 つある**ので、
+                **それぞれの実際の窓名を出す**（ユーザーは OBS の一覧をこの文字列で探す）。
+                ⚠ 窓名は `EFFECT_OUTPUT_WINDOW_TITLE` から引く（直書きすると片方が必ず嘘になる。
+                Rust の契約テストが実タイトルとのバイト一致を固定している）。
+                ⚠ **UI 上の呼び方（「コーナー」「全画面」）と窓名は別物**——既存窓の改名は禁止なので
+                （既に OBS にソースを作ったユーザーが静かに壊れる）、**両方を併記する**。 */}
             <p className={styles.note}>
               ウィンドウは枠なし・最背面・透明で開くため、配信者の操作を邪魔しません。OBS では
               「ソースを追加 →
-              ウィンドウキャプチャ」を選び、ウィンドウの一覧から「StreamDock
-              エフェクト」を指定してください。
+              ウィンドウキャプチャ」を選び、ウィンドウの一覧から次の名前を指定してください。
+            </p>
+            <ul className={styles.note}>
+              {EFFECT_OUTPUTS.map((output) => (
+                <li key={output}>
+                  {EFFECT_OUTPUT_LABEL[output]}…「
+                  {EFFECT_OUTPUT_WINDOW_TITLE[output]}」
+                </li>
+              ))}
+            </ul>
+            {/* ⚠⚠ 061k（判断 9 の受容）: テンプレートの大きさは**絶対 px** なので、
+                コーナー用に作ったものを全画面へ出すと**相対的に小さく見える**。
+                ⚠ **`fitScale` / `transform: scale()` は持ち込まない**（061d-1 レビュー Q-1 が
+                「比率が同じでも枠の実寸が違えば見え方が変わる」を既に受容している）。⇒ 1 文で説明する。 */}
+            <p className={styles.note}>
+              2 つのウィンドウは大きさが違うため、同じエフェクトでも全画面のほうでは小さく見えます（エフェクトの大きさはテンプレート側で決まります）。
             </p>
             {/* ⚠ 061a レビュー（Q-1）: 旧文言は「（配信中には表示されません）」と断言していたが、
                 起動時の窓復元経路があるため約束できなかった。ガイドが出る条件をそのまま書く。
@@ -364,9 +483,14 @@ export function ObsEffectsScreen() {
         <section className={layout.panel}>
           <div className={layout.panelHead}>
             <h3>OBS へ自動で反映</h3>
+            {/* ⚠⚠ 061k: **窓が 2 つになったので、片方だけ名指しすると嘘になる**（実機確認で発見）。
+                ⚠ 窓名は表から引く（直書きすると片方が必ず古くなる）。 */}
             <p>
-              OBS
-              に「StreamDock エフェクト」のウィンドウキャプチャを自動で追加します（既にあれば再利用します）。
+              OBS に
+              {EFFECT_OUTPUTS.map((o) => `「${EFFECT_OUTPUT_WINDOW_TITLE[o]}」`).join(
+                "と",
+              )}
+              のウィンドウキャプチャを自動で追加します（既にあれば再利用します）。
             </p>
           </div>
           <div className={layout.panelBody}>
@@ -425,46 +549,67 @@ export function ObsEffectsScreen() {
                 >
                   {conditionCount === 0
                     ? "設定されていません"
-                    : `${conditionCount} 件`}
+                    : `${conditionCount} 件（${EFFECT_OUTPUTS.map(
+                        (o) => `${EFFECT_OUTPUT_LABEL[o]} ${countByOutput[o]}`,
+                      ).join("・")}）`}
                 </span>
               </div>
-              <div className={styles.statusRow}>
-                <span className={styles.statusLabel}>エフェクトのウィンドウ</span>
-                <span className={styles.statusValueGroup}>
-                  <span
-                    className={`${styles.statusValue} ${effectWindowOpen === false ? styles.blocked : ""}`}
-                  >
-                    {effectWindowOpen === null
-                      ? "確認中…"
-                      : effectWindowOpen
-                        ? "表示中"
-                        : "停止中"}
+              {/* ⚠⚠ 061k（判断 11）: **出力窓が 2 本になったので行も 2 本**。
+                  各行に「ウィンドウを閉じる」／「ウィンドウを開く」（061i レビュー Q-2 の非対称の
+                  埋め合わせも 2 組）を持たせる。⚠ **窓の状態も件数も出力先ごとに独立**で、
+                  片方の値でもう片方を代表させない。 */}
+              {windowRows.map(({ output, open, count }) => (
+                <div key={output} className={styles.statusRow}>
+                  {/* ⚠ **1 つのテキストノードとして組む**（`{"..."}{label}{"..."}` と分けると
+                      DOM 上で 3 ノードに割れ、`getByText` の完全一致が効かなくなる）。 */}
+                  <span className={styles.statusLabel}>
+                    {`エフェクトのウィンドウ（${EFFECT_OUTPUT_LABEL[output]}）`}
                   </span>
-                  {/* ⚠⚠ 061i（判断 1）: **閉じるのは明示操作だけ**——「条件が全部『出さない』に
-                      なったら自動で閉じる」は作らない（窓が消えると OBS のウィンドウキャプチャが
-                      真っ黒になる・親 046 の規律）。⚠ トグルではなく**アクション**にしてあるのが要点で、
-                      押しても**条件（設定）は消えない**＝アプリを開き直せばまた開く。
-                      ⚠ 表示中のときだけ出す（停止中に「閉じる」を出しても押せることが無い）。 */}
-                  {effectWindowOpen === true && (
-                    <Button type="button" onClick={closeEffectOverlay}>
-                      ウィンドウを閉じる
-                    </Button>
-                  )}
-                  {/* ⚠⚠ 061i レビュー Q-2: **「閉じる」だけあって「開く」が無い**非対称を埋める。
-                      自動 open の契機は **0 → 1 件の遷移だけ**なので、条件が既に 1 件以上ある状態では
-                      **何をしても窓が開かない**（アプリを再起動するか、テスト表示を押すしかない）。
-                      ⚠ 061h から「条件あり・表示トグル OFF」で持ち越したユーザー（＝061i が
-                      救おうとしている当のユーザー）は、まさにこの状態で画面に入ってくる。
-                      ⚠ **条件が 0 件のときは出さない**——出しても「開いたのに何も出ない」窓を
-                      作るだけで、そのときの正しい行動は条件を設定すること（上のカードへ誘導する）。
-                      ⚠ **ガイド旗は立てない**（判断 3 の起点は「テスト表示」だけに保つ）。 */}
-                  {effectWindowOpen === false && conditionCount > 0 && (
-                    <Button type="button" onClick={openEffectOverlay}>
-                      ウィンドウを開く
-                    </Button>
-                  )}
-                </span>
-              </div>
+                  <span className={styles.statusValueGroup}>
+                    <span
+                      className={`${styles.statusValue} ${open === false ? styles.blocked : ""}`}
+                    >
+                      {open === null ? "確認中…" : open ? "表示中" : "停止中"}
+                    </span>
+                    {/* ⚠⚠ 061i（判断 1）: **閉じるのは明示操作だけ**——「条件が全部『出さない』に
+                        なったら自動で閉じる」は作らない（窓が消えると OBS のウィンドウキャプチャが
+                        真っ黒になる・親 046 の規律）。⚠ トグルではなく**アクション**にしてあるのが要点で、
+                        押しても**条件（設定）は消えない**＝アプリを開き直せばまた開く。
+                        ⚠ 表示中のときだけ出す（停止中に「閉じる」を出しても押せることが無い）。
+                        ⚠⚠ **061k: これは `docs/security.md` §1 が名指しする停止導線でもある**——
+                        **両方**を閉じたときに sidecar が落ちる（＝コメント取得が止まる）。 */}
+                    {open === true && (
+                      // ⚠⚠ 061k: **ボタンが 2 つ並ぶので、アクセシブル名でどちらか分かるようにする。**
+                      //   見た目の文言は短いまま（行の左のラベルで文脈が読める）だが、
+                      //   スクリーンリーダーは行を跨いで読まないので `aria-label` で窓名を足す。
+                      <Button
+                        type="button"
+                        aria-label={`${EFFECT_OUTPUT_LABEL[output]}のウィンドウを閉じる`}
+                        onClick={() => closeEffectOverlay(output)}
+                      >
+                        ウィンドウを閉じる
+                      </Button>
+                    )}
+                    {/* ⚠⚠ 061i レビュー Q-2: **「閉じる」だけあって「開く」が無い**非対称を埋める。
+                        自動 open の契機は **0 → 1 件の遷移だけ**なので、条件が既に 1 件以上ある状態では
+                        **何をしても窓が開かない**（アプリを再起動するか、テスト表示を押すしかない）。
+                        ⚠ **条件が 0 件のときは出さない**——出しても「開いたのに何も出ない」窓を
+                        作るだけで、そのときの正しい行動は条件を設定すること（上のカードへ誘導する）。
+                        ⚠⚠ **061k: 判定は「その出力先の件数」**（合計だと「コーナー条件しか無いのに
+                        ステージ窓を開く」ボタンが出て、まさに「開いたのに何も出ない窓」になる）。
+                        ⚠ **ガイド旗は立てない**（判断 3 の起点は「テスト表示」だけに保つ）。 */}
+                    {open === false && count > 0 && (
+                      <Button
+                        type="button"
+                        aria-label={`${EFFECT_OUTPUT_LABEL[output]}のウィンドウを開く`}
+                        onClick={() => openEffectOverlay(output)}
+                      >
+                        ウィンドウを開く
+                      </Button>
+                    )}
+                  </span>
+                </div>
+              ))}
               <div className={styles.statusRow}>
                 <span className={styles.statusLabel}>コメントビューア</span>
                 <span
@@ -521,11 +666,24 @@ export function ObsEffectsScreen() {
                     ⚠ 新しい止め方＝**すぐ上の「エフェクトのウィンドウ」行の「ウィンドウを閉じる」**。
                     ⚠ 同じ文言をツール管理側（`MainScreen` の停止フィードバック）も持っているので、
                     **片方だけ直さないこと**（§1 が導線として名指ししているのは 2 か所ある）。 */}
+                {/* ⚠⚠ **061k: 「ウィンドウを閉じる」が 2 つになったので条件も 2 窓ぶんになった。**
+                    `docs/security.md` §1「取得の停止条件」は
+                    「**どちらか 1 つでも開いていれば取得が続く**」なので、
+                    **「両方閉じる」と書かないと嘘になる**（片方だけ閉じても止まらない）。
+                    ⚠ 同じ文言をツール管理側（`MainScreen` の停止フィードバック）も持っている。
+                    **片方だけ直さないこと**（§1 が導線として名指ししているのは 2 か所ある）。 */}
+                {/* ⚠ 061k レビュー Q-3（修正）: 呼び方は直書きせず `EFFECT_OUTPUT_LABEL` から引く
+                    （直書きだと、表を直したときにここだけ古くなる＝061k が窓名で塞いだのと同じ穴を
+                    「呼び方」で作ることになる）。⚠ 窓名（`EFFECT_OUTPUT_WINDOW_TITLE`）とは別物。 */}
                 <p className={styles.prerequisiteText}>
-                  エフェクトのウィンドウを表示したままコメントビューアを閉じた場合は、エフェクトの表示とコメントの取得がそのまま続きます。取得を止めたいときは、コメントビューアを開いて取得を停止するか、上の「エフェクトのウィンドウ」にある「ウィンドウを閉じる」を押してください。
+                  {`エフェクトのウィンドウ（${EFFECT_OUTPUTS.map(
+                    (o) => EFFECT_OUTPUT_LABEL[o],
+                  ).join("・")}のどちらか）を表示したままコメントビューアを閉じた場合は、エフェクトの表示とコメントの取得がそのまま続きます。取得を止めたいときは、コメントビューアを開いて取得を停止するか、上の「エフェクトのウィンドウ」にある「ウィンドウを閉じる」を`}
+                  <strong>2 つとも</strong>押してください。
                 </p>
                 <p className={styles.prerequisiteText}>
-                  エフェクトのウィンドウを表示していない状態でコメントビューアを閉じたときは、コメントの取得も止まります（取得の開始はコメントビューアから行います）。
+                  エフェクトのウィンドウを 2
+                  つとも表示していない状態でコメントビューアを閉じたときは、コメントの取得も止まります（取得の開始はコメントビューアから行います）。
                 </p>
                 <Button type="button" onClick={handleOpenCommentViewer}>
                   コメントビューアを開く

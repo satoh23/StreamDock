@@ -18,11 +18,21 @@ export function Select({
   value,
   onChange,
   ariaLabel,
+  disabled,
   children,
 }: {
   value: string | number;
   onChange: (e: ChangeEvent<HTMLSelectElement>) => void;
   ariaLabel?: string;
+  /**
+   * 061k: 選べない状態にする（**任意・既定は有効**＝既存の呼び出しは 1 文字も変わらない）。
+   *
+   * ⚠ 初出の用途は「**エフェクトを出さない条件の出力先**」——保存層が既定へ丸めるので、
+   * 有効なままだと「選んだのに元へ戻る」という説明できない挙動になる。
+   * ⚠ **見た目は native の既定に任せる**（`disabled` 専用の意匠を作らない＝
+   * `Select.module.css` は差分ゼロ。意匠を足したくなったら、まず本当に必要かを問うこと）。
+   */
+  disabled?: boolean;
   children: ReactNode;
 }) {
   return (
@@ -32,6 +42,7 @@ export function Select({
         value={value}
         onChange={onChange}
         aria-label={ariaLabel}
+        disabled={disabled}
       >
         {children}
       </select>

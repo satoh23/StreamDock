@@ -15,6 +15,7 @@ import {
   EFFECT_OVERLAY_GUIDE_PENDING_KEY,
   EFFECT_TEST_FIRE_KEY,
   EFFECT_TEST_FIRE_PENDING_KEY,
+  STAGE_TEST_FIRE_PENDING_KEY,
 } from "../../features/comment-viewer/overlaySettings";
 
 /**
@@ -52,6 +53,7 @@ vi.mock("../../features/obs-effects/effectTemplateApi", () => ({
 
 import { EffectTemplateCard } from "./EffectTemplateCard";
 import { useEffectTemplates } from "./useEffectTemplates";
+import type { EffectOutput } from "./effectAssignments";
 
 /**
  * ⚠⚠ **061d-2 で `EffectTemplateCard` が state を持たなくなった**（061d-1 レビュー Q-9 の分割）。
@@ -64,10 +66,13 @@ import { useEffectTemplates } from "./useEffectTemplates";
  */
 function Harness({
   effectWindowOpen = true,
+  stageWindowOpen = true,
   openEffectOverlay = () => {},
 }: {
   effectWindowOpen?: boolean | null;
-  openEffectOverlay?: () => void;
+  openEffectOverlay?: (output: EffectOutput) => void;
+  /** 061k: ステージ側の窓の状態。⚠ 既定は「表示中」＝ 061j までと同じ経路（`storage`）を通る。 */
+  stageWindowOpen?: boolean | null;
 }) {
   // ⚠ 061i: hook は「条件が 0 → 1 件になったら窓を開く」を判断するだけで invoke はしない
   //   （実行と直列化は `ObsEffectsScreen`）。このファイルは割り当てを触らないので hook 側は発火しない。
@@ -82,6 +87,7 @@ function Harness({
     <EffectTemplateCard
       {...templates}
       effectWindowOpen={effectWindowOpen}
+      stageWindowOpen={stageWindowOpen}
       openEffectOverlay={openEffectOverlay}
     />
   );
@@ -331,7 +337,7 @@ describe("EffectTemplateCard", () => {
     ).toMatch(/:t2$/);
   });
 
-  it("⚠⚠ エフェクト窓が停止中なら「ウィンドウを開いてから表示する」と案内する（061i で挙動が変わった）", async () => {
+  it("⚠⚠ エフェクト窓が停止中なら「開いてから表示する」と案内する（061i で挙動が変わった）", async () => {
     // ⚠ 「黙って何も起きない」を作らないための注記（061a 以来の規律）。
     // ⚠⚠ **061h の文言（「いまは何も表示されません」）は 061i で嘘になった**——
     //   停止中でも**開いてから出す**ようになったため。約束できることだけ書く（061a Q-1）。
@@ -339,17 +345,32 @@ describe("EffectTemplateCard", () => {
     render(<Harness effectWindowOpen={false} />);
     await screen.findByText("きらきら演出");
     expect(
-      screen.getByText(/ウィンドウを開いてから表示します/),
+      screen.getByText(/停止中のウィンドウは、開いてから表示します/),
     ).toBeInTheDocument();
     // ⚠ 旧文言が「親切だから」で戻ってこないようにする（挙動と食い違う案内の復活を止める）。
     expect(screen.queryByText(/いまは何も表示されません/)).toBeNull();
   });
 
-  it("エフェクト窓が表示中ならその注記は出さない", async () => {
+  // ⚠⚠ **061k レビュー Q-2: 「ステージだけ停止中」でも注記が出ること。**
+  //   これが 061k で実際に漏れていた——注記が `effectWindowOpen` だけを見ていたため、
+  //   **「コーナーは開・ステージは停止中」（＝通常の状態）でステージ窓が無告知で開いた**。
+  //   ⚠ 実機で見つけた「窓は 1 つ」前提の言い落とし 3 件と完全に同型の 4 件目である。
+  it("⚠⚠ 061k: ステージ側だけ停止中でも注記を出す（無告知で窓を開かない）", async () => {
     mocks.listEffectTemplates.mockResolvedValue([record()]);
-    render(<Harness effectWindowOpen={true} />);
+    render(<Harness effectWindowOpen={true} stageWindowOpen={false} />);
     await screen.findByText("きらきら演出");
-    expect(screen.queryByText(/ウィンドウを開いてから表示します/)).toBeNull();
+    expect(
+      screen.getByText(/停止中のウィンドウは、開いてから表示します/),
+    ).toBeInTheDocument();
+  });
+
+  it("2 つとも表示中ならその注記は出さない", async () => {
+    mocks.listEffectTemplates.mockResolvedValue([record()]);
+    render(<Harness effectWindowOpen={true} stageWindowOpen={true} />);
+    await screen.findByText("きらきら演出");
+    expect(
+      screen.queryByText(/停止中のウィンドウは、開いてから表示します/),
+    ).toBeNull();
   });
 
   // --- 061i（判断 3・4）: テスト表示が窓を開く -----------------------------------------------------
@@ -361,18 +382,57 @@ describe("EffectTemplateCard", () => {
     //   `EFFECT_OVERLAY_GUIDE_PENDING_KEY` と同じ**ワンショット旗**で渡す。
     // ⚠ ここで `EFFECT_TEST_FIRE_KEY`（`storage` の wire）を**書かない**ことが要点——
     //   2 経路を混ぜると、窓側は旗でも `storage` でも発火するので**二重に出る**。
+    // ⚠⚠ **061k: 2 窓とも停止中にする**（この不変条件は「窓ごとに」成立するもので、
+    //   片方が開いていれば `storage` 側も正しく走る＝下の「混在」ケースが正）。
     const openEffectOverlay = vi.fn();
     mocks.listEffectTemplates.mockResolvedValue([record({ id: UUID })]);
     render(
-      <Harness effectWindowOpen={false} openEffectOverlay={openEffectOverlay} />,
+      <Harness
+        effectWindowOpen={false}
+        stageWindowOpen={false}
+        openEffectOverlay={openEffectOverlay}
+      />,
     );
     await screen.findByText("きらきら演出");
 
     fireEvent.click(screen.getByRole("button", { name: "配信画面でテスト表示" }));
 
     expect(localStorage.getItem(EFFECT_TEST_FIRE_PENDING_KEY)).toBe(UUID);
+    // ⚠ 061k（新規 7）: **ステージ側の旗も立つ**（テスト表示は 2 窓とも出す・判断 8）。
+    expect(localStorage.getItem(STAGE_TEST_FIRE_PENDING_KEY)).toBe(UUID);
     expect(localStorage.getItem(EFFECT_TEST_FIRE_KEY)).toBeNull();
+    // ⚠⚠ **2 窓とも open が投げられる**（引数で窓を指定する）。
+    expect(openEffectOverlay).toHaveBeenCalledTimes(2);
+    expect(openEffectOverlay).toHaveBeenCalledWith("corner");
+    expect(openEffectOverlay).toHaveBeenCalledWith("stage");
+  });
+
+  it("⚠⚠ 061k（新規 7）: 片方だけ停止中なら、その窓は旗・もう片方は `storage`（2 経路を混ぜない）", async () => {
+    // ⚠⚠ **これが通常の状態である**（コーナーは開きっぱなし・ステージは条件が無くて停止中）。
+    //   ⚠ 停止中の窓に `storage` を撒いても**登録前なので消える**（押しても出ない）／
+    //   開いている窓に旗を立てると**消えない残骸**になる（次に開いた瞬間に無操作で出る）。
+    const openEffectOverlay = vi.fn();
+    mocks.listEffectTemplates.mockResolvedValue([record({ id: UUID })]);
+    render(
+      <Harness
+        effectWindowOpen={true}
+        stageWindowOpen={false}
+        openEffectOverlay={openEffectOverlay}
+      />,
+    );
+    await screen.findByText("きらきら演出");
+
+    fireEvent.click(screen.getByRole("button", { name: "配信画面でテスト表示" }));
+
+    // 停止中のステージ側だけ旗が立つ。
+    expect(localStorage.getItem(STAGE_TEST_FIRE_PENDING_KEY)).toBe(UUID);
+    // ⚠⚠ **開いているコーナー側に旗を立てない**（残骸を作らない）。
+    expect(localStorage.getItem(EFFECT_TEST_FIRE_PENDING_KEY)).toBeNull();
+    // 開いている窓へは `storage` で撒く。
+    expect(localStorage.getItem(EFFECT_TEST_FIRE_KEY)).toContain(UUID);
+    // open が投げられるのは停止中の窓だけ。
     expect(openEffectOverlay).toHaveBeenCalledTimes(1);
+    expect(openEffectOverlay).toHaveBeenCalledWith("stage");
   });
 
   it("⚠⚠ 窓が開いているときは従来どおり `storage` で発火する（保留旗を残さない）", async () => {

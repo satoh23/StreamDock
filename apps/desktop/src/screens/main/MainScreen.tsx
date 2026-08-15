@@ -18,6 +18,7 @@ import {
   closeCommentViewerWindow,
   isCommentViewerOpen,
   isEffectOverlayOpen,
+  isStageOverlayOpen,
 } from "../../features/comment-viewer/windowApi";
 import { toErrorMessage } from "../../features/tools/useTools";
 import { Button, IconTile, Spinner } from "../../components/primitives";
@@ -410,13 +411,32 @@ export function MainScreen({
       //   新しい止め方＝「OBSエフェクト」画面の「ウィンドウを閉じる」。
       //   ⚠ **画面名まで書く**（この文が出るのはツール管理画面で、ボタンはそこに無いため）。
       //   ⚠ 同じ文言を `ObsEffectsScreen` の前提案内も持っている（§1 が名指しする導線は 2 か所）。
-      const effectOpen = await isEffectOverlayOpen().catch(() => false);
+      // ⚠⚠ **061k: エフェクトの出力窓が 2 本になったので、両方を見る。**
+      //   `docs/security.md` §1「取得の停止条件」は「**どちらか 1 つでも開いていれば取得が続く**」
+      //   なので、**片方だけ見ると「ステージ窓だけ開いたまま『停止しました』と嘘をつく」**
+      //   ——061i レビュー S-1 とまったく同型の失敗モードである。
+      //   ⚠ 判定に失敗したら通常の文言へフォールバックするのも従来どおり（停止操作自体は成功している）。
+      // ⚠⚠ **061k レビュー S-4（受容・修正不要）: `.catch(() => false)` は fail-open 方向である。**
+      //   意図＝この 2 本は**引数なしの読み取り専用 invoke**（`generate_handler!` 登録済み・
+      //   Rust 側は `get_webview_window().is_some()` を返すだけ）で、**reject する経路が実質存在しない**。
+      //   一方でここは「ツールを停止した」直後のフィードバックなので、**判定できなかったときに
+      //   長い注意文を出すと、エフェクトを使っていないユーザーに毎回嘘の警告を見せる**ことになる。
+      //   ＝ 起こり得ない失敗のために、常時起きる体験を悪くしない、という判断（061a からの形を踏襲）。
+      //   ⚠ **ただし向きとしては §1 の逆**（「取得が続いているのに『停止しました』」へ倒れる）である。
+      //   **再修正トリガー**＝実機でこの reject が 1 度でも観測されたとき。そのときは `false` へ倒さず
+      //   `null`（＝判定不能）を第 3 の状態にし、「取得が続いている可能性があります」を出すこと。
+      //   ⚠ そのとき `ObsEffectsScreen` の `refreshStatus` も同じ扱いに揃える（導線は 2 か所）。
+      const [effectOpen, stageOpen] = await Promise.all([
+        isEffectOverlayOpen().catch(() => false),
+        isStageOverlayOpen().catch(() => false),
+      ]);
       if (!mountedRef.current) return;
       setLaunchFeedback({
         kind: "success",
-        text: effectOpen
-          ? `${name} を閉じました。エフェクトのウィンドウが表示中のため、コメントの取得は続いています（止めるには、「OBSエフェクト」画面で「ウィンドウを閉じる」を押すか、コメントビューアを開いて取得を停止してください）`
-          : `${name} を停止しました`,
+        text:
+          effectOpen || stageOpen
+            ? `${name} を閉じました。エフェクトのウィンドウが表示中のため、コメントの取得は続いています（止めるには、「OBSエフェクト」画面でエフェクトのウィンドウを 2 つとも「ウィンドウを閉じる」で閉じるか、コメントビューアを開いて取得を停止してください）`
+            : `${name} を停止しました`,
       });
     } catch (e) {
       if (!mountedRef.current) return;

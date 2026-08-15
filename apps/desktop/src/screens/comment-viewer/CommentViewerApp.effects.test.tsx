@@ -3,6 +3,7 @@ import { render, act, fireEvent, screen, waitFor } from "@testing-library/react"
 import { CommentViewerApp } from "./CommentViewerApp";
 import {
   EFFECT_OVERLAY_ENABLED_KEY,
+  STAGE_OVERLAY_ENABLED_KEY,
   EFFECT_OBS_AUTO_ADD_KEY,
   OBS_AUTO_ADD_KEY,
 } from "../../features/comment-viewer/overlaySettings";
@@ -54,6 +55,8 @@ const mocks = vi.hoisted(() => ({
   closePinnedOverlayWindow: vi.fn(),
   // 061a: この窓が使うのは**実窓の存在確認だけ**（open/close は main 窓が持つ）。
   isEffectOverlayOpen: vi.fn(),
+  // 061k: ステージ窓ぶん（**独立に**判定されることを見る）。
+  isStageOverlayOpen: vi.fn(),
   handlers: { current: null as CommentStreamHandlers | null },
   recordComments: vi.fn(),
   stream: {
@@ -87,6 +90,9 @@ vi.mock("../../features/comment-viewer/windowApi", () => ({
   isEffectOverlayOpen: mocks.isEffectOverlayOpen,
   openEffectOverlayWindow: vi.fn(async () => {}),
   closeEffectOverlayWindow: vi.fn(async () => {}),
+  isStageOverlayOpen: mocks.isStageOverlayOpen,
+  openStageOverlayWindow: vi.fn(async () => {}),
+  closeStageOverlayWindow: vi.fn(async () => {}),
   openCommentViewerWindow: vi.fn(async () => {}),
   closeCommentViewerWindow: vi.fn(async () => {}),
   isCommentViewerOpen: vi.fn(async () => false),
@@ -209,6 +215,7 @@ beforeEach(() => {
   mocks.openPinnedOverlayWindow.mockResolvedValue(undefined);
   mocks.closePinnedOverlayWindow.mockResolvedValue(undefined);
   mocks.isEffectOverlayOpen.mockResolvedValue(false);
+  mocks.isStageOverlayOpen.mockResolvedValue(false);
   mocks.handlers.current = null;
 });
 
@@ -391,6 +398,28 @@ describe("061a エフェクト窓の OBS 自動反映（コメビュ窓が代行
       await act(async () => {});
 
       emitSettingChange(EFFECT_OVERLAY_ENABLED_KEY, "true"); // 猶予が仕掛かる
+      emitSettingChange(EFFECT_OBS_AUTO_ADD_KEY, "false"); // 経過前に連携 OFF
+
+      await act(() => vi.advanceTimersByTimeAsync(10_000));
+      expect(mocks.stream.enableObs).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // ⚠⚠ **061k レビュー S-1: 上のケースの `"stage"` 版が無かったため、実装の非対称が生存していた。**
+  //   （`clearObsEnableTimer("effects")` を消すと上のケースが RED になるのに、stage 側は誰も見ていなかった）
+  //   ⚠ 壊れ方は「ユーザーが自動反映を OFF にしたのに `enableObs("stage")` が飛ぶ」＝
+  //   docs/security.md §1「明示的に有効化した時のみ接続」に反する（045c 回帰の再発）。
+  it("⚠⚠ 061k: ステージ側も、猶予中に自動反映 OFF にしたら enableObs は飛ばない", async () => {
+    vi.useFakeTimers();
+    try {
+      localStorage.setItem(EFFECT_OBS_AUTO_ADD_KEY, "true");
+      render(<CommentViewerApp />);
+      emitConnected();
+      await act(async () => {});
+
+      emitSettingChange(STAGE_OVERLAY_ENABLED_KEY, "true"); // stage の猶予が仕掛かる
       emitSettingChange(EFFECT_OBS_AUTO_ADD_KEY, "false"); // 経過前に連携 OFF
 
       await act(() => vi.advanceTimersByTimeAsync(10_000));
@@ -787,5 +816,77 @@ describe("061e OBS 連携の失敗がツールバーに出る（共有 obsState 
     expect(note.textContent).not.toContain("コメント");
     // 045c: 成功はツールバーへ出さない（配信中のツールバーを騒がしくしない）。
     expect(screen.queryByText(OBS_ERROR_TEXT)).not.toBeInTheDocument();
+  });
+  // --- 061k（新規 9）: ステージ窓ぶんの連携 --------------------------------------------------------
+
+  it("⚠⚠ 新規 9: stage キーの `storage` で `enableObs(\"stage\")` を出す（`\"effects\"` を巻き添えにしない）", async () => {
+    vi.useFakeTimers();
+    try {
+      localStorage.setItem(EFFECT_OBS_AUTO_ADD_KEY, "true");
+      mocks.isStageOverlayOpen.mockResolvedValue(true);
+      render(<CommentViewerApp />);
+      emitConnected();
+      await act(async () => {});
+
+      // main 窓が stage の派生値を true にした（＝stage 条件が 0 → 1 件）。
+      emitSettingChange(STAGE_OVERLAY_ENABLED_KEY, "true");
+      // 044a と同じ猶予（窓が OBS のウィンドウ一覧に載るまで）を経由する。
+      expect(mocks.stream.enableObs).not.toHaveBeenCalled();
+
+      await act(() => vi.advanceTimersByTimeAsync(10_000));
+      expect(mocks.stream.enableObs).toHaveBeenCalledWith(4455, "stage");
+      // ⚠⚠ **本命**: コーナー側は 1 度も呼ばれない（種別を取り違えない）。
+      expect(mocks.stream.enableObs).not.toHaveBeenCalledWith(4455, "effects");
+      expect(mocks.stream.enableObs).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("⚠⚠ 新規 9: stage キーが false になったら `hideObs(\"stage\")` を出す（`\"effects\"` は触らない）", async () => {
+    localStorage.setItem(EFFECT_OBS_AUTO_ADD_KEY, "true");
+    localStorage.setItem(STAGE_OVERLAY_ENABLED_KEY, "true");
+    render(<CommentViewerApp />);
+    emitConnected();
+    await act(async () => {});
+
+    emitSettingChange(STAGE_OVERLAY_ENABLED_KEY, "false");
+
+    await waitFor(() =>
+      expect(mocks.stream.hideObs).toHaveBeenCalledWith(4455, "stage"),
+    );
+    expect(mocks.stream.hideObs).not.toHaveBeenCalledWith(4455, "effects");
+  });
+
+  it("⚠⚠ 新規 9: 接続確立時の reconcile も 2 窓を独立に判定する（片方だけ ON）", async () => {
+    // ⚠ 合計で判定すると「コーナー条件しか無いのにステージのソースを作りに行く」＝
+    //   キャプチャ対象未設定の空ソースが OBS に残る（046d レビューの失敗モード）。
+    localStorage.setItem(EFFECT_OBS_AUTO_ADD_KEY, "true");
+    localStorage.setItem(STAGE_OVERLAY_ENABLED_KEY, "true");
+    // ⚠ コーナー側の派生値は false（＝条件が corner に 1 件も無い）。
+    mocks.isEffectOverlayOpen.mockResolvedValue(true);
+    mocks.isStageOverlayOpen.mockResolvedValue(true);
+
+    render(<CommentViewerApp />);
+    emitConnected();
+
+    await waitFor(() =>
+      expect(mocks.stream.enableObs).toHaveBeenCalledWith(4455, "stage"),
+    );
+    expect(mocks.stream.enableObs).not.toHaveBeenCalledWith(4455, "effects");
+  });
+
+  it("⚠ 新規 9: ステージ窓が実在しないなら `enableObs(\"stage\")` を送らない（空ソースを残さない）", async () => {
+    // ⚠ 046d レビューと同じ理由——設定 ON ／ 窓なしで送ると sidecar 側 `ensureOverlaySource` が
+    //   先に `CreateInput` してから窓を探して失敗し、**キャプチャ対象未設定の空ソースが OBS に残る**。
+    localStorage.setItem(EFFECT_OBS_AUTO_ADD_KEY, "true");
+    localStorage.setItem(STAGE_OVERLAY_ENABLED_KEY, "true");
+    mocks.isStageOverlayOpen.mockResolvedValue(false);
+
+    render(<CommentViewerApp />);
+    emitConnected();
+    await act(async () => {});
+
+    expect(mocks.stream.enableObs).not.toHaveBeenCalledWith(4455, "stage");
   });
 });

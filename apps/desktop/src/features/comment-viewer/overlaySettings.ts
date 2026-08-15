@@ -60,6 +60,19 @@ export const PINNED_OVERLAY_ENABLED_KEY =
  * ⚠ **再修正トリガー＝061k で出力窓が 2 本になり、窓ごとに「開くべきか」を持つ必要が出たとき。**
  * そのとき (b) へ寄せるか、窓ごとにキーを持つかを決め直すこと。
  *
+ * ## ⚠⚠ 061k の回答（上の再修正トリガーの発火）＝**窓ごとにキーを持つ**（判断 6）
+ *
+ * このキーの意味が **「コーナー側の出力窓を出すべきか」＝「`output === "corner"` の条件が 1 件以上あるか」**
+ * へ狭まり、ステージ側は [`STAGE_OVERLAY_ENABLED_KEY`] が同じ形で持つ。
+ * ⚠ **却下した 2 案**:
+ *   - **1 本のキーに JSON を入れる** … `CommentViewerApp` はこの値を **`=== "true"`** で読むので、
+ *     **値の形を変えると読み手が壊れる**（045c / 061e が固めた OBS 反映の契機に手が入る）。
+ *   - **キーを廃止して割り当てから導出する** … `CommentViewerApp` の `storage` 購読は
+ *     **`e.key === …` とキー名で分岐**している（061i が明示的に却下した案 (b) そのもの）。
+ * ⇒ **(a) を採ると、既存の分岐がそのまま残り stage 用に同型の分岐を 1 本足すだけで済む**（値の形も同じ）。
+ * ⚠ **書き手は引き続き `useEffectTemplates` の 2 か所**（保存経路 ＋ マウント時の再計算）で、
+ * **その 2 か所が 2 キーを書く**。⚠ **hook の外から書かない**という 061i の不変条件は変えない。
+ *
  * ⚠ **帰結（意図した新しい挙動）**: 条件を全部「エフェクトを出さない」に戻すとこの値は false になり、
  * `CommentViewerApp` の既存分岐が `hideObs("effects")` を送って **OBS 側のソースが非表示になる**
  * （⚠ **窓は閉じない**——自動 close は作らない・判断 1）。条件が無いのに OBS へ映り続けるほうが筋が悪い。
@@ -69,6 +82,20 @@ export const PINNED_OVERLAY_ENABLED_KEY =
  */
 export const EFFECT_OVERLAY_ENABLED_KEY =
   "stream-dock.comment-viewer.effect-overlay-enabled";
+/**
+ * 061k: **ステージ演出窓（label `stage-overlay`）を出すかの派生値**（既定 OFF）。
+ * 意味は「**`output === "stage"` の条件が 1 件以上あるか**」で、
+ * [`EFFECT_OVERLAY_ENABLED_KEY`] とまったく同型（値も `"true"` / `"false"` の文字列）。
+ *
+ * ⚠⚠ **既存キーの意味を変えず、新しいキーを 1 本足しただけ**なのが要点（判断 6 の (a)）。
+ * ⚠ **書き手は `useEffectTemplates` の 2 か所だけ**（既存キーと同じ。`grep` で確認できる）。
+ * ⚠ **読み手はコメビュ窓**（`CommentViewerApp`）で、既存の `effects` 分岐と同型の分岐が
+ * `"stage"` 種別について 1 本増える。
+ * ⚠ **旧ビルドへ戻したときはこのキーが誰にも読まれないだけ**＝ ステージ窓は開かず、
+ * 条件は `output` ごと未知フィールドとして無視され、**全部コーナーに出る**（＝061j の挙動・安全側）。
+ */
+export const STAGE_OVERLAY_ENABLED_KEY =
+  "stream-dock.comment-viewer.stage-overlay-enabled";
 /**
  * 061a: 「エフェクト窓を OBS へ自動で反映する」ON/OFF の保存キー（既定 OFF）。
  *
@@ -217,6 +244,25 @@ export const EFFECT_TEST_FIRE_KEY =
  */
 export const EFFECT_TEST_FIRE_PENDING_KEY =
   "stream-dock.comment-viewer.effect-test-fire-pending";
+/**
+ * 061k: **ステージ演出窓ぶんの保留旗**（[`EFFECT_TEST_FIRE_PENDING_KEY`] と完全に同型）。
+ *
+ * ⚠⚠ **なぜ窓ごとに 2 本要るのか**（判断 8）: テスト表示は **2 つの窓の両方へ出す**
+ * （目的が OBS の位置合わせで、061k 以降は**合わせる対象が 2 ソースある**ため）。
+ * 旗を 1 本にすると、**先にマウントしたほうの窓が読んで消してしまい**、
+ * もう一方は**無反応**になる（`take*` ＝読んだら消す、なので取り合いになる）。
+ * ⚠⚠ **各窓は自分の旗だけを `take` すること。相手の旗を消さない。**
+ *
+ * ⚠ **061i 判断 4 の取りこぼしは 2 窓ぶん起きる**——`open_*_overlay_window` の解決は
+ * **窓生成の完了**であって、**その窓の React が `storage` リスナーを登録し終えたこと**ではない。
+ * ⚠ **061i レビュー S-4 の楽観更新（開く側だけ前提ステータスを楽観的に倒す）も 2 窓ぶん要る**
+ * （stale-false の隙間に押すと、既存窓は `show()` されるだけで再マウントせず**旗が残骸になる**）。
+ *
+ * ⚠ §9 の判断は [`EFFECT_TEST_FIRE_PENDING_KEY`] と同一（載るのは Rust 採番の uuid だけ）。
+ * ⚠ **一括削除・エクスポートを作るときの対象がもう 1 本増えた**（読まれた時点で消えるのも同じ）。
+ */
+export const STAGE_TEST_FIRE_PENDING_KEY =
+  "stream-dock.comment-viewer.stage-test-fire-pending";
 /**
  * 061d-2: **イベント種別 → エフェクトの割り当て**の保存キー
  * （未保存＝全種別「表示しない」。⚠ **061h までは「組み込み」だった**）。
@@ -416,6 +462,37 @@ export function saveEffectOverlayEnabled(enabled: boolean): void {
   }
 }
 
+/**
+ * 061k: ステージ演出窓を出すか（未保存・例外は false へフォールバック）。
+ * ⚠ 意味は「`output === "stage"` の条件が 1 件以上あるか」＝ [`loadEffectOverlayEnabled`] と同型。
+ * 読み手は `effectOverlayRestore.ts`（起動時の窓復元）と `CommentViewerApp`（OBS 反映の代行）。
+ */
+export function loadStageOverlayEnabled(): boolean {
+  try {
+    return localStorage.getItem(STAGE_OVERLAY_ENABLED_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 061k: ステージ演出窓を出すかを保存する（ローカルのみ・非機密・外部送信しない）。
+ *
+ * ⚠⚠ **[`saveEffectOverlayEnabled`] と同じ規律**——**呼んでよいのは `useEffectTemplates` の中だけ**で、
+ * 呼び出しは**同じ 2 か所**（保存経路 ＋ マウント時の再計算）。
+ * ⚠ **2 キーは必ず対で書くこと**——片方だけ書くと「stage 条件を作ったのにステージ窓が開かない」
+ * （あるいは逆に「条件を全部消したのに OBS に映り続ける」）が黙って起きる。
+ * ⚠ 不変条件の確認は `grep -rn "saveEffectOverlayEnabled\|saveStageOverlayEnabled" src` で、
+ * 実装側のヒットが本ファイルと `useEffectTemplates` に限られること。
+ */
+export function saveStageOverlayEnabled(enabled: boolean): void {
+  try {
+    localStorage.setItem(STAGE_OVERLAY_ENABLED_KEY, String(enabled));
+  } catch {
+    // プライベートモード等で書けない場合は黙って無視する。
+  }
+}
+
 /** 061a: 「エフェクト窓を OBS へ自動反映」ON/OFF を読み込む。未保存・例外は false（OFF）へフォールバック。 */
 export function loadEffectObsAutoAdd(): boolean {
   try {
@@ -448,7 +525,15 @@ export function loadEffectOverlayGuidePending(): boolean {
 
 /**
  * 061a レビュー（Q-1）: 上記の旗を立てる／倒す。
- * ⚠ 立てるのは **`ObsEffectsScreen` の表示トグル ON（明示操作）だけ**。倒すのは `EffectOverlayApp` のマウント時。
+ *
+ * ⚠⚠ **061k で 061i 申し送り §9 の残骸を返済した。** ここは長らく
+ * 「立てるのは `ObsEffectsScreen` の**旧トグル ON（明示操作）だけ**」と**現在形で**書いていたが、
+ * **そのトグルは 061i で廃止済み**である（同キーの JSDoc は正しく「061i で起点が移った」と
+ * 書いてあったのに、この関数側だけが取り残されていた）。
+ * ⚠ **いまの起点は「ウィンドウが停止中のときに『配信画面でテスト表示』を押したとき」だけ**
+ * （`EffectTemplateCard`）。⚠ **条件を編集して窓が自動で開いたときは立てない**
+ * ——立てると条件を 1 つ足すたびにガイドが数十秒 OBS へ映る。
+ * ⚠ 倒すのは `EffectOverlayApp` のマウント時（**2 窓とも**倒す＝旗は窓ごとに分けていない）。
  * ⚠ 書けない環境（プライベートモード等）では旗が立たず**ガイドが出ないだけ**＝配信画面は汚さない側に倒れる。
  */
 export function saveEffectOverlayGuidePending(pending: boolean): void {
@@ -518,6 +603,38 @@ export function takeEffectTestFirePending(): string | null {
     const raw = localStorage.getItem(EFFECT_TEST_FIRE_PENDING_KEY);
     // ⚠ 無いときに `removeItem` を呼ばない（`storage` イベントを他窓へ撒かないため）。
     if (raw !== null) localStorage.removeItem(EFFECT_TEST_FIRE_PENDING_KEY);
+    return raw;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 061k: [`saveEffectTestFirePending`] のステージ窓版（完全に同型）。
+ * ⚠ 呼ぶのは `EffectTemplateCard` の **ステージ窓が停止中のときだけ**。
+ * ⚠⚠ **コーナー側とは独立に判定すること**——「コーナーは開いているがステージは停止中」で
+ * 片方だけ旗が要る、が通常の状態である。
+ */
+export function saveStageTestFirePending(templateId: string): void {
+  try {
+    localStorage.setItem(STAGE_TEST_FIRE_PENDING_KEY, templateId);
+  } catch {
+    // プライベートモード等で書けない場合は黙って無視する。
+  }
+}
+
+/**
+ * 061k: [`takeEffectTestFirePending`] のステージ窓版（完全に同型）。
+ *
+ * ⚠⚠ **各窓は「自分の旗」だけを take すること。相手の旗を消してはいけない。**
+ * 消すと「片方の窓が先にマウントして両方の旗を食う」＝**もう片方が無反応**になり、
+ * 判断 8（テスト表示は 2 窓とも出す）が黙って半分だけ効く状態になる。
+ */
+export function takeStageTestFirePending(): string | null {
+  try {
+    const raw = localStorage.getItem(STAGE_TEST_FIRE_PENDING_KEY);
+    // ⚠ 無いときに `removeItem` を呼ばない（`storage` イベントを他窓へ撒かないため）。
+    if (raw !== null) localStorage.removeItem(STAGE_TEST_FIRE_PENDING_KEY);
     return raw;
   } catch {
     return null;

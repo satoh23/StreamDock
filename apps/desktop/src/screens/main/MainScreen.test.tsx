@@ -29,6 +29,8 @@ const mocks = vi.hoisted(() => ({
   closeCommentViewerWindow: vi.fn(),
   isCommentViewerOpen: vi.fn(),
   isEffectOverlayOpen: vi.fn(),
+  // 061k: ステージ窓ぶん（§1 の導線は**どちらか 1 つでも開いていれば**取得が続く）。
+  isStageOverlayOpen: vi.fn(),
   listRuntimeProcesses: vi.fn(),
   launchTool: vi.fn(),
   stopProcess: vi.fn(),
@@ -41,6 +43,7 @@ vi.mock("../../features/comment-viewer/windowApi", () => ({
   closeCommentViewerWindow: mocks.closeCommentViewerWindow,
   isCommentViewerOpen: mocks.isCommentViewerOpen,
   isEffectOverlayOpen: mocks.isEffectOverlayOpen,
+  isStageOverlayOpen: mocks.isStageOverlayOpen,
 }));
 vi.mock("../../features/presets/runtimeApi", () => ({
   listRuntimeProcesses: mocks.listRuntimeProcesses,
@@ -114,6 +117,7 @@ describe("061b: メイン画面・内蔵コメントビューアの「停止」"
     // 窓は開いている＝行は「起動済み」＝停止ボタンが出る状態。
     mocks.isCommentViewerOpen.mockResolvedValue(true);
     mocks.isEffectOverlayOpen.mockResolvedValue(false);
+    mocks.isStageOverlayOpen.mockResolvedValue(false);
     mocks.closeCommentViewerWindow.mockResolvedValue(undefined);
   });
 
@@ -165,6 +169,29 @@ describe("061b: メイン画面・内蔵コメントビューアの「停止」"
     expect(feedback.textContent).not.toContain("エフェクトの表示を OFF");
   });
 
+  it("⚠⚠ 061k（新規 12）: **ステージ窓だけ**開いていても「取得が続いている」と伝える", async () => {
+    // ⚠⚠ **061i レビュー S-1 と同型の失敗モードを 061k で再発させないための本命。**
+    //   `docs/security.md` §1 は「**どちらか 1 つでも開いていれば取得が続く**」なので、
+    //   コーナー側だけを見る実装だと**「停止しました」と積極的に嘘を述べる**。
+    mocks.isEffectOverlayOpen.mockResolvedValue(false);
+    mocks.isStageOverlayOpen.mockResolvedValue(true);
+    await openThenStop();
+
+    const feedback = await screen.findByText(/コメントの取得は続いています/);
+    expect(feedback.textContent).not.toContain("を停止しました");
+    // ⚠ 止め方は「**2 つとも**閉じる」（片方だけ閉じても止まらない）。
+    expect(feedback.textContent).toContain("2 つとも");
+  });
+
+  it("⚠ 061k: 2 窓とも閉じているときだけ「停止しました」と言い切る", async () => {
+    mocks.isEffectOverlayOpen.mockResolvedValue(false);
+    mocks.isStageOverlayOpen.mockResolvedValue(false);
+    await openThenStop();
+    expect(
+      await screen.findByText(/コメントビューア を停止しました/),
+    ).toBeInTheDocument();
+  });
+
   it("⚠ 窓の状態軸は増やさない（どちらの場合もツール行は「停止済み」になる）", async () => {
     // ⚠ ツール行の意味は「窓が開いているか」であり、取得が続いているかどうかではない
     //   （`is_comment_viewer_open` が見ているのは窓の存在）。文言だけを分岐させるのが 061b の決定。
@@ -178,6 +205,7 @@ describe("061b: メイン画面・内蔵コメントビューアの「停止」"
     // ⚠ 停止（窓 close）自体は成功しているので、ここで失敗を見せると
     //   「停止できなかった」と誤解させる。判定はあくまで文言を足すためのもの。
     mocks.isEffectOverlayOpen.mockRejectedValue(new Error("ipc failed"));
+    mocks.isStageOverlayOpen.mockRejectedValue(new Error("ipc failed"));
     await openThenStop();
     expect(
       await screen.findByText(/コメントビューア を停止しました/),
@@ -194,5 +222,6 @@ describe("061b: メイン画面・内蔵コメントビューアの「停止」"
 
     expect(screen.queryByText(/コメントの取得は続いています/)).toBeNull();
     expect(mocks.isEffectOverlayOpen).not.toHaveBeenCalled();
+    expect(mocks.isStageOverlayOpen).not.toHaveBeenCalled();
   });
 });

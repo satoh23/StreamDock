@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "stage-overlay",
+  "description": "Capability for the OBS stage (full-screen) effect transparent overlay window (061k). Display-only, minimal permissions.",
+  "windows": ["stage-overlay"],
+  "permissions": ["core:default"]
+}

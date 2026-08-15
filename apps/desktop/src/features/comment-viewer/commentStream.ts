@@ -27,16 +27,22 @@ export interface DeviceCodePrompt {
 export type CommentService = "twitch" | "youtube";
 
 /**
- * 046d/061a: OBS へ自動追加する対象オーバーレイの種別。sidecar 側の `ObsOverlayKind` と**同じ 3 値**で、
- * 制御フレームにはこの識別子だけを載せる（ソース名・窓名は sidecar 内の表に閉じる＝任意の名前を渡さない）。
+ * 046d/061a/**061k**: OBS へ自動追加する対象オーバーレイの種別。sidecar 側の `ObsOverlayKind` と
+ * **同じ 4 値**で、制御フレームにはこの識別子だけを載せる
+ * （ソース名・窓名は sidecar 内の表に閉じる＝任意の名前を渡さない）。
  *
  * ⚠ **型定義は 2 か所（ここと sidecar の `obs/obs-client.ts`）にあり、同期は人手**。ずれても
  * typecheck では気付けない（WS 境界で型が失われる）が、実害は「送っても sidecar 側の
  * `parseOverlayKind` が `"comments"` へ落とす」＝**誤った窓のソースが作られる**方向に出る。
  * ⚠ 窓名の 2 者間契約は Rust の `overlay_window_contract` が固定しているが、**この union のずれは
  * そこでは捕まらない**（あちらが見るのは窓タイトル文字列）。値を足すときは必ず両方を直すこと。
+ * ⚠⚠ **061a レビュー Q-7 でこのずれを止める契約テストが入っている**
+ * （`obs_overlay_kind_union_matches_between_sidecar_and_desktop`＝両側の union の**右辺を文字列として
+ * 突き合わせ**、さらに**値の数と Rust の窓数**も照合する）。
+ * ⚠ **片側だけ 4 値にすると `"stage"` が sidecar で `"comments"` に化け、
+ * コメントオーバーレイのソースが黙って作られる**——壊れ方の向きを知っておくこと。
  */
-export type ObsOverlayKind = "comments" | "pinned" | "effects";
+export type ObsOverlayKind = "comments" | "pinned" | "effects" | "stage";
 
 export interface CommentStreamHandlers {
   onComments: (comments: CommentViewDto[]) => void;

@@ -20712,3 +20712,451 @@ OBS は**インストール済みだが起動していなかった**。実施す
 - クリップボードを元の状態（空）へ戻した
 - ⚠ **本番オリジン（`~/Library/WebKit/com.tetsuya.stream-dock/`）には一度も触れていない**
 - アプリと dev サーバは停止済み
+
+## 061k 出力窓を用途別 2 本へ（2026-08-15）
+
+> base = `a017038`（061j はコミット済み・タスクファイル追加後）。⚠ **制約 1〜6・判断 1〜12 はタスクファイルが正**で、
+> 本節はその**実装上の帰結**と、着手前に潰した**前提の破れ**、実測結果を記録する。
+> ⚠ **行番号は書かない**（特定はシンボル名で行う）。
+> ⚠⚠ **この回は `security-review` 必須**（`docs/security.md` 自身が名指しで再評価を要求していた）。
+
+### この段で解いた問題＝**出力窓が 1 本しかなかった**
+
+`open_effect_overlay_window` は **960×360 固定**で `anchor` はその箱の中の 9 分割。OBS ソースが 1 つなので
+**「全画面に出す演出」と「右下に小さく出す投げ銭」を同時に成立させられなかった**（依頼者の言う「画面がぐちゃぐちゃ」の直接原因）。
+⇒ **用途別に固定 2 窓**（コーナー＝既存 `effect-overlay` ／ 全画面＝新設 `stage-overlay`）。
+⚠ **動的 N 窓は構造的に不可能**（Tauri v2 の capability は静的 JSON で `windows: ["label"]` が固定配列）。
+
+### ⚠⚠ CLAUDE.md の「1 回で複数機能をまとめない」に従い **3 段に割った**
+
+| 段 | 範囲 | 止めた理由 |
+|---|---|---|
+| **061k-1「窓と経路」** | Rust 3 コマンド／capability 1 枚／sidecar の種別／`windowApi` 3 本／`commentStream` の union／窓名表／**`docs/security.md` 7 か所** | **security の面がすべてこの段に揃う**ので、直後に `security-review` を回した |
+| **061k-2「条件の出力先と matcher」** | `effectAssignments.ts`（`output` / 丸め / `createEffectMatcher(output)` / 数え方 / `setConditionOutput`） | **純ロジック・画面差分ゼロ**。変異①③⑯-a⑯-m がここで片付く |
+| **061k-3「2 窓の配線」** | キー 2 本／復元／`EffectOverlayApp` の `output` prop／画面／§1 の導線 2 か所／061i 残骸の返済 | 最大。frontend 完結（061h〜061j と同型） |
+
+### ⚠⚠ 着手前に依頼者が挙げた「差 A〜C・穴 α〜δ」の追認と**訂正**
+
+#### 差 A（ベースラインのフレーキー）… ⚠ **私は 1 度も踏まなかった**
+
+依頼者の実測は「1 回目に 2 failed / 67 files 中 1 file failed」だったが、**本タスク中に 20 回以上フルスイートを回して 1 度も再現しなかった**。
+⚠ **「直った」とは書かない**（同一コードで再現しなかっただけ）。⚠ 次に踏んだ人は
+`vitest run --reporter=verbose 2>&1 | tee <log>` → `grep -nE "×|FAIL|AssertionError"` で**名前を先に捕まえること**。
+⚠ **件数の引き算で増減を判断しない**——本タスクは「新しく追加したテスト名の一覧」で数えた（フレーキーで 2 件減っても誤診しない）。
+
+#### 差 B（061i 残骸の grep）… ⚠⚠ **数が違った。しかも「ゼロにできない理由」が別だった**
+
+タスク依頼文は「実測 8 ヒット／`overlaySettings.ts` は 3 ヒット」だったが、**着手時の実測は 63 ヒット / 17 ファイル**。分類:
+
+| 種別 | 件数 | 扱い |
+|---|---|---|
+| **(a) 061i 残骸**（廃止済みのトグルを**現存する操作のように**名指し） | 7 ＋ ⚠ **1**（下記） | **返済した** |
+| **(b) 履歴**（「061i で廃止した」経緯の説明） | 約 35 | **残す**（消すと判断の根拠が消える） |
+| ⚠⚠ **(c) 無関係** | **21** | **045b「コメントをOBSに表示」／046b「固定コメント」の表示トグル＝いまも現存する別機能の正しい名前** |
+
+⇒ ⚠⚠ **「ヒットゼロ」が不可能な本当の理由は (c)** である（依頼文は「overlaySettings が履歴だから」と見ていた）。
+⇒ **検証コマンドを「判断 7 の対象 4 本に絞ってヒットゼロ」へ書き直した**（下記「検証」）。全体は **63 → 53**。
+
+⚠ **判断 7 が名指ししていない残骸を 1 件見つけて返済した**: `overlaySettings.ts` の
+**`saveEffectOverlayGuidePending` の関数 JSDoc**が「立てるのは表示トグル ON だけ」と**現在形**で書いていた
+（同キーの JSDoc は正しく「061i で起点が移った」と書いてあるのに、関数側だけ取り残されていた）。
+⚠ これは 061i S-1／実機で踏んだガイド本文の残骸と**同型**である。
+
+⚠⚠ **実装中に自分でも 3 回同じ罠を踏んだ**——**返済コメントの中で旧文言をそのまま引用する**と grep が再びヒットする
+（`windowApi.ts` / `effectOverlayRestore.ts` / `App.tsx`）。⇒ **引用せず「061i で廃止された旧トグル」と言い換えた。**
+
+#### 差 C（`parseOverlayKind` の自動追随）… ✅ **追認**（`OBS_OVERLAY_KINDS = Object.keys(OBS_OVERLAYS)`）
+
+#### 穴 α（テスト表示 vs「何も出ない窓」）… ⚠ **訂正：矛盾していない**
+
+061i 自身が既にこの線を引いていた——**自動 open は条件を要求し、明示操作は要求しない**
+（061i 実機確認⑥＝**条件 0 件でテスト表示 → 6/6 で窓が開いてエフェクトが出た**が設計意図そのもの）。
+⇒ **「開いたのに何も出ない窓」の "何も出ない" は「条件が無い」ではなく「その操作の結果として画面に何も描かれない」**。
+テスト表示は開いた直後に必ずそのテンプレートを出すので、stage 条件 0 件でも「何も出ない窓」にはならない。
+
+⚠ **却下した案**: (B) stage 条件 0 件なら stage へ出さない → **鶏卵**（OBS ソースを足すには窓が要る／窓を開くには条件が要る／
+条件を作るには見え方を確かめたい）で、061i が解いた問題の逆行。さらに**新規 8 が検証不能**になる。
+(C) 出したあと自動で閉じる → 判断 1 が却下した自動 close ＋ **OBS のソース追加が完了する前に窓が消える**。
+
+⚠⚠ **ただし穴 α には「判断 11 の帰結」として残る問題があり、そこは手当てした**——
+「表示する条件」を合計 1 行のままにすると、**「ステージ窓は表示中なのにステージ条件が 0 件」がどこにも出ない**。
+⇒ **行は 1 本のまま内訳を添えた**（`3 件（コーナー（小さめ） 3・全画面（ステージ） 0）`）。判断 11 を守りつつ 061a 以来の
+「黙って何も起きない状態を作らない」を維持する。⚠ 内訳を消す変異（⑯-n）は**新規 6 が RED にする**。
+
+#### 穴 β（`WINDOW_OPEN_LOCK`）… ✅ **追認。コメントに残した**
+
+`WINDOW_OPEN_LOCK` は `static Mutex<()>` **1 本を全窓生成コマンドで共有**＝**2 窓の生成は Rust 側で直列**。
+`#[tauri::command(async)]` なので UI は固まらない。⇒ **`open_stage_overlay_window` と `ObsEffectsScreen` の
+`runOverlayOp` の両方に注記**し、**新規 11 のテスト名にも「frontend のキューの話であって Rust の並列性ではない」と明記**した。
+⚠ 追加で分かったこと: `open_comment_viewer_window` はこのロックを **`ensure_started`（keychain 読み取り）を跨いで保持**するので、
+起動時に「コメビュ窓 ＋ 2 オーバーレイ窓」が重なると overlay がその後ろで待つ。**061a/061b からある性質**で 061k が悪化させてはいない。
+
+#### 穴 γ（security.md）… ⚠⚠ **判断 12 の「5 か所」は実測 7 か所だった**
+
+| # | 箇所 | 判断 12 | 実測 |
+|---|---|---|---|
+| 1 | §1「取得の停止条件」 | #1 | ✅ |
+| 2 | **046b 節「kill 契機は 2 点」** | — | ⚠⚠ **追加**（3 点へ。古いままだと「stage は延命しない」と読める） |
+| 3 | **061a 節「失効条件の最終判定」** | 「**差分ゼロのはず**」 | ⚠⚠ **訂正・差分が出た**（下記） |
+| 4〜6 | 061a 節の停止条件／窓タイトル／`ObsOverlayKind` | #2〜#4 | ✅ |
+| 7 | Capabilities 方針へ新窓 | #5 | ✅（**061a 節の末尾に追補**＝案 A） |
+
+⚠⚠ **#3 の訂正の根拠（読み直したうえで書いている）**: あの節は 2 つの部分に分かれる。
+**後段の 3 点**（①MIME 完全一致許可リスト ②`innerHTML` 系不使用 ③`blob:`/`<iframe>`/外部 URL を作らない）は
+**差分ゼロで正しい**——stage 窓は**同じ `EffectOverlayApp`・同じ `effectMedia.ts`・`check-css-guards.mjs` の (10-i)(10-t) の
+対象 3 ファイル**を通り、**描画ファイルは 1 本も増えていない**（実コードで確認）。
+⚠ しかし**前段**は「`main` 窓と **`effect-overlay` 窓の両方**が第三者由来のバイト列を `src` に載せる」と書いており、
+これは **061k で 3 窓になる**＝「どの窓が第三者バイト列を運ぶか」というセキュリティ上の事実なので**書き換えが要る**。
+⚠ 引用されている「5 窓」の数は**当時の前提の引用**なので**触っていない**（直すとむしろ意味が壊れる）。
+
+⚠ **「レビュー必須条件」への追記は不要と判定した**（省いていない）:
+capabilities / process停止処理 / 外部通信の 3 項は**条文が一般形**（とくに process停止処理は
+「sidecar の停止条件を変える変更も本項に該当する」と既に書いてある）／外部コンテンツの埋め込みは
+「**許可 MIME・注入 API・`src` の組み立て方のいずれかを触るなら**」が該当条件で**そのどれにも触らない**／
+新規 localStorage キー 2 本は下位条件が明示的に非該当としている「ユーザー自身の UI 設定値」と「Rust 採番の uuid」。
+⚠ **この判定結果を security.md には書かない**（依頼者の方針＝あのファイルはレビュー基準だけを載せる）。
+
+⚠ 判断 12 #1 の「再評価した結果をその場に書く」は、**実装記録ではなく「将来どういう窓なら足してよいか」の 3 点基準**として条文化した
+（①その窓自身が第三者のコメントを受けて配信画面へ出す ②sidecar を起動しない ③開閉が §1 の導線 2 か所に反映される）。
+
+#### 穴 δ（4 層に跨る）… ✅ **追認 → 3 段に割った**（上記）
+
+### ⚠⚠ タスクファイルの「差分ゼロ」見通しの訂正（3 件）
+
+| ファイル | タスクファイル | 実測 |
+|---|---|---|
+| `effectTrigger.ts` | 差分ゼロ（目標） | ⚠ **JSDoc 3 行だけ差分**（`resolveEffectMatch` を名指ししていた。コードは差分ゼロ・`output` フィールドはゼロ） |
+| `EffectTemplateCard.tsx` | 差分ゼロ（判断 8 で触らないと決めた） | ⚠⚠ **差分あり**。判断 8 が触らないと決めたのは **UI（ボタンの数・レイアウト）**であって `handleTestFire` の中身ではない。**旗を 2 本立てて 2 窓を開くコードはここにある**（`stageWindowOpen` prop も増えた）。⚠ **`.templateRow` のボタンは 3 個のまま**なので 061h Q-4 のトリガーは踏んでいない |
+| `EffectTemplateView.*` / `EffectOverlayApp.module.css` / `effectSelectValue.ts` / `effectEventRows.ts` / `effectTemplateText.ts` | 差分ゼロ | ✅ **見通しどおり**（`.templateLayer { inset: 0 }` なので 1280×720 に自動追随） |
+
+### ⚠⚠ タスクファイルに無かった発見＝**窓名の「3 つ目の写し」が frontend にあり、機械が守っていなかった**
+
+窓名の写しは **Rust の `.title` ／ sidecar の `OBS_OVERLAYS` ／ frontend がユーザーへ案内する文字列**の 3 つある。
+契約テストは前 2 者しか見ておらず、**frontend の案内文がずれても誰も止めない**（061i の実機確認で
+「ガイド本文だけが古い」を実際に踏んでいる。⚠⚠ **ガイド本文は OBS のキャプチャに数十秒そのまま映る＝視聴者にも読める**）。
+⇒ **`effectAssignments.ts` の `EFFECT_OUTPUT_WINDOW_TITLE` 1 か所へ寄せ、Rust の契約テストを 1 本新設**した
+（`frontend_window_title_table_matches_overlay_titles`＝表の各値が `OVERLAY_TITLES` にバイト一致で在ること ＋ エントリ数 2）。
+⚠ 変異⑯-d（1 文字変える）／⑯-j（エントリを消す）がどちらも RED。
+
+### 判断 1〜12 の実装上の帰結
+
+- **判断 1・2**: label `stage-overlay` ／ タイトル `StreamDock ステージ演出` ／ **1280×720・位置 (0,0)・min 320×180**。
+  ⚠ その他（透過 / `decorations(false)` / `always_on_bottom` / `focused(false)` / `shadow(false)` /
+  `background_throttling(Disabled)` / `SHARED_BROWSER_ARGS` / `WINDOW_OPEN_LOCK` / `(async)` / 再利用は `show()` のみ）は完全踏襲。
+  ⚠ **UI 上の呼び方（「コーナー（小さめ）」「全画面（ステージ）」）と窓名は別物**で、案内文には**両方を併記**する。
+- **判断 3**: `SIDECAR_CONSUMER_LABELS` は 3 値へ。⚠⚠ **これが security-review で穴を生んだ**（下記 S-1）。
+- **判断 4 / 4-b**: `EffectCondition.output`（第 3 のフィールド）。既定 `"corner"`／未知も `"corner"`。
+  ⚠⚠ **推奨どおり「保存時に丸める」を採った**（`parseOutput` が `effect.kind === "none"` の行を既定へ丸める）
+  ⇒ **`saveEffectConditions` の削除条件を 1 文字も変えずに正しくできた**（「全部 none だが output は stage」という状態が
+  **保存形から構造的に消える**）。⚠ 併せて **`<select>` を `none` の行で `disabled`** にした（丸めと対）。
+- **判断 5**: `resolveEffectMatch` → **`createEffectMatcher(output)`**。⚠ **読み直しの規律は変えていない**
+  （返す関数は呼ばれるたびに `readConditions()` する＝「ついでに最適化」をしない）。
+- **判断 6**: キー 2 本（(a) 案）。⚠ **書き手は `useEffectTemplates` の 2 か所のまま**で、その 2 か所が `EFFECT_OUTPUTS` を回して 2 キーを書く。
+  ⚠ `saveOverlayEnabled` を `Record` の表に畳まなかったのは、**`saveEffectOverlayEnabled` / `saveStageOverlayEnabled` という
+  「名前」が grep で追えること**に不変条件の担保を置いているため。
+- **判断 7**: 061i 残骸を返済（差 B）。
+- **判断 8**: テスト表示は両窓へ。旗は窓ごとに 2 本、**各窓は自分の旗だけ take**。
+  ⚠ **窓ごとに独立に経路を選ぶ**（停止中の窓は旗＋open／開いている窓は `storage`）＝「片方だけ停止中」が通常の状態。
+  ⚠ **ガイド旗は 1 本のまま**（ガイドは「窓の位置を示す」ものなので、開いた窓すべてに出るのが正しい）。
+- **判断 9**: `EffectOverlayApp` に `output` prop（**省略不可**）。`warmTemplates` は自分の output だけ温める。
+  ガイド本文の窓名は表から引く。⚠ **絶対 px による「全画面では小さく見える」は受容し、画面で 1 文説明した**。
+- **判断 10**: OBS 自動反映トグルは 1 つのまま。⚠⚠ **`obsState` の受容範囲が 3 → 4 種別へ広がった**
+  （061e レビュー Q-5。再修正トリガーは 046d / 061a Q-2 と同じ＝wire を種別つきへ広げるとき）。
+- **判断 11**: 前提ステータス 2 行／**キューは窓ごとに 2 本**／「表示する条件」は 1 行のまま（＋内訳）。
+- **判断 12**: security.md 7 か所（穴 γ）。
+
+### ⚠⚠ security-review（061k-1 の直後に実施）で**守備範囲の穴が 1 件見つかった**
+
+**変異⑯-k（`is_last_sidecar_consumer` で `*label != "stage-overlay"` と除外）が実測で SURVIVED（345 passed / 0 failed）。**
+原因＝061b 当時の `sidecar_lifecycle` のケースが**ラベルを直書き**していたので、
+**`SIDECAR_CONSUMER_LABELS` に 1 行足しても新しいラベルが単体テストを一度も通らなかった**。
+既存の契約テスト（`every_consumer_window_registers_the_guard` 等）は**配線の形しか見ていない**ので全部素通りする。
+壊れ方は **「ステージ窓が開いていても sidecar を落とす」＝061k の目的が黙って壊れる**方向。
+
+⇒ **`overlay_window_contract` が窓タイトルで採った手口と同じ総当たり化**でテストを 2 本追加した:
+`every_consumer_window_keeps_the_sidecar_alive_for_every_other_one`（全順序対）／
+`every_consumer_window_stops_the_sidecar_when_it_is_the_last_one`（Destroyed 相当 ＋ CloseRequested 相当）。
+⚠ **今後は窓を足してもここに手を入れる必要がない**（それが総当たりにした目的）。⑯-k / ⑯-l とも RED になった。
+
+### ⚠ security-review S-2（段の分割に起因する一時的な不整合・061k-3 で解消）
+
+061k-1 の時点で **§1 の条文は「3 窓」なのに、導線 2 か所（`MainScreen` / `ObsEffectsScreen`）は stage を見ていなかった**。
+＝ **自分で書いた条文に自分が違反している状態**（061a S-2 と同型の危険）。実害は
+「stage 窓を開く UI 経路が無い」ためゼロだったが、**061k-3 で両方を直して解消**した。
+⚠ **教訓＝条文が実装より先に進む段の割り方をしたら、全段が入るまでコミットしないこと。**
+
+### 実装
+
+**新規**: `capabilities/stage-overlay.json`
+
+| ファイル | 変更 |
+|---|---|
+| `src-tauri/src/lib.rs` | `open/close/is_stage_overlay_window` 3 本 ／ `generate_handler!` ／ `SIDECAR_CONSUMER_LABELS` 3 値 ／ `OVERLAY_TITLES` 4 行目 ／ `found >= 12 → 15` ／ **契約テスト 1 本新設** ／ **`sidecar_lifecycle` に総当たり 2 本** |
+| `obs-client.ts` / `test-obs-client.mjs` | `ObsOverlayKind` 4 値 ／ `OBS_OVERLAYS` 1 エントリ ／ 期待値 3 種 → 4 種（⚠ **総当たりループは 1 行も変えていない**） |
+| `windowApi.ts` | 3 本追加 ＋ 残骸返済 |
+| `commentStream.ts` | union 4 値（人手同期・契約テストが突き合わせる） |
+| `effectAssignments.ts` | **本タスクの中心**。`EffectOutput` / `EFFECT_OUTPUTS` / `DEFAULT_EFFECT_OUTPUT` / `EFFECT_OUTPUT_WINDOW_TITLE` / `EFFECT_OUTPUT_LABEL` ／ `EffectCondition.output` ／ `parseOutput`（丸め）／ `createEffectMatcher(output)` ／ `effectConditionCount(_, output?)` / `hasEffectConditions(_, output?)` / `assignedTemplateIds(_, output?)` ／ **`setConditionOutput`（7 本目の変更 API）** |
+| `effectTrigger.ts` | ⚠ **JSDoc 3 行のみ**（コード差分ゼロ） |
+| `overlaySettings.ts` | キー 2 本 ＋ `load/saveStageOverlayEnabled` / `save/takeStageTestFirePending` ／ **残骸 1 件返済** |
+| `effectOverlayRestore.ts` | **2 窓を独立に復元**（`allSettled`＝片方の失敗で巻き添えにしない） |
+| `App.tsx` | `stage-overlay` の分岐 ＋ `output` prop ＋ 残骸返済 |
+| `EffectOverlayApp.tsx` | `output` prop（**省略不可**）／`matchEffect` / `takePending` / `windowTitle` を `useMemo` で束縛／`warmTemplates` の絞り込み |
+| `useEffectTemplates.ts` | `commitConditions` / マウント時 reconcile が **`EFFECT_OUTPUTS` を回して 2 キー**／`setConditionOutput` |
+| `ObsEffectsScreen.tsx` | 前提ステータス **2 行**（＋ `aria-label` で窓を区別）／**キュー 2 本**／件数の内訳／案内文（窓名を表から・大きさの違いを 1 文）／§1 の停止導線 |
+| `EffectAssignmentCard.tsx` | **`ConditionOutputSelect`**（イベント行とキーワード行で **1 実装**・`none` で `disabled`） |
+| `EffectTemplateCard.tsx` | `handleTestFire` が **2 窓ぶん**（旗 2 本・open 2 回・`storage` は 1 回）／`stageWindowOpen` prop |
+| `CommentViewerApp.tsx` | stage の `storage` 分岐 1 本 ／ `requestStageObsAutoAddIfOpen` ／ 接続確立時 reconcile の 2 本目 |
+| `MainScreen.tsx` | 停止フィードバックが **2 窓を見る**（§1 の導線） |
+| `components/Select.tsx` | ⚠ **`disabled` prop を 1 つ追加**（任意・既定は有効＝既存の呼び出しは無改変。意匠は native 既定に任せ `Select.module.css` は差分ゼロ） |
+
+### ⚠ 計画になかった追加（3 件・いずれも理由つき）
+
+1. **Rust の契約テスト 1 本新設**（frontend の窓名表）… 上記の「3 つ目の写し」。
+2. **`sidecar_lifecycle` に総当たり 2 本**… security-review で見つけた穴（⑯-k）。
+3. **`Select` に `disabled`**… 判断 4-b の丸めと対（「選んだのに戻る」を見せない）。
+
+⚠ **`ObsEffectsScreen` の 2 つのボタンに `aria-label` を足した**のも計画外だが、
+**同じ名前のボタンが 2 つ並ぶのは a11y の問題**（スクリーンリーダーは行を跨いで読まない）で、テストの都合ではない。
+
+### テスト（**1625 → 1668**・+43）
+
+⚠ **件数の引き算ではなく、追加したケース名で数えた**（差 A の教訓）。
+
+| 段 | 追加 |
+|---|---|
+| 1 | `windowApi.test.ts` +4（ラッパ 3 本 ＋ 本数固定）／Rust 契約テスト +1 ／`sidecar_lifecycle` +2 ／sidecar は期待値の書き換え |
+| 2 | `effectAssignments.test.ts` +14（新規 2・3・4・6・13 の判定側／T-a〜T-c ＋ **T-b'**／`setConditionOutput` ／表の形）／`effectTrigger.test.ts` +3（**新規 1 の本体＝ state のサイズを直接数える**） |
+| 3 | `ObsEffectsScreen.test.tsx` +3（新規 5・6・11）／`EffectOverlayApp.test.tsx` +5（新規 8×3・13・ガイド窓名）／`EffectTemplateCard.test.tsx` +1（新規 7 の混在ケース）／`effectOverlayRestore.test.ts` +6（新規 10）／`CommentViewerApp.effects.test.tsx` +4（新規 9）／`MainScreen.test.tsx` +2（新規 12） |
+
+⚠ **T-b'（丸めが防ぐ実挙動）は変異⑯-m の実測を見てから足した**——最初は T-b の 1 ケースしか落ちず、
+**「丸めは保存形の整理にすぎないのでは」と疑って調べ直した**結果、
+**「`none` の行に隠れた `output` が残ったままエフェクトを選び直すと、画面に一度も出ていない『全画面』が有効になる」**
+という実挙動の差を見つけたため（⑯-m が 1 → 2 ケースへ）。
+
+### ⚠⚠ ミューテーション（**18 件・全部 RED**／ただし ⑦⑨⑯-d は**1 回目が偽の緑**だった）
+
+⚠ `git stash` ではなく**バックアップ → 復元 → `shasum` のバイト一致確認**で実施。
+
+| # | 変異 | 結果 | 殺したもの |
+|---|---|---|---|
+| ① | matcher の output 絞り込みを外す | **RED**(2) | 新規 1 |
+| ② | `EffectRequest` に `output` を載せ**窓側で捨てる** | **RED**(9) | 新規 1 ＋ ⚠ **§9 のキー集合**（`EffectMatch` / `EffectRequest` 8 個）＝想定より厚い網だった |
+| ②' | 当たらないコメントでも枠を積む（＝「捨てる」実装の実体） | **RED**(6) | ⚠⚠ **061k で足した state サイズの 2 ケースを含む** |
+| ③ | 移行の既定を `"stage"` にする | **RED**(7) | 新規 2 |
+| ④ | `SIDECAR_CONSUMER_LABELS` から stage を落とす | **RED** | `every_consumer_window_registers_the_guard` |
+| ⑤-a/-b | stage 窓の窓イベント登録を消す／片方だけにする | **RED** | 同上（M2 相当） |
+| ⑥ | 停止ガードを `"effect-overlay"` のラベルで呼ぶ | **RED** | 同上（M1 相当） |
+| ⑦ | タイトルを `"StreamDock エフェクト（全画面）"` にする | **RED**（Rust ＋ **sidecar の 2 層**） | `titles_do_not_contain_each_other` ／ 総当たり |
+| ⑧ | `ObsOverlayKind` を desktop 側だけ 4 値に | **RED** | union 契約テスト |
+| ⑨ | `OBS_OVERLAYS` に足さずタイトルだけ増やす | **RED** | `titles_match_sidecar_obs_overlays_table` の**逆方向** |
+| ⑩ | 開閉キューを 1 本に戻す | **RED**(1) | 新規 11 |
+| ⑪-a/-b | 保留旗を 1 本に戻す／相手の旗も消す | **RED**(1 / 3) | 新規 8 |
+| ⑫ | stage の enabled を corner と同じキーにする | **RED**(7) | 新規 5 |
+| ⑬ | `warmTemplates` が相手の output も温める | **RED**(1) | 新規 13 |
+| ⑭ | `MainScreen` の停止フィードバックが stage を見ない | **RED**(1) | 新規 12 |
+| ⑮ | 新窓で `SHARED_BROWSER_ARGS` を省く | **RED** | `shared_browser_args_match_all_windows` |
+| ⑯-a | `parseOutput` が**常に** corner へ丸める | **RED**(7) | **T-c**（T-a/T-b だけでは丸めすぎを検出できない） |
+| ⑯-b | ガイド本文の窓名を corner 固定にする | **RED**(1) | ガイド窓名ケース（⚠ 061i が実機でだけ踏んだ残骸と同型） |
+| ⑯-d / ⑯-j | frontend の窓名表を 1 文字変える／エントリを消す | **RED** | **新設**の frontend 窓名契約テスト |
+| ⑯-m | `none` の丸めを外す | **RED**(2) | T-b ＋ **T-b'** |
+| ⑯-n | 前提ステータスの内訳を消す | **RED**(1) | 新規 6（穴 α の緩和） |
+| **⑯-k / ⑯-l** | 停止判定から stage を除外／常に生存扱い | ⚠⚠ **初回 SURVIVED → テスト 2 本追加で RED** | security-review S-1 |
+
+#### ⚠⚠ 変異の実測手順で踏んだ落とし穴（次回のために残す）
+
+⑦⑨⑯-d は **1 回目に「全部緑」と出たが、変異が当たっていなかった**。原因は **`perl -CSD`**——
+入力を UTF-8 デコードする一方で**スクリプト中の日本語パターンはバイトのまま**なのでマッチしない（`node`/`perl` で実測確認）。
+⇒ ⚠ **日本語を含む変異では `-CSD` を使わない**／**置換後のヒット数を毎回数えてから走らせる**。
+⚠⚠ **「緑だった」を変異の生存と読み違えると、守備範囲があると誤認する**（今回はまさに 3 件それを踏んだ）。
+
+### ⚠ 固定できていないもの（正直に書く）
+
+1. ⚠⚠ **`WINDOW_OPEN_LOCK` による Rust 側の直列化はテストで固定できていない**（`AppHandle` が要る）。
+   担保はコメントと実機だけ。新規 11 が見ているのは **frontend のキュー**である。
+2. ⚠ **窓のサイズ・位置（1280×720 / (0,0) / min 320×180）はテストで固定していない**（変異⑯-f は何も落とさない）。
+   `decorations(false)` で永続化されないので**既定値がすべて**だが、担保は実機確認だけである。
+3. **CSS の実効はテストで固定できない**（061d-2 / 061g / 061i / 061j と同じ）。
+   2 行になった前提ステータスの折り返しは `check:css` の対象外。
+4. ⚠ **「テンプレートが全画面では小さく見える」は仕様として受容**（判断 9）。画面の 1 文だけが担保で、
+   実際の見え方はテストで測れない。**再修正トリガー＝「全画面用に作り直すのが面倒」と言われたとき**
+   （そのとき `fitScale` を検討する。⚠ `.previewStage` の再修正トリガーとは別物なので混同しないこと）。
+5. ⚠ **`obsState` は 4 種別で 1 本のまま**（061e Q-5 の受容が 3 → 4 へ広がった）。
+   「設定カードを見てもどの種別の結果か分からない」は**悪化している**（種別が 1 つ増えたので）。
+   **再修正トリガーは 046d / 061a Q-2 と同じ＝wire を種別つきへ広げるとき。**
+6. ⚠ **差 A のフレーキーは再現しなかっただけ**で、解明できていない。
+
+### 検証（すべて実測）
+
+- `pnpm --filter ./apps/desktop typecheck` / `lint` … 緑（⚠ **警告 0 件**）
+- `pnpm --filter ./apps/desktop test` … **67 files / 1668 tests 緑**（`check:css` / `check:version` / `check:effect-contract` も OK）
+- `cargo check` … 緑 ／ `cargo test` … **345 → 347 passed / 0 failed**
+- `node apps/comment-sidecar/scripts/test-obs-client.mjs` … **OBS-CLIENT PASS**（4 種・総当たり 12 方向・`parseOverlayKind` は自動追随）
+- **差分ゼロ（実測で空）**: `tauri.conf.json` ／ **既存 capability 5 枚** ／ `obs-helpers.ts` ／
+  `package.json`・`pnpm-lock.yaml`・`.github/` ／ `EffectTemplateView.tsx` / `.module.css` ／
+  `EffectOverlayApp.module.css` ／ `effectEventRows.ts` ／ `effectTemplateText.ts` ／ `effectSelectValue.ts`
+- **制約 1**: `"StreamDock エフェクト"` は lib.rs / obs-client.ts / effectAssignments.ts に**そのまま存在**（1 バイトも変えていない）
+- **4 窓の相互非包含**: `なし ✅`
+- **§9**: `effectTrigger.ts` に `output` フィールドの語は**ゼロ**（唯一のヒットは sidecar 関数名 `outputComments` の言及で**ベースラインから存在**）
+- **派生値の書き手**: `saveEffectOverlayEnabled` / `saveStageOverlayEnabled` の実装側のヒットは
+  **`overlaySettings.ts`（定義）と `useEffectTemplates.ts` だけ**
+- **061i 残骸の返済（⚠ 差 B で書き直した期待値）**:
+  - **判断 7 の対象 4 本 … ヒットゼロ ✅**
+  - `overlaySettings.ts` … **5 → 4**（履歴だけが残る）
+  - 全体 … **63 → 53**（⚠ **ゼロにはならない**。(b) 履歴と (c) 045b/046b の現存トグル）
+
+### ✅ 実機確認（**2026-08-15 実施**・macOS / OBS 32.2.1 起動 / `COMMENT_SIDECAR_MOCK=1 pnpm tauri dev`）
+
+⚠⚠ **061d-2 から 3 回持ち越された「OBS を起動しての確認」を、依頼者の承認を得てここで実施した。**
+⚠ **外部通信はゼロ**（sidecar は env ゲートのモックモード。⚠ **OAuth の実接続もしていない**——
+下記のとおり keychain アクセスは**すべて拒否**した）。⚠ OBS の WebSocket は **loopback（127.0.0.1:4455・認証なし設定）**。
+
+#### 観測手法（061j の手法を踏襲・次回のためにそのまま残す）
+
+- **透過窓は `CGWindowListCreateImage(.optionIncludingWindow)` の窓単位キャプチャ**で
+  **alpha>8 の画素数と bbox** を数値化（`screencapture -R` は背後が写るので使わない・061f の教訓）。
+- **UI 操作は AX（System Events）**。⚠⚠ **`entire contents` は WKWebView で空を返す**ので、
+  **深さ制限つきの再帰ハンドラ**を書いた（`UI elements of` は `tell application "System Events"` の中でしか解決しない）。
+- ⚠⚠ **自前でコンパイルしたバイナリからは AX が使えない**（呼び出し側プロセスに Accessibility 権限が要る）。
+  ⇒ **AX は osascript 経由・CGWindowList と画像処理は Swift の自作ツール**、と役割を分けた。
+- **OBS の状態は obs-websocket の `GetInputList` / `GetInputSettings` / `GetStats`** を読み取り専用で使った。
+- ⚠ **`<select>` は AXPress してもメニューが AX に出ない**（061j の「合成キーは入らない」と同種の壁）。
+  ⇒ **条件は localStorage へ直接仕込んでから起動**する方式にした（061j と同じ）。
+
+#### ⚠⚠ 実施中に踏んだ環境の壁（次回のために記録する）
+
+1. **sidecar バイナリが stale で `pnpm tauri dev` が起動しない**（`obs-client.ts` を触ったため）。
+   リビルドには `TWITCH_CLIENT_ID` / `YOUTUBE_CLIENT_ID` / `YOUTUBE_CLIENT_SECRET` が要る（build-sea の fail-fast）。
+   ⇒ ⚠ **依頼者の資格情報は使わず、`MOCK_ONLY_...` のプレースホルダで焼いて検証し、終了後に
+   依頼者のバイナリをバックアップから復元した**（`shasum` バイト一致を確認）。
+   ⚠⚠ **その結果、リポジトリはいま「ソースが新しく・バイナリが古い」状態に戻っている。**
+   **次に実機で動かすときは本物の資格情報でリビルドが要る。**
+   ⚠⚠ **061k レビュー S-3 の訂正: ここで「`check-fresh` が正しく止める」と書いたのは誤りだった。**
+   `check-fresh.mjs` は**入力の最新 mtime とバイナリの mtime を比べる**だけなので、
+   **`cp` で復元したバイナリは mtime が「いま」になり、ソースより新しく見えて素通りする**
+   （レビュアの実測で `[check-fresh] sidecar バイナリは最新です ✓`。
+   同バイナリ内の `ステージ`＝「ステージ」は **0 件**、`エフェクト` は 2 件＝**061k 前のもの**）。
+   ⚠ 止まらないまま走ると **3 値の sidecar** が動き、`parseOverlayKind("stage")` が `"comments"` へ落ちて
+   **「StreamDock コメントオーバーレイ」のソースを触りに行く**（union のずれについて security.md が
+   名指ししている「誤った窓のソースが OBS に作られる」そのもの）。
+   ⚠ **教訓＝「バックアップから復元した」は mtime ベースの鮮度ガードを無効化する。**
+   復元したら**必ず自分で `check:sidecar` を実行して結果を見ること**（「止まるはず」を書かない）。
+   ⚠ `check-fresh` をハッシュ比較へ寄せるかは **061l 以降の検討事項**（061k のスコープ外）。
+2. ⚠⚠ **未署名 dev ビルドでは keychain の確認ダイアログ（`SecurityAgent`）が出て、
+   コメビュ窓の生成がその間ブロックされる**（`open_comment_viewer_window` が `WINDOW_OPEN_LOCK` を
+   `ensure_started` を跨いで保持する、という JSDoc の記述が実機で観測できた）。
+   ⇒ **すべて「拒否」で閉じた**（＝ Twitch/YouTube のトークンは 1 度も読んでいない）。
+   ⚠ 拒否しても mock モードの検証には影響しない。
+
+#### 結果
+
+| # | 項目 | 結果 |
+|---|---|---|
+| ① | **OBS に 2 つのソースが別々に追加される** | ✅ `StreamDock エフェクト` と **`StreamDock ステージ演出`** が別ソースとして並び、**それぞれ違う window id を掴んだ**（68478＝コーナー(160,60,960×360) / 68479＝ステージ(0,0,1280×720)）＝ **窓の取り違えゼロ** |
+| ② | ⚠⚠ **既存の「StreamDock エフェクト」ソースが壊れずに再利用される** | ✅ 既存ソースは**作り直されず**、`window` が現在の実窓へ更新された。**制約 1 の失敗モード（`"reused"` を返して真っ黒）は起きていない** |
+| ③ | **全画面とコーナーが同時に出ても衝突しない** | ✅ 「ナイスプレイ👏」→ **ステージだけ**（stage=80204 / corner=0）、「草」→ **コーナーだけ**（corner=99823 / stage=0）、さらに **両方同時に描画される区間**も観測（corner=80000 & stage=106769） |
+| ④ | 出力先の切り替えが次の発火から効く | ✅ 上記と同じ観測（条件ごとに出力先が分かれている） |
+| ⑤ | 片方だけ条件があるとき、もう片方の窓は開かない | ✅ **061j までの保存値（`output` なし）で起動 → コーナー窓だけが復元され、ステージ窓は開かなかった**（`stage-overlay-enabled` は**書かれもしない**＝「値が一致していれば書かない」も同時に確認） |
+| ⑥ | ⚠⚠ **コメビュ窓を閉じてもエフェクトが出続ける** | ✅ コメビュ窓を閉じても **sidecar は生存**し、**ステージ窓で発火が続いた**（stage=72485→79510） |
+| ⑦ | ⚠⚠ **両方の窓を閉じると sidecar が落ちる**（`ps` で実測） | ✅ **コーナーだけ閉じた時点では sidecar 生存**（判断 3 の目的）／**ステージも閉じた瞬間に落ちた**（§6・孤児なし）。⚠ **アプリ終了でも落ちる**ことを別途確認 |
+| ⑧ | ⚠⚠ **§1 の停止導線 2 か所が stage も見て分岐** | ✅ **2 窓とも開き**＝「取得は続いています（…**2 つとも**「ウィンドウを閉じる」…）」／⚠⚠ **ステージ窓だけ開き**でも**同じ文言**（＝片方だけ見る実装なら「停止しました」と嘘をつく・061i S-1 と同型）／**2 窓とも閉じたときだけ**「停止しました」 |
+| ⑨ | **テスト表示で 2 窓とも出る／ガイドが正しい窓名** | ✅ 2 窓とも停止中からテスト表示 → **2 窓とも開いて 2 窓とも描画**（corner=85088 / stage=88235）。⚠⚠ **ガイド本文は各窓が自分の窓名**を出した（コーナー窓＝「StreamDock エフェクト」／ステージ窓＝「StreamDock ステージ演出」）＝ **061i が実機でだけ踏んだ残骸の再発なし** |
+| ⑩ | アプリ再起動で 2 窓が独立に復元 | ✅ 2 キーとも true の状態で起動 → 2 窓とも復元。⚠ **窓の実測値が判断 1 と一致**（ステージ=(0,0) 1280×720 / コーナー=(160,60) 960×360・**どちらも layer=-1＝最背面**） |
+| ⑪ | コーナー用テンプレを全画面へ出すと小さく見える | ✅ **描画の絶対幅は 755px で同一**、窓が大きいぶん**占有面積は 36.1% → 20.6%（0.57 倍）**＝ 判断 9 の受容が数値で確認できた |
+| ⑫ | ⚠⚠ **OBS キャプチャのカクつき**（061d-2 からの持ち越し） | ✅ **カクつきは観測されなかった**（下記）⇒ **親 061 のクローズ条件の片方がここで解消** |
+
+#### ⑫ の実測（OBS `GetStats`・2 秒間隔）
+
+| 区間 | fps | 平均レンダリング時間 | CPU | Δframes / 2s | **Δskipped** |
+|---|---|---|---|---|---|
+| ベースライン（20 秒・発火なし） | **60.0** 固定 | 4.11〜4.86ms | 5.7〜6.5% | 121〜122 | **0** |
+| 2 窓で発火しながら（30 秒・発火 5 件） | **60.0** 固定 | 4.21〜5.14ms | 5.8〜6.7% | 121〜122 | **0** |
+
+⇒ **1 フレームも落ちていない**（`Δframes` は常に 60fps × 2s ＝ 121〜122）。
+⚠⚠ **正直な限界**: dev-mock の出力は **youtube 単独で ≒0.55 件/秒**（`EMIT_INTERVAL_MS=1800`）で、
+**twitch 側のモックセッションは今回どうしても開始できなかった**（`start-session` に対し
+`connecting` が来ない。⚠ 061k とは無関係の mock 側の問題）。
+⇒ **測れたのは「2 窓を同時にキャプチャし、30 秒で 5 件発火しても OBS は 1 フレームも落とさない」まで**で、
+**実配信の高頻度（毎秒 10 件級）は再現できていない**（061j の④と同じ限界）。
+
+#### ⚠⚠ 実機でしか見つからなかった不具合（3 件・修正済み）
+
+**画面の文言が「窓は 1 つ」の前提のまま残っていた**——061i がガイド本文で踏んだのと**まったく同型**である。
+
+1. **OBS 自動反映カードの説明**が「OBS に**「StreamDock エフェクト」**のウィンドウキャプチャを自動で追加します」
+   と**片方の窓名だけ**を名指ししていた（⚠ **ソース名の案内なので実害が大きい**）
+   ⇒ 表から 2 つとも出す形へ。
+2. 「配信画面に表示」の説明が「エフェクト専用の透明な**ウィンドウを開きます**」（単数）
+   ⇒ 「用途別に **2 つ**開きます」へ。
+3. `EffectAssignmentCard` の「条件を 1 つでも設定すると、**エフェクトのウィンドウ**が自動で開きます」
+   ⇒ 「**その条件の出力先の**ウィンドウが自動で開きます。出力先は条件ごとに選べます。」へ。
+
+⚠⚠ **教訓＝「窓が 1 本」を前提にした文言は、コードの型では捕まらない。**
+`EFFECT_OUTPUT_WINDOW_TITLE` へ寄せたのは**ガイド本文と案内文だけ**で、
+**「ウィンドウ」という語を単数で語る文**は表から引きようがない。⇒ **実機で読むしかない。**
+
+#### ⚠ 実機で分かった副次的な事実（受容・記録のみ）
+
+- **コーナー窓（960×360）ではテンプレートの下端が切れている**（描画 bbox の高さ 1006px に対し
+  窓は retina 720px）。⚠ **061k が作った問題ではない**（テンプレートの絶対 px と窓サイズの関係で、
+  061d-2 から在る）。⚠ **むしろ 061k の「全画面」窓はこれを解消する側**である。
+- 前提ステータスの「表示する条件」が **`1 件（コーナー（小さめ） 1・全画面（ステージ） 0）`** と
+  内訳つきで出ることを確認（穴 α の緩和が実機で読める）。
+
+#### ⚠ 後始末（すべて実測で確認）
+
+- **OBS**: 検証で増えた **`StreamDock ステージ演出` ソースを削除**し、`GetInputList` が
+  **検証前と同じ 6 ソース**に戻ったことを確認（⚠ 既存の `StreamDock エフェクト` は**削除していない**。
+  ⚠ ただしその `window` id は検証中の実窓へ更新されている——**次に窓を開けば自動で解決し直される**値で、
+  元の id は既に死んだ窓を指していた）。
+- **dev オリジンの localStorage をバックアップから復元**（`shasum` バイト一致・
+  ⚠ 061j までの旧形式 Record ＋ `effect-overlay-enabled=true` の状態に戻っている）。
+- **sidecar バイナリを依頼者のものへ復元**（`shasum` バイト一致）。
+  ⚠⚠ **次に実機で動かすときは本物の資格情報でリビルドが必要。**
+  ⚠⚠ **061k レビュー S-3 の訂正: `check-fresh` は止めない**（mtime ベースなので復元で素通りする。
+  詳細は上記「環境の壁」1 を参照）。**リビルド忘れは誰も検出しない。**
+- **本番オリジン（`~/Library/WebKit/com.tetsuya.stream-dock/`）には一度も触れていない。**
+- **`stream-dock.db` は 1 バイトも書き換えていない**（テンプレートの取り込み・削除を行っていない）。
+- アプリと dev サーバは停止済み。⚠ **孤児プロセスなし**（`ps` で確認）。
+
+### ⚠⚠ security-review の締め（全差分に対して・実測）
+
+| 観点 | 結果 |
+|---|---|
+| **§1 の再評価が条文と導線 2 か所の両方に反映されている** | ✅ 条文＝**3 点基準**を新設（§1）／導線①`MainScreen` が `isStageOverlayOpen` も見る／導線②`ObsEffectsScreen` が 2 行＋「**2 つとも**」。⚠ **実機で 3 パターンとも確認**（2 窓／ステージのみ／0 窓） |
+| **孤児プロセスが残る経路が無い** | ✅ 停止ガードの呼び出しは **3 か所（各窓が自分のラベル）**／`RunEvent::Exit` は**無条件のまま**／`ensure_started` は**1 箇所のまま**。⚠ **実機で「片方閉じ→生存／両方閉じ→停止／アプリ終了→停止」を `ps` で実測** |
+| **capability が 1 枚追加・`core:default` のみ／既存 5 枚が差分ゼロ** | ✅ `git diff` が空。全 6 枚の `windows` / `permissions` を実測で確認 |
+| **窓タイトルの 2 者間契約（4 窓・バイト一致・相互に部分文字列でない）** | ✅ Rust の総当たり ＋ sidecar の総当たり 12 方向 ＋ **frontend の表を突き合わせる契約テストを新設**。⚠ **実機では OBS が 2 ソースに別々の window id を割り当てた**＝取り違えゼロ |
+| **`ObsOverlayKind` が固定 union ／ `parseOverlayKind` が allow-list** | ✅ 両側 4 値・`Object.keys` 配列への `includes`（`__proto__` 等 3 件の fail-open 検査は緑） |
+| **新規宛先ゼロ／`EffectRequest` に本文も `output` も載っていない** | ✅ sidecar の差分は種別 union・表エントリ・注記だけ（接続/URL 組み立て/`assertAllowedObsUrl` は無改変）。`effectTrigger.ts` の `text` は **matcher への入力**（061j から在る）で `EffectRequest` ではない |
+| **shell / fs / process / updater / dialog 権限の追加ゼロ・新規依存ゼロ・`csp: null` 不変** | ✅ すべて `git diff` が空 |
+| **`console.*` の増加ゼロ** | ✅ |
+| ⚠ **「下位条件に当てはまらない」を理由に自分を免除していない** | ✅ **レビュー必須条件の 3 項（Tauri capabilities / process停止処理 / 外部通信）に該当すると明記**して実施した |
+
+⚠⚠ **段の分割に起因する一時的な不整合（S-2）は解消済み**——061k-1 の時点では
+「§1 の条文は 3 窓なのに導線 2 か所が stage を見ていない」状態だった（実害は
+「stage 窓を開く UI 経路が無い」ためゼロ）。**061k-3 で両方を直して閉じた。**
+⚠ **教訓＝条文が実装より先に進む段の割り方をしたら、全段が入るまでコミットしないこと。**
+⚠⚠ **061k レビューでこの教訓が不十分だと指摘された（下記 S-5）**——同じ規律で言えば
+**security.md の判定行が「実施予定」のまま残っていた**のも同型である。
+⇒ **「段を割ったら、条文・実装・判定記録の 3 つが揃うまでコミットしない」まで広げる。**
+
+### ⚠⚠ 外部レビューへの対応（2026-08-15・全差分に対する security-review ＋ 品質レビュー）
+
+判定「**軽微な懸念あり**」。⚠ **自己申告のうち検証されたもの**: 差分ゼロ 9 パス（`.github/` 含む）は
+`git diff` が実測で空／訂正 4 件はいずれも正しい（⚠ ただし**依頼文の前提のほうが誤り**で、
+`parseOverlayKind` の実体は `obs-helpers.ts` ではなく `obs-client.ts`＝061a で移動済み）／
+**変異は代表 8 件をレビュア側が独立に再現し全件 RED**（①／⑥＝M1／⑯-k／⑯-d／⑯-j／⑫相当／⑪-a 相当／⑭）。
+⚠ **実機 12 項目は検証不能**（OBS 実行を伴うため）。
+
+| # | 指摘 | 対応 |
+|---|---|---|
+| **S-1 / Q-1** | ⚠⚠ **`EFFECT_OBS_AUTO_ADD_KEY` の OFF 分岐に `clearObsEnableTimer("stage")` が無い**＝猶予 1.2 秒中に自動反映を OFF にしても `enableObs("stage")` が飛ぶ（§1 違反・045c 回帰の再発） | **修正**（1 行 ＋ `CommentViewerApp.effects.test.tsx` に同型テスト 1 本）。⚠⚠ **18 件の変異表に無い変異が実装側に生存していた**＝`clearObsEnableTimer("effects")` を消すと既存ケースが RED になるのに、**stage 側は実装もテストも無かった** |
+| **Q-2** | ⚠⚠ **「窓は 1 つ」前提の言い落としが 4 件目**——`EffectTemplateCard` の注記が `effectWindowOpen` だけを見ており、「コーナーは開・ステージは停止中」（＝JSDoc 自身が「通常の状態」と書く状態）で**ステージ窓が無告知で開く** | **修正**（`|| stageWindowOpen === false` ＋ 文言を窓数に依存しない形へ）。⚠ 実機で見つけた 3 件と**完全に同型**で、`grep 'ウィンドウが停止中'` で機械的に見つかった＝**実機の前に grep を 1 回回すべきだった** |
+| **Q-3** | 前提案内が `EFFECT_OUTPUT_LABEL` を使わず「コーナー・全画面」直書き | **修正**（表から引く。⚠ 窓名ではないので機能は壊れないが、061k が窓名で塞いだ穴を「呼び方」で作っていた） |
+| **S-5** | `docs/security.md` の 061k 追補が「security-review 必須（**実施予定**）」のまま | **修正**（061a 節の先例に揃えて実際の判定・S-1・S-4・リポジトリ状態 2 件を記載） |
+| **Q-5** | 親 061 クローズ条件 ⑧ を「**解消**」と書いたのは根拠より一段強い（⑧ の元の懸念は**高頻度時**で、0.55 件/秒はその負荷帯に届いていない） | **修正**（task-board を「現行の再現条件では再現せず・高頻度帯は未測定」へ。⚠ **061l に「高頻度で ⑧ を再測」を申し送り**。状態としてはクローズ条件から外したまま） |
+| **S-3** | ⚠⚠ **申し送りの「`check:sidecar` が正しく止める」は誤り**（mtime ベース＝復元で素通り。実測で「最新です ✓」／バイナリ内の `ステージ` は 0 件） | **修正**（上記 2 か所と task-board を訂正）。⚠ **バイナリのリビルド自体は本物の資格情報が要るので未実施** |
+| **S-4** | 停止フィードバックの `.catch(() => false)` が **fail-open 方向**（判定不能で「停止しました」） | ⚠ **受容・コメントのみ**（`MainScreen`）。理由＝引数なしの読み取り専用 invoke で reject 経路が実質無く、起こり得ない失敗のために常時の体験を悪くしない。**再修正トリガー＝実機で reject を 1 度でも観測したら `null`（判定不能）を第 3 状態にする** |
+| **S-6** | `refreshStatus` の `.then` に `.catch` が無い | ⚠ **受容・コメントのみ**（握りつぶすと「確認中…」で固まる／2 秒ポーリングが引き戻す。トリガーは S-4 と対） |
+| **Q-4** | `windowRows` だけ `useMemo` が無い | ⚠ **受容・コメントのみ**（JSX へ直接流す 2 要素で、上の 2 つと違い**別の計算の入力ではない**。トリガー＝依存配列や `React.memo` した子へ渡すとき） |
+| **S-2** | 新規 capability が **untracked** で `git commit -a` から漏れる | ⚠ **未対応（依頼者の操作）**。⚠⚠ **コミット前に `git add apps/desktop/src-tauri/capabilities/stage-overlay.json` が必要** |

@@ -4,6 +4,7 @@ import { ObsEffectsScreen } from "./ObsEffectsScreen";
 import {
   EFFECT_ASSIGNMENTS_KEY,
   EFFECT_OVERLAY_ENABLED_KEY,
+  STAGE_OVERLAY_ENABLED_KEY,
   EFFECT_OBS_AUTO_ADD_KEY,
   EFFECT_OVERLAY_GUIDE_PENDING_KEY,
 } from "../../features/comment-viewer/overlaySettings";
@@ -37,6 +38,10 @@ const mocks = vi.hoisted(() => ({
   openEffectOverlayWindow: vi.fn(async () => {}),
   closeEffectOverlayWindow: vi.fn(async () => {}),
   isEffectOverlayOpen: vi.fn(async () => false),
+  // 061k: ステージ窓ぶん（**独立のキュー・独立の状態**であることを見る）。
+  openStageOverlayWindow: vi.fn(async () => {}),
+  closeStageOverlayWindow: vi.fn(async () => {}),
+  isStageOverlayOpen: vi.fn(async () => false),
   isCommentViewerOpen: vi.fn(async () => false),
   openCommentViewerWindow: vi.fn(async () => {}),
   detectObsWebsocketConfig: vi.fn(async (): Promise<ObsWsConfig | null> => null),
@@ -65,6 +70,9 @@ vi.mock("../../features/comment-viewer/windowApi", () => ({
   openEffectOverlayWindow: mocks.openEffectOverlayWindow,
   closeEffectOverlayWindow: mocks.closeEffectOverlayWindow,
   isEffectOverlayOpen: mocks.isEffectOverlayOpen,
+  openStageOverlayWindow: mocks.openStageOverlayWindow,
+  closeStageOverlayWindow: mocks.closeStageOverlayWindow,
+  isStageOverlayOpen: mocks.isStageOverlayOpen,
   isCommentViewerOpen: mocks.isCommentViewerOpen,
   openCommentViewerWindow: mocks.openCommentViewerWindow,
   closeCommentViewerWindow: vi.fn(async () => {}),
@@ -119,15 +127,28 @@ const record = (
 const conditionSelect = (label: string) =>
   screen.getByLabelText(`${label}のエフェクト`) as HTMLSelectElement;
 
+/** 061k: 条件の**出力先**の `<select>`。 */
+const outputSelect = (label: string) =>
+  screen.getByLabelText(`${label}の出力先`) as HTMLSelectElement;
+
 /** 061i: 「表示する条件」行の値。 */
 const conditionStatus = () =>
   screen.getByText("表示する条件").parentElement?.textContent ?? "";
+
+/**
+ * 061k: **出力先ごとの「エフェクトのウィンドウ」行**の値（「表示中」/「停止中」/「確認中…」）。
+ * ⚠ 窓が 2 本になったので `getByText("停止中")` は**必ず 2 件ヒットする**——行を特定して読む。
+ */
+const windowStatus = (label = "コーナー（小さめ）") =>
+  screen.getByText(`エフェクトのウィンドウ（${label}）`).parentElement?.textContent ??
+  "";
 
 describe("061a: ObsEffectsScreen", () => {
   beforeEach(() => {
     localStorage.clear();
     vi.clearAllMocks();
     mocks.isEffectOverlayOpen.mockResolvedValue(false);
+    mocks.isStageOverlayOpen.mockResolvedValue(false);
     mocks.isCommentViewerOpen.mockResolvedValue(false);
     mocks.detectObsWebsocketConfig.mockResolvedValue(null);
     mocks.listEffectTemplates.mockResolvedValue([]);
@@ -195,7 +216,13 @@ describe("061a: ObsEffectsScreen", () => {
 
     expect(autoAddToggle()).toBeInTheDocument();
     expect(screen.getByText("表示する条件")).toBeInTheDocument();
-    expect(screen.getByText("エフェクトのウィンドウ")).toBeInTheDocument();
+    // ⚠ 061k: 窓が 2 本になったので行も 2 本（どちらも共通領域にある）。
+    expect(
+      screen.getByText("エフェクトのウィンドウ（コーナー（小さめ））"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("エフェクトのウィンドウ（全画面（ステージ））"),
+    ).toBeInTheDocument();
     // OBS への取り込み手順も共通領域（トグルは消えたが説明は残す）。
     expect(
       screen.getByRole("heading", { name: "配信画面に表示" }),
@@ -254,6 +281,92 @@ describe("061a: ObsEffectsScreen", () => {
     expect(localStorage.getItem(EFFECT_OVERLAY_ENABLED_KEY)).toBe("true");
     expect(mocks.closeEffectOverlayWindow).not.toHaveBeenCalled();
     expect(conditionStatus()).toContain("1 件");
+  });
+
+  // --- 061k: 出力先ごとの窓 -----------------------------------------------------------------------
+
+  it("⚠⚠ 新規 5: stage 条件を 0 → 1 件にすると **stage のキーが true・stage 窓が開く**", async () => {
+    mocks.listEffectTemplates.mockResolvedValue([record()]);
+    render(<ObsEffectsScreen />);
+    await screen.findAllByText("きらきら演出");
+
+    // ⚠ まず出力先を「全画面」へ（この時点では `effect` が none なので `<select>` は無効）。
+    //   ⇒ **先にエフェクトを選び、それから出力先を変える**（実際のユーザー操作と同じ順）。
+    fireEvent.change(conditionSelect("スーパーチャット・ビッツ"), {
+      target: { value: `template:${TEMPLATE_ID}` },
+    });
+    await waitFor(() =>
+      expect(mocks.openEffectOverlayWindow).toHaveBeenCalledTimes(1),
+    );
+    fireEvent.change(outputSelect("スーパーチャット・ビッツ"), {
+      target: { value: "stage" },
+    });
+
+    await waitFor(() =>
+      expect(mocks.openStageOverlayWindow).toHaveBeenCalledTimes(1),
+    );
+    expect(localStorage.getItem(STAGE_OVERLAY_ENABLED_KEY)).toBe("true");
+    // ⚠⚠ **コーナー側は「もう条件が無い」ので false へ倒れる**（＝OBS のソースが非表示になる）。
+    //   ⚠ ただし**窓は閉じない**（判断 1）。
+    expect(localStorage.getItem(EFFECT_OVERLAY_ENABLED_KEY)).toBe("false");
+    expect(mocks.closeEffectOverlayWindow).not.toHaveBeenCalled();
+    // ⚠ open は 1 回ずつ（コーナーを重ねて開かない）。
+    expect(mocks.openEffectOverlayWindow).toHaveBeenCalledTimes(1);
+  });
+
+  it("⚠⚠ 新規 6: corner 条件だけのとき **stage 窓は開かない**（開いたのに何も出ない窓を作らない）", async () => {
+    mocks.listEffectTemplates.mockResolvedValue([record()]);
+    render(<ObsEffectsScreen />);
+    await screen.findAllByText("きらきら演出");
+
+    fireEvent.change(conditionSelect("スーパーチャット・ビッツ"), {
+      target: { value: `template:${TEMPLATE_ID}` },
+    });
+
+    await waitFor(() =>
+      expect(mocks.openEffectOverlayWindow).toHaveBeenCalledTimes(1),
+    );
+    // ⚠⚠ **本命**: 合計で判定する実装だとここが 1 になる。
+    expect(mocks.openStageOverlayWindow).not.toHaveBeenCalled();
+    expect(localStorage.getItem(STAGE_OVERLAY_ENABLED_KEY)).toBe("false");
+    // ⚠ 「表示する条件」行は**合計 1 行のまま**だが、内訳が出る（穴 α の緩和）。
+    expect(conditionStatus()).toContain("1 件");
+    expect(conditionStatus()).toContain("全画面（ステージ） 0");
+  });
+
+  it("⚠⚠ 新規 11: 開閉キューは窓ごとに独立（corner の close 中に stage の open が待たされない）", async () => {
+    // ⚠⚠ **1 本のキューに混ぜるとここが落ちる**（061i がキューを作った理由は
+    //   「**同じ窓**への close と open の順序」であって、別の窓を直列化する理由は無い）。
+    let releaseClose = () => {};
+    mocks.closeEffectOverlayWindow.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseClose = resolve;
+        }),
+    );
+    mocks.isEffectOverlayOpen.mockResolvedValue(true);
+    mocks.listEffectTemplates.mockResolvedValue([record()]);
+    render(<ObsEffectsScreen />);
+    await screen.findAllByText("きらきら演出");
+    await waitFor(() => expect(windowStatus()).toContain("表示中"));
+
+    // コーナー窓を閉じる（この Promise は解決させないまま止めておく）。
+    fireEvent.click(
+      screen.getByRole("button", { name: "コーナー（小さめ）のウィンドウを閉じる" }),
+    );
+    // その最中に stage 条件を作る＝ステージ窓の open が投げられる。
+    fireEvent.change(conditionSelect("スーパーチャット・ビッツ"), {
+      target: { value: `template:${TEMPLATE_ID}` },
+    });
+    fireEvent.change(outputSelect("スーパーチャット・ビッツ"), {
+      target: { value: "stage" },
+    });
+
+    // ⚠⚠ **close が止まったままでも stage の open は届く**（＝キューが別）。
+    await waitFor(() =>
+      expect(mocks.openStageOverlayWindow).toHaveBeenCalledTimes(1),
+    );
+    releaseClose();
   });
 
   it("⚠⚠ 061i: 1 件以上のまま別の条件を変えても open を重ねて投げない", async () => {
@@ -358,9 +471,11 @@ describe("061a: ObsEffectsScreen", () => {
     mocks.listEffectTemplates.mockResolvedValue([record()]);
     mocks.isEffectOverlayOpen.mockResolvedValue(true);
     render(<ObsEffectsScreen />);
-    await waitFor(() => expect(screen.getByText("表示中")).toBeInTheDocument());
+    await waitFor(() => expect(windowStatus()).toContain("表示中"));
 
-    fireEvent.click(screen.getByRole("button", { name: "ウィンドウを閉じる" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "コーナー（小さめ）のウィンドウを閉じる" }),
+    );
     await waitFor(() =>
       expect(mocks.closeEffectOverlayWindow).toHaveBeenCalledTimes(1),
     );
@@ -372,8 +487,10 @@ describe("061a: ObsEffectsScreen", () => {
   it("⚠ 061i: 窓が停止中のときは「ウィンドウを閉じる」を出さない", async () => {
     mocks.isEffectOverlayOpen.mockResolvedValue(false);
     render(<ObsEffectsScreen />);
-    await waitFor(() => expect(screen.getByText("停止中")).toBeInTheDocument());
-    expect(screen.queryByRole("button", { name: "ウィンドウを閉じる" })).toBeNull();
+    await waitFor(() => expect(windowStatus()).toContain("停止中"));
+    expect(
+      screen.queryByRole("button", { name: "コーナー（小さめ）のウィンドウを閉じる" }),
+    ).toBeNull();
   });
 
   // --- 061i レビュー対応: 移行（S-3）と「ウィンドウを開く」（Q-2） ---------------------------------
@@ -418,7 +535,7 @@ describe("061a: ObsEffectsScreen", () => {
     //   ⚠ 未保存（キー無し）は false 扱いなので、条件 0 件の初回訪問では**キーが生えないこと**が期待。
     const setItem = vi.spyOn(Storage.prototype, "setItem");
     render(<ObsEffectsScreen />);
-    await waitFor(() => expect(screen.getByText("停止中")).toBeInTheDocument());
+    await waitFor(() => expect(windowStatus()).toContain("停止中"));
 
     expect(localStorage.getItem(EFFECT_OVERLAY_ENABLED_KEY)).toBeNull();
     expect(
@@ -438,9 +555,11 @@ describe("061a: ObsEffectsScreen", () => {
     mocks.listEffectTemplates.mockResolvedValue([record()]);
     mocks.isEffectOverlayOpen.mockResolvedValue(false);
     render(<ObsEffectsScreen />);
-    await waitFor(() => expect(screen.getByText("停止中")).toBeInTheDocument());
+    await waitFor(() => expect(windowStatus()).toContain("停止中"));
 
-    fireEvent.click(screen.getByRole("button", { name: "ウィンドウを開く" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "コーナー（小さめ）のウィンドウを開く" }),
+    );
     await waitFor(() =>
       expect(mocks.openEffectOverlayWindow).toHaveBeenCalledTimes(1),
     );
@@ -452,8 +571,10 @@ describe("061a: ObsEffectsScreen", () => {
     // ⚠ 出しても「開いたのに何も出ない窓」を作るだけで、正しい行動は条件を設定すること。
     mocks.isEffectOverlayOpen.mockResolvedValue(false);
     render(<ObsEffectsScreen />);
-    await waitFor(() => expect(screen.getByText("停止中")).toBeInTheDocument());
-    expect(screen.queryByRole("button", { name: "ウィンドウを開く" })).toBeNull();
+    await waitFor(() => expect(windowStatus()).toContain("停止中"));
+    expect(
+      screen.queryByRole("button", { name: "コーナー（小さめ）のウィンドウを開く" }),
+    ).toBeNull();
   });
 
   it("⚠⚠ 061i レビュー S-4: 自動 open の直後は前提ステータスを楽観的に「表示中」にする", async () => {
@@ -468,15 +589,15 @@ describe("061a: ObsEffectsScreen", () => {
     mocks.openEffectOverlayWindow.mockImplementation(() => new Promise(() => {}));
     render(<ObsEffectsScreen />);
     await screen.findAllByText("きらきら演出"); // ⚠ 一覧と `<option>` の 2 か所に出る
-    await waitFor(() => expect(screen.getByText("停止中")).toBeInTheDocument());
+    await waitFor(() => expect(windowStatus()).toContain("停止中"));
 
     fireEvent.change(conditionSelect("スーパーチャット・ビッツ"), {
       target: { value: `template:${TEMPLATE_ID}` },
     });
 
-    expect(screen.getByText("表示中")).toBeInTheDocument();
+    expect(windowStatus()).toContain("表示中");
     // ⚠ ＝ この時点でテスト表示を押しても旗経路へは倒れない（`EffectTemplateCard` が `true` を見る）。
-    expect(screen.queryByText("停止中")).toBeNull();
+    expect(windowStatus()).not.toContain("停止中");
   });
 
   it("⚠ 自動反映トグルは設定を立てるだけ（窓を開かない・045c の規律）", async () => {
@@ -532,7 +653,7 @@ describe("061a: ObsEffectsScreen", () => {
     await waitFor(() => expect(screen.getByText("閉じています")).toBeInTheDocument());
     expect(
       screen.getByText(
-        /エフェクトのウィンドウを表示したまま[\s\S]*閉じた場合は[\s\S]*続きます/,
+        /エフェクトのウィンドウ（.*）を表示したまま[\s\S]*閉じた場合は[\s\S]*続きます/,
       ),
     ).toBeInTheDocument();
   });
@@ -710,7 +831,7 @@ describe("061a: ObsEffectsScreen", () => {
 
     render(<ObsEffectsScreen />);
     await screen.findAllByText("きらきら演出"); // ⚠ 一覧と `<option>` の 2 か所に出る
-    await waitFor(() => expect(screen.getByText("表示中")).toBeInTheDocument());
+    await waitFor(() => expect(windowStatus()).toContain("表示中"));
 
     // 条件を 0 → 1 件（＝自動 open。まだ解決させない）。
     fireEvent.change(conditionSelect("スーパーチャット・ビッツ"), {
@@ -721,7 +842,9 @@ describe("061a: ObsEffectsScreen", () => {
     await act(async () => {});
     expect(resolveOpen).toBeDefined(); // open が呼ばれ、未解決のまま滞留している
 
-    fireEvent.click(screen.getByRole("button", { name: "ウィンドウを閉じる" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "コーナー（小さめ）のウィンドウを閉じる" }),
+    );
     expect(order).toEqual([]); // どちらもまだ走り終わっていない
 
     // ⚠ `waitFor`（実タイマー・既定 1s）は使わない。open の解決後に走るのは
@@ -792,8 +915,10 @@ describe("061a: ObsEffectsScreen", () => {
     expect(localStorage.getItem(EFFECT_OVERLAY_GUIDE_PENDING_KEY)).toBeNull();
 
     // ⚠ 「ウィンドウを閉じる」でも立てない（閉じる操作にガイドの出番は無い）。
-    await waitFor(() => expect(screen.getByText("表示中")).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: "ウィンドウを閉じる" }));
+    await waitFor(() => expect(windowStatus()).toContain("表示中"));
+    fireEvent.click(
+      screen.getByRole("button", { name: "コーナー（小さめ）のウィンドウを閉じる" }),
+    );
     await act(async () => {});
     expect(localStorage.getItem(EFFECT_OVERLAY_GUIDE_PENDING_KEY)).toBeNull();
 

@@ -55,8 +55,10 @@ import {
   // 061a: エフェクト窓の設定は **main 窓（`ObsEffectsScreen`）が書き手**で、この窓は読み手。
   // ⚠ state にミラーせず、判断のたびに読み直す（詳細はエフェクト連携 effect の JSDoc）。
   loadEffectOverlayEnabled,
+  loadStageOverlayEnabled,
   loadEffectObsAutoAdd,
   EFFECT_OVERLAY_ENABLED_KEY,
+  STAGE_OVERLAY_ENABLED_KEY,
   EFFECT_OBS_AUTO_ADD_KEY,
 } from "../../features/comment-viewer/overlaySettings";
 // 046a: 固定コメント（ピン留め）のピンストア。本体が唯一の書き手で、046b の固定専用オーバーレイが読み手になる。
@@ -108,6 +110,8 @@ import {
   // 061a: エフェクト窓の open/close は main 窓が持つ。この窓が使うのは **実窓の存在確認だけ**
   //（`enableObs("effects")` を送ってよいかの判定・046d レビューと同じ理由）。
   isEffectOverlayOpen,
+  // 061k: ステージ窓ぶん（`enableObs("stage")` を送ってよいかの判定・同じ理由）。
+  isStageOverlayOpen,
 } from "../../features/comment-viewer/windowApi";
 import { CommentList } from "./CommentList";
 import {
@@ -1603,6 +1607,16 @@ export function CommentViewerApp() {
     });
   };
 
+  // 061k: ステージ窓（label `stage-overlay`）ぶん。⚠ 理由は上と完全に同じ（046d レビュー）——
+  // 設定 ON ／ 窓なしで走らせると、キャプチャ対象未設定の空ソース「StreamDock ステージ演出」が
+  // OBS に残る（ユーザーが手で消すまで消えない）。
+  // ⚠⚠ **コーナー側と独立に判定すること**（片方だけ開いている、が通常の状態）。
+  const requestStageObsAutoAddIfOpen = () => {
+    void isStageOverlayOpen().then((open) => {
+      if (open) requestObsAutoAdd("stage");
+    });
+  };
+
   /**
    * 061a: **エフェクト窓の OBS 自動反映を、この窓が代行する。**
    *
@@ -1678,13 +1692,42 @@ export function CommentViewerApp() {
           }
         }
       }
+      // ⚠⚠ **061k: ステージ窓ぶんの分岐**（判断 6・10）。**上の `effects` 側と完全に同型**で、
+      //   違うのは見るキーと送る種別だけ。⚠ **`"effects"` 側を巻き添えにしないこと**——
+      //   種別ごとに `scheduleObsAutoAdd` / `requestObsHide` / `clearObsEnableTimer` を呼ぶ。
+      // ⚠ `clear()`（`e.key === null`）の扱いは `effects` と**同じ形**にしてある
+      //   （061a Q-4 の受容を割らない＝`clear()` では OBS を触りに行かない）。
+      // ⚠ **OBS 自動反映トグルは 1 つのまま**（`EFFECT_OBS_AUTO_ADD_KEY` が 2 ソースを束ねる・判断 10）。
+      //   「たぬえさ3 より簡単に」＝設定を増やさない。片方だけ自動追加したいという要求は出ていない。
+      if (e.key === STAGE_OVERLAY_ENABLED_KEY || e.key === null) {
+        if (loadStageOverlayEnabled()) {
+          if (loadEffectObsAutoAdd()) scheduleObsAutoAdd("stage");
+        } else {
+          clearObsEnableTimer("stage");
+          if (loadEffectObsAutoAdd()) {
+            requestObsHide("stage");
+            // ⚠ `obsState` は 4 種別で 1 本のまま（061e Q-5 の受容の範囲が 3 → 4 へ広がった）。
+            setObsState("idle");
+          }
+        }
+      }
       if (e.key === EFFECT_OBS_AUTO_ADD_KEY || e.key === null) {
         if (loadEffectObsAutoAdd()) {
           // 既に表示中なら猶予不要（窓は OBS のウィンドウ一覧に載っている）ので即反映する。
           if (loadEffectOverlayEnabled()) requestEffectObsAutoAddIfOpen();
+          // ⚠ 061k: ステージ側も同じ扱い（**独立に判定する**）。
+          if (loadStageOverlayEnabled()) requestStageObsAutoAddIfOpen();
         } else {
           // ⚠ 連携 OFF で仕掛かりを取り消す（disableObs の後に enableObs が飛ぶのを防ぐ・045c レビュー）。
+          // ⚠⚠ **061k レビュー S-1（修正）: `"stage"` の取り消しが漏れていた。**
+          //   このトグルは 2 ソース（effects / stage）を束ねる（判断 10）ので、**後始末も 2 種別ぶん要る**。
+          //   漏れていた間の壊れ方は「stage 条件を作った直後（猶予 1.2 秒以内）に自動反映を OFF にしても、
+          //   **タイマーが生き残って `enableObs("stage")` が飛ぶ**」＝ ユーザーが OFF にしたのに OBS の
+          //   ソースが作られる（docs/security.md §1「明示的に有効化した時のみ接続」に反する・045c 回帰の再発）。
+          // ⚠ **種別を足したらここへ 1 行足すこと**（すぐ上の 061k 分岐が「種別ごとに 3 つの後始末を対で呼ぶ」
+          //   と書いているのに、この 3 本目だけ非対称だった）。
           clearObsEnableTimer("effects");
+          clearObsEnableTimer("stage");
           // ⚠⚠ 061e(1): **045c の不変条件「連携 OFF なら必ず `obsState` を idle へ戻す」を effects 側でも
           // 成立させる。** 061a はここで `clearObsEnableTimer` しか呼んでおらず（表示 OFF 側の分岐だけが
           // idle へ戻していた）、そのせいで「エフェクトの失敗の赤字が、連携を OFF にしても残る」形になっていた。
@@ -1778,9 +1821,13 @@ export function CommentViewerApp() {
   useEffect(() => {
     if (!streamConnected || effectReconcileDoneRef.current) return;
     effectReconcileDoneRef.current = true;
-    if (loadEffectObsAutoAdd() && loadEffectOverlayEnabled()) {
+    if (loadEffectObsAutoAdd()) {
       // 猶予は要らない（窓は既に開いていて OBS のウィンドウ一覧に載っているはず）。
-      requestEffectObsAutoAddIfOpen();
+      // ⚠⚠ 061k: **2 窓ぶんを独立に判定する**（片方だけ条件がある、が通常の状態）。
+      //   ⚠ 合計で判定すると「コーナー条件しか無いのにステージのソースを作りに行く」＝
+      //   キャプチャ対象未設定の空ソースが OBS に残る（`requestStageObsAutoAddIfOpen` の注記）。
+      if (loadEffectOverlayEnabled()) requestEffectObsAutoAddIfOpen();
+      if (loadStageOverlayEnabled()) requestStageObsAutoAddIfOpen();
     }
     // ⚠ `requestEffectObsAutoAddIfOpen` はレンダーごとに作り直されるが、読むのは ref と localStorage だけ。
     // eslint-disable-next-line react-hooks/exhaustive-deps

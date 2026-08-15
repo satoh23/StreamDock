@@ -834,3 +834,63 @@ describe("061b: decideEffects（発火層）", () => {
     expect(state.lastGiftAt.get("youtube:u1")).toBe(before);
   });
 });
+
+/**
+ * 061k（判断 5・**新規 1 の本体**）: **もう一方の窓宛ての条件が、この窓の state を 1 バイトも汚さない。**
+ *
+ * ⚠⚠ **「出ない」だけを見るアサーションでは、判断 5 が却下した実装を殺せない。**
+ * 却下したのは「`EffectRequest` に `output` を載せ、窓側で自分宛てでなければ捨てる」形で、
+ * それでも**出力は同じ（出ない）**である。違うのは **`decideEffects` が発火時に
+ * `recentFires.push` / `lastConditionAt.set` / `lastGiftAt.set` を書いてしまう**こと——
+ * ＝ **コーナー窓のバースト枠がステージ用エフェクトに食われる**。
+ *
+ * ⚠ ここは `effectAssignments.ts` を通さず、**却下した実装を模した matcher** で
+ * 「発火層の側から見て何が違うのか」を直接固定する（＝ 実装の置き場所が将来変わっても効く）。
+ * ⚠⚠ **061j 追加穴 η・061d-2 穴 γ と同型の罠であり、これが 3 回目である。**
+ */
+describe("061k: 出力先の絞り込みは state を汚してはいけない（判断 5）", () => {
+  /** ⚠ 採用した実装＝**自分宛てでなければ matcher が `null` を返す**（state に触れない）。 */
+  const OTHER_WINDOW_SKIPS: EffectMatcher = () => null;
+
+  it("⚠⚠ 相手の窓宛ての条件しかないとき、この窓の state のサイズが 1 つも増えない", () => {
+    const state = createEffectTriggerState();
+    const out = feedOneByOne(
+      [comment({ id: "a" }), comment({ id: "b" }), comment({ id: "c" })],
+      state,
+    ).length;
+    // 対照: 素の TPL matcher なら 3 件出て state も積まれる。
+    expect(out).toBe(3);
+    expect(state.recentFires.length).toBe(3);
+
+    // 本題: 相手の窓宛て（matcher が null）なら **1 件も出ず、state も 1 つも増えない**。
+    const other = createEffectTriggerState();
+    for (const id of ["a", "b", "c"]) {
+      expect(decideEffects([comment({ id })], [], other, T0, OTHER_WINDOW_SKIPS)).toHaveLength(0);
+    }
+    // ⚠⚠ **ここが本命の 3 行**（「出ない」だけを見ると、捨てる実装が生存する）。
+    expect(other.recentFires.length).toBe(0);
+    expect(other.lastConditionAt.size).toBe(0);
+    expect(other.lastGiftAt.size).toBe(0);
+  });
+
+  it("⚠⚠ 相手の窓宛てが `EFFECT_MAX_CONCURRENT` 件続いても、直後の自分宛てが捨てられない", () => {
+    // ⚠ これが「バースト枠を食われる」の具体形である。
+    const state = createEffectTriggerState();
+    for (let i = 0; i < EFFECT_MAX_CONCURRENT + 2; i++) {
+      decideEffects([comment({ id: `other-${i}` })], [], state, T0, OTHER_WINDOW_SKIPS);
+    }
+    // 自分宛ての 1 件目は**必ず出る**（枠が消費されていないため）。
+    const mine = decideEffects([comment({ id: "mine" })], [], state, T0, TPL);
+    expect(mine).toHaveLength(1);
+  });
+
+  it("⚠⚠ 相手の窓宛ては、同じ条件 id のクールダウンも消費しない", () => {
+    // ⚠ 「捨てる」実装だと `lastConditionAt` に相手ぶんの id が積まれ、
+    //   **自分の窓で同じ条件が当たったときに黙って落ちる**（＝ 出るはずのものが出ない）。
+    const state = createEffectTriggerState();
+    decideEffects([comment({ id: "other", text: "草" })], [], state, T0, OTHER_WINDOW_SKIPS);
+    expect(state.lastConditionAt.size).toBe(0);
+    const m = keywordMatcher("草", "kw:1", 10_000);
+    expect(decideEffects([comment({ id: "mine", text: "草" })], [], state, T0, m)).toHaveLength(1);
+  });
+});

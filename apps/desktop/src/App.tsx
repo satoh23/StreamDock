@@ -65,7 +65,13 @@ function MainWindowApp() {
   const [addToolPrefillName, setAddToolPrefillName] = useState<string | null>(null);
   const [addToolOrigin, setAddToolOrigin] = useState<Screen>("main");
 
-  // 061a: 「エフェクトを配信画面に表示する」が ON なのに窓が無ければ開き直す（永続設定の復元）。
+  // 061a: **エフェクトの出力窓を、永続設定（＝表示する条件があるか）に従って開き直す**（起動時の復元）。
+  //
+  // ⚠⚠ **061k で 061i 申し送り §9 の残骸を返済した**——ここは長らく **061i で廃止された旧トグルの
+  //   ON/OFF** を復元の条件として名指ししていたが、いまの判定は
+  //   「**表示する条件が 1 件以上あるか**」の派生値である。
+  // ⚠⚠ **061k で復元する窓が 2 本になった**（コーナー／ステージ）。**独立に判定して独立に開く**
+  //   （片方の結果でもう片方を判断しない）。判断の本体は `effectOverlayRestore.ts` にある。
   //
   // ⚠ **ここ（main 窓のマウント＝アプリ起動時）で復元するのが要点**。046b が固定コメント窓で同じことを
   // している理由と同じで、**配信開始時に窓が無いと OBS のウィンドウキャプチャソースが真っ黒のまま始まる**。
@@ -416,9 +422,14 @@ function MainWindowApp() {
  * `main`（既定）= 管理画面（MainWindowApp）／`comment-viewer` = 内蔵コメントビューア／
  * `comment-overlay` = OBS 用の背景透過オーバーレイ（コメント一覧・表示専用）／
  * `pinned-overlay` = 固定コメント専用の背景透過オーバーレイ（046a のピンだけを描く・表示専用・WS なし）／
- * `effect-overlay` = エフェクト専用の背景透過オーバーレイ（061a では空＋セットアップ用ガイド・表示専用・WS なし）。
+ * `effect-overlay` = エフェクトの**コーナー側**の出力窓（061b 以降は loopback WS へ読み取り専用接続）／
+ * `stage-overlay` = エフェクトの**全画面（ステージ）側**の出力窓（**061k で追加**）。
+ * ⚠⚠ **後ろの 2 つは同じ [`EffectOverlayApp`] を `output` prop 違いで描く**——描画も接続も完全に同じで、
+ * 違うのは「どの `output` の条件を拾うか」「どちらの保留旗を読むか」「案内文に出す窓名」だけである。
+ * ⚠ **`output` は省略可にしない**（渡し忘れが「黙って片方の窓に出ない」へ倒れる・061i / 061h の規律）。
  * ウィンドウ生成は Rust の `open_comment_viewer_window` / `open_comment_overlay_window` /
- * `open_pinned_overlay_window` / `open_effect_overlay_window` に閉じ、frontend からは生成しない。
+ * `open_pinned_overlay_window` / `open_effect_overlay_window` / `open_stage_overlay_window` に閉じ、
+ * frontend からは生成しない。
  */
 function App() {
   const label = getCurrentWindow().label;
@@ -432,7 +443,11 @@ function App() {
     return <PinnedOverlayApp />;
   }
   if (label === "effect-overlay") {
-    return <EffectOverlayApp />;
+    return <EffectOverlayApp output="corner" />;
+  }
+  // ⚠ 061k: **同じコンポーネント・別の出力先**（窓ごとに `output` を束縛するのはここ 1 か所だけ）。
+  if (label === "stage-overlay") {
+    return <EffectOverlayApp output="stage" />;
   }
   return <MainWindowApp />;
 }

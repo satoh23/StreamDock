@@ -6,7 +6,12 @@ import {
   assignedTemplateIds,
   clearAllEffectConditions,
   clearEffectConditionsForTemplate,
+  createEffectMatcher,
+  DEFAULT_EFFECT_OUTPUT,
   effectConditionCount,
+  EFFECT_OUTPUT_LABEL,
+  EFFECT_OUTPUT_WINDOW_TITLE,
+  EFFECT_OUTPUTS,
   hasEffectConditions,
   isUsableKeyword,
   KEYWORD_CONDITION_MAX,
@@ -14,13 +19,14 @@ import {
   KEYWORD_MAX_LENGTH,
   loadEffectConditions,
   removeCondition,
-  resolveEffectMatch,
   sanitizeKeywordInput,
   saveEffectConditions,
   setConditionEffect,
+  setConditionOutput,
   updateKeywordCondition,
   type EffectCondition,
   type EffectConditions,
+  type EffectOutput,
 } from "./effectAssignments";
 import { CONDITION_COOLDOWN_MAX_MS } from "./effectTrigger";
 
@@ -54,6 +60,17 @@ const UUID2 = "0f0e0d0c-1111-4222-8333-444455556666";
 const TPL = { kind: "template", templateId: UUID } as const;
 
 const EVENT_TYPES = [...MONETARY_EVENT_TYPES];
+
+/**
+ * 061k: **061j までの `resolveEffectMatch` 相当**（＝コーナー窓の matcher）。
+ *
+ * ⚠ 061j までの全ケースは「窓が 1 本だった時代」の仕様なので、この 1 本で**無改変のまま通る**
+ * （既定の出力先が `"corner"` だから＝判断 4-b の「既存ユーザーの見え方が変わらない」の裏取りでもある）。
+ * ⚠ **出力先の絞り込みそのものを見るケースは別に置く**（下の「061k: 出力先」節）。
+ * ⚠ factory をモジュールの先頭で 1 回作っているが、**返す関数は呼ばれるたびに localStorage を読む**ので
+ * 各ケースの `beforeEach` でのクリアが効く（061k が「読み直しの規律を変えていない」ことの副次的な担保）。
+ */
+const resolveEffectMatch = createEffectMatcher(DEFAULT_EFFECT_OUTPUT);
 
 /** 保存値をそのまま読む（＝「書き戻していない」ことの確認にも使う）。 */
 const raw = (): string | null => localStorage.getItem(EFFECT_ASSIGNMENTS_KEY);
@@ -249,7 +266,12 @@ describe("effectAssignments（061j: 条件の配列）", () => {
     for (const text of ["", " ", "　", " 　 "]) {
       localStorage.clear();
       saveEffectConditions([
-        { id: "kw:1", when: { type: "keyword", text, match: "contains" }, effect: TPL },
+        {
+          id: "kw:1",
+          when: { type: "keyword", text, match: "contains" },
+          effect: TPL,
+          output: DEFAULT_EFFECT_OUTPUT,
+        },
       ]);
       expect(keywordRows(loadEffectConditions())).toHaveLength(0);
       // ⚠ 条件が 1 件も残らないので、キーごと消えている（未保存＝既定と同じ状態）。
@@ -370,8 +392,18 @@ describe("effectAssignments（061j: 条件の配列）", () => {
 
   it("保存した条件を読み戻せる（イベント・キーワードの両方）", () => {
     saveEffectConditions([
-      { id: "event:superchat", when: { type: "event", eventType: "superchat" }, effect: TPL },
-      { id: "kw:1", when: { type: "keyword", text: "草", match: "exact" }, effect: TPL },
+      {
+        id: "event:superchat",
+        when: { type: "event", eventType: "superchat" },
+        effect: TPL,
+        output: DEFAULT_EFFECT_OUTPUT,
+      },
+      {
+        id: "kw:1",
+        when: { type: "keyword", text: "草", match: "exact" },
+        effect: TPL,
+        output: DEFAULT_EFFECT_OUTPUT,
+      },
     ]);
     const conditions = loadEffectConditions();
     expect(conditions.find((c) => c.id === "event:superchat")?.effect).toEqual(TPL);
@@ -389,7 +421,12 @@ describe("effectAssignments（061j: 条件の配列）", () => {
   it("⚠⚠ キーワード条件が 1 件でも在ればキーを消さない（打った文字列を勝手に捨てない）", () => {
     // ⚠ **エフェクトが「出さない」でも消さない**のが要点——キーワードは**ユーザーのデータ**である。
     saveEffectConditions([
-      { id: "kw:1", when: { type: "keyword", text: "草", match: "contains" }, effect: NONE },
+      {
+        id: "kw:1",
+        when: { type: "keyword", text: "草", match: "contains" },
+        effect: NONE,
+        output: DEFAULT_EFFECT_OUTPUT,
+      },
     ]);
     expect(raw()).not.toBeNull();
     const rows = keywordRows(loadEffectConditions());
@@ -403,7 +440,12 @@ describe("effectAssignments（061j: 条件の配列）", () => {
     });
     expect(() =>
       saveEffectConditions([
-        { id: "event:gift", when: { type: "event", eventType: "gift" }, effect: TPL },
+        {
+          id: "event:gift",
+          when: { type: "event", eventType: "gift" },
+          effect: TPL,
+          output: DEFAULT_EFFECT_OUTPUT,
+        },
       ]),
     ).not.toThrow();
   });
@@ -644,6 +686,214 @@ describe("effectAssignments（061j: 条件の配列）", () => {
     expect(KEYWORD_COOLDOWN_MS).toBeLessThanOrEqual(CONDITION_COOLDOWN_MAX_MS);
   });
 
+  // --- 061k: 出力先（どこへ出すか・第 3 の軸） ---------------------------------------------------
+
+  /** 061k: 条件 1 件を保存形のまま仕込む（`output` を明示できる）。 */
+  const seed = (items: unknown[]) =>
+    localStorage.setItem(EFFECT_ASSIGNMENTS_KEY, JSON.stringify(items));
+  /** 061k: 出力先つきのキーワード条件。 */
+  const kwOut = (n: number, text: string, output: unknown, effect: unknown = TPL) => ({
+    id: `kw:${n}`,
+    when: { type: "keyword", text, match: "contains" },
+    effect,
+    output,
+  });
+  /** 061k: 出力先つきのイベント条件。 */
+  const evOut = (eventType: string, output: unknown, effect: unknown = TPL) => ({
+    id: `event:${eventType}`,
+    when: { type: "event", eventType },
+    effect,
+    output,
+  });
+  const outputOf = (conditions: EffectConditions, id: string) =>
+    conditions.find((c) => c.id === id)?.output;
+
+  it("⚠⚠ 新規 2: `output` の無い保存値は `corner` へ倒れる（既存ユーザーの見え方が 1 ミリも変わらない）", () => {
+    // ⚠ **061j までの保存値そのもの**（`output` フィールドが存在しない）。
+    seed([ev("superchat"), kw(1, "草")]);
+    const conditions = loadEffectConditions();
+    expect(outputOf(conditions, "event:superchat")).toBe("corner");
+    expect(outputOf(conditions, "kw:1")).toBe("corner");
+    // ⚠ 061i 以前の**旧形式（Record）**からの移行も同じ（出力先という概念が無かった）。
+    seed([]);
+    localStorage.setItem(EFFECT_ASSIGNMENTS_KEY, JSON.stringify({ superchat: TPL }));
+    expect(outputOf(loadEffectConditions(), "event:superchat")).toBe("corner");
+  });
+
+  it("⚠⚠ 新規 3: 未知の `output` も `corner` へ（「出さない」へは倒さない＝意味が違う）", () => {
+    // ⚠⚠ 061j の「未知は安全側」と**形は同じだが意味が違う**——ここでの安全側は
+    //   「出さない」ではなく「**既存の挙動**」である。倒す先を `none` にすると
+    //   「アップデートしたらエフェクトが消えた」になる。
+    for (const bad of ["fullscreen", "", 42, null, {}, ["stage"], "__proto__", "constructor"]) {
+      seed([evOut("superchat", bad), kwOut(1, "草", bad)]);
+      const conditions = loadEffectConditions();
+      expect(outputOf(conditions, "event:superchat")).toBe("corner");
+      expect(outputOf(conditions, "kw:1")).toBe("corner");
+      // ⚠ **「出さない」へ倒れていない**ことも同時に見る（倒す先を取り違える変異を殺す）。
+      expect(conditions.find((c) => c.id === "event:superchat")?.effect).toEqual(TPL);
+    }
+  });
+
+  it("⚠⚠ T-c: `stage` を指定した条件は保存され、読み直しても `stage` のまま", () => {
+    // ⚠⚠ **これが無いと「常に corner へ丸める」変異（⑯-a）が生存する**
+    //   ——下の T-a / T-b（丸めと削除条件）だけでは、丸めすぎを検出できない。
+    seed([evOut("superchat", "stage"), kwOut(1, "草", "stage")]);
+    const conditions = loadEffectConditions();
+    expect(outputOf(conditions, "event:superchat")).toBe("stage");
+    expect(outputOf(conditions, "kw:1")).toBe("stage");
+    // 保存経路（`saveEffectConditions` → `parseConditions`）を通しても往復すること。
+    saveEffectConditions(conditions);
+    expect(outputOf(loadEffectConditions(), "event:superchat")).toBe("stage");
+    expect(outputOf(loadEffectConditions(), "kw:1")).toBe("stage");
+  });
+
+  it("⚠⚠ T-b: `effect` が「出さない」の条件は `output` が既定へ丸められる（判断 4-b）", () => {
+    // ⚠ 「何も出さない条件の出力先」に意味は無い。丸めておくことで
+    //   `saveEffectConditions` の「キーごと削除」条件が**無改変のまま正しくなる**。
+    seed([evOut("superchat", "stage", NONE), kwOut(1, "草", "stage", NONE)]);
+    const conditions = loadEffectConditions();
+    expect(outputOf(conditions, "event:superchat")).toBe("corner");
+    expect(outputOf(conditions, "kw:1")).toBe("corner");
+  });
+
+  it("⚠⚠ T-b': 「出さない」行にエフェクトを選び直しても、隠れていた出力先が有効化されない", () => {
+    // ⚠⚠ **丸めが防いでいる実挙動はこれである**（T-b は保存値の見え方の話）。
+    //   丸めが無いと、手編集や過去の操作で `{effect:none, output:"stage"}` が残った行に
+    //   ユーザーがテンプレートを選んだ瞬間、**画面に一度も出ていない「全画面」が有効になる**
+    //   ——「コーナーに出るはずが全画面に出る」が無操作で起きる。
+    seed([evOut("superchat", "stage", NONE)]);
+    setConditionEffect("event:superchat", TPL);
+    expect(outputOf(loadEffectConditions(), "event:superchat")).toBe("corner");
+    expect(effectConditionCount(loadEffectConditions(), "stage")).toBe(0);
+  });
+
+  it("⚠⚠ T-a: イベント条件が全部「出さない」なら、出力先を変えていてもキーごと消える", () => {
+    // ⚠⚠ **これが「ユーザーが変えた出力先が黙って消える」問題の答えである**——
+    //   丸めによって「全部 none だが output は stage」という状態が**保存形に存在しなくなる**ので、
+    //   061j の削除条件を 1 文字も変えずに済む（＝分岐を増やさない）。
+    seed([evOut("superchat", "stage", NONE), evOut("gift", "stage", NONE)]);
+    saveEffectConditions(loadEffectConditions());
+    expect(raw()).toBeNull();
+  });
+
+  it("⚠ キーワード条件が在れば、出力先を変えていてもキーは消えない（打った文字列を捨てない）", () => {
+    seed([kwOut(1, "草", "stage", NONE)]);
+    saveEffectConditions(loadEffectConditions());
+    expect(raw()).not.toBeNull();
+    expect(keywordRows(loadEffectConditions())).toHaveLength(1);
+  });
+
+  it("⚠ `setConditionOutput` で出力先を変えられる（イベント条件・キーワード条件の両方）", () => {
+    setConditionEffect("event:superchat", TPL);
+    addKeywordCondition({ text: "草", match: "contains" }, TPL);
+    setConditionOutput("event:superchat", "stage");
+    setConditionOutput("kw:1", "stage");
+    const conditions = loadEffectConditions();
+    expect(outputOf(conditions, "event:superchat")).toBe("stage");
+    expect(outputOf(conditions, "kw:1")).toBe("stage");
+    // ⚠ 触っていない条件は既定のまま（1 件だけ変わることの担保）。
+    expect(outputOf(conditions, "event:gift")).toBe("corner");
+  });
+
+  it("⚠ `setConditionOutput` は存在しない id では何も壊さない", () => {
+    setConditionEffect("event:superchat", TPL);
+    const before = raw();
+    setConditionOutput("kw:999", "stage");
+    expect(outputOf(loadEffectConditions(), "event:superchat")).toBe("corner");
+    expect(raw()).toBe(before);
+  });
+
+  it("⚠⚠ 新規 4: `effectConditionCount` は出力先ごとに数える／省略すると合計", () => {
+    seed([
+      evOut("superchat", "corner"),
+      evOut("gift", "stage"),
+      kwOut(1, "草", "stage"),
+      // ⚠ 「出さない」条件は出力先に関係なく 0 件側（061i からの規則は無改変）。
+      kwOut(2, "w", "stage", NONE),
+    ]);
+    const conditions = loadEffectConditions();
+    expect(effectConditionCount(conditions, "corner")).toBe(1);
+    expect(effectConditionCount(conditions, "stage")).toBe(2);
+    // ⚠⚠ **省略時は合計**（前提ステータスの「表示する条件」がこれを出す）。
+    //   ⚠ 既定を片方の窓にすると画面の数字が黙って半分になる。
+    expect(effectConditionCount(conditions)).toBe(3);
+    expect(hasEffectConditions(conditions, "stage")).toBe(true);
+    expect(hasEffectConditions(conditions, "corner")).toBe(true);
+    expect(hasEffectConditions(conditions)).toBe(true);
+  });
+
+  it("⚠⚠ 新規 6（判定側）: corner 条件だけのとき stage は 0 件（＝ステージ窓を開く理由が無い）", () => {
+    seed([evOut("superchat", "corner"), kwOut(1, "草", "corner")]);
+    const conditions = loadEffectConditions();
+    expect(hasEffectConditions(conditions, "corner")).toBe(true);
+    expect(hasEffectConditions(conditions, "stage")).toBe(false);
+    // 逆向きも同じ。
+    seed([evOut("superchat", "stage")]);
+    const only = loadEffectConditions();
+    expect(hasEffectConditions(only, "stage")).toBe(true);
+    expect(hasEffectConditions(only, "corner")).toBe(false);
+  });
+
+  it("⚠⚠ 新規 13（判定側）: `assignedTemplateIds` は出力先で絞れる／省略すると合計", () => {
+    // ⚠ 先読みの 20MiB 予算を「もう一方の窓のぶん」で使わないための絞り込み。
+    seed([evOut("superchat", "corner"), evOut("gift", "stage", { kind: "template", templateId: UUID2 })]);
+    const conditions = loadEffectConditions();
+    expect(assignedTemplateIds(conditions, "corner")).toEqual([UUID]);
+    expect(assignedTemplateIds(conditions, "stage")).toEqual([UUID2]);
+    expect(assignedTemplateIds(conditions).sort()).toEqual([UUID2, UUID].sort());
+  });
+
+  it("⚠⚠ 新規 1: corner の matcher は stage の条件を返さない／その逆も", () => {
+    seed([kwOut(1, "こーなー", "corner"), kwOut(2, "すてーじ", "stage")]);
+    const corner = createEffectMatcher("corner");
+    const stage = createEffectMatcher("stage");
+    expect(corner({ eventType: "chat", text: "こーなー" })?.conditionId).toBe("kw:1");
+    expect(corner({ eventType: "chat", text: "すてーじ" })).toBeNull();
+    expect(stage({ eventType: "chat", text: "すてーじ" })?.conditionId).toBe("kw:2");
+    expect(stage({ eventType: "chat", text: "こーなー" })).toBeNull();
+    // イベント条件でも同じ。
+    seed([evOut("superchat", "stage")]);
+    expect(createEffectMatcher("stage")({ eventType: "superchat", text: "" })?.conditionId).toBe(
+      "event:superchat",
+    );
+    expect(createEffectMatcher("corner")({ eventType: "superchat", text: "" })).toBeNull();
+  });
+
+  it("⚠ 出力先を変えると、次の照合から相手の matcher が当てる（保存が即座に効く）", () => {
+    addKeywordCondition({ text: "草", match: "contains" }, TPL);
+    expect(createEffectMatcher("corner")({ eventType: "chat", text: "草" })).not.toBeNull();
+    setConditionOutput("kw:1", "stage");
+    // ⚠⚠ **factory を作り直していない**（＝返す関数が毎回 localStorage を読んでいることの担保）。
+    const corner = createEffectMatcher("corner");
+    const stage = createEffectMatcher("stage");
+    setConditionOutput("kw:1", "stage");
+    expect(corner({ eventType: "chat", text: "草" })).toBeNull();
+    expect(stage({ eventType: "chat", text: "草" })).not.toBeNull();
+  });
+
+  it("⚠ 出力先の表は `EffectOutput` の全値を持ち、窓名は互いに部分文字列でない（案内文の出所）", () => {
+    // ⚠⚠ **窓名は sidecar の `includes` 一致で使われる**ので、互いに含み合ってはいけない。
+    //   ⚠ Rust の `frontend_window_title_table_matches_overlay_titles` が実タイトルとの
+    //   バイト一致を見ており、ここは「表の形」だけを見る（2 層で守る）。
+    for (const output of EFFECT_OUTPUTS) {
+      expect(EFFECT_OUTPUT_WINDOW_TITLE[output]).toBeTruthy();
+      expect(EFFECT_OUTPUT_LABEL[output]).toBeTruthy();
+    }
+    expect(Object.keys(EFFECT_OUTPUT_WINDOW_TITLE).sort()).toEqual([...EFFECT_OUTPUTS].sort());
+    for (const a of EFFECT_OUTPUTS) {
+      for (const b of EFFECT_OUTPUTS) {
+        if (a === b) continue;
+        expect(EFFECT_OUTPUT_WINDOW_TITLE[a].includes(EFFECT_OUTPUT_WINDOW_TITLE[b])).toBe(false);
+      }
+    }
+    // ⚠ **画面での呼び方と窓名は別物**（判断 2＝改名は禁止なので UI 側だけ変えた）。
+    for (const output of EFFECT_OUTPUTS) {
+      expect(EFFECT_OUTPUT_LABEL[output]).not.toBe(EFFECT_OUTPUT_WINDOW_TITLE[output]);
+    }
+    // ⚠ 既定は「061j までの唯一の窓」＝コーナー（ここを stage にすると既存ユーザーの見え方が変わる）。
+    expect(DEFAULT_EFFECT_OUTPUT).toBe<EffectOutput>("corner");
+  });
+
   // --- §9 ---------------------------------------------------------------------------------------
 
   it("⚠⚠ 照合の戻り値に本文が 1 バイトも含まれない（§9・型の担保をテストでも固定）", () => {
@@ -676,5 +926,7 @@ const _shape: EffectCondition = {
   id: "kw:1",
   when: { type: "keyword", text: "草", match: "contains" },
   effect: { kind: "none" },
+  // ⚠ 061k: 第 3 の軸。⚠ **`when` にも `effect` にも入っていない**ことを型で示す。
+  output: "corner",
 };
 void _shape;

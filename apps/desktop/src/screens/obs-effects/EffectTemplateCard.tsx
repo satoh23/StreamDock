@@ -4,11 +4,13 @@ import {
   requestEffectTestFire,
   saveEffectOverlayGuidePending,
   saveEffectTestFirePending,
+  saveStageTestFirePending,
 } from "../../features/comment-viewer/overlaySettings";
 import { Button } from "../../components/primitives";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { EffectTemplatePreview } from "./EffectTemplatePreview";
 import type { UseEffectTemplates } from "./useEffectTemplates";
+import type { EffectOutput } from "./effectAssignments";
 import layout from "../formLayout.module.css";
 import styles from "./ObsEffectsScreen.module.css";
 
@@ -65,6 +67,27 @@ import styles from "./ObsEffectsScreen.module.css";
  * **窓生成の完了**であって、**エフェクト窓の React が `storage` リスナーを登録し終えたこと**ではない。
  * 「open を await → nonce を書く」と実装すると**確率的に取りこぼす**（詳細は
  * `EFFECT_TEST_FIRE_PENDING_KEY` の JSDoc）。
+ *
+ * ## ⚠⚠ 061k（判断 8）: テスト表示は **2 つの窓の両方へ出す**
+ *
+ * テスト表示の目的は **OBS の位置合わせ**で、061k 以降は**合わせる対象が 2 ソースある**
+ * （セットアップでは 2 つとも OBS に追加するのだから、**同時に出るほうが目的に合っている**）。
+ * ⇒ **上の表を窓ごとに独立に適用する**（コーナーは開いていてステージは停止中、が通常の状態）。
+ * ⚠⚠ **保留旗も窓ごとに 2 本あり、各窓は自分の旗だけを読む**——1 本にすると
+ * 先にマウントした窓が両方を食い、もう片方が無反応になる。
+ *
+ * ⚠ **却下した案＝行に「出力先」の選択を足す**: `.templateRow` のボタンは**既に 3 個**で、
+ * **061h レビュー Q-4 が「再修正トリガー＝ボタンが 4 個以上になるとき」**と明記している
+ * （`.templateRow > button` の `flex: none` / `white-space: nowrap` は 3 個前提。
+ * ⚠⚠ **jsdom はレイアウトを解決しないのでテストは全部緑のまま壊れる**）。
+ * ＝ 出力先の選択をここへ足すと**行を 2 段にする作業が付いてくる**ので、判断 8 は UI 追加ゼロを選んだ。
+ * ⚠ **再修正トリガー＝「片方だけ出したい」と言われたとき**——そのとき wire に出力先を載せ、
+ * **同時に `.templateRow` を 2 段レイアウトへ変えること**（Q-4 のトリガーを一緒に消化する）。
+ *
+ * ⚠ **代償＝ステージ窓を使う気が無いユーザーでも、テスト表示で窓が開く。**
+ * 緩和は ①開いた窓には**必ずそのテンプレートが出る**（＝「開いたのに何も出ない窓」ではない）
+ * ②前提ステータスに 2 行出て、それぞれに「ウィンドウを閉じる」がある（判断 11）
+ * ③「表示する条件」行の内訳で「全画面 0」が見える。
  */
 export function EffectTemplateCard({
   templates,
@@ -80,22 +103,30 @@ export function EffectTemplateCard({
   runDelete,
   conditionLabelsUsing,
   effectWindowOpen,
+  stageWindowOpen,
   openEffectOverlay,
 }: UseEffectTemplates & {
   /**
-   * 061h: エフェクト窓が開いているか（`null` ＝ 未取得）。⚠ **前提ステータスの持ち主は
+   * 061h: **コーナー側**のエフェクト窓が開いているか（`null` ＝ 未取得）。⚠ **前提ステータスの持ち主は
    * `ObsEffectsScreen`**（2 秒ごとのポーリング）で、ここはそれを注記と経路の分岐に使う。
    * ⚠ **省略可にしない**——既定値を持たせると、渡し忘れたときに
    * 「窓が停止中でも注記が出ない＝黙って何も起きない」へ倒れる（061a 以来の規律）。
    */
   effectWindowOpen: boolean | null;
   /**
-   * 061i: **エフェクト窓を開く**（判断 4）。⚠ **この module は `windowApi` を import しない**
-   * ——窓の invoke は `ObsEffectsScreen` の直列化キュー（`effectOverlayOpRef`）を通す必要があり、
+   * 061k: **ステージ側**の窓が開いているか（`null` ＝ 未取得）。⚠ `effectWindowOpen` と**同型・独立**。
+   * ⚠⚠ **片方の値でもう片方を代表させないこと**——代表させると「開いている窓に旗を立てる」
+   * （＝消えない残骸）か「停止中の窓へ `storage` を撒く」（＝押しても出ない）のどちらかが起きる。
+   */
+  stageWindowOpen: boolean | null;
+  /**
+   * 061i: **エフェクトの出力窓を開く**（判断 4）。⚠ **この module は `windowApi` を import しない**
+   * ——窓の invoke は `ObsEffectsScreen` の直列化キューを通す必要があり、
    * ここから直接投げると「『ウィンドウを閉じる』と競合して順序が入れ替わる」経路を作ってしまう。
    * ⚠ **省略可にしない**（渡し忘れが「押しても窓が開かない」＝黙って何も起きないへ倒れる）。
+   * ⚠ 061k: **どちらの窓かを引数で指定する**（キューも窓ごとに分かれている）。
    */
-  openEffectOverlay: () => void;
+  openEffectOverlay: (output: EffectOutput) => void;
 }) {
   /** プレビュー中のテンプレート。⚠ **record をそのまま持つ**（一覧から `find` しない・S-2(a)）。 */
   const [preview, setPreview] = useState<EffectTemplateRecord | null>(null);
@@ -126,18 +157,29 @@ export function EffectTemplateCard({
    * （窓のマウントは invoke の解決より後なので順序は保証されるが、その保証に依存しない）。
    */
   const handleTestFire = (templateId: string) => {
-    if (effectWindowOpen === false) {
-      saveEffectTestFirePending(templateId);
-      // ⚠⚠ **セットアップ用ガイドの新しい起点はここだけ**（判断 3・061a レビュー Q-1）。
-      //   061h までは `ObsEffectsScreen` の表示トグル ON が起点だったが、あのトグルは 061i で消えた。
-      //   ⚠ **条件を編集して窓が自動で開いたときは立てない**（`ObsEffectsScreen` の
-      //   `openEffectOverlay` はこの旗を触らない）——立てると**条件を足すたび**に
-      //   ガイドが 30 秒 OBS へ映る。ここは「窓が停止中に、位置合わせのために開いた」瞬間である。
-      saveEffectOverlayGuidePending(true);
-      openEffectOverlay();
-      return;
-    }
-    requestEffectTestFire(templateId);
+    // ⚠⚠ **061k（判断 8）: 2 つの窓に対して、それぞれ独立に経路を選ぶ。**
+    //   ⚠ 停止中の窓には**その窓の保留旗**を立てて開く／開いている窓には `storage` を撒く。
+    //   ⚠ **相手の旗を立てない・相手の状態で判断しない**（片方だけ停止中、が通常の状態）。
+    const stagePending = stageWindowOpen === false;
+    const cornerPending = effectWindowOpen === false;
+    if (cornerPending) saveEffectTestFirePending(templateId);
+    if (stagePending) saveStageTestFirePending(templateId);
+    // ⚠⚠ **セットアップ用ガイドの新しい起点はここだけ**（判断 3・061a レビュー Q-1）。
+    //   061h までは `ObsEffectsScreen` の旧トグル ON が起点だったが、あのトグルは 061i で消えた。
+    //   ⚠ **条件を編集して窓が自動で開いたときは立てない**（`ObsEffectsScreen` の
+    //   `openEffectOverlay` はこの旗を触らない）——立てると**条件を足すたび**に
+    //   ガイドが 30 秒 OBS へ映る。ここは「窓が停止中に、位置合わせのために開いた」瞬間である。
+    //   ⚠ 061k: **旗は窓ごとに分けていない**（1 本で 2 窓とも倒れる）——ガイドは「窓の位置を示す」
+    //   ためのもので、**開いた窓すべてに出るのが正しい**（どちらを開いても位置合わせ中である）。
+    if (cornerPending || stagePending) saveEffectOverlayGuidePending(true);
+    // ⚠ **旗を書き終えてから開く**（`saveEffectOverlayGuidePending` と同じ作法）。
+    if (cornerPending) openEffectOverlay("corner");
+    if (stagePending) openEffectOverlay("stage");
+    // ⚠ **開いている（または未取得の）窓へは従来どおり `storage` で撒く。**
+    //   ⚠⚠ **2 経路を混ぜないこと**——開いている窓に旗を立てると**消えない残骸**になり、
+    //   次に窓が開いた瞬間に無操作でエフェクトが出る（046b レビュー S-1 と同型）。
+    //   ⚠ `storage` は**全窓へ飛ぶ**ので、片方でも `storage` 経路なら 1 回書けば足りる。
+    if (!cornerPending || !stagePending) requestEffectTestFire(templateId);
   };
 
   /** 表示秒数の見出し用。⚠ 壊れ値は握りつぶす（一覧が落ちるより「—」のほうがよい）。 */
@@ -256,12 +298,19 @@ export function EffectTemplateCard({
           //   「ウィンドウが停止中のため、いまは何も表示されません」と書いていたが、
           //   いまは**開いてから出す**ので、そのままだと**嘘になる**（061a レビュー Q-1 の規律＝
           //   約束できることだけ書く。文言を実装より先に古くしない）。
+          // ⚠⚠ **061k レビュー Q-2（修正）: この注記が `effectWindowOpen` だけを見ていた。**
+          //   「コーナーは開いていてステージは停止中」は上の JSDoc が「通常の状態」と書いている状態で、
+          //   そのとき注記が出ないまま `handleTestFire` が**ステージ窓を無告知で開く**。
+          //   上の JSDoc が受容した「⚠ 代償＝ステージ窓を使う気が無いユーザーでも窓が開く」を
+          //   **事前に伝える唯一の文がここ**なので、**どちらか一方でも停止中なら出す**。
+          // ⚠ どちらが停止中かまでは書かない（文が長くなるうえ、2 窓とも出るのが仕様なので
+          //   ユーザーが取る行動は同じ）。⚠ **窓を増やしたらここの条件も増やすこと。**
           <p className={styles.note}>
-            「配信画面でテスト表示」を押すと、そのエフェクトをエフェクトのウィンドウへ 1
-            回だけ出します。OBS
+            「配信画面でテスト表示」を押すと、そのエフェクトをエフェクトのウィンドウ 2
+            つへ 1 回だけ出します。OBS
             での位置合わせに使ってください（イベントの条件に使っていないエフェクトでも出せます）。
-            {effectWindowOpen === false &&
-              "エフェクトのウィンドウが停止中のため、ウィンドウを開いてから表示します。"}
+            {(effectWindowOpen === false || stageWindowOpen === false) &&
+              "停止中のウィンドウは、開いてから表示します。"}
           </p>
         )}
 

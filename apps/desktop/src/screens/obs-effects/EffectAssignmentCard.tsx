@@ -3,12 +3,16 @@ import { Button } from "../../components/primitives";
 import { Select } from "../../components/Select";
 import {
   DEFAULT_EFFECT_ASSIGNMENT,
+  DEFAULT_EFFECT_OUTPUT,
+  EFFECT_OUTPUT_LABEL,
+  EFFECT_OUTPUTS,
   isUsableKeyword,
   KEYWORD_CONDITION_MAX,
   KEYWORD_MAX_LENGTH,
   sanitizeKeywordInput,
   type EffectAssignment,
   type EffectKeywordMatch,
+  type EffectOutput,
 } from "./effectAssignments";
 import { EFFECT_EVENT_LABEL } from "./effectEventRows";
 import {
@@ -134,6 +138,55 @@ function ConditionEffectSelect({
 }
 
 /**
+ * 061k: 条件 1 行の「**どこへ出すか**」（判断 4）。
+ *
+ * ⚠⚠ **`ConditionEffectSelect` と同じく、イベント行とキーワード行が 1 実装を共有する。**
+ * 選択肢を 2 か所に書くと片方だけラベルや値がずれる（そして DOM からは観測しづらい）。
+ *
+ * ⚠⚠ **`effect.kind === "none"` の行は `disabled` にする。** 「何も出さない条件の出力先」に
+ * 意味は無く、保存層（`parseOutput`）が**既定へ丸める**ので、有効にすると
+ * **「選んだのに元へ戻る」**という説明できない挙動になる（判断 4-b の帰結）。
+ * ⚠ **`disabled` を外すなら、丸めのほうも同時に見直すこと**（対で成立している）。
+ */
+function ConditionOutputSelect({
+  output,
+  disabled,
+  ariaLabel,
+  onChange,
+}: {
+  output: EffectOutput;
+  disabled: boolean;
+  ariaLabel: string;
+  onChange: (output: EffectOutput) => void;
+}) {
+  return (
+    <Select
+      value={output}
+      ariaLabel={ariaLabel}
+      disabled={disabled}
+      onChange={(e) => {
+        // ⚠ 未知の値は既定へ（`<select>` の選択肢しか来ないが、保存層と同じ向きに倒しておく）。
+        const next = e.target.value;
+        onChange(
+          (EFFECT_OUTPUTS as readonly string[]).includes(next)
+            ? (next as EffectOutput)
+            : DEFAULT_EFFECT_OUTPUT,
+        );
+      }}
+    >
+      {/* ⚠ 並びは `EFFECT_OUTPUTS`（＝既定の `"corner"` が先頭）。⚠⚠ **先頭を変えないこと**——
+          061h ⑦-c と同じ理由で、ブラウザの既定選択と「規則が選ぶ値」が一致していることに
+          いくつかの検査が乗っている。 */}
+      {EFFECT_OUTPUTS.map((o) => (
+        <option key={o} value={o}>
+          {EFFECT_OUTPUT_LABEL[o]}
+        </option>
+      ))}
+    </Select>
+  );
+}
+
+/**
  * 061j: **未確定のキーワード行**（まだ localStorage に無い行）。
  *
  * ⚠⚠ **これがある理由＝判断 9（空文字を保存しない）と「条件を追加」ボタンの衝突を解くため。**
@@ -152,6 +205,7 @@ export function EffectAssignmentCard({
   listState,
   conditions,
   setConditionEffect,
+  setConditionOutput,
   addKeywordCondition,
   updateKeywordCondition,
   removeCondition,
@@ -240,7 +294,7 @@ export function EffectAssignmentCard({
             ⚠ **「条件を全部『出さない』に戻すと窓が閉じる」とは書かない**（＝閉じないので嘘になる）。 */}
         <p className={styles.note}>
           条件を 1
-          つでも設定すると、エフェクトのウィンドウが自動で開きます（下の「エフェクトのウィンドウ」の「ウィンドウを閉じる」でいつでも閉じられます）。
+          つでも設定すると、その条件の出力先のウィンドウが自動で開きます（下の「エフェクトのウィンドウ」の「ウィンドウを閉じる」でいつでも閉じられます）。出力先は条件ごとに選べます。
         </p>
         {/* ⚠⚠ **061i（判断 5）: (b)(c)(d) の「壊れて何も出ない」に対する唯一の実用的な観測手段。**
             `EffectOverlayApp` の `fire()` の JSDoc が列挙しているとおり、無音になる 5 経路のうち
@@ -304,6 +358,13 @@ export function EffectAssignmentCard({
                   listState={listState}
                   ariaLabel={`${label}のエフェクト`}
                   onChange={(effect) => setConditionEffect(condition.id, effect)}
+                />
+                {/* ⚠ 061k: 出力先。⚠ 「出さない」行では選べない（保存層が既定へ丸めるため）。 */}
+                <ConditionOutputSelect
+                  output={condition.output}
+                  disabled={condition.effect.kind === "none"}
+                  ariaLabel={`${label}の出力先`}
+                  onChange={(output) => setConditionOutput(condition.id, output)}
                 />
               </div>
             );
@@ -398,6 +459,13 @@ export function EffectAssignmentCard({
                   listState={listState}
                   ariaLabel={`キーワード ${n} のエフェクト`}
                   onChange={(effect) => setConditionEffect(condition.id, effect)}
+                />
+                {/* ⚠ 061k: 出力先。⚠ イベント行と**同じ 1 実装**を共有する。 */}
+                <ConditionOutputSelect
+                  output={condition.output}
+                  disabled={condition.effect.kind === "none"}
+                  ariaLabel={`キーワード ${n} の出力先`}
+                  onChange={(output) => setConditionOutput(condition.id, output)}
                 />
                 <Button
                   type="button"

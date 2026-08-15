@@ -6,12 +6,14 @@ import {
   EFFECT_OVERLAY_GUIDE_PENDING_KEY,
   EFFECT_TEST_FIRE_KEY,
   EFFECT_TEST_FIRE_PENDING_KEY,
+  STAGE_TEST_FIRE_PENDING_KEY,
 } from "../../features/comment-viewer/overlaySettings";
 import type { CommentViewDto } from "../../features/comment-viewer/types";
 import { MONETARY_EVENT_TYPES } from "../comment-viewer/viewerFormat";
 import type { EffectTemplateMedia } from "../../features/obs-effects/bindings/EffectTemplateMedia";
 import type { EffectTemplateRecord } from "../../features/obs-effects/bindings/EffectTemplateRecord";
 import { EFFECT_DISPLAY_MS, EFFECT_MAX_CONCURRENT } from "./effectTrigger";
+import type { EffectOutput } from "./effectAssignments";
 
 /**
  * 061a / 061b-1: エフェクト専用オーバーレイ窓（label `effect-overlay`）の描画本体の仕様テスト。
@@ -205,8 +207,8 @@ const container0 = () => document.body;
  * （`waitFor` へ寄せない理由＝ 待つ対象が「IPC が呼ばれたこと」ではなく「先読みが一巡したこと」で、
  * 肯定の観測点をケースごとに書くほうが、何を待っているかがテストに残る。）
  */
-const renderWarmed = async () => {
-  const view = render(<EffectOverlayApp />);
+const renderWarmed = async (output: EffectOutput = "corner") => {
+  const view = render(<EffectOverlayApp output={output} />);
   await act(async () => {
     await Promise.resolve();
     await Promise.resolve();
@@ -279,7 +281,7 @@ describe("061a/061b: EffectOverlayApp", () => {
     localStorage.setItem(EFFECT_OVERLAY_GUIDE_PENDING_KEY, "true");
 
   it("data-overlay を立て、unmount で外す", () => {
-    const { unmount } = render(<EffectOverlayApp />);
+    const { unmount } = render(<EffectOverlayApp output="corner" />);
     expect(document.documentElement.getAttribute("data-overlay")).toBe("1");
     unmount();
     expect(document.documentElement.hasAttribute("data-overlay")).toBe(false);
@@ -287,7 +289,7 @@ describe("061a/061b: EffectOverlayApp", () => {
 
   it("明示操作で開いた直後はセットアップ用ガイドが出る（OBS でキャプチャ範囲を確認するため）", () => {
     armGuide();
-    render(<EffectOverlayApp />);
+    render(<EffectOverlayApp output="corner" />);
     expect(screen.getByText("StreamDock エフェクト")).toBeInTheDocument();
     expect(
       screen.getByText(/この枠にエフェクトが表示されます/),
@@ -303,7 +305,7 @@ describe("061a/061b: EffectOverlayApp", () => {
     // ⚠ 起点を変えるときは `ObsEffectsScreen` の案内文・`EFFECT_OVERLAY_GUIDE_PENDING_KEY` の
     //   JSDoc とあわせて **3 か所**直すこと。
     armGuide();
-    render(<EffectOverlayApp />);
+    render(<EffectOverlayApp output="corner" />);
     expect(
       screen.getByText(/「配信画面でテスト表示」で開いた直後だけ出て/),
     ).toBeInTheDocument();
@@ -313,27 +315,27 @@ describe("061a/061b: EffectOverlayApp", () => {
   it("⚠ 旗が立っていなければガイドを出さない（起動時の窓復元では配信画面を汚さない）", () => {
     // ⚠ 061a レビュー（Q-1）の本命。`App.tsx` の起動時復元は旗を立てないので、
     // 「設定 ON のまま配信直前に StreamDock を起動」でガイドが OBS に映らないこと。
-    render(<EffectOverlayApp />);
+    render(<EffectOverlayApp output="corner" />);
     expect(screen.queryByText("StreamDock エフェクト")).toBeNull();
     expect(screen.queryByText(/この枠にエフェクトが表示されます/)).toBeNull();
   });
 
   it("⚠ 旗はマウント時に倒れる（次に開く窓ではもう出ない）", () => {
     armGuide();
-    const { unmount } = render(<EffectOverlayApp />);
+    const { unmount } = render(<EffectOverlayApp output="corner" />);
     expect(screen.getByText("StreamDock エフェクト")).toBeInTheDocument();
     expect(localStorage.getItem(EFFECT_OVERLAY_GUIDE_PENDING_KEY)).toBe("false");
 
     // 窓を開き直しても（旗が立て直されていなければ）出ない。
     unmount();
-    render(<EffectOverlayApp />);
+    render(<EffectOverlayApp output="corner" />);
     expect(screen.queryByText("StreamDock エフェクト")).toBeNull();
   });
 
   it("ガイドは一定時間で自動的に消える（開けっぱなしでも残らないことの担保）", () => {
     vi.useFakeTimers();
     armGuide();
-    render(<EffectOverlayApp />);
+    render(<EffectOverlayApp output="corner" />);
     expect(screen.getByText("StreamDock エフェクト")).toBeInTheDocument();
 
     // ⚠ 実装の定数（SETUP_GUIDE_VISIBLE_MS）より十分に長く進める。テストは**「いつか消える」**を
@@ -348,7 +350,7 @@ describe("061a/061b: EffectOverlayApp", () => {
   it("ガイドが消えたあとは何も描かない（061b-1 は経路だけ・描画は 061b-2）", () => {
     vi.useFakeTimers();
     armGuide();
-    const { container } = render(<EffectOverlayApp />);
+    const { container } = render(<EffectOverlayApp output="corner" />);
     act(() => {
       vi.advanceTimersByTime(120_000);
     });
@@ -357,7 +359,7 @@ describe("061a/061b: EffectOverlayApp", () => {
   });
 
   it("安定クラス sd-overlay を付けない（060d の注入先は comment-overlay のみ）", () => {
-    const { container } = render(<EffectOverlayApp />);
+    const { container } = render(<EffectOverlayApp output="corner" />);
     expect(container.querySelector(".sd-overlay")).toBeNull();
   });
 
@@ -366,20 +368,20 @@ describe("061a/061b: EffectOverlayApp", () => {
   it("⚠ sidecar の WS へ接続する（061a の「接続しない」を 061b で反転した）", () => {
     // ⚠⚠ 旧テストは「1 本も張らない」ことを固定していた。061b でエフェクト窓が
     // `OverlayApp` と同じく loopback WS を直接張る設計に変わったので、**逆向きの仕様**になった。
-    render(<EffectOverlayApp />);
+    render(<EffectOverlayApp output="corner" />);
     expect(mocks.connectCommentStream).toHaveBeenCalledTimes(1);
   });
 
   it("⚠ 接続は「窓内 WS 1 本」（再レンダーで張り直さない）", () => {
-    const { rerender } = render(<EffectOverlayApp />);
-    rerender(<EffectOverlayApp />);
+    const { rerender } = render(<EffectOverlayApp output="corner" />);
+    rerender(<EffectOverlayApp output="corner" />);
     expect(mocks.connectCommentStream).toHaveBeenCalledTimes(1);
   });
 
   it("⚠ unmount で切断する（窓を閉じたあと接続が残らない）", () => {
     const disconnect = vi.fn();
     mocks.connectCommentStream.mockReturnValue({ disconnect });
-    const { unmount } = render(<EffectOverlayApp />);
+    const { unmount } = render(<EffectOverlayApp output="corner" />);
     expect(disconnect).not.toHaveBeenCalled();
     unmount();
     expect(disconnect).toHaveBeenCalledTimes(1);
@@ -391,7 +393,7 @@ describe("061a/061b: EffectOverlayApp", () => {
     const spy = makeHandleSpy();
     mocks.connectCommentStream.mockReturnValue(spy.proxy);
 
-    const { unmount } = render(<EffectOverlayApp />);
+    const { unmount } = render(<EffectOverlayApp output="corner" />);
     const handlers = mocks.connectCommentStream.mock.calls[0]?.[0];
     expect(handlers).toBeDefined();
     // `onComments` 以外のハンドラを取らない＝session/link/obs/device_code の受信面も持たない。
@@ -803,7 +805,7 @@ describe("061a/061b: EffectOverlayApp", () => {
 
   it("⚠ localStorage.clear()（key === null）ではテスト発火しない", () => {
     // ⚠ 設定をまとめて消す操作で配信画面にエフェクトが出るのは筋が悪い（046b の `clear()` 論点と同型）。
-    const { container } = render(<EffectOverlayApp />);
+    const { container } = render(<EffectOverlayApp output="corner" />);
     act(() => {
       window.dispatchEvent(new StorageEvent("storage", { key: null }));
     });
@@ -815,7 +817,7 @@ describe("061a/061b: EffectOverlayApp", () => {
     //   `clear()` は `key === null` で来るので上のケースが拾うが、**`removeItem` は key 付き・値 null** で
     //   来るため、そちらはこのケースでしか止められない。「設定を消す操作で配信画面にエフェクトが出る」
     //   のは筋が悪い、という判断は `clear()` と同じ（046b の論点と同型）。
-    const { container } = render(<EffectOverlayApp />);
+    const { container } = render(<EffectOverlayApp output="corner" />);
     act(() => {
       window.dispatchEvent(
         new StorageEvent("storage", {
@@ -858,6 +860,103 @@ describe("061a/061b: EffectOverlayApp", () => {
     const { container } = await renderWarmed();
     await act(async () => {});
     expect(container.textContent).not.toContain("テスト");
+  });
+
+  // --- 061k: 窓ごとの旗・出力先・案内文 -----------------------------------------------------------
+
+  it("⚠⚠ 新規 8: **自分の旗だけ**を読んで消す（コーナー窓は stage の旗を消さない）", async () => {
+    // ⚠⚠ **1 本の旗を取り合う実装だと、先にマウントした窓が両方を食う**＝
+    //   もう片方が無反応になり、判断 8（テスト表示は 2 窓とも出す）が半分だけ効く。
+    mocks.listEffectTemplates.mockResolvedValue([templateRecord()]);
+    localStorage.setItem(EFFECT_TEST_FIRE_PENDING_KEY, TEMPLATE_ID);
+    localStorage.setItem(STAGE_TEST_FIRE_PENDING_KEY, TEMPLATE_ID);
+
+    await renderWarmed("corner");
+    await act(async () => {});
+
+    expect(screen.getByText(templateLine("テスト"))).toBeInTheDocument();
+    expect(localStorage.getItem(EFFECT_TEST_FIRE_PENDING_KEY)).toBeNull();
+    // ⚠⚠ **本命**: 相手の旗は残っている（あちらの窓がマウントしたときに読む）。
+    expect(localStorage.getItem(STAGE_TEST_FIRE_PENDING_KEY)).toBe(TEMPLATE_ID);
+  });
+
+  it("⚠⚠ 新規 8: ステージ窓は stage の旗だけを読んで消す（corner の旗を消さない）", async () => {
+    mocks.listEffectTemplates.mockResolvedValue([templateRecord()]);
+    localStorage.setItem(EFFECT_TEST_FIRE_PENDING_KEY, TEMPLATE_ID);
+    localStorage.setItem(STAGE_TEST_FIRE_PENDING_KEY, TEMPLATE_ID);
+
+    await renderWarmed("stage");
+    await act(async () => {});
+
+    expect(screen.getByText(templateLine("テスト"))).toBeInTheDocument();
+    expect(localStorage.getItem(STAGE_TEST_FIRE_PENDING_KEY)).toBeNull();
+    expect(localStorage.getItem(EFFECT_TEST_FIRE_PENDING_KEY)).toBe(TEMPLATE_ID);
+  });
+
+  it("⚠ 061k: コーナー窓は stage の旗だけが立っていても発火しない", async () => {
+    mocks.listEffectTemplates.mockResolvedValue([templateRecord()]);
+    localStorage.setItem(STAGE_TEST_FIRE_PENDING_KEY, TEMPLATE_ID);
+
+    const { container } = await renderWarmed("corner");
+    await act(async () => {});
+
+    expect(container.textContent).not.toContain("テスト");
+    expect(localStorage.getItem(STAGE_TEST_FIRE_PENDING_KEY)).toBe(TEMPLATE_ID);
+  });
+
+  it("⚠⚠ 061k（判断 2・9）: セットアップ用ガイドは**その窓の実タイトル**を出す", async () => {
+    // ⚠⚠ **ユーザーは OBS のウィンドウ一覧をこの文字列で探す**ので、間違うと窓が見つからない。
+    //   ⚠ しかも**この本文は OBS のキャプチャに数十秒そのまま映る**（視聴者にも読める）。
+    //   061i の実機確認で「ガイド本文だけが古い」を実際に踏んでいる。
+    localStorage.setItem(EFFECT_OVERLAY_GUIDE_PENDING_KEY, "true");
+    const stage = await renderWarmed("stage");
+    expect(
+      stage.getAllByText(/StreamDock ステージ演出/).length,
+    ).toBeGreaterThanOrEqual(1);
+    // ⚠⚠ **コーナー側の窓名を出さない**（＝窓名を直書きに戻す変異を殺す）。
+    expect(stage.container.textContent).not.toContain("StreamDock エフェクト");
+    stage.unmount();
+
+    localStorage.setItem(EFFECT_OVERLAY_GUIDE_PENDING_KEY, "true");
+    const corner = await renderWarmed("corner");
+    expect(
+      corner.getAllByText(/StreamDock エフェクト/).length,
+    ).toBeGreaterThanOrEqual(1);
+    expect(corner.container.textContent).not.toContain("StreamDock ステージ演出");
+  });
+
+  it("⚠⚠ 新規 13: `warmTemplates` は**自分の output の条件だけ**を温める", async () => {
+    // ⚠ 温める対象を絞らないと、**2 窓それぞれが全件を抱える**＝ 20MiB の先読み予算を
+    //   もう一方の窓のぶんで使い切る（自分のテンプレートが LRU で押し出される）。
+    const OTHER = "0f0e0d0c-1111-4222-8333-444455556666";
+    mocks.listEffectTemplates.mockResolvedValue([
+      templateRecord(),
+      templateRecord({ id: OTHER }),
+    ]);
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify([
+        {
+          id: "event:superchat",
+          when: { type: "event", eventType: "superchat" },
+          effect: { kind: "template", templateId: TEMPLATE_ID },
+          output: "corner",
+        },
+        {
+          id: "event:gift",
+          when: { type: "event", eventType: "gift" },
+          effect: { kind: "template", templateId: OTHER },
+          output: "stage",
+        },
+      ]),
+    );
+
+    await renderWarmed("corner");
+
+    // ⚠ **肯定を先に見る**（否定だけだと先読みが一巡していない場合に vacuous になる）。
+    expect(mocks.getEffectTemplateMedia).toHaveBeenCalledWith(TEMPLATE_ID);
+    // ⚠⚠ **本命**: もう一方の窓の条件が指す id は温めない。
+    expect(mocks.getEffectTemplateMedia).not.toHaveBeenCalledWith(OTHER);
   });
 
   it("⚠ 061i: 保留旗が無ければマウントだけでは何も出ない", async () => {
@@ -1208,7 +1307,7 @@ describe("061a/061b: EffectOverlayApp", () => {
     setAssignments({
       superchat: { kind: "template", templateId: TEMPLATE_ID },
     });
-    render(<EffectOverlayApp />);
+    render(<EffectOverlayApp output="corner" />);
 
     emitComments([superchat()]);
     // ⚠⚠ **1 件も出ない**（061d-2 はここで組み込み意匠が出ていた）。

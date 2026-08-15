@@ -39,8 +39,14 @@ export type ObsStateListener = (state: ObsState, reason?: string) => void;
  * 046d: 自動追加の対象オーバーレイ種別。**viewer から任意の名前を受け取らない**ための固定 union で、
  * 実際のソース名／窓名は下の `OBS_OVERLAYS` に閉じてある（§3/§8＝ユーザー入力が OBS 操作へ渡る経路を作らない）。
  * 061a: 3 本目 `"effects"`（エフェクト専用オーバーレイ窓）を追加。
+ * 061k: 4 本目 `"stage"`（エフェクトの全画面／ステージ側の出力窓）を追加。
+ * ⚠⚠ **この union は desktop 側（`features/comment-viewer/commentStream.ts`）と人手で同期している。**
+ * WS 境界で型が失われるのでずれても typecheck では気付けず、実害は
+ * 「desktop が送った種別を下の `parseOverlayKind` が `"comments"` へ落とす」＝
+ * **誤った窓のソースが OBS に作られる**という静かな方向に出る（Rust の
+ * `obs_overlay_kind_union_matches_between_sidecar_and_desktop` が両側を突き合わせて止めている）。
  */
-export type ObsOverlayKind = "comments" | "pinned" | "effects";
+export type ObsOverlayKind = "comments" | "pinned" | "effects" | "stage";
 
 /**
  * オーバーレイ種別ごとの「OBS に作るソース名」と「キャプチャ対象の窓名」。
@@ -50,8 +56,11 @@ export type ObsOverlayKind = "comments" | "pinned" | "effects";
  *   comments → `open_comment_overlay_window` の `.title`（033f）
  *   pinned   → `open_pinned_overlay_window` の `.title`（046b）
  *   effects  → `open_effect_overlay_window` の `.title`（061a）
+ *   stage    → `open_stage_overlay_window` の `.title`（061k）
  * 候補一致は `includes` なので、**どれかが他を部分文字列として含んではいけない**
- * （3 つとも相互に含まないことを実測済み。Rust 側 `overlay_window_contract` が総当たりで固定している）。
+ * （4 つとも相互に含まないことを実測済み。Rust 側 `overlay_window_contract` が総当たりで固定している）。
+ * ⚠⚠ **061k で "StreamDock エフェクト（全画面）" を採らなかったのはこの制約のため**
+ * （既存の `effects` を部分文字列として含むと、ステージ用のソースがエフェクト窓を掴む）。
  *
  * ⚠ **export しているのはテストのため**（`scripts/test-obs-client.mjs`）。046d までは module-private で、
  * その結果「3 つが `includes` で紛れないこと」を検証する対象がどこにも公開されておらず、
@@ -77,6 +86,10 @@ export const OBS_OVERLAYS: Readonly<
   effects: Object.freeze({
     sourceName: "StreamDock エフェクト",
     windowTitle: "StreamDock エフェクト",
+  }),
+  stage: Object.freeze({
+    sourceName: "StreamDock ステージ演出",
+    windowTitle: "StreamDock ステージ演出",
   }),
 });
 
