@@ -1535,10 +1535,18 @@
     - ⚠ **レイド元は `viewers` に「視聴者」として行ができる**（`viewer_comments.viewer_id` は FK NOT NULL なので他に選択肢が無い）。視聴者一覧に配信者が並び「初コメ」バッジも付く＝**受容した副作用**。062c の貢献者一覧を作るときは**レイドだけの視聴者が混ざる**ことを前提にすること
     - ⚠ **レイドは配信画面（OBS オーバーレイ）には出していない**（`renderOverlayItem` で早期 return）。`text` が空なので出すと**空の吹き出しが配信に映る**ため。出したくなったら専用の意匠を決めてから
     - ⚠ **固定コメント（046a）にレイドを固定すると人数が落ちる**（`PinnedComment` に `raidViewerCount` が無い）。スキーマ追加は §9 追補 046a の変更＝**別レビューが要る**
-  - 062b 配信セッションの記録（[docs/tasks/062b-stream-session-recording.md](tasks/062b-stream-session-recording.md)／`stream_sessions` テーブル＋境界の確定＋`sessionIdRef` の置き換え・**security-review 必須**〔§9 保存データ種別の変更〕）
-    - **境界の推奨＝接続開始/全切断＋猶予（例 30 分）。猶予中の再接続は同一セッションを継続**（配信中の一時的な切断で記録が割れないように）／起動時に閉じ忘れを回収する
-    - ⚠ **`viewer_comments.session_id` に FK を張らない**（既存データに対応行が無く、`PRAGMA foreign_keys = ON` で**既存 DB が壊れる**）／**バックフィルもしない**（セッションを捏造しない・過去の配信が一覧に出ない旨を UI に出す）
-    - ⚠ **051 の初コメ判定が `session_id` の粒度に依存している**可能性がある。粒度が変わることで挙動が変わらないかを必ず確認し、変わるなら意図した変更としてテストで固定する
+  - 062b 配信セッションの記録（[docs/tasks/062b-stream-session-recording.md](tasks/062b-stream-session-recording.md)／`stream_sessions` テーブル＋境界の確定＋`sessionIdRef` の置き換え・**security-review 必須**〔§9 保存データ種別の変更〕）— ✅ **実装完了（2026-08-16・security-review 済／⏳ 実機確認だけ未実施）**。判断の全文は progress.md の 062b 節が正
+    - **確定した境界＝どれかの provider が `connected`（またはコメント到着）で開始／全 provider が `connected` でなくなって 30 分で終了**。猶予中の再接続・コメント到着で継続（タイマーを取り消す）。⚠ **`failed` は未接続扱い**（復帰は猶予とコメントで拾う）
+    - ⚠ **`viewer_comments.session_id` に FK を張らない**（理由は「`PRAGMA foreign_keys = ON` で既存 DB が壊れる」**ではない**——SQLite は既存行を検証しない。正しい理由は ①`ALTER TABLE` で FK を後付けできず、043e 以降 UPDATE も走る `viewer_comments` の作り直しが要る ②既存データに対応行の無い `session_id` が大量にある ③バックフィルしない、の 3 点）／**バックフィルもしない**（過去の配信が一覧に出ない旨は 062c が UI に出す）
+    - **訂正（完了条件の誤り）**: `viewer_comments` には**元から FK が在る**（`viewer_id` → `viewers(id)` CASCADE）。固定したのは「**`session_id` に FK が無いこと**」
+    - ⚠ 051 の初コメ判定は `session_id` を**読んでいない**（マウント単位の Map）。062b で粒度が分かれたので「**窓を開き直すと常連に初コメが再表示される**」を**受容した挙動としてテストで固定**した（記録には影響しない）
+  - ⚠⚠ **062c / 062d への申し送り（062b で判明・接続状態に依存するなら同じ落とし穴を踏む）**
+    - ⚠⚠⚠ **sidecar は WS が繋がるたびに `session.state = idle` を両 platform へ送る**（`websocket-comment.output-port.ts` の `sendSessionSnapshots`。スナップショットは `publishSessionState` でしか更新されないが stream-dock は `broadcastMessage` を直接使うので**永久に初期値**）。しかも状態が変わるまで `connected` は届かない。⇒ **接続状態を「配信中か」の判断に使う機能は、必ずこの嘘の idle を考慮すること**。062b の対処は `commentStream.ts` の `snapshotPending`（接続 1 本につき platform ごとの最初の `idle` を捨てる）＋ Rust からの引き継ぎ ＋ コメント到着＝生存の証拠、の**三重**
+    - **セッション境界の在り処**: 判定規則は `features/stream-session/sessionBoundary.ts`（純関数）、Rust 呼び出しは `streamSessionApi.ts`、テーブルは `stream_sessions`（列＝`id` / `started_at` / `ended_at`〔NULL＝進行中〕/ `platforms`〔`"twitch,youtube"` の昇順 CSV〕/ `title`〔手入力・既定空〕/ `created_at` / `updated_at`）
+    - **コマンドは 7 本**（タスクファイルの 6 本＋**`get_active_stream_session`**）。⚠ 進行中の取得を `start_stream_session` で代用すると「窓を開いた＝配信開始」になる
+    - ⚠ **`ended_at` は近似**。ライブ終了は「猶予満了時の now」（実際の切断より最大 30 分後ろ）、回収は「最終活動時刻」。**正確な尾は `published_at` を見ること**
+    - ⚠ **既存データ（`stream_sessions` に行の無い `session_id`）は `list_stream_sessions` に出てこない**。「過去の配信が出てこない」旨の 1 行注記は **062c の担当**
+    - ⚠ **`check:bindings` はハードコードされた 6 ディレクトリしか見ない**（実在は 7・`rakuraku/bindings` が漏れている）。新しい型は既存の checked ディレクトリへ出すか、列挙に足すこと。**新規 binding ファイルは未追跡なので `git add` するまで `git diff --exit-code` が見に行かない**
   - 062c 配信サマリー画面（[docs/tasks/062c-stream-summary-view.md](tasks/062c-stream-summary-view.md)／`stream_summary` モジュール新設＋数字のタイル＋**貢献者一覧**〔マスト・金額降順・行から視聴者詳細へ〕＋**レイド一覧**〔マスト〕・**軽レビュー**）
     - ⚠ **`viewers` の列を使わない**（あれは全期間の累計でこの配信のぶんではない）／**既存 SQL と分類を揃える**（視聴者一覧と数字が矛盾しないように）／**集計結果をキャッシュテーブルに保存しない**（§9 の判断をやり直さない）
   - 062d 配信履歴とフィルタ（[docs/tasks/062d-stream-history-filter.md](tasks/062d-stream-history-filter.md)／配信別/月別/年別・プリセット〔今月・先月・今年・全期間〕・**軽レビュー**）

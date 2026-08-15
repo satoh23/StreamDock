@@ -1,6 +1,35 @@
 # 062b 配信セッションの記録（`stream_sessions` テーブル・境界の確定）
 
-> 状態: **未着手（実装サブタスク）**。分割・線引きは親 [062](062-stream-summary.md) を正とする。
+> 状態: ✅ **実装完了（2026-08-16・security-review 済／⏳ 実機確認だけ未実施）**。
+> **判断と結論の全文は [docs/progress.md](../progress.md) の 062b 節が正**（本ファイルは着手前の設計文書）。
+> 分割・線引きは親 [062](062-stream-summary.md) を正とする。
+>
+> ## ⚠⚠ 実装で判明した前提（本文・下記「前提の訂正」より**さらに優先**する）
+>
+> - ⚠⚠⚠ **穴 A（本タスク最大の穴）: sidecar は WS が繋がるたびに `session.state = idle` を両 platform へ送る。**
+>   `sendSessionSnapshots` は接続時に無条件で走るが、スナップショットを更新する `publishSessionState` は
+>   `apps/comment-sidecar/src/` から**一度も呼ばれていない**（制御経路は `broadcastMessage` を直接使う）。
+>   しかも状態が変わるまで `connected` は届かない。⇒ **接続状態をそのまま信じると、配信中にセッションが終了する。**
+>   **対処は sidecar 差分ゼロの三重防御**（①Rust から進行中セッションを引き継ぐ ②接続 1 本につき platform ごとの
+>   最初の `idle` を捨てる ③コメント到着＝配信が生きている証拠として扱う）。
+> - ⚠⚠ **穴 L: 「窓を開き直す」は 2 種類ある。** `SIDECAR_CONSUMER_LABELS` は
+>   `["comment-viewer", "stage-overlay"]` なので、**ステージ窓が開いていれば sidecar は生き続け、
+>   コメントも流れ続ける**。①だけでも②だけでも足りないのはこのため。
+> - ⚠⚠ **穴 B: セッション未確定の間のコメントは「画面に出たのに DB に無い」になる**
+>   （`record_comment` が空 `session_id` を弾き、`recordComments` が握り潰す）。⇒ **バッファして確定後に流す**。
+>   窓が id を提案する案は、Rust が別 id を返した瞬間に**孤児行**を作るので却下した。
+> - ⚠ **穴 M: 回収の `ended_at` は「最終活動時刻」**（`now` を入れると 3 日後の回収で終了時刻が 3 日後になる）。
+>   ライブ終了（猶予満了）は `now` なので、**`ended_at` は近似**である（正確な尾は `published_at`）。
+> - ⚠ **穴 N: 猶予は Rust（回収）と frontend（ライブ）の 2 か所にある。** 不変条件は「**Rust ≧ frontend**」。
+> - ⚠ **穴 O: 猶予中に窓を閉じるとタイマーごと消える。** ⇒ 閉じ忘れ回収は**起動時とマウント時の両方**で呼ぶ。
+> - ⚠ **穴 G の訂正: `viewer_comments` には元から FK が在る**（`viewer_id` → `viewers(id)` CASCADE）。
+>   固定すべきは「**`session_id` に FK が無いこと**」。下記の完了条件・テストは訂正済み。
+> - ⚠ **穴 D: `check:bindings` はハードコードされた 6 ディレクトリしか見ない**（実在は 7・
+>   `src/features/rakuraku/bindings` が漏れている）。`StreamSessionRecord` は既に checked な
+>   `src/features/comment-viewer/bindings/` へ出した（`package.json` 差分ゼロ）。
+>   ⚠ **列挙漏れ自体は本タスクでは直していない**（仕様外の修正）。
+> - **コマンドは 7 本になった**（下記 (3) の 6 本＋**`get_active_stream_session`**）。進行中の取得を
+>   `start_stream_session` で代用すると「窓を開いた＝配信開始」になるため、read-only の経路を分けた。
 >
 > **必読前提**: 親 [062](062-stream-summary.md)、レイド取り込み [062a](062a-twitch-raid-ingestion.md)、
 > **既存の session_id 採番 [`CommentViewerApp.tsx`](../../apps/desktop/src/screens/comment-viewer/CommentViewerApp.tsx)（`sessionIdRef`）**、
@@ -261,7 +290,9 @@ CREATE INDEX IF NOT EXISTS idx_stream_sessions_started ON stream_sessions(starte
   - `close_stale_stream_sessions` が猶予時間内のセッションを閉じない／超過したものだけ閉じる
   - `platforms` が正規化した順で保存される（`"twitch,youtube"` と `"youtube,twitch"` が同一にならないと困る）
   - `title` の検証（長さ上限・制御文字）
-  - **`viewer_comments` に FK が張られていない**こと（既存 DB が壊れない担保）
+  - ⚠ **`viewer_comments.session_id` に FK が張られていない**こと（既存 DB が壊れない担保）。
+    ⚠⚠ **`viewer_comments` に FK が無い、ではない**——`viewer_id` → `viewers(id)` の FK CASCADE は
+    **元から在り**、`delete_viewer` の削除手段がそれに依存している。両者を混同しないこと（穴 G）
 - frontend:
   - 接続 → セッション開始、全切断 → 猶予後に終了
   - **猶予中の再接続で同じセッションが継続する**
@@ -306,7 +337,9 @@ CREATE INDEX IF NOT EXISTS idx_stream_sessions_started ON stream_sessions(starte
   ⚠ 受容するなら「窓を開き直すと初コメが再表示される」ことをテストで固定し、
   合わせるなら「同一セッション中の再マウントで初コメが再表示されない」ことを固定する。
   **どちらでも `firstOfStream.ts` の docstring を書き換える**（「`sessionIdRef` と同じ粒度」は嘘になる）。
-- **`viewer_comments` に FK が張られていない**（既存 DB が壊れない）。
+- ⚠ **`viewer_comments.session_id` に FK が張られていない**（既存 DB が壊れない）。
+  ⚠⚠ 当初この条件は「`viewer_comments` に FK が張られていない」と書かれていたが**事実として誤り**だった
+  （`viewer_id` の FK CASCADE は元から在る＝穴 G）。テスト名も `session_id` 側に合わせてある。
 - 既存データが一覧に出ないことがユーザーに伝わる。
 - [`docs/security.md`](../security.md) §9 に (6) が追記されている。
 - ts-rs binding が生成され `pnpm check:bindings` が通る。

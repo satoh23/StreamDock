@@ -10,6 +10,7 @@ mod preset_items;
 mod presets;
 mod process;
 mod rakuraku;
+mod stream_session;
 mod tools;
 mod util;
 mod viewer_memory;
@@ -766,6 +767,11 @@ pub fn run() {
             app_logs::repository::init(&conn)?;
             // 038a: 視聴者メモリ（viewers / viewer_comments）。保存は端末内 SQLite のみ。
             viewer_memory::repository::init(&conn)?;
+            // 062b: 配信セッション（stream_sessions）。「1 回の配信」の開始/終了時刻・プラットフォーム・
+            // 手入力タイトルだけを持つ（第三者の個人データは入らない・docs/security.md §9 追補〔062b〕）。
+            // ⚠ **viewer_memory::repository::init より後に置くこと**——閉じ忘れ回収
+            //   （下の close_stale）が `viewer_comments` を突き合わせるため。
+            stream_session::repository::init(&conn)?;
             // 060b: オーバーレイのカスタム CSS テーマ（overlay_themes）。CSS 実体は
             // app_data_dir/themes/<id>.css で、そのディレクトリは取り込み時に作る
             //（overlay_theme::service の保存ヘルパが冪等に create_dir_all する＝
@@ -792,6 +798,15 @@ pub fn run() {
                 let db = app.state::<tools::commands::DbState>();
                 let conn = db.lock().expect("db mutex poisoned");
                 presets::commands::reconcile_autostart(app.handle(), &conn);
+
+                // 062b: 閉じ忘れた配信セッションの回収。アプリを強制終了すると `ended_at` が NULL の行が
+                // 残り、放っておくと**永久に「配信中」**になって次の配信と混ざる。最終活動（そのセッションの
+                // 最後のコメント。1 件も無ければ開始時刻）から猶予（Rust 側定数）を過ぎたものだけを閉じる。
+                // ⚠ frontend のマウント時にも同じコマンドを呼ぶ（猶予中に窓だけ閉じるとタイマーが消えるため、
+                //   起動時の 1 回だけでは回収しきれない）。
+                // ⚠ 失敗しても起動は続ける（回収は次の起動でも走る。エラーは log_command_err 相当の扱いに
+                //   せず握るが、DB が壊れているなら他のコマンドが先に失敗して app_logs へ残る）。
+                let _ = stream_session::service::close_stale(&conn);
             }
 
             // ウィンドウ制御: config はデフォルト(visible:true)。手動起動・自動起動とも通常表示にする
@@ -894,6 +909,15 @@ pub fn run() {
             viewer_memory::commands::update_viewer_note,
             viewer_memory::commands::delete_viewer,
             viewer_memory::commands::clear_viewers,
+            // 062b: 配信セッション（「1 回の配信」の境界）。すべて単一目的で、capability は増えない
+            //（アプリ定義コマンドは ACL 列挙不要）。
+            stream_session::commands::start_stream_session,
+            stream_session::commands::get_active_stream_session,
+            stream_session::commands::update_stream_session_platforms,
+            stream_session::commands::end_stream_session,
+            stream_session::commands::update_stream_session_title,
+            stream_session::commands::list_stream_sessions,
+            stream_session::commands::close_stale_stream_sessions,
             app_update::commands::check_app_update,
             app_update::commands::install_app_update,
             app_update::commands::restart_app,

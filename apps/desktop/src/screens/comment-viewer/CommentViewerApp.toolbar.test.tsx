@@ -183,6 +183,30 @@ vi.mock("../../features/viewer-memory/viewerMemoryApi", () => ({
   deleteViewer: vi.fn(async () => {}),
   clearViewers: vi.fn(async () => {}),
 }));
+// ⚠ 062b: 配信セッション（invoke）。**マウント時に必ず走る**（閉じ忘れ回収 → 進行中セッションの引き継ぎ）
+// うえ、コメント到着でも `start_stream_session` が飛ぶ。塞がないと実 invoke が jsdom で reject し、
+// 実装の `.catch` が握るので**テストは通ってしまう**（＝この窓の「外部境界は全てモックして隔離する」方針どおり
+// ここでも封鎖する）。進行中セッション無し・開始は成功、で固定する。
+vi.mock("../../features/stream-session/streamSessionApi", () => {
+  const record = {
+    id: "session-1",
+    startedAt: "2026-08-16T10:00:00+00:00",
+    platforms: ["twitch"],
+    title: "",
+    createdAt: "2026-08-16T10:00:00+00:00",
+    updatedAt: "2026-08-16T10:00:00+00:00",
+  };
+  return {
+    startStreamSession: vi.fn(async () => record),
+    getActiveStreamSession: vi.fn(async () => null),
+    updateStreamSessionPlatforms: vi.fn(async () => record),
+    endStreamSession: vi.fn(async () => record),
+    updateStreamSessionTitle: vi.fn(async () => record),
+    listStreamSessions: vi.fn(async () => []),
+    closeStaleStreamSessions: vi.fn(async () => 0),
+  };
+});
+
 
 // 設定ビュー（SettingsView）が host_os を invoke するため OS を固定する（SettingsView.obs.test.tsx と同型）。
 vi.mock("../../features/platform/useHostOs", () => ({
@@ -814,7 +838,7 @@ describe("047 受信バッチの分配（一覧・課金ティッカー・視聴
     act(() => mocks.handlers.current?.onComments(comments));
   }
 
-  it("課金コメントは一覧とティッカーの両方へ流れ、視聴者記録の経路も生きている", () => {
+  it("課金コメントは一覧とティッカーの両方へ流れ、視聴者記録の経路も生きている", async () => {
     renderApp(false);
     emitComments([
       dto({
@@ -838,7 +862,11 @@ describe("047 受信バッチの分配（一覧・課金ティッカー・視聴
     // setComments 側: 一覧に本文が出ている＝updater が走った。
     expect(screen.getByText("応援してます")).toBeInTheDocument();
     // updater 内の保存経路も生きている（TTS の単一注入点と同じ `added` を受け取る側）。
-    expect(mocks.recordComments).toHaveBeenCalled();
+    // ⚠ 062b: **記録だけは 1 拍遅れる**——session_id は Rust の `stream_sessions` が持つので、
+    //   セッション未確定の間に届いたコメントはバッファへ入り、`start_stream_session` が解決した
+    //   時点でまとめて流れる（空 session_id で投げると Rust の Validation に弾かれて**黙って消える**ため）。
+    //   表示・ティッカー（上の同期アサーション）は従来どおり即時である。
+    await waitFor(() => expect(mocks.recordComments).toHaveBeenCalled());
   });
 
   it("通常チャットだけのバッチではティッカーが出ない（既存レイアウトが不変）", () => {

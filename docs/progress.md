@@ -22693,3 +22693,194 @@ doc コメントに全文を残してある（再修正トリガーつき）。*
 
 ⚠ **後始末**: DB・localStorage をバックアップから復元し `shasum` で照合する。
 ⚠ バックアップの sqlite を読むときは **必ず `file:...?mode=ro`** を付けること（061 系の教訓）。
+
+## 062b 配信セッションの記録（2026-08-16・**`stream_sessions` テーブル＋境界の確定**）
+
+タスク: [docs/tasks/062b-stream-session-recording.md](tasks/062b-stream-session-recording.md)。
+**2 段に割って実装**（段 1＝Rust だけ／段 2＝frontend・docs・レビュー）。**commit / push はしていない。**
+
+### ⚠⚠ 最大の穴は「WS が繋がるたびに sidecar が嘘の `idle` を送る」ことだった（穴 A）
+
+実コード（`apps/comment-sidecar/vendor/gateway/src/adapters/ws/websocket-comment.output-port.ts`）で確認した事実:
+
+1. `server.on("connection")` は新規クライアントへ**無条件で `sendSessionSnapshots`** を送る。
+2. `sessionSnapshots` の初期値は両 platform とも `idle`。
+3. これを更新するのは `publishSessionState` だけで、**`apps/comment-sidecar/src/` に呼び出しは 1 件も無い**
+   （stream-dock の制御経路 `index.ts` の `sendSessionState` は `output.broadcastMessage` を直接使う）。
+4. `setConnectionHandler` が再送するのは `link.state` だけ＝**`session.state` は送り直されない**。
+
+⇒ **WS が繋がるたび、両 platform に嘘の `idle` が 1 通ずつ届き、そのあと `connected` は戻ってこない。**
+既存コメントは「実害は再接続直後の一瞬だけ idle 表示」と書いていたが、**062b はその前提を壊す**
+（接続状態から配信セッションの終了を判定するため）。
+
+**さらに実測で分かった分岐（穴 L・タスクファイルにも依頼文にも無かった）**: `lib.rs` の
+`SIDECAR_CONSUMER_LABELS = ["comment-viewer", "stage-overlay"]` により、「窓を開き直す」には 2 種類ある。
+
+| | sidecar | 実際の取得 | 062b への影響 |
+|---|---|---|---|
+| ステージ窓を開いたままコメビュ窓だけ閉じ→開く | **生存** | **継続中**（コメントは流れ続ける） | ⚠⚠ 嘘の idle で猶予が起動し、**配信中に終了させられる** |
+| コメビュ窓だけ（他に消費者なし） | 停止 | 本当に止まる | セッションは進行中のまま残すべき＝**Rust から引き継ぐ必要がある** |
+| WS が一瞬切れて 1 秒後に再接続（`RETRY_INTERVAL_MS`） | 生存 | 継続中 | 1 行目と同じ |
+
+⇒ **「スナップショットを無視する」だけでは 2 行目を救えず、「Rust から引き継ぐ」だけでは 1 行目の猶予暴発を止められない。**
+採った対処は **sidecar 差分ゼロの三重防御**（`apps/comment-sidecar/` は 1 バイトも触っていない）:
+
+1. **引き継ぎ**: マウント時に `close_stale_stream_sessions()` → `get_active_stream_session()` の順で呼び、進行中があれば**その id を採用**（新規採番しない）。
+2. **スナップショット無視**: `commentStream.ts` で**接続 1 本につき platform ごとの最初の 1 通が `idle` なら捨てる**。経験則ではなく構造上の厳密規則（スナップショットは常に接続直後の最初の 1 通・常に idle）。⚠ `idle` 以外は通す（将来 sidecar が `publishSessionState` 経由になっても情報を捨てない）。
+3. **コメント＝生存の証拠**: コメントが届いたらセッションが無ければ開始し、猶予タイマーを取り消す。
+
+### 穴 B: セッション未確定の間のコメントは「画面に出たのに DB に無い」になる
+
+`record_comment` は先頭で `require_non_empty(&session_id, …)` を撃ち、`recordComments` は失敗を
+`.catch(() => {})` で握り潰す。⇒ 非同期 invoke の解決前に届いたコメントは**静かに消える**
+（`app_logs` に固定安全文言が残るだけ）。⚠ 062b の動機が「記録は遡れない」なので**最も避けたい失敗**。
+
+⇒ **バッファ方式**（`pendingRecords.ts`）を採った。窓が id を提案する案は、Rust が別 id を返した瞬間に
+**提案 id で入った行が孤児になる**（062c の集計から消える）ので却下。受容案は動機と衝突。
+表示・読み上げ・通知音・OBS は session_id を要らないので、**遅れるのは記録だけ**。
+上限 500 件・超過は古い側から捨て、**捨てた件数をツールバーに出す**（黙って捨てない）。
+
+### 穴 C〜K の結論
+
+| 穴 | 結論 |
+|---|---|
+| C（StrictMode の二重発火） | セッション確保の発火は `setComments` updater の**外**へ（invoke を updater に巻き込まない）。frontend は単一飛行キュー、Rust は単一 Mutex ＋トランザクションで冪等。⚠ 下記「固定できていないこと」も参照 |
+| D（`check:bindings` の列挙漏れ） | `StreamSessionRecord` は**既に checked な `comment-viewer/bindings/`** へ出した（`overlay_theme` / `audio` / `obs_config` と同じ先例）＝`package.json` 差分ゼロ。⚠ **`rakuraku/bindings` が列挙から漏れている事実は発見したが、本タスクでは直していない**（仕様外の修正なので要確認） |
+| E（回収の呼び出し元） | **`setup()` と コメビュ窓のマウント時の両方**。⚠ マウント側が要るのは、**猶予中に窓だけ閉じるとタイマーごと消える**ため（穴 O）。引数は**取らない**（猶予は Rust 定数・§3） |
+| F（時刻比較） | SQL では比較せず Rust で `parse_from_rfc3339`。最終活動＝`max(started_at, 全 published_at)`／コメント 0 件は `started_at` フォールバック／**1 つでもパース不能なら閉じない** |
+| G（完了条件の誤り） | `viewer_comments` には**元から FK が在る**（`viewer_id`）。固定したのは「**`session_id` に FK が無いこと**」＋「FK は `viewer_id` の 1 本だけ」 |
+| H（`PRAGMA foreign_keys`） | 「接続ごと」だが本アプリは `setup()` で**単一 Connection に 1 回**＝アプリ全体で 1 本。結論（FK を張らない）は不変で、コメントの事実だけ直した |
+| I（`title` の検証） | `update_note`（上限なし）ではなく `MAX_NAME_LEN` / `MAX_NAME_CHARS` に倣い **`chars().count()` で 100 文字** |
+| J（訂正 1 の順序） | 穴 A を解いてから決めた（下記） |
+| K（`platforms` と `failed`） | 値は `twitch` / `youtube` の 2 語・**昇順 CSV**・セッション中は **union（減らない）**。**`failed` は未接続扱い**（`connected` だけが生存。復帰は猶予 30 分とコメント到着で拾う） |
+
+### 実装中に見つけた、計画にも無かった穴（M〜O）
+
+- **穴 M**: 回収の `ended_at` に `now` を入れると、3 日後に起動したときの終了時刻が「3 日後」になる。
+  ⇒ **回収は「最終活動時刻」を入れる**。ライブ終了（猶予満了）は `now`。⚠ **`ended_at` は近似**＝062c へ申し送り。
+- **穴 N**: 猶予が Rust（回収）と frontend（ライブ）の 2 か所に生まれる。⇒ 不変条件
+  「**Rust の猶予 ≧ frontend の猶予**」を両方のコメントに明記し、どちらも 30 分でテスト固定。
+- **穴 O**: 猶予中に窓を閉じるとタイマーごと消える。⇒ 回収を**マウント時にも**呼ぶ（穴 E の結論）。
+
+### ⚠⚠ 実装中に自分で作った穴を 1 つ潰した（変異が教えてくれた）
+
+段 1 で `active_candidates` の SQL に **`MAX(c.published_at)`** と書いていた。これは**穴 F がまさに
+禁じている「SQL の文字列比較」そのもの**で、`Z` とオフセット付き（`+09:00` / `-08:00`）が混在すると
+**最新でない行を最新として選ぶ**（例: `12:00:00Z` と `05:00:00-08:00`＝13:00 UTC では前者が MAX になる）
+⇒ **まだ配信中のセッションを閉じる**方向へ倒れる。**変異 M9（最大値の決定を文字列比較に退化させる）が
+緑のまま通ったこと**で発覚した。⇒ SQL は `published_at` を**全件取り出すだけ**にし、最大値の決定を
+Rust へ移した。コストは「進行中セッション 1 本ぶん・`idx_viewer_comments_session` が効く・
+呼ばれるのは起動時とマウント時だけ」。
+
+### セッションの状態遷移
+
+```
+未確立 ──(connected / コメント到着)──> 進行中 ──(全 provider が connected でない)──> 猶予中
+  ▲                                      ▲                                            │
+  │                                      └──(connected 復帰 / コメント到着)───────────┘
+  │                                          ＝ clearTimeout（045c 同型）              │
+  │                                                                        (30 分経過) │
+  └──────────────────────────────────────── 終了 <──────────────────────────────────┘
+```
+
+| 出来事 | どの遷移に落ちるか |
+|---|---|
+| 窓の再マウント（sidecar 生存・コメント継続） | 嘘の idle は `commentStream` が捨て、id は `get_active` で引き継ぐ ⇒ **進行中のまま・`session_id` 不変** |
+| 窓の再マウント（sidecar 停止） | 同上（取得は押し直しだが、猶予内なら同一セッション） |
+| WS の瞬断＋自動再接続 | 嘘の idle を捨てる ⇒ **進行中のまま** |
+| アプリの強制終了 | 宙ぶらりん → 次回 `setup()` の回収（`ended_at`＝最終活動時刻） |
+| 猶予中に窓だけ閉じる | 宙ぶらりん → **次のマウント時**の回収（それまでに開き直せば継続） |
+
+### 決めたこと（一覧）
+
+- **コマンドは 7 本**（タスクファイルの 6 本＋`get_active_stream_session`）。進行中の取得を
+  `start_stream_session` で代用すると「窓を開いた＝配信開始」になるため、read-only の経路を分けた。
+- **訂正 1 は①受容**: 窓を開き直すと常連に「初コメ」が再表示される。②に揃えるには
+  新しい読み取りコマンドか**第三者 viewerId の永続化**（§9 追補 046a と同じ土俵）が要り、062b の範囲外。
+  `firstOfStream.ts` の docstring を全面的に書き換え、**再表示されることをテストで固定**した。
+- **猶予は 30 分**（frontend `SESSION_END_GRACE_MS` / Rust `STALE_GRACE_MINUTES`）。
+- **アンマウントでセッションを終了しない**（窓を閉じても配信は続いている＝主目的そのもの）。
+
+### 機械で固定したこと（変異で実効性を確認）
+
+Rust（`stream_session` 33 本）／frontend（`sessionBoundary` 12・`pendingRecords` 7・
+`commentStream.session` 5・`CommentViewerApp.session` 21）。
+
+| 変異 | 結果 |
+|---|---|
+| 猶予判定の不等号を反転 | Rust 6 件レッド |
+| `platforms` のソートを外す | Rust 1 件レッド |
+| `chars().count()` → `len()` | Rust 1 件レッド（100 文字の日本語タイトルが落ちる） |
+| 回収の `ended_at` を `now` に | Rust 2 件レッド |
+| 最大値の決定を文字列比較に／SQL の `MAX(published_at)` に戻す | Rust 各 1 件レッド（**修正前は緑＝上記の発見**） |
+| `started_at` フォールバックを外す | Rust 2 件レッド |
+| パース不能を「閉じる側」に倒す | Rust 1 件レッド |
+| `update_platforms` の union を置き換えに | Rust 1 件レッド |
+| 猶予タイマーの `clearTimeout` を削る（045c 同型） | frontend 3 件レッド |
+| 接続直後の嘘 idle を捨てる処理を外す | frontend 4 件レッド |
+| マウント時の引き継ぎを外す | frontend 3 件レッド |
+| 記録バッファを外す（未確定なら捨てる） | frontend 3 件レッド |
+| コメント＝生存の証拠を外す | frontend 1 件レッド |
+| `failed` を接続扱いにする | frontend 2 件レッド |
+| マウント時の閉じ忘れ回収を呼ばない | frontend 2 件レッド |
+| `needsPlatformUpdate` を常に true | frontend 3 件レッド |
+| `platformsOfComments` の正規化を外す | frontend 1 件レッド |
+
+⚠⚠ **固定できていないこと（正直な記録）**: **`start_stream_session` の判定を
+トランザクションの外へ出す変異は緑のまま**だった。冪等性を実際に担保しているのは
+**`DbState` の単一 `Mutex<Connection>` による直列化**で、トランザクションは
+「接続を増やしたときに効く多層防御」でしかない（1 接続を 1 Mutex で守る限り観測可能な差が出ない）。
+テストが固定できているのは「**単一 Mutex 下で 2 スレッドから叩いても行は 1 本**」まで。
+この事実は `repository::start` の doc コメントと当該テストに明記した。
+
+### セキュリティ面（docs/security.md の 062b 追記が正）
+
+- **§9 追補（062b）を追記**（保存するもの／**保存しないもの**／§8 の検証／§3 の判断／削除手段の申し送り）。
+- **外部通信ゼロ**: 新規モジュールに `fetch` / `http(s)://` / `WebSocket` は 1 件も無く、invoke するのは
+  アプリ定義コマンド 7 本だけ。**`apps/comment-sidecar/` 差分ゼロ**・capability 差分ゼロ・新規依存ゼロ。
+- **§3**: `close_stale_stream_sessions` は**引数を取らない**（`0` を渡せば進行中セッションを全部
+  終了できてしまうので、その能力を構造側に持たせない）。
+- **§9 ログ**: 新規コードに `console.*` ゼロ。`AppError` の文言にセッション id もタイトルも載せない
+  （テストで固定）。新しい画面表示は**件数だけ**。
+- **記録待ちバッファはメモリのみ**（localStorage への新規書き込みゼロ・窓を閉じれば消える）。
+
+### 検証
+
+```
+cargo check                      Finished（警告なし）
+cargo test                       327 passed / 0 failed（+33）
+pnpm check:bindings              OK（⚠ 新規 binding は `git add` して初めてチェック対象になる）
+pnpm typecheck / lint            OK
+pnpm test（frontend）            71 files / 1654 tests passed（ベースライン 67/1612 → +4 files / +42 tests）
+git status（差分ゼロの担保）      capabilities/ ・tauri.conf.json ・.github/ ・apps/comment-sidecar/
+                                 ・package.json ・pnpm-lock.yaml ・Cargo.toml
+```
+
+⚠ **既存テストを 1 件だけ直した**: `CommentViewerApp.toolbar.test.tsx` の「視聴者記録の経路も生きている」。
+062b で**記録だけが 1 拍遅れる**（セッション確定後にまとめて流す）ため、同期 assert から
+`await waitFor(...)` へ変更した。⚠ **仕様変更を隠すための変更ではない**ので、その旨をテストに明記してある。
+併せて CommentViewerApp をマウントする 4 ファイルに `streamSessionApi` のモックを足した
+（各ファイルの「マウント時に走る外部境界は全てモックして隔離する」方針どおり）。
+
+⏳ **未実施**: **実機確認**（下記の手順を依頼者の環境で実施）。
+
+### 実機確認の手順（⚠ 何が検証できて、何ができないか）
+
+DB は `~/Library/Application Support/<bundle id>/stream-dock.db`（macOS）。
+⚠ 事前に**バックアップを取り**、読むときは `sqlite3 "file:...?mode=ro"`（061 系の教訓）。
+⚠ 申し送り 6 のとおり `COMMENT_SIDECAR_MOCK=1` で接続/切断を合成できる（実配信なしで ①〜⑦ を再現可能）。
+
+| # | 手順 | ✅ 検証できる | ❌ 検証できない |
+|---|---|---|---|
+| 1 | Twitch に接続 → `SELECT * FROM stream_sessions;` に行ができる | 開始の契機・`platforms='twitch'` | — |
+| 2 | YouTube も接続 → `platforms` が `twitch,youtube` になり**行は増えない** | union・単一セッション | — |
+| 3 | 切断 → 猶予中は `ended_at` が NULL／再接続で同じ id が続く | 猶予とタイマー取り消し | — |
+| 4 | 猶予（30 分）を過ぎる → `ended_at` が入る | 終了 | ⚠ 30 分待つ必要がある |
+| 5 | 接続中にアプリを強制終了 → 再起動で `ended_at` が入る（**最終活動時刻**であること） | 穴 E・穴 M | — |
+| 6 | ⚠⚠ **配信中にコメビュ窓を閉じて開き直す** → `viewer_comments.session_id` が変わらず、セッションも終了しない | **本タスクの主目的＋穴 A** | ⚠ ステージ窓を開いた状態でも試すこと（穴 L の 1 行目） |
+| 7 | ⚠ 窓を開き直した直後のコメントが DB に入っている（`SELECT COUNT(*) FROM viewer_comments WHERE session_id='…';`） | 穴 B | — |
+| 8 | 既存 DB（実装前のデータ）で起動してもエラーが出ない | 冪等な init | — |
+| 9 | `SELECT * FROM stream_sessions;` に**コメント本文・視聴者名が 1 文字も無い**こと | §9 の保存範囲 | — |
+| 10 | `lsof -i` で外部 ESTABLISHED が増えない | 外部通信ゼロ | — |
+
+⚠ **後始末**: DB をバックアップから復元し、`shasum` のバイト一致を確認する。

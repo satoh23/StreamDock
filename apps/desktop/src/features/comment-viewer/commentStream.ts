@@ -251,6 +251,29 @@ export function connectCommentStream(
     }
 
     const socket = new WebSocket(`ws://127.0.0.1:${port}`);
+    /**
+     * ⚠⚠ 062b: **この接続で `session.state` をまだ 1 通も受けていない platform**。
+     *
+     * sidecar（`websocket-comment.output-port.ts` の `server.on("connection")`）は、新規クライアントへ
+     * **必ず・同期で・最初に** `sendSessionSnapshots` を送る。ところがそのスナップショットを更新するのは
+     * `publishSessionState` だけで、stream-dock の制御経路（sidecar の `index.ts`）は
+     * `broadcastMessage` を直接使うため、**スナップショットは永久に初期値（`idle`）のまま**である。
+     * ⇒ **WS が繋がるたびに、両 platform へ嘘の `idle` が 1 通ずつ届く**（しかも sidecar は状態が
+     * 変化するまで `connected` を送り直さないので、**その後 `idle` のまま据え置かれる**）。
+     *
+     * 062b 以前は「再接続直後の一瞬だけ待機表示」で済んでいたが、062b は接続状態から
+     * **配信セッションの終了**を判定するので、これを信じると:
+     *   - ステージ窓を開いたままコメビュ窓を開き直す（sidecar は生きていてコメントは流れ続ける）
+     *   - WS が一瞬切れて 1 秒後に自動再接続する（`RETRY_INTERVAL_MS`）
+     * のどちらでも **配信中なのにセッションが終了させられる**。
+     *
+     * ⇒ **接続 1 本につき platform ごとの最初の 1 通が `idle` なら捨てる。** これは経験則ではなく
+     * 構造上の厳密規則である（スナップショットは常に接続直後の最初の 1 通・常に `idle`）。
+     * ⚠ `idle` 以外なら通す——将来 sidecar が `publishSessionState` 経由へ変わってスナップショットが
+     * 正確になったとき、その情報を捨てないため。
+     * ⚠ 接続ごとに作り直す（`connect()` のローカル）ので、再接続でも必ず効く。
+     */
+    const snapshotPending = new Set<CommentService>(["twitch", "youtube"]);
     ws = socket;
     socket.onopen = () => {
       handlers.onConnectionChange?.(true);
@@ -275,8 +298,13 @@ export function connectCommentStream(
           | { platform?: unknown; state?: unknown; reason?: unknown }
           | undefined;
         if (typeof p?.state === "string") {
+          const platform = parsePlatform(p.platform);
+          // ⚠⚠ 062b: 接続直後のスナップショット（常に `idle`）は捨てる。理由は上の
+          //   `snapshotPending` の注記（＝配信中のセッションを終了させないための本体）。
+          const isFirstSinceOpen = snapshotPending.delete(platform);
+          if (isFirstSinceOpen && p.state === "idle") return;
           handlers.onSessionState?.(
-            parsePlatform(p.platform),
+            platform,
             p.state,
             typeof p.reason === "string" ? p.reason : undefined,
           );

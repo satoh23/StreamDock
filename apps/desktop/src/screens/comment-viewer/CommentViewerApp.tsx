@@ -130,6 +130,26 @@ import {
 } from "../../features/comment-viewer/soundPrefs";
 import { mergeComments } from "../../features/comment-viewer/mergeComments";
 import { recordComments } from "../../features/viewer-memory/viewerMemoryApi";
+// 062b: 「1 回の配信」の記録。境界の判定規則は純関数（sessionBoundary）に、
+// 記録の取りこぼし対策は純関数（pendingRecords）に、Rust 呼び出しは API ラッパに閉じてある。
+import {
+  closeStaleStreamSessions,
+  endStreamSession,
+  getActiveStreamSession,
+  startStreamSession,
+  updateStreamSessionPlatforms,
+} from "../../features/stream-session/streamSessionApi";
+import {
+  connectedPlatforms,
+  needsPlatformUpdate,
+  platformsOfComments,
+  SESSION_END_GRACE_MS,
+  type StreamPlatform,
+} from "../../features/stream-session/sessionBoundary";
+import {
+  enqueuePendingRecords,
+  type PendingRecordBatch,
+} from "../../features/stream-session/pendingRecords";
 import type { RecordResult } from "../../features/viewer-memory/types";
 import {
   openCommentOverlayWindow,
@@ -392,15 +412,40 @@ export function CommentViewerApp() {
   // 複数契機が来ても spawn を 1 回に抑える同期ガード（launchRequested は起動成功後の窓を守る別レイヤ）。
   const launchInFlightRef = useRef(false);
 
-  // 038a: 視聴者メモリの「その配信」の束を識別するローカル session_id。窓マウント毎に 1 つ採番し、
-  // この窓の全 record_comment に付与する（専用 session テーブルは持たない・端末外へ出さないローカル ID）。
-  // 【意図/修正不要理由】採番は crypto.randomUUID。Tauri webview は secure context 前提で対象 OS
-  //   （WKWebView/WebView2/WebKitGTK）いずれも利用可能なため fallback は置かない。
-  // 【再修正トリガ】非 secure context/古い webview で randomUUID 未定義エラーが出たら try/catch + 簡易 fallback を足す（Q4）。
-  const sessionIdRef = useRef<string>("");
-  if (!sessionIdRef.current) {
-    sessionIdRef.current = crypto.randomUUID();
-  }
+  // 038a/062b: 視聴者メモリの「その配信」の束を識別する session_id。
+  //
+  // ⚠⚠ **062b で採番の持ち主が Rust（`stream_sessions`）へ移った。** 038a〜062a は
+  //   `crypto.randomUUID()` を**窓のマウント毎に**採番していたため、①窓を開き直すと 1 回の配信が
+  //   複数に分裂し ②窓を開きっぱなしで 2 日配信すると 2 回の配信が 1 つに混ざっていた。
+  //   いまは「配信の開始/終了」に紐づいた id を Rust から受け取り、**窓を開き直しても引き継ぐ**。
+  // ⚠ **確定前は `null`**（起動直後・マウント直後の invoke 解決待ち）。この間に届いたコメントは
+  //   `pendingRecordsRef` に貯めて、確定後に流す（`recordOrBufferComments`）。
+  //   `record_comment` は空 session_id を Validation で弾き、`recordComments` はそれを握り潰すので、
+  //   貯めずに渡すと**画面には出たのに DB に無い**コメントが静かに生まれる。
+  const sessionIdRef = useRef<string | null>(null);
+  // 062b: 進行中セッションに記録済みのプラットフォーム（Rust が返した値のミラー）。
+  // 増分があるときだけ `update_stream_session_platforms` を投げるための判定に使う。
+  const sessionPlatformsRef = useRef<readonly string[]>([]);
+  // 062b: セッション操作（開始・引き継ぎ・プラットフォーム追加・終了）の**直列化キュー**。
+  // ⚠ これが無いと、StrictMode の二重マウントや「connected とコメント到着の同時発火」で
+  //   `start_stream_session` が並行に飛ぶ。Rust 側も単一 Mutex ＋トランザクションで冪等だが、
+  //   frontend 側でも 1 本に束ねておくと「解決前の 2 本目」がそもそも発生しない
+  //   （046b の `pinnedOverlayOpRef` と同じイディオム）。`.catch` はキューを詰まらせないための握り潰し。
+  const sessionOpRef = useRef<Promise<void>>(Promise.resolve());
+  // 062b: 全 provider 切断後の猶予タイマー。⚠ **必ず取り消せるように id を保持する**
+  //   （045c は「猶予タイマーの取り消し漏れ」で実際に回帰を作った）。
+  const sessionEndTimerRef = useRef<number | null>(null);
+  // 062b: セッション未確定の間に届いたコメント（確定後に流す）。
+  const pendingRecordsRef = useRef<readonly PendingRecordBatch[]>([]);
+  // 062b: 上限超過で捨てた記録待ちコメントの件数（表示用・§9 のため本文は持たない）。
+  const [droppedRecordCount, setDroppedRecordCount] = useState(0);
+  // 062b: provider 別の接続状態の**ミラー**。`sessionState` / `youtubeSessionState`（表示用 state）は
+  // マウント時 1 回だけ張る WS effect のクロージャからは stale になるため、判定用に ref を持つ
+  //（この窓の他の getter 注入と同じイディオム）。**書き手は `onSessionState` ハンドラ 1 か所だけ**。
+  const platformStatesRef = useRef<Record<StreamPlatform, string>>({
+    twitch: "idle",
+    youtube: "idle",
+  });
 
   // 032c-b: Twitch 連携（Device Code ログイン・取得セッション）の状態。
   const streamRef = useRef<CommentStreamHandle | null>(null);
@@ -1100,6 +1145,171 @@ export function CommentViewerApp() {
     [],
   );
 
+  // --- 062b: 配信セッション（「1 回の配信」）の境界 ------------------------------------------------
+  //
+  // ⚠ ここに置く関数はすべて **useCallback で安定**にする（不安定にすると WS 接続 effect が張り直され、
+  //   その間のコメントを落とす＝この窓の全体規律）。判定規則そのものは `sessionBoundary.ts` の純関数。
+
+  /** 猶予タイマーを取り消す（045c の回帰＝取り消し漏れを構造的に防ぐため、取り消しは 1 か所に集約する）。 */
+  const clearSessionEndTimer = useCallback(() => {
+    if (sessionEndTimerRef.current !== null) {
+      window.clearTimeout(sessionEndTimerRef.current);
+      sessionEndTimerRef.current = null;
+    }
+  }, []);
+
+  /** セッション確定前に貯めたコメントを、確定した id で記録し直す（穴 B の出口）。 */
+  const flushPendingRecords = useCallback(
+    (sessionId: string) => {
+      const batches = pendingRecordsRef.current;
+      if (batches.length === 0) return;
+      pendingRecordsRef.current = [];
+      for (const batch of batches) {
+        // ⚠ `added`（withResult=true）だけに判定コールバックを渡す。`updated`（043e の combo 更新）へ
+        //   渡すと初見/久しぶりバッジが再点灯する。
+        recordComments(
+          [...batch.comments],
+          sessionId,
+          batch.withResult ? handleRecordResult : undefined,
+        );
+      }
+    },
+    [handleRecordResult],
+  );
+
+  /** Rust から受け取ったセッションを採用する（引き継ぎ・新規開始の共通処理）。 */
+  const adoptStreamSession = useCallback(
+    (record: { id: string; platforms: readonly string[] }) => {
+      sessionIdRef.current = record.id;
+      sessionPlatformsRef.current = record.platforms;
+      flushPendingRecords(record.id);
+    },
+    [flushPendingRecords],
+  );
+
+  /**
+   * セッションを確保する（無ければ開始し、プラットフォームが増えていれば足す）。**猶予タイマーも取り消す。**
+   *
+   * 呼ばれる契機は 2 つだけ:
+   *   ①どれかの provider が `connected` になった ②コメントが届いた（＝配信は生きている）
+   * ⚠ **マウントでは呼ばない**（窓を開いた＝配信開始、という誤った境界になる）。引き継ぎは
+   *   `get_active_stream_session` の側で行う。
+   */
+  const ensureStreamSession = useCallback(
+    (platforms: readonly StreamPlatform[]) => {
+      if (platforms.length === 0) return;
+      clearSessionEndTimer();
+      sessionOpRef.current = sessionOpRef.current
+        .then(async () => {
+          const current = sessionIdRef.current;
+          if (current === null) {
+            adoptStreamSession(await startStreamSession([...platforms]));
+            return;
+          }
+          if (!needsPlatformUpdate(sessionPlatformsRef.current, platforms)) return;
+          const updated = await updateStreamSessionPlatforms(current, [
+            ...platforms,
+          ]);
+          sessionPlatformsRef.current = updated.platforms;
+        })
+        // 記録は best-effort（表示・読み上げ・OBS を止めない）。§9 のため例外の中身は出さない。
+        .catch(() => {});
+    },
+    [adoptStreamSession, clearSessionEndTimer],
+  );
+
+  /**
+   * 全 provider が切断されたので、猶予後にセッションを終了する予約を入れる。
+   *
+   * ⚠ 猶予中に `connected` へ戻る／コメントが届くと `ensureStreamSession` が取り消す
+   *   ＝**配信中の一時的な切断で記録が割れない**（062b の中心的な要求）。
+   * ⚠ 猶予中に窓を閉じるとこのタイマーは消える（webview ごと消えるため）。そのぶんは
+   *   `close_stale_stream_sessions`（起動時＋次のマウント時）が回収する。
+   */
+  const scheduleStreamSessionEnd = useCallback(() => {
+    if (sessionIdRef.current === null) return;
+    clearSessionEndTimer();
+    sessionEndTimerRef.current = window.setTimeout(() => {
+      sessionEndTimerRef.current = null;
+      const id = sessionIdRef.current;
+      if (id === null) return;
+      // 先に手放す（この後に届くコメントは「セッション未確定」として貯まり、
+      // 次の配信のセッションが確定した時点でそちらへ記録される）。
+      sessionIdRef.current = null;
+      sessionPlatformsRef.current = [];
+      sessionOpRef.current = sessionOpRef.current
+        .then(async () => {
+          await endStreamSession(id);
+        })
+        .catch(() => {});
+    }, SESSION_END_GRACE_MS);
+  }, [clearSessionEndTimer]);
+
+  /**
+   * コメントを記録する。**セッション未確定なら貯める**（穴 B の入口）。
+   *
+   * ⚠ `setComments` の updater 内から呼ばれる（既存の `recordComments` と同じ位置）。StrictMode の
+   *   二重実行で同じバッチが 2 度積まれても、Rust が `INSERT OR IGNORE` で冪等なので集計は重複しない
+   *   （既存の fire-and-forget と同じ論拠）。
+   */
+  const recordOrBufferComments = useCallback(
+    (comments: CommentViewDto[], withResult: boolean) => {
+      if (comments.length === 0) return;
+      const sessionId = sessionIdRef.current;
+      if (sessionId !== null) {
+        recordComments(
+          comments,
+          sessionId,
+          withResult ? handleRecordResult : undefined,
+        );
+        return;
+      }
+      const { next, dropped } = enqueuePendingRecords(
+        pendingRecordsRef.current,
+        { comments, withResult },
+      );
+      pendingRecordsRef.current = next;
+      // ⚠ 捨てたことを黙らせない（「動いているように見えて記録されない」を作らない）。
+      if (dropped > 0) setDroppedRecordCount((prev) => prev + dropped);
+    },
+    [handleRecordResult],
+  );
+
+  /**
+   * ⚠⚠ 062b: マウント時に**進行中セッションを引き継ぐ**（本タスクの主目的）。
+   *
+   * ①`close_stale_stream_sessions` … 猶予中に窓だけ閉じた／アプリを強制終了した結果、宙ぶらりんに
+   *   なっている行を先に閉じる。**これを挟まないと、昨日の配信を今日の配信として引き継いでしまう。**
+   * ②`get_active_stream_session` … それでも進行中なら、その id をこの窓のセッションとして採用する。
+   *
+   * ⚠ **`start_stream_session` を使わないこと。** 進行中が無ければ新規に作ってしまい、
+   *   「窓を開いた＝配信開始」という誤った境界になる。
+   * ⚠ StrictMode の二重実行では、2 周目が `sessionIdRef.current !== null` で降りる。
+   */
+  useEffect(() => {
+    let cancelled = false;
+    sessionOpRef.current = sessionOpRef.current
+      .then(async () => {
+        await closeStaleStreamSessions();
+        const active = await getActiveStreamSession();
+        if (cancelled || active === null || sessionIdRef.current !== null) return;
+        adoptStreamSession(active);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [adoptStreamSession]);
+
+  /**
+   * アンマウントで猶予タイマーを必ず止める（045c 同型の取り消し漏れを作らない）。
+   *
+   * ⚠ **セッションはここで終了させない。** 窓を閉じても配信は続いているのが普通で、
+   *   開き直したときに同じセッションへ戻れることが 062b の主目的だからである
+   *   （閉じ忘れは `close_stale_stream_sessions` が回収する）。
+   */
+  useEffect(() => clearSessionEndTimer, [clearSessionEndTimer]);
+
   // 046a: コメント行の右クリックメニューから呼ばれる**固定トグル**。既に固定済みの id なら解除、そうでなければ
   // 先頭（最新）に足して PINNED_LIMIT でクランプする（046a では 1＝直前の固定を置き換える単一ピン）。
   // toPinned が author.avatar を落とすので、localStorage に data URI は載らない。
@@ -1156,13 +1366,16 @@ export function CommentViewerApp() {
           // 端末外へ出さない）。added は comment.id で dedup 済み、Rust 側も INSERT OR IGNORE で冪等なので
           // StrictMode の updater 二重実行でも集計は重複しない（enqueueForSpeech と同じ論拠）。fire-and-forget。
           // 038c: 判定（初見/久しぶり）を handleRecordResult で受け取りバッジ Map を更新する（実挿入の初回のみ肯定）。
-          recordComments(added, sessionIdRef.current, handleRecordResult);
+          // 062b: session_id は Rust の `stream_sessions` が持つ。**未確定なら貯めて確定後に流す**
+          //   （`recordOrBufferComments`）。空 session_id で投げると Rust が Validation で弾き、
+          //   `recordComments` がそれを握り潰すので**画面に出たのに DB に無い**コメントが生まれる。
+          recordOrBufferComments(added, true);
           // 043e: combo 更新（YouTube Jewels の同一 id 再送）は「新規コメント」ではないので、
           // **読み上げず（added に載らない）記録だけ**行う。判定コールバックを渡さないのは、Rust が更新経路で
           // 必ず {false,false} を返す＝初見/久しぶりバッジを再点灯させない契約を呼び出し側でも明示するため。
           // StrictMode で updater が二重実行されると同じ UPDATE が 2 回飛ぶが、同じ値の冪等な上書きであり
           // 集計は viewer_comments からの全再計算（total_comments は COUNT(*) で不変）なのでドリフトしない。
-          recordComments(updated, sessionIdRef.current);
+          recordOrBufferComments(updated, false);
           return next;
         });
         // 047: 上部ティッカー用の蓄積。**`mergeComments` の中には入れず、同じ `incoming` から独立に導出する**。
@@ -1184,6 +1397,15 @@ export function CommentViewerApp() {
         // `added` ではなく `incoming` を渡してよいのは、`trackFirstOfStream` が「既記録の viewerId を
         // 上書きしない」＝再送も combo 更新も自然に no-op になるため（詳細は firstOfStream.ts）。
         setFirstOfStream((prev) => trackFirstOfStream(prev, incoming));
+
+        // ⚠⚠ 062b: **コメントが届いた＝配信は生きている。** 接続状態（session.state）だけを信じると、
+        //   sidecar が WS 接続のたびに送る「嘘の idle」（commentStream.ts の `snapshotPending` 参照）で
+        //   配信中のセッションを終了させてしまう。到着したコメントはその誤認を必ず打ち消す
+        //   ——セッションが無ければその場で開始し、猶予タイマーが動いていれば取り消す。
+        // ⚠ 置き場所が `setComments` の updater の**外**なのは、ティッカー（047）/051/064b と同じ規律
+        //   （updater の中で別の副作用を起こさない）。**加えてここは invoke を起こす**ので、
+        //   StrictMode の updater 二重実行に巻き込まないためでもある。
+        ensureStreamSession(platformsOfComments(incoming));
 
         // ⚠⚠ 064b: **コメントの条件が当たったら OBS 側のソースを鳴らす。**
         //
@@ -1234,12 +1456,32 @@ export function CommentViewerApp() {
         if (platform === "youtube") {
           setYoutubeSessionState(state);
           setYoutubeSessionReason(reason ?? null);
-          return;
+        } else {
+          setSessionState(state);
+          setSessionReason(reason ?? null);
+          // 接続済み（connected）になったら Device Code 提示は不要なので消す。
+          if (state === "connected") setDeviceCode(null);
         }
-        setSessionState(state);
-        setSessionReason(reason ?? null);
-        // 接続済み（connected）になったら Device Code 提示は不要なので消す。
-        if (state === "connected") setDeviceCode(null);
+        // ⚠⚠ 062b: **配信セッションの境界はここで判定する**（接続状態の実体はこの窓の state 2 本で、
+        //   その唯一の書き手がこのハンドラだから＝新しい状態の持ち主を作らない）。
+        //   判定には両 platform の最新値が要るが、この effect はマウント時 1 回しか張らないので
+        //   state を読むと stale になる。⇒ ref にミラーしてから純関数へ渡す。
+        // ⚠ `streamConnected`（`onConnectionChange`）と混同しないこと——あれは
+        //   **viewer webview ↔ sidecar の loopback WS** が繋がっているかであって、配信への接続ではない。
+        //   あれを境界に使うと「アプリを開いた＝配信開始」になる。
+        platformStatesRef.current = {
+          ...platformStatesRef.current,
+          [platform]: state,
+        };
+        const live = connectedPlatforms(
+          platformStatesRef.current.twitch,
+          platformStatesRef.current.youtube,
+        );
+        if (live.length > 0) {
+          ensureStreamSession(live);
+        } else {
+          scheduleStreamSessionEnd();
+        }
       },
       onConnectionChange: (connected) => setStreamConnected(connected),
       onLinkState: (platform, isLinked) => {
@@ -1279,11 +1521,17 @@ export function CommentViewerApp() {
     // ⚠⚠ **ここに不安定な値を足さないこと**——張り直すと WS が切れて、その間のコメントを落とす。
     // ⚠ `requestObsSourceFire` を deps に載せていないのは、あれが**ref しか読まない**ため
     //   （`streamRef` / `obsConfigRef`）。マウント時の写しを掴んでいても常に最新の接続へ送る。
+    // ⚠ 062b で足した 3 つ（`recordOrBufferComments` / `ensureStreamSession` /
+    //   `scheduleStreamSessionEnd`）も useCallback チェーンが安定（元は `handleRecordResult` と ref だけ）
+    //   ＝ここに載せても WS は張り直らない。
   }, [
     enqueueForSpeech,
     handleRecordResult,
     playBatchNotification,
     obsSourceMatcher,
+    recordOrBufferComments,
+    ensureStreamSession,
+    scheduleStreamSessionEnd,
   ]);
 
   // ユーザー明示操作でのみ発火する（§1 の「ユーザーが明示接続した時のみ」）。
@@ -2262,6 +2510,24 @@ export function CommentViewerApp() {
                     通知音を再生できません
                   </span>
                 )}
+              {/* ⚠⚠ 062b: **記録待ちのコメントを上限超過で捨てたこと**の継続表示。
+                  セッション id が確定するまでの間コメントはバッファへ貯まるが、Rust 側の invoke が
+                  ずっと失敗する（DB が壊れている等）と上限（PENDING_RECORD_LIMIT）で古い順に捨てられる。
+                  ⚠ **黙って捨てると「動いているように見えて記録されない」**＝062b が最も避けたい失敗
+                  （視聴者メモリ・配信サマリーからその配信ぶんが静かに欠ける）。通知音インジケータ（059a）と
+                  同じ置き場所・同じクラスで、性質も同じ＝ユーザー操作なしに起きた失敗を配信中の画面へ出す。
+                  ⚠ §9: **件数だけ**を出す（コメント本文・投稿者名・例外の中身は出さない）。
+                  ⚠ 時間経過では消さない（気付かせるのが目的）。実際に踏むのは異常時だけなので、
+                  平常時のツールバーは 1 文字も変わらない。 */}
+              {droppedRecordCount > 0 && (
+                <span
+                  className={styles.toolbarError}
+                  role="status"
+                  title="配信セッションを開始できなかったため、一部のコメントを視聴者メモリに記録できませんでした。コメントビューアを開き直すと復帰します。"
+                >
+                  記録できなかったコメント {droppedRecordCount} 件
+                </span>
+              )}
               <ToggleSwitch
                 label="コメントをOBSに表示"
                 checked={overlayOpen}
