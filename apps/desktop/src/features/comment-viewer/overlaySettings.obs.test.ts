@@ -6,6 +6,10 @@ import {
   PINNED_OVERLAY_ENABLED_KEY,
   loadPinnedOverlayEnabled,
   savePinnedOverlayEnabled,
+  // 064a/064c: 鳴らせる OBS ソースの一覧（コメビュ窓 → main 窓）。
+  OBS_SOURCE_LIST_KEY,
+  loadObsSourceList,
+  saveObsSourceList,
 } from "./overlaySettings";
 
 /**
@@ -131,5 +135,92 @@ describe("loadPinnedOverlayEnabled / savePinnedOverlayEnabled", () => {
     expect(loadObsAutoAdd()).toBe(true);
     expect(loadPinnedOverlayEnabled()).toBe(false);
     expect(PINNED_OVERLAY_ENABLED_KEY).not.toBe(OBS_AUTO_ADD_KEY);
+  });
+});
+
+/**
+ * 064a/064c: 鳴らせる OBS ソースの一覧（コメビュ窓が書き、main 窓が読む）。
+ *
+ * ⚠⚠ **`ok`（OBS へ繋がったか）と `sources.length`（鳴らせるものがあるか）は別物**である。
+ * 混ぜると、OBS が起動していないユーザーへ「OBS のシーンにソースを追加してください」という
+ * **間違った対処**を案内することになる（064a の壊れ方＝061a レビュー Q-1 と同じ失敗モードの 3 度目）。
+ *
+ * ⚠ このキーは**他窓からも書ける**ので、形が違う値はすべて安全側へ倒す
+ * （`loadEffectConditions` と同じ姿勢）。⚠ 載るのは**ユーザー自身が OBS で付けた名前と種別だけ**（§9）。
+ */
+describe("064c: loadObsSourceList / saveObsSourceList", () => {
+  it("未保存のときは null（「まだ無い」と「0 件」を混ぜない）", () => {
+    expect(loadObsSourceList()).toBeNull();
+  });
+
+  it("ok と一覧が往復する（at も付く）", () => {
+    saveObsSourceList([{ name: "花火", kind: "ffmpeg_source" }], true);
+    const got = loadObsSourceList();
+    expect(got?.ok).toBe(true);
+    expect(got?.sources).toEqual([{ name: "花火", kind: "ffmpeg_source" }]);
+    expect(typeof got?.at).toBe("number");
+  });
+
+  it("⚠⚠ 繋がらなかった（ok:false・0 件）を、繋がって 0 件と区別して保存する", () => {
+    saveObsSourceList([], false);
+    expect(loadObsSourceList()).toMatchObject({ ok: false, sources: [] });
+
+    saveObsSourceList([], true);
+    expect(loadObsSourceList()).toMatchObject({ ok: true, sources: [] });
+  });
+
+  it("⚠⚠ ok が無い／boolean でない値は false へ倒す（「取れた」と断言しない）", () => {
+    // ⚠⚠ **倒し先を間違えないこと。** `true` へ倒すと、0 件のときに
+    //   「OBS のシーンにソースを追加してください」＝064c が潰した当の誤案内が復活する。
+    //   ⚠ 同じ規則を WS 境界（`commentStream.ts`）も持っている。**片方だけ緩めない。**
+    for (const raw of [
+      '{"at":1,"sources":[]}',
+      '{"at":1,"ok":"true","sources":[]}',
+      '{"at":1,"ok":1,"sources":[]}',
+      '{"at":1,"ok":null,"sources":[]}',
+    ]) {
+      localStorage.setItem(OBS_SOURCE_LIST_KEY, raw);
+      expect(loadObsSourceList()?.ok).toBe(false);
+    }
+  });
+
+  it("⚠ 読めない・形が違う値は「まだ無い」へ倒す（他窓が書ける値を信用しない）", () => {
+    for (const raw of [
+      "not json",
+      "null",
+      "[]",
+      '{"ok":true,"sources":"nope"}',
+      '{"at":"x","ok":true,"sources":[]}',
+    ]) {
+      localStorage.setItem(OBS_SOURCE_LIST_KEY, raw);
+      expect(loadObsSourceList()).toBeNull();
+    }
+  });
+
+  it("⚠ 要素の形が違うものは、その要素だけ落とす（一覧ごと捨てない）", () => {
+    localStorage.setItem(
+      OBS_SOURCE_LIST_KEY,
+      JSON.stringify({
+        at: 1,
+        ok: true,
+        sources: [
+          null,
+          42,
+          { name: 1, kind: "ffmpeg_source" },
+          { name: "花火", kind: "ffmpeg_source" },
+        ],
+      }),
+    );
+    expect(loadObsSourceList()?.sources).toEqual([
+      { name: "花火", kind: "ffmpeg_source" },
+    ]);
+  });
+
+  it("書込が例外でも壊れない（投げない）", () => {
+    const set = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("blocked");
+    });
+    expect(() => saveObsSourceList([], true)).not.toThrow();
+    set.mockRestore();
   });
 });

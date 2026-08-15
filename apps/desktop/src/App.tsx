@@ -422,14 +422,13 @@ function MainWindowApp() {
  * `main`（既定）= 管理画面（MainWindowApp）／`comment-viewer` = 内蔵コメントビューア／
  * `comment-overlay` = OBS 用の背景透過オーバーレイ（コメント一覧・表示専用）／
  * `pinned-overlay` = 固定コメント専用の背景透過オーバーレイ（046a のピンだけを描く・表示専用・WS なし）／
- * `effect-overlay` = エフェクトの**コーナー側**の出力窓（061b 以降は loopback WS へ読み取り専用接続）／
- * `stage-overlay` = エフェクトの**全画面（ステージ）側**の出力窓（**061k で追加**）。
- * ⚠⚠ **後ろの 2 つは同じ [`EffectOverlayApp`] を `output` prop 違いで描く**——描画も接続も完全に同じで、
- * 違うのは「どの `output` の条件を拾うか」「どちらの保留旗を読むか」「案内文に出す窓名」だけである。
- * ⚠ **`output` は省略可にしない**（渡し忘れが「黙って片方の窓に出ない」へ倒れる・061i / 061h の規律）。
+ * `stage-overlay` = 配信イベント（061l）の出力窓（loopback WS へ読み取り専用接続）。
+ * ⚠⚠ **064d で `effect-overlay`（コーナー窓）を廃止した**——あちらは**取り込んだテンプレート専用**の窓で、
+ * 配信イベント（061l）は最初からステージ窓にしか出さないと決めていたので、
+ * テンプレートを消すと**描くものが 1 つも無い窓**になったため。
+ * ＝ `EffectOverlayApp` の `output` prop も `EffectOutput` の軸も消えている。
  * ウィンドウ生成は Rust の `open_comment_viewer_window` / `open_comment_overlay_window` /
- * `open_pinned_overlay_window` / `open_effect_overlay_window` / `open_stage_overlay_window` に閉じ、
- * frontend からは生成しない。
+ * `open_pinned_overlay_window` / `open_stage_overlay_window` に閉じ、frontend からは生成しない。
  */
 function App() {
   const label = getCurrentWindow().label;
@@ -442,12 +441,9 @@ function App() {
   if (label === "pinned-overlay") {
     return <PinnedOverlayApp />;
   }
-  if (label === "effect-overlay") {
-    return <EffectOverlayApp output="corner" />;
-  }
-  // ⚠ 061k: **同じコンポーネント・別の出力先**（窓ごとに `output` を束縛するのはここ 1 か所だけ）。
+
   if (label === "stage-overlay") {
-    return <EffectOverlayApp output="stage" />;
+    return <EffectOverlayApp />;
   }
   return <MainWindowApp />;
 }

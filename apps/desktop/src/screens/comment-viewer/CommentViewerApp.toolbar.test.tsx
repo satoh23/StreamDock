@@ -82,6 +82,9 @@ const mocks = vi.hoisted(() => ({
     stopSession: vi.fn(),
     enableObs: vi.fn(),
     hideObs: vi.fn(),
+    // 064a: OBS のソースを鳴らす方式（一覧取得と 1 回発火）。
+    listObsSources: vi.fn(),
+    fireObsSource: vi.fn(),
     disableObs: vi.fn(),
     // 060c: 外部 `@import` 取得。⚠ テストで**実際に呼ばれてはいけない**（このファイルは
     // WS の制御フレームを検証する場所で、取得の同意経路は OverlayThemeCard.test.tsx が持つ）。

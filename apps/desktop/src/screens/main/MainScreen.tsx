@@ -17,7 +17,6 @@ import { listRuntimeProcesses } from "../../features/presets/runtimeApi";
 import {
   closeCommentViewerWindow,
   isCommentViewerOpen,
-  isEffectOverlayOpen,
   isStageOverlayOpen,
 } from "../../features/comment-viewer/windowApi";
 import { toErrorMessage } from "../../features/tools/useTools";
@@ -430,15 +429,13 @@ export function MainScreen({
       //   **再修正トリガー**＝実機でこの reject が 1 度でも観測されたとき。そのときは `false` へ倒さず
       //   `null`（＝判定不能）を第 3 の状態にし、「取得が続いている可能性があります」を出すこと。
       //   ⚠ そのとき `ObsEffectsScreen` の `refreshStatus` も同じ扱いに揃える（導線は 2 か所）。
-      const [effectOpen, stageOpen] = await Promise.all([
-        isEffectOverlayOpen().catch(() => false),
-        isStageOverlayOpen().catch(() => false),
-      ]);
+      // ⚠ 064d: 出力窓は 1 つになった（コーナー窓は取り込み機能ごと廃止）。
+      const stageOpen = await isStageOverlayOpen().catch(() => false);
       if (!mountedRef.current) return;
       setLaunchFeedback({
         kind: "success",
         text:
-          effectOpen || stageOpen
+          stageOpen
             ? `${name} を閉じました。エフェクトのウィンドウが表示中のため、コメントの取得は続いています（止めるには、コメントビューアを開いて取得を停止してください）`
             : `${name} を停止しました`,
       });

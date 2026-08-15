@@ -4,10 +4,10 @@ import {
   MONETARY_EVENT_TYPES,
 } from "../comment-viewer/viewerFormat";
 import type {
-  EffectKind,
   EffectMatch,
   EffectMatcher,
   EffectMatchInput,
+  EffectObsSource,
 } from "./effectTrigger";
 
 /**
@@ -81,10 +81,16 @@ import type {
 /**
  * 割り当て 1 行の値＝**何を出すか**。
  *
- * ⚠⚠ **`EffectKind`（061b/061d-2）に `"none"` を足した形にしてある**——「出さない」は
- * **発火するかどうか**の判断であって「どう描くか」ではないので、`EffectKind` 側へ入れると
- * `EffectRequest` に「描けない kind」が生まれてしまう（描画分岐が必ず不能ケースを持つ）。
- * ここで受け取り、[`resolveEffectMatch`] が `null` へ翻訳して発火層へ渡す。
+ * ⚠⚠ **`{ kind: "none" }` を発火層の型（`EffectObsSource` 等）と混ぜない。** 「出さない」は
+ * **発火するかどうか**の判断であって「何を鳴らすか」ではないので、発火層側の union へ入れると
+ * **鳴らせない kind** が生まれてしまう（発火分岐が必ず不能ケースを持つ）。
+ * ここで受け取り、matcher が `null` へ翻訳して発火層へ渡す。
+ *
+ * ⚠⚠ **064d で `{ kind: "template"; templateId }`（取り込んだテンプレート）を削除した。**
+ * 064 でエフェクトは **OBS 側のソースを鳴らす**方式になり、取り込み機能ごと消えたため。
+ * ⚠ **旧ビルドが保存した `{"kind":"template"}` は「未知の kind → 出さない」へ安全側に倒れる**
+ * ——061h から積み上げてきた前方互換が、そのまま**後方互換**としても効いている
+ * （移行コードを 1 行も書かずに済んだのはこの形のおかげ）。
  *
  * ⚠ **063（ガチャ）は `{ kind: "gacha"; … }` を足す**。そのとき下の [`parseAssignment`] に
  * 1 分岐足せば、**旧ビルドは「未知の kind → 出さない」へ安全側に倒れる**（＝前方互換）。
@@ -93,7 +99,7 @@ import type {
  * ⚠ **061h の移行もこの仕組みがそのまま担う**——既に保存されている
  * `{"kind":"builtin-monetary"}` は**未知の kind として「出さない」へ倒れる**。
  */
-export type EffectAssignment = { kind: "none" } | EffectKind;
+export type EffectAssignment = { kind: "none" } | EffectObsSource;
 
 /**
  * 未保存・不正・例外のときに使う既定。
@@ -114,80 +120,32 @@ export const DEFAULT_EFFECT_ASSIGNMENT: EffectAssignment = { kind: "none" };
 export type EffectKeywordMatch = "contains" | "exact";
 
 /**
- * 061k: 条件 1 件の**どこへ出すか**（＝どちらの出力窓に出すか）。
- *
- * ⚠⚠ **061j の語彙の線に 3 本目を足したもの**——**条件＝いつ出すか**（[`EffectConditionWhen`]）／
- * **割り当て＝何を出すか**（[`EffectAssignment`]）／**出力先＝どこへ出すか**（ここ）。
- * ⚠ `when` にも `effect` にも入れない: `when` に入れると
- * `{type:"keyword"; text; match; output}` のように**条件の種類ごとに複製**することになり、
- * `effect` に入れると `{kind:"none"}` に出力先が無い＝**描けない kind と同型の不能ケース**が生まれる。
- *
- * ⚠ **既定は `"corner"`**（[`DEFAULT_EFFECT_OUTPUT`]）＝ **061j までの唯一の窓**なので、
- * 既存ユーザーの見え方が 1 ミリも変わらない。
- */
-export type EffectOutput = "corner" | "stage";
-
-/** 061k: 出力先の全値（保存形の検証と、窓ごとの繰り返しに使う）。⚠ 並び順に意味は無い。 */
-export const EFFECT_OUTPUTS: readonly EffectOutput[] = ["corner", "stage"];
-
-/**
- * 061k: 保存値に `output` が無い／未知の値だったときの倒し先。
- *
- * ⚠⚠ **061j の「未知は安全側へ倒す」と形は同じだが、意味が違う。** あちらの安全側は
- * **「出さない」**（`{kind:"none"}`）だったが、ここでの安全側は**「既存の挙動」**である
- * ——`"corner"` は 061j までの唯一の窓なので、旧保存値がそのまま同じ見え方で動く。
- * ⚠ **混同して `"stage"` を既定にすると、既存ユーザーの投げ銭演出が全部全画面に出る。**
- */
-export const DEFAULT_EFFECT_OUTPUT: EffectOutput = "corner";
-
-/**
- * 061k: 出力先 → **その窓の実タイトル**（＝OBS に作られるソース名）。
+ * 064d: **配信イベントを出すウィンドウの実タイトル**（＝OBS に作られるソース名）。
  *
  * ⚠⚠ **これは窓名の「3 つ目の写し」であり、機能要件である。** 1 つ目は Rust の `.title(...)`、
- * 2 つ目は sidecar の `OBS_OVERLAYS[kind].windowTitle`、そして 3 つ目が
- * **frontend がユーザーへ案内する文字列**（エフェクト窓のセットアップ用ガイド本文と
- * `ObsEffectsScreen` の案内文）である。⚠ ユーザーは **OBS のウィンドウ一覧をこの文字列で探す**ので、
+ * 2 つ目は sidecar の `OBS_OVERLAYS.stage.windowTitle`、そして 3 つ目が
+ * **frontend がユーザーへ案内する文字列**（ステージ窓のガイド本文と `ObsEffectsScreen` / `StreamEventTab`
+ * の案内文）である。⚠ ユーザーは **OBS のウィンドウ一覧をこの文字列で探す**ので、
  * ずれると窓が見つからない＝機能が壊れる。
  * ⚠⚠ しかも**ガイド本文は OBS のキャプチャに数十秒そのまま映る**（＝配信を見ている視聴者にも読める）。
  * 061i の実機確認で「ガイド本文だけが古い」を実際に踏んでいる。
  *
- * ⇒ **窓名を直書きせず必ずこの表から引くこと。** Rust の
+ * ⇒ **窓名を直書きせず必ずここから引くこと。** Rust の
  * `overlay_window_contract::frontend_window_title_table_matches_overlay_titles` が
- * この表の値と `OVERLAY_TITLES` の**バイト一致**、および**エントリ数 2** を固定している。
- * ⚠ **候補一致は sidecar 側で `includes`** なので、値どうしが互いに部分文字列になってはいけない
- * （＝ `"StreamDock エフェクト（全画面）"` は不可。同テストと sidecar の総当たりが固定）。
- */
-export const EFFECT_OUTPUT_WINDOW_TITLE: Readonly<Record<EffectOutput, string>> = {
-  corner: "StreamDock エフェクト",
-  stage: "StreamDock ステージ演出",
-};
-
-/**
- * 061k: 出力先 → **画面での呼び方**（判断 2）。
+ * この値と `OVERLAY_TITLES` の**バイト一致**を固定している。
  *
- * ⚠⚠ **窓タイトル（[`EFFECT_OUTPUT_WINDOW_TITLE`]）とは別物。** 既存窓は 960×360 で名前も
- * 「StreamDock エフェクト」＝「小さく」とは書いていないが、**改名は禁止**（既存ユーザーの
- * OBS ソースが `ensureOverlaySource` の M2 経路で静かに壊れるため）。
- * ⇒ **UI 上の呼び方だけを変え、OBS のソース名は実際の窓名をそのまま案内する**という非対称にしてある。
- * ⚠ **案内文では必ず両方を出すこと**（呼び方だけ書くと OBS の一覧で探せない）。
- *
- * ⚠⚠ **061p で「コーナー（小さめ）」「全画面（ステージ）」から言い換えた。** 実機の指摘＝
- * **「コーナー」が何のことか分からない**（配信ツールの語彙を知っている前提の言葉だった）。
- * ⇒ **どこに・どのくらいの大きさで出るかだけを書く**（`<select>` の選択肢としてそのまま読める形）。
- * ⚠ **値は表示専用**（保存形は `EffectOutput` の `"corner"` / `"stage"` で 1 ミリも変わっていない）。
+ * ⚠ **064d 以前は `EFFECT_OUTPUT_WINDOW_TITLE`（2 エントリの表）だった。**
+ * コーナー窓（テンプレート専用）を廃止して**窓が 1 つになった**ので、表ではなく定数 1 本にしてある。
  */
-export const EFFECT_OUTPUT_LABEL: Readonly<Record<EffectOutput, string>> = {
-  corner: "小さく（画面のすみ）",
-  stage: "大きく（画面全体）",
-};
+export const STAGE_OVERLAY_WINDOW_TITLE = "StreamDock ステージ演出";
 
 /**
  * 061j: 条件 1 件の**いつ出すか**。
  *
- * ⚠ **061k の「出力先（全画面 / コーナー）」はここに入っていない。** 061j はこの JSDoc に
- * 「先回りで足さないこと」という予約席を書いていたが、**あれは置き場所の指定ではなかった**——
- * 実際の置き場所は [`EffectCondition.output`]（＝**第 3 のフィールド**）である。理由は
- * [`EffectOutput`] の JSDoc が正（`when` に入れると条件の種類ごとに複製することになる）。
+ * ⚠ **061k がここへ足した「出力先（全画面 / コーナー）」は 064d で軸ごと削除した。**
+ * 出力先は「**StreamDock のどちらの窓に描くか**」という意味だったので、
+ * **窓に描くのをやめた**（＝ OBS 側のソースを鳴らす）時点で意味を失った。
+ * ⚠ **条件の種類ごとに複製することになる形はここへ入れない**という 061j の規律は生きている。
  */
 export type EffectConditionWhen =
   | { type: "event"; eventType: string }
@@ -218,15 +176,6 @@ export interface EffectCondition {
   when: EffectConditionWhen;
   /** 何を出すか。 */
   effect: EffectAssignment;
-  /**
-   * 061k: **どこへ出すか**（第 3 の軸）。⚠ 保存値に無ければ [`DEFAULT_EFFECT_OUTPUT`]。
-   *
-   * ⚠⚠ **`effect.kind === "none"` の条件では必ず既定へ丸められる**（[`parseConditions`]）。
-   * 「何も出さない条件の出力先」に意味は無く、丸めておくと
-   * [`saveEffectConditions`] の「キーごと削除」条件が**1 文字も変えずに正しいまま**になる
-   * （＝ユーザーが変えた出力先が黙って消える経路が構造的に生まれない）。
-   */
-  output: EffectOutput;
 }
 
 export type EffectConditions = readonly EffectCondition[];
@@ -247,33 +196,35 @@ interface MatchableCondition {
 }
 
 /**
- * テンプレート id として受け入れる形（**uuid の「形」＝ 36 文字・hex とハイフンの完全一致**）。
+ * 064b: **OBS のソース名として保存してよい形か**（型・空・200 文字・制御文字）。
  *
- * ⚠ **061d-2 レビュー S-3: 「uuid v4 完全一致」ではない**——version / variant のニブルは見ていない。
- * それは Rust の `is_template_id`（`effect_template/service.rs`）も同じで、**2 層の強さが揃っている**
- * ことのほうが重要（片方だけ厳しくすると、Rust が受け入れる id を TS が黙って「出さない」へ倒す）。
- * ここの目的はパス安全（`../` / 絶対パス / 区切り文字を通さない）で、形の一致で十分である。
+ * ⚠⚠ **これは「壁」ではない。壁は sidecar 側の 2 枚**（形式検査
+ * `isAllowedObsSourceName` ＋ **`GetInputList` との実在照合**）で、そちらが唯一の持ち主である。
+ * ここが在るのは**多層防御の 1 枚目**で、細工された localStorage 値が
+ * **そもそも wire に載らない**ようにするためのもの
+ * （⚠ 064 レビュー Q-6: かつて同じ位置づけだった `isEffectTemplateId` は 064d で削除済み）。
  *
- * ⚠ **`overlaySettings.ts` の `OVERLAY_THEME_ID_RE` と同型・同じ理由**（060d の先例）——
- * id を採番するのは Rust の `effect_template::service` の `Uuid::new_v4()` だけなので、
- * 細工された localStorage 値がそもそもコマンドまで届かない（届いても Rust が弾くだけなので
- * 多層防御の 1 枚目という位置づけ）。
- * ⚠ **再修正トリガー＝ Rust の id 採番方式を変えるとき**（変えると条件が黙って「出さない」へ落ちる）。
+ * ⚠⚠ **sidecar の `isAllowedObsSourceName` と規則を揃えてある**（trim して空でない・200 文字以下・
+ * 制御文字なし）。⚠ **片方だけ厳しくしないこと**——TS 側だけ厳しいと
+ * 「OBS には在るのに条件が黙って『出さない』へ落ちる」、sidecar 側だけ厳しいと
+ * 「保存できるのに鳴らない」という、どちらも**画面から理由が読めない**壊れ方になる
+ * （064d で削除した `EFFECT_TEMPLATE_ID_RE` が Rust の `is_template_id` と強さを揃えていたのと同じ理由）。
+ * ⚠ **再修正トリガー＝ sidecar 側の規則を変えるとき**（必ず両方直す）。
+ *
+ * ⚠ 長さは **UTF-16 コード単位**で数える（`KEYWORD_MAX_LENGTH` のコードポイント数とは**別の規則**）。
+ * これも sidecar 側に合わせたもので、ここでの目的は文字数の厳密さではなく**入力の暴走を止める衛生上限**である。
  */
-const EFFECT_TEMPLATE_ID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const isEffectObsSourceName = (value: unknown): value is string => {
+  if (typeof value !== "string") return false;
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > OBS_SOURCE_NAME_MAX_LENGTH) {
+    return false;
+  }
+  return !hasControlChar(trimmed);
+};
 
-/**
- * 061h: テンプレート id として受け入れてよい形か。
- *
- * ⚠⚠ **正規表現の持ち主を 1 か所に保つための export である。** 061h で
- * **エフェクト窓のテスト表示が localStorage 経由で id を受け取る**ようになった
- * （`EFFECT_TEST_FIRE_KEY` の値が `<nonce>:<templateId>`）ので、あちらでも同じ検証が要る。
- * ⚠ 2 か所に同じ正規表現を書くと**片方だけ緩む**（061d-2 レビュー S-4 が「検証を 2 か所に
- * 分けない」と書いたのと同じ理由）ので、述語として共有する。
- */
-export const isEffectTemplateId = (value: unknown): value is string =>
-  typeof value === "string" && EFFECT_TEMPLATE_ID_RE.test(value);
+/** OBS のソース名の長さ上限。⚠ **sidecar の `isAllowedObsSourceName` と同じ値**（上の注記が正）。 */
+const OBS_SOURCE_NAME_MAX_LENGTH = 200;
 
 /**
  * 割り当て 1 行を検証する。**受け入れられない値はすべて `DEFAULT_EFFECT_ASSIGNMENT`（＝出さない）**。
@@ -286,11 +237,17 @@ const parseAssignment = (raw: unknown): EffectAssignment => {
   if (typeof raw !== "object" || raw === null) return DEFAULT_EFFECT_ASSIGNMENT;
   const kind = (raw as { kind?: unknown }).kind;
   if (kind === "none") return { kind: "none" };
-  if (kind === "template") {
-    const templateId = (raw as { templateId?: unknown }).templateId;
-    // ⚠ 形が違えば「出さない」へ（061h で反転。旧実装は「組み込み」へ倒していた）。
-    if (!isEffectTemplateId(templateId)) return DEFAULT_EFFECT_ASSIGNMENT;
-    return { kind: "template", templateId };
+  if (kind === "obs-source") {
+    const sourceName = (raw as { sourceName?: unknown }).sourceName;
+    // ⚠ 形が違えば「出さない」へ（`isEffectObsSourceName` の注記が正）。
+    if (!isEffectObsSourceName(sourceName)) return DEFAULT_EFFECT_ASSIGNMENT;
+    // ⚠⚠⚠ 064 レビュー S-10（修正）: **保存するのは trim 済みの値**である。
+    //   旧実装は `trim()` して**判定**しながら**生のまま保存**していたので、
+    //   細工された `" foo "` が入ると **matcher は発火するのに `<select>` は「出さない」に見える**
+    //   （`isObsSourceMissingFromList` は一覧の `name` と**完全一致**で照合し、
+    //   一覧側は sidecar が `trim()` 済みの名前を返すため）。
+    //   ⚠ sidecar も受領時に `trim()` するので、**これで両側の値が 1 つに揃う**。
+    return { kind: "obs-source", sourceName: sourceName.trim() };
   }
   // ⚠ 旧ビルドが書いた "builtin-monetary"（061h で廃止）と、未知の kind
   //   （063 の "gacha" を古いビルドが読んだ場合を含む）。どちらも「出さない」へ倒す。
@@ -418,29 +375,6 @@ export function isUsableKeyword(text: string): boolean {
   return normalizeForMatch(text) !== "";
 }
 
-/**
- * 061k: 保存値の `output` を [`EffectOutput`] へ落とす。**未指定・未知・非文字列はすべて既定へ**。
- *
- * ⚠⚠ **`effect` を一緒に見て「出さない条件」は既定へ丸める。** 判断 4-b の 2 案のうち
- * 「保存時に丸める」を採ったのがここ 1 行で、これにより [`saveEffectConditions`] の
- * 「キーごと削除」条件が**無改変のまま正しくなる**——「イベント条件が全部 `none` だが 1 件だけ
- * `output` を変えた」という状態が**保存形に存在しなくなる**ため。
- * ⚠ 却下した案（削除条件に「すべての `output` が既定」を足す）は、`{kind:"none"} × output:"stage"` という
- * **意味の無い状態を保存形に増やす**ので採らない。
- *
- * ⚠ **既定は `"corner"`＝「既存の挙動」**であって「出さない」ではない（[`DEFAULT_EFFECT_OUTPUT`]）。
- */
-const parseOutput = (raw: unknown, effect: EffectAssignment): EffectOutput => {
-  // ⚠ 「何も出さない条件の出力先」は意味が無いので、必ず既定へ丸める（上記）。
-  if (effect.kind === "none") return DEFAULT_EFFECT_OUTPUT;
-  // ⚠ 照合は**値の配列に対する `includes`**（`raw in TABLE` 形にすると `"__proto__"` 等が
-  //   プロトタイプ経由で真になる。sidecar の `parseOverlayKind` が同じ理由で同じ形を採っている）。
-  return typeof raw === "string" &&
-    (EFFECT_OUTPUTS as readonly string[]).includes(raw)
-    ? (raw as EffectOutput)
-    : DEFAULT_EFFECT_OUTPUT;
-};
-
 /** キーワード条件の id かどうか（`kw:<非負整数>`）。 */
 const keywordIdNumber = (id: unknown): number | null => {
   if (typeof id !== "string" || !id.startsWith(KEYWORD_ID_PREFIX)) return null;
@@ -481,8 +415,6 @@ const parseKeywordCondition = (raw: unknown): MatchableCondition | null => {
       id: item.id as string,
       when: { type: "keyword", text, match },
       effect,
-      // ⚠ 061k: 未知・未指定は既定へ／`none` は既定へ丸める（[`parseOutput`]）。
-      output: parseOutput((raw as { output?: unknown }).output, effect),
     },
     normalized,
   };
@@ -492,13 +424,11 @@ const parseKeywordCondition = (raw: unknown): MatchableCondition | null => {
 const eventCondition = (
   eventType: string,
   effect: EffectAssignment,
-  output: EffectOutput,
 ): MatchableCondition => ({
   condition: {
     id: `${EVENT_ID_PREFIX}${eventType}`,
     when: { type: "event", eventType },
     effect,
-    output,
   },
   normalized: null,
 });
@@ -532,9 +462,8 @@ const eventCondition = (
  */
 const parseConditions = (raw: unknown): MatchableCondition[] => {
   // ⚠ 先勝ち＋未知捨て＋欠け補完を 1 つの Map で表す。
-  // ⚠ 061k: 値が `EffectAssignment` から `{effect, output}` の対になった（**出力先も先勝ちで運ぶ**）。
-  //   ⚠ 「effect は 1 件目・output は 2 件目」のような取り違えが起きない形にするため、対で入れる。
-  const events = new Map<string, { effect: EffectAssignment; output: EffectOutput }>();
+  // ⚠ 064d: 値は `EffectAssignment` 1 つに戻った（061k の出力先の軸ごと消えたため）。
+  const events = new Map<string, EffectAssignment>();
   const keywords: MatchableCondition[] = [];
 
   if (Array.isArray(raw)) {
@@ -549,11 +478,7 @@ const parseConditions = (raw: unknown): MatchableCondition[] => {
         if (typeof eventType !== "string" || !MONETARY_EVENT_TYPES.has(eventType)) continue;
         // ⚠ **先勝ち**（2 件目以降は無視する）。
         if (events.has(eventType)) continue;
-        const effect = parseAssignment((item as { effect?: unknown }).effect);
-        events.set(eventType, {
-          effect,
-          output: parseOutput((item as { output?: unknown }).output, effect),
-        });
+        events.set(eventType, parseAssignment((item as { effect?: unknown }).effect));
         continue;
       }
       if (type !== "keyword") continue;
@@ -571,12 +496,7 @@ const parseConditions = (raw: unknown): MatchableCondition[] => {
     for (const eventType of MONETARY_EVENT_TYPES) {
       const value = (raw as Record<string, unknown>)[eventType];
       if (value === undefined) continue;
-      // ⚠ 061k: 旧形式（061i まで）に出力先という概念は無いので、**必ず既定＝コーナー**へ。
-      //   ＝ 061j までのユーザーの見え方が 1 ミリも変わらない（判断 4-b の目的そのもの）。
-      events.set(eventType, {
-        effect: parseAssignment(value),
-        output: DEFAULT_EFFECT_OUTPUT,
-      });
+      events.set(eventType, parseAssignment(value));
     }
   }
 
@@ -584,15 +504,8 @@ const parseConditions = (raw: unknown): MatchableCondition[] => {
   //   ⚠ 7 種別目が増えたら、保存値に無くてもここで自動的に 7 行目が生える。
   const out: MatchableCondition[] = [];
   for (const eventType of MONETARY_EVENT_TYPES) {
-    const saved = events.get(eventType);
     out.push(
-      eventCondition(
-        eventType,
-        saved?.effect ?? DEFAULT_EFFECT_ASSIGNMENT,
-        // ⚠ 061k: 欠けている行は既定の出力先。⚠ 既定の `effect` は `none` なので、
-        //   `parseOutput` の丸めと結果は一致する（＝2 通りの既定を作っていない）。
-        saved?.output ?? DEFAULT_EFFECT_OUTPUT,
-      ),
+      eventCondition(eventType, events.get(eventType) ?? DEFAULT_EFFECT_ASSIGNMENT),
     );
   }
   out.push(...keywords);
@@ -636,15 +549,14 @@ export function loadEffectConditions(): EffectConditions {
  * （イベント側だけなら「未保存＝既定」と「既定を明示的に選んだ」を同じ状態に潰す＝
  * `saveOverlayTheme(null)` と同じ判断で、分岐を増やさないため。）
  *
- * ⚠⚠ **061k: この削除条件は 1 文字も変えていない。** 061k は条件に `output`（出力先）を足したので、
- * 素直に読むと「イベント条件の出力先だけ変えた」状態が**「全部 `none`」の条件を満たしたまま消える**
- * ＝ **ユーザーが変えた出力先が黙って消える**。⇒ **[`parseOutput`] が「`effect.kind === "none"` の
- * 条件の `output` を既定へ丸める**ことで、**その状態を保存形から構造的に消した**（判断 4-b の推奨案）。
- * ⚠ **ここに `output` を見る条件を足さないこと**——足すと「何も出さないのに保存値が残る」状態が復活する。
- * ⚠ 逆に丸めを外すと、この関数は**無改変のまま静かに壊れる**（丸めと削除条件は対で成立している）。
+ * ⚠⚠ **064d でこの削除条件はさらに単純になった。** 061k が足した `output`（出力先）の軸ごと
+ * 消えたので、「条件が持つのは `when` と `effect` だけ」＝
+ * **「全部 `none` かつキーワード 0 件」なら保存すべき情報が 1 バイトも無い**が字義どおり成立する。
+ * ⚠ 061k は「出力先だけ変えた状態が黙って消える」を避けるために `parseOutput` の丸めと
+ * 対で成立させていたが、**その対そのものが不要になった**（丸めごと削除済み）。
  *
- * ⚠ **061d-2 レビュー S-4（受容・修正不要）: 書き込み時に `templateId` の形は検査しない**……のではなく、
- * **`parseAssignment` を通すので検査される**（061j で保存経路も同じ関数に寄せたため強くなった）。
+ * ⚠ **書き込み時も `parseAssignment` を通す**ので、ソース名の形式検査は保存経路にも効く
+ * （061j で保存経路を読み込みと同じ関数へ寄せた結果がそのまま残っている）。
  */
 export function saveEffectConditions(conditions: EffectConditions): void {
   try {
@@ -716,33 +628,8 @@ export function addKeywordCondition(
       id: nextKeywordId(current),
       when: { type: "keyword", ...when },
       effect,
-      // ⚠ 061k: **追加時の出力先は必ず既定**（＝コーナー）。出力先を選ぶのは追加した「あと」で、
-      //   UI もそう作ってある（行を追加してから `<select>` で変える）。
-      output: DEFAULT_EFFECT_OUTPUT,
     },
   ];
-  saveEffectConditions(next);
-  return loadEffectConditions();
-}
-
-/**
- * 061k: 条件 1 件の**出力先**（どこへ出すか）を変える。イベント条件・キーワード条件のどちらにも使う。
- *
- * ⚠⚠ **061j 申し送りの「条件を書き換える経路は全部 `commitConditions` を通す」の 7 本目**である。
- * hook（`useEffectTemplates`）側で必ず包むこと——通さないと**派生値 2 キーが追従しない**
- * ＝「stage 条件を作ったのに stage 窓が開かない」が黙って起きる。
- *
- * ⚠ 存在しない id を渡しても**何も起きない**（保存関数が 6 行を作り直すので構造的に無害）。
- * ⚠ `effect.kind === "none"` の条件に対して呼んでも、[`parseOutput`] が保存時に既定へ丸めるので
- * **値は変わらない**（＝ UI 側でその行の `<select>` を disabled にしてあるのと対）。
- */
-export function setConditionOutput(
-  id: string,
-  output: EffectOutput,
-): EffectConditions {
-  const next = loadEffectConditions().map((c) =>
-    c.id === id ? { ...c, output } : c,
-  );
   saveEffectConditions(next);
   return loadEffectConditions();
 }
@@ -786,202 +673,59 @@ export function removeCondition(id: string): EffectConditions {
  */
 
 /**
- * 指定テンプレートを指している条件を**「表示しない」へ戻す**（テンプレート削除時に呼ぶ）。
+ * 064b: **OBS 側のソースを鳴らすレーンの matcher**（`decideEffects` に渡す）。
  *
- * ⚠⚠ **061h で戻し先を反転した。** 061d-2 は「削除の副作用でエフェクトが**黙って止まる**のを避ける」
- * ために組み込みへ戻していたが、組み込みを廃止した以上ほかに倒しようがなく、かつ
- * 「消したテンプレートの代わりに**頼んでいない演出**が出る」ほうが今の運用では害が大きい。
- * ⚠ **061j: キーワード条件も対象**（あちらが指している場合も同じく戻す）。
- * ⚠ **削除操作のときだけ保存値を書き換える。** 「一覧に無い id」を見つけただけでは書き換えない
- * ——`list_effect_templates` が一時的に失敗した場合や、061c の「読めない行は黙って落とす」に
- * 当たっただけの場合に、**ユーザーの設定が黙って消える**ため（そちらは UI の警告で扱う）。
- */
-export function clearEffectConditionsForTemplate(
-  templateId: string,
-): EffectConditions {
-  const next = loadEffectConditions().map((c) =>
-    c.effect.kind === "template" && c.effect.templateId === templateId
-      ? { ...c, effect: DEFAULT_EFFECT_ASSIGNMENT }
-      : c,
-  );
-  saveEffectConditions(next);
-  return loadEffectConditions();
-}
-
-/**
- * 061i: **「エフェクトを表示する条件」の数**＝エフェクトを出す設定になっている条件の数。
+ * ## ⚠⚠ このレーンを回すのはコメビュ窓である
  *
- * ⚠⚠ **`assignedTemplateIds().length` とは違う**（あちらは**重複を潰した id の数**＝先読みの対象）。
- * ここが数えるのは**行の数**なので、6 種別すべてに同じテンプレートを割り当てたら 6 である
- * （前提ステータスの「表示する条件」に出す値が「1 件」だと嘘になる）。
+ * sidecar と WS で繋がっているのは**コメビュ窓だけ**なので、OBS を鳴らせるのもあの窓だけ
+ * （064a の `ObsSourceCard` が localStorage 経由で代行させているのと同じ構造上の非対称）。
+ * ⇒ **エフェクト窓は OBS レーンを 1 度も見ない**（上の [`createEffectMatcher`] が弾く）。
  *
- * ⚠ **061i の派生値（`EFFECT_OVERLAY_ENABLED_KEY`）と画面表示の両方がこの 1 か所を見る**——
- * 「条件があるか」の定義を 2 通りに書かないため（判断 2 の「2 つの真実」を増やさない）。
- * ⚠⚠ **061j で保存形が配列になったが、数える規則は 1 文字も変えていない**
- * （＝`kind === "template"` の行を数える）。061i が「そのとき直すのはこの関数だけで済む」ように
- * 呼び出し側へ数え方を持たせなかった意図がそのまま効いた。
- * ⚠ **キーワードを打っただけでは数に入らない**（エフェクトを選んで初めて 1 件になる）＝
- * イベント行と同じ規則であり、「窓がいつ開くか」の説明が 1 本で済む。
+ * ## ⚠ 064d: レーンは 1 本だけになった
  *
- * ⚠⚠ **061k: `output` を省略すると合計**（既存の呼び出しが 1 文字も変わらない）。
- * 渡すと**その出力先の条件だけ**を数える＝ **窓を開くかの判定は必ず出力先ごとに行う**
- * （`effectConditionCount(conditions, "stage") > 0` でステージ窓を開く）。
- * ⚠ **省略時を「corner」にしないこと**——前提ステータスの「表示する条件」は**合計**を出すので、
- * 既定を片方の窓にすると画面の数字が黙って半分になる。
- */
-export function effectConditionCount(
-  conditions: EffectConditions,
-  output?: EffectOutput,
-): number {
-  let count = 0;
-  for (const c of conditions) {
-    if (c.effect.kind !== "template") continue;
-    if (output !== undefined && c.output !== output) continue;
-    count += 1;
-  }
-  return count;
-}
-
-/**
- * 061i: **条件が 1 件以上あるか**（＝その出力窓を出すべきか＝`*_OVERLAY_ENABLED_KEY` の値）。
+ * 064b の時点では「エフェクト窓に描くレーン」と共存していたので、
+ * **相手のレーンの条件を当たり判定の前に落とす**ことが最重要の不変条件だった。
+ * 064d で取り込み機能ごと消えたので、**いま条件が持つ発火先は OBS ソースだけ**である。
+ * ⚠ **それでも `select` で絞る形は残してある**——063（ガチャ）が 2 本目のレーンとして入る予定で、
+ * そのとき「当たり判定の前に落とす」を**作り直さずに済む**（061d-2 穴 γ 以来 4 回踏んだ罠）。
  *
- * ⚠ **「一覧に無い id を指している条件」も 1 件として数える。** 保存値は
- * `list_effect_templates` の成否で書き換えない（上の `clearEffectConditionsForTemplate` の注記）ので、
- * 一覧が一時的に読めないだけでフラグが false へ倒れると **OBS のソースが黙って消える**。
- * 「割り当てたのに出ない」は `EffectAssignmentCard` の警告のほうで観測する。
+ * ## ⚠⚠ レーンごとに `EffectTriggerState` を分けること（呼び出し側の責務）
  *
- * ⚠ 061k: `output` は [`effectConditionCount`] にそのまま渡る（省略＝合計）。
- */
-export function hasEffectConditions(
-  conditions: EffectConditions,
-  output?: EffectOutput,
-): boolean {
-  return effectConditionCount(conditions, output) > 0;
-}
-
-/**
- * 条件に出てくるテンプレート id（重複なし）。⚠ **先読みの対象はこれだけ**（一覧全部ではない）。
- *
- * ⚠ **061j で上限が 6 件から 26 件（イベント 6 ＋ キーワード 20）へ増えた**が、
- * メモリの上限を守っているのは `effectMediaCache` の 20MiB ＋ LRU なので、形は変えていない。
- *
- * ⚠⚠ **061k: `output` を渡すと、その出力先の条件が指す id だけを返す。**
- * エフェクト窓は**自分の出力先ぶんだけ**を温めること——省略すると
- * **20MiB の先読み予算をもう一方の窓のぶんで使う**（2 窓それぞれが全 26 件を抱える）。
- * ⚠ 省略時が合計なのは [`effectConditionCount`] と同じ規則（既存の呼び出しを壊さないため）。
- */
-export function assignedTemplateIds(
-  conditions: EffectConditions,
-  output?: EffectOutput,
-): string[] {
-  const ids = new Set<string>();
-  for (const c of conditions) {
-    if (c.effect.kind !== "template") continue;
-    if (output !== undefined && c.output !== output) continue;
-    ids.add(c.effect.templateId);
-  }
-  return [...ids];
-}
-
-/**
- * 061d-2 / 061j / **061k**: **`decideEffects` に渡す matcher を、出力先ごとに作る factory**。
- *
- * ## ⚠⚠ 061k: なぜ「窓側で捨てる」ではなく matcher で絞るのか（判断 5・最重要）
- *
- * 2 つの出力窓は**それぞれ独立に全コメントを受けて `decideEffects` を回す**（`EffectOverlayApp` が
- * 窓ごとに `connectCommentStream` を 1 本張り、`EffectTriggerState` も窓ごとに持つ）。
- * 素直に思いつく「`EffectRequest` に `output` を載せ、窓側で自分宛てでなければ捨てる」は **誤りである**:
- *
- * ⚠⚠ **`decideEffects` は発火時に `recentFires.push` / `lastConditionAt.set` / `lastGiftAt.set` を書く。**
- * 捨てるのは**その後**なので、**コーナー窓のバースト枠がステージ用エフェクトに食われる**
- * ——「別の窓へ出す条件が 3 件続いただけで、直後の投げ銭が捨てられる」が起きる。
- * ⚠ これは **061j 追加穴 η が守った不変条件「出さないと決まったものは state に一切触らない」の裏返し**で、
- * さらに遡れば 061d-2 の穴 γ と同型である。⚠⚠ **同じ罠を 3 回目で踏まないこと。**
- * ⇒ **自分の `output` 以外の条件は、当たり判定の前にスキップする**（下のループの 1 行）。
- * ⚠ **「出ない」だけを見るテストではこの区別がつかない**（どちらの実装でも出ない）。
- * 検証は **`recentFires` / `lastConditionAt` / `lastGiftAt` のサイズを直接数える**こと。
- *
- * ⚠ **`EffectMatch` も `EffectRequest` も無改変**（後者は 8 キーのまま）＝ §9 の担保はそのまま。
- * ⚠ 条件の `output` は 1 つなので、**2 窓で二重に発火することはない**。
- * ⚠ 帰結: **バースト枠もクールダウンも窓ごとに独立**（061k の制約 6）。
- *
- * ## ⚠⚠ factory にしたが「読み直しの規律」は変えていない
- *
- * 061j はこの形（`createEffectMatcher()`）を JSDoc に**寄せ先として**残していたが、理由は
- * 「localStorage の読み回数を減らす最適化」で、**061j 自身が「いま 1 バイトも節約しないので作らない」と
- * 却下している**。⚠ **061k が factory にしたのは出力先を束縛するためだけ**で、
- * **返す関数は呼ばれるたびに [`readConditions`] する**（＝ main 窓で条件を変えた直後の 1 件目から効く）。
- * ⚠⚠ **「ついでに最適化」をしないこと**——測っていない最適化を、別の理由の変更に紛れ込ませない。
- * ⚠ 再修正トリガーは 061j のまま＝**実機で高頻度のコメントによりカクついたとき**、
- * かつ **sidecar がコメントをまとめて送るようになったとき**（いまは 1 件ずつなので効果ゼロ）。
- *
- * ---
- *
- * ⚠⚠ **発火のたびに localStorage を読み直す**（state にミラーしない・`storage` にも依存しない）。
- * この設定の持ち主は main 窓なので、エフェクト窓の state に写すと
- * 「main 窓で変えたのに古い値で判断する」形が作れてしまう（061b が `loadEffectMonetaryEnabled` を
- * 発火のたびに読んでいたのと同じ規律。⚠ あの関数は 061h で削除したので、
- * **この規律を体現しているのは本関数だけ**になった）。
- * ⚠ 読むのは localStorage 1 本で **同期**——`storage` の窓跨ぎ伝播（ベストエフォート）に
- * 依存しないので、**設定は必ず届く**。
- *
- * ## ⚠⚠ 課金ゲートはここにある（判断 5）
- *
- * 061h までは `decideEffects` の先頭に `if (!isMonetaryEvent(c.eventType)) continue;` があった。
- * **キーワード条件は通常チャットで発火するのが目的**なので、そのままだと**キーワードが永久に当たらない**。
- * ⇒ ゲートを**イベント条件の判定の中**へ移した。⚠ **罠が 3 つある**:
- *   1. ⚠⚠ **`isMonetaryEvent(input.eventType)` であって `displayEventType` を通さない。**
- *      `displayEventType` は superchat＋`currency:"BITS"` を `"bits"` へ振り替えるが、`"bits"` は
- *      `MONETARY_EVENT_TYPES` に**無い**（あの Set は「ビッツは superchat に含まれる」前提）。
- *      通すと**ビッツでエフェクトが出なくなる**（061b が踏み、059b も踏んだ罠）。
- *      ⇒ そもそも本関数は `CommentViewDto` を受け取らないので `displayEventType` を**呼べない**
- *      （型で罠を塞いである）。
- *   2. **穴 γ の順序を崩さない**（`decideEffects` 側の責務。あちらの注記が正）。
- *   3. `effectTrigger.ts` から `isMonetaryEvent` の import が消えるが、**本モジュールは既に
- *      `viewerFormat` を import している**＝ **層の向きは変わらない**。
- *
- * ## ⚠⚠ 走査順と「最初の 1 件だけ」（判断 11）
- *
- * 1 つのコメントが複数条件にヒットしうる（「草」と「w」の両方を含む・スパチャの本文にキーワードが入る）。
- * 全部出すと **1 コメントで N 件**＝バースト枠を一瞬で食い尽くす。
- * ⇒ **走査順で最初に当たった 1 件だけ**（＝戻り値が `EffectMatch | null` である形がそのまま答え）。
- * 走査順は **イベント条件（6 行・固定順）→ キーワード条件（保存順）**。帰結:
- *   - ⚠ **課金コメントにキーワードも当たる場合はイベント条件が勝つ**（投げ銭のほうが重要度が高く、
- *     ユーザーが**明示的に種別へ割り当てた**ものだから）。
- *   - ⚠⚠ **キーワードは種別を問わず当たる**（スパチャ本文の「草」でも当たる）。
- *     ⚠ 却下した案＝「課金コメントはキーワード判定の対象外」——「キーワードを設定したのに、
- *     たまたまスパチャで書かれると出ない」という**説明しづらい穴**を作るため。
- *   - ⚠⚠ **`effect.kind === "none"` の条件はスキップする**（＝「当たった」扱いにしない）。
- *     そうしないと「スーパーチャットを『出さない』にしている」だけでキーワードが塞がれる。
- *     ⚠ これは `effectConditionCount` が `kind === "template"` だけ数えているのと**同じ規則**である。
- *
- * ## ⚠⚠ 性能（判断 6・実測してから最適化する）
- *
- * 061j で本関数は**全コメントで呼ばれる**ようになった（061h までは課金コメントのときだけ）。
- *   - **本文の正規化はコメント 1 件につき 1 回**（下の `text`）。⚠ 条件ごとに正規化すると
- *     290 字級の長文 × 20 件＝ **5,800 字**になる。ここが判断 6 の警告の本体である。
- *   - **キーワード側の正規化は [`parseConditions`] が 1 件 1 回**行い、**空判定と照合が同じ結果を共有**する。
- *     ⚠ 残差は `KEYWORD_MAX_LENGTH × KEYWORD_CONDITION_MAX` ＝ **640 字/コメント**が上限で、
- *     判断 9 の「32 文字・20 件」がそのまま走査コストの上限になっている。
- *   - ⚠⚠ **「発火のたびに読み直す」規律は変えない**（キャッシュすると「main 窓で変えたのに
- *     古い値で判断する」形が復活する）。⚠ **窓を跨ぐキャッシュにはしない。**
- * ⚠ **再修正トリガー＝実機で高頻度のコメントによりカクついたとき。** そのときは
- * **`decideEffects` の 1 呼び出しにつき 1 回だけ読む**形（＝ factory が**作られた時点で 1 回だけ**読み、
- * 返す関数はその写しを見る）へ寄せること。⚠ **061k の factory 化はこれではない**（上記）。
- * ⚠ **いま寄せない理由**＝ sidecar は `comments.append` を **1 件ずつ**送るので `added` は常に長さ 1 で、
- * 「1 バッチ 1 回」と「1 コメント 1 回」が**現状まったく同じ**だから（＝測っていない最適化になる）。
- * ⇒ **寄せるのは sidecar がまとめて送るようになったとき**でもある。
+ * 061k が 2 窓で作った構えと同じ＝**バースト枠とクールダウンはレーンごとに独立**である。
+ * 共有すると「OBS のソースが 3 回鳴っただけで、直後の投げ銭がエフェクト窓で捨てられる」が起きる
+ * （061d-2 穴 γ ／ 061j 穴 η ／ 061k と同型で **4 例目**）。
  *
  * ## §9
  *
- * ⚠⚠ **戻り値に本文を載せない。** `EffectRequest` は **8 キーのまま無改変**
- * ＝ **第三者の本文が発火層より先へ 1 バイトも進まない**ことが型で担保される。
- * ⚠ `conditionId` は**ユーザー自身が作った条件の識別子**で第三者データではない（§9 の対象外）。
- * ⚠ **それでも `EffectRequest` には載せない**——クールダウンの判定は `decideEffects` の中で完結するので
- * 載せる理由が無く、載せると「出すのに要る最小限」という 061b の規律が緩む。
+ * ⚠⚠ **OBS へ渡るのは `sourceName` だけ**＝**ユーザー自身が OBS で付けた名前**である。
+ * コメント本文は照合に使って**その場で捨てる**（`EffectMatchInput` が本文を受けるが、
+ * `EffectMatch` は本文を載せられない＝型で担保）。
  */
-export function createEffectMatcher(output: EffectOutput): EffectMatcher {
-  return (input: EffectMatchInput): EffectMatch | null => {
+export function createObsSourceMatcher(): EffectMatcher<EffectObsSource> {
+  return createConditionMatcher((condition) =>
+    condition.effect.kind === "obs-source" ? condition.effect : null,
+  );
+}
+
+/**
+ * 064b: **条件の走査そのもの**（レーンの違いは `select` の 1 関数だけに閉じる）。
+ *
+ * ⚠⚠ **[`createEffectMatcher`] と [`createObsSourceMatcher`] が 1 実装を共有するために切り出した。**
+ * 走査を 2 通り書くと、課金ゲート・走査順・「最初の 1 件だけ」・クールダウンの規則が
+ * **片方だけ緩む**（061d-2 レビュー S-4 以来の規律）。
+ *
+ * ⚠⚠ **`select` は「自分のレーン宛てか」と「何を発火させるか」を同時に答える。**
+ * `null` を返した条件は**当たった扱いにしない**＝
+ *   1. 判断 11 の「『出さない』条件はキーワードを塞がない」がそのまま維持される
+ *   2. ⚠⚠ **もう一方のレーンの条件が、このレーンのバースト枠とクールダウンを食わない**
+ *      （＝当たり判定の**前**に落ちる。上の [`createObsSourceMatcher`] の JSDoc が正）
+ * ⚠ **「出ない」だけを見るテストでは 2 の変異は殺せない**（`recentFires` / `lastConditionAt` /
+ * `lastGiftAt` のサイズを直接数えること）。
+ */
+function createConditionMatcher<T extends object>(
+  select: (condition: EffectCondition) => T | null,
+): EffectMatcher<T> {
+  return (input: EffectMatchInput): EffectMatch<T> | null => {
     const conditions = readConditions();
     // ⚠ 生の `eventType`（罠 1）。
     const monetary = isMonetaryEvent(input.eventType);
@@ -993,19 +737,18 @@ export function createEffectMatcher(output: EffectOutput): EffectMatcher {
     const text = normalizeForMatch(input.text);
 
     for (const { condition, normalized } of conditions) {
-      // ⚠⚠ **061k（判断 5）: 自分の窓宛てでない条件は、当たり判定の前に落とす。**
+      // ⚠⚠ **061k（判断 5）/ 064b: 自分のレーン宛てでない条件は、当たり判定の前に落とす。**
       //   ⚠ ここを `decideEffects` の後ろ（＝`EffectRequest` を捨てる形）へ動かすと、
-      //   **もう一方の窓の条件がこの窓のバースト枠とクールダウンを消費する**（上記 JSDoc）。
+      //   **もう一方のレーンの条件がこのレーンのバースト枠とクールダウンを消費する**（上記 JSDoc）。
       //   ⚠ 「出ない」だけを見るテストでは**この変異は殺せない**（state のサイズを数えること）。
-      if (condition.output !== output) continue;
-      // ⚠⚠ 判断 11: 「出さない」条件は**当たった扱いにしない**（キーワードを塞がない）。
-      if (condition.effect.kind === "none") continue;
+      const effect = select(condition);
+      if (effect === null) continue;
       if (condition.when.type === "event") {
         // ⚠⚠ 課金ゲート（判断 5）。⚠ ここを `decideEffects` の先頭へ戻すとキーワードが永久に当たらない。
         if (!monetary) continue;
         if (condition.when.eventType !== input.eventType) continue;
         // ⚠ イベント条件にクールダウンは効かせない（スパチャ 2 連投の 2 件目を落とさない）。
-        return { effect: condition.effect, conditionId: condition.id, cooldownMs: 0 };
+        return { effect, conditionId: condition.id, cooldownMs: 0 };
       }
       // ⚠ keyword なら `normalized` は必ず非 null（`parseConditions` の不変条件）。型の都合で 1 行置く。
       if (normalized === null) continue;
@@ -1015,7 +758,7 @@ export function createEffectMatcher(output: EffectOutput): EffectMatcher {
           : text.includes(normalized);
       if (!hit) continue;
       return {
-        effect: condition.effect,
+        effect,
         conditionId: condition.id,
         cooldownMs: KEYWORD_COOLDOWN_MS,
       };

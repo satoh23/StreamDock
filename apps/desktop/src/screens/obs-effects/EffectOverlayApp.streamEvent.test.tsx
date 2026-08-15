@@ -2,13 +2,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, act } from "@testing-library/react";
 import { EffectOverlayApp } from "./EffectOverlayApp";
 import {
-  EFFECT_ASSIGNMENTS_KEY,
   STREAM_EVENT_ROUND_KEY,
 } from "../../features/comment-viewer/overlaySettings";
 import type { CommentViewDto } from "../../features/comment-viewer/types";
-import type { EffectTemplateMedia } from "../../features/obs-effects/bindings/EffectTemplateMedia";
-import type { EffectTemplateRecord } from "../../features/obs-effects/bindings/EffectTemplateRecord";
-import type { EffectTriggerState } from "./effectTrigger";
 
 /**
  * 061l: **ステージ窓に出る配信イベント**の仕様テスト（判断 4・5・7・8・11）。
@@ -39,14 +35,11 @@ import type { EffectTriggerState } from "./effectTrigger";
  */
 const mocks = vi.hoisted(() => ({
   connectCommentStream: vi.fn(),
-  listEffectTemplates: vi.fn(),
-  getEffectTemplateMedia: vi.fn(),
   /**
    * ⚠⚠ **`decideEffects` の呼び出しを記録するラッパ**（実装へはそのまま委譲する）。
    * 第 3 引数が **`EffectOverlayApp` が `useRef` で抱えている発火層の state そのもの**なので、
    * ここから `recentFires` / `lastConditionAt` / `lastGiftAt` の**サイズを直接数えられる**。
    */
-  decideEffects: vi.fn(),
   /** 061p: 検査用の同梱イベント 1 本（実データは 0 本）。 */
   event: {
     id: "test-event",
@@ -77,65 +70,9 @@ vi.mock("../../features/comment-viewer/commentStream", () => ({
   connectCommentStream: mocks.connectCommentStream,
 }));
 
-vi.mock("../../features/obs-effects/effectTemplateApi", () => ({
-  listEffectTemplates: mocks.listEffectTemplates,
-  getEffectTemplateMedia: mocks.getEffectTemplateMedia,
-}));
-
-vi.mock("./effectTrigger", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./effectTrigger")>();
-  mocks.decideEffects.mockImplementation(actual.decideEffects);
-  return { ...actual, decideEffects: mocks.decideEffects };
-});
-
-/** `decideEffects` に渡された発火層の state（＝窓が抱えている ref の中身）。 */
-const triggerState = (): EffectTriggerState => {
-  const calls = mocks.decideEffects.mock.calls;
-  if (calls.length === 0) throw new Error("decideEffects が 1 度も呼ばれていない");
-  return calls[calls.length - 1][2] as EffectTriggerState;
-};
 
 // ⚠ 061p: **注入した検査用イベント**（実データは 0 本＝上のクラス JSDoc の 061p 節）。
 const EVENT = mocks.event;
-const TEMPLATE_ID = "93c76e02-1111-4222-8333-444455556666";
-const PNG: EffectTemplateMedia = {
-  media: "data:image/png;base64,iVBORw0KGgo=",
-  sound: null,
-};
-const templateRecord = (): EffectTemplateRecord => ({
-  id: TEMPLATE_ID,
-  name: "きらきら演出",
-  durationMs: 5000,
-  layout: { anchor: "center", offsetX: 0, offsetY: 0, width: 480, height: 240 },
-  text: {
-    template: "{name}さんが{amount}",
-    templateWithoutAmount: "{message}",
-    anchor: "bottom",
-    fontSize: 32,
-  },
-  hasSound: false,
-  createdAt: "2026-08-11T00:00:00Z",
-  updatedAt: "2026-08-11T00:00:00Z",
-});
-
-/**
- * 「スーパーチャットで**ステージ窓に**エフェクトを出す」条件を保存する。
- * ⚠ 061j 以降の保存形は**条件の配列**で、⚠ 061k 以降は **`output` を明示しないと `"corner"`**
- *   （＝ステージ窓では 1 件も出ない）。
- */
-const assignSuperchatToStage = () =>
-  localStorage.setItem(
-    EFFECT_ASSIGNMENTS_KEY,
-    JSON.stringify([
-      {
-        id: "event:superchat",
-        when: { type: "event", eventType: "superchat" },
-        effect: { kind: "template", templateId: TEMPLATE_ID },
-        output: "stage",
-      },
-    ]),
-  );
-
 const THIRD_PARTY_TEXT = "これは第三者のコメント本文です";
 const THIRD_PARTY_NAME = "視聴者ネーム";
 
@@ -195,11 +132,6 @@ describe("061l: EffectOverlayApp（配信イベント）", () => {
     localStorage.clear();
     mocks.connectCommentStream.mockReset();
     mocks.connectCommentStream.mockReturnValue({ disconnect: vi.fn() });
-    mocks.listEffectTemplates.mockReset();
-    mocks.listEffectTemplates.mockResolvedValue([]);
-    mocks.getEffectTemplateMedia.mockReset();
-    mocks.getEffectTemplateMedia.mockResolvedValue(PNG);
-    mocks.decideEffects.mockClear();
   });
 
   afterEach(() => {
@@ -211,31 +143,31 @@ describe("061l: EffectOverlayApp（配信イベント）", () => {
 
   it("⚠⚠ 新規 7: ステージ窓はマウント時に開催状態を読む（`storage` が届かなくても出る）", () => {
     armRound();
-    render(<EffectOverlayApp output="stage" />);
+    render(<EffectOverlayApp />);
     // ⚠ `storage` は 1 度も飛ばしていない（＝マウント時の読み出しだけで出ている）。
     expect(screen.getByText(EVENT.title)).toBeInTheDocument();
     expect(countText()).toContain("0");
   });
 
   it("⚠ 開催していなければ何も描かない", () => {
-    const { container } = render(<EffectOverlayApp output="stage" />);
+    const { container } = render(<EffectOverlayApp />);
     expect(screen.queryByText(EVENT.title)).toBeNull();
     expect(container.textContent).toBe("");
   });
 
   it("⚠ 期限切れ・壊れた保存値では描かない（`parseStreamEventRound` が落とす）", () => {
     armRound({ endsAt: Date.now() - 1 });
-    const { unmount } = render(<EffectOverlayApp output="stage" />);
+    const { unmount } = render(<EffectOverlayApp />);
     expect(screen.queryByText(EVENT.title)).toBeNull();
     unmount();
 
     localStorage.setItem(STREAM_EVENT_ROUND_KEY, "{");
-    render(<EffectOverlayApp output="stage" />);
+    render(<EffectOverlayApp />);
     expect(screen.queryByText(EVENT.title)).toBeNull();
   });
 
   it("⚠⚠ 新規 8: `storage` で開始と終了が反映される", () => {
-    render(<EffectOverlayApp output="stage" />);
+    render(<EffectOverlayApp />);
     expect(screen.queryByText(EVENT.title)).toBeNull();
 
     // 開始（main 窓の書換）。
@@ -250,11 +182,11 @@ describe("061l: EffectOverlayApp（配信イベント）", () => {
   });
 
   it("⚠ 他のキーの `storage` では反応しない", () => {
-    render(<EffectOverlayApp output="stage" />);
+    render(<EffectOverlayApp />);
     armRound();
     act(() => {
       window.dispatchEvent(
-        new StorageEvent("storage", { key: EFFECT_ASSIGNMENTS_KEY, newValue: "{}" }),
+        new StorageEvent("storage", { key: "stream-dock.other-key", newValue: "{}" }),
       );
     });
     expect(screen.queryByText(EVENT.title)).toBeNull();
@@ -263,7 +195,7 @@ describe("061l: EffectOverlayApp（配信イベント）", () => {
   it("⚠⚠ この窓は開催キーを書きも消しもしない（書き手は main 窓だけ・判断 5）", () => {
     const round = armRound();
     const raw = JSON.stringify(round);
-    const { unmount } = render(<EffectOverlayApp output="stage" />);
+    const { unmount } = render(<EffectOverlayApp />);
     emitComments([comment("c-1"), comment("c-2")]);
     expect(localStorage.getItem(STREAM_EVENT_ROUND_KEY)).toBe(raw);
     unmount();
@@ -273,22 +205,9 @@ describe("061l: EffectOverlayApp（配信イベント）", () => {
 
   // --- 新規 9: コーナー窓には出さない -------------------------------------------------------------
 
-  it("⚠⚠ 新規 9: コーナー窓ではイベントを描かない（判断 7）", () => {
-    armRound();
-    const { container } = render(<EffectOverlayApp output="corner" />);
-    expect(screen.queryByText(EVENT.title)).toBeNull();
-    expect(container.textContent).toBe("");
-
-    // ⚠ `storage` が届いても描かない（＝出力先の分岐が読み出し側にもある）。
-    dispatchRoundStorage(localStorage.getItem(STREAM_EVENT_ROUND_KEY));
-    expect(screen.queryByText(EVENT.title)).toBeNull();
-  });
-
-  // --- 新規 10: 件数 ------------------------------------------------------------------------------
-
   it("⚠⚠ 新規 10: 開催中のコメントで件数が増える", () => {
     armRound();
-    render(<EffectOverlayApp output="stage" />);
+    render(<EffectOverlayApp />);
     expect(countText()).toContain("0");
 
     emitComments([comment("c-1"), comment("c-2")]);
@@ -305,7 +224,7 @@ describe("061l: EffectOverlayApp（配信イベント）", () => {
     //   RED になるのは下の「⚠⚠ 期限を過ぎたら、tick が来る前でも数えない」**1 件だけ**である。
     //   ⇒ **割り切って残している**（仕様として読めることに価値がある）。
     //   ⚠ 「⑦ はこのケースで殺せている」と読まないこと。
-    render(<EffectOverlayApp output="stage" />);
+    render(<EffectOverlayApp />);
     emitComments([comment("c-1"), comment("c-2")]);
     expect(screen.queryByText("コメント")).toBeNull();
 
@@ -319,7 +238,7 @@ describe("061l: EffectOverlayApp（配信イベント）", () => {
 
   it("⚠⚠ 穴 γ: 同一 id の再送（043e の combo 更新）で二重に数えない", () => {
     armRound();
-    render(<EffectOverlayApp output="stage" />);
+    render(<EffectOverlayApp />);
 
     emitComments([comment("j-1")]);
     expect(countText()).toContain("1");
@@ -338,7 +257,7 @@ describe("061l: EffectOverlayApp（配信イベント）", () => {
 
   it("⚠⚠ 期限を過ぎたら、tick が来る前でも数えない", () => {
     armRound({ endsAt: Date.now() + 50 });
-    render(<EffectOverlayApp output="stage" />);
+    render(<EffectOverlayApp />);
     emitComments([comment("c-1")]);
     expect(countText()).toContain("1");
 
@@ -351,7 +270,7 @@ describe("061l: EffectOverlayApp（配信イベント）", () => {
 
   it("⚠⚠ 変異 ⑭-c: 2 回目の開催は 0 から数え直す", () => {
     const first = armRound();
-    render(<EffectOverlayApp output="stage" />);
+    render(<EffectOverlayApp />);
     emitComments([comment("c-1"), comment("c-2")]);
     expect(countText()).toContain("2");
 
@@ -365,7 +284,7 @@ describe("061l: EffectOverlayApp（配信イベント）", () => {
 
   it("⚠ 同じ内容の `storage` が届いても件数は消えない", () => {
     const round = armRound();
-    render(<EffectOverlayApp output="stage" />);
+    render(<EffectOverlayApp />);
     emitComments([comment("c-1"), comment("c-2")]);
     expect(countText()).toContain("2");
 
@@ -378,7 +297,7 @@ describe("061l: EffectOverlayApp（配信イベント）", () => {
 
   it("⚠⚠ 新規 11: イベントの表示に第三者の本文・表示名・アバターが 1 文字も出ない（§9）", () => {
     armRound();
-    const { container } = render(<EffectOverlayApp output="stage" />);
+    const { container } = render(<EffectOverlayApp />);
     emitComments([comment("c-1"), superchat("c-2")]);
 
     expect(countText()).toContain("2");
@@ -396,7 +315,7 @@ describe("061l: EffectOverlayApp（配信イベント）", () => {
     // ⚠ 開催の仕込み（main 窓の役目）を済ませてから監視を始める＝**この窓の書込だけ**を見る。
     armRound();
     const setItem = vi.spyOn(Storage.prototype, "setItem");
-    render(<EffectOverlayApp output="stage" />);
+    render(<EffectOverlayApp />);
     emitComments([comment("c-1"), superchat("c-2")]);
 
     expect(countText()).toContain("2");
@@ -416,60 +335,10 @@ describe("061l: EffectOverlayApp（配信イベント）", () => {
 
   // --- 新規 12: 発火層の枠を食わない ---------------------------------------------------------------
 
-  it("⚠⚠ 新規 12: イベントはバースト枠・クールダウンを 1 つも消費しない（サイズを直接数える）", () => {
-    armRound();
-    render(<EffectOverlayApp output="stage" />);
-
-    // 割り当てが無い（＝エフェクトは 1 件も出ない）状態で、コメントを大量に流す。
-    emitComments([
-      comment("c-1"),
-      comment("c-2"),
-      comment("c-3"),
-      comment("c-4"),
-      superchat("c-5"),
-    ]);
-    expect(countText()).toContain("5");
-
-    // ⚠⚠ **ここが本命**——「何も出ない」ではなく**発火層の state のサイズ**を見る。
-    //   イベントを `decideEffects` に相乗りさせる変異（⑨）は、ここでしか殺せない。
-    const state = triggerState();
-    expect(state.recentFires).toHaveLength(0);
-    expect(state.lastConditionAt.size).toBe(0);
-    expect(state.lastGiftAt.size).toBe(0);
-    // ⚠ `decideEffects` の呼び出しは「コメントのバッチ 1 回につき 1 回」のまま
-    //   （イベント用の 2 本目の呼び出しを足していない）。
-    expect(mocks.decideEffects).toHaveBeenCalledTimes(1);
-  });
-
-  it("⚠⚠ 新規 12: 開催中でもエフェクトのバースト枠は満額のまま使える", async () => {
-    // 割り当て済み＝課金コメントでエフェクトが出る状態を作る。
-    mocks.listEffectTemplates.mockResolvedValue([templateRecord()]);
-    assignSuperchatToStage();
-    armRound();
-    render(<EffectOverlayApp output="stage" />);
-    await act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    // イベントが数えるだけのコメントを先に大量に流す（枠を食う変異ならここで埋まる）。
-    emitComments([comment("x-1"), comment("x-2"), comment("x-3"), comment("x-4")]);
-    expect(countText()).toContain("4");
-
-    // ⚠ そのうえで課金コメント 3 件＝バースト上限ちょうど（5 秒 3 件）まで出ること。
-    emitComments([superchat("s-1"), superchat("s-2"), superchat("s-3")]);
-    expect(triggerState().recentFires).toHaveLength(3);
-    expect(screen.getAllByText(/さんが¥1,000/)).toHaveLength(3);
-  });
-
-  // --- 新規 13: タイマー / リスナーの後始末 ---------------------------------------------------------
-
   it("⚠⚠ 新規 13: 期限が来たら表示が消える（⚠ 窓は閉じない・localStorage も触らない）", async () => {
     vi.useFakeTimers();
     const round = armRound({ endsAt: Date.now() + 2_000 });
-    render(<EffectOverlayApp output="stage" />);
+    render(<EffectOverlayApp />);
     expect(screen.getByText(EVENT.title)).toBeInTheDocument();
 
     await act(async () => {
@@ -483,7 +352,7 @@ describe("061l: EffectOverlayApp（配信イベント）", () => {
   it("⚠ 残り時間は tick で進む（配信画面は秒まで出す）", async () => {
     vi.useFakeTimers();
     armRound({ endsAt: Date.now() + 65_000 });
-    render(<EffectOverlayApp output="stage" />);
+    render(<EffectOverlayApp />);
     expect(screen.getByText(/残り 1:0\d/)).toBeInTheDocument();
 
     await act(async () => {
@@ -498,7 +367,7 @@ describe("061l: EffectOverlayApp（配信イベント）", () => {
     const removeSpy = vi.spyOn(window, "removeEventListener");
     const clearSpy = vi.spyOn(window, "clearInterval");
     armRound();
-    const { unmount } = render(<EffectOverlayApp output="stage" />);
+    const { unmount } = render(<EffectOverlayApp />);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1_000);
     });
@@ -521,47 +390,4 @@ describe("061l: EffectOverlayApp（配信イベント）", () => {
     clearSpy.mockRestore();
   });
 
-  it("⚠ コーナー窓では開催のタイマーも `storage` リスナーも張らない", async () => {
-    vi.useFakeTimers();
-    const addSpy = vi.spyOn(window, "addEventListener");
-    armRound();
-    render(<EffectOverlayApp output="corner" />);
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(5_000);
-    });
-    // ⚠ この窓が張る `storage` は既存の 2 本（割り当ての温め直し・テスト表示）だけ。
-    expect(addSpy.mock.calls.filter((c) => c[0] === "storage")).toHaveLength(2);
-    addSpy.mockRestore();
-  });
-
-  // --- 変異⑪: 層の前後関係 -------------------------------------------------------------------------
-
-  it("⚠⚠ 変異⑪: イベント層はエフェクト層より DOM 順で前（＝下に描かれる・判断 7）", async () => {
-    mocks.listEffectTemplates.mockResolvedValue([templateRecord()]);
-    assignSuperchatToStage();
-    armRound();
-    const { container } = render(<EffectOverlayApp output="stage" />);
-    await act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    emitComments([superchat("s-1")]);
-
-    const root = container.firstElementChild as HTMLElement;
-    const layers = Array.from(root.children);
-    expect(layers.length).toBeGreaterThanOrEqual(2);
-    // ⚠⚠ **イベントが先・エフェクトが後**（`z-index` を使わず塗り順に任せているため、
-    //   ここを入れ替えるとエフェクトがイベントの下に隠れる）。
-    //   ⚠ **実際の重なりの見え方は jsdom では確かめられない**（CSS の実効はテストで固定できない）。
-    const eventLayer = layers[0];
-    const templateLayer = layers[1];
-    expect(eventLayer.textContent).toContain(EVENT.title);
-    expect(templateLayer.textContent).toContain("さんが¥1,000");
-    expect(
-      eventLayer.compareDocumentPosition(templateLayer) &
-        Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-  });
 });

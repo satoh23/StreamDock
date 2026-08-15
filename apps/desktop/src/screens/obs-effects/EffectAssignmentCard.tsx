@@ -1,27 +1,34 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "../../components/primitives";
 import { Select } from "../../components/Select";
 import {
+  loadObsSourceList,
+  OBS_SOURCE_LIST_KEY,
+  type ObsSourceEntry,
+} from "../../features/comment-viewer/overlaySettings";
+import {
+  addKeywordCondition as addKeywordConditionRaw,
   DEFAULT_EFFECT_ASSIGNMENT,
-  DEFAULT_EFFECT_OUTPUT,
-  EFFECT_OUTPUT_LABEL,
-  EFFECT_OUTPUTS,
   isUsableKeyword,
   KEYWORD_CONDITION_MAX,
   KEYWORD_MAX_LENGTH,
+  loadEffectConditions,
+  removeCondition as removeConditionRaw,
   sanitizeKeywordInput,
+  setConditionEffect as setConditionEffectRaw,
+  updateKeywordCondition as updateKeywordConditionRaw,
   type EffectAssignment,
+  type EffectConditions,
   type EffectKeywordMatch,
-  type EffectOutput,
 } from "./effectAssignments";
 import { EFFECT_EVENT_LABEL } from "./effectEventRows";
 import {
+  effectSelectAssignment,
   effectSelectValue,
-  isEffectTemplateMissingFromList,
+  isObsSourceMissingFromList,
   NONE_VALUE,
-  TEMPLATE_PREFIX,
+  OBS_SOURCE_PREFIX,
 } from "./effectSelectValue";
-import type { UseEffectTemplates } from "./useEffectTemplates";
 import layout from "../formLayout.module.css";
 import styles from "./ObsEffectsScreen.module.css";
 
@@ -63,6 +70,8 @@ import styles from "./ObsEffectsScreen.module.css";
  * ⇒ **カード見出しの説明 2 行 ＋ キーワード欄の 1 行**まで削っている。
  * ⚠⚠ **消した文のうち「黙って何も起きない／黙って何かが起きる」を防いでいたもの**は、
  * 061a 以来の規律に従い**見出しの説明へ畳んで残した**（＝条件を 1 つ設定すると窓が自動で開く）。
+ * ⚠⚠⚠ **064e でその 1 文を削除した**——064d で挙動ごと消えて**嘘になっていた**ため
+ * （経緯の全文は下の `<h3>` 直上のコメントが正）。**「情報を減らした」のではなく「嘘を消した」。**
  * ⚠ **音が配信に載る旨（061d-2 security-review S-1）と専用フォルダの案内（061c S-3）は
  * [`EffectTemplateCard`] 側へ集約**した（テンプレートを取り込む場所に置くほうが目に入る）。
  * ⚠⚠ **復帰導線を消した代償**——壊れたテンプレート（巨大・真っ黒・画面全体を覆う）を割り当てると
@@ -88,109 +97,55 @@ import styles from "./ObsEffectsScreen.module.css";
  */
 function ConditionEffectSelect({
   effect,
-  templates,
-  listState,
+  obsSources,
   ariaLabel,
   onChange,
 }: {
   effect: EffectAssignment;
-  templates: UseEffectTemplates["templates"];
-  listState: UseEffectTemplates["listState"];
+  /** 064b: 064a で取得済みの OBS ソース（`null` ＝ **まだ 1 度も取っていない**）。 */
+  obsSources: readonly ObsSourceEntry[] | null;
   ariaLabel: string;
   onChange: (effect: EffectAssignment) => void;
 }) {
-  // ⚠⚠ **警告を出すのは `listState === "ready"` のときだけ**（061d-2 レビュー S-1）。
-  //   `notInList` と分けてあるのが要点——**表示の受け皿**（`effectSelectValue`）と
-  //   **「無い」という断言**（この警告）は別の判断で、後者は一覧が読めて初めて成立する。
-  const missing =
-    isEffectTemplateMissingFromList(effect, templates) && listState === "ready";
+  // ⚠⚠ 断言してよいのは
+  //   **一覧を 1 度でも取れているとき**（`obsSources !== null`）だけである——
+  //   未取得のまま「見つかりません」と出すと、**設定は正しいのに壊れて見える**
+  //   （OBS の一覧は 064a の「OBS のソースを取得」でしか更新されない）。
+  const obsMissing =
+    obsSources !== null && isObsSourceMissingFromList(effect, obsSources);
   return (
     <>
       <Select
-        value={effectSelectValue(effect, templates)}
+        value={effectSelectValue(effect, obsSources ?? [])}
         ariaLabel={ariaLabel}
-        onChange={(e) => {
-          const next = e.target.value;
-          // ⚠ テンプレート以外はすべて「出さない」（061h：選択肢は 2 種類しかない）。
-          onChange(
-            next.startsWith(TEMPLATE_PREFIX)
-              ? {
-                  kind: "template",
-                  templateId: next.slice(TEMPLATE_PREFIX.length),
-                }
-              : { kind: "none" },
-          );
-        }}
+        // ⚠⚠ **値の分解は [`effectSelectAssignment`] が持つ**（061j (0) の規律＝
+        //   組み立てと分解を 1 モジュールに閉じる）。⚠ ここで `startsWith` / `slice` を書かないこと
+        //   ——OBS のソース名は `:` を含みうるので、分解が 2 か所になると片方だけ壊れる。
+        onChange={(e) => onChange(effectSelectAssignment(e.target.value))}
       >
         {/* ⚠ 呼び方は「エフェクトを出さない」（「なし」にしない＝UX の決定）。
-            ⚠ 061h: 「組み込み（名前と金額）」の `<option>` を削除した。
-            ⚠⚠ **中身と順序を変えないこと**（061h ⑦-c ／ 061i の判断）。 */}
+            ⚠⚠ **先頭は必ずこれ**（061h ⑦-c ／ 061i の判断）。 */}
         <option value={NONE_VALUE}>エフェクトを出さない</option>
-        {templates.map((template) => (
-          <option key={template.id} value={`${TEMPLATE_PREFIX}${template.id}`}>
-            {template.name}
+        {/* ⚠⚠ **OBS 側に置いてあるソース**（064d 以降、選べるのはこれだけ）。
+            ⚠ 名前はユーザー自身が OBS で付けた文字列なので、そのままテキストノードとして描く。 */}
+        {(obsSources ?? []).map((source) => (
+          <option
+            key={`${OBS_SOURCE_PREFIX}${source.name}`}
+            value={`${OBS_SOURCE_PREFIX}${source.name}`}
+          >
+            {source.name}
           </option>
         ))}
       </Select>
-      {missing && (
-        // ⚠⚠ **061h: これが「出さない側へ倒した」ことを観測可能にしている 1 文である。**
-        //   エフェクト窓は透過・最背面・非フォーカスで何も出せないので、
-        //   「割り当てたのに出ない」に気付ける場所はここしかない
-        //   （`EffectOverlayApp` の `fire()` の注記が、この警告を反転の前提として名指ししている）。
+      {obsMissing && (
+        // ⚠⚠ 064b: OBS 側で**名前を変えた／消した**ときに気付ける唯一の場所。
+        //   ⚠ 発火は sidecar の実在照合で落ちるだけ（＝配信中は無言）なので、ここに出さないと
+        //   「設定したのに鳴らない」の理由がどこからも読めない。
         <p className={styles.errorText}>
-          割り当てていたエフェクトが見つかりません。いまは何も表示されません。
+          OBS にこの名前のソースが見つかりません。名前を変えた場合は選び直してください。
         </p>
       )}
     </>
-  );
-}
-
-/**
- * 061k: 条件 1 行の「**どこへ出すか**」（判断 4）。
- *
- * ⚠⚠ **`ConditionEffectSelect` と同じく、イベント行とキーワード行が 1 実装を共有する。**
- * 選択肢を 2 か所に書くと片方だけラベルや値がずれる（そして DOM からは観測しづらい）。
- *
- * ⚠⚠ **`effect.kind === "none"` の行は `disabled` にする。** 「何も出さない条件の出力先」に
- * 意味は無く、保存層（`parseOutput`）が**既定へ丸める**ので、有効にすると
- * **「選んだのに元へ戻る」**という説明できない挙動になる（判断 4-b の帰結）。
- * ⚠ **`disabled` を外すなら、丸めのほうも同時に見直すこと**（対で成立している）。
- */
-function ConditionOutputSelect({
-  output,
-  disabled,
-  ariaLabel,
-  onChange,
-}: {
-  output: EffectOutput;
-  disabled: boolean;
-  ariaLabel: string;
-  onChange: (output: EffectOutput) => void;
-}) {
-  return (
-    <Select
-      value={output}
-      ariaLabel={ariaLabel}
-      disabled={disabled}
-      onChange={(e) => {
-        // ⚠ 未知の値は既定へ（`<select>` の選択肢しか来ないが、保存層と同じ向きに倒しておく）。
-        const next = e.target.value;
-        onChange(
-          (EFFECT_OUTPUTS as readonly string[]).includes(next)
-            ? (next as EffectOutput)
-            : DEFAULT_EFFECT_OUTPUT,
-        );
-      }}
-    >
-      {/* ⚠ 並びは `EFFECT_OUTPUTS`（＝既定の `"corner"` が先頭）。⚠⚠ **先頭を変えないこと**——
-          061h ⑦-c と同じ理由で、ブラウザの既定選択と「規則が選ぶ値」が一致していることに
-          いくつかの検査が乗っている。 */}
-      {EFFECT_OUTPUTS.map((o) => (
-        <option key={o} value={o}>
-          {EFFECT_OUTPUT_LABEL[o]}
-        </option>
-      ))}
-    </Select>
   );
 }
 
@@ -208,16 +163,39 @@ interface DraftKeywordRow {
   effect: EffectAssignment;
 }
 
-export function EffectAssignmentCard({
-  templates,
-  listState,
-  conditions,
-  setConditionEffect,
-  setConditionOutput,
-  addKeywordCondition,
-  updateKeywordCondition,
-  removeCondition,
-}: UseEffectTemplates) {
+export function EffectAssignmentCard() {
+  /**
+   * 064d: **条件はこのカードが持つ**（旧: `useEffectTemplates` の戻り値を `ObsEffectsScreen` が配っていた）。
+   *
+   * ⚠⚠ **あの hook はテンプレートの一覧・取り込み・削除と条件を 1 つにまとめたもの**で、
+   * 「テンプレートを削除したら、それを指す条件を『出さない』へ戻す」という**継ぎ目**が存在理由だった。
+   * 064d で取り込み機能ごと消えたので、その継ぎ目そのものが無くなった。
+   * ⇒ **条件の唯一の消費者はこのカード**なので、ここに閉じる（画面を跨ぐ配線を残さない）。
+   * ⚠ **書き換えは必ず `commitConditions` を通す**（061j 申し送り＝保存と state を 1 か所で揃える）。
+   */
+  const [conditions, setConditions] = useState<EffectConditions>(() =>
+    loadEffectConditions(),
+  );
+  /**
+   * ⚠⚠ **条件を書き換える経路はすべてここを通す。** 純関数側（`effectAssignments.ts`）は
+   * **保存して読み直した結果**を返すので、戻り値をそのまま state にすると
+   * 「画面に出ている値」と「保存されている値」が構造的に一致する。
+   * ⚠ **ここを通さずに `setConditions` を呼ばないこと**（片方だけ古くなる）。
+   */
+  const commitConditions = (next: EffectConditions) => setConditions(next);
+  const setConditionEffect = (id: string, effect: EffectAssignment) =>
+    commitConditions(setConditionEffectRaw(id, effect));
+  const addKeywordCondition = (
+    when: { text: string; match: EffectKeywordMatch },
+    effect: EffectAssignment,
+  ) => commitConditions(addKeywordConditionRaw(when, effect));
+  const updateKeywordCondition = (
+    id: string,
+    when: { text: string; match: EffectKeywordMatch },
+  ) => commitConditions(updateKeywordConditionRaw(id, when));
+  const removeCondition = (id: string) =>
+    commitConditions(removeConditionRaw(id));
+
   /**
    * ⚠⚠ **061j（穴 α）: 入力中の生文字列はここに持ち、`onChange` では保存しない。**
    *
@@ -233,6 +211,30 @@ export function EffectAssignmentCard({
    */
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [draftRow, setDraftRow] = useState<DraftKeywordRow | null>(null);
+
+  /**
+   * 064b: 割り当て先に出す **OBS 側のソース**（`null` ＝ **まだ 1 度も取っていない**）。
+   *
+   * ⚠⚠ **この窓は OBS へ直接繋げない**ので、一覧はコメビュ窓が取って localStorage へ書いたものを読む
+   * （064a の `ObsSourceCard` と同じ経路・同じ非対称）。⚠ **取り直しのボタンはあちらが持つ**
+   * ——同じ操作を 2 か所に置くと、どちらが正か分からなくなる（061p の「画面の情報量を減らす」）。
+   * ⚠ `null` と空配列を区別するのが要点。「見つかりません」と断言してよいのは**取れているとき**だけ。
+   */
+  const [obsSources, setObsSources] = useState<readonly ObsSourceEntry[] | null>(
+    () => loadObsSourceList()?.sources ?? null,
+  );
+
+  // ⚠ コメビュ窓が一覧を書き戻したら追従する（`ObsSourceCard` と同じ購読）。
+  // ⚠ `storage` は**他窓での書換**でだけ飛ぶので、この購読が拾うのは常にコメビュ窓の書き込みである。
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === OBS_SOURCE_LIST_KEY || e.key === null) {
+        setObsSources(loadObsSourceList()?.sources ?? null);
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
 
   const eventConditions = conditions.filter((c) => c.when.type === "event");
   const keywordConditions = conditions.filter((c) => c.when.type === "keyword");
@@ -282,14 +284,21 @@ export function EffectAssignmentCard({
             ⚠ 061j でキーワード条件（自由テキスト）が入ると「イベントごと」では**表現できなくなる**
             ——先に語のほうを合わせておく。 */}
         <h3>エフェクトを表示する条件</h3>
-        {/* ⚠⚠ 061p: **カードの説明はここ 2 行だけ**（旧: 説明 1 行 ＋ note 7 本）。
-            ⚠ 2 文目を残しているのは 061i 判断 1・2 の**唯一の説明**だから——表示トグルを廃止した
-            いま、「いつ窓が開くのか」を書いている場所がここしかない（061a 以来の規律＝
-            **黙って何かが起きる／起きない状態を作らない**）。⚠ **消さないこと。** */}
-        <p>
-          どのコメントで、どのエフェクトを出すかを決めます。条件を 1
-          つでも設定すると、配信画面用のウィンドウが自動で開きます。
-        </p>
+        {/* ⚠⚠⚠ **064e: 2 文目「条件を 1 つでも設定すると、配信画面用のウィンドウが自動で開きます」を
+            削除した。⚠ 意匠の都合ではなく、064d 以降この文が「嘘」だったからである。**
+
+            061i〜061j: あの文が正しかったのは、`useEffectTemplates` が
+            **「条件が 0 → 1 件になったら `STAGE_OVERLAY_ENABLED_KEY` を立てる」**という
+            派生値を持っていた間だけ。⚠⚠ **064d でその hook ごと消し、旗の意味を
+            「いま配信イベントでステージ窓を使っているか」へ移した**（書き手は `ObsEffectsScreen` の
+            開始／終了ハンドラ 1 か所）。⇒ **条件をいくつ作っても窓は 1 ミリも開かない。**
+            ⚠ 064d の見落としで、064e まで画面に残っていた。
+
+            ⚠ 061p が「⚠ **消さないこと**」と書いていた根拠（表示トグル廃止後に
+            「いつ窓が開くのか」を説明する唯一の場所）は、**その挙動ごと無くなったので失効している。**
+            ⚠⚠ **いま「窓が開く契機」を説明しているのは [`StreamEventTab`] の
+            「『開始』を押すと、配信画面用のウィンドウ（…）が…」1 か所**である（＝実際に開く場所）。 */}
+        <p>どのコメントで、どのエフェクトを出すかを決めます。</p>
       </div>
       <div className={layout.panelBody}>
         {/* ⚠⚠ **061p: ここにあった note 7 本をすべて削除した**（指示＝説明が長すぎる）。
@@ -311,17 +320,9 @@ export function EffectAssignmentCard({
                 <span className={styles.assignmentLabel}>{label}</span>
                 <ConditionEffectSelect
                   effect={condition.effect}
-                  templates={templates}
-                  listState={listState}
+                  obsSources={obsSources}
                   ariaLabel={`${label}のエフェクト`}
                   onChange={(effect) => setConditionEffect(condition.id, effect)}
-                />
-                {/* ⚠ 061k: 出力先。⚠ 「出さない」行では選べない（保存層が既定へ丸めるため）。 */}
-                <ConditionOutputSelect
-                  output={condition.output}
-                  disabled={condition.effect.kind === "none"}
-                  ariaLabel={`${label}の出力先`}
-                  onChange={(output) => setConditionOutput(condition.id, output)}
                 />
               </div>
             );
@@ -402,17 +403,9 @@ export function EffectAssignmentCard({
                 </Select>
                 <ConditionEffectSelect
                   effect={condition.effect}
-                  templates={templates}
-                  listState={listState}
+                  obsSources={obsSources}
                   ariaLabel={`キーワード ${n} のエフェクト`}
                   onChange={(effect) => setConditionEffect(condition.id, effect)}
-                />
-                {/* ⚠ 061k: 出力先。⚠ イベント行と**同じ 1 実装**を共有する。 */}
-                <ConditionOutputSelect
-                  output={condition.output}
-                  disabled={condition.effect.kind === "none"}
-                  ariaLabel={`キーワード ${n} の出力先`}
-                  onChange={(output) => setConditionOutput(condition.id, output)}
                 />
                 <Button
                   type="button"
@@ -459,8 +452,7 @@ export function EffectAssignmentCard({
               </Select>
               <ConditionEffectSelect
                 effect={draftRow.effect}
-                templates={templates}
-                listState={listState}
+                obsSources={obsSources}
                 ariaLabel={`キーワード ${keywordConditions.length + 1} のエフェクト`}
                 onChange={(effect) => setDraftRow({ ...draftRow, effect })}
               />

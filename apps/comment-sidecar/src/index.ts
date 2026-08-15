@@ -51,6 +51,11 @@ import {
   parseOverlayKind,
   type ObsOverlayKind,
 } from "./obs/obs-client.js";
+// 064a: ソース名と表示時間の入口検査（純関数・obs-websocket 非依存）。
+import {
+  isAllowedObsSourceName,
+  clampObsFireDurationMs,
+} from "./obs/obs-helpers.js";
 import {
   createThemeFontFetcher,
   createThemeImporter,
@@ -74,6 +79,14 @@ const DEVICE_CODE_FRAME = "device_code";
 const LINK_STATE_FRAME = "link.state";
 // 044a: OBS 連携の状態を viewer へ通知する outbound フレーム（device_code/link.state と同じ bare literal 前例）。
 const OBS_STATE_FRAME = "obs.state";
+/**
+ * 064a: 鳴らせる OBS ソースの一覧を viewer へ返すフレーム。⚠ 載るのは**名前と種別だけ**（§9）。
+ *
+ * ⚠⚠ **064c で payload に `ok`（boolean）が 1 個増えた**——「OBS へ繋がらなかった」と
+ * 「繋がったが 0 件」を viewer 側で区別するため（理由の全文は `obs-client.ts` の
+ * `ObsSourceListResult` の JSDoc が正）。⚠ **第三者データは 1 バイトも増えていない。**
+ */
+const OBS_SOURCES_FRAME = "obs.sources";
 // 032c-b/032c-d′: ログイン永続化。token(JSON) は viewer WS には流さず、**stdout の専用行**（親子 private pipe）
 // でのみ Rust へ渡し、Rust が OS キーチェーンへ保存する。復元は Rust→**stdin** の専用行で受ける（§9）。
 // 032c-d′: twitch/youtube を統一するため各行に **provider を付与**する:
@@ -120,6 +133,17 @@ type ControlFrame =
   // 044a: オーバーレイ表示 OFF 連動＝OBS 側ソースを削除せず非表示にする（port は再表示と同じ検出値）。
   | { type: "obs-hide"; port: number; overlay: ObsOverlayKind }
   | { type: "obs-disable" }
+  // 064a: **ユーザーが OBS に作ったソース**を鳴らす方式（061 の「専用透過窓」からの転換）。
+  // ⚠⚠ **`obs-fire-source` は「viewer から来た文字列が OBS 操作へ渡る」初めての経路**である。
+  //   壁は 2 枚（形式検査＝`isAllowedObsSourceName` ／ **実在検査＝`GetInputList` との照合**）で、
+  //   後者が本体。⚠ **ソースを作る能力は無い**（表示 / 非表示 / 頭出しの 3 操作だけ）。
+  | { type: "obs-list-sources"; port: number }
+  | {
+      type: "obs-fire-source";
+      port: number;
+      sourceName: string;
+      durationMs: number;
+    }
   // 060c/060h: 外部 `@import` と `@font-face` の実体の取り込み時スナップショット。
   // **1 フレーム 1 URL**（バッチ取得しない）。⚠ 形と処理は `theme-import-frame.ts` にある。
   | ThemeFrame;
@@ -133,6 +157,19 @@ type ControlFrame =
  * **移動先の JSDoc が正**。ここで再掲しない（2 か所に書くと片方だけ古くなる）。
  * ⚠ 呼び出し側（下の `parseControlFrame` の `obs-enable` / `obs-hide` 分岐）は無改変。
  */
+
+/**
+ * 064a: OBS の port を受理範囲（数値 [1,65535]）へ落とす。範囲外・非数値は `null`。
+ *
+ * ⚠ 既存の `obs-enable` / `obs-hide` は同じ検査を**インラインで**持っている。
+ *   **意図的に共通化していない**——あちらを触ると 044a の security-review で確定した
+ *   コメント群ごと動かすことになるため。⚠ **3 か所目が要るときに 3 本まとめて畳むこと。**
+ */
+function parseObsPort(v: unknown): number | null {
+  return typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 65535
+    ? v
+    : null;
+}
 
 /** service フィールドを Provider に正規化する（未指定・不正は既定 twitch＝後方互換）。 */
 function parseService(v: unknown): Provider {
@@ -193,6 +230,26 @@ function parseControlFrame(raw: string): ControlFrame | null {
   }
   if (m.type === "obs-disable") {
     return { type: "obs-disable" };
+  }
+  if (m.type === "obs-list-sources") {
+    const port = parseObsPort((msg as { port?: unknown }).port);
+    return port === null ? null : { type: "obs-list-sources", port };
+  }
+  if (m.type === "obs-fire-source") {
+    // ⚠ `obs-enable` と同じ作法＝**受理条件をすべて満たすときだけ**明示構築する
+    //   （`msg` をスプレッドしないので未検証フィールドは 1 つも混入しない）。
+    const port = parseObsPort((msg as { port?: unknown }).port);
+    const sourceName = (msg as { sourceName?: unknown }).sourceName;
+    if (port === null || !isAllowedObsSourceName(sourceName)) return null;
+    return {
+      type: "obs-fire-source",
+      port,
+      sourceName: sourceName.trim(),
+      // ⚠ 範囲外は**クランプ**する（消し忘れて配信に残るのを避けるため・ヘルパの注記が正）。
+      durationMs: clampObsFireDurationMs(
+        (msg as { durationMs?: unknown }).durationMs,
+      ),
+    };
   }
   if (m.type === THEME_IMPORT_FETCH_FRAME || m.type === THEME_FONT_FETCH_FRAME) {
     // 060c: 受理条件を**すべて**満たすときだけフレームを組む（`obs-enable` と同じ作法＝
@@ -581,6 +638,21 @@ async function main(): Promise<void> {
     }
     if (frame.type === "obs-hide") {
       void obsClient.hide(frame.port, frame.overlay);
+      return;
+    }
+    if (frame.type === "obs-list-sources") {
+      // ⚠ 064c: `ok` をそのまま載せる（「繋がらなかった」と「0 件」は viewer 側で別の案内になる）。
+      void obsClient.listSources(frame.port).then(({ ok, sources }) => {
+        output.broadcastMessage({
+          type: OBS_SOURCES_FRAME,
+          payload: { ok, sources },
+        });
+      });
+      return;
+    }
+    if (frame.type === "obs-fire-source") {
+      // ⚠ fire-and-forget（`obs-enable` と同じ）。失敗は obs.state で通知される。
+      void obsClient.fireSource(frame.port, frame.sourceName, frame.durationMs);
       return;
     }
     if (frame.type === "obs-disable") {

@@ -1,11 +1,8 @@
 import {
-  loadEffectOverlayEnabled,
   loadStageOverlayEnabled,
 } from "./overlaySettings";
 import {
-  isEffectOverlayOpen,
   isStageOverlayOpen,
-  openEffectOverlayWindow,
   openStageOverlayWindow,
 } from "./windowApi";
 
@@ -67,12 +64,13 @@ export async function restoreEffectOverlayWindow(): Promise<void> {
     await open();
   };
 
-  // ⚠⚠ **2 窓を独立に走らせる**（`allSettled` なので片方の失敗がもう片方を止めない）。
+  // ⚠⚠ **064d で窓は 1 つになった**（コーナー窓は取り込み機能ごと廃止）。
+  //   ⚠ `allSettled` の形は**残してある**——063（ガチャ）で 2 本目の出力窓が要るなら、
+  //   ここへ 1 行足すだけで戻せる（「片方の失敗がもう片方を止めない」という性質も一緒に戻る）。
   const results = await Promise.allSettled([
-    restore(isEffectOverlayOpen, loadEffectOverlayEnabled, openEffectOverlayWindow),
     restore(isStageOverlayOpen, loadStageOverlayEnabled, openStageOverlayWindow),
   ]);
-  // ⚠ 失敗は握りつぶさない（呼び出し側の関心事）。2 つ失敗したら最初のものを投げ直す。
+  // ⚠ 失敗は握りつぶさない（呼び出し側の関心事）。
   const failed = results.find((r) => r.status === "rejected");
   if (failed !== undefined && failed.status === "rejected") throw failed.reason;
 }

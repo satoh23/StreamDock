@@ -42,7 +42,7 @@ export type CommentService = "twitch" | "youtube";
  * ⚠ **片側だけ 4 値にすると `"stage"` が sidecar で `"comments"` に化け、
  * コメントオーバーレイのソースが黙って作られる**——壊れ方の向きを知っておくこと。
  */
-export type ObsOverlayKind = "comments" | "pinned" | "effects" | "stage";
+export type ObsOverlayKind = "comments" | "pinned" | "stage";
 
 export interface CommentStreamHandlers {
   onComments: (comments: CommentViewDto[]) => void;
@@ -58,6 +58,22 @@ export interface CommentStreamHandlers {
   onLinkState?: (platform: CommentService, linked: boolean) => void;
   /** 044a: OBS 連携の状態（idle/connecting/added/reused/failed）。UI のトグル状態・失敗時の手動誘導に使う。 */
   onObsState?: (state: string, reason?: string) => void;
+  /**
+   * 064a: **OBS に既にあるソースのうち、エフェクトとして鳴らせるものの一覧**。
+   *
+   * ⚠ 載るのは**名前と種別だけ**（設定値もファイルパスも sidecar が落としている・§9）。
+   *
+   * ## ⚠⚠ 064c: `ok`（取れたのか）が増えた
+   *
+   * 064a は失敗時も**空配列**で来て、受け手が「取れていない」と「0 件」を区別できなかった。
+   * その結果 main 窓が **OBS 未起動のユーザーへ「OBS のシーンにソースを追加してください」**という
+   * 間違った対処を案内していた（061a レビュー Q-1 と同じ失敗モードの 3 度目）。
+   * ⚠ **`onObsState` では代替できない**——あちらは comments/pinned/stage 共有の状態通知で、
+   * どの操作が失敗したのか判別できない（061e レビュー Q-5 が受容している限界）。
+   *
+   * @param ok `true` ＝ OBS へ繋がって一覧を取れた（**0 件でも `true`**）。
+   */
+  onObsSources?: (sources: { name: string; kind: string }[], ok: boolean) => void;
 }
 
 /**
@@ -92,6 +108,20 @@ export interface CommentStreamHandle {
    *  パスワードはこの WS には載せず、Rust コマンド（set_obs_websocket_password）経由で sidecar へ渡す。
    *  046d: `overlay` は対象種別。実際のソース名/窓名は **sidecar 内の表**に閉じており、ここから名前は渡さない。 */
   enableObs(port: number, overlay: ObsOverlayKind): void;
+  /**
+   * 064a: 鳴らせる OBS ソースの一覧を要求する（結果は [`CommentStreamHandlers.onObsSources`]）。
+   * ⚠ port のみ・非秘密（`enableObs` と同じ）。
+   */
+  listObsSources(port: number): void;
+  /**
+   * 064a: **ユーザーが OBS に作ったソースを 1 回だけ鳴らす**（表示 → 頭出し → `durationMs` 後に非表示）。
+   *
+   * ⚠⚠ **これは「viewer から来た文字列が OBS 操作へ渡る」唯一の経路**である。
+   * sidecar 側で①形式検査②**`GetInputList` との実在照合**を通してからしか使われない
+   * （`obs/obs-helpers.ts` の `isAllowedObsSourceName` と `obs-client` の `fireSource` が正）。
+   * ⚠ **ソースを作る／消す能力は無い**（表示・非表示・頭出しの 3 操作だけ）。
+   */
+  fireObsSource(port: number, sourceName: string, durationMs: number): void;
   /** 044a: オーバーレイ表示 OFF 連動。OBS 側ソースを削除せず非表示にする（ON で enableObs が再表示）。port のみ・非秘密。 */
   hideObs(port: number, overlay: ObsOverlayKind): void;
   /** 044a: OBS 連携 OFF（状態を idle に戻す・OBS 側のソースは消さない）。 */
@@ -277,6 +307,25 @@ export function connectCommentStream(
           pendingThemeImport = null;
           settle(p);
         }
+      } else if (m.type === "obs.sources") {
+        // 064a: 鳴らせる OBS ソースの一覧。⚠ **型は WS 境界で失われる**ので、
+        //   ここで**配列であること・各要素が name/kind の文字列であること**まで見てから渡す
+        //   （`obs.state` が `typeof p?.state === "string"` を見ているのと同じ作法）。
+        const p = m.payload as { sources?: unknown; ok?: unknown } | undefined;
+        const sources = Array.isArray(p?.sources)
+          ? p.sources.filter(
+              (s): s is { name: string; kind: string } =>
+                typeof s === "object" &&
+                s !== null &&
+                typeof (s as { name?: unknown }).name === "string" &&
+                typeof (s as { kind?: unknown }).kind === "string",
+            )
+          : [];
+        // ⚠⚠ 064c: **`ok` が boolean でなければ `false`**（＝「取れた」と断言しない）。
+        //   ⚠ **倒し先を間違えないこと。** `true` へ倒すと、0 件のときに
+        //   「OBS のシーンにソースを追加してください」＝**064c が潰した当の誤案内**が復活する。
+        //   `false` 側の誤りは「OBS を確認してください」で済み、ユーザーの行動が無害である。
+        handlers.onObsSources?.(sources, typeof p?.ok === "boolean" ? p.ok : false);
       } else if (m.type === "obs.state") {
         // 044a: OBS 連携の状態通知。非秘密（state/reason のみ・パスワードは載らない）。
         // L4(修正不要): state は WS 境界を跨ぐため string で受ける（sidecar の ObsState union は共有しない）。
@@ -414,6 +463,13 @@ export function connectCommentStream(
     },
     enableObs(port: number, overlay: ObsOverlayKind): void {
       send({ type: "obs-enable", port, overlay });
+    },
+    listObsSources(port: number): void {
+      send({ type: "obs-list-sources", port });
+    },
+    fireObsSource(port: number, sourceName: string, durationMs: number): void {
+      // ⚠ 整形も検証もここではしない（**検証の持ち主は sidecar 側 1 か所**＝規則が 2 か所に割れない）。
+      send({ type: "obs-fire-source", port, sourceName, durationMs });
     },
     hideObs(port: number, overlay: ObsOverlayKind): void {
       send({ type: "obs-hide", port, overlay });

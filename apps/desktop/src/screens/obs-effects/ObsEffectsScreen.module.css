@@ -44,20 +44,6 @@
   line-height: 1.5;
 }
 
-/* --- 061d: テンプレートの取り込み・一覧・プレビュー -------------------------------------------- */
-
-/* ⚠⚠ **読み飛ばされては困る注記**（061c security-review S-3 の緩和策＝専用フォルダの案内と、
-   プレビューの音が配信に載る旨）。`.note` より 1 段強い扱いにするが、⚠ **色だけで伝えない**——
-   文言自体が具体的な行動を書いているので、色と左罫は補助にとどめる（`.statusValue.blocked` と同じ判断）。 */
-.caution {
-  margin-top: 10px;
-  padding: 8px 10px;
-  border-left: 3px solid var(--warn-border-strong);
-  border-radius: 6px;
-  background: var(--warn-soft);
-  color: var(--warn-text);
-}
-
 /* エラー文言。⚠ 詳細（パス・テンプレート名・例外の中身）は載せない（§9）。 */
 .errorText {
   margin-top: 10px;
@@ -96,8 +82,15 @@
   border-top: 1px solid var(--border-soft);
 }
 
+/* ⚠⚠ **061q: ボタンが 4 個になったので `flex-wrap` を入れた**（061h レビュー Q-4 の
+   「再修正トリガー＝ボタンが 4 個以上になるとき」が発火した）。
+   ⚠ 下の `.templateName { flex: 1 }` は**負の余白を吸収しない**ので、折り返しが無いと
+   4 個目のボタンが押し出されて**ラベルが切れる**（⚠⚠ jsdom はレイアウトを解決しないため
+   **テストは全部緑のまま壊れる**——ここは目視でしか守れない）。
+   ⚠ 併せて `.templateEdit`（全幅）が行の下へ回り込めるようになる。 */
 .templateRow {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
 }
@@ -134,53 +127,6 @@
   flex: none;
   color: var(--muted);
   font-size: 11px;
-}
-
-/* プレビュー枠。⚠ **main 窓の中だけ**で再生する（エフェクト窓へ出すと配信中に出てしまう）。 */
-.preview {
-  margin-top: 14px;
-  padding-top: 14px;
-  border-top: 1px solid var(--border-soft);
-}
-
-.previewCaption {
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 700;
-}
-
-/* ⚠⚠ **`position: relative` が要る**——`EffectTemplateView` の器が `position: absolute; inset: 0` で
-   ここに重なり、その中の `max-width/height: 100%` がこの枠の大きさに対して解決される。
-
-   ⚠ 比率はエフェクト窓（960×360）と同じ 8/3 にしてある。**ただし「本番と同じ収まりで見える」わけではない**
-   （061d-1 レビュー Q-1 で当初の主張を撤回）。`layout.width/height` / `offsetX/Y` / `text.fontSize` は
-   いずれも**絶対 px** なので、比率が同じでも枠の実寸が違えば見え方が変わる:
-     - main 窓の既定幅 1280 では、この枠は約 1188×445（＝エフェクト窓の約 1.24 倍）。
-     - 480×240 のテンプレートは本番で幅 50%・プレビューで幅 40% を占める。
-     - `max-*: 100%` の**縮小が始まる境界も違う**（例: 1000×380 は本番では縮むがここでは縮まない）。
-   ＝ **この枠で確かめられるのは「何が取り込まれたか」と「だいたいの配置」まで**で、
-   はみ出し・収まりの最終確認は実機（エフェクト窓）で行うこと。**061c S-3 の緩和策としての価値
-   （意図しない画像が混入していないかを見る）は、この制限があっても損なわれない。**
-   ⚠ **再修正トリガー＝「プレビューどおりに出ない」と実機で言われたとき。** そのときは
-   内側に 960×360 固定の層を置き `transform: scale()` で縮める形にする（絶対 px・オフセット・
-   fontSize・クランプ境界を同時に正しくできる唯一の形。倍率は `ResizeObserver` で測る）。
-   ⚠ 046c の `fitScale` を持ち込むという意味ではない（あちらは内容を測る反復ソルバ）。 */
-.previewStage {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  aspect-ratio: 8 / 3;
-  margin-top: 8px;
-  border: 1px dashed var(--muted-border);
-  border-radius: var(--radius);
-  /* ⚠⚠ **061d-2: 「配信映像の上」を模した暗色**（`--surface-subtle` から変更）。
-     061d-1 の実機 E2E で「文字を白固定にしたら白地に白で読めない」という破綻が起きたのは、
-     ここが `--surface-subtle`（ライトテーマでほぼ白）だったため。**色と枠の背景は一緒に決める**
-     （判断の全文は `EffectTemplateView.module.css` の `.text` の注記が正）。
-     ⚠ 生 hex を書かない（`theme.css` のトークンのみ）。 */
-  background: var(--overlay-effect-preview-bg);
-  overflow: hidden;
 }
 
 /* 061d-2: イベント種別ごとの割り当て表。⚠ 行は `MONETARY_EVENT_TYPES` から機械的に作られる

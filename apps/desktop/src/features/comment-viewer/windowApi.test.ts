@@ -20,9 +20,6 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 import { invoke } from "@tauri-apps/api/core";
 import {
-  openEffectOverlayWindow,
-  closeEffectOverlayWindow,
-  isEffectOverlayOpen,
   openCommentViewerWindow,
   closeCommentViewerWindow,
   isCommentViewerOpen,
@@ -46,10 +43,7 @@ beforeEach(() => {
 
 /** ラッパ → 呼ぶべき command 名。⚠ 窓を増やしたらここへ 3 行足すこと。 */
 const WRAPPERS: ReadonlyArray<readonly [() => Promise<unknown>, string]> = [
-  // 061a: エフェクト専用オーバーレイ窓。
-  [openEffectOverlayWindow, "open_effect_overlay_window"],
-  [closeEffectOverlayWindow, "close_effect_overlay_window"],
-  [isEffectOverlayOpen, "is_effect_overlay_open"],
+  // ⚠ 064d: コーナー窓（`effect-overlay`）の 3 本は削除した（取り込み機能ごと廃止）。
   // 032c-a: 内蔵コメントビューア窓（061a で open のラッパを足した）。
   [openCommentViewerWindow, "open_comment_viewer_window"],
   [closeCommentViewerWindow, "close_comment_viewer_window"],
@@ -93,13 +87,12 @@ describe("windowApi: command 名の固定", () => {
     expect(new Set(names).size).toBe(names.length);
     // ⚠⚠ **本数そのものも固定する**（061k で 12 → 15）。集合の一意性だけだと、
     //   ラッパを 1 本まるごと消す変異が緑のまま通る（＝Rust 側の下限 `found >= 15` と対になる検査）。
-    expect(names).toHaveLength(15);
+    expect(names).toHaveLength(12);
   });
 });
 
 describe("windowApi: is* は Rust の戻り値を透過する", () => {
   const READERS: ReadonlyArray<readonly [() => Promise<boolean>, string]> = [
-    [isEffectOverlayOpen, "is_effect_overlay_open"],
     [isCommentViewerOpen, "is_comment_viewer_open"],
     [isCommentOverlayOpen, "is_comment_overlay_open"],
     [isPinnedOverlayOpen, "is_pinned_overlay_open"],

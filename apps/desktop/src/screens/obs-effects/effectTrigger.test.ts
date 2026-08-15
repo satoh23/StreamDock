@@ -1,13 +1,19 @@
 import { describe, it, expect } from "vitest";
 import type { CommentViewDto } from "../../features/comment-viewer/types";
+import type {
+  EffectObsSource as EffectObsSourcePayload,
+  EffectRequestBase,
+} from "./effectTrigger";
 import {
   CONDITION_COOLDOWN_MAX_MS,
   createEffectTriggerState,
+  createSeenEffectIds,
   decideEffects,
   EFFECT_DISPLAY_MS,
   EFFECT_MAX_CONCURRENT,
+  takeFreshComments,
   type EffectMatcher,
-  type EffectRequest,
+  type EffectObsSource,
 } from "./effectTrigger";
 
 /**
@@ -28,8 +34,8 @@ import {
 
 const T0 = 1_700_000_000_000;
 
-/** テンプレート id（形は問われないが、実物に合わせて uuid の形にしておく）。 */
-const TEMPLATE_ID = "93c76e02-1111-4222-8333-444455556666";
+/** 064d: 発火先はもう「OBS 側のソース」1 種類だけ（テンプレートは取り込み機能ごと削除）。 */
+const SOURCE_NAME = "きらきら演出";
 
 /**
  * ⚠⚠ **061h: resolver は「省略できる第 5 引数」ではなく必須の引数になった。**
@@ -41,10 +47,9 @@ const TEMPLATE_ID = "93c76e02-1111-4222-8333-444455556666";
  * それが 061h の目的そのものである（判断の全文は docs/progress.md の 061h 節）。
  * ＝ **下のケースは全部この resolver を明示的に渡す**（＝「何を出すか」を決めているのは
  * 常に呼び出し側であることが、テストの字面にも現れる）。
- * ⚠ **ここに既定引数を復活させる変異は「型エラー」で落ちる**（`{ kind: "builtin-monetary" }` は
- * もう `EffectKind` ではない）。
+ * ⚠ **ここに既定引数を復活させる変異は「型エラー」で落ちる**。
  */
-const KIND = { kind: "template", templateId: TEMPLATE_ID } as const;
+const KIND = { kind: "obs-source", sourceName: SOURCE_NAME } as const;
 
 /**
  * ⚠⚠ **061j: resolver は `EffectMatcher` になった**（`{eventType, text}` を受け、
@@ -100,7 +105,7 @@ const feedOneByOne = (
   comments: CommentViewDto[],
   state = createEffectTriggerState(),
   at = T0,
-): EffectRequest[] =>
+): (EffectRequestBase & EffectObsSourcePayload)[] =>
   comments.flatMap((c) => decideEffects([c], [], state, at, TPL));
 
 describe("061b: decideEffects（発火層）", () => {
@@ -381,7 +386,7 @@ describe("061b: decideEffects（発火層）", () => {
       T0,
       TPL,
     );
-    // ⚠ 061h: 組み込み経路（7 キー）が消え、**常に 8 キー**になった（`templateId` が必ず載る）。
+    // ⚠ 064d: 発火先が OBS ソース 1 種類になったので、載るのは `kind` と `sourceName`。
     expect(Object.keys(out[0]).sort()).toEqual(
       [
         "amountText",
@@ -390,7 +395,7 @@ describe("061b: decideEffects（発火層）", () => {
         "kind",
         "message",
         "name",
-        "templateId",
+        "sourceName",
         "tone",
       ].sort(),
     );
@@ -441,9 +446,9 @@ describe("061b: decideEffects（発火層）", () => {
     expect(t0[0].tone).toBe("t0");
   });
 
-  it("⚠ 063 への拡張余地として kind を持つ（061h 以降の唯一の variant は template）", () => {
+  it("⚠ 063 への拡張余地として kind を持つ（064d 以降の唯一の variant は obs-source）", () => {
     const out = decideEffects([comment()], [], createEffectTriggerState(), T0, TPL);
-    expect(out[0].kind).toBe("template");
+    expect(out[0].kind).toBe("obs-source");
   });
 
   // --- 状態が増え続けないこと ---------------------------------------------------------------------
@@ -487,14 +492,14 @@ describe("061b: decideEffects（発火層）", () => {
       createEffectTriggerState(),
       T0,
       () => ({
-        effect: { kind: "template", templateId: "0f0e0d0c-1111-4222-8333-444455556666" },
+        effect: { kind: "obs-source", sourceName: "別の演出" },
         conditionId: "kw:9",
         cooldownMs: 0,
       }),
     );
     expect(out[0]).toMatchObject({
-      kind: "template",
-      templateId: "0f0e0d0c-1111-4222-8333-444455556666",
+      kind: "obs-source",
+      sourceName: "別の演出",
     });
     // ⚠⚠ **`conditionId` は `EffectRequest` に載らない**（判断 4・「出すのに要る最小限」の維持）。
     expect(out[0]).not.toHaveProperty("conditionId");
@@ -512,14 +517,14 @@ describe("061b: decideEffects（発火層）", () => {
     expect(out).toEqual([]);
   });
 
-  it("⚠ matcher がテンプレートを返すと kind と templateId が載る（キー集合は 8 個）", () => {
+  it("⚠ matcher が返した発火先がそのまま載る（キー集合は 8 個）", () => {
     const out = decideEffects(
       [comment()],
       [],
       createEffectTriggerState(),
       T0,
       () => ({
-        effect: { kind: "template", templateId: "tpl-1" },
+        effect: { kind: "obs-source", sourceName: "tpl-1" },
         conditionId: "event:superchat",
         cooldownMs: 0,
       }),
@@ -533,7 +538,7 @@ describe("061b: decideEffects（発火層）", () => {
         "kind",
         "message",
         "name",
-        "templateId",
+        "sourceName",
         "tone",
       ].sort(),
     );
@@ -892,5 +897,133 @@ describe("061k: 出力先の絞り込みは state を汚してはいけない（
     expect(state.lastConditionAt.size).toBe(0);
     const m = keywordMatcher("草", "kw:1", 10_000);
     expect(decideEffects([comment({ id: "mine", text: "草" })], [], state, T0, m)).toHaveLength(1);
+  });
+});
+
+/**
+ * 064b: **発火先が 2 種類になった**ことの仕様テスト。
+ *
+ * ⚠⚠ 固定したい不変条件は 3 つ:
+ *
+ * **① `decideEffects` の 4 つの関門は、OBS レーンでも 1 実装のまま効く。**
+ * 特に [043a] のコミュニティギフト N+1——別実装にすると **1 回の贈与で OBS のソースが 4 回鳴る**。
+ *
+ * **② レーンごとに `EffectTriggerState` を分ければ、枠を食い合わない。**
+ * ⚠ 「出ない」だけを見ても分からないので、**state の 3 つのサイズを直接数える**。
+ *
+ * **③ 本文は発火層より先へ進まない**（§9）。`sourceName` は
+ * **ユーザー自身が OBS で付けた名前**なので、第三者データではない。
+ */
+const OBS_SOURCE = KIND;
+
+/** OBS レーンの matcher（イベント条件を模す＝クールダウン無効）。 */
+const OBS: EffectMatcher<EffectObsSource> = () => ({
+  effect: OBS_SOURCE,
+  conditionId: "event:superchat",
+  cooldownMs: 0,
+});
+
+describe("064b: OBS のソースを鳴らすレーン", () => {
+  it("OBS レーンでも 1 件のコメントから 1 件出る（ペイロードは sourceName）", () => {
+    const out = decideEffects([comment()], [], createEffectTriggerState(), T0, OBS);
+    expect(out).toHaveLength(1);
+    expect(out[0].sourceName).toBe("きらきら演出");
+    expect(out[0].kind).toBe("obs-source");
+  });
+
+  it("⚠⚠ [043a] コミュニティギフトの N+1 は OBS レーンでも 1 件に畳まれる", () => {
+    // ⚠ ここが別実装だと **1 回の贈与で OBS のソースが 4 回鳴る**。
+    const state = createEffectTriggerState();
+    const out = [
+      comment({ id: "g0", eventType: "gift" }),
+      comment({ id: "g1", eventType: "gift" }),
+      comment({ id: "g2", eventType: "gift" }),
+      comment({ id: "g3", eventType: "gift" }),
+    ].flatMap((c) => decideEffects([c], [], state, T0, OBS));
+    expect(out).toHaveLength(1);
+  });
+
+  it("⚠⚠ バースト上限も OBS レーンで効く（溜めずに捨てる）", () => {
+    const state = createEffectTriggerState();
+    const out = Array.from({ length: EFFECT_MAX_CONCURRENT + 3 }, (_, i) =>
+      comment({ id: `s${i}`, author: { id: `u${i}`, name: `視聴者${i}` } }),
+    ).flatMap((c) => decideEffects([c], [], state, T0, OBS));
+    expect(out).toHaveLength(EFFECT_MAX_CONCURRENT);
+  });
+
+  it("⚠⚠ combo 更新（`updated`）からは 1 件も鳴らない", () => {
+    const jewels = comment({ id: "j1", eventType: "jewels" });
+    expect(
+      decideEffects([], [jewels], createEffectTriggerState(), T0, OBS),
+    ).toHaveLength(0);
+  });
+
+  it("⚠⚠ レーンごとに state を分ければ、相手の発火が枠を食わない", () => {
+    // ⚠⚠ これが 061k の「窓ごとに state を持つ」を 3 本目のレーンへ広げた形。
+    //   ⚠ 共有すると「OBS のソースが 3 回鳴っただけで直後の投げ銭が捨てられる」が起きる。
+    const obsState = createEffectTriggerState();
+    const templateState = createEffectTriggerState();
+    for (let i = 0; i < EFFECT_MAX_CONCURRENT + 2; i++) {
+      decideEffects([comment({ id: `o${i}` })], [], obsState, T0, OBS);
+    }
+    expect(templateState.recentFires.length).toBe(0);
+    expect(templateState.lastConditionAt.size).toBe(0);
+    expect(templateState.lastGiftAt.size).toBe(0);
+    expect(
+      decideEffects([comment({ id: "mine" })], [], templateState, T0, TPL),
+    ).toHaveLength(1);
+  });
+
+  it("⚠⚠ 本文は戻り値に載らない（§9・キー集合はテンプレートのときと同じ 6 ＋ ペイロード）", () => {
+    const out = decideEffects(
+      [comment({ text: "これは第三者の本文です" })],
+      [],
+      createEffectTriggerState(),
+      T0,
+      OBS,
+    );
+    expect(Object.keys(out[0]).sort()).toEqual(
+      ["amountText", "eventLabel", "id", "kind", "message", "name", "sourceName", "tone"].sort(),
+    );
+    expect(JSON.stringify(out[0])).not.toContain("第三者");
+  });
+});
+
+/**
+ * 064b: [`takeFreshComments`]（`EffectOverlayApp` から移した「一度見た id は二度と発火させない」）。
+ *
+ * ⚠⚠ **移設が正しく行われたことをここで固定する。** 消費者が 2 つ（エフェクト窓・コメビュ窓）に
+ * なったので、規則が片方だけ緩むと **[043e] の combo 再送で二重に鳴る**。
+ */
+describe("064b: takeFreshComments", () => {
+  it("初見のコメントはそのまま返る", () => {
+    const seen = createSeenEffectIds();
+    expect(takeFreshComments(seen, [comment({ id: "a" })])).toHaveLength(1);
+  });
+
+  it("⚠⚠ 同じ id は 2 度目に落ちる（[043e] の combo 再送）", () => {
+    const seen = createSeenEffectIds();
+    takeFreshComments(seen, [comment({ id: "a" })]);
+    expect(takeFreshComments(seen, [comment({ id: "a" })])).toHaveLength(0);
+  });
+
+  it("⚠ 同じバッチ内の新旧が混ざっても、新しいものだけ返る", () => {
+    const seen = createSeenEffectIds();
+    takeFreshComments(seen, [comment({ id: "a" })]);
+    const fresh = takeFreshComments(seen, [
+      comment({ id: "a" }),
+      comment({ id: "b" }),
+    ]);
+    expect(fresh.map((c) => c.id)).toEqual(["b"]);
+  });
+
+  it("⚠ 集合は上限までしか増えない（長時間の配信で増え続けない）", () => {
+    const seen = createSeenEffectIds();
+    for (let i = 0; i < 600; i++) {
+      takeFreshComments(seen, [comment({ id: `c${i}` })]);
+    }
+    expect(seen.size).toBeLessThanOrEqual(500);
+    // ⚠ 直近のものは残っている（＝捨てるのは古い順）。
+    expect(seen.has("c599")).toBe(true);
   });
 });

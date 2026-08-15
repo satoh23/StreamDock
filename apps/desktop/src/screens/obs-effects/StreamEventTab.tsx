@@ -11,7 +11,7 @@ import {
   type StreamEventRound,
 } from "../../features/obs-effects/streamEventRound";
 import { Button } from "../../components/primitives";
-import { EFFECT_OUTPUT_LABEL, EFFECT_OUTPUT_WINDOW_TITLE } from "./effectAssignments";
+import { STAGE_OVERLAY_WINDOW_TITLE } from "./effectAssignments";
 import layout from "../formLayout.module.css";
 import styles from "./StreamEventTab.module.css";
 
@@ -175,7 +175,7 @@ export function StreamEventTab({
                   ⚠ **「終了しても閉じない」という事実のほうは残す**（061l の security-review が
                   「語感から『これで全部止まった』と読まれうる」として置いた 1 文である）。 */}
               <p className={styles.note}>
-                終了しても{EFFECT_OUTPUT_LABEL.stage}のウィンドウは開いたままです。
+                終了してもウィンドウは開いたままです。
               </p>
               <div className={styles.roundActions}>
                 <Button type="button" onClick={onEndRound}>
@@ -192,8 +192,8 @@ export function StreamEventTab({
               {/* ⚠ 窓名は表から引く（直書きすると、窓名を直したときにここだけ古くなる。
                   ユーザーは OBS のウィンドウ一覧を**この文字列で探す**）。 */}
               <p className={styles.note}>
-                「開始」を押すと、{EFFECT_OUTPUT_LABEL.stage}のウィンドウ（「
-                {EFFECT_OUTPUT_WINDOW_TITLE.stage}」）を開いて、そこにイベントを表示します。
+                「開始」を押すと、配信画面用のウィンドウ（「{STAGE_OVERLAY_WINDOW_TITLE}
+                」）を開いて、そこにイベントを表示します。
               </p>
               <div className={styles.roundActions}>
                 <Button

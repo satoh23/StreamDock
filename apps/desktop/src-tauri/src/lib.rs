@@ -3,7 +3,6 @@ mod app_update;
 mod audio;
 mod comment_sidecar;
 mod comment_viewer;
-mod effect_template;
 mod error;
 mod obs_config;
 mod overlay_theme;
@@ -63,8 +62,7 @@ static WINDOW_OPEN_LOCK: Mutex<()> = Mutex::new(());
 /// `ensure_started` **1 箇所のまま**で、エフェクトの出力窓は sidecar を起動しない
 /// （起動しても `start-session` の導線がコメビュ窓にしか無いためコメントは 1 件も来ず、
 /// アプリ起動時の窓復元経路で keychain 復元だけが走る形になるため。詳細は `open_effect_overlay_window` の注記）。
-const SIDECAR_CONSUMER_LABELS: [&str; 3] =
-    ["comment-viewer", "effect-overlay", "stage-overlay"];
+const SIDECAR_CONSUMER_LABELS: [&str; 2] = ["comment-viewer", "stage-overlay"];
 
 /// 061b: **閉じようとしている窓を除いて**、sidecar を使う窓が 1 つも残っていなければ `true`。
 ///
@@ -514,153 +512,6 @@ fn is_pinned_overlay_open(app: AppHandle) -> bool {
     app.get_webview_window("pinned-overlay").is_some()
 }
 
-/// 061a: エフェクト（061b の「〇〇さんが ¥1,000」・061c/061d のテンプレート）を配信へ載せるための
-/// **専用の背景透過オーバーレイ窓**（label `effect-overlay`）を開く。既存 2 本
-/// （`comment-overlay`＝033f / `pinned-overlay`＝046b）と**同型の単一目的コマンド**で（§3・任意ラベル/
-/// 任意オプションの窓生成は露出しない）、OBS では 3 本目の独立したソースとして取り込む。
-///
-/// **表示専用（読み取り専用接続）**: ⚠⚠ **061b で 061a の決定を反転した。** この窓の frontend
-/// （`EffectOverlayApp`）は `comment-overlay` 窓（`OverlayApp`）と**同じ既存の loopback WS**
-/// （`ws://127.0.0.1:<port>`）へ `connectCommentStream` で**読み取り専用接続**する
-/// （`onComments` のみ・制御フレームは送らない）。**新規宛先・新規 WS プロトコル・Rust emit・依存はゼロ**。
-/// 061a が「そもそも WS を張らない」と書いていたのは、当時の 061b が localStorage ＋ `storage` で
-/// `EffectRequest` を受ける設計だったため。その経路は廃止された。
-///
-/// **sidecar のライフサイクル**: ⚠⚠ **061b でこの窓が sidecar の生存に関与するようになった。**
-/// - **起動はしない**（`ensure_started` を呼ばない）。起動契機は `open_comment_viewer_window` の 1 箇所のまま。
-///   ⚠ ここで起動しないのは意図的で、①`start-session`（＝実際のコメント取得）の導線はコメビュ窓にしか無いので
-///   この窓のために sidecar を起動してもコメントは 1 件も来ない ②起動すると `restoreEffectOverlayWindow`
-///   （`MainWindowApp` のマウント＝**アプリ起動**）経由で、**ユーザー操作ゼロで keychain のトークンが
-///   メモリへ復元される**経路を新設することになる（しかも `WINDOW_OPEN_LOCK` を保持したまま跨ぐ）、の 2 点による。
-///   ⚠ 帰結＝**sidecar 未起動の間、この窓の `connectCommentStream` は毎秒 `get_comment_stream_port` を
-///   invoke し続ける**（`RETRY_INTERVAL_MS`）。
-///   ⚠⚠ **受容根拠の訂正（061b レビュー S-4）**: 当初は「`comment-overlay` 窓が既に持っている性質と同じ」
-///   としていたが**不正確**だった——`comment-overlay` はコメビュ窓からしか開けず起動時復元も無いので、
-///   実際には sidecar が動いている間しか存在しない。対して**この窓は永続設定でアプリ起動時に自動復元される
-///   唯一の WS 窓**（`restoreEffectOverlayWindow` ← `MainWindowApp` のマウント）なので、
-///   「sidecar 未起動のまま回り続ける」は**アプリ起動からコメビュ窓を開くまでの全区間**であり、
-///   コメビュ窓を一度も開かなければ**永久**である。＝**性質は同じだが定常状態が新しい。**
-///   それでも受容するのは、1 回の実体が「`state.lock()` して `Option<u16>` を読む」だけの Rust command で、
-///   毎秒 1 回のコストが配信中でも無視できるため（新規の外部通信でも OS 操作でもない）。
-///   ⚠ 再修正トリガー＝実配信で CPU / IPC が問題になったら `connectCommentStream` の
-///   「ポート未確定時だけ指数バックオフ（上限 15 秒程度）」を入れる（`OverlayApp` にも同時に効く）。
-/// - **停止には関与する**（`SIDECAR_CONSUMER_LABELS` に入っている）。この窓が閉じるとき、
-///   **コメビュ窓が残っていなければ sidecar を落とす**（下の窓イベント登録・`is_last_sidecar_consumer`）。
-///   ＝「コメント取得を開始したあとコメビュ窓だけ閉じてもエフェクトが出続ける」を成立させつつ、
-///   **どの窓も無くなれば必ず落ちる**（孤児プロセスを残さない・docs/security.md §6 の趣旨）。
-/// capability は `capabilities/effect-overlay.json`（最小権限・既存 4 枚は不変）に閉じる。
-///
-/// **窓タイトル `StreamDock エフェクト`**: 044a/046d の自動ソース追加は sidecar の
-/// `OBS_OVERLAYS[kind].windowTitle` と**バイト一致**する窓名を OBS のウィンドウ一覧から `includes` で探すため、
-/// これは表示用の文字列ではなく**壊れると機能が壊れる 2 者間契約**である（下の `overlay_window_contract` で固定）。
-/// 3 つのタイトルが**互いに部分文字列でない**ことも実測済み（同テストが総当たりで固定）。
-/// ⚠ `includes` 一致なので「タイトルに `StreamDock エフェクト` を含む別の OS ウィンドウ」があれば取り違えうるが、
-/// ①一致対象は OS の窓一覧であってユーザーが OBS 上で付けたソース名ではない（OBS 側で好きな名前を付けても衝突しない）
-/// ②既存 2 窓も同じ性質で 044a/046d が受容済み ③誤取得は OBS プレビューで即座に見える
-/// （静かに壊れるのは「既存ソース＋窓名不一致」で `ensureOverlaySource` の M2 が `"reused"` を返す経路だけで、
-/// そちらは上記の契約テストが守る）ため、対策は入れない。
-/// **再修正トリガー**＝実機で誤取得が起きたら、sidecar の `findOverlayWindowItem` を
-/// 「完全一致 → 前方一致 → `includes`」の段階マッチへ変える（sidecar 1 関数の変更で済む）。
-///
-/// **サイズと位置の根拠**（061a で決定・⚠ `decorations(false)` では手動リサイズが実質できずサイズは
-/// 永続化されない＝**既定値がすべて**。046c の教訓）:
-/// - **幅 960** = 想定最小デスクトップ幅 1280（`tauri.conf.json` の `main` 既定幅＝本アプリが前提にする最小）の 75%。
-///   061b の「〇〇さんが ¥1,000」を 1〜2 行で大きく組む帯として、16:9 の配信画面に載せたとき横 3/4 を占める。
-/// - **高さ 360** = 投稿者名 1 行（大）＋金額 1 行（特大）＋余白でも余る値。061b が足りないと判断したら、
-///   frontend で縮小フィット（046c）を足す前に**まずここを上げる**（既定サイズが主役・フィットは保険）。
-/// - **位置 (160, 60)** = 1280×800 で x 160..1120 / y 60..420 ＝**完全に画面内**に収まる。
-///   ⚠ macOS は**完全に画面外**の窓でウィンドウキャプチャが凍結しやすい（033f の注記）ため、画面内は機能要件。
-/// - ⚠ **既存 2 窓と重なるが、これは意図的**。046b の doc が言う「重ねない＝取り違えない」は当時デスクトップに
-///   余白があったための配慮で**機能要件ではない**——OBS の対象特定は**窓タイトル**で行うので重なっても取り違えない。
-///   実測で 1280×800 では既存 2 窓が x24..936 / y48..768 を占め、**大きなエフェクト窓を重ねずに置く余地が無い**
-///   （残余は x968.. の 312px 幅のみ）。透過・最背面・非フォーカスなので配信者の操作も妨げない。
-///
-/// その他（透過・装飾なし・最背面・非フォーカス・影なし・`background_throttling(Disabled)`・
-/// `SHARED_BROWSER_ARGS`・`WINDOW_OPEN_LOCK`）は既存 2 本を**完全踏襲**する。とくに `SHARED_BROWSER_ARGS` は
-/// Windows で UDF 共有窓の引数が**全窓一致**でないと WebView2 生成が `ERROR_INVALID_STATE` で失敗し、
-/// この窓が開けない回帰になる（定数の注記・033f 追修正③の経緯。窓数は契約テストが固定）。
-///
-/// `(async)`: 窓生成を伴うため viewer/overlay と同じ理由で必須（Windows の白画面デッドロック回避。
-/// 詳細は `open_comment_viewer_window` の注記）。
-#[tauri::command(async)]
-fn open_effect_overlay_window(app: AppHandle) -> AppResult<()> {
-    // 二重生成試行ガード（viewer / comment-overlay / pinned-overlay と共有）。poison 回復の理由は
-    // WINDOW_OPEN_LOCK の注記、保持範囲の考え方は `open_comment_viewer_window` の注記を参照。
-    let _guard = WINDOW_OPEN_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-
-    // 既に開いていれば多重生成せず再利用する。最背面窓を前面へ引き上げてちらつかせないよう、
-    // set_focus はせず show のみ（既に可視なら実質 no-op）。
-    if let Some(window) = app.get_webview_window("effect-overlay") {
-        let _ = window.show();
-        return Ok(());
-    }
-    // 同一 Vite バンドルを読み込み、frontend は `getCurrentWindow().label` で EffectOverlayApp を描画する。
-    let window =
-        WebviewWindowBuilder::new(&app, "effect-overlay", WebviewUrl::App("index.html".into()))
-            .title("StreamDock エフェクト")
-            .transparent(true)
-            .decorations(false)
-            .always_on_bottom(true)
-            .focused(false)
-            .shadow(false)
-            .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
-            .additional_browser_args(SHARED_BROWSER_ARGS)
-            .position(160.0, 60.0)
-            .inner_size(960.0, 360.0)
-            .min_inner_size(320.0, 120.0)
-            .build()
-            .map_err(|_| AppError::launch_failed("エフェクトのオーバーレイを開けませんでした"))?;
-
-    // ⚠⚠ 061b: **この窓も sidecar の生存に関与するようになった**（061a では窓イベントを一切登録していなかった）。
-    // コメビュ窓と**同じ**ガードを通す＝「自分以外に sidecar を使う窓が残っていなければ落とす」。
-    // これが無いと、コメビュ窓を先に閉じたあとエフェクト窓を閉じても sidecar が落ちず**孤児になる**
-    // （逆に、コメビュ窓側だけを条件付きにしてこちらを登録し忘れるのが最も危険な抜け方）。
-    // ⚠ **起動（`ensure_started`）はしない。** 起動契機はコメビュ窓の 1 箇所のままにしてある（下のクラス注記）。
-    // ⚠ 窓を再利用する経路（上の早期 return）では登録しない＝**登録は窓の生成時 1 回だけ**。
-    let app_for_event = app.clone();
-    window.on_window_event(move |event| match event {
-        WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed => {
-            shutdown_sidecar_if_last_consumer(&app_for_event, "effect-overlay");
-        }
-        _ => {}
-    });
-    Ok(())
-}
-
-/// 061a: エフェクト専用オーバーレイ窓（label `effect-overlay`）を閉じる。`obs-effects` 画面の表示トグル OFF 用。
-/// `close_pinned_overlay_window` と同型の単一目的コマンド（§3）で、任意ラベルの窓操作は露出しない。
-/// 窓が無ければ no-op（冪等）。**PID kill・プロセス名 kill は行わず**、自アプリのウィンドウを閉じるのみ
-/// （§6 の PID kill はそもそも発生しない）。
-///
-/// ⚠⚠ **061b: `.close()` は `CloseRequested` を出すので、`open_effect_overlay_window` が登録した
-/// 窓イベントハンドラを必ず通る**（`.destroy()` と違い intercept 可能な経路）。＝**コメビュ窓が既に
-/// 閉じている状態でこのコマンドを呼ぶと sidecar も落ちる**（＝sidecar を使う窓が 1 つも残らないため）。
-/// これは意図どおりで、`obs-effects` 画面の表示トグル OFF が最後の消費者を閉じる操作になり得る。
-#[tauri::command]
-fn close_effect_overlay_window(app: AppHandle) -> AppResult<()> {
-    if let Some(window) = app.get_webview_window("effect-overlay") {
-        window.close().map_err(|_| {
-            AppError::launch_failed("エフェクトのオーバーレイを閉じられませんでした")
-        })?;
-    }
-    Ok(())
-}
-
-/// 061a: エフェクト専用オーバーレイ窓が開いているかを返す読み取り専用コマンド（`is_pinned_overlay_open` を手本）。
-/// 用途は 2 つで、**別々の窓から呼ぶ**:
-/// ①`ObsEffectsScreen`（main 窓）が前提ステータス表示とマウント時の窓復元に使う
-/// ②`CommentViewerApp`（コメビュ窓）が `enableObs("effects")` を送る前に「窓が実在するか」を確かめるのに使う。
-/// ⚠ ②が**実窓**を見るのは 046d レビューの指摘と同じ理由——`requestObsAutoAdd` は「窓が OBS の
-/// ウィンドウ一覧に載っている」ことを前提にする操作で、設定 ON ／ 窓なしで走らせると sidecar 側
-/// `ensureOverlaySource` が**先に `CreateInput` でソースを作ってから**窓を探して失敗し、
-/// キャプチャ対象未設定の空ソースが OBS に残る（ユーザーが手で消すまで消えない）。
-#[tauri::command]
-fn is_effect_overlay_open(app: AppHandle) -> bool {
-    app.get_webview_window("effect-overlay").is_some()
-}
-
 /// 061k: エフェクトの**全画面（ステージ）側の出力窓**（label `stage-overlay`）を開く。
 /// `open_effect_overlay_window`（061a）と**同型の単一目的コマンド**で（§3・任意ラベル/任意オプションの
 /// 窓生成は露出しない）、OBS では 4 本目の独立したソースとして取り込む。
@@ -920,11 +771,9 @@ pub fn run() {
             //（overlay_theme::service の保存ヘルパが冪等に create_dir_all する＝
             //  実行中にディレクトリを消されても復旧できる）。
             overlay_theme::repository::init(&conn)?;
-            // 061c: エフェクトテンプレート（effect_templates）。アセット実体は
-            // app_data_dir/effects/<uuid v4>/ で、そのディレクトリは取り込み時に作る
-            //（effect_template::service::store_template が冪等に create_dir_all する＝
-            //  overlay_theme と同じく、実行中にディレクトリを消されても復旧できる）。
-            effect_template::repository::init(&conn)?;
+            // ⚠⚠ 064d: `effect_templates` テーブルの作成をやめた（取り込み機能ごと削除）。
+            //   ⚠ **既存の開発環境には未使用のテーブルが残る**（DROP はしない＝削除のためだけの
+            //   マイグレーションを書かない）。新規環境ではそもそも作られない。
             app.manage(Mutex::new(conn));
             // stream-dock がこのセッション中に起動したプロセスを保持する runtime process registry。
             // 009 の停止は raw PID ではなくここに保持した Child ハンドル経由で行う。
@@ -1000,9 +849,6 @@ pub fn run() {
             open_pinned_overlay_window,
             close_pinned_overlay_window,
             is_pinned_overlay_open,
-            open_effect_overlay_window,
-            close_effect_overlay_window,
-            is_effect_overlay_open,
             open_stage_overlay_window,
             close_stage_overlay_window,
             is_stage_overlay_open,
@@ -1063,12 +909,6 @@ pub fn run() {
             overlay_theme::commands::get_overlay_theme_font_css,
             overlay_theme::commands::rename_overlay_theme,
             overlay_theme::commands::delete_overlay_theme,
-            // 061c: エフェクトテンプレート（app_data_dir/effects/<uuid v4>/ ＋ effect_templates）。
-            // ⚠ アプリ定義コマンドは ACL 対象外＝この 4 本も全 5 窓から呼べる。狭さはコマンド側で担保する。
-            effect_template::commands::import_effect_template,
-            effect_template::commands::list_effect_templates,
-            effect_template::commands::get_effect_template_media,
-            effect_template::commands::delete_effect_template,
         ])
         // 032c-b: RunEvent::Exit フックを追加するため .run() を .build()+.run(closure) に分割した
         //（従来は lib.rs に exit フックが無かった）。no-orphan 3 段 kill の②。
@@ -1223,16 +1063,17 @@ mod overlay_window_contract {
     /// `OBS_OVERLAYS[kind].windowTitle` と**バイト一致**する文字列）。
     /// ⚠ 窓を増やしたら**ここへ 1 行足すだけ**でよい（下のテストは全部この配列を回す）。
     /// ⚠ `comment-viewer` 窓（`コメントビューア for StreamDock`）は自動追加の対象外なので**入れない**。
-    const OVERLAY_TITLES: [&str; 4] = [
+    const OVERLAY_TITLES: [&str; 3] = [
         // `open_comment_overlay_window`（033f）
         "StreamDock コメントオーバーレイ",
         // `open_pinned_overlay_window`（046b）
         "StreamDock 固定コメント",
-        // `open_effect_overlay_window`（061a）
-        "StreamDock エフェクト",
         // `open_stage_overlay_window`（061k）
-        // ⚠ 既存 3 つを部分文字列として含まず、既存 3 つにも含まれないこと（下の総当たりが固定）。
-        //   ⚠⚠ `"StreamDock エフェクト（全画面）"` はこの条件を満たさないので**不可**。
+        // ⚠ 既存 2 つを部分文字列として含まず、既存 2 つにも含まれないこと（下の総当たりが固定）。
+        // ⚠⚠ **064d で「StreamDock エフェクト」（コーナー窓）を削除した**——あの窓は
+        //   取り込んだテンプレート専用で、064 の方針転換（OBS 側のソースを鳴らす）で廃止したため。
+        //   ⚠ `"StreamDock エフェクト（全画面）"` を不可にしていた制約は**当時の話**だが、
+        //   **総当たりの規律は残る**（名前を足すときは必ずこのループを通すこと）。
         "StreamDock ステージ演出",
     ];
 
@@ -1448,13 +1289,13 @@ mod overlay_window_contract {
             );
         }
         // ⚠ 抽出そのものが壊れて 0 件になったら、このテストは**何も検証しないまま緑になる**。
-        // 窓 5 種 × (open / close / is) の 15 本が下限（減ったら抽出か実装のどちらかが壊れている）。
-        // ⚠⚠ **061k で 12 → 15 へ上げた**（窓が 1 本増えたのに下限を据え置くと、検出力が落ちたまま
-        //   「3 本消えても緑」になる）。⚠ **窓を足したら必ずここも上げること**——上の 4 テストと違い、
+        // 窓 4 種 × (open / close / is) の 12 本が下限（減ったら抽出か実装のどちらかが壊れている）。
+        // ⚠⚠ **064d で 15 → 12 へ戻した**（コーナー窓を廃止して窓が 1 本減ったため）。
+        //   ⚠ **窓を増減したら必ずここも直すこと**——上の 4 テストと違い、
         //   この下限だけは `OVERLAY_TITLES` から導出できない（`comment-viewer` 窓は OBS 自動追加の
         //   対象外だが `windowApi.ts` には 3 本ある、という非対称のため）。
         assert!(
-            found >= 15,
+            found >= 12,
             "windowApi.ts から抽出できた command が {found} 本しかない（抽出が壊れている可能性）"
         );
     }
@@ -1468,37 +1309,25 @@ mod overlay_window_contract {
     /// 誤りが配信を見ている視聴者にも読める）。061i の実機確認で実際に踏んだ失敗モードである。
     ///
     /// ⇒ frontend 側は `screens/obs-effects/effectAssignments.ts` の
-    /// **`EFFECT_OUTPUT_WINDOW_TITLE`（出力先 → 窓名の表）1 か所**に寄せてあるので、ここで突き合わせる。
-    /// ⚠ **エントリ数も見る**（片方だけ書き換えて「表から消す」変異を止める）。
+    /// **`STAGE_OVERLAY_WINDOW_TITLE`（定数 1 本）**に寄せてあるので、ここで突き合わせる。
+    /// ⚠⚠ **064d で「出力先 → 窓名の表」から定数 1 本になった**（窓が 1 つになったため）。
     /// **再修正トリガー**＝窓名を Rust/TS の共有定義（ビルド時生成）へ寄せたら、本テストは不要になる。
     #[test]
     fn frontend_window_title_table_matches_overlay_titles() {
         // ⚠ needle は実行時に組む（`include_str!("lib.rs")` の自己ヒット対策・このモジュールの規律）。
-        let table_head = format!("const {}: Readonly<Record<EffectOutput, string>> = {{", "EFFECT_OUTPUT_WINDOW_TITLE");
-        let table = EFFECT_ASSIGNMENTS_TS
-            .split_once(table_head.as_str())
-            .and_then(|(_, rest)| rest.split_once("};"))
-            .map(|(block, _)| block);
+        let head = format!("const {} = \"", "STAGE_OVERLAY_WINDOW_TITLE");
+        let title = EFFECT_ASSIGNMENTS_TS
+            .split_once(head.as_str())
+            .and_then(|(_, rest)| rest.split_once('"'))
+            .map(|(value, _)| value);
         assert!(
-            table.is_some(),
-            "effectAssignments.ts に EFFECT_OUTPUT_WINDOW_TITLE の表が見つからない（frontend の案内文が窓名を直書きしている可能性）"
+            title.is_some(),
+            "effectAssignments.ts に STAGE_OVERLAY_WINDOW_TITLE が見つからない（frontend の案内文が窓名を直書きしている可能性）"
         );
-        let table = table.unwrap_or("");
-
-        // 表に載っている窓名（`"…"` の中身）を全部拾い、**すべてが実在の窓タイトル**であること。
-        let mut found = 0usize;
-        for chunk in table.split('"').skip(1).step_by(2) {
-            found += 1;
-            assert!(
-                OVERLAY_TITLES.contains(&chunk),
-                "frontend の EFFECT_OUTPUT_WINDOW_TITLE が実在しない窓名 `{chunk}` を案内している（OBS のウィンドウ一覧で見つからない）"
-            );
-        }
-        // ⚠ エフェクトの出力窓は 2 本（corner / stage）。⚠ ここを増減させるときは
-        //   `EffectOutput` の union と `ObsOverlayKind` の値も同時に増減しているはず。
-        assert_eq!(
-            found, 2,
-            "EFFECT_OUTPUT_WINDOW_TITLE のエントリ数が {found} 件（期待 2 ＝ corner / stage）"
+        let title = title.unwrap_or("");
+        assert!(
+            OVERLAY_TITLES.contains(&title),
+            "frontend の STAGE_OVERLAY_WINDOW_TITLE が実在しない窓名 `{title}` を案内している（OBS のウィンドウ一覧で見つからない）"
         );
     }
 }
@@ -1545,15 +1374,17 @@ mod sidecar_lifecycle {
 
     #[test]
     fn keeps_sidecar_while_the_other_consumer_window_is_open() {
-        // コメビュ窓を閉じる。エフェクト窓が生きているので**落としてはいけない**
-        //（＝061b の目的「コメビュ窓を閉じてもエフェクトが出続ける」そのもの）。
+        // コメビュ窓を閉じる。ステージ窓が生きているので**落としてはいけない**
+        //（＝061b の目的「コメビュ窓を閉じても配信画面の演出が出続ける」そのもの）。
+        // ⚠ 064d: 直書きしていたラベルを `effect-overlay` から `stage-overlay` へ移した
+        //   （コーナー窓は取り込み機能ごと廃止＝消費者窓は 2 つになった）。
         assert!(!is_last_sidecar_consumer(
             "comment-viewer",
-            &opened(&["effect-overlay"])
+            &opened(&["stage-overlay"])
         ));
-        // 逆順も同じ（エフェクト窓を閉じるがコメビュ窓は生きている）。
+        // 逆順も同じ（ステージ窓を閉じるがコメビュ窓は生きている）。
         assert!(!is_last_sidecar_consumer(
-            "effect-overlay",
+            "stage-overlay",
             &opened(&["comment-viewer"])
         ));
     }

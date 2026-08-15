@@ -28,7 +28,6 @@ import type { PresetItemWithTool } from "../../features/presets/types";
 const mocks = vi.hoisted(() => ({
   closeCommentViewerWindow: vi.fn(),
   isCommentViewerOpen: vi.fn(),
-  isEffectOverlayOpen: vi.fn(),
   // 061k: ステージ窓ぶん（§1 の導線は**どちらか 1 つでも開いていれば**取得が続く）。
   isStageOverlayOpen: vi.fn(),
   listRuntimeProcesses: vi.fn(),
@@ -42,7 +41,6 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../../features/comment-viewer/windowApi", () => ({
   closeCommentViewerWindow: mocks.closeCommentViewerWindow,
   isCommentViewerOpen: mocks.isCommentViewerOpen,
-  isEffectOverlayOpen: mocks.isEffectOverlayOpen,
   isStageOverlayOpen: mocks.isStageOverlayOpen,
 }));
 vi.mock("../../features/presets/runtimeApi", () => ({
@@ -116,7 +114,6 @@ describe("061b: メイン画面・内蔵コメントビューアの「停止」"
     mocks.listRuntimeProcesses.mockResolvedValue([]);
     // 窓は開いている＝行は「起動済み」＝停止ボタンが出る状態。
     mocks.isCommentViewerOpen.mockResolvedValue(true);
-    mocks.isEffectOverlayOpen.mockResolvedValue(false);
     mocks.isStageOverlayOpen.mockResolvedValue(false);
     mocks.closeCommentViewerWindow.mockResolvedValue(undefined);
   });
@@ -133,15 +130,15 @@ describe("061b: メイン画面・内蔵コメントビューアの「停止」"
   it("エフェクト窓が閉じていれば「停止しました」と伝える（実際に取得も止まるため）", async () => {
     // ⚠ この場合はコメビュ窓の close で sidecar が落ちる（消費者が 1 つも残らない）＝取得も止まる。
     //   ここで余計な但し書きを出すと、エフェクトを使っていないユーザーに嘘を言うことになる。
-    mocks.isEffectOverlayOpen.mockResolvedValue(false);
     await openThenStop();
     expect(
       await screen.findByText(/コメントビューア を停止しました/),
     ).toBeInTheDocument();
   });
 
-  it("⚠⚠ エフェクト窓が開いていれば「取得が続いている」ことを伝える（§1・停止したと偽らない）", async () => {
-    mocks.isEffectOverlayOpen.mockResolvedValue(true);
+  it("⚠⚠ 出力窓が開いていれば「取得が続いている」ことを伝える（§1・停止したと偽らない）", async () => {
+    // ⚠ 064d: 判定対象はステージ窓 1 つだけ（コーナー窓は取り込み機能ごと廃止）。
+    mocks.isStageOverlayOpen.mockResolvedValue(true);
     await openThenStop();
 
     const feedback = await screen.findByText(/コメントの取得は続いています/);
@@ -160,7 +157,7 @@ describe("061b: メイン画面・内蔵コメントビューアの「停止」"
     //   **061p が廃止したボタンの名前を固定していた**（＝また存在しない操作を守っていた）。
     //   ⇒ **いまの止め方は「コメントビューアを開いて取得を停止する」1 つだけ**
     //   （`docs/security.md` §1 の 061p 追補）。⚠ **廃止した 2 つの名前が戻らないことも見る。**
-    mocks.isEffectOverlayOpen.mockResolvedValue(true);
+    mocks.isStageOverlayOpen.mockResolvedValue(true);
     await openThenStop();
 
     const feedback = await screen.findByText(/コメントの取得は続いています/);
@@ -175,7 +172,6 @@ describe("061b: メイン画面・内蔵コメントビューアの「停止」"
     // ⚠⚠ **061i レビュー S-1 と同型の失敗モードを 061k で再発させないための本命。**
     //   `docs/security.md` §1 は「**どちらか 1 つでも開いていれば取得が続く**」なので、
     //   コーナー側だけを見る実装だと**「停止しました」と積極的に嘘を述べる**。
-    mocks.isEffectOverlayOpen.mockResolvedValue(false);
     mocks.isStageOverlayOpen.mockResolvedValue(true);
     await openThenStop();
 
@@ -188,7 +184,6 @@ describe("061b: メイン画面・内蔵コメントビューアの「停止」"
   });
 
   it("⚠ 061k: 2 窓とも閉じているときだけ「停止しました」と言い切る", async () => {
-    mocks.isEffectOverlayOpen.mockResolvedValue(false);
     mocks.isStageOverlayOpen.mockResolvedValue(false);
     await openThenStop();
     expect(
@@ -199,7 +194,6 @@ describe("061b: メイン画面・内蔵コメントビューアの「停止」"
   it("⚠ 窓の状態軸は増やさない（どちらの場合もツール行は「停止済み」になる）", async () => {
     // ⚠ ツール行の意味は「窓が開いているか」であり、取得が続いているかどうかではない
     //   （`is_comment_viewer_open` が見ているのは窓の存在）。文言だけを分岐させるのが 061b の決定。
-    mocks.isEffectOverlayOpen.mockResolvedValue(true);
     await openThenStop();
     expect(await screen.findByText("停止済み")).toBeInTheDocument();
     expect(screen.queryByText("起動済み")).toBeNull();
@@ -208,7 +202,7 @@ describe("061b: メイン画面・内蔵コメントビューアの「停止」"
   it("⚠ エフェクト窓の判定に失敗しても停止操作は成功として扱う（通常の文言へフォールバック）", async () => {
     // ⚠ 停止（窓 close）自体は成功しているので、ここで失敗を見せると
     //   「停止できなかった」と誤解させる。判定はあくまで文言を足すためのもの。
-    mocks.isEffectOverlayOpen.mockRejectedValue(new Error("ipc failed"));
+    mocks.isStageOverlayOpen.mockRejectedValue(new Error("ipc failed"));
     mocks.isStageOverlayOpen.mockRejectedValue(new Error("ipc failed"));
     await openThenStop();
     expect(
@@ -221,11 +215,9 @@ describe("061b: メイン画面・内蔵コメントビューアの「停止」"
     // ⚠ close に失敗した＝窓は開いたまま＝取得の状態も変わっていないので、
     //   「取得が続いています」を出すと原因を取り違えさせる（出すべきはエラー）。
     mocks.closeCommentViewerWindow.mockRejectedValue(new Error("close failed"));
-    mocks.isEffectOverlayOpen.mockResolvedValue(true);
     await openThenStop();
 
     expect(screen.queryByText(/コメントの取得は続いています/)).toBeNull();
-    expect(mocks.isEffectOverlayOpen).not.toHaveBeenCalled();
     expect(mocks.isStageOverlayOpen).not.toHaveBeenCalled();
   });
 });

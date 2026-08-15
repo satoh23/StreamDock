@@ -23,6 +23,10 @@ import {
   safeReason,
   parseMacWindowItemName,
   isWgcMethodName,
+  // 064a: ユーザーが OBS 側に作ったソースを鳴らすための入口検査（純関数）。
+  isAllowedObsSourceName,
+  clampObsFireDurationMs,
+  resolveObsFireDurationMs,
 } from "./obs-helpers.js";
 
 /** OBS 連携の状態（viewer へ通知して UI に反映する）。 */
@@ -39,14 +43,16 @@ export type ObsStateListener = (state: ObsState, reason?: string) => void;
  * 046d: 自動追加の対象オーバーレイ種別。**viewer から任意の名前を受け取らない**ための固定 union で、
  * 実際のソース名／窓名は下の `OBS_OVERLAYS` に閉じてある（§3/§8＝ユーザー入力が OBS 操作へ渡る経路を作らない）。
  * 061a: 3 本目 `"effects"`（エフェクト専用オーバーレイ窓）を追加。
- * 061k: 4 本目 `"stage"`（エフェクトの全画面／ステージ側の出力窓）を追加。
+ * ⚠⚠ **064d でその `"effects"` を削除した**——コーナー窓は**取り込んだテンプレート専用**で、
+ * 064 の方針転換（エフェクトは OBS 側のソースを鳴らす）で窓ごと廃止したため。
+ * 061k: 4 本目 `"stage"`（全画面／ステージ側の出力窓）を追加。⚠ 064d 以降**これが唯一のエフェクト系の窓**。
  * ⚠⚠ **この union は desktop 側（`features/comment-viewer/commentStream.ts`）と人手で同期している。**
  * WS 境界で型が失われるのでずれても typecheck では気付けず、実害は
  * 「desktop が送った種別を下の `parseOverlayKind` が `"comments"` へ落とす」＝
  * **誤った窓のソースが OBS に作られる**という静かな方向に出る（Rust の
  * `obs_overlay_kind_union_matches_between_sidecar_and_desktop` が両側を突き合わせて止めている）。
  */
-export type ObsOverlayKind = "comments" | "pinned" | "effects" | "stage";
+export type ObsOverlayKind = "comments" | "pinned" | "stage";
 
 /**
  * オーバーレイ種別ごとの「OBS に作るソース名」と「キャプチャ対象の窓名」。
@@ -55,12 +61,12 @@ export type ObsOverlayKind = "comments" | "pinned" | "effects" | "stage";
  * 窓名は Rust の窓タイトルと**バイト一致**させること:
  *   comments → `open_comment_overlay_window` の `.title`（033f）
  *   pinned   → `open_pinned_overlay_window` の `.title`（046b）
- *   effects  → `open_effect_overlay_window` の `.title`（061a）
  *   stage    → `open_stage_overlay_window` の `.title`（061k）
  * 候補一致は `includes` なので、**どれかが他を部分文字列として含んではいけない**
- * （4 つとも相互に含まないことを実測済み。Rust 側 `overlay_window_contract` が総当たりで固定している）。
+ * （3 つとも相互に含まないことを実測済み。Rust 側 `overlay_window_contract` が総当たりで固定している）。
  * ⚠⚠ **061k で "StreamDock エフェクト（全画面）" を採らなかったのはこの制約のため**
- * （既存の `effects` を部分文字列として含むと、ステージ用のソースがエフェクト窓を掴む）。
+ * （当時あった `effects` を部分文字列として含むと、ステージ用のソースがエフェクト窓を掴む）。
+ * ⚠ 064d で `effects` は消えたが、**この制約は残る**（名前を足すときは必ず総当たりを確認すること）。
  *
  * ⚠ **export しているのはテストのため**（`scripts/test-obs-client.mjs`）。046d までは module-private で、
  * その結果「3 つが `includes` で紛れないこと」を検証する対象がどこにも公開されておらず、
@@ -82,10 +88,6 @@ export const OBS_OVERLAYS: Readonly<
   pinned: Object.freeze({
     sourceName: "StreamDock 固定コメント",
     windowTitle: "StreamDock 固定コメント",
-  }),
-  effects: Object.freeze({
-    sourceName: "StreamDock エフェクト",
-    windowTitle: "StreamDock エフェクト",
   }),
   stage: Object.freeze({
     sourceName: "StreamDock ステージ演出",
@@ -151,6 +153,108 @@ export interface ObsClient {
   hide(port: number, overlay: ObsOverlayKind): Promise<void>;
   /** 連携 OFF（状態を idle に戻す・OBS 側ソースは消さない）。 */
   disable(): void;
+  /**
+   * 064a: **OBS に既にあるソースのうち、エフェクトとして鳴らせるものの一覧**を返す。
+   *
+   * ⚠ 失敗（未起動・認証失敗等）でも throw しない（[`ObsSourceListResult`] の `ok:false`）。
+   * ⚠⚠ **064c で戻り値に `ok` が付いた**——理由の全文は [`ObsSourceListResult`] の JSDoc が正。
+   */
+  listSources(port: number): Promise<ObsSourceListResult>;
+  /**
+   * 064a: 指定ソースを**頭出しして表示し、`durationMs` 後に非表示へ戻す**。
+   * ⚠ 戻り値は「出せたか」。失敗理由は `onState("failed", …)` で伝える。
+   */
+  fireSource(
+    port: number,
+    sourceName: string,
+    durationMs: number,
+  ): Promise<boolean>;
+}
+
+/**
+ * 064a: エフェクトとして鳴らせる OBS ソース 1 件。
+ *
+ * ⚠ **返すのは名前と種別だけ**（設定値・ファイルパスは 1 つも持ち帰らない）。
+ * ユーザーのローカルパスが viewer へ渡る経路を作らないため（§9）。
+ */
+export interface ObsSourceInfo {
+  name: string;
+  kind: ObsSourceKind;
+}
+
+/**
+ * 064c: [`ObsClient.listSources`] の結果。
+ *
+ * ## ⚠⚠ なぜ `ok` が要るのか（064c の中心）
+ *
+ * 064a は失敗も成功も**空配列**で返していた。その結果 main 窓では
+ * 「**OBS に繋がらなかった**」と「**繋がったが鳴らせるソースが 0 件**」が区別できず、
+ * OBS が起動していないだけのユーザーへ
+ * 「OBS のシーンに『メディアソース』か『画像』を追加してください」という
+ * **間違った対処**を案内していた（061a レビュー Q-1 と同じ失敗モードの 3 度目）。
+ *
+ * ⚠ **`onState("failed", …)` では代替できない。** あちらは comments / pinned / stage と
+ * **共有**の状態通知で、「固定コメントの自動追加が失敗した」のか
+ * 「一覧が取れなかった」のかを受け手が判別できない（061e レビュー Q-5 が受容している限界）。
+ * ⇒ **一覧要求への直接の返事**にだけ載せるのが正しい。
+ *
+ * ⚠ `ok:false` のときの `sources` は**必ず空**（部分的に取れた一覧を返す経路は無い）。
+ */
+export interface ObsSourceListResult {
+  /** `true` ＝ OBS へ繋がって一覧を取れた（0 件でも `true`）。`false` ＝ 取れなかった。 */
+  ok: boolean;
+  sources: ObsSourceInfo[];
+}
+
+/**
+ * 064a: **鳴らしてよいソース種別**（allow-list）。
+ *
+ * - `ffmpeg_source` … OBS の「メディアソース」（mp4 / mov / webm …）。⚠ **頭出しができる唯一の種別**。
+ * - `image_source` … 「画像」（png / gif …）。頭出しの概念が無いので表示/非表示だけ。
+ *
+ * ⚠⚠ **`browser_source` を足さないこと**（064a の判断）。他ツールの HTML エフェクトを OBS 経由で
+ * 鳴らせるようになる魅力はあるが、**頭出しの手段が別 API（`PressInputPropertiesButton`）**になり、
+ * 操作面が 1 つ増える。⚠ **再修正トリガー＝「ブラウザソースを鳴らしたい」と言われたとき**
+ * （そのとき §3 の再評価と security-review を行うこと）。
+ * ⚠ 一覧にも出さない＝**ユーザーが選べるのは、ここに載っている種別だけ**である。
+ */
+const FIREABLE_SOURCE_KINDS = ["ffmpeg_source", "image_source"] as const;
+export type ObsSourceKind = (typeof FIREABLE_SOURCE_KINDS)[number];
+
+/**
+ * 064c: **`GetInputList` の結果を [`ObsSourceListResult`] へ落とす**（＝一覧が取れたときの唯一の作り方）。
+ *
+ * ⚠⚠ **`ok` が必ず `true` であることがこの関数の意味である。** ここへ来ているということは
+ * **OBS へ繋がって `GetInputList` が返った**ということなので、**絞り込んだ結果が 0 件でも `ok:true`**。
+ * ⇒ main 窓は「OBS のシーンにソースを追加してください」を出す（「OBS を起動して」ではなく）。
+ * ⚠ **`ok:false` を返してよいのは接続に辿り着けなかったときだけ**（`listSources` の `catch`）。
+ *
+ * ⚠ **純関数として切り出してある理由**＝ [`listSources`] 本体は OBS への実接続を要するので
+ * `test-obs-client.mjs` から呼べない。**allow-list による絞り込みと「0 件でも `ok:true`」**という
+ * 064c の核心だけは、実機を待たずに固定できるようにしておく。
+ */
+export function toObsSourceListResult(
+  inputs: readonly unknown[],
+): ObsSourceListResult {
+  return {
+    ok: true,
+    // ⚠ 名前と種別だけを取り出す（設定値やファイルパスは持ち帰らない・§9）。
+    sources: inputs
+      .map(toFireableSource)
+      .filter((s): s is ObsSourceInfo => s !== null),
+  };
+}
+
+/** `GetInputList` の 1 件を [`ObsSourceInfo`] に落とす（許可外の種別は `null`）。 */
+function toFireableSource(input: unknown): ObsSourceInfo | null {
+  if (typeof input !== "object" || input === null) return null;
+  const { inputName, inputKind } = input as {
+    inputName?: unknown;
+    inputKind?: unknown;
+  };
+  if (!isAllowedObsSourceName(inputName)) return null;
+  const kind = FIREABLE_SOURCE_KINDS.find((k) => k === inputKind);
+  return kind === undefined ? null : { name: inputName.trim(), kind };
 }
 
 /** connect を timeout 付きで行う（未起動/無効を速やかに graceful 失敗へ）。 */
@@ -317,6 +421,18 @@ async function setOverlaySceneItemEnabled(
 
 export function createObsClient(onState: ObsStateListener): ObsClient {
   let password: string | null = null;
+  /**
+   * 064a: **出したソースを消す予定**（ソース名 → タイマーと接続の後始末）。
+   *
+   * ⚠⚠ **「消し忘れ」＝配信画面に出しっぱなし**がこの機能で最悪の壊れ方なので、
+   * 予定は必ずここに載せ、**同じソースの再発火では前の予定を捨ててから張り直す**。
+   * ⚠ プロセスが落ちれば OBS 側は表示のままだが、それは**ユーザーが OBS で消せる**
+   * （StreamDock が作ったソースではなくユーザー自身のソースなので、見つけられる）。
+   */
+  const pendingHides = new Map<
+    string,
+    { timer: ReturnType<typeof setTimeout>; close: () => Promise<void> }
+  >();
 
   return {
     setPassword(next: string | null): void {
@@ -375,6 +491,212 @@ export function createObsClient(onState: ObsStateListener): ObsClient {
 
     disable(): void {
       onState("idle");
+    },
+
+    /**
+     * 064a: 鳴らせるソースの一覧（`GetInputList` → allow-list で絞る）。
+     *
+     * ⚠ **オンデマンド接続のまま**（`enable` / `hide` と同じ作法）。一覧の取得は
+     * **ユーザーがボタンを押した瞬間だけ**なので、常時接続にする理由が無い。
+     * ⚠⚠ **発火（`fireSource`）は本来オンデマンドでは遅い**（接続 1 往復ぶん）。064a は
+     * 「OBS のソースを出せること」を確かめるためのもので、**コメントで自動発火させるのは 064b**。
+     * **接続を維持するかどうかは 064b で決める**（security.md に姿勢の追補が要るため）。
+     *
+     * ⚠⚠ **064c: 戻り値に `ok` が付いた**（[`ObsSourceListResult`]）。
+     * **`ok:false` を返すのは「OBS へ辿り着けなかった」ときだけ**で、
+     * 繋がって 0 件だったときは **`ok:true` ＋ 空配列**である——この 2 つを混ぜると
+     * main 窓が間違った対処を案内する（型の JSDoc が正）。
+     * ⚠ `onState("failed", …)` は**従来どおり残す**（コメビュ窓ツールバーの赤字＝既存の観測点）。
+     */
+    async listSources(port: number): Promise<ObsSourceListResult> {
+      const url = `ws://${OBS_HOST}:${port}`;
+      try {
+        assertAllowedObsUrl(url);
+      } catch {
+        onState("failed", "OBS の接続先が不正です");
+        return { ok: false, sources: [] };
+      }
+      const obs = new OBSWebSocket();
+      try {
+        await connectWithTimeout(obs, url, password);
+        const { inputs } = await obs.call("GetInputList");
+        // ⚠⚠ 絞り込みと `ok:true` は [`toObsSourceListResult`] が持つ（0 件でも `ok:true`）。
+        return toObsSourceListResult(inputs);
+      } catch (err) {
+        onState("failed", safeReason(err, "OBS に接続できませんでした"));
+        return { ok: false, sources: [] };
+      } finally {
+        await obs.disconnect().catch(() => {});
+      }
+    },
+
+    /**
+     * 064a: **ソースを頭出しして出し、`durationMs` 後に戻す**（064 の中心）。
+     *
+     * 手順は fail-closed:
+     *   ①名前の形式検査 ②**`GetInputList` で実在と種別を確認**（⚠ **ここが本体の壁**）
+     *   ③現在シーンの scene item を引く ④表示 ⑤メディアなら頭出し
+     *   ⑥⚠ 064b: メディアなら**長さを OBS に聞く**（[`resolveObsFireDurationMs`]）⑦その長さで非表示
+     *
+     * ⚠⚠ **消す責任をここに閉じる。** 表示だけして消し忘れると**配信画面に出しっぱなし**になる——
+     * この機能で最悪の壊れ方なので、①タイマーは必ず張る ②同じソースの再発火では
+     * **前のタイマーを捨てて張り直す**（先に張った方が消すと、出したばかりのものが即座に消える）
+     * ③接続は**消し終えるまで保持する**（消すためだけに繋ぎ直さない）。
+     *
+     * ## ⚠⚠⚠ 064 レビュー S-2（修正）: ①が破れる経路が 2 本あった
+     *
+     * - **(a) `TriggerMediaInputAction` を素の `await` で呼んでいた。** すぐ下の
+     *   `GetMediaInputStatus` は `.catch` で握っているのに、**より危険なこちらだけ素通し**で、
+     *   throw すると **`SetSceneItemEnabled(true)` 済み／タイマー未設定**のまま catch へ抜けていた
+     *   ＝ **そのソースは誰も消さない**。⇒ 同じ理由（頭出しの失敗は「出せない」ではない）で握る。
+     * - **(b) 前の「消す」予定を、新しい接続より先に捨てていた。** 前回の発火がまだ表示中のときに
+     *   再発火し、その 2 回目が connect timeout 等で失敗すると、**消す予定だけが消えて出しっぱなし**に
+     *   なっていた（`SetSceneItemEnabled` の値は OBS のシーンコレクションに永続するので
+     *   OBS を再起動しても戻らない）。⇒ **捨てるのは「対象が実在すると分かってから」**へ移し、
+     *   さらに **捨てた後に失敗したら、その場で消してから切る**（`shownSceneItem`）。
+     *
+     * ⚠⚠ **この 2 経路は `scripts/test-obs-client.mjs` から固定できていない**——
+     * あちらは obs-websocket 非依存の純関数だけを対象にしており、ここを検査するには
+     * `createObsClient` に `OBSWebSocket` を注入する seam が要る（＝ 044a 以来
+     * 手を入れていない fail-closed 層の構造変更になる）。
+     * ⚠ **再修正トリガー＝この経路をもう一度触るとき**（そのとき seam の導入を先に判断すること）。
+     * それまでは**上の 3 つの不変条件を人が読んで守る**しかない。
+     *
+     * ⚠ **`hide` と違って `enable` を経由しない**＝ **ソースを作らない**。鳴らせるのは
+     * **ユーザーが自分で OBS に作ったもの**だけである（§3＝この経路は作成能力を持たない）。
+     */
+    async fireSource(
+      port: number,
+      sourceName: string,
+      durationMs: number,
+    ): Promise<boolean> {
+      if (!isAllowedObsSourceName(sourceName)) {
+        onState("failed", "ソース名が不正です");
+        return false;
+      }
+      const name = sourceName.trim();
+      // ⚠ 064b: メディアソースなら下で **OBS が返した長さ**へ差し替える（[`resolveObsFireDurationMs`]）。
+      //   ⚠⚠ **ここで一度クランプしておくことが要点**——差し替えに失敗しても、
+      //   `showMs` は常に有限で範囲内（＝「消えないまま残る」経路が存在しない）。
+      let showMs = clampObsFireDurationMs(durationMs);
+      const url = `ws://${OBS_HOST}:${port}`;
+      try {
+        assertAllowedObsUrl(url);
+      } catch {
+        onState("failed", "OBS の接続先が不正です");
+        return false;
+      }
+
+      const obs = new OBSWebSocket();
+      let connected = false;
+      /**
+       * ⚠⚠⚠ S-2(b): **前の「消す」予定を捨てた後で失敗したときに、消してから切るための控え。**
+       * `null` ＝ まだ何も出していない（＝失敗しても出しっぱなしにはならない）。
+       */
+      let shownSceneItem: { sceneName: string; sceneItemId: number } | null =
+        null;
+      try {
+        await connectWithTimeout(obs, url, password);
+        connected = true;
+        // ⚠⚠ **実在検査（本体の壁）**——OBS に無い名前は 1 回も操作へ渡さない。
+        const { inputs } = await obs.call("GetInputList");
+        const target = inputs
+          .map(toFireableSource)
+          .find((s): s is ObsSourceInfo => s !== null && s.name === name);
+        if (target === undefined) {
+          onState("failed", "そのソースが OBS に見つかりません");
+          return false;
+        }
+
+        const { currentProgramSceneName } = await obs.call("GetSceneList");
+        // ⚠ 現在シーンに置かれていないソースは出せない（`GetSceneItemId` が throw する）。
+        const { sceneItemId } = await obs.call("GetSceneItemId", {
+          sceneName: currentProgramSceneName,
+          sourceName: name,
+        });
+
+        // ⚠⚠ 同じソースが再発火したら、**前の「消す」予定を捨てる**（捨てないと今出したものが即消える）。
+        // ⚠⚠⚠ **S-2(b): 捨てるのはここ**——「接続できて、対象が実在して、scene item も引けた」＝
+        //   このあと確実に出せると分かってからである。⚠ **これより前へ戻さないこと**
+        //   （戻すと、接続や実在確認で失敗したときに**前回出したぶんの消す予定だけが消える**）。
+        const pending = pendingHides.get(name);
+        if (pending !== undefined) {
+          clearTimeout(pending.timer);
+          pendingHides.delete(name);
+          // ⚠ 既に出ている状態を引き継ぐ＝ここから先で失敗したら下の catch が消す。
+          shownSceneItem = { sceneName: currentProgramSceneName, sceneItemId };
+          await pending.close();
+        }
+
+        await obs.call("SetSceneItemEnabled", {
+          sceneName: currentProgramSceneName,
+          sceneItemId,
+          sceneItemEnabled: true,
+        });
+        // ⚠⚠ S-2: ここから先で throw したら**出しっぱなし**になるので、消す手段を控える。
+        shownSceneItem = { sceneName: currentProgramSceneName, sceneItemId };
+        // ⚠ メディアソースだけ頭出しする（画像には再生位置の概念が無い）。
+        // ⚠⚠ 064b: **同じ理由で「長さ」もメディアソースだけ聞く**（画像に長さは無い）。
+        //   `showMs` を上書きするのはここ 1 か所だけ＝「何秒出るか」の決まり方が 2 通りにならない。
+        if (target.kind === "ffmpeg_source") {
+          // ⚠⚠⚠ **S-2(a): 失敗しても止めない**（`catch` で握る）。頭出しできないのは
+          //   「出せない」ではなく「頭から出ないだけ」で、ここで発火ごと落とすと
+          //   **表示済みのソースを消さないまま catch へ抜ける**＝最悪の壊れ方そのものになる。
+          //   ⚠ すぐ下の `GetMediaInputStatus` と**同じ扱い**に揃えてある。
+          await obs
+            .call("TriggerMediaInputAction", {
+              inputName: name,
+              mediaAction: "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART",
+            })
+            .catch(() => {});
+          // ⚠⚠ **失敗しても止めない**（`catch` で `null`）——長さが分からないのは
+          //   「出せない」ではなく「既定の秒数で出す」なので、ここで発火ごと落とすほうが害が大きい。
+          // ⚠ 非表示だったソースは OBS 側で未ロードのことがあり、**頭出しの直後でも
+          //   `mediaDuration` が来ないことがある**。そのときも既定へ落ちる（`resolveObsFireDurationMs`）。
+          const status = await obs
+            .call("GetMediaInputStatus", { inputName: name })
+            .catch(() => null);
+          showMs = resolveObsFireDurationMs(status?.mediaDuration, durationMs);
+        }
+
+        // ⚠⚠ **消すところまでがこの関数の責任**（接続は消し終えるまで保持する）。
+        const close = async () => {
+          await obs.disconnect().catch(() => {});
+        };
+        const timer = setTimeout(() => {
+          pendingHides.delete(name);
+          void obs
+            .call("SetSceneItemEnabled", {
+              sceneName: currentProgramSceneName,
+              sceneItemId,
+              sceneItemEnabled: false,
+            })
+            .catch(() => {})
+            .finally(close);
+        }, showMs);
+        // ⚠ Node のプロセス終了をこのタイマーで引き延ばさない。
+        timer.unref?.();
+        pendingHides.set(name, { timer, close });
+        return true;
+      } catch (err) {
+        onState("failed", safeReason(err, "OBS に接続できませんでした"));
+        if (connected) {
+          // ⚠⚠⚠ S-2: **出した後で失敗したなら、切る前に必ず消す。**
+          //   ここに来る経路は 2 つ——①`SetSceneItemEnabled(true)` の後の想定外の throw
+          //   ②前の「消す」予定を引き継いだ直後の throw（どちらも `shownSceneItem !== null`）。
+          //   ⚠ 消せなくても切る（`catch` で握る）＝ここで throw して disconnect を飛ばさない。
+          if (shownSceneItem !== null) {
+            await obs
+              .call("SetSceneItemEnabled", {
+                ...shownSceneItem,
+                sceneItemEnabled: false,
+              })
+              .catch(() => {});
+          }
+          await obs.disconnect().catch(() => {});
+        }
+        return false;
+      }
     },
   };
 }

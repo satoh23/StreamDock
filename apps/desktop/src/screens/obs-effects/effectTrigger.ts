@@ -109,56 +109,49 @@ const GIFT_FOLD_WINDOW_MS = 5_000;
 export const CONDITION_COOLDOWN_MAX_MS = 60_000;
 
 /**
- * エフェクト 1 件を出すのに必要な**最小限**の情報。
+ * 発火 1 件を出すのに必要な**最小限**の情報。
  *
  * ⚠⚠ **`CommentViewDto` をそのまま持ち回らない。** 本文（`text`）もアバター（`author.avatar`）も
  * **入れない**（§9・「必要ないものは持ち回らない」＝043a が `system_message` を持ち回らないと決めた先例と同型）。
- * - **本文を出さない理由**: 要望は「誰がいくら」であり本文は不要。出すと**配信画面に第三者の自由入力が
- *   そのまま大写しになる**（荒らし耐性が下がる）。**再修正トリガー＝「メッセージも出したい」と言われたとき**
- *   ——そのときは本フィールドを足す前に、伏せ字・長さ制限・NG ワードの扱いを先に決めること。
- * - **アバターを出さない理由**: [046a] と同じ判断（base64 data URI を持ち回らない）。
+ * ⚠ **「便利だから」で `text` を足さないこと**（`effectTrigger.test.ts` がキー集合そのものを固定している）。
  *
- * ⚠ `EffectRequest.test.ts` 相当のテストが**キー集合そのもの**を固定している。
- * 「便利だから」で `text` を足すと落ちる。
+ * ## ⚠⚠ 064d: `EffectRequest`（= [`EffectRequestBase`] & `EffectKind`）を削除した
  *
- * ⚠⚠ **061d-2 で「共通部分（[`EffectRequestBase`]）＋ 判別子（[`EffectKind`]）」の合成になった。**
- * 交差型にしてあるのは、**`kind` を見ずに `templateId` を読むコードが書けない**ようにするため
- * （`kind === "template"` で絞って初めて `templateId` が生える）。
- * ⚠⚠ **061h で [`EffectKind`] が 1 本になったので、キー集合は常に 8 個**である
- * （`{id,name,amountText,message,eventLabel,tone,kind,templateId}`）。061b/061d-2 が
- * 「組み込み経路は 7 個のまま」と書いていた対比は**もう存在しない**。
- * ⚠ `tone` は 061h の時点で**描画側の読み手が居ない**（組み込みカードの配色に使っていた）。
- * それでも残しているのは ①`EffectRequestBase` を削らないという 061h の指定 ②061k の
- * ステージ窓・063 のガチャが同じ配色表に乗る余地、の 2 点による。
- * **再修正トリガー＝ 061k / 063 が終わっても読み手が現れなかったとき**（そのとき落とす）。
+ * `EffectKind` は **`{ kind: "template"; templateId }` 1 本だけ**の union で、
+ * 「エフェクト窓が取り込んだテンプレートを描く」ための型だった。064 で取り込み機能ごと消えたので、
+ * **その型が指す対象が 1 つも存在しなくなった**。
+ * ⇒ 総称の既定を [`EffectObsSource`] へ移し、`EffectRequest` という別名は落とした。
+ *
+ * ⚠⚠ **申し送り（064d では直さない）**: レーンが 1 本になったので、
+ * ①総称化（064b）は**インスタンスが 1 つだけ**になり ②[`EffectRequestBase`] の
+ * `name` / `amountText` / `message` / `eventLabel` / `tone` は **OBS レーンでは 1 つも読まれない**。
+ * §9 の「必要ないものは持ち回らない」に照らせば落とすべきだが、**064d は削除に集中する**と決めた
+ * （削除と設計変更を 1 コミットに混ぜない）。⚠ **再修正トリガー＝063（ガチャ）に着手するとき**
+ * ——あちらが 2 本目のレーンとして何を要るかで、残すフィールドが決まる。
  */
-export type EffectRequest = EffectRequestBase & EffectKind;
 
 /**
- * 061d-2: **どのエフェクトで出すか**（`EffectRequest` の判別子部分）。
+ * 064b: **エフェクト窓が描くのではない発火先**（＝ OBS 側のソースを鳴らす）。
  *
- * ⚠⚠ **`EffectRequest` に `eventType` を足さない**（①）。「どのイベントか」は割り当てを引くための
- * 一時的な鍵にすぎず、描画にも表示にも要らない——足すと `EffectRequest` が
- * 「出すのに要る最小限」ではなくなり、061b が型で作った §9 の担保（持ち回るものを増やさない）が緩む。
- * 割り当ての解決は**この union を返す resolver** が担い、結果だけがここに載る。
+ * ⚠⚠ **064b の時点では、エフェクト窓が描く `EffectKind` と混ぜないことが要点だった**
+ * （混ぜると `EffectRequest` に「描けない kind」が生まれ、描画分岐が必ず不能ケースを持つ）。
+ * ⇒ **`decideEffects` をペイロードで総称化**し、レーンごとに別の型を流す形にした（下記）。
+ * ⚠ **064d で `EffectKind` 側が消えた**ので、いま流れているのはこの型 1 つだけである。
  *
- * ⚠⚠ **061h で `{ kind: "builtin-monetary" }` を削り、variant は 1 本になった。**
- * 組み込み意匠（061b の「〇〇さんが ¥1,000」）は**完全に廃止**である——エフェクトは
- * 各々が使いたいものを取り込んで割り当てる、という運用に対して、
- * 「未設定・不正・壊れたメディアがすべて組み込みへ倒れる」形が真逆だったため
- * （判断の全文は docs/progress.md の 061h 節）。
- * ⚠ **union のまま残してある**（`{ kind: "template"; … }` を裸で書かない）のは、
- * 063（ガチャ）が `{ kind: "gacha"; … }` を **2 本目**として足すため。
- * そのとき `EffectOverlayApp` の描画分岐と `effectAssignments.ts` の検証表に 1 行ずつ足すことになる。
+ * ⚠ 載せるのは**ソース名だけ**。何秒出すかは **OBS が持っている**（メディアの長さ）ので、
+ * ここにも保存形にも秒数を置かない（sidecar の `resolveObsFireDurationMs` が正）。
  */
-export type EffectKind = { kind: "template"; templateId: string };
+export type EffectObsSource = { kind: "obs-source"; sourceName: string };
+
 
 /**
  * 061j: 条件の照合に渡す**最小限**の入力。
  *
  * ⚠⚠ **`CommentViewDto` をそのまま渡さない**（§9・「必要ないものは持ち回らない」＝ 061b が
- * [`EffectRequest`] に `text` / `avatar` を持たせなかったのと**同じ規律**。043a が `system_message` を
+ * [`EffectRequestBase`] に `text` / `avatar` を持たせなかったのと**同じ規律**。043a が `system_message` を
  * 持ち回らないと決めた先例と同型）。渡すのは判定に要る 2 つだけ。
+ * ⚠ 064 レビュー Q-6: 以降の文中に出てくる `EffectRequest` / `EffectKind` は
+ * **064d で削除した型の名前**である（当時の判断の記録。上の 064d 節が正）。
  * ⚠ `eventType` は**生の値**（`displayEventType` を通したものではない）。
  * 「ビッツは superchat に含まれる」という `MONETARY_EVENT_TYPES` の前提が条件表とずれない
  * （061b の穴②と同じ罠）。⚠⚠ **`displayEventType` を呼ぶのに必要な `monetary` を渡していない**ので、
@@ -181,9 +174,12 @@ export interface EffectMatchInput {
  * 載せる理由が無く、載せると「出すのに要る最小限」という 061b の規律が緩む。
  * ⚠ `cooldownMs` を戻り値に載せることで、[`decideEffects`] の分岐は 1 つで済む
  * （＝**発火層は「イベント条件かキーワード条件か」を知らない**・061b の「発火層は割り当てを知らない」の維持）。
+ *
+ * ⚠ **064b で `effect` の型が総称化された**（既定は 064d 以降 [`EffectObsSource`]）。
+ * 理由の全文は [`decideEffects`] の JSDoc が正。
  */
-export interface EffectMatch {
-  effect: EffectKind;
+export interface EffectMatch<T extends object = EffectObsSource> {
+  effect: T;
   conditionId: string;
   /** `0` ＝ クールダウン無効。⚠ 実際の値の根拠は `effectAssignments.ts` の `KEYWORD_COOLDOWN_MS` が正。 */
   cooldownMs: number;
@@ -203,9 +199,15 @@ export interface EffectMatch {
  * ＝ 本モジュールから `isMonetaryEvent` の import が消えたが、**層の向きは変わっていない**
  * （`effectAssignments.ts` は元から `viewerFormat` を import している）。
  */
-export type EffectMatcher = (input: EffectMatchInput) => EffectMatch | null;
+export type EffectMatcher<T extends object = EffectObsSource> = (
+  input: EffectMatchInput,
+) => EffectMatch<T> | null;
 
-interface EffectRequestBase {
+/**
+ * ⚠ **064b で export した**（`decideEffects` の戻り値が `EffectRequestBase & T` になったため、
+ * 呼び出し側が型を書けるようにする）。⚠ **中身は 1 バイトも変えていない**（§9 の担保はそのまま）。
+ */
+export interface EffectRequestBase {
   /**
    * 元コメントの id。**重複発火の抑止と React の key** に使う（不透明な識別子で、本文は含まない）。
    *
@@ -254,6 +256,64 @@ export function createEffectTriggerState(): EffectTriggerState {
 }
 
 /**
+ * 一度でも発火判定に通したコメント id を覚えておく上限。
+ *
+ * ⚠⚠ **064b で `EffectOverlayApp` からここへ移した**（判断の本文は当時のまま）。理由は
+ * **消費者が 2 つになった**こと——エフェクト窓（テンプレート）とコメビュ窓（OBS ソース）が
+ * 同じ「既に見た id は発火させない」規則を要る。⚠ **2 通りに書くと片方だけ緩む。**
+ *
+ * 値の根拠: [043e] の combo 更新は数秒以内に届くため 500 件の窓では取りこぼさない。
+ * **再修正トリガー**＝この上限を大幅に下げるなら、再発火が現実に起きるので設計ごと見直すこと。
+ *
+ * ⚠ **061b レビュー②Q-4（テストで固定していない・意図的）**: 「古い順に捨てる」は `Set` の挿入順に
+ * 依存しているが、追い出し方向を反転させる変異はテストで殺せていない（501 件を流したうえで
+ * 「窓の外へ出た id だけが再発火する」を観測する必要があり、バースト上限と時間窓を跨ぐので
+ * テストが実装の内部順序へ強く結合する）。**修正不要と判断した理由**＝反転しても実害は
+ * 「上限 500 を超えた運用でのみ、稀に 1 回余計に光る」だけで、§9 にも §6 にも触れないため。
+ * **再修正トリガー**＝上限を大幅に下げる／この集合を再発火以外の判断（例: 集計・永続）に使い始めたとき。
+ */
+const SEEN_EFFECT_IDS_MAX = 500;
+
+/**
+ * 064b: 発火判定に通した id の集合を作る。⚠ **窓ごと（レーンごと）に 1 つ**。
+ *
+ * ⚠ **ref に持つこと**（state にしない）——`connectCommentStream` の張り直しを跨いで持続する必要がある。
+ */
+export function createSeenEffectIds(): Set<string> {
+  return new Set();
+}
+
+/**
+ * 064b: **まだ発火判定に通していないコメントだけを取り出す**（`seen` は破壊的に更新する）。
+ *
+ * ⚠⚠ **[043e] YouTube Jewels の combo 更新を落とすのがここである。** あちらは
+ * 「別メッセージが N 件届く」のではなく「**同じ 1 件が N 回更新される**」ので、
+ * 素通しすると **1 回の課金で N 回発火する**。⚠ `decideEffects` 側の `updated` 無視と**二重に守る**形。
+ *
+ * ⚠⚠ **接続直後に過去分で一斉発火しないこと**の担保でもある:
+ *   ①sidecar は**接続時にコメントのバックログを送らない**（`index.ts` の `setConnectionHandler` が送るのは
+ *     `link.state` の 2 本だけ）。②仮に届いても、この集合に載っている id は発火しない。
+ *   ⚠ **再修正トリガー＝sidecar にバックログ送信が入ったら**、id 集合では足りない
+ *     （初見の id が一斉に来る）ので、明示的な抑制（接続直後の猶予など）を設計し直すこと。
+ */
+export function takeFreshComments(
+  seen: Set<string>,
+  incoming: CommentViewDto[],
+): CommentViewDto[] {
+  const fresh = incoming.filter((c) => !seen.has(c.id));
+  if (fresh.length === 0) return fresh;
+  for (const c of fresh) seen.add(c.id);
+  // 上限を超えたぶんは**古い順に**捨てる（Set は挿入順を保つ）。
+  if (seen.size > SEEN_EFFECT_IDS_MAX) {
+    for (const id of seen) {
+      if (seen.size <= SEEN_EFFECT_IDS_MAX) break;
+      seen.delete(id);
+    }
+  }
+  return fresh;
+}
+
+/**
  * `CommentViewDto` → `EffectRequest`。⚠ **判定・文言・配色はすべて既存の共有関数**（2 実装に分けない）。
  *
  * ⚠⚠ **061j: ここが「本文を落とす関門」である。** 入ってくる `c` は本文を持つが、
@@ -261,7 +321,10 @@ export function createEffectTriggerState(): EffectTriggerState {
  * kind / templateId）だけ**で、`text` を書ける場所が型として無い。
  * ⚠ **「便利だから」で `text` を足さないこと**（`effectTrigger.test.ts` がキー集合そのものを固定している）。
  */
-function toEffectRequest(c: CommentViewDto, kind: EffectKind): EffectRequest {
+function toEffectRequest<T extends object>(
+  c: CommentViewDto,
+  kind: T,
+): EffectRequestBase & T {
   return {
     id: c.id,
     name: c.author.name,
@@ -298,6 +361,33 @@ function toEffectRequest(c: CommentViewDto, kind: EffectKind): EffectRequest {
  *   呼び出し側が matcher を渡さない限り 1 件も発火しない。これが 061h の目的そのものである。
  *   ⚠ **ここに既定値を書き戻さないこと**（書き戻した瞬間に、条件を無視して出る経路が復活する）。
  *
+ * ## ⚠⚠ 064b: ペイロードで総称化した（**振る舞いは 1 バイトも変えていない**）
+ *
+ * 064b の時点で発火先が 2 つになった——**エフェクト窓が描く**（当時の `EffectKind`）と
+ * **OBS 側のソースを鳴らす**（[`EffectObsSource`]）である。⚠ 後者は
+ * **コメビュ窓が発火する**（sidecar の WS ハンドルを持つのがあの窓だけだから）ので、
+ * **この関数の呼び出し元が 2 か所になった**。
+ *
+ * ⚠⚠ **却下した案＝「OBS レーン用に発火判定をもう 1 本書く」。** 本関数が塞いでいる多重発火は
+ * 下記の 4 経路で、**そのすべてが OBS レーンでも同じように必要**である
+ * （特に [043a] のコミュニティギフト N+1——別実装にすると **OBS のソースが 1 回の贈与で 4 回鳴る**）。
+ * ⚠ 同じ規則を 2 通りに書かないのは 061d-2 レビュー S-4 以来の規律。
+ *
+ * ⚠⚠ **却下した案 2 ＝「`EffectKind` に `obs-source` を足して union を広げる」。**
+ * `EffectRequest` に**エフェクト窓が描けない kind** が生まれ、描画分岐が必ず不能ケースを持つ
+ * （[`EffectObsSource`] の JSDoc が正）。⇒ **型引数で分ける**——各レーンの matcher は
+ * 自分のペイロードしか返さないので、**もう一方のレーンの値が型として流れ込めない**。
+ *
+ * ⚠⚠⚠ **064 レビュー Q-6（訂正）: `EffectKind` / `EffectRequest` は 064d で削除済み**である
+ * （上の 2 つの却下理由は**当時の判断の記録**として残してある。いま在る型ではない）。
+ * ⚠ **帰結＝総称のインスタンスは `EffectObsSource` 1 つだけになった。**
+ * **いま畳まないのは 063（ガチャ）が 2 本目のレーンを足す前提があるため**で、
+ * 畳んで戻すのは往復になる。⚠ **再修正トリガー＝063 が 2 本目を足さないと決まったとき**
+ * （そのとき総称を外し、[`EffectRequestBase`] の未使用フィールドもまとめて落とすこと）。
+ *
+ * ⚠ **レーンごとに [`EffectTriggerState`] を別に持つこと**（呼び出し側の責務）。バースト枠と
+ * クールダウンがレーン間で混ざらない＝ 061k が 2 窓で作った構えをそのまま 3 レーン目へ広げた形である。
+ *
  * 塞いでいる多重発火は **4 経路**（061j でクールダウンが 4 つ目として増えた）:
  * 1. **[043e] Jewels の combo 再送** … `updated` から出さない（下記）。
  * 2. **[043a] Twitch コミュニティギフトの N+1** … 同一投稿者の `gift` を `GIFT_FOLD_WINDOW_MS` 内で 1 件へ。
@@ -305,13 +395,13 @@ function toEffectRequest(c: CommentViewDto, kind: EffectKind): EffectRequest {
  * 4. **061j: 条件ごとのクールダウン** … 同じ条件は `match.cooldownMs` 内で 1 件まで
  *    （＝視聴者が同じ単語を連呼しても画面が埋まらない）。
  */
-export function decideEffects(
+export function decideEffects<T extends object = EffectObsSource>(
   added: CommentViewDto[],
   updated: CommentViewDto[],
   state: EffectTriggerState,
   now: number,
-  matchEffect: EffectMatcher,
-): EffectRequest[] {
+  matchEffect: EffectMatcher<T>,
+): (EffectRequestBase & T)[] {
   // ⚠⚠ **`updated` は意図的に 1 件も読まない。** [043e] の Jewels は「別メッセージが N 件届く」のではなく
   // 「**同じ 1 件が N 回更新される**」（公式 proto に "For giftEvents, the same ID may be reused to update
   // the combo count" と明記）ので、combo 更新で毎回エフェクトを出すと**1 回の課金で N 回光る**。
@@ -336,7 +426,7 @@ export function decideEffects(
     }
   }
 
-  const requests: EffectRequest[] = [];
+  const requests: (EffectRequestBase & T)[] = [];
   for (const c of added) {
     // ⚠⚠ **061j: 課金判定（`isMonetaryEvent`）は matcher の中へ移した**（判断 5）。
     //   ここに `if (!isMonetaryEvent(c.eventType)) continue;` を書き戻すと、

@@ -5,7 +5,7 @@ import { render, screen } from "@testing-library/react";
  * 061a: `App.tsx` の**窓ラベル分岐**の仕様テスト。
  *
  * あるべき挙動: 同一 Vite バンドルを全窓が読むので、`getCurrentWindow().label` だけで描くものが決まる。
- * - `effect-overlay` → `EffectOverlayApp`（061a の新規窓）
+ * - `stage-overlay` → `EffectOverlayApp`（⚠ 064d で `effect-overlay` は廃止）
  * - `pinned-overlay` → `PinnedOverlayApp`（⚠ 3 本目を足したときに既存の分岐を奪っていないこと）
  * - `comment-overlay` → `OverlayApp`
  *
@@ -65,10 +65,22 @@ describe("061a: App の窓ラベル分岐", () => {
     mocks.label.current = "main";
   });
 
-  it("effect-overlay ラベルで EffectOverlayApp を描く", () => {
-    mocks.label.current = "effect-overlay";
+  it("stage-overlay ラベルで EffectOverlayApp を描く", () => {
+    mocks.label.current = "stage-overlay";
     render(<App />);
     expect(screen.getByTestId("effect-overlay-app")).toBeInTheDocument();
+  });
+
+  it("⚠⚠ 064d: `effect-overlay`（コーナー窓）は廃止した＝ main へ落ちる", () => {
+    // ⚠ あの窓は**取り込んだテンプレート専用**で、配信イベントはステージ窓にしか出さないと
+    //   決めていたので、テンプレートを消すと**描くものが 1 つも無い窓**になった。
+    mocks.label.current = "effect-overlay";
+    render(<App />);
+    // ⚠ 既知のラベルに当たらなければ `MainWindowApp` へ落ちる（＝ここでは「窓が描かれない」だけ見る。
+    //   `MainWindowApp` は invoke 依存の hook を多数マウントするので、この形の否定検査に留める）。
+    expect(screen.queryByTestId("effect-overlay-app")).toBeNull();
+    expect(screen.queryByTestId("overlay-app")).toBeNull();
+    expect(screen.queryByTestId("pinned-overlay-app")).toBeNull();
   });
 
   it("pinned-overlay ラベルは PinnedOverlayApp のまま（3 本目が既存の分岐を奪っていない）", () => {

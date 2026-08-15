@@ -33,82 +33,59 @@ export const OBS_AUTO_ADD_KEY = "stream-dock.comment-viewer.obs-auto-add";
 export const PINNED_OVERLAY_ENABLED_KEY =
   "stream-dock.comment-viewer.pinned-overlay-enabled";
 /**
- * 061a: エフェクト専用オーバーレイ窓（label `effect-overlay`）を出すかの保存キー（既定 OFF）。
- * ⚠ **061h までの意味＝「エフェクトを配信画面に表示する」トグルの状態**／
- * ⚠⚠ **061i 以降の意味＝「エフェクトを表示する条件が 1 件以上あるか」の派生値**（下記）。
- * `PINNED_OVERLAY_ENABLED_KEY` と同種の**ユーザー自身の UI 設定値**で、
- * §9 追補（046a）が対象とする第三者の個人データではない。
+ * ⚠⚠⚠ **064 レビュー S-6: `EFFECT_OVERLAY_ENABLED_KEY`（コーナー窓を出すかの派生値）を削除した。**
  *
- * ⚠⚠ **このキーは 061a で初めて「窓をまたいで役割が分かれる」設定になった。**
- *   - **書き手＝main 窓**（⚠ **061i でトグルから派生値へ変わった**。下記）
- *   - **読み手＝コメビュ窓**（`CommentViewerApp`）。**`obs-enable` を送れる WS ハンドルを持つのは
- *     コメビュ窓だけ**なので、OBS への自動反映はコメビュ窓が代行する。
+ * 061a〜061k のあいだ、この旗は「`output === "corner"` の条件が 1 件以上あるか」を表し、
+ * 書き手は `useEffectTemplates`・読み手は `effectOverlayRestore` / `CommentViewerApp` だった。
+ * ⚠ **064d でコーナー窓（`effect-overlay`）を窓ごと廃止**し、書き手も読み手も同時に消えたのに、
+ * **キーと `load*` / `save*` だけが残っていた**（呼び手ゼロのまま `grep` に出続ける状態）。
+ * ⇒ 064d の削除の取りこぼしとして回収する。
  *
- * ## ⚠⚠ 061i: ユーザーが触るトグルは消え、**割り当ての保存時に立てる派生値**になった（判断 2）
- *
- * 「エフェクトを配信画面に表示する」トグルは**二度手間**（条件を設定した時点で出したいことは自明なのに、
- * 別に ON にしないと何も出ない）だったので廃止した。いまの意味は
- * **「エフェクトを表示する条件が 1 件以上あるか」**で、書き手は
- * **`useEffectTemplates` の割り当て保存経路ただ 1 か所**（`saveEffectOverlayEnabled` の呼び出しは
- * リポジトリ全体でそこだけ＝`grep` で確認できる）。
- *
- * ⚠⚠ **キーを廃止して「割り当てから導出する」案は却下した**（判断 2 の (b)）。理屈は綺麗だが、
- * `CommentViewerApp` の `storage` 購読は **`e.key === EFFECT_OVERLAY_ENABLED_KEY` とキー名で分岐**しており、
- * 購読先を変えると **045c / 061e が固めた「OBS 反映の契機」の実装に手が入る**。
- * 派生値にしておけば `effectOverlayRestore.ts` / `CommentViewerApp.tsx` / `windowApi.ts` / `App.tsx` は
- * **差分ゼロ**で済む（061i の成果物として実測した不変条件）。
- * ⚠ **再修正トリガー＝061k で出力窓が 2 本になり、窓ごとに「開くべきか」を持つ必要が出たとき。**
- * そのとき (b) へ寄せるか、窓ごとにキーを持つかを決め直すこと。
- *
- * ## ⚠⚠ 061k の回答（上の再修正トリガーの発火）＝**窓ごとにキーを持つ**（判断 6）
- *
- * このキーの意味が **「コーナー側の出力窓を出すべきか」＝「`output === "corner"` の条件が 1 件以上あるか」**
- * へ狭まり、ステージ側は [`STAGE_OVERLAY_ENABLED_KEY`] が同じ形で持つ。
- * ⚠ **却下した 2 案**:
- *   - **1 本のキーに JSON を入れる** … `CommentViewerApp` はこの値を **`=== "true"`** で読むので、
- *     **値の形を変えると読み手が壊れる**（045c / 061e が固めた OBS 反映の契機に手が入る）。
- *   - **キーを廃止して割り当てから導出する** … `CommentViewerApp` の `storage` 購読は
- *     **`e.key === …` とキー名で分岐**している（061i が明示的に却下した案 (b) そのもの）。
- * ⇒ **(a) を採ると、既存の分岐がそのまま残り stage 用に同型の分岐を 1 本足すだけで済む**（値の形も同じ）。
- * ⚠ **書き手は引き続き `useEffectTemplates` の 2 か所**（保存経路 ＋ マウント時の再計算）で、
- * **その 2 か所が 2 キーを書く**。⚠ **hook の外から書かない**という 061i の不変条件は変えない。
- *
- * ⚠ **帰結（意図した新しい挙動）**: 条件を全部「エフェクトを出さない」に戻すとこの値は false になり、
- * `CommentViewerApp` の既存分岐が `hideObs("effects")` を送って **OBS 側のソースが非表示になる**
- * （⚠ **窓は閉じない**——自動 close は作らない・判断 1）。条件が無いのに OBS へ映り続けるほうが筋が悪い。
- * 伝達は 046a/046b と同じ**二段構え**（保証ベースライン＝コメビュ窓のマウント時に読み直す／
- * 即時反映＝`storage` 購読・ベストエフォート）。⚠ **コメビュ窓が閉じている間は誰も送れない**ので、
- * その事実は `ObsEffectsScreen` の前提ステータスでユーザーに明示する（黙って何も起きない状態を作らない）。
+ * ⚠ 旧キーの値は localStorage に残りうるが、**読み手が 1 人も居ない**ので無害
+ * （§9 の一括削除・エクスポートの対象は 1 本減った。`EFFECT_OBS_AUTO_ADD_KEY` と同じ扱い）。
+ * ⚠ ステージ窓ぶんは [`STAGE_OVERLAY_ENABLED_KEY`] が持っており、**そちらは現役**である。
  */
-export const EFFECT_OVERLAY_ENABLED_KEY =
-  "stream-dock.comment-viewer.effect-overlay-enabled";
 /**
- * 061k: **ステージ演出窓（label `stage-overlay`）を出すかの派生値**（既定 OFF）。
- * 意味は「**`output === "stage"` の条件が 1 件以上あるか**」で、
- * [`EFFECT_OVERLAY_ENABLED_KEY`] とまったく同型（値も `"true"` / `"false"` の文字列）。
+ * 061k / **064d**: **ステージ演出窓（label `stage-overlay`）を出すかの旗**（既定 OFF・値は `"true"` / `"false"`）。
  *
- * ⚠⚠ **既存キーの意味を変えず、新しいキーを 1 本足しただけ**なのが要点（判断 6 の (a)）。
- * ⚠ **書き手は `useEffectTemplates` の 2 か所だけ**（既存キーと同じ。`grep` で確認できる）。
- * ⚠ **読み手はコメビュ窓**（`CommentViewerApp`）で、既存の `effects` 分岐と同型の分岐が
- * `"stage"` 種別について 1 本増える。
- * ⚠ **旧ビルドへ戻したときはこのキーが誰にも読まれないだけ**＝ ステージ窓は開かず、
- * 条件は `output` ごと未知フィールドとして無視され、**全部コーナーに出る**（＝061j の挙動・安全側）。
+ * ⚠⚠ **064d で意味が変わった**——旧「`output === "stage"` の条件が 1 件以上あるか」（派生値）→
+ * 新「**いま配信イベントでステージ窓を使っているか**」（開催状態の写し）。
+ * 派生値の計算元だった `useEffectTemplates` が 064d で消えたための移設である。
+ *
+ * ## ⚠⚠⚠ このキーは `docs/security.md` §1（044a 例外）を守る**唯一のガード**である
+ *
+ * 064e で「OBS へ自動で反映」トグルを削除した結果、**OBS へ繋ぐかどうかを決めているのはこの旗だけ**に
+ * なった。§1 の追補は「**旗 true ＝ ユーザーが『開始』ボタンを押した**」という**同値**を根拠にしているので、
+ * ⚠⚠ **その同値を壊す書き方をしないこと。**
+ *
+ * - **書き手は `ObsEffectsScreen` の 3 か所だけ**（`grep -rn "saveStageOverlayEnabled" src` で確認できる）:
+ *   ①`handleStartRound`（開始 → true）②`handleEndRound`（終了 → false）
+ *   ③⚠⚠ **064 レビュー S-1 で足した 2 つの掃除**（期限切れ tick ／ マウント時の取り残し修復 → false）。
+ *   ⚠ ③が無いと「**終了を押さずに時間切れ**」で旗が永久に true のまま残り、
+ *   **再起動時に無操作でステージ窓が復元され OBS へ繋ぐ**（＝上の同値が偽になる）。
+ * - **読み手は `effectOverlayRestore`（起動時の窓復元）と `CommentViewerApp`**
+ *   （`storage` 購読 ＋ WS 接続時 reconcile。`obs-enable` を送れる WS を持つのはあの窓だけ）。
+ *
+ * ⚠ **旧ビルドへ戻したときはこのキーが誰にも読まれないだけ**（ステージ窓は開かない＝安全側）。
  */
 export const STAGE_OVERLAY_ENABLED_KEY =
   "stream-dock.comment-viewer.stage-overlay-enabled";
 /**
- * 061a: 「エフェクト窓を OBS へ自動で反映する」ON/OFF の保存キー（既定 OFF）。
+ * ⚠⚠⚠ **064e: `EFFECT_OBS_AUTO_ADD_KEY`（エフェクト窓を OBS へ自動反映する ON/OFF）を削除した。**
  *
- * ⚠ **既存の `OBS_AUTO_ADD_KEY`（コメント一覧＋固定コメント用）とは別のキーにしてある。** 理由は
- * 共有すると `CommentViewerApp` が state に持っている `obsAutoAdd` が **main 窓の書換で stale になる**ため、
- * 既存 OBS 系へ `storage` 購読を足す必要が生じる＝**045c で回帰が見つかった箇所に手を入れる**ことになる。
- * 専用キーなら既存 2 種の自動反映挙動は**差分ゼロ**のまま。代償として設定スイッチが 2 つになるので、
- * 画面側の文言で「エフェクト窓のソース」に限る旨を明示すること。
- * **再修正トリガー**＝「OBS 連携のスイッチを 1 つにしたい」となったら、先に `obsAutoAdd` を
- * localStorage 直読み（＋`storage` 購読）へ寄せてから統合する（state のミラーを残したまま統合しない）。
+ * 依頼者の指示＝「**OBS に自動で反映はデフォルト機能にします**」。
+ * ⇒ ステージ窓の OBS 追加は**配信イベントを開始したら必ず走る**（`CommentViewerApp` の
+ * `STAGE_OVERLAY_ENABLED_KEY` 分岐と WS 接続時 reconcile が無条件になった）。
+ * ⚠⚠ **明示操作が 2 段（トグル ＋ 開始）から 1 段（開始）になった**＝
+ * `docs/security.md` §1 の 044a 例外に対する姿勢変更で、**§1 に 064e 追補がある**。
+ *
+ * ⚠ **044a の [`OBS_AUTO_ADD_KEY`]（コメント一覧＋固定コメント用）は残っている。**
+ * あちらは**常設のオーバーレイ窓**が対象で、「開始ボタン」のような明示操作に紐づいていないため、
+ * 同じ理屈で既定 ON にはできない（＝ 061a が 2 キーに分けた判断は、片方が消えた形で決着した）。
+ *
+ * ⚠ 旧キーの値は localStorage に残りうるが、**読み手が 1 人も居ない**ので無害
+ * （§9 の一括削除・エクスポートの対象は 1 本減った）。
  */
-export const EFFECT_OBS_AUTO_ADD_KEY =
-  "stream-dock.comment-viewer.effect-obs-auto-add";
 /**
  * 061a レビュー（Q-1 修正）: **エフェクト窓のセットアップ用ガイドを「次の 1 回だけ」出すためのワンショット旗**。
  *
@@ -140,129 +117,61 @@ export const EFFECT_OBS_AUTO_ADD_KEY =
 export const EFFECT_OVERLAY_GUIDE_PENDING_KEY =
   "stream-dock.comment-viewer.effect-overlay-guide-pending";
 /**
- * 061b: **テスト発火の合図**（main 窓 → エフェクト窓）。値は `<nonce>:<templateId>`。
+ * ⚠⚠⚠ **064 レビュー S-6: テスト発火まわりの 3 キーを削除した**
+ * （`EFFECT_TEST_FIRE_KEY` / `EFFECT_TEST_FIRE_PENDING_KEY` / `STAGE_TEST_FIRE_PENDING_KEY`）。
  *
- * ⚠⚠ **なぜこのキーが要るのか**（061b の穴 A）: 2026-08-09 の仕様変更でエフェクト窓が sidecar の WS を
- * 直接張る形になり、`effectQueue.ts`（localStorage 経由の窓間伝達）を廃止した結果、
- * **main 窓からエフェクト窓へ届く道が 1 本も無くなった**。しかしテスト発火ボタンは
- * 「実際のスパチャを待たないと OBS のセットアップができない」ため必須。
- * 却下した案: ①エフェクト窓側に操作 UI を置く（透過・非フォーカス・最背面なのでクリックを受けられない）
- * ②sidecar から合成コメントを流す（**sidecar 差分ゼロに反する**うえ、未認証の loopback WS に
- * 「配信画面へ任意の文字列を出す口」を作ることになる）③Rust コマンド＋Tauri emit（**新 command ゼロに反する**）。
+ * 3 本とも**唯一の書き手が `EffectTemplateCard`**（＝「配信画面でテスト表示」）で、
+ * **唯一の読み手が `EffectOverlayApp` のテンプレート描画**だった。
+ * ⚠ **064d でテスト表示ごと削除**され、書き手も読み手も同時に消えたが、
+ * **キーと `request*` / `save*` / `take*` の 5 関数だけが残っていた**（呼び手ゼロ）。
+ * ⇒ 064d の削除の取りこぼしとして回収する。
  *
- * ⚠⚠ **値は `<nonce>:<templateId>` で、エフェクトの中身は載せない。**
- * 出す内容（名前・金額・種別ラベル）はエフェクト窓側の**固定ダミー定数**から作る＝
- * **第三者のデータが localStorage に 1 バイトも載らない**
- * （§9 追補〔046a〕の対象外。廃止した `effectQueue` とはここが決定的に違う）。
- * ⚠ **毎回値を変える**こと。同じ値の `setItem` では `storage` イベントを飛ばさない実装があるため。
- *
- * ## ⚠⚠ 061h: `templateId` を載せた（§9 の新しい判断）
- *
- * 061b〜061g のあいだ、このキーの値は **nonce だけ**で「中身は使わない」ことが §9 の担保だった。
- * 061h でテスト表示が「**テンプレート行ごと**に、そのテンプレートを出す」導線になったので、
- * **どれを出すか**を伝える必要が生じた。載せてよいと判断した根拠:
- *   1. 載るのは **nonce** と **Rust の `effect_template::service` が `Uuid::new_v4()` で採番した id** だけ。
- *      ⚠ **第三者の個人データ（本文・表示名・金額・アバター）は 1 バイトも入らない**——
- *      それらは相変わらずエフェクト窓側の固定ダミーから作る。
- *   2. **`EFFECT_ASSIGNMENTS_KEY` が既に同じ id を保存している**＝ localStorage に載るデータの
- *      **種類は 1 つも増えていない**（増えたのは「同じ種類の値を書く 2 本目のキー」だけ）。
- *   3. ⚠⚠ **受け取る側で形を検証する**——エフェクト窓は `effectAssignments.ts` の
- *      [`isEffectTemplateId`] を通してから使う。localStorage は他窓から書けるので**多層防御の 1 枚目**で、
- *      実際には Rust の `is_template_id` も同じ形を要求する（2 層の強さが揃っている）。
- * ⚠ **中身（名前・金額・本文）をここへ載せる変更は §9 の再評価が要る**（`effectQueue` を廃止した線）。
- *
- * ⚠⚠ **`docs/security.md` に追記していないのは、同ドキュメント自身のルールがそう定めているため**
- * （061h レビューで裏取り）。「レビュー必須条件」→「取得コメント・視聴者情報の端末保存」の下位条件が
- * **「ユーザー自身の UI 設定値（テーマ・フォント・トグル・チャンネル名等）を localStorage に置く変更は
- * 従来どおり本項に該当しない」**と明示しており、テンプレート id はこれに当たる。
- * 先例＝ **`OVERLAY_THEME_KEY`（060d・テーマ id）は security.md に 1 行も追記されていない**。
- * ⚠ 逆に §9 追補が要ったのは 058a のデバイス ID だが、あれの理由は「id を保存すること」ではなく
- * **デバイス名が配信者の環境を推測させるという中身の性質**なので、本キーの反例にはならない。
- *
- * ⚠ **このキーには削除経路が無い**（`EFFECT_ASSIGNMENTS_KEY` は「全部が既定ならキーごと削除」で消えるが、
- * こちらは一度書いたら残る）。＝ **端末内保存データの一括削除・エクスポートを作るときの対象が 1 本増えた**
- * （§9 追補〔046a〕の同趣旨の申し送りと同じ扱い）。⚠ 残るのは id 1 個なので §9 の線には触れない。
- *
- * ⚠⚠ **エフェクト窓はこの値を `storage` ハンドラの中でしか読まない（マウント時に `getItem` しない）。**
- * ⚠ **ここを「マウント時にも読む」に変えないこと**——残存値で**再起動直後に無操作で配信画面へ出る**
- * 経路になり、046b レビュー S-1（永続した値が無操作で配信面に出る）と同型の問題を作る。
- *
- * ⚠⚠ **061i の [`EFFECT_TEST_FIRE_PENDING_KEY`] は「マウント時に読む」が、これと矛盾しない。**
- * 違いは 2 つ:
- *   1. あちらは**読んだ瞬間に消える**（`take*`）＝ 残存値が積み上がらない。
- *      このキーは**一度書いたら残り続ける**ので、マウント時に読むと**毎回**出る。
- *   2. あちらを書くのは「**窓が停止中**のときのテスト表示」だけ＝ **書いた直後に必ず窓が開く**
- *      （＝押した本人が見ている）。残っても**次に窓が開いたとき 1 回だけ**出る
- *      （＝ガイド旗と同じ「余分に 1 回」の向き）。
- *      ⚠⚠ **061i レビュー S-4 で訂正**: 当初ここは「**残るのは open が失敗したときだけ**」と
- *      書いていたが、**それは真ではない**——旗を書くかどうかの判定に使う `effectWindowOpen` は
- *      2 秒ポーリングの値なので、**「実は既に開いていた」瞬間にも旗が書かれうる**
- *      （既存窓は `show()` されるだけで**再マウントしない**＝旗を読み直さない＝残骸になる）。
- *      ⚠ 露出窓は「窓の React がマウントし終えてから `is_effect_overlay_open` が解決するまで」に
- *      限られ、`ObsEffectsScreen` が **`openEffectOverlay` の時点で `effectWindowOpen` を
- *      楽観的に true にする**ことで塞いである（同レビューの対応）。
- * ⚠ 逆に言うと、**あちらを「読んでも消さない」に変えた瞬間にこの区別が崩れる**（窓を開くたびに出る）。
- *
- * ⚠ 伝達は `storage` イベント（**別 webview 間の伝播はプラットフォーム依存でベストエフォート**）。
- * 届かなくても壊れ方は「**テストボタンが効かない**」という観測可能なものに留まり、本番の発火（WS 直結）には
- * 影響しない。**再修正トリガー**＝実機で効かないと分かったら、エフェクト窓側でこのキーだけを
- * 短間隔で**読む**ポーリングへ切り替える（読み取りは `storage` を撒かないので他窓に副作用が無い）。
+ * ⚠ 064 以降の「手動で 1 回出す」は **OBS 側のソースを鳴らす経路**（[`OBS_SOURCE_TEST_FIRE_KEY`]）
+ * が担っており、**localStorage 経由という形だけが引き継がれている**（値の形も宛先も別物）。
+ * ⚠ 旧キーの値は残りうるが読み手ゼロで無害（§9 の対象は 3 本減った）。
  */
-export const EFFECT_TEST_FIRE_KEY =
-  "stream-dock.comment-viewer.effect-test-fire";
 /**
- * 061i（判断 4）: **エフェクト窓が停止中のときのテスト表示を、窓が開いた「後で」渡すためのワンショット旗**。
- * 値は **`templateId` 1 個だけ**（nonce は要らない＝`storage` イベントに乗せないため）。
+ * 064a: **鳴らせる OBS ソースの一覧**（コメビュ窓 → main 窓）。
  *
- * ⚠⚠ **なぜ必要か（061i で最も取りこぼしやすいところ）**: 061i でテスト表示は
- * 「窓が停止中なら**開いてから**出す」になった（＝条件を 1 つも作らずに OBS の位置合わせができる）。
- * ここで素直に **「`open_effect_overlay_window` を await → `EFFECT_TEST_FIRE_KEY` を書く」**と実装すると
- * **確率的に取りこぼす**——あのコマンドの解決は**窓生成の完了**であって、
- * **エフェクト窓の React がマウントして `storage` リスナーを登録し終えたこと**ではない。
- * `storage` は**登録前に飛んだ分を後から拾えない**ので、「押しても何も出ない」が起きる。
+ * ⚠⚠ **なぜ localStorage 経由なのか**: OBS へ繋いでいるのは **sidecar と WS で繋がっているコメビュ窓だけ**で、
+ * main 窓は WS ハンドルを持たない（`ObsEffectsScreen` の JSDoc が「**構造として**そうならざるを得ない」と
+ * 書いているとおり）。⇒ **061a が予告していた再修正トリガー**
+ * 「**main 窓でも結果を見たくなったら、コメビュ窓が localStorage へ書くキーを足す**」が
+ * 064a で発火した、というのが本キーの位置づけである。
  *
- * ⇒ **`EFFECT_OVERLAY_GUIDE_PENDING_KEY` と同じ idiom**（旗を立てる → 窓がマウント時に読んで倒す）に
- * 寄せた。**実績のある形なので新しい仕組みを発明しない**（ポーリングも ready 通知も足さない）。
- *   - **書き手＝main 窓（`EffectTemplateCard`）で、窓が停止中のときだけ**。
- *     ⚠⚠ **窓が開いているときは旗を使わない**（従来どおり [`requestEffectTestFire`] の `storage` 発火）。
- *     **2 経路を混ぜないこと**——開いている窓は旗を読み直さないので、旗を立てても
- *     **消えない残骸**になり、次に窓を開いた瞬間に無操作でエフェクトが出る
- *     （`EFFECT_TEST_FIRE_KEY` の JSDoc が戒めている 046b レビュー S-1 と同型の問題）。
- *   - **読み手＝`EffectOverlayApp` のマウント時 1 回だけ**（[`takeEffectTestFirePending`]＝**読んだら消す**）。
- *     ⚠ 値は `isEffectTemplateId()` で検証してから使う（061h が作った検証を再利用＝
- *     正規表現の持ち主を増やさない。localStorage は他窓から書けるので多層防御の 1 枚目）。
+ * 値は `{"at":<epoch ms>,"ok":<boolean>,"sources":[{"name":…,"kind":…}]}` の JSON。
+ * ⚠ **`at` を入れるのは「いつ時点の一覧か」を画面に出すため**（古い一覧を新しいものと誤認させない）。
+ * ⚠⚠ **064c で `ok` が増えた**——「OBS へ繋がらなかった」と「繋がったが 0 件」は
+ * **画面での案内が正反対**になるため（[`ObsSourceListSnapshot`] の JSDoc が正）。
  *
- * ⚠ **fail 方向は「余分に 1 回出る」側**（窓の open が失敗して旗が残ると、次に窓が開いたとき 1 度だけ出る）。
- * 逆側（旗が消えて押しても永久に出ない）に倒すと**位置合わせが不能になる**ので、この向きを選んでいる
- * （＝`EFFECT_OVERLAY_GUIDE_PENDING_KEY` と同じ判断）。
- *
- * ⚠ §9: 載るのは **Rust の `effect_template::service` が `Uuid::new_v4()` で採番した id** だけで、
- * 第三者の個人データは 1 バイトも入らない＝ **061h で `EFFECT_TEST_FIRE_KEY` について決着済みの判断の延長**
- * （localStorage に載るデータの**種類は 1 つも増えていない**。判断の全文は同キーの JSDoc）。
- * ⚠ **一括削除・エクスポートを作るときの対象が 1 本増えた**（`EFFECT_TEST_FIRE_KEY` と同じ扱い。
- * ⚠ ただしこちらは**読まれた時点で消える**ので、残り続けるのは「窓が開かなかった」ときだけ）。
+ * ⚠ §9: 載るのは**ユーザー自身が OBS で付けたソース名と種別**だけである（ファイルパスも設定値も
+ * sidecar 側で落としている）。第三者の個人データは 1 バイトも入らない。
+ * ⚠ **一括削除・エクスポートを作るときの対象が 1 本増えた。**
  */
-export const EFFECT_TEST_FIRE_PENDING_KEY =
-  "stream-dock.comment-viewer.effect-test-fire-pending";
+export const OBS_SOURCE_LIST_KEY = "stream-dock.comment-viewer.obs-source-list";
 /**
- * 061k: **ステージ演出窓ぶんの保留旗**（[`EFFECT_TEST_FIRE_PENDING_KEY`] と完全に同型）。
+ * 064a: **一覧を取り直してほしい**（main 窓 → コメビュ窓）。値は nonce だけ。
  *
- * ⚠⚠ **なぜ窓ごとに 2 本要るのか**（判断 8）: テスト表示は **2 つの窓の両方へ出す**
- * （目的が OBS の位置合わせで、061k 以降は**合わせる対象が 2 ソースある**ため）。
- * 旗を 1 本にすると、**先にマウントしたほうの窓が読んで消してしまい**、
- * もう一方は**無反応**になる（`take*` ＝読んだら消す、なので取り合いになる）。
- * ⚠⚠ **各窓は自分の旗だけを `take` すること。相手の旗を消さない。**
- *
- * ⚠ **061i 判断 4 の取りこぼしは 2 窓ぶん起きる**——`open_*_overlay_window` の解決は
- * **窓生成の完了**であって、**その窓の React が `storage` リスナーを登録し終えたこと**ではない。
- * ⚠ **061i レビュー S-4 の楽観更新（開く側だけ前提ステータスを楽観的に倒す）も 2 窓ぶん要る**
- * （stale-false の隙間に押すと、既存窓は `show()` されるだけで再マウントせず**旗が残骸になる**）。
- *
- * ⚠ §9 の判断は [`EFFECT_TEST_FIRE_PENDING_KEY`] と同一（載るのは Rust 採番の uuid だけ）。
- * ⚠ **一括削除・エクスポートを作るときの対象がもう 1 本増えた**（読まれた時点で消えるのも同じ）。
+ * ⚠ `EFFECT_TEST_FIRE_KEY` と同じ idiom（**値を変えて `storage` を撒く**）。
+ * ⚠ 伝達は `storage` イベント＝**別 webview 間ではベストエフォート**。届かなくても壊れ方は
+ * 「**更新ボタンが効かない**」という観測可能なものに留まる。
  */
-export const STAGE_TEST_FIRE_PENDING_KEY =
-  "stream-dock.comment-viewer.stage-test-fire-pending";
+export const OBS_SOURCE_LIST_REQUEST_KEY =
+  "stream-dock.comment-viewer.obs-source-list-request";
+/**
+ * 064a: **このソースを 1 回鳴らしてほしい**（main 窓 → コメビュ窓）。
+ * 値は `<nonce>:<durationMs>:<sourceName>`。
+ *
+ * ⚠⚠ **ここに載るソース名を「検証済み」と読まないこと。** localStorage は**他窓からも書ける**ので、
+ * 読み手（コメビュ窓）は受け取った文字列をそのまま sidecar へ流すだけであり、
+ * **実際の壁は sidecar 側の 2 枚**（形式検査 ＋ `GetInputList` との実在照合）である。
+ * ⚠ この向きは `EFFECT_TEST_FIRE_PENDING_KEY` が「値を `isEffectTemplateId()` で検証してから使う」
+ * と書いているのと**同じ姿勢**（localStorage を信用しない）で、検証の場所が sidecar なだけである。
+ *
+ * ⚠ §9: 載るのは**ユーザー自身が OBS で付けた名前**だけ。
+ */
+export const OBS_SOURCE_TEST_FIRE_KEY =
+  "stream-dock.comment-viewer.obs-source-test-fire";
 /**
  * 061d-2: **イベント種別 → エフェクトの割り当て**の保存キー
  * （未保存＝全種別「表示しない」。⚠ **061h までは「組み込み」だった**）。
@@ -487,44 +396,15 @@ export function savePinnedOverlayEnabled(enabled: boolean): void {
   }
 }
 
-/**
- * 061a: エフェクト窓を出すか（未保存・例外は false へフォールバック）。
- * ⚠ **061i でこの値の意味は「表示する条件が 1 件以上あるか」になった**（トグルは廃止・上の JSDoc）。
- * 読み手は `effectOverlayRestore.ts`（起動時の窓復元）と `CommentViewerApp`（OBS 反映の代行）。
- */
-export function loadEffectOverlayEnabled(): boolean {
-  try {
-    return localStorage.getItem(EFFECT_OVERLAY_ENABLED_KEY) === "true";
-  } catch {
-    return false;
-  }
-}
-
-/**
- * 061a: エフェクト窓を出すかを保存する（ローカルのみ・非機密・外部送信しない）。
- *
- * ⚠⚠ **061i: 呼んでよいのは `useEffectTemplates` の中だけ**（判断 2 の「2 つの真実」対策）。
- * ほかの module から呼ばれた瞬間に「割り当て」と「このフラグ」が同期を外しうるので、
- * **`grep -rn "saveEffectOverlayEnabled" src` の実装側のヒットが本定義と `useEffectTemplates` に
- * 限られる**ことが不変条件である（＋本関数自身の単体テスト `overlaySettings.effects.test.ts`）。
- * ⚠ **061i レビュー S-3 で `useEffectTemplates` 内の呼び出しは 2 か所になった**——
- * ①割り当ての保存経路（`commitAssignments`）②**マウント時の再計算**
- * （アップグレードで持ち越した値を実態＝割り当てへ合わせ直す。値が一致していれば書かない）。
- * どちらも「割り当てが正」という同じ規則で書いており、**規律は不変**。
- * ⚠ 窓の open/close とは別物（設定が正・窓が従。「ウィンドウを閉じる」ボタンはこの値を触らない）。
- */
-export function saveEffectOverlayEnabled(enabled: boolean): void {
-  try {
-    localStorage.setItem(EFFECT_OVERLAY_ENABLED_KEY, String(enabled));
-  } catch {
-    // プライベートモード等で書けない場合は黙って無視する。
-  }
-}
+/* ⚠ 064 レビュー S-6: `loadEffectOverlayEnabled` / `saveEffectOverlayEnabled` を削除した
+   （コーナー窓ごと消えて呼び手が 0 になっていた。理由は上の `EFFECT_OVERLAY_ENABLED_KEY` 跡地の JSDoc が正）。 */
 
 /**
  * 061k: ステージ演出窓を出すか（未保存・例外は false へフォールバック）。
- * ⚠ 意味は「`output === "stage"` の条件が 1 件以上あるか」＝ [`loadEffectOverlayEnabled`] と同型。
- * 読み手は `effectOverlayRestore.ts`（起動時の窓復元）と `CommentViewerApp`（OBS 反映の代行）。
+ * ⚠ 意味は 064d 以降「**いま配信イベントを開催しているか**」（キーの JSDoc が正）。
+ * 読み手は `effectOverlayRestore.ts`（起動時の窓復元）と `CommentViewerApp`（OBS 反映の代行）、
+ * および `ObsEffectsScreen`（⚠ **旗の取り残しを直すためだけ**に読む・064 レビュー S-1）。
+ * ⚠⚠ **この false 側フォールバックが §1 の fail-closed 方向である**（読めなければ OBS へ繋がない）。
  */
 export function loadStageOverlayEnabled(): boolean {
   try {
@@ -535,14 +415,16 @@ export function loadStageOverlayEnabled(): boolean {
 }
 
 /**
- * 061k: ステージ演出窓を出すかを保存する（ローカルのみ・非機密・外部送信しない）。
+ * 061k / 064d: ステージ演出窓を出すかを保存する（ローカルのみ・非機密・外部送信しない）。
  *
- * ⚠⚠ **[`saveEffectOverlayEnabled`] と同じ規律**——**呼んでよいのは `useEffectTemplates` の中だけ**で、
- * 呼び出しは**同じ 2 か所**（保存経路 ＋ マウント時の再計算）。
- * ⚠ **2 キーは必ず対で書くこと**——片方だけ書くと「stage 条件を作ったのにステージ窓が開かない」
- * （あるいは逆に「条件を全部消したのに OBS に映り続ける」）が黙って起きる。
- * ⚠ 不変条件の確認は `grep -rn "saveEffectOverlayEnabled\|saveStageOverlayEnabled" src` で、
- * 実装側のヒットが本ファイルと `useEffectTemplates` に限られること。
+ * ⚠⚠⚠ **これは `docs/security.md` §1 を守る唯一のガードの書き手である**（キーの JSDoc が正）。
+ * **呼んでよいのは `ObsEffectsScreen` の中だけ**で、呼び出しは 3 か所——
+ * ①開始（true）②終了（false）③⚠ **064 レビュー S-1 の掃除 2 つ**（期限切れ／取り残し修復・false）。
+ * ⚠⚠ **`true` にしてよいのは「ユーザーが『開始』を押した」瞬間だけ**である。
+ * ここを増やすと「開催していないのに OBS へ繋ぐ」＝ §1 の 044a 例外を本当に破る。
+ * ⚠ **`false` にする契機を減らさないこと**——旗が残ると、次回起動時に**無操作で OBS へ繋ぐ**。
+ * ⚠ 不変条件の確認は `grep -rn "saveStageOverlayEnabled" src` で、
+ * 実装側のヒットが本ファイルと `ObsEffectsScreen` に限られること。
  */
 export function saveStageOverlayEnabled(enabled: boolean): void {
   try {
@@ -552,23 +434,8 @@ export function saveStageOverlayEnabled(enabled: boolean): void {
   }
 }
 
-/** 061a: 「エフェクト窓を OBS へ自動反映」ON/OFF を読み込む。未保存・例外は false（OFF）へフォールバック。 */
-export function loadEffectObsAutoAdd(): boolean {
-  try {
-    return localStorage.getItem(EFFECT_OBS_AUTO_ADD_KEY) === "true";
-  } catch {
-    return false;
-  }
-}
-
-/** 061a: 「エフェクト窓を OBS へ自動反映」ON/OFF を保存する（ローカルのみ・非機密・外部送信しない）。 */
-export function saveEffectObsAutoAdd(enabled: boolean): void {
-  try {
-    localStorage.setItem(EFFECT_OBS_AUTO_ADD_KEY, String(enabled));
-  } catch {
-    // プライベートモード等で書けない場合は黙って無視する。
-  }
-}
+/* ⚠ 064e: `loadEffectObsAutoAdd` / `saveEffectObsAutoAdd` を削除した
+   （設定そのものが消えた。理由は上の `EFFECT_OBS_AUTO_ADD_KEY` 跡地の JSDoc が正）。 */
 
 /**
  * 061a レビュー（Q-1）: 次にエフェクト窓が開いたときにセットアップ用ガイドを出すか（ワンショット旗）。
@@ -603,102 +470,10 @@ export function saveEffectOverlayGuidePending(pending: boolean): void {
   }
 }
 
-/**
- * 061b/061h: **テスト表示の合図を出す**（main 窓のテンプレート行のボタンから呼ぶ）。
- *
- * ⚠⚠ **書くのは nonce と `templateId` だけ**（第三者のデータは 1 バイトも載せない・
- * §9 の判断の全文は `EFFECT_TEST_FIRE_KEY` の JSDoc）。
- * ⚠ **毎回必ず違う値**にする（同値の `setItem` では `storage` イベントを飛ばさない実装があるため）。
- * `Date.now()` は同一ミリ秒で衝突しうるので、プロセス内カウンタを併記して単調に増やす。
- * ⚠ **区切りは `:` 1 文字**——nonce（数字とハイフン）にも uuid にも `:` は現れないので、
- * 受け手は「最初の `:` の後ろ」を取れば必ず id になる。
- * ⚠ **ここでは id の形を検査しない**（呼び出し元は一覧の record から渡すので細工の余地が無い）。
- * 検査するのは**受け取る側**＝ localStorage を他窓から書かれうるエフェクト窓のほう。
- */
-let testFireSeq = 0;
-export function requestEffectTestFire(templateId: string): void {
-  try {
-    testFireSeq += 1;
-    localStorage.setItem(
-      EFFECT_TEST_FIRE_KEY,
-      `${Date.now()}-${testFireSeq}:${templateId}`,
-    );
-  } catch {
-    // 書けない環境では**テストボタンが効かないだけ**（本番の発火は WS 直結なので影響しない）。
-  }
-}
+/* ⚠ 064 レビュー S-6: テスト発火の 5 関数（`requestEffectTestFire` / `saveEffectTestFirePending` /
+   `takeEffectTestFirePending` / `saveStageTestFirePending` / `takeStageTestFirePending`）を削除した
+   （テスト表示ごと消えて呼び手が 0 になっていた。理由は上の `EFFECT_TEST_FIRE_KEY` 跡地の JSDoc が正）。 */
 
-/**
- * 061i（判断 4）: **窓が停止中のときのテスト表示を「次に開く窓」へ渡す**（ワンショット旗を立てる）。
- *
- * ⚠ 呼ぶのは `EffectTemplateCard` の **`effectWindowOpen === false` のときだけ**。
- * ⚠⚠ **窓が開いているときに呼ばないこと**（残骸になる。理由は `EFFECT_TEST_FIRE_PENDING_KEY` の JSDoc）。
- * ⚠ **窓を開く invoke より先に書く**（窓のマウントは invoke の解決より後なので順序は保証されるが、
- * その保証に依存しないため先に書く＝`saveEffectOverlayGuidePending` と同じ作法）。
- * ⚠ 書けない環境（プライベートモード等）では**テスト表示が出ないだけ**で、配信画面は汚さない側に倒れる。
- */
-export function saveEffectTestFirePending(templateId: string): void {
-  try {
-    localStorage.setItem(EFFECT_TEST_FIRE_PENDING_KEY, templateId);
-  } catch {
-    // プライベートモード等で書けない場合は黙って無視する。
-  }
-}
-
-/**
- * 061i（判断 4）: **保留中のテスト表示を受け取り、同時に消す**（`EffectOverlayApp` のマウント時に 1 回）。
- *
- * ⚠⚠ **`load*` ではなく `take*` にしてあるのは「読むと消える」ことを呼び出し側に見せるため。**
- * このファイルの他の `load*` はすべて副作用が無く、旗を倒すのは
- * `saveEffectOverlayGuidePending(false)` という**別の呼び出し**である。同じ顔で片方だけ消すと、
- * 「もう一度読めば同じ値が返る」と誤読されて **2 回発火する**実装を招く。
- * ⚠ **読んだら必ず消すこと**——消さないと**窓を開くたびに同じエフェクトが出る**
- * （＝無操作で配信画面へ出る経路になる）。
- * ⚠ **値の形はここでは検査しない**（検査するのは受け取って使う `EffectOverlayApp` 側＝
- * `isEffectTemplateId`。正規表現の持ち主を増やさないため。`requestEffectTestFire` と同じ役割分担）。
- */
-export function takeEffectTestFirePending(): string | null {
-  try {
-    const raw = localStorage.getItem(EFFECT_TEST_FIRE_PENDING_KEY);
-    // ⚠ 無いときに `removeItem` を呼ばない（`storage` イベントを他窓へ撒かないため）。
-    if (raw !== null) localStorage.removeItem(EFFECT_TEST_FIRE_PENDING_KEY);
-    return raw;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * 061k: [`saveEffectTestFirePending`] のステージ窓版（完全に同型）。
- * ⚠ 呼ぶのは `EffectTemplateCard` の **ステージ窓が停止中のときだけ**。
- * ⚠⚠ **コーナー側とは独立に判定すること**——「コーナーは開いているがステージは停止中」で
- * 片方だけ旗が要る、が通常の状態である。
- */
-export function saveStageTestFirePending(templateId: string): void {
-  try {
-    localStorage.setItem(STAGE_TEST_FIRE_PENDING_KEY, templateId);
-  } catch {
-    // プライベートモード等で書けない場合は黙って無視する。
-  }
-}
-
-/**
- * 061k: [`takeEffectTestFirePending`] のステージ窓版（完全に同型）。
- *
- * ⚠⚠ **各窓は「自分の旗」だけを take すること。相手の旗を消してはいけない。**
- * 消すと「片方の窓が先にマウントして両方の旗を食う」＝**もう片方が無反応**になり、
- * 判断 8（テスト表示は 2 窓とも出す）が黙って半分だけ効く状態になる。
- */
-export function takeStageTestFirePending(): string | null {
-  try {
-    const raw = localStorage.getItem(STAGE_TEST_FIRE_PENDING_KEY);
-    // ⚠ 無いときに `removeItem` を呼ばない（`storage` イベントを他窓へ撒かないため）。
-    if (raw !== null) localStorage.removeItem(STAGE_TEST_FIRE_PENDING_KEY);
-    return raw;
-  } catch {
-    return null;
-  }
-}
 
 /**
  * 060d: テーマ id として受け入れる形（uuid v4）。
@@ -739,5 +514,152 @@ export function saveOverlayTheme(id: string | null): void {
     else localStorage.setItem(OVERLAY_THEME_KEY, id);
   } catch {
     // プライベートモード等で書けない場合は黙って無視する（表示は継続できる）。
+  }
+}
+
+// --- 064a: OBS のソースを鳴らす方式（main 窓 ⇄ コメビュ窓）-----------------------------------------
+
+/** 064a: 一覧の 1 件。⚠ **名前と種別だけ**（`obs.sources` フレームと同じ形）。 */
+export interface ObsSourceEntry {
+  name: string;
+  kind: string;
+}
+
+/**
+ * 064b: **OBS が長さを教えてくれなかったときに出しておく時間**（ミリ秒）。
+ *
+ * ⚠⚠ **これは「エフェクトの長さ」ではない。** 実際の長さは **OBS 側のメディアが持っている**ので、
+ * sidecar が `GetMediaInputStatus` で聞いて使う（`resolveObsFireDurationMs`）。
+ * ここが効くのは **画像ソース**と、**長さを聞けなかったとき**（未ロード等）だけである。
+ *
+ * ⚠ **持ち主を 1 か所にするために `features/` へ置いた**——値を使うのは
+ * ①064a のテスト発火（main 窓の `ObsSourceCard`）②064b の自動発火（コメビュ窓）の 2 か所で、
+ * **どちらも同じ「分からなかったときの長さ」**である。2 か所に書くと片方だけ変わる。
+ * ⚠ sidecar 側は受け取った値を必ずクランプする（500〜15000）ので、ここが壊れても消え残らない。
+ */
+export const OBS_SOURCE_FALLBACK_DURATION_MS = 5000;
+
+let obsSourceSeq = 0;
+
+/** 064a: main 窓から「一覧を取り直して」と頼む。⚠ 失敗しても**ボタンが効かないだけ**。 */
+export function requestObsSourceList(): void {
+  try {
+    obsSourceSeq += 1;
+    localStorage.setItem(
+      OBS_SOURCE_LIST_REQUEST_KEY,
+      `${Date.now()}-${obsSourceSeq}`,
+    );
+  } catch {
+    // 書けない環境では更新ボタンが効かないだけ（本番の発火には影響しない）。
+  }
+}
+
+/**
+ * 064a: main 窓から「このソースを 1 回鳴らして」と頼む。
+ * ⚠ **検証はしない**（壁は sidecar 側・キーの JSDoc が正）。ここは値を組むだけ。
+ */
+export function requestObsSourceTestFire(
+  sourceName: string,
+  durationMs: number,
+): void {
+  try {
+    obsSourceSeq += 1;
+    localStorage.setItem(
+      OBS_SOURCE_TEST_FIRE_KEY,
+      `${Date.now()}-${obsSourceSeq}:${durationMs}:${sourceName}`,
+    );
+  } catch {
+    // 同上。
+  }
+}
+
+/**
+ * 064a: [`OBS_SOURCE_TEST_FIRE_KEY`] の値を分解する（コメビュ窓が使う）。
+ *
+ * ⚠ **`sourceName` に `:` が含まれうる**ので、**先頭 2 つの `:` だけで切る**
+ * （`split(":")` で全部割ると名前に `:` を含むソースが鳴らせなくなる）。
+ * ⚠ 壊れた値は `null`（＝何もしない）。
+ */
+export function parseObsSourceTestFire(
+  raw: string | null,
+): { sourceName: string; durationMs: number } | null {
+  if (raw === null) return null;
+  const first = raw.indexOf(":");
+  if (first < 0) return null;
+  const second = raw.indexOf(":", first + 1);
+  if (second < 0) return null;
+  const durationMs = Number(raw.slice(first + 1, second));
+  const sourceName = raw.slice(second + 1);
+  if (!Number.isFinite(durationMs) || sourceName.length === 0) return null;
+  return { sourceName, durationMs };
+}
+
+/**
+ * 064c: main 窓が読む一覧のスナップショット。
+ *
+ * ⚠⚠ **`ok` が「OBS へ繋がったか」で、`sources.length` が「鳴らせるものがあるか」である。**
+ * この 2 つを混ぜると、OBS が起動していないユーザーへ
+ * 「OBS のシーンにソースを追加してください」という**間違った対処**を案内することになる
+ * （064a がまさにそうなっていた）。⚠ **どちらか一方で代表させないこと。**
+ */
+export interface ObsSourceListSnapshot {
+  /** いつ時点の一覧か（epoch ms）。⚠ **「取得中」の判定にも使う**（要求時刻より新しければ返事が来た）。 */
+  at: number;
+  /** `true` ＝ OBS へ繋がって一覧を取れた（**0 件でも `true`**）。 */
+  ok: boolean;
+  sources: ObsSourceEntry[];
+}
+
+/**
+ * 064a: コメビュ窓が取れた一覧を main 窓へ渡す。⚠ **保存するのは名前と種別だけ**（§9）。
+ * ⚠ 064c: **`ok`（取れたのか）も一緒に書く**（[`ObsSourceListSnapshot`] の JSDoc が正）。
+ */
+export function saveObsSourceList(
+  sources: ObsSourceEntry[],
+  ok: boolean,
+): void {
+  try {
+    localStorage.setItem(
+      OBS_SOURCE_LIST_KEY,
+      JSON.stringify({ at: Date.now(), ok, sources }),
+    );
+  } catch {
+    // 書けない環境では main 窓に一覧が出ないだけ。
+  }
+}
+
+/**
+ * 064a: main 窓が一覧を読む。⚠ **読み取れない・形が違う値はすべて「まだ無い」へ倒す**
+ * （localStorage は他窓からも書けるので、形を信用しない＝ `loadEffectConditions` と同じ姿勢）。
+ *
+ * ⚠⚠ 064c: **`ok` が boolean でなければ `false`**（＝「取れた」と断言しない）。
+ * WS 境界（`commentStream.ts`）と**同じ規則をここでも書いている**のは、このキーが
+ * **他窓からも書ける**からで、片方だけ緩めると誤案内が戻る経路が 1 本開く。
+ */
+export function loadObsSourceList(): ObsSourceListSnapshot | null {
+  try {
+    const raw = localStorage.getItem(OBS_SOURCE_LIST_KEY);
+    if (raw === null) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const { at, ok, sources } = parsed as {
+      at?: unknown;
+      ok?: unknown;
+      sources?: unknown;
+    };
+    if (typeof at !== "number" || !Array.isArray(sources)) return null;
+    return {
+      at,
+      ok: typeof ok === "boolean" ? ok : false,
+      sources: sources.filter(
+        (s): s is ObsSourceEntry =>
+          typeof s === "object" &&
+          s !== null &&
+          typeof (s as { name?: unknown }).name === "string" &&
+          typeof (s as { kind?: unknown }).kind === "string",
+      ),
+    };
+  } catch {
+    return null;
   }
 }

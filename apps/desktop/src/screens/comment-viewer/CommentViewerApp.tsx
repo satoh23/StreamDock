@@ -54,13 +54,44 @@ import {
   savePinnedOverlayEnabled,
   // 061a: エフェクト窓の設定は **main 窓（`ObsEffectsScreen`）が書き手**で、この窓は読み手。
   // ⚠ state にミラーせず、判断のたびに読み直す（詳細はエフェクト連携 effect の JSDoc）。
-  loadEffectOverlayEnabled,
+  // ⚠ 064e: `loadEffectObsAutoAdd` / `EFFECT_OBS_AUTO_ADD_KEY` の import を外した
+  //   （自動反映が既定になり、**設定そのものが消えた**）。
   loadStageOverlayEnabled,
-  loadEffectObsAutoAdd,
-  EFFECT_OVERLAY_ENABLED_KEY,
   STAGE_OVERLAY_ENABLED_KEY,
-  EFFECT_OBS_AUTO_ADD_KEY,
+  // 064a: OBS のソースを再生する方式（main 窓からの依頼をこの窓が代行する）。
+  OBS_SOURCE_LIST_REQUEST_KEY,
+  OBS_SOURCE_TEST_FIRE_KEY,
+  parseObsSourceTestFire,
+  saveObsSourceList,
+  // 064b: OBS が長さを教えてくれなかったときの既定（実際の長さは OBS 側のメディアが持つ）。
+  OBS_SOURCE_FALLBACK_DURATION_MS,
 } from "../../features/comment-viewer/overlaySettings";
+/**
+ * 064b: **コメントの条件が当たったら OBS 側のソースを鳴らす**（方針転換の本体）。
+ *
+ * ⚠⚠ **なぜこの窓なのか（構造上の必然）**: sidecar と WS で繋がっているのは**この窓だけ**なので、
+ * OBS を鳴らせるのもこの窓だけである（064a で `ObsSourceCard` の依頼を代行しているのと同じ非対称）。
+ * ⚠ エフェクト窓（テンプレートを描くレーン）は **OBS 用の条件を 1 度も見ない**
+ * （`createEffectMatcher` が当たり判定の前に落とす）。
+ *
+ * ⚠⚠ **`screens/comment-viewer/` → `screens/obs-effects/` の import はここが初めて**である。
+ * 逆向き（`obs-effects/` → `comment-viewer/viewerFormat`）は 061b から在り、ディレクトリとしては
+ * 相互参照になるが、**モジュールの循環は無い**（`viewerFormat` はこの窓を参照しない）。
+ * ⚠ `effectTrigger.ts` の JSDoc が予告している再修正トリガー
+ * 「**エフェクト窓以外に `decideEffects` の消費者が現れたとき**」に**該当する**が、
+ * あちらが警戒しているのは `features/` → `screens/` という**層の逆転**であり、
+ * ここは `screens/` どうしの横参照なのでその形にはならない。
+ * ⚠⚠ **本当の解決は 064d**（取り込み機能ごと `screens/obs-effects/` を畳むとき）で、
+ * そのときに `effectTrigger` / `effectAssignments` / `viewerFormat` の置き場所をまとめて決めること。
+ * **いま移さないのは、064d で消える側のディレクトリへ引っ越しを 2 回行わないため。**
+ */
+import {
+  createEffectTriggerState,
+  createSeenEffectIds,
+  decideEffects,
+  takeFreshComments,
+} from "../obs-effects/effectTrigger";
+import { createObsSourceMatcher } from "../obs-effects/effectAssignments";
 // 046a: 固定コメント（ピン留め）のピンストア。本体が唯一の書き手で、046b の固定専用オーバーレイが読み手になる。
 import {
   savePinned,
@@ -109,7 +140,6 @@ import {
   isPinnedOverlayOpen,
   // 061a: エフェクト窓の open/close は main 窓が持つ。この窓が使うのは **実窓の存在確認だけ**
   //（`enableObs("effects")` を送ってよいかの判定・046d レビューと同じ理由）。
-  isEffectOverlayOpen,
   // 061k: ステージ窓ぶん（`enableObs("stage")` を送ってよいかの判定・同じ理由）。
   isStageOverlayOpen,
 } from "../../features/comment-viewer/windowApi";
@@ -553,6 +583,20 @@ export function CommentViewerApp() {
   //（`clearObsEnableTimer()` を引数なしで呼べば全種別が止まる＝種別を増やしても cleanup は無改変）。
   // 種別ごとに別エントリなのは 046d の意図どおり（片方の ON がもう片方の仕掛かりを取り消さない）。
   const obsEnableTimersRef = useRef<Map<ObsOverlayKind, number>>(new Map());
+
+  // --- 064b: OBS 側のソースを鳴らすレーン -------------------------------------------------------
+  //
+  // ⚠⚠ **レーンごとに state を分ける**（061k が 2 窓で作った構えの 3 本目）。エフェクト窓と
+  //   共有すると「OBS のソースが 3 回鳴っただけで直後の投げ銭がエフェクト窓で捨てられる」が起きる。
+  //   ⚠ この窓はエフェクト窓の state を**そもそも触れない**（別プロセスの webview なので構造的に無理）が、
+  //   規律としては同じ＝**バースト枠とクールダウンはレーンごとに独立**である。
+  // ⚠ **ref に持つ**（state にしない）——`connectCommentStream` は**マウント時 1 回だけ**張るので、
+  //   ここを state にすると effect が張り直されて WS が切れ、その間のコメントを落とす。
+  const obsEffectStateRef = useRef(createEffectTriggerState());
+  const obsEffectSeenIdsRef = useRef<Set<string>>(createSeenEffectIds());
+  // ⚠⚠ **matcher は呼ばれるたびに localStorage を読み直す**（`createObsSourceMatcher` の JSDoc が正）。
+  //   ＝ main 窓で条件を変えた直後の 1 件目から効く（`storage` の窓跨ぎ伝播に依存しない）。
+  const obsSourceMatcher = useMemo(() => createObsSourceMatcher(), []);
 
   // 058a: 通知音の出力デバイス（②-軽）。
   // - audioOutputDeviceId: ユーザーが選んだデバイス ID の永続状態（非機密・localStorage）。
@@ -1140,6 +1184,49 @@ export function CommentViewerApp() {
         // `added` ではなく `incoming` を渡してよいのは、`trackFirstOfStream` が「既記録の viewerId を
         // 上書きしない」＝再送も combo 更新も自然に no-op になるため（詳細は firstOfStream.ts）。
         setFirstOfStream((prev) => trackFirstOfStream(prev, incoming));
+
+        // ⚠⚠ 064b: **コメントの条件が当たったら OBS 側のソースを鳴らす。**
+        //
+        // ⚠⚠ **二重発火を止めているのは [`takeFreshComments`]（＝ id の集合）である。**
+        //   これ 1 つで [043e] の combo 再送・再接続・StrictMode の updater 二重実行の
+        //   **3 つすべて**に効く（集合は ref なので、どの経路でも 2 度目は空配列になる）。
+        //
+        // ⚠ **置き場所が `setComments` の updater の外**なのは、ティッカー（047）・051 と同じ規律による:
+        //   ①updater の中で別の副作用を起こさない ②`mergeComments` は表示・TTS・保存の
+        //   単一注入点なので、そこへ関心を混ぜない。
+        //   ⚠⚠ **ただし「updater の中に入れると 2 回鳴る」は事実ではない**（実際に変異させて確認した）
+        //   ——上の id 集合が先に落とすため。⇒ **この置き場所はテストでは固定できていない**
+        //   （＝規律として守るもので、テストが守ってくれるものではない）。
+        //   ⚠ 逆に **id 集合のほうを外すと、テストが必ずレッドになる**（そちらが本体の担保）。
+        // ⚠ `mergeComments` の `added` を使わないのも同じ理由（あれは updater の中にしか無い）。
+        // ⚠⚠ **`updated` に `[]` を渡す**のは「このレーンは combo 更新を一切扱わない」の明示
+        //   （`decideEffects` 側にも `updated` から出さない規則があり、二重に守っている）。
+        // ⚠ **鳴らすのは「表示 → 頭出し → 指定時間で非表示」の 3 操作だけ**で、
+        //   ソースを作る／消す／設定を書き換える能力はこの経路に無い（§3）。
+        // ⚠⚠ **第三者のコメント本文は OBS へ 1 バイトも渡らない**——渡るのは
+        //   `sourceName`（＝**ユーザー自身が OBS で付けた名前**）だけで、本文は照合に使って捨てる
+        //   （`EffectMatch` に本文を載せる場所が型として無い・§9）。
+        const freshForObs = takeFreshComments(
+          obsEffectSeenIdsRef.current,
+          incoming,
+        );
+        if (freshForObs.length > 0) {
+          const fires = decideEffects(
+            freshForObs,
+            [],
+            obsEffectStateRef.current,
+            Date.now(),
+            obsSourceMatcher,
+          );
+          for (const fire of fires) {
+            // ⚠ 何秒出すかは **OBS 側のメディアの長さ**が正（sidecar が聞く）。
+            //   ここで渡すのは**聞けなかったときの既定**だけである。
+            requestObsSourceFire(
+              fire.sourceName,
+              OBS_SOURCE_FALLBACK_DURATION_MS,
+            );
+          }
+        }
       },
       onDeviceCode: (prompt) => setDeviceCode(prompt),
       onSessionState: (platform, state, reason) => {
@@ -1165,6 +1252,14 @@ export function CommentViewerApp() {
         if (isLinked) setDeviceCode(null);
       },
       // 044a: OBS 連携の状態通知（非秘密）。UI の状態表示に反映する（技術的 reason は UI に出さないため捨てる）。
+      // 064a: 鳴らせる OBS ソースの一覧を main 窓へ渡す（localStorage 経由）。
+      //   ⚠⚠ **064c: `ok`（取れたのか）も一緒に書く。** 旧実装は失敗時も空配列で来るのを
+      //   そのまま「0 件」として見せていたが、main 窓は**そこから理由を復元できず**、
+      //   OBS 未起動のユーザーへ「OBS のシーンにソースを追加してください」と誤案内していた。
+      //   ⚠ 失敗の**文言**は従来どおりツールバーの `obsState` 側に出る（表示の持ち主は増やしていない）。
+      onObsSources: (sources, ok) => {
+        saveObsSourceList(sources, ok);
+      },
       onObsState: (state) => {
         setObsState(state);
       },
@@ -1179,7 +1274,17 @@ export function CommentViewerApp() {
     // ⚠ 059a/059b: playBatchNotification が state を依存に持つと**ここが張り直されて WS が繋ぎ直る**ので、
     // 通知音の ON/OFF 2 つとデバイス ID は ref 経由で読んでいる
     //（soundCommentEnabledRef / soundMonetaryEnabledRef / audioOutputDeviceIdRef）。
-  }, [enqueueForSpeech, handleRecordResult, playBatchNotification]);
+    // ⚠ 064b: `obsSourceMatcher` は `useMemo(…, [])` で**一生変わらない**ので、deps に載せても
+    //   張り直らない（061k がエフェクト窓で `matchEffect` を deps に載せているのと同じ形）。
+    // ⚠⚠ **ここに不安定な値を足さないこと**——張り直すと WS が切れて、その間のコメントを落とす。
+    // ⚠ `requestObsSourceFire` を deps に載せていないのは、あれが**ref しか読まない**ため
+    //   （`streamRef` / `obsConfigRef`）。マウント時の写しを掴んでいても常に最新の接続へ送る。
+  }, [
+    enqueueForSpeech,
+    handleRecordResult,
+    playBatchNotification,
+    obsSourceMatcher,
+  ]);
 
   // ユーザー明示操作でのみ発火する（§1 の「ユーザーが明示接続した時のみ」）。
   const handleTwitchConnect = () => {
@@ -1486,6 +1591,34 @@ export function CommentViewerApp() {
     streamRef.current?.hideObs(obsConfigRef.current?.port ?? 4455, overlay);
   };
 
+  /**
+   * 064a: **main 窓の依頼を代行して OBS のソース一覧を取り直す。**
+   *
+   * ⚠⚠ **main 窓は WS を持たないので、この窓が代わりに投げるしかない**
+   * （`ObsEffectsScreen` の JSDoc が「構造としてそうならざるを得ない」と書いている非対称そのもの）。
+   * 結果は `onObsSources` → `saveObsSourceList` で localStorage へ書き戻し、main 窓が読む。
+   * ⚠ `obsConfigRef` から port を読むのは `requestObsHide` と同じ理由（deps 空の closure が
+   * 初期値 null を掴んで既定 4455 へ送るのを避ける）。
+   */
+  const requestObsSourceListRefresh = () => {
+    streamRef.current?.listObsSources(obsConfigRef.current?.port ?? 4455);
+  };
+
+  /**
+   * 064a: **main 窓の依頼を代行してソースを 1 回鳴らす。**
+   *
+   * ⚠⚠ **ここでソース名を検証しない。** 検証の持ち主は sidecar 側 1 か所
+   * （形式検査 ＋ **`GetInputList` との実在照合**）で、ここで先回りすると規則が 2 か所に割れる。
+   * ⚠ localStorage は他窓からも書けるが、**壁は sidecar 側にある**ので素通りにはならない。
+   */
+  const requestObsSourceFire = (sourceName: string, durationMs: number) => {
+    streamRef.current?.fireObsSource(
+      obsConfigRef.current?.port ?? 4455,
+      sourceName,
+      durationMs,
+    );
+  };
+
   // 045c レビュー（回帰）: 仕掛かり中の猶予タイマーを取り消す。表示 OFF・自動反映 OFF・アンマウントで呼ぶ。
   // 「ユーザーが OFF にしたのに、その後 enableObs が飛ぶ」を止めるのが目的（§1 の「明示的に有効化した時のみ接続」）。
   // ⚠ 061a: 引数を省くと**全種別**を取り消す（アンマウント用）。種別を指定すればその 1 本だけ。
@@ -1597,16 +1730,6 @@ export function CommentViewerApp() {
     });
   };
 
-  // 061a: エフェクト窓（label `effect-overlay`）の自動追加を**実窓の有無**で判定して要求する。
-  // 理由は `requestPinnedObsAutoAddIfOpen` と完全に同じ（046d レビュー）——設定 ON ／ 窓なしで走らせると
-  // sidecar 側 `ensureOverlaySource` が先に `CreateInput` してから窓を探して失敗し、キャプチャ対象未設定の
-  // 空ソース「StreamDock エフェクト」が OBS に残る（ユーザーが手で消すまで消えない）。
-  const requestEffectObsAutoAddIfOpen = () => {
-    void isEffectOverlayOpen().then((open) => {
-      if (open) requestObsAutoAdd("effects");
-    });
-  };
-
   // 061k: ステージ窓（label `stage-overlay`）ぶん。⚠ 理由は上と完全に同じ（046d レビュー）——
   // 設定 ON ／ 窓なしで走らせると、キャプチャ対象未設定の空ソース「StreamDock ステージ演出」が
   // OBS に残る（ユーザーが手で消すまで消えない）。
@@ -1677,109 +1800,71 @@ export function CommentViewerApp() {
       // なお `clear()` を呼ぶコードは本アプリに無く、DevTools 経由でしか到達しない。
       // **再修正トリガー**＝設定リセット機能を UI に足すときは、この分岐ではなくその機能側で
       // 明示的に `hideObs` を送ること（`clear()` に副作用を持たせない）。
-      if (e.key === EFFECT_OVERLAY_ENABLED_KEY || e.key === null) {
-        if (loadEffectOverlayEnabled()) {
-          // 反映の契機は**表示 ON**。窓が OBS の一覧に載るまでの猶予を置く（044a と同じ理由・同じ値）。
-          if (loadEffectObsAutoAdd()) scheduleObsAutoAdd("effects");
-        } else {
-          // ⚠ 自動反映の ON/OFF に関わらず取り消す（OFF ならそもそも仕掛かっていない）。
-          clearObsEnableTimer("effects");
-          if (loadEffectObsAutoAdd()) {
-            // 表示 OFF＝OBS 側も非表示（**ソースは消さない**・ON で再表示される）。
-            requestObsHide("effects");
-            // 直前の結果（connecting/added/failed）は実態と食い違うので idle へ戻す（045c と同じ扱い）。
-            setObsState("idle");
-          }
-        }
-      }
-      // ⚠⚠ **061k: ステージ窓ぶんの分岐**（判断 6・10）。**上の `effects` 側と完全に同型**で、
-      //   違うのは見るキーと送る種別だけ。⚠ **`"effects"` 側を巻き添えにしないこと**——
-      //   種別ごとに `scheduleObsAutoAdd` / `requestObsHide` / `clearObsEnableTimer` を呼ぶ。
-      // ⚠ `clear()`（`e.key === null`）の扱いは `effects` と**同じ形**にしてある
-      //   （061a Q-4 の受容を割らない＝`clear()` では OBS を触りに行かない）。
-      // ⚠ **OBS 自動反映トグルは 1 つのまま**（`EFFECT_OBS_AUTO_ADD_KEY` が 2 ソースを束ねる・判断 10）。
-      //   「たぬえさ3 より簡単に」＝設定を増やさない。片方だけ自動追加したいという要求は出ていない。
+      // ⚠⚠ **ステージ窓ぶんの分岐**（061k 判断 6・10）。
+      // ⚠⚠ **064d でこれが唯一の出力窓になった**——コーナー窓（`"effects"`）は
+      //   取り込んだテンプレート専用だったので、取り込み機能ごと廃止した。
+      // ⚠⚠ **064d で `STAGE_OVERLAY_ENABLED_KEY` の意味が変わった**——
+      //   旧「stage 出力の条件が 1 件以上あるか」→ 新「**いま配信イベントでステージ窓を使っているか**」。
+      //   書き手は `ObsEffectsScreen` の開始／終了ハンドラ 1 か所（あちらの JSDoc が正）。
+      // ⚠ `clear()`（`e.key === null`）では OBS を触りに行かない（061a Q-4 の受容）。
+      // ⚠⚠⚠ **064e: `loadEffectObsAutoAdd()` のゲートを外した（＝既定 ON）。**
+      //   あのトグルは「ステージ窓を OBS へ自動追加するか」だけを決めていたが、
+      //   ⚠ **ステージ窓が開く契機は 064d 以降「配信イベントの開始」だけ**であり、
+      //   その開始こそがユーザーの明示操作である。⇒ **明示操作が 2 段（トグル＋開始）から
+      //   1 段（開始）になった**＝ `docs/security.md` §1 の 044a 例外に対する姿勢変更で、
+      //   **§1 に 064e 追補を書いてある**（依頼者の指示＝「OBS に自動で反映はデフォルト機能にします」）。
+      //   ⚠ 044a の comments / pinned 側のトグル（`OBS_AUTO_ADD_KEY`）は**無改変**。
       if (e.key === STAGE_OVERLAY_ENABLED_KEY || e.key === null) {
         if (loadStageOverlayEnabled()) {
-          if (loadEffectObsAutoAdd()) scheduleObsAutoAdd("stage");
+          scheduleObsAutoAdd("stage");
         } else {
           clearObsEnableTimer("stage");
-          if (loadEffectObsAutoAdd()) {
+          // ⚠⚠⚠ **064e: `e.key !== null`（＝`clear()` ではない）を明示的に足した。**
+          //   これは新しい規律ではなく、**消したゲートが偶然果たしていた役割の埋め合わせ**である
+          //   ——旧コードは `loadEffectObsAutoAdd()` が `clear()` で false になることに頼って
+          //   ここへ到達しない形になっており、061a レビュー Q-4 はそれを「修正不要」と受容していた
+          //   （上のコメント）。⚠ **ゲートを外しただけだと `clear()` が OBS へ `hide` を送り始める**
+          //   ＝「`clear()` に副作用を持たせない」という Q-4 の判断を黙って破ることになる。
+          //   ⚠ **タイマーの取り消しは `clear()` でも行う**（あちらはこのアプリ内の後始末で、
+          //   OBS へは何も送らない＝Q-4 の対象外）。
+          if (e.key !== null) {
             requestObsHide("stage");
             // ⚠ `obsState` は 4 種別で 1 本のまま（061e Q-5 の受容の範囲が 3 → 4 へ広がった）。
             setObsState("idle");
+          } else if (!loadObsAutoAdd()) {
+            // ⚠⚠ **`clear()` のときの後始末**（064e で削除した `EFFECT_OBS_AUTO_ADD_KEY` 分岐から移設）。
+            //   ⚠ **OBS へは何も送らない**（Q-4）が、共有の赤字だけは畳んでよい。
+            //   ⚠⚠ **`!loadObsAutoAdd()` で狭めているのは 061e 穴 1 の結論**——`obsState` は
+            //   comments / pinned / stage の共有なので、無条件に倒すと**他種別の失敗の赤字まで
+            //   巻き添えで消える**（「失敗が黙って出ない」を自分で 1 本作ることになる）。
+            setObsState("idle");
           }
         }
       }
-      if (e.key === EFFECT_OBS_AUTO_ADD_KEY || e.key === null) {
-        if (loadEffectObsAutoAdd()) {
-          // 既に表示中なら猶予不要（窓は OBS のウィンドウ一覧に載っている）ので即反映する。
-          if (loadEffectOverlayEnabled()) requestEffectObsAutoAddIfOpen();
-          // ⚠ 061k: ステージ側も同じ扱い（**独立に判定する**）。
-          if (loadStageOverlayEnabled()) requestStageObsAutoAddIfOpen();
-        } else {
-          // ⚠ 連携 OFF で仕掛かりを取り消す（disableObs の後に enableObs が飛ぶのを防ぐ・045c レビュー）。
-          // ⚠⚠ **061k レビュー S-1（修正）: `"stage"` の取り消しが漏れていた。**
-          //   このトグルは 2 ソース（effects / stage）を束ねる（判断 10）ので、**後始末も 2 種別ぶん要る**。
-          //   漏れていた間の壊れ方は「stage 条件を作った直後（猶予 1.2 秒以内）に自動反映を OFF にしても、
-          //   **タイマーが生き残って `enableObs("stage")` が飛ぶ**」＝ ユーザーが OFF にしたのに OBS の
-          //   ソースが作られる（docs/security.md §1「明示的に有効化した時のみ接続」に反する・045c 回帰の再発）。
-          // ⚠ **種別を足したらここへ 1 行足すこと**（すぐ上の 061k 分岐が「種別ごとに 3 つの後始末を対で呼ぶ」
-          //   と書いているのに、この 3 本目だけ非対称だった）。
-          clearObsEnableTimer("effects");
-          clearObsEnableTimer("stage");
-          // ⚠⚠ 061e(1): **045c の不変条件「連携 OFF なら必ず `obsState` を idle へ戻す」を effects 側でも
-          // 成立させる。** 061a はここで `clearObsEnableTimer` しか呼んでおらず（表示 OFF 側の分岐だけが
-          // idle へ戻していた）、そのせいで「エフェクトの失敗の赤字が、連携を OFF にしても残る」形になっていた。
-          // ⚠ 061e(2) でツールバーの赤字ゲートから `obsAutoAdd &&` を外すため、この後始末が**赤字を消す
-          // 唯一の経路**になる（ゲートが肩代わりしてくれなくなる）。
-          //
-          // ⚠⚠ **`!loadObsAutoAdd()` で狭めている理由（061e 穴 1 の結論）**: `obsState` は
-          // comments / pinned / effects の **3 種別で 1 本**なので、ここで無条件に idle へ倒すと
-          // **comments / pinned の失敗の赤字まで巻き添えで消える**。それは 061e が消そうとしている
-          // 「失敗が黙って出ない」を 061e 自身が 1 本作ることになるので採らない。
-          // ＝「**他種別の連携もすべて OFF のときだけ倒す**」。代償は「エフェクトの連携を OFF にしたのに
-          // 赤字が残る」だが、その赤字は**そのとき真**（comments/pinned 側が現に OBS へ繋がっていない）で、
-          // ユーザーが取る行動も同じ＝OBS を起動する（059b の「失敗の中身で文言を変えない」と同じ論拠）。
-          //
-          // ⚠⚠ **なぜコメント側の idle 経路（`handleOverlayToggle` / `handlePinnedOverlayToggle` /
-          // `handleObsAutoAddToggle` の OFF 分岐）は同じように狭めないのか**: あちらは `hideObs` /
-          // `disableObs` を送るので、**sidecar が `obs.state = idle` を broadcast し返す**
-          //（`obs-client.ts` の `hide()` は `finally { onState("idle") }`、`disable()` は `onState("idle")`）。
-          // frontend の `setObsState("idle")` は "先取りの echo" にすぎず、そこを条件付きにしても
-          // echo が遅れて着弾して同じ結果になる＝**効かないガードになる**（読んだ人が守られていると誤解する）。
-          // **この分岐だけは sidecar へ何も送らない**ので、frontend の判断だけで完全に制御できる。
-          // ＝ 種別ごとの完全な出し分けは **wire を変えない限り不可能**（下記 (2) のコメントの再修正トリガー）。
-          //
-          // ⚠⚠ **061e レビュー Q-2（修正不要・例外の明示）: echo が来るのは WS 接続時だけ。**
-          // `requestObsHide` も `disableObs()` も `streamRef.current?.` なので、**WS 未接続なら何も送られず
-          // echo も返らない**。しかも `failed` が出る主要経路の 1 つが**その未接続状態そのもの**
-          //（`requestObsAutoAdd` の L2 分岐が `setObsState("failed")` する）。よって WS 未接続時は、
-          // 上記 3 経路と**エフェクトの「表示 OFF」分岐（すぐ上）**の `setObsState("idle")` が
-          // echo の裏打ち無しに comments/pinned の failed を消しうる。
-          // **それでもここ以外を狭めないのは**、①通常時（WS 接続時）は echo で必ず潰されるので
-          // 「効かないガード」になる ②未接続時は OBS 連携そのものが成立しておらず、赤字を残しても
-          // ユーザーが取れる行動が無い（sidecar が復帰すれば次の明示操作で再評価される）から。
-          // **再修正トリガー**＝ WS 未接続のまま失敗表示を保ちたい要求が出たとき
-          //（そのときは種別ごとの state ＝ wire 変更の領分。下記 (2) のトリガーと同じ作業でまとめて）。
-          //
-          // ⚠ state（`obsAutoAdd`）ではなく `loadObsAutoAdd()` を直読みするのは、この `storage` 購読が
-          // **マウント時 1 回だけ張る effect**（deps 空）で、state を読むと stale closure を掴むため。
-          // 永続値はこの窓の `saveObsAutoAdd(obsAutoAdd)` effect が常に同期しているので、
-          // **判断の瞬間の最新値**が読める（`loadPinnedOverlayEnabled()` を直読みするマウント同期 effect と同じ形）。
-          // ⚠ これは (2) が `obsAutoAdd || effectObsAutoAdd` を却下した理由（**レンダー時**に state ミラーが要る）
-          // には当たらない——こちらは**イベントハンドラ内の 1 回きりの判断**で、ミラーも再レンダーも要らない。
-          // ⚠⚠ **さらに決め手は「キーの所有者」**（061e レビューの補強）: `obsAutoAdd` は**この窓が所有する**
-          // キー（書き手は同窓の `saveObsAutoAdd` effect だけ）なので、直読みは**窓跨ぎ伝播に一切依存しない**。
-          // 却下した OR のほうは `effectObsAutoAdd`＝**main 窓所有**で、読むにはベストエフォートの伝播が要る。
-          // ＝ 非対称の根拠は「ハンドラかレンダーか」より「**自窓所有か他窓所有か**」のほうが強い。
-          //
-          // ⚠ `localStorage.clear()`（`e.key === null`）でもこの分岐に入るが、`loadObsAutoAdd()` も
-          // false になるので idle へ倒れる。**OBS へは何も送らない**ので Q-4 の判断（`clear()` に副作用を
-          // 持たせない）とは矛盾しない。
-          if (!loadObsAutoAdd()) setObsState("idle");
-        }
+      // ⚠⚠ 064a: main 窓からの依頼 2 種（一覧の取り直し／1 回鳴らす）。
+      //   ⚠ **`e.key === null`（`clear()`）では動かさない**——`clear()` は「全部消す」であって
+      //   「OBS を触れ」ではない（061a Q-4 の受容と同じ姿勢）。
+      if (e.key === OBS_SOURCE_LIST_REQUEST_KEY && e.newValue !== null) {
+        requestObsSourceListRefresh();
       }
+      if (e.key === OBS_SOURCE_TEST_FIRE_KEY && e.newValue !== null) {
+        const fire = parseObsSourceTestFire(e.newValue);
+        // ⚠ 壊れた値は**何もしない**（黙って落とすのが正しい＝押し直せばよい）。
+        if (fire !== null) requestObsSourceFire(fire.sourceName, fire.durationMs);
+      }
+      // ⚠⚠⚠ **064e: `EFFECT_OBS_AUTO_ADD_KEY` の分岐（67 行）を丸ごと削除した。**
+      //
+      // あの分岐は「main 窓で自動反映トグルが切り替わった」ことに反応するためのもので、
+      // **064e でトグルごと消えた（＝既定 ON）**ので、**発火する契機が 1 つも無くなった**。
+      // ⚠ 消えた 2 つの経路と、その受け皿:
+      //   - **ON にした瞬間の即時反映**（`requestStageObsAutoAddIfOpen`）…
+      //     ⇒ 開始時は上の `STAGE_OVERLAY_ENABLED_KEY` 分岐が、既に開いている窓は
+      //        下の **WS 接続時 reconcile** が拾う（どちらも 064e で無条件になった）。
+      //   - **OFF にした瞬間の後始末**（`clearObsEnableTimer` ／ 共有 `obsState` を idle へ）…
+      //     ⇒ 「OFF にする」という操作が存在しない。⚠ **`clear()` ぶんの後始末だけは
+      //        上の `STAGE_OVERLAY_ENABLED_KEY` 分岐へ移してある**（あちらも `e.key === null` で入る）。
+      // ⚠⚠ **061e 穴 1 の結論（共有 `obsState` を無条件に idle へ倒さない＝他種別の赤字を
+      //   巻き添えにしない）は、移した先でも `!loadObsAutoAdd()` として保っている。**
     };
     window.addEventListener("storage", onStorage);
     return () => {
@@ -1821,15 +1906,14 @@ export function CommentViewerApp() {
   useEffect(() => {
     if (!streamConnected || effectReconcileDoneRef.current) return;
     effectReconcileDoneRef.current = true;
-    if (loadEffectObsAutoAdd()) {
-      // 猶予は要らない（窓は既に開いていて OBS のウィンドウ一覧に載っているはず）。
-      // ⚠⚠ 061k: **2 窓ぶんを独立に判定する**（片方だけ条件がある、が通常の状態）。
-      //   ⚠ 合計で判定すると「コーナー条件しか無いのにステージのソースを作りに行く」＝
-      //   キャプチャ対象未設定の空ソースが OBS に残る（`requestStageObsAutoAddIfOpen` の注記）。
-      if (loadEffectOverlayEnabled()) requestEffectObsAutoAddIfOpen();
-      if (loadStageOverlayEnabled()) requestStageObsAutoAddIfOpen();
-    }
-    // ⚠ `requestEffectObsAutoAddIfOpen` はレンダーごとに作り直されるが、読むのは ref と localStorage だけ。
+    // 猶予は要らない（窓は既に開いていて OBS のウィンドウ一覧に載っているはず）。
+    // ⚠ 064d: 対象はステージ窓 1 つだけ（コーナー窓は取り込み機能ごと廃止）。
+    // ⚠⚠ 064e: `loadEffectObsAutoAdd()` のゲートを外した（＝既定 ON）。
+    //   ⚠ **`loadStageOverlayEnabled()` は残す**——あれは「いま配信イベントを開催しているか」で、
+    //   **これが唯一の明示操作の痕跡**である（064d で意味を移した）。ここを外すと
+    //   **開催していないのに OBS へ繋ぐ**ことになり、§1 の 044a 例外を本当に破る。
+    if (loadStageOverlayEnabled()) requestStageObsAutoAddIfOpen();
+    // ⚠ `requestStageObsAutoAddIfOpen` はレンダーごとに作り直されるが、読むのは ref と localStorage だけ。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streamConnected]);
 

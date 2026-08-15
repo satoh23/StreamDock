@@ -10,15 +10,14 @@
     "tauri": "tauri",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "vitest run && pnpm check:css && pnpm check:version && pnpm check:effect-contract",
+    "test": "vitest run && pnpm check:css && pnpm check:version",
     "test:watch": "vitest",
     "check:css": "node scripts/check-css-guards.mjs",
     "check:version": "node scripts/check-version-sync.mjs",
-    "check:effect-contract": "node scripts/check-effect-template-contract.mjs",
     "build:sidecar": "pnpm --filter @stream-dock/comment-sidecar build:sea",
     "check:sidecar": "node ../comment-sidecar/scripts/check-fresh.mjs",
     "gen:bindings": "cd src-tauri && cargo test export_bindings",
-    "check:bindings": "pnpm gen:bindings && git diff --exit-code -- src/features/tools/bindings src/features/presets/bindings src/features/logs/bindings src/features/comment-viewer/bindings src/features/viewer-memory/bindings src/features/app-update/bindings src/features/obs-effects/bindings"
+    "check:bindings": "pnpm gen:bindings && git diff --exit-code -- src/features/tools/bindings src/features/presets/bindings src/features/logs/bindings src/features/comment-viewer/bindings src/features/viewer-memory/bindings src/features/app-update/bindings"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

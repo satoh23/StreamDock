@@ -114,19 +114,14 @@ const PINNED_OVERLAY_TSX = "src/screens/comment-viewer/PinnedOverlayApp.tsx";
 // 061a: 3 本目の透過オーバーレイ窓。⚠ **060d の注入先ではない**ので、(10-d) の否定検査の対象に含める
 //（窓を増やすたびにここへ足すこと。足さないと「注入先は comment-overlay のみ」という契約に穴が開く）。
 const EFFECT_OVERLAY_TSX = "src/screens/obs-effects/EffectOverlayApp.tsx";
-// 061d: エフェクト窓の描画の一部が**ファイルとして外へ出た**（main 窓のプレビューと共有するため）。
-// ⚠⚠ (10-d) はファイル名で対象を選ぶので、**切り出した先を足さないと否定検査がすり抜ける**
-//（「窓を増やすたびに足す」の**ファイル分割版**。この窓に描かれるものを増やすときは必ずここへ足すこと）。
-const EFFECT_TEMPLATE_VIEW_TSX =
-  "src/screens/obs-effects/EffectTemplateView.tsx";
+// ⚠⚠ **064d: `EffectTemplateView.tsx` / `EffectTemplatePreview.tsx` は取り込み機能ごと削除した。**
+//   ⚠ **切り出し先を足す運用そのものは残る**——この窓に描かれるものをファイルへ分けたら、
+//   下の (10-d) / (10-t) の配列へ必ず足すこと（足さないと否定検査がすり抜ける）。
 // 061d-2: エフェクト窓の 2 層（テンプレート層＝絶対配置・組み込み＝手前）の位置指定を持つ CSS。
 // ⚠⚠ **jsdom はレイアウトを解決しないので、この 3 ルールはコンポーネントテストでは殺せない**
 //（061d-2 のミューテーションで `.templateLayer` の `position/inset` を外す変異が実際に生存した）。
 // ＝ **(10-r) がこの不変条件を殺している唯一の検査**である。
 const EFFECT_OVERLAY_CSS = "src/screens/obs-effects/EffectOverlayApp.module.css";
-// 061d-2: main 窓のプレビュー（エフェクト窓と `EffectTemplateView` を共有する 2 つ目の呼び出し元）。
-// ⚠ (10-t) の対象＝「取り込んだメディアを `src` に載せるファイル」はここまでの 3 本。
-const EFFECT_PREVIEW_TSX = "src/screens/obs-effects/EffectTemplatePreview.tsx";
 const CSS_COMPAT_TS = "src/features/comment-viewer/cssCompat.ts";
 // 060d: ユーザー CSS を実際に注入する側の 3 本（(10-h) / (10-i)）。
 const CSS_SCOPE_TS = "src/features/comment-viewer/cssScope.ts";
@@ -949,7 +944,6 @@ for (const rel of [VIEWER_CSS, OVERLAY_CSS]) {
   const overlayAppTsx = stripTsComments(readRaw(OVERLAY_APP_TSX));
   const pinnedTsx = stripTsComments(readRaw(PINNED_OVERLAY_TSX));
   const effectTsx = stripTsComments(readRaw(EFFECT_OVERLAY_TSX));
-  const effectTemplateTsx = stripTsComments(readRaw(EFFECT_TEMPLATE_VIEW_TSX));
   const compatTs = stripTsComments(readRaw(CSS_COMPAT_TS));
 
   // (10-a) 契約の安定クラスが実際に DOM を組む側へ付いていること。
@@ -1169,10 +1163,7 @@ for (const rel of [VIEWER_CSS, OVERLAY_CSS]) {
     // ⚠ 変数名を `tsxRel` にしているのは、外側の `for (const rel of [VIEWER_CSS, OVERLAY_CSS])` を
     //   シャドウしないため（061d-1 レビュー Q-5）。このスクリプトは「フェイル文にファイル名を出す」ことが
     //   機能そのものなので、同名だと後で外側の `rel` を参照した瞬間に**間違ったファイル名を報告する**。
-    for (const [tsxRel, tsxSrc] of [
-      [EFFECT_OVERLAY_TSX, effectTsx],
-      [EFFECT_TEMPLATE_VIEW_TSX, effectTemplateTsx],
-    ]) {
+    for (const [tsxRel, tsxSrc] of [[EFFECT_OVERLAY_TSX, effectTsx]]) {
       if (classToken(cls).test(tsxSrc)) {
         fail(
           `${tsxRel}: エフェクト窓に \`${cls}\` が付いています（060a / 060d / 061a / 061d）。` +
@@ -1999,9 +1990,7 @@ for (const rel of [VIEWER_CSS, OVERLAY_CSS]) {
 {
   const effectCss = read(EFFECT_OVERLAY_CSS);
   const expectations = [
-    [".root", "position", "relative", "テンプレート層とイベント層の基準（無いと窓に解決される）"],
-    [".templateLayer", "position", "absolute", "テンプレートを通常フローの外へ出す層"],
-    [".templateLayer", "inset", "0", "層を窓いっぱいに広げる（`EffectTemplateView` の器の基準）"],
+    [".root", "position", "relative", "イベント層の基準（無いと窓に解決される）"],
     [".eventLayer", "position", "absolute", "配信イベントを通常フローの外へ出す層（061l・判断 7）"],
     [".eventLayer", "inset", "0", "層を窓いっぱいに広げる（061l・判断 7）"],
   ];
@@ -2045,11 +2034,7 @@ for (const rel of [VIEWER_CSS, OVERLAY_CSS]) {
     ["srcDoc", "`srcDoc` を使っています"],
     ["srcdoc", "`srcdoc` を使っています"],
   ];
-  for (const rel of [
-    EFFECT_OVERLAY_TSX,
-    EFFECT_TEMPLATE_VIEW_TSX,
-    EFFECT_PREVIEW_TSX,
-  ]) {
+  for (const rel of [EFFECT_OVERLAY_TSX]) {
     // ⚠ コメントで言及するのは許す（この不変条件は各ファイルの JSDoc が説明しているため）。
     //   行コメント / ブロックコメントを落としてから見る（(10-i) と同じ前処理の考え方）。
     const src = read(rel)

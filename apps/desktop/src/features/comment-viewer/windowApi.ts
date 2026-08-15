@@ -98,59 +98,8 @@ export function isPinnedOverlayOpen(): Promise<boolean> {
   return invoke<boolean>("is_pinned_overlay_open");
 }
 
-/**
- * 061a: エフェクト専用の背景透過オーバーレイ窓（label `effect-overlay`）を開く。
- * 既に開いていれば Rust 側で再利用する（冪等）。既存の `comment-overlay` / `pinned-overlay` とは
- * **独立した別窓**で、OBS では 3 本目の別ソースとして取り込む（窓名「StreamDock エフェクト」）。
- *
- * ⚠⚠ **061k でこれは「エフェクトの出力窓のうち*コーナー側*」になった**（もう 1 本は
- * [`openStageOverlayWindow`]＝全画面／ステージ側）。⚠ **label も窓タイトルも 1 バイトも変えていない**
- * ——変えると既に OBS にソースを作ったユーザーだけが `ensureOverlaySource` の M2 経路
- * （既存ソース＋窓名不一致 → `"reused"`＝成功として返る）で静かに壊れるため。
- * ⇒ **UI 上の呼び方だけを「コーナー（小さめ）」に変え、OBS のソース名は実際の窓名をそのまま案内する。**
- *
- * ⚠⚠ **061b で 061a の決定を反転した。** この窓は**表示専用のまま**だが、`comment-overlay` 窓と同じく
- * sidecar の loopback WS へ**読み取り専用接続**する（`connectCommentStream` の `onComments` だけ・
- * 制御フレームは送らない）。061a が「WS へ接続しない」と書いていたのは、当時の 061b が localStorage ＋
- * `storage` で `EffectRequest` を受ける設計だったため。その経路ごと廃止された。
- *
- * ⚠ **sidecar のライフサイクル**: この窓は sidecar を**起動しない**（起動契機は
- * `openCommentViewerWindow` の 1 箇所のまま）が、**この窓が生きている間は sidecar が落ちない**
- * （Rust の `SIDECAR_CONSUMER_LABELS`）。＝ **コメント取得を開始したあとコメビュ窓を閉じても
- * エフェクトが出続ける**。どの窓も無くなれば必ず落ちる（孤児プロセスを残さない）。
- *
- * ⚠ **呼ぶのは main 窓（`ObsEffectsScreen` と起動時復元）**。アプリ定義コマンドは ACL 対象外なので
- * main 窓からそのまま invoke できる（`default.json` は差分ゼロ）。
- */
-export function openEffectOverlayWindow(): Promise<void> {
-  return invoke<void>("open_effect_overlay_window");
-}
 
-/**
- * 061a: エフェクト専用オーバーレイ窓を閉じる。窓が無ければ Rust 側 no-op（冪等）。
- * 最背面・非フォーカスで開くため Cmd+W では掴みにくく、画面から明示的に閉じられるよう用意する
- * （`closePinnedOverlayWindow` と同型）。
- *
- * ⚠⚠ **061i 申し送り §9 の残骸をここで返済した**（061k）。旧コメントは用途として
- * **061i で廃止された旧トグルの OFF 操作**を唯一の呼び出し元として名指ししていた。
- * いまの呼び出し元は `ObsEffectsScreen` の前提ステータスにある**「ウィンドウを閉じる」**（明示操作）だけで、
- * ⚠ **これは `docs/security.md` §1「取得の停止条件」が名指しする停止導線そのもの**なので、
- * 存在しない操作を指す記述を残すと導線を壊すのと同じになる（061i レビュー S-1 と同型）。
- */
-export function closeEffectOverlayWindow(): Promise<void> {
-  return invoke<void>("close_effect_overlay_window");
-}
 
-/**
- * 061a: エフェクト専用オーバーレイ窓が開いているかを返す（読み取り専用）。
- * ⚠ **3 か所から呼ぶ**: ①`ObsEffectsScreen`（main 窓）が前提ステータスと起動時の窓復元に使う
- * ②`CommentViewerApp`（コメビュ窓）が `enableObs("effects")` を送る前の実窓確認に使う
- * （046d レビューの指摘＝設定値ではなく実窓で判定しないと、OBS に空ソースが残る）
- * ③`MainScreen` がコメビュ停止時のフィードバック文言を分岐するのに使う（§1 の導線）。
- */
-export function isEffectOverlayOpen(): Promise<boolean> {
-  return invoke<boolean>("is_effect_overlay_open");
-}
 
 /**
  * 061k: エフェクトの**全画面（ステージ）側の出力窓**（label `stage-overlay`）を開く。
@@ -176,9 +125,20 @@ export function openStageOverlayWindow(): Promise<void> {
 
 /**
  * 061k: ステージ演出オーバーレイ窓を閉じる。窓が無ければ Rust 側 no-op（冪等）。
- * 呼び出し元は `ObsEffectsScreen` の前提ステータスにある**「ウィンドウを閉じる」**（明示操作）だけで、
- * ⚠ **`docs/security.md` §1「取得の停止条件」が名指しする停止導線の一部**である
- * （コーナー側と**両方**閉じたときに sidecar が落ちる＝取得が止まる）。
+ *
+ * ⚠⚠⚠ **064 レビュー S-4（訂正）: この関数には呼び手が 1 つも無い。**
+ * 旧文が呼び出し元としていた「`ObsEffectsScreen` の前提ステータスの『ウィンドウを閉じる』」は
+ * **061p で削除済み**であり、**アプリからエフェクトの出力窓を閉じる手段は存在しない**
+ * （窓が消えるのはアプリの終了時だけ）。⚠ 対になっていた `close_effect_overlay_window` は
+ * **064d でコーナー窓ごと削除**され、残っているのはこの 1 本だけである。
+ *
+ * ⚠ **それでも口を残すのは修正不要と判断した**: ①`docs/security.md` が停止条件の説明で
+ * この口を名指ししている ②呼び手を戻すときに Rust コマンドから作り直すのは無駄
+ * ③`cargo check` / lint とも警告ゼロ（Tauri コマンドは `generate_handler!` 経由なので
+ * 未使用にならず、TS 側も export された関数なので死なない）。
+ * ⚠ **再修正トリガー＝実機で「エフェクトの窓が消せない」と言われたとき**——そのときは
+ * 前提ステータスごと戻すのではなく**「ウィンドウを閉じる」1 ボタンだけ**を復活させ、
+ * **`docs/security.md` §1 の停止導線も一緒に戻すこと**（導線の数は §1 の本文が正）。
  */
 export function closeStageOverlayWindow(): Promise<void> {
   return invoke<void>("close_stage_overlay_window");
@@ -186,7 +146,7 @@ export function closeStageOverlayWindow(): Promise<void> {
 
 /**
  * 061k: ステージ演出オーバーレイ窓が開いているかを返す（読み取り専用）。
- * ⚠ **`isEffectOverlayOpen` と同じ 3 か所から、対で呼ぶ**（前提ステータス／`enableObs("stage")` の
+ * ⚠ **前提ステータス／`enableObs("stage")` の実窓確認から呼ぶ**（前提ステータス／`enableObs("stage")` の
  * 実窓確認／`MainScreen` の停止フィードバック）。
  * ⚠⚠ **片方だけ見て分岐しないこと**——§1 が要求する「取得が続いていることの明示」は
  * **どちらか 1 つでも開いていれば真**なので、コーナー側だけを見ると
