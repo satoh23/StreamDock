@@ -170,6 +170,8 @@ import {
   type SoundPreviewState,
 } from "./SettingsView";
 import { ViewersView } from "./ViewersView";
+// 062c: 配信サマリー（4 つ目のビュー）。表示専用で WS/TTS/sidecar を持たない＝ViewersView と同型。
+import { SummaryView } from "./SummaryView";
 import { ViewerDetailPanel } from "./ViewerDetailPanel";
 import { PinnedCommentBar } from "./PinnedCommentBar";
 import { MonetaryTicker } from "./MonetaryTicker";
@@ -281,14 +283,41 @@ function ViewersIcon() {
   );
 }
 
+/** 062c: 配信サマリーへの導線アイコン（棒グラフ）。`GearIcon` / `ViewersIcon` と同じ流儀の inline SVG。 */
+function SummaryIcon() {
+  return (
+    <svg
+      width="22"
+      height="22"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M3 3v18h18" />
+      <path d="M7 16v-5" />
+      <path d="M12 16V7" />
+      <path d="M17 16v-3" />
+    </svg>
+  );
+}
+
 export function CommentViewerApp() {
   const [comments, setComments] = useState<CommentViewDto[]>([]);
-  // 033b/038b: 表示モード（本体コメント / 設定 / 視聴者）。歯車ボタンで settings、人型ボタンで viewers へ、
-  // 各ビューの戻るボタンで comment へ切替。切替は描画のみで、接続 state・WS・TTS は本コンポーネントに残るため、
-  // 設定/視聴者を表示中もコメント受信・蓄積は継続し（WS は窓内 1 本のまま）、本体へ戻ると全件が並ぶ。
-  const [view, setView] = useState<"comment" | "settings" | "viewers">(
-    "comment",
-  );
+  // 033b/038b/062c: 表示モード（本体コメント / 設定 / 視聴者 / 配信サマリー）。歯車ボタンで settings、
+  // 人型ボタンで viewers、グラフボタンで summary へ、各ビューの戻るボタンで comment へ切替。
+  // 切替は描画のみで、接続 state・WS・TTS は本コンポーネントに残るため、
+  // 設定/視聴者/サマリーを表示中もコメント受信・蓄積は継続し（WS は窓内 1 本のまま）、本体へ戻ると全件が並ぶ。
+  // ⚠⚠ 062c: **この性質は「記録が止まらない」ことの担保そのもの**——`connectCommentStream` の effect は
+  //   `view` に依存していないので、サマリーを開いている間に届いたコメントも `recordComments` される。
+  //   ここを「view ごとに WS を張り直す」形へ変えると**見ている間の課金が記録されない**（記録は遡れない）。
+  //   `CommentViewerApp.session.test.tsx` の「サマリーを開いていても記録が止まらない」がこれを固定する。
+  const [view, setView] = useState<
+    "comment" | "settings" | "viewers" | "summary"
+  >("comment");
   // 042b（デザイン改修）: ヘッダー内 接続ピル（Twitch / YouTube）のポップオーバー開閉。1 つずつ開く（ラジオ排他）ので
   // 独立 bool ではなく単一の openCard で持つ（一方を開くと他方は自動的に閉じる）。表示状態のみでコメント受信・WS には触れない。
   const [openCard, setOpenCard] = useState<"twitch" | "youtube" | null>(null);
@@ -2218,6 +2247,10 @@ export function CommentViewerApp() {
       {view === "viewers" ? (
         // 038b: 視聴者一覧・詳細＋配信者メモ。表示専用（invoke のみ）で WS/TTS/sidecar を持たない（窓内 WS 1 本のまま）。
         <ViewersView onBack={() => setView("comment")} />
+      ) : view === "summary" ? (
+        // 062c: 配信サマリー（1 回の配信の数字・貢献者一覧・レイド一覧）。ViewersView と同じ表示専用の流儀で、
+        // 受け取る props は onBack のみ。集計は Rust 側の read-only command（新しい保存はしない・§9）。
+        <SummaryView onBack={() => setView("comment")} />
       ) : view === "settings" ? (
         // 042b: 接続 UI（Twitch/YouTube の連携・取得開始/停止・Device Code 提示）は本体のプラットフォーム別カードへ
         // 移設した（033b の部分反転）。設定ビューは読み上げ（VOICEVOX）／OBS オーバーレイの設定のみを担い、接続系の
@@ -2540,6 +2573,16 @@ export function CommentViewerApp() {
                 onChange={handleTtsEnabledChange}
                 inline
               />
+              {/* 062c: 配信サマリーへの導線。視聴者一覧の隣に置く（配信終わりに数字を突き合わせる相手が隣）。 */}
+              <button
+                type="button"
+                className={styles.settingsBtn}
+                onClick={() => setView("summary")}
+                title="配信サマリー"
+                aria-label="配信サマリー"
+              >
+                <SummaryIcon />
+              </button>
               {/* 038b: 視聴者ビューへの導線。設定ギアと同じゴーストボタン流儀（テキスト無し・title/aria-label で用途を担保）。 */}
               <button
                 type="button"

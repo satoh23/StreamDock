@@ -1321,6 +1321,65 @@
   color: var(--muted);
 }
 
+/* ===========================================================================
+   062c: 配信サマリー（SummaryView）。
+
+   ⚠⚠ **専用の CSS モジュールを作らず、このファイルに足している。**
+   `scripts/check-css-guards.mjs` の (6-b)（`--text-faint` は `:disabled` 専用）が走査するのは
+   `FAINT_SCANNED` ＝ **このファイル ＋ `src/components/**.module.css` だけ**なので、
+   `screens/comment-viewer/SummaryView.module.css` を新設すると**走査外**になり無効色の誤用が素通りする。
+   ガード自身が「リストの保守を人間に委ねた時点で同じ穴が開く」と同型の穴を 2 度踏んだ記録を残している。
+   ⇒ **`ViewersView` と同じ作法（専用 CSS を持たない）に揃える。** 054 の 3 段規則の宣言もこのファイルの
+   先頭にあるので、宣言と実体が離れない利点もある。
+
+   ⚠ 表の意匠は `.viewerHead` / `.viewerRow` を**そのまま重ねて使い**、ここでは**列構成だけ**を上書きする
+   （`className={`${styles.viewerRow} ${styles.contribRow}`}`）。同じ意匠を 2 度書かないための形で、
+   単一クラス同士＝同特異度なので**このファイルの後方にある側が勝つ**（この位置から動かさないこと）。
+   =========================================================================== */
+
+/* 表のセクション（見出し＋表＋注記）をまとめる器。
+   ⚠ **`flex-shrink: 0` が要件**——`.settingsView` は「flex 縦積み＋`overflow-y:auto`」そのもので、
+   `.card` が同じ理由で `flex-shrink: 0` を持っている。中の `.viewerTable` は `overflow: hidden` を
+   持つため、縮むと**中身がクリップされて表が読めなくなる**（035c / 043c / 047c で 3 回起きた形）。
+   ⚠ ここで受け止めることで `.viewerTable` 自体（＝ViewersView と共有）には手を入れずに済ませている。 */
+.summarySection {
+  display: block;
+  flex-shrink: 0;
+}
+
+/* 表の見出し。⚠ `.cardHead` は背景と下罫線を持つ「カードの頭」なので、カード外のこの用途には使わない
+   （書式だけを合わせる＝12px/800/--text）。054 の 3 段規則の「設定項目名」ではなく**見出し**なので、
+   同ファイル冒頭の「■ 別段のもの」で `.cardHead` を別扱いにしているのと同じ位置づけ。 */
+.summaryHeading {
+  margin: 14px 16px 0;
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--text);
+}
+
+/* 貢献者一覧の列（名前 / サイト / 金額 / サブスク）。金額は通貨ごとに並ぶので幅を広めに取る。 */
+.contribHead,
+.contribRow {
+  grid-template-columns:
+    minmax(0, 1.6fr) 76px minmax(0, 1.5fr)
+    minmax(0, 0.8fr);
+}
+
+/* レイド一覧の列（レイド元 / 人数 / 時刻）。 */
+.raidHead,
+.raidRow {
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 0.7fr) minmax(0, 1.4fr);
+}
+
+/* 「配信中」バッジ（`.badge` を基底に色だけ差し替え＝038c の判定バッジと同じ作り）。
+   ⚠ **ok（緑）＝「進行中」の意味で使う。** 課金のティア配色とは無関係で、`.badgeRaid` が無彩色を
+   選んだのと同じ配慮（色の意味を増やさない）。役割トークンのみ（生 hex/rgba なし）。 */
+.badgeLive {
+  color: var(--ok);
+  background: var(--ok-soft);
+  border-color: var(--ok-border);
+}
+
 /* 詳細の集計（ラベル｜値の 2 列）。 */
 .statGrid {
   display: grid;

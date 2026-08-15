@@ -11,6 +11,7 @@ mod presets;
 mod process;
 mod rakuraku;
 mod stream_session;
+mod stream_summary;
 mod tools;
 mod util;
 mod viewer_memory;
@@ -772,6 +773,12 @@ pub fn run() {
             // ⚠ **viewer_memory::repository::init より後に置くこと**——閉じ忘れ回収
             //   （下の close_stale）が `viewer_comments` を突き合わせるため。
             stream_session::repository::init(&conn)?;
+            // ⚠⚠ 062c: `stream_summary` の init は**無い**（ここに 1 行足す必要がない）。
+            //   配信サマリーは `viewer_comments` をその場で集計するだけで、**テーブルを 1 つも作らない**。
+            //   集計結果をキャッシュテーブルへ保存すると docs/security.md §9（端末保存）の判断が
+            //   やり直しになるため。`idx_viewer_comments_session` が効くので都度計算で足りる。
+            //   ⇒ **ここへ `stream_summary::repository::init(&conn)?;` を足したくなったら、
+            //      まず何を保存しようとしているのかを疑うこと。**
             // 060b: オーバーレイのカスタム CSS テーマ（overlay_themes）。CSS 実体は
             // app_data_dir/themes/<id>.css で、そのディレクトリは取り込み時に作る
             //（overlay_theme::service の保存ヘルパが冪等に create_dir_all する＝
@@ -918,6 +925,9 @@ pub fn run() {
             stream_session::commands::update_stream_session_title,
             stream_session::commands::list_stream_sessions,
             stream_session::commands::close_stale_stream_sessions,
+            // 062c: 配信サマリー（1 回の配信ぶんの集計）。read-only・単一目的で、
+            //   **新しい保存もテーブルも増えない**（docs/security.md §9）。capability も増えない。
+            stream_summary::commands::get_stream_summary,
             app_update::commands::check_app_update,
             app_update::commands::install_app_update,
             app_update::commands::restart_app,

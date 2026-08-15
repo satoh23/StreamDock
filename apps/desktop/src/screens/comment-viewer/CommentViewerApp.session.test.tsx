@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, act, waitFor, cleanup } from "@testing-library/react";
+import {
+  render,
+  screen,
+  act,
+  waitFor,
+  cleanup,
+  fireEvent,
+} from "@testing-library/react";
 import { CommentViewerApp } from "./CommentViewerApp";
 import type {
   CommentStreamHandle,
@@ -162,6 +169,14 @@ vi.mock("../../features/stream-session/streamSessionApi", () => ({
   updateStreamSessionTitle: vi.fn(),
   listStreamSessions: vi.fn(async () => []),
   closeStaleStreamSessions: mocks.closeStaleStreamSessions,
+}));
+
+// 062c: 配信サマリー（4 つ目のビュー）。本ファイルの関心は「サマリーを開いている間も記録が止まらないこと」
+// だけなので、集計 command は呼ばれない前提でスタブする（呼ばれたら SummaryView が安全文言を出すだけ）。
+vi.mock("../../features/stream-summary/streamSummaryApi", () => ({
+  getStreamSummary: vi.fn(async () => {
+    throw new Error("stub");
+  }),
 }));
 
 vi.mock("../../features/platform/useHostOs", () => ({
@@ -583,5 +598,68 @@ describe("062b セッション未確定の間の記録（取りこぼさない�
     await emitComments([dto()]);
     await waitFor(() => expect(mocks.recordComments).toHaveBeenCalled());
     expect(screen.queryByText(/記録できなかったコメント/)).toBeNull();
+  });
+});
+
+/**
+ * 062c 穴 H: **サマリービューを開いている間もコメントの受信・記録が止まらない**こと。
+ *
+ * ⚠⚠ 062c で増える他の担保（数字・注記・並び順）は**あとから作り直せる**が、ここだけは違う——
+ * 記録は遡れないので、サマリーを見ている間の課金が記録されないと**その配信ぶんは永久に失われる**。
+ * 構造上は `connectCommentStream` の effect が `view` に依存していないため止まらないが、それは
+ * 「今そうである」だけなので固定する。
+ */
+describe("062c サマリーを開いている間の記録（穴 H）", () => {
+  it("サマリーを開いたまま届いたコメントも記録される", async () => {
+    await renderApp();
+    await emitSessionState("twitch", "connected");
+    await waitFor(() => expect(mocks.startStreamSession).toHaveBeenCalled());
+    await emitComments([dto({ id: "before" })]);
+    await waitFor(() => expect(mocks.recordComments).toHaveBeenCalledTimes(1));
+
+    // 配信サマリーへ切り替える（本体のコメント一覧は分岐ごとアンマウントされる）。
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("配信サマリー"));
+    });
+    expect(screen.getByText("配信サマリー")).toBeInTheDocument();
+    expect(screen.queryByText("こんばんは")).toBeNull();
+
+    // ⚠ その間に届いたコメントも、同じ session_id で記録される。
+    await emitComments([
+      dto({ id: "during", author: { id: "u2", name: "Bob" } }),
+    ]);
+    await waitFor(() => expect(mocks.recordComments).toHaveBeenCalledTimes(2));
+    expect(recordedSessionIds()).toEqual(["session-new", "session-new"]);
+
+    // 戻ると、その間のコメントも一覧に並ぶ（state は CommentViewerApp が保持している）。
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("コメントへ戻る"));
+    });
+    expect(screen.getAllByText("こんばんは").length).toBeGreaterThanOrEqual(2);
+  });
+
+  // ⚠ ビュー切替で WS を張り直すと、張り直している間のコメントを落とす（窓内 WS 1 本の原則）。
+  it("サマリーへ切り替えても sidecar WS を張り直さない", async () => {
+    await renderApp();
+    expect(mocks.stream.disconnect).not.toHaveBeenCalled();
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("配信サマリー"));
+    });
+
+    expect(mocks.stream.disconnect).not.toHaveBeenCalled();
+  });
+
+  // 猶予タイマー（配信の区切り）もビュー切替では動かない。
+  it("サマリーを開いてもセッションを終了しない", async () => {
+    await renderApp();
+    await emitSessionState("twitch", "connected");
+    await waitFor(() => expect(mocks.startStreamSession).toHaveBeenCalled());
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("配信サマリー"));
+    });
+
+    expect(mocks.endStreamSession).not.toHaveBeenCalled();
   });
 });
