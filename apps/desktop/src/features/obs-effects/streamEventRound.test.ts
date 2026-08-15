@@ -1,9 +1,8 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
   STREAM_EVENT_ROUND_KEY,
   STREAM_EVENT_SELECTED_KEY,
 } from "../comment-viewer/overlaySettings";
-import { STREAM_EVENT_REGISTRY } from "./streamEventRegistry";
 import {
   clearStreamEventRound,
   formatStreamEventClock,
@@ -27,8 +26,41 @@ import {
  * - ⚠⚠ **壊れた保存値はすべて「開催していない」へ倒す**（fail-safe）。とくに
  *   **未知 eventId**（アプリ更新でレジストリから消えた／他窓から細工された）も落とす。
  * - ⚠ 判定は **`now` を引数で受ける純関数**（テストで時計を偽装しない＝061b/061j と同じ規律）。
+ *
+ * ## ⚠⚠ 061p: 同梱レジストリを**差し替えて**検査する（`StreamEventTab.test.tsx` と同じ手）
+ *
+ * 061l はここで `STREAM_EVENT_REGISTRY[0]`（＝見本「みんなでコメントカウント」）を直接使っていたが、
+ * **061p で同梱イベントが 0 本になった**ため、そのままだと `undefined` を掴んで落ちる。
+ * ⇒ **検査用のイベントを 1 本注入する**。⚠ **こうすることで「開催状態の仕様」は
+ * 同梱データの本数に関係なく固定され続ける**（次タスクで玉入れ大会を足したときも無改変で通る）。
+ * ⚠⚠ **実データが 0 本であること自体は `streamEventRegistry.test.ts` が固定している**
+ * （＝「未知 id は落とす」規則と合わせて、**実機では開催状態を作れない**ことの担保になっている）。
  */
-const EVENT = STREAM_EVENT_REGISTRY[0];
+// ⚠ `vi.mock` は巻き上げられるので、注入する値は `vi.hoisted` に置く
+//   （`StreamEventTab.test.tsx` と同じ形。**同じ定義を 2 か所に書かない**）。
+const mocks = vi.hoisted(() => ({
+  event: {
+    id: "test-event",
+    icon: "🧪",
+    title: "検査用イベント",
+    summary: "検査用。",
+    description: "検査用。",
+    defaultDurationMs: 5 * 60_000,
+    howTo: ["検査用"],
+  },
+}));
+const EVENT = mocks.event;
+
+vi.mock("./streamEventRegistry", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./streamEventRegistry")>();
+  const registry = [mocks.event];
+  return {
+    ...actual,
+    STREAM_EVENT_REGISTRY: registry,
+    findStreamEvent: (id: string) => registry.find((e) => e.id === id) ?? null,
+    isStreamEventId: (id: string) => registry.some((e) => e.id === id),
+  };
+});
 
 describe("061l: streamEventRound", () => {
   beforeEach(() => {

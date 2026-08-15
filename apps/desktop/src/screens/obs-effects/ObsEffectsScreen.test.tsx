@@ -7,10 +7,11 @@ import {
   STAGE_OVERLAY_ENABLED_KEY,
   EFFECT_OBS_AUTO_ADD_KEY,
   EFFECT_OVERLAY_GUIDE_PENDING_KEY,
+  EFFECT_TEST_FIRE_KEY,
+  EFFECT_TEST_FIRE_PENDING_KEY,
   STREAM_EVENT_ROUND_KEY,
   STREAM_EVENT_SELECTED_KEY,
 } from "../../features/comment-viewer/overlaySettings";
-import { STREAM_EVENT_REGISTRY } from "../../features/obs-effects/streamEventRegistry";
 // 型のみの import（コンパイル時に消えるので vi.hoisted / vi.mock の巻き上げと競合しない）。
 // ⚠ 明示的に型を付けないと `vi.fn(async () => null)` の戻り値が `Promise<null>` に推論され、
 // 検出できたケース（`mockResolvedValue({...})`）が typecheck で落ちる。
@@ -26,13 +27,24 @@ import type { EffectTemplateRecord } from "../../features/obs-effects/bindings/E
  * - ⚠⚠ **自動反映トグルは設定を立てるだけ**——窓を開かないし OBS へも繋がない（045c の規律。
  *   044a の旧実装は「自動反映 ON だけで窓が開く」隠れた副作用を持っており、045c が回帰として削除した）。
  *   この画面には WS が無いので構造としても破れないが、**将来ここへ open を足す退行**を止めるために固定する。
- * - **前提ステータス**が「いま何が足りないか」を出す。⚠ とくに**コメビュ窓が閉じていると
- *   OBS へは反映されない**ことを明示する（`obs-enable` を送れる窓が存在しないため）。
- *   ⚠⚠ **061b で案内文から「（エフェクトも表示されません）」を削った**——エフェクト窓が sidecar の WS を
- *   直接張るようになり、**コメント取得を開始したあとならコメビュ窓を閉じてもエフェクトは出続ける**ので、
- *   あの一文は嘘になった。代わりに「エフェクトの表示自体は続く」という非対称を明示する。
- *   下の 2 ケースがこの文言を仕様として固定する（**復活させない**ための回帰テスト）。
+ * - ⚠⚠ **061p で前提ステータス（6 行）とその中のボタンが消えた。**
+ *   ⇒ **窓の状態・条件の件数・開催中のイベントを DOM から観測する手段はもう無い**ので、
+ *   これらの仕様は **localStorage のキーと invoke の呼ばれ方**で固定する（観測点の付け替え）。
+ *   ⚠ **「表示が消えたから検査も消す」ではない**——挙動（自動 open・キューの直列化・派生値の
+ *   書き手が 1 か所）は 1 ミリも変えていないので、**検査は同じ数だけ残っている**。
+ * - ⚠ **コメビュ窓が閉じているときの前提案内だけは残っている**（`docs/security.md` §1 が
+ *   要求する停止導線の main 窓側 1 か所）。⚠⚠ **061p で止め方が
+ *   「コメントビューアを開いて取得を停止する」1 つになった**（「ウィンドウを閉じる」は廃止）。
  * - 準備中プレースホルダ（`ComingSoonScreen`）の文言が出ない。
+ *   ⚠ 061p: 「配信イベント」タブは**同梱イベントが 0 本のとき自前の「準備中です」を出す**が、
+ *   `ComingSoonScreen` の固有文言（「この機能は現在準備中です」「To be continued」）は使わない。
+ *
+ * ## ⚠⚠ 061p: 同梱レジストリを差し替えて検査する
+ *
+ * 開催の仕様（開始 → ステージ窓だけ開く／終了 → 窓を閉じない／期限切れの掃除）は
+ * **同梱イベントが 0 本になっても仕様として生き続ける**ので、検査用イベントを 1 本注入する。
+ * ⚠ **実データが 0 本＝実機ではタブに「準備中です」が出るだけ**であることは
+ * `streamEventRegistry.test.ts` と `StreamEventTab.test.tsx` が固定している。
  *
  * 外部境界（Tauri invoke）は全てモックして隔離する。**テストは外部通信も OS 操作も一切行わない**。
  */
@@ -55,7 +67,31 @@ const mocks = vi.hoisted(() => ({
   importEffectTemplate: vi.fn(),
   getEffectTemplateMedia: vi.fn(),
   deleteEffectTemplate: vi.fn(async () => {}),
+  /** 061p: 検査用の同梱イベント 1 本（実データは 0 本＝上のクラス JSDoc の 061p 節）。 */
+  event: {
+    id: "test-event",
+    icon: "🧪",
+    title: "検査用イベント",
+    summary: "検査用。",
+    description: "検査用。",
+    defaultDurationMs: 5 * 60_000,
+    howTo: ["検査用"],
+  },
 }));
+
+vi.mock("../../features/obs-effects/streamEventRegistry", async (importOriginal) => {
+  const actual =
+    await importOriginal<
+      typeof import("../../features/obs-effects/streamEventRegistry")
+    >();
+  const registry = [mocks.event];
+  return {
+    ...actual,
+    STREAM_EVENT_REGISTRY: registry,
+    findStreamEvent: (id: string) => registry.find((e) => e.id === id) ?? null,
+    isStreamEventId: (id: string) => registry.some((e) => e.id === id),
+  };
+});
 
 vi.mock("../../features/obs-effects/effectTemplateApi", () => ({
   listEffectTemplates: mocks.listEffectTemplates,
@@ -134,24 +170,26 @@ const conditionSelect = (label: string) =>
 const outputSelect = (label: string) =>
   screen.getByLabelText(`${label}の出力先`) as HTMLSelectElement;
 
-/** 061i: 「表示する条件」行の値。 */
-const conditionStatus = () =>
-  screen.getByText("表示する条件").parentElement?.textContent ?? "";
+// ⚠⚠ **061p: `conditionStatus()` / `roundStatus()` / `windowStatus()` を削除した**
+//   （「表示する条件」「開催中のイベント」「エフェクトのウィンドウ」の各行ごと画面から消えたため）。
+//   ⇒ **観測点の付け替え**:
+//     - 条件の件数 …… `EFFECT_OVERLAY_ENABLED_KEY` / `STAGE_OVERLAY_ENABLED_KEY`（派生値）と
+//       `openEffectOverlayWindow` / `openStageOverlayWindow` の呼ばれ方
+//     - 窓の状態 …… `is*OverlayOpen` の**呼ばれた回数**（ポーリングが回っていること）と、
+//       ⚠⚠ **`EffectTemplateCard` の「配信画面でテスト表示」がどちらの経路へ倒れるか**
+//       （＝停止中なら保留旗を書く／表示中なら `storage` を撒く。これが窓の状態の唯一の実用途）
+//     - 開催中のイベント …… 「配信イベント」タブの中の表示（残り時間・終了ボタン）と開催キー
 
-/** 061l: 「開催中のイベント」行の値（判断 10）。 */
-const roundStatus = () =>
-  screen.getByText("開催中のイベント").parentElement?.textContent ?? "";
+/** 061l: 検査用イベントの id（⚠ 注入したレジストリから引く＝id を 2 か所へ書かない）。 */
+const EVENT_ID = mocks.event.id;
 
-/** 061l: 同梱イベント（見本 1 本）の id。⚠ レジストリから引く（id を 2 か所へ書かない）。 */
-const EVENT_ID = STREAM_EVENT_REGISTRY[0].id;
-
-/**
- * 061k: **出力先ごとの「エフェクトのウィンドウ」行**の値（「表示中」/「停止中」/「確認中…」）。
- * ⚠ 窓が 2 本になったので `getByText("停止中")` は**必ず 2 件ヒットする**——行を特定して読む。
- */
-const windowStatus = (label = "コーナー（小さめ）") =>
-  screen.getByText(`エフェクトのウィンドウ（${label}）`).parentElement?.textContent ??
-  "";
+/** 061p: ポーリングが 1 周した（＝窓の状態が state に入った）ことを待つ。 */
+const waitForStatusPoll = async () => {
+  await waitFor(() =>
+    expect(mocks.isEffectOverlayOpen.mock.calls.length).toBeGreaterThan(0),
+  );
+  await act(async () => {});
+};
 
 describe("061a: ObsEffectsScreen", () => {
   beforeEach(() => {
@@ -198,52 +236,125 @@ describe("061a: ObsEffectsScreen", () => {
       "配信イベント",
     ]);
     expect(tabs[0]).toHaveAttribute("aria-selected", "true");
-    // 既定タブの中身＝テンプレートと条件の 2 カード。
+    // 既定タブの中身＝条件とインポートの 2 カード。
+    // ⚠⚠ **061p で並びを反転した**（条件が先・インポートが最後）ので、**順序も固定する**
+    //   ——指示は「インポートのカードは一番下」なので、戻す変異をここで殺す。
+    const headings = screen
+      .getAllByRole("heading", { level: 3 })
+      .map((h) => h.textContent);
+    expect(headings.slice(0, 2)).toEqual([
+      "エフェクトを表示する条件",
+      "エフェクトのインポート",
+    ]);
+    // ⚠ 061p: 旧名（「エフェクトのテンプレート」）は戻ってこない。
     expect(
-      screen.getByRole("heading", { name: "エフェクトのテンプレート" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("heading", { name: "エフェクトを表示する条件" }),
-    ).toBeInTheDocument();
+      screen.queryByRole("heading", { name: "エフェクトのテンプレート" }),
+    ).toBeNull();
   });
 
-  it("⚠⚠ 061l: 「配信イベント」タブにイベントの一覧と開催の器が出る（061i の準備中を置き換えた）", async () => {
-    // ⚠ 061i はここに「準備中」の 1 文しか無く、061l がその中身を入れた。
-    //   **「準備中」の文言が戻ってこないこと**も同時に固定する（枠だけの状態への逆戻り）。
+  it("⚠⚠ 061p: 「配信イベント」タブは準備中（同梱イベントが 0 本のときの見え方）", async () => {
+    // ⚠⚠ **061p の指示＝見本「みんなでコメントカウント」は要らない**（ユーザーが使えるものだと
+    //   誤解する）。⇒ **レジストリを空にし、タブは「準備中です」だけを出す**。
+    // ⚠ ここは**注入したレジストリ（1 本）ではなく実データの見え方**を見たいので、
+    //   `STREAM_EVENT_REGISTRY` の中身に依存しない形で
+    //   **`StreamEventTab` が空のときに出す文言**を `StreamEventTab.test.tsx` が固定している。
+    //   ⇒ このケースでは「**廃止した見本の名前が戻ってこない**」ことだけを固定する。
     const { container } = render(<ObsEffectsScreen />);
     fireEvent.click(screen.getByRole("tab", { name: "配信イベント" }));
 
-    expect(container.textContent).not.toContain("この機能は準備中です");
-    expect(screen.getByRole("heading", { name: "イベントの開催" })).toBeInTheDocument();
-    expect(screen.getByText("みんなでコメントカウント")).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "詳細を見る →" }),
-    ).toBeInTheDocument();
+    expect(container.textContent).not.toContain("みんなでコメントカウント");
+    // ⚠ `ComingSoonScreen`（画面まるごと用のダミーページ）は流用しない。
+    expect(container.textContent).not.toContain("この機能は現在準備中です");
+    expect(container.textContent).not.toContain("To be continued");
     // ⚠ タブを切り替えるとコメント側のカードは出ない（＝本当に入れ替わっている）。
     expect(
       screen.queryByRole("heading", { name: "エフェクトを表示する条件" }),
     ).toBeNull();
   });
 
-  it("⚠⚠ 061i: 「OBS へ自動で反映」と前提ステータスは**両タブの外**にある", async () => {
+  it("⚠⚠ 061i: 「OBS へ自動で反映」は**両タブの外**にある", async () => {
     // ⚠ どちらのタブで使うエフェクトも**同じ窓・同じ OBS ソース**に出るため
-    //   （タブの中へ入れると「タブごとに別の窓がある」と読める）。⚠ 061k で窓が 2 本になったら見直す。
+    //   （タブの中へ入れると「タブごとに別の窓がある」と読める）。
+    // ⚠⚠ **061p: 一緒に共通領域へ置いていた前提ステータス 6 行と、
+    //   「配信画面に表示」カードは削除した**（下の「061p: 消えたもの」の節が固定する）。
     render(<ObsEffectsScreen />);
     fireEvent.click(screen.getByRole("tab", { name: "配信イベント" }));
 
     expect(autoAddToggle()).toBeInTheDocument();
-    expect(screen.getByText("表示する条件")).toBeInTheDocument();
-    // ⚠ 061k: 窓が 2 本になったので行も 2 本（どちらも共通領域にある）。
+  });
+
+  // --- ⚠⚠⚠ 061p: 消えたものが戻ってこないこと -------------------------------------------------
+
+  it("⚠⚠ 061p: 前提ステータスの 6 行が 1 つも出ない（情報過多の解消そのものが仕様）", async () => {
+    // ⚠⚠ **指示＝「表示する条件などのステータスは全ていらない。情報が増えて UX が下がる」。**
+    //   ⚠ 親切心で 1 行ずつ戻すと元の 6 行に戻るので、**まとめて固定する**。
+    mocks.isEffectOverlayOpen.mockResolvedValue(true);
+    mocks.isStageOverlayOpen.mockResolvedValue(true);
+    mocks.isCommentViewerOpen.mockResolvedValue(true);
+    mocks.detectObsWebsocketConfig.mockResolvedValue({
+      enabled: true,
+      port: 4455,
+      authRequired: false,
+    });
+    const { container } = render(<ObsEffectsScreen />);
+    await waitForStatusPoll();
+
+    for (const label of [
+      "表示する条件",
+      "エフェクトのウィンドウ（小さく（画面のすみ））",
+      "エフェクトのウィンドウ（大きく（画面全体））",
+      "開催中のイベント",
+      "コメントビューア",
+      "OBS の WebSocket",
+    ]) {
+      expect(screen.queryByText(label)).toBeNull();
+    }
+    // ⚠ 値の側（「表示中」「開いています」「有効（ポート 4455）」）も出ない。
+    expect(container.textContent).not.toContain("表示中");
+    expect(container.textContent).not.toContain("開いています");
+    expect(container.textContent).not.toContain("有効（ポート");
+  });
+
+  it("⚠⚠⚠ 061p: 「ウィンドウを閉じる」「ウィンドウを開く」がどこにも無い（§1 の停止導線を改訂した）", async () => {
+    // ⚠⚠⚠ **`docs/security.md` §1 の 061p 追補と対になる検査。**
+    //   このボタンは §1 が名指ししていた停止導線だったので、**消すこと自体が方針変更**である。
+    //   ⇒ 止め方は「コメントビューアを開いて取得を停止する」1 つになった（下の前提案内の節）。
+    //   ⚠ **帰結＝アプリ内からエフェクトの出力窓を閉じる手段は無い**（`close*` の invoke が 0 件）。
+    mocks.isEffectOverlayOpen.mockResolvedValue(true);
+    mocks.isStageOverlayOpen.mockResolvedValue(true);
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify({ superchat: { kind: "template", templateId: TEMPLATE_ID } }),
+    );
+    mocks.listEffectTemplates.mockResolvedValue([record()]);
+    const { container } = render(<ObsEffectsScreen />);
+    await waitForStatusPoll();
+
+    expect(container.textContent).not.toContain("ウィンドウを閉じる");
+    expect(container.textContent).not.toContain("ウィンドウを開く");
+    expect(mocks.closeEffectOverlayWindow).not.toHaveBeenCalled();
+    expect(mocks.closeStageOverlayWindow).not.toHaveBeenCalled();
+  });
+
+  it("⚠ 061p: 「配信画面に表示」カードが無く、窓名の案内だけが残っている", async () => {
+    // ⚠ 指示＝「説明だけのカードは要らない（削除忘れでは？）」。
+    // ⚠⚠ **窓名は残す**——OBS で手動追加する人は**この文字列でウィンドウ一覧を探す**ので、
+    //   カードごと消すと探せなくなる（061k が実機で踏んだ言い落としと同じ穴）。
+    render(<ObsEffectsScreen />);
     expect(
-      screen.getByText("エフェクトのウィンドウ（コーナー（小さめ））"),
-    ).toBeInTheDocument();
+      screen.queryByRole("heading", { name: "配信画面に表示" }),
+    ).toBeNull();
     expect(
-      screen.getByText("エフェクトのウィンドウ（全画面（ステージ））"),
+      screen.getByText(/「StreamDock エフェクト」と「StreamDock ステージ演出」/),
     ).toBeInTheDocument();
-    // OBS への取り込み手順も共通領域（トグルは消えたが説明は残す）。
-    expect(
-      screen.getByRole("heading", { name: "配信画面に表示" }),
-    ).toBeInTheDocument();
+  });
+
+  it("⚠ 061p: OBS の WebSocket 設定を検出しに行かない（表示先が無くなったため）", async () => {
+    // ⚠ 帰結＝ OBS 側で WebSocket が無効でも**この画面では気づけない**（受容）。
+    //   ⚠ 同じ検出はコメビュ窓の設定が持っており、あちらは無改変。
+    render(<ObsEffectsScreen />);
+    await waitForStatusPoll();
+    expect(mocks.detectObsWebsocketConfig).not.toHaveBeenCalled();
   });
 
   it("⚠⚠ 061i: 「エフェクトを配信画面に表示する」トグルが戻ってこない", () => {
@@ -286,7 +397,8 @@ describe("061a: ObsEffectsScreen", () => {
     mocks.listEffectTemplates.mockResolvedValue([record()]);
     render(<ObsEffectsScreen />);
     await screen.findAllByText("きらきら演出"); // ⚠ 一覧と `<option>` の 2 か所に出る
-    expect(conditionStatus()).toContain("設定されていません");
+    // ⚠ 061p: 「表示する条件」行は消えたので、件数は**派生値**で見る（0 件＝キーが無い）。
+    expect(localStorage.getItem(EFFECT_OVERLAY_ENABLED_KEY)).toBeNull();
 
     fireEvent.change(conditionSelect("スーパーチャット・ビッツ"), {
       target: { value: `template:${TEMPLATE_ID}` },
@@ -297,7 +409,6 @@ describe("061a: ObsEffectsScreen", () => {
     );
     expect(localStorage.getItem(EFFECT_OVERLAY_ENABLED_KEY)).toBe("true");
     expect(mocks.closeEffectOverlayWindow).not.toHaveBeenCalled();
-    expect(conditionStatus()).toContain("1 件");
   });
 
   // --- 061k: 出力先ごとの窓 -----------------------------------------------------------------------
@@ -346,44 +457,46 @@ describe("061a: ObsEffectsScreen", () => {
     // ⚠⚠ **本命**: 合計で判定する実装だとここが 1 になる。
     expect(mocks.openStageOverlayWindow).not.toHaveBeenCalled();
     expect(localStorage.getItem(STAGE_OVERLAY_ENABLED_KEY)).toBe("false");
-    // ⚠ 「表示する条件」行は**合計 1 行のまま**だが、内訳が出る（穴 α の緩和）。
-    expect(conditionStatus()).toContain("1 件");
-    expect(conditionStatus()).toContain("全画面（ステージ） 0");
   });
 
   it("⚠⚠ 新規 11: 開閉キューは窓ごとに独立（corner の close 中に stage の open が待たされない）", async () => {
     // ⚠⚠ **1 本のキューに混ぜるとここが落ちる**（061i がキューを作った理由は
     //   「**同じ窓**への close と open の順序」であって、別の窓を直列化する理由は無い）。
-    let releaseClose = () => {};
-    mocks.closeEffectOverlayWindow.mockImplementation(
+    // ⚠⚠ **061p で駆動が変わった**——「コーナー窓の close を止めておく」ができなくなった
+    //   （「ウィンドウを閉じる」を削除したため）ので、**コーナー窓の open を止めて**同じ性質を見る。
+    //   ⚠ 見たい不変条件は変わっていない＝**片方の窓の滞留が、もう片方の窓の要求を待たせない**。
+    let releaseCornerOpen = () => {};
+    mocks.openEffectOverlayWindow.mockImplementation(
       () =>
         new Promise<void>((resolve) => {
-          releaseClose = resolve;
+          releaseCornerOpen = resolve;
         }),
     );
-    mocks.isEffectOverlayOpen.mockResolvedValue(true);
     mocks.listEffectTemplates.mockResolvedValue([record()]);
     render(<ObsEffectsScreen />);
     await screen.findAllByText("きらきら演出");
-    await waitFor(() => expect(windowStatus()).toContain("表示中"));
 
-    // コーナー窓を閉じる（この Promise は解決させないまま止めておく）。
-    fireEvent.click(
-      screen.getByRole("button", { name: "コーナー（小さめ）のウィンドウを閉じる" }),
-    );
-    // その最中に stage 条件を作る＝ステージ窓の open が投げられる。
+    // コーナー条件を 0 → 1 件（＝コーナー窓の open。この Promise は解決させないまま止めておく）。
     fireEvent.change(conditionSelect("スーパーチャット・ビッツ"), {
       target: { value: `template:${TEMPLATE_ID}` },
     });
-    fireEvent.change(outputSelect("スーパーチャット・ビッツ"), {
+    await waitFor(() =>
+      expect(mocks.openEffectOverlayWindow).toHaveBeenCalledTimes(1),
+    );
+
+    // その最中に別の条件を stage 出力で作る＝ステージ窓の open が投げられる。
+    fireEvent.change(conditionSelect("メンバーシップ"), {
+      target: { value: `template:${TEMPLATE_ID}` },
+    });
+    fireEvent.change(outputSelect("メンバーシップ"), {
       target: { value: "stage" },
     });
 
-    // ⚠⚠ **close が止まったままでも stage の open は届く**（＝キューが別）。
+    // ⚠⚠ **コーナーの open が止まったままでも stage の open は届く**（＝キューが別）。
     await waitFor(() =>
       expect(mocks.openStageOverlayWindow).toHaveBeenCalledTimes(1),
     );
-    releaseClose();
+    releaseCornerOpen();
   });
 
   it("⚠⚠ 061i: 1 件以上のまま別の条件を変えても open を重ねて投げない", async () => {
@@ -413,7 +526,6 @@ describe("061a: ObsEffectsScreen", () => {
     await act(async () => {});
 
     expect(mocks.openEffectOverlayWindow).toHaveBeenCalledTimes(1);
-    expect(conditionStatus()).toContain("2 件");
   });
 
   it("⚠⚠ 061i: 条件を全部「出さない」に戻すとフラグが false になる（窓は閉じない）", async () => {
@@ -439,7 +551,6 @@ describe("061a: ObsEffectsScreen", () => {
 
     expect(localStorage.getItem(EFFECT_OVERLAY_ENABLED_KEY)).toBe("false");
     expect(mocks.closeEffectOverlayWindow).not.toHaveBeenCalled();
-    expect(conditionStatus()).toContain("設定されていません");
   });
 
   it("⚠⚠ 061i: テンプレート削除で条件が 0 件になったときもフラグが false になる", async () => {
@@ -466,49 +577,15 @@ describe("061a: ObsEffectsScreen", () => {
     await waitFor(() =>
       expect(localStorage.getItem(EFFECT_OVERLAY_ENABLED_KEY)).toBe("false"),
     );
-    expect(conditionStatus()).toContain("設定されていません");
     // ⚠ 窓は閉じない（判断 1）。
     expect(mocks.closeEffectOverlayWindow).not.toHaveBeenCalled();
   });
 
-  it("⚠⚠ 061i: 「ウィンドウを閉じる」で窓は閉じるが、フラグは false にならない", async () => {
-    // ⚠⚠ **設定と窓を混ぜない**（判断 1）。これは「条件を消す」操作ではなく
-    //   「いま出ている窓を片付ける」操作なので、条件はそのまま残る
-    //   ＝ アプリを開き直せば `restoreEffectOverlayWindow` がまた開く。
-    // ⚠⚠ **061i レビュー S-3 で前提を直した。** 旧版は「条件 0 件・フラグ true」という
-    //   **実装上ありえない不整合**を作って「フラグが変わらないこと」を見ていたため、
-    //   マウント時の再計算（S-3）が入った途端に落ちた。⚠ 見たいのは
-    //   「**閉じるボタンがフラグを触らない**」であって「フラグが絶対に動かない」ではないので、
-    //   条件を 1 件持たせて **true が正当な状態**にしてから押す。
-    localStorage.setItem(
-      EFFECT_ASSIGNMENTS_KEY,
-      JSON.stringify({ superchat: { kind: "template", templateId: TEMPLATE_ID } }),
-    );
-    localStorage.setItem(EFFECT_OVERLAY_ENABLED_KEY, "true");
-    mocks.listEffectTemplates.mockResolvedValue([record()]);
-    mocks.isEffectOverlayOpen.mockResolvedValue(true);
-    render(<ObsEffectsScreen />);
-    await waitFor(() => expect(windowStatus()).toContain("表示中"));
-
-    fireEvent.click(
-      screen.getByRole("button", { name: "コーナー（小さめ）のウィンドウを閉じる" }),
-    );
-    await waitFor(() =>
-      expect(mocks.closeEffectOverlayWindow).toHaveBeenCalledTimes(1),
-    );
-
-    expect(localStorage.getItem(EFFECT_OVERLAY_ENABLED_KEY)).toBe("true");
-    expect(mocks.openEffectOverlayWindow).not.toHaveBeenCalled();
-  });
-
-  it("⚠ 061i: 窓が停止中のときは「ウィンドウを閉じる」を出さない", async () => {
-    mocks.isEffectOverlayOpen.mockResolvedValue(false);
-    render(<ObsEffectsScreen />);
-    await waitFor(() => expect(windowStatus()).toContain("停止中"));
-    expect(
-      screen.queryByRole("button", { name: "コーナー（小さめ）のウィンドウを閉じる" }),
-    ).toBeNull();
-  });
+  // ⚠⚠⚠ **061p: 「ウィンドウを閉じる」の 2 ケースを削除した**
+  //   （①押しても派生値を触らない ②停止中には出さない）。**ボタンごと廃止したため。**
+  //   ⚠ ①が守っていた「**設定と窓を混ぜない**」（判断 1）は、いまや窓を閉じる経路が
+  //   1 つも無いので**構造的に成立している**（`close*` が呼ばれないことは上の 061p の節が固定）。
+  //   ⚠ 復活させるときは `git show` でこの 2 ケースごと戻すこと。
 
   // --- 061i レビュー対応: 移行（S-3）と「ウィンドウを開く」（Q-2） ---------------------------------
 
@@ -552,7 +629,7 @@ describe("061a: ObsEffectsScreen", () => {
     //   ⚠ 未保存（キー無し）は false 扱いなので、条件 0 件の初回訪問では**キーが生えないこと**が期待。
     const setItem = vi.spyOn(Storage.prototype, "setItem");
     render(<ObsEffectsScreen />);
-    await waitFor(() => expect(windowStatus()).toContain("停止中"));
+    await waitForStatusPoll();
 
     expect(localStorage.getItem(EFFECT_OVERLAY_ENABLED_KEY)).toBeNull();
     expect(
@@ -561,60 +638,71 @@ describe("061a: ObsEffectsScreen", () => {
     setItem.mockRestore();
   });
 
-  it("⚠⚠ 061i レビュー Q-2: 停止中でも条件があれば「ウィンドウを開く」で開き直せる", async () => {
-    // ⚠⚠ **自動 open の契機は「0 → 1 件の遷移」だけ**なので、条件が既に 1 件以上ある状態では
-    //   何をしても窓が開かない（＝「閉じる」はあるのに「開く」が無い非対称）。
-    // ⚠ フラグは触らない（設定と窓を混ぜない・判断 1）。⚠ ガイド旗も立てない（判断 3）。
-    localStorage.setItem(
-      EFFECT_ASSIGNMENTS_KEY,
-      JSON.stringify({ superchat: { kind: "template", templateId: TEMPLATE_ID } }),
-    );
-    mocks.listEffectTemplates.mockResolvedValue([record()]);
-    mocks.isEffectOverlayOpen.mockResolvedValue(false);
-    render(<ObsEffectsScreen />);
-    await waitFor(() => expect(windowStatus()).toContain("停止中"));
+  // ⚠⚠ **061p: 「ウィンドウを開く」の 2 ケースを削除した**（ボタンごと廃止）。
+  //   ⚠⚠ **061i レビュー Q-2 の非対称は「両方無い」で解消した**——閉じる手段も開く手段も
+  //   画面から消えたので、**窓を開き直す導線は「配信画面でテスト表示」とアプリ再起動だけ**である。
+  //   ⚠ 前者の仕様は `EffectTemplateCard.test.tsx`、後者は `effectOverlayRestore` が持つ。
 
-    fireEvent.click(
-      screen.getByRole("button", { name: "コーナー（小さめ）のウィンドウを開く" }),
-    );
-    await waitFor(() =>
-      expect(mocks.openEffectOverlayWindow).toHaveBeenCalledTimes(1),
-    );
-    expect(localStorage.getItem(EFFECT_OVERLAY_ENABLED_KEY)).toBe("true"); // 再計算のぶん（押して変わったのではない）
-    expect(localStorage.getItem(EFFECT_OVERLAY_GUIDE_PENDING_KEY)).toBeNull();
-  });
-
-  it("⚠ 061i レビュー Q-2: 条件が 0 件のときは「ウィンドウを開く」を出さない", async () => {
-    // ⚠ 出しても「開いたのに何も出ない窓」を作るだけで、正しい行動は条件を設定すること。
-    mocks.isEffectOverlayOpen.mockResolvedValue(false);
-    render(<ObsEffectsScreen />);
-    await waitFor(() => expect(windowStatus()).toContain("停止中"));
-    expect(
-      screen.queryByRole("button", { name: "コーナー（小さめ）のウィンドウを開く" }),
-    ).toBeNull();
-  });
-
-  it("⚠⚠ 061i レビュー S-4: 自動 open の直後は前提ステータスを楽観的に「表示中」にする", async () => {
+  it("⚠⚠ 061i レビュー S-4: 自動 open の直後は窓を楽観的に「開いている」扱いにする", async () => {
     // ⚠⚠ **旗の残骸を防ぐための楽観更新。** ポーリングは 2 秒間隔なので、素のままだと
-    //   自動 open の直後もしばらく「停止中」に見える。その隙間に「配信画面でテスト表示」を押すと
+    //   自動 open の直後もしばらく「停止中」のままである。その隙間に「配信画面でテスト表示」を押すと
     //   `EffectTemplateCard` が**旗経路**へ倒れるが、既存窓は `show()` されるだけで
     //   **再マウントしない**＝旗を読み直さないので、保留旗とガイド旗が**消えない残骸**になる
     //   （次に窓が開いた瞬間＝再起動時の復元で、無操作でエフェクトが出てガイドが OBS へ映る）。
-    // ⚠ close 側は楽観更新しない（壊れ方が「押しても出ない」で軽いほうへ倒れるため）。
+    // ⚠⚠ **061p で観測点を付け替えた**——「表示中」という文字は画面から消えたので、
+    //   **この state の唯一の実用途である「テスト表示がどちらの経路へ倒れるか」**を直接見る。
+    //   ⇒ 楽観更新が無いとコーナーの**保留旗が書かれてしまう**（＝残骸）。
+    // ⚠ close 側は楽観更新しない（061p 現在、close の経路自体が無い）。
     mocks.listEffectTemplates.mockResolvedValue([record()]);
+    // ⚠ ステージ窓は開いている扱いにして、コーナー側の分岐だけを見る。
+    mocks.isStageOverlayOpen.mockResolvedValue(true);
     // ⚠ open を解決させない＝「invoke は投げたが実態はまだ分からない」状態を作る。
     mocks.openEffectOverlayWindow.mockImplementation(() => new Promise(() => {}));
     render(<ObsEffectsScreen />);
     await screen.findAllByText("きらきら演出"); // ⚠ 一覧と `<option>` の 2 か所に出る
-    await waitFor(() => expect(windowStatus()).toContain("停止中"));
+    await waitForStatusPoll();
 
     fireEvent.change(conditionSelect("スーパーチャット・ビッツ"), {
       target: { value: `template:${TEMPLATE_ID}` },
     });
+    await waitFor(() =>
+      expect(mocks.openEffectOverlayWindow).toHaveBeenCalledTimes(1),
+    );
 
-    expect(windowStatus()).toContain("表示中");
-    // ⚠ ＝ この時点でテスト表示を押しても旗経路へは倒れない（`EffectTemplateCard` が `true` を見る）。
-    expect(windowStatus()).not.toContain("停止中");
+    fireEvent.click(
+      screen.getByRole("button", { name: "配信画面でテスト表示" }),
+    );
+
+    // ⚠⚠ **本命**: 保留旗もガイド旗も書かれない（＝`storage` 経路へ倒れた）。
+    expect(localStorage.getItem(EFFECT_TEST_FIRE_PENDING_KEY)).toBeNull();
+    expect(localStorage.getItem(EFFECT_OVERLAY_GUIDE_PENDING_KEY)).toBeNull();
+    expect(localStorage.getItem(EFFECT_TEST_FIRE_KEY)).not.toBeNull();
+    // ⚠ 窓を開き直す invoke も増えない（既に「開いている」と見なしているため）。
+    expect(mocks.openEffectOverlayWindow).toHaveBeenCalledTimes(1);
+  });
+
+  it("⚠⚠ 061p: 窓の状態のポーリングは残っている（表示はしないが、テスト表示の経路分岐に要る）", async () => {
+    // ⚠⚠ **前提ステータスを消したときに一緒に消しやすい**——消すと `effectWindowOpen` が
+    //   `null` のままになり、`EffectTemplateCard` が**常に `storage` 経路へ倒れる**＝
+    //   停止中の窓では「押しても何も出ない」（061h までの挙動）へ静かに退行する。
+    mocks.isEffectOverlayOpen.mockResolvedValue(false);
+    mocks.isStageOverlayOpen.mockResolvedValue(false);
+    mocks.listEffectTemplates.mockResolvedValue([record()]);
+    render(<ObsEffectsScreen />);
+    await screen.findAllByText("きらきら演出");
+    await waitForStatusPoll();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "配信画面でテスト表示" }),
+    );
+
+    // ⚠ 2 窓とも停止中なので、**旗経路**（保留旗＋ガイド旗＋窓を開く）へ倒れる。
+    expect(localStorage.getItem(EFFECT_TEST_FIRE_PENDING_KEY)).toBe(TEMPLATE_ID);
+    expect(localStorage.getItem(EFFECT_OVERLAY_GUIDE_PENDING_KEY)).toBe("true");
+    await waitFor(() =>
+      expect(mocks.openEffectOverlayWindow).toHaveBeenCalledTimes(1),
+    );
+    expect(mocks.openStageOverlayWindow).toHaveBeenCalledTimes(1);
   });
 
   it("⚠ 自動反映トグルは設定を立てるだけ（窓を開かない・045c の規律）", async () => {
@@ -634,7 +722,10 @@ describe("061a: ObsEffectsScreen", () => {
     mocks.isCommentViewerOpen.mockResolvedValue(false);
     render(<ObsEffectsScreen />);
 
-    await waitFor(() => expect(screen.getByText("閉じています")).toBeInTheDocument());
+    // ⚠ 061p: 「コメントビューア＝閉じています」の行は消えたので、**案内そのもの**の出現を待つ。
+    await waitFor(() =>
+      expect(screen.getByText(/OBS\s*への反映は行われません/)).toBeInTheDocument(),
+    );
     expect(
       screen.getByText(/OBS\s*への反映は行われません/),
     ).toBeInTheDocument();
@@ -653,26 +744,38 @@ describe("061a: ObsEffectsScreen", () => {
     mocks.isCommentViewerOpen.mockResolvedValue(false);
     const { container } = render(<ObsEffectsScreen />);
 
-    await waitFor(() => expect(screen.getByText("閉じています")).toBeInTheDocument());
+    // ⚠ 061p: 「コメントビューア＝閉じています」の行は消えたので、**案内そのもの**の出現を待つ。
+    await waitFor(() =>
+      expect(screen.getByText(/OBS\s*への反映は行われません/)).toBeInTheDocument(),
+    );
     expect(container.textContent).not.toContain("エフェクトも表示されません");
   });
 
-  it("⚠ 061b: エフェクトの表示だけは続く、という非対称を**条件つきで**案内する", async () => {
-    // 「OBS への反映は止まるが、エフェクトの表示自体は続く」というねじれをユーザーへ明示する
-    //（`obs-enable` の送出だけがコメビュ窓に残っているため）。
-    // ⚠⚠ **061b レビュー Q-1 で「エフェクトのウィンドウを表示したまま」という条件を必須にした。**
-    //   条件抜きで「取得を開始したあとなら続きます」と書くと、この案内が出る状況
-    //   （＝コメビュ窓が閉じている）に「表示 OFF のまま閉じた＝sidecar は既に死んでいる」
-    //   ユーザーが含まれるため**嘘になる**（061a Q-1「配信中には表示されません」と同じ失敗モード）。
+  it("⚠⚠ 061b/061p: コメント取得（外部通信）が続くことと、その止め方を案内する（§1 の停止導線）", async () => {
+    // ⚠ 061b レビュー S-1: コメビュ窓を閉じても sidecar が生き続けるケースでは
+    //   Twitch/YouTube への取得＝外部通信も続く（`stop-session` は送られない）。
+    // ⚠⚠⚠ **061p で止め方が 1 つになった。** 061i/061k は
+    //   「エフェクトのウィンドウを**2 つとも**『ウィンドウを閉じる』で閉じる」も案内していたが、
+    //   **そのボタンを削除した**ので、案内は `stop-session`（コメントビューアで取得を停止）だけになる。
+    //   ⚠ `docs/security.md` §1 の 061p 追補が要求するのはこの 2 要素——
+    //   **①取得が続いていること ②その止め方**。⚠ **どちらかを落とす変異はここで落ちる。**
     mocks.isCommentViewerOpen.mockResolvedValue(false);
-    render(<ObsEffectsScreen />);
+    const { container } = render(<ObsEffectsScreen />);
 
-    await waitFor(() => expect(screen.getByText("閉じています")).toBeInTheDocument());
-    expect(
-      screen.getByText(
-        /エフェクトのウィンドウ（.*）を表示したまま[\s\S]*閉じた場合は[\s\S]*続きます/,
-      ),
-    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByText(/OBS\s*への反映は行われません/)).toBeInTheDocument(),
+    );
+    // ①取得が続く条件（エフェクトのウィンドウが開いている間）
+    expect(container.textContent).toContain(
+      "エフェクトのウィンドウが開いているあいだはコメントの取得が続く",
+    );
+    // ②止め方（＝いま実在する唯一の操作）
+    expect(container.textContent).toContain(
+      "コメントビューアを開いて取得を停止してください",
+    );
+    // ⚠⚠ **廃止した操作を案内しない**（061i レビュー S-1／061p で 2 度発火した失敗モード）。
+    expect(container.textContent).not.toContain("ウィンドウを閉じる");
+    expect(container.textContent).not.toContain("2 つとも");
   });
 
   it("⚠⚠ 061b: 条件なしで「閉じても続く」と断言しない（Q-1 の再発防止）", async () => {
@@ -681,20 +784,10 @@ describe("061a: ObsEffectsScreen", () => {
     mocks.isCommentViewerOpen.mockResolvedValue(false);
     const { container } = render(<ObsEffectsScreen />);
 
-    await waitFor(() => expect(screen.getByText("閉じています")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByText(/OBS\s*への反映は行われません/)).toBeInTheDocument(),
+    );
     expect(container.textContent).not.toContain("エフェクトの表示そのものは");
-  });
-
-  it("⚠⚠ 061b: コメント取得（外部通信）が続くことと、その止め方を案内する", async () => {
-    // ⚠ 061b レビュー S-1: コメビュ窓を閉じても sidecar が生き続けるケースでは
-    //   Twitch/YouTube への取得＝外部通信も続く（`stop-session` は送られない）。
-    //   ツール管理の「停止」は窓を閉じるだけなので、**取得を止める導線はここにしか無い**。
-    mocks.isCommentViewerOpen.mockResolvedValue(false);
-    const { container } = render(<ObsEffectsScreen />);
-
-    await waitFor(() => expect(screen.getByText("閉じています")).toBeInTheDocument());
-    expect(container.textContent).toContain("コメントの取得がそのまま続きます");
-    expect(container.textContent).toContain("取得を止めたいとき");
   });
 
   /**
@@ -710,18 +803,16 @@ describe("061a: ObsEffectsScreen", () => {
    *   ②追加できたかどうかの確認場所（コメビュ窓の設定 →「OBSに表示」）
    *   ③コメビュ窓を開いていないと反映そのものが行われない
    */
-  it("⚠⚠ 061e: 注記が「失敗のときだけ赤字・成功は無表示」と書いてある（旧文は嘘だった）", async () => {
+  it("⚠⚠ 061e/061p: 注記が「失敗のときだけ赤字が出る」と書いてある（旧文は嘘だった）", async () => {
     const { container } = render(<ObsEffectsScreen />);
     await waitFor(() => expect(autoAddToggle()).toBeInTheDocument());
 
-    // 要素①
-    expect(container.textContent).toContain("失敗したときだけ");
-    expect(container.textContent).toContain("成功したときは何も出ません");
     // ⚠⚠ **「コメント画面の」という限定まで固定する**（061e レビュー Q-3）。ここが無いと
     // 「コメントビューアの画面上部に**いつでも**赤い文字が出ます」のような**別の言い回しの嘘**へ
-    // 書き換える変異が**生存する**（実測: 上の部分一致 2 件と旧文の不在 assert だけでは 28/28 緑のまま通った）。
+    // 書き換える変異が**生存する**（実測: 部分一致 2 件と旧文の不在 assert だけでは緑のまま通った）。
     // ⚠ 限定が要る理由＝コメビュ窓で設定/視聴者ビューを開いている間はツールバーごと差し替わる
     //（045c/059a の既知の割り切り）。
+    expect(container.textContent).toContain("失敗したときだけ");
     expect(container.textContent).toContain(
       "コメントビューアのコメント画面の上部に赤い文字が出ます",
     );
@@ -731,17 +822,12 @@ describe("061a: ObsEffectsScreen", () => {
     );
   });
 
-  it("⚠ 061e: 注記に「どこで結果を確認できるか」と「コメビュ窓が要ること」が書いてある", async () => {
-    const { container } = render(<ObsEffectsScreen />);
-    await waitFor(() => expect(autoAddToggle()).toBeInTheDocument());
-
-    // 要素②（全状態が見えるのは設定カードのほう）
-    expect(container.textContent).toContain("「OBSに表示」で確認できます");
-    // 要素③（061a の事実＝`obs-enable` を送れるのはコメビュ窓だけ）
-    expect(container.textContent).toContain(
-      "コメントビューアを開いていないあいだは反映そのものが行われない",
-    );
-  });
+  // ⚠⚠ **061p: 061e の要素②③（確認場所＝「OBSに表示」／コメビュ窓が要ること）の 1 ケースを削除した。**
+  //   注記を 3 文 → 1 文へ短縮したため（指示＝説明が長すぎる）。
+  //   ⚠ **①（失敗のときだけ赤字）だけを残した**のは、あれが「成功したはずなのに何も出ない＝
+  //   壊れていると誤解する」を防いでいる唯一の文だから。
+  //   ⚠ ③（コメビュ窓を開いていないと反映されない）は**前提案内が `viewerOpen === false` のときに
+  //   出す**ので、必要な人には届く（061e 穴 2 の役割分担のうち、常時側だけを削ったことになる）。
 
   it("⚠⚠ 061e: 注記は常時出る／前提案内の指示文とは重複させない（役割分担の固定）", async () => {
     // ⚠⚠ **穴 2 の結論をここで固定する。**
@@ -751,12 +837,12 @@ describe("061a: ObsEffectsScreen", () => {
     // **指示**（「コメントビューアを開くと、そのときに反映されます」）を書かない。
     mocks.isCommentViewerOpen.mockResolvedValue(true);
     const { container } = render(<ObsEffectsScreen />);
-    await waitFor(() =>
-      expect(screen.getByText("開いています")).toBeInTheDocument(),
-    );
+    await waitForStatusPoll();
 
     // コメビュ窓が開いていても注記は出る（＝常時表示）。
     expect(container.textContent).toContain("失敗したときだけ");
+    // ⚠ 061p: 前提案内は出ないので、止め方の案内もこの画面には無い。
+    expect(container.textContent).not.toContain("取得を停止してください");
     // 前提案内は出ないので、その指示文もこの画面のどこにも無い（＝注記が抱え込んでいない）。
     expect(container.textContent).not.toContain(
       "コメントビューアを開くと、そのときに反映されます",
@@ -767,36 +853,14 @@ describe("061a: ObsEffectsScreen", () => {
     mocks.isCommentViewerOpen.mockResolvedValue(true);
     render(<ObsEffectsScreen />);
 
-    await waitFor(() =>
-      expect(screen.getByText("開いています")).toBeInTheDocument(),
-    );
+    await waitForStatusPoll();
     expect(screen.queryByText(/OBS\s*への反映は行われません/)).toBeNull();
     expect(screen.queryByRole("button", { name: "コメントビューアを開く" })).toBeNull();
   });
 
-  it("前提ステータスに OBS WebSocket の検出結果が出る", async () => {
-    mocks.detectObsWebsocketConfig.mockResolvedValue({
-      enabled: true,
-      port: 4455,
-      authRequired: false,
-    });
-    render(<ObsEffectsScreen />);
-    await waitFor(() =>
-      expect(screen.getByText("有効（ポート 4455）")).toBeInTheDocument(),
-    );
-  });
-
-  it("OBS WebSocket が無効なら有効化を促す（未検出と同じ扱い）", async () => {
-    mocks.detectObsWebsocketConfig.mockResolvedValue({
-      enabled: false,
-      port: 4455,
-      authRequired: false,
-    });
-    render(<ObsEffectsScreen />);
-    await waitFor(() =>
-      expect(screen.getByText(/無効（OBS の/)).toBeInTheDocument(),
-    );
-  });
+  // ⚠⚠ **061p: OBS WebSocket の検出結果を出す 2 ケースを削除した**
+  //   （有効／無効の 2 状態。⚠ 認証必須のケースも下で削除）。「OBS の WebSocket」行ごと廃止したため。
+  //   ⚠ **検出そのものを呼ばなくなったこと**は上の 061p の節が固定している。
 
   // --- 061a レビュー（Q-9）で追加した 3 ケース -------------------------------------------------
 
@@ -821,71 +885,51 @@ describe("061a: ObsEffectsScreen", () => {
     expect(mocks.isEffectOverlayOpen.mock.calls.length).toBe(callsBeforeUnmount);
   });
 
-  it("⚠⚠ 061i: 窓の開閉は直列化される（条件の自動 open の途中で「閉じる」を押しても順序が保たれる）", async () => {
-    // ⚠ `open_effect_overlay_window` は `#[tauri::command(async)]`（別スレッド・窓生成で数百 ms）、
-    // close は同期コマンド。直列化が無いと「close が『窓なし＝no-op』で先に流れ、その後 open が窓を作る」
-    // 順序が起こりうる（＝閉じたはずの窓が OBS に映り続ける・自動 close 経路が無いので解消しない）。
-    // ⚠⚠ **061i で経路が変わったので固定する経路も差し替えた**（表示トグルの連打 → 条件の自動 open ＋
-    //   「ウィンドウを閉じる」）。**契機が増えたぶん、直列化はむしろ必要になっている**——
-    //   だから `effectOverlayOpRef` は残してあり、3 つの契機は全部あのキューを通る。
-    const order: string[] = [];
-    let resolveOpen: (() => void) | undefined;
+  it("⚠⚠ 061i/061p: 同じ窓への要求は直列化される（先の open が終わるまで次を投げない）", async () => {
+    // ⚠ `open_effect_overlay_window` は `#[tauri::command(async)]`（別スレッド・窓生成で数百 ms）。
+    //   直列化が無いと、同じ窓に対する 2 つの要求が**同時に走る**（061i がキューを作った理由）。
+    // ⚠⚠ **061p で駆動を差し替えた**——旧版は「自動 open の途中で『ウィンドウを閉じる』を押す」で
+    //   順序を見ていたが、**そのボタンを削除した**。⇒ コーナー窓への open 契機が
+    //   **2 つ残っている**ことを使う（①「配信画面でテスト表示」②条件が 0 → 1 件）。
+    //   ⚠ 見たい不変条件は同じ＝**先の要求が解決するまで次の invoke を投げない**。
+    let resolveFirst: (() => void) | undefined;
     mocks.openEffectOverlayWindow.mockImplementation(
       () =>
         new Promise<void>((resolve) => {
-          resolveOpen = () => {
-            order.push("open");
-            resolve();
-          };
+          // ⚠ 2 本目以降は待たせない（1 本目だけを止める）。
+          if (resolveFirst === undefined) resolveFirst = resolve;
+          else resolve();
         }),
     );
-    mocks.closeEffectOverlayWindow.mockImplementation(async () => {
-      order.push("close");
-    });
-    // 「閉じる」ボタンを出すために、窓は表示中に見せておく。
-    mocks.isEffectOverlayOpen.mockResolvedValue(true);
+    // ⚠ ステージ窓は開いている扱い（テスト表示がコーナー窓だけを開く状態にする）。
+    mocks.isEffectOverlayOpen.mockResolvedValue(false);
+    mocks.isStageOverlayOpen.mockResolvedValue(true);
     mocks.listEffectTemplates.mockResolvedValue([record()]);
 
     render(<ObsEffectsScreen />);
     await screen.findAllByText("きらきら演出"); // ⚠ 一覧と `<option>` の 2 か所に出る
-    await waitFor(() => expect(windowStatus()).toContain("表示中"));
+    await waitForStatusPoll();
 
-    // 条件を 0 → 1 件（＝自動 open。まだ解決させない）。
+    // ①テスト表示 → コーナー窓の open（まだ解決させない）。
+    fireEvent.click(screen.getByRole("button", { name: "配信画面でテスト表示" }));
+    await act(async () => {});
+    expect(resolveFirst).toBeDefined(); // open が呼ばれ、未解決のまま滞留している
+    expect(mocks.openEffectOverlayWindow).toHaveBeenCalledTimes(1);
+
+    // ②その最中に条件を 0 → 1 件（＝同じ窓への 2 本目の要求）。
     fireEvent.change(conditionSelect("スーパーチャット・ビッツ"), {
       target: { value: `template:${TEMPLATE_ID}` },
     });
-    // ⚠ open は `effectOverlayOpRef` の `.then` の中で呼ばれる＝**マイクロタスクを 1 つ挟む**ので、
-    // ここで流さないと `resolveOpen` がまだ未定義のまま先へ進んでしまう（実装時に踏んだ）。
     await act(async () => {});
-    expect(resolveOpen).toBeDefined(); // open が呼ばれ、未解決のまま滞留している
+    // ⚠⚠ **本命**: 1 本目が滞留している間、2 本目の invoke は**まだ飛ばない**。
+    expect(mocks.openEffectOverlayWindow).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(
-      screen.getByRole("button", { name: "コーナー（小さめ）のウィンドウを閉じる" }),
-    );
-    expect(order).toEqual([]); // どちらもまだ走り終わっていない
-
-    // ⚠ `waitFor`（実タイマー・既定 1s）は使わない。open の解決後に走るのは
-    // 「refreshStatus → close → refreshStatus」という**マイクロタスクの連なりだけ**なので、
-    // `act` で流し切れば結果は決定的になる。フルスイートの負荷で 1s を跨ぐ flaky を持ち込まないため。
-    await act(async () => resolveOpen?.());
+    // ⚠ `waitFor`（実タイマー・既定 1s）は使わない。解決後に走るのは
+    //   「refreshStatus → open → refreshStatus」という**マイクロタスクの連なりだけ**なので、
+    //   `act` で流し切れば結果は決定的になる（フルスイートの負荷で 1s を跨ぐ flaky を持ち込まない）。
+    await act(async () => resolveFirst?.());
     await act(async () => {});
-    expect(order).toEqual(["open", "close"]);
-    // ⚠ 「閉じる」は設定を触らないので、条件のぶん true のまま（判断 1）。
-    expect(localStorage.getItem(EFFECT_OVERLAY_ENABLED_KEY)).toBe("true");
-  });
-
-  it("OBS WebSocket が認証必須ならその旨も出す（パスワード設定が要ることに気付ける）", async () => {
-    mocks.detectObsWebsocketConfig.mockResolvedValue({
-      enabled: true,
-      port: 4466,
-      authRequired: true,
-    });
-    render(<ObsEffectsScreen />);
-    await waitFor(() =>
-      expect(
-        screen.getByText("有効（ポート 4466・パスワードあり）"),
-      ).toBeInTheDocument(),
-    );
+    expect(mocks.openEffectOverlayWindow).toHaveBeenCalledTimes(2);
   });
 
   it("⚠ 前提ステータスは他の窓での開閉にも追随する（この画面の外でも開閉されるため）", async () => {
@@ -893,21 +937,23 @@ describe("061a: ObsEffectsScreen", () => {
     // 他窓の操作で開閉されうる。**この画面を開いたまま**表示が実態へ追いつくこと。
     // ⚠ ステータスは invoke の解決を経て state へ入るので、**`act` で包んで再レンダーまで流す**
     //（`advanceTimersByTimeAsync` だけだと「確認中…」のまま先へ進む）。
+    // ⚠ 061p: ステータス行は消えたので、**前提案内の出入り**で追随を見る（観測点の付け替え）。
     vi.useFakeTimers();
     mocks.isCommentViewerOpen.mockResolvedValue(false);
     render(<ObsEffectsScreen />);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
-    expect(screen.getByText("閉じています")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "コメントビューアを開く" }),
+    ).toBeInTheDocument();
 
     // 画面の外でコメビュ窓が開かれた。
     mocks.isCommentViewerOpen.mockResolvedValue(true);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(2000);
     });
-    expect(screen.getByText("開いています")).toBeInTheDocument();
-    // 案内も引っ込む（＝「黙って何も起きない」状態が解消したことが分かる）。
+    // 案内が引っ込む（＝「黙って何も起きない」状態が解消したことが分かる）。
     expect(screen.queryByRole("button", { name: "コメントビューアを開く" })).toBeNull();
   });
 
@@ -931,14 +977,7 @@ describe("061a: ObsEffectsScreen", () => {
     );
     expect(localStorage.getItem(EFFECT_OVERLAY_GUIDE_PENDING_KEY)).toBeNull();
 
-    // ⚠ 「ウィンドウを閉じる」でも立てない（閉じる操作にガイドの出番は無い）。
-    await waitFor(() => expect(windowStatus()).toContain("表示中"));
-    fireEvent.click(
-      screen.getByRole("button", { name: "コーナー（小さめ）のウィンドウを閉じる" }),
-    );
-    await act(async () => {});
-    expect(localStorage.getItem(EFFECT_OVERLAY_GUIDE_PENDING_KEY)).toBeNull();
-
+    // ⚠ 061p: 「ウィンドウを閉じる」でも立てないことを見ていたが、**ボタンごと廃止**したので落とした。
     // ⚠ 自動反映トグルでも立てない（窓を開かないので）。
     fireEvent.click(autoAddToggle());
     expect(localStorage.getItem(EFFECT_OVERLAY_GUIDE_PENDING_KEY)).toBeNull();
@@ -992,18 +1031,23 @@ describe("061a: ObsEffectsScreen", () => {
     expect(mocks.closeEffectOverlayWindow).not.toHaveBeenCalled();
   });
 
-  it("⚠⚠ 新規 14: 前提ステータスの「開催中のイベント」行が 2 状態とも正しい", async () => {
+  it("⚠⚠ 新規 14/061p: 開催中かどうかが「配信イベント」タブの表示に出る（2 状態とも）", async () => {
+    // ⚠⚠ **061p で観測点を付け替えた**——前提ステータスの「開催中のイベント」行は削除したので、
+    //   **タブの中の表示**（＝開催中は残り時間と「終了」、未開催は「適用中」と「開始」）で見る。
+    //   ⚠ 残りは**分まで**（秒を出すと毎秒再描画になる・判断 10）。
+    // ⚠ 「適用中」バッジは一覧カードにも出るので、**開催の器のほうのボタン**で状態を見る。
     openEventTabWithApplied();
-    expect(roundStatus()).toContain("開催していません");
+    expect(screen.getByRole("button", { name: "開始" })).toBeInTheDocument();
+    expect(screen.queryByText(/残り \d+ 分/)).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "開始" }));
-    // ⚠ 残りは**分まで**（秒を出すと毎秒再描画になる・判断 10）。
-    expect(roundStatus()).toContain("みんなでコメントカウント");
-    expect(roundStatus()).toContain("残り 5 分");
-    expect(roundStatus()).not.toContain("開催していません");
+    expect(screen.getByText("残り 5 分")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "終了" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "開始" })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "終了" }));
-    expect(roundStatus()).toContain("開催していません");
+    expect(screen.getByRole("button", { name: "開始" })).toBeInTheDocument();
+    expect(screen.queryByText(/残り \d+ 分/)).toBeNull();
     await act(async () => {});
   });
 
@@ -1015,7 +1059,8 @@ describe("061a: ObsEffectsScreen", () => {
       JSON.stringify({ eventId: EVENT_ID, startedAt: now, endsAt: now + 120_000 }),
     );
     render(<ObsEffectsScreen />);
-    expect(roundStatus()).toContain("みんなでコメントカウント");
+    fireEvent.click(screen.getByRole("tab", { name: "配信イベント" }));
+    expect(screen.getByText("残り 2 分")).toBeInTheDocument();
     // ⚠⚠ **窓は開き直さない**（開くのは「開始」の操作だけ＝画面を開くたびに窓が増えない）。
     await act(async () => {});
     expect(mocks.openStageOverlayWindow).not.toHaveBeenCalled();
@@ -1032,8 +1077,11 @@ describe("061a: ObsEffectsScreen", () => {
       STREAM_EVENT_ROUND_KEY,
       JSON.stringify({ eventId: EVENT_ID, startedAt: 0, endsAt: 1 }),
     );
+    localStorage.setItem(STREAM_EVENT_SELECTED_KEY, EVENT_ID);
     render(<ObsEffectsScreen />);
-    expect(roundStatus()).toContain("開催していません");
+    fireEvent.click(screen.getByRole("tab", { name: "配信イベント" }));
+    // ⚠ 期限切れ＝開催していない＝タブは「適用中／開始」の状態に戻っている。
+    expect(screen.getByRole("button", { name: "開始" })).toBeInTheDocument();
     await act(async () => {});
     // ⚠⚠ **残ることが正しい**——正しさは `parseStreamEventRound` が持っており（読む側が必ず落とす）、
     //   掃除は「開催中に main 窓がこの画面を開いているとき」の best-effort に留めてある（判断 5）。
@@ -1057,10 +1105,10 @@ describe("061a: ObsEffectsScreen", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(60_000);
     });
-    expect(roundStatus()).toContain("みんなでコメントカウント");
     expect(localStorage.getItem(STREAM_EVENT_ROUND_KEY)).not.toBeNull();
     // ⚠ 残りは分で減っていく（時計が 1 つ＝`nowMs` が tick で進んでいる）。
-    expect(roundStatus()).toContain("残り 4 分");
+    // ⚠ 061p: 観測点はタブの中の残り時間（前提ステータスの行は削除した）。
+    expect(screen.getByText("残り 4 分")).toBeInTheDocument();
   });
 
   it("⚠⚠ 新規 13: 期限が来たら表示が消えて掃除が走り、アンマウントで tick が止まる", async () => {
@@ -1069,13 +1117,13 @@ describe("061a: ObsEffectsScreen", () => {
     const { unmount } = render(<ObsEffectsScreen />);
     fireEvent.click(screen.getByRole("tab", { name: "配信イベント" }));
     fireEvent.click(screen.getByRole("button", { name: "開始" }));
-    expect(roundStatus()).toContain("残り 5 分");
+    expect(screen.getByText("残り 5 分")).toBeInTheDocument();
 
     // 5 分を越えると、tick が期限切れに気づいて表示を落とし、保存値も掃除する。
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5 * 60_000 + 10_000);
     });
-    expect(roundStatus()).toContain("開催していません");
+    expect(screen.queryByText(/残り \d+ 分/)).toBeNull();
     expect(localStorage.getItem(STREAM_EVENT_ROUND_KEY)).toBeNull();
 
     // ⚠ 本命: 開催中にアンマウントしても tick が残らない（配信中にタイマーを残さない）。
@@ -1089,12 +1137,7 @@ describe("061a: ObsEffectsScreen", () => {
     expect(localStorage.getItem(STREAM_EVENT_ROUND_KEY)).not.toBeNull();
   });
 
-  it("⚠ 「開催中のイベント」行は共通領域にある（どちらのタブでも見える）", async () => {
-    localStorage.setItem(STREAM_EVENT_SELECTED_KEY, EVENT_ID);
-    render(<ObsEffectsScreen />);
-    // 既定タブ（コメントで出すエフェクト）でも出る。
-    expect(screen.getByText("開催中のイベント")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("tab", { name: "配信イベント" }));
-    expect(screen.getByText("開催中のイベント")).toBeInTheDocument();
-  });
+  // ⚠⚠ **061p: 「「開催中のイベント」行は共通領域にある」を削除した**（行ごと廃止）。
+  //   ⚠ **開催状態の持ち主が `ObsEffectsScreen` であること自体は変えていない**
+  //   （タブへ props で渡し、開始のステージ窓 open もこの画面のキューを通る＝上のケース群が固定）。
 });

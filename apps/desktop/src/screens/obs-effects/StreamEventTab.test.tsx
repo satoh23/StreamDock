@@ -48,6 +48,13 @@ const mocks = vi.hoisted(() => ({
   ],
 }));
 
+/**
+ * 061p: 「同梱イベントが 0 本」のケースで `registry` を空にするので、**戻すための控え**を取る。
+ * ⚠ `registry` の**参照**は `vi.mock` のファクトリが掴んでいるので、
+ * **配列を差し替えず、中身だけを出し入れする**こと（`length = 0` と `push`）。
+ */
+const REGISTRY_BACKUP = [...mocks.registry];
+
 vi.mock("../../features/obs-effects/streamEventRegistry", async (importOriginal) => {
   const actual =
     await importOriginal<
@@ -81,6 +88,35 @@ describe("061l: StreamEventTab", () => {
     localStorage.clear();
     mocks.vanished.value = false;
     vi.clearAllMocks();
+  });
+
+  // --- ⚠⚠⚠ 061p: 同梱イベントが 0 本のとき（＝実データの見え方） -------------------------------
+
+  it("⚠⚠ 061p: イベントが 1 本も無いときは「準備中です」だけを出す（実データの見え方）", () => {
+    // ⚠⚠ **061p で `STREAM_EVENT_REGISTRY` を空にした**（見本「みんなでコメントカウント」を削除。
+    //   指示＝ユーザーが使えるものだと誤解する）。⇒ **実機で出るのはこの状態だけ**である。
+    //   ⚠ 下の全ケース（一覧 → 詳細 → 適用 → 開始 → 終了）は**次タスクでイベントを 1 本足したときの
+    //   仕様**として、レジストリを注入したまま生かしてある。
+    // ⚠⚠ **「イベントの開催」カードを出さないこと**まで固定する——適用できるイベントが 1 つも
+    //   無いのに「一覧から選んで『適用』を押してください」と案内すると、**存在しない操作の指示**になる。
+    mocks.registry.length = 0;
+    try {
+      renderTab();
+      expect(screen.getByText("準備中です")).toBeInTheDocument();
+      expect(
+        screen.getByText(/今後のアップデートで追加予定です/),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("heading", { name: "イベントの開催" }),
+      ).toBeNull();
+      expect(screen.queryByRole("button", { name: "詳細を見る →" })).toBeNull();
+      // ⚠ `ComingSoonScreen`（画面まるごと用のダミーページ）は流用しない（クラス JSDoc）。
+      expect(screen.queryByText("この機能は現在準備中です")).toBeNull();
+      expect(screen.queryByText(/To be continued/)).toBeNull();
+    } finally {
+      // ⚠ 他のケースは注入した 2 本を前提にしているので、必ず戻す。
+      mocks.registry.push(...REGISTRY_BACKUP);
+    }
   });
 
   // --- 新規 3: 一覧 → 詳細 → 一覧 ----------------------------------------------------------------

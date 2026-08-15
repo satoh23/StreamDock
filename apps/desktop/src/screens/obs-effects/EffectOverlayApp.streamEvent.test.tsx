@@ -5,7 +5,6 @@ import {
   EFFECT_ASSIGNMENTS_KEY,
   STREAM_EVENT_ROUND_KEY,
 } from "../../features/comment-viewer/overlaySettings";
-import { STREAM_EVENT_REGISTRY } from "../../features/obs-effects/streamEventRegistry";
 import type { CommentViewDto } from "../../features/comment-viewer/types";
 import type { EffectTemplateMedia } from "../../features/obs-effects/bindings/EffectTemplateMedia";
 import type { EffectTemplateRecord } from "../../features/obs-effects/bindings/EffectTemplateRecord";
@@ -27,6 +26,16 @@ import type { EffectTriggerState } from "./effectTrigger";
  *   （＝ `recentFires` / `lastConditionAt` / `lastGiftAt` の**サイズを直接数える**。
  *   「何も出ない」系のアサーションでは殺せない＝061j 追加穴 η・061d-2 穴 γ・061k と同型の罠）
  * - **タイマーと `storage` リスナーがアンマウントで必ず外れる**（判断 11・教訓 E-1）
+ *
+ * ## ⚠⚠ 061p: 同梱レジストリを**差し替えて**検査する（`StreamEventTab.test.tsx` と同じ手）
+ *
+ * 061l はここで `STREAM_EVENT_REGISTRY[0]`（＝見本「みんなでコメントカウント」）を直接使っていたが、
+ * **061p で同梱イベントが 0 本になった**ため、そのままでは 1 件も検査できない。
+ * ⇒ **検査用のイベントを 1 本注入する**＝「ステージ窓の描画と件数の数え方」の仕様は
+ * 同梱データの本数に関係なく固定され続ける（次タスクで玉入れ大会を足しても無改変で通る）。
+ * ⚠⚠ **実データが 0 本＝実機ではイベントが 1 ピクセルも出ない**ことは
+ * `streamEventRegistry.test.ts`（未知 id は引けない）と `streamEventRound.test.ts`
+ * （未知 id の保存値は `null` へ倒す）が固定している。
  */
 const mocks = vi.hoisted(() => ({
   connectCommentStream: vi.fn(),
@@ -38,7 +47,31 @@ const mocks = vi.hoisted(() => ({
    * ここから `recentFires` / `lastConditionAt` / `lastGiftAt` の**サイズを直接数えられる**。
    */
   decideEffects: vi.fn(),
+  /** 061p: 検査用の同梱イベント 1 本（実データは 0 本）。 */
+  event: {
+    id: "test-event",
+    icon: "🧪",
+    title: "検査用イベント",
+    summary: "検査用。",
+    description: "検査用。",
+    defaultDurationMs: 5 * 60_000,
+    howTo: ["検査用"],
+  },
 }));
+
+vi.mock("../../features/obs-effects/streamEventRegistry", async (importOriginal) => {
+  const actual =
+    await importOriginal<
+      typeof import("../../features/obs-effects/streamEventRegistry")
+    >();
+  const registry = [mocks.event];
+  return {
+    ...actual,
+    STREAM_EVENT_REGISTRY: registry,
+    findStreamEvent: (id: string) => registry.find((e) => e.id === id) ?? null,
+    isStreamEventId: (id: string) => registry.some((e) => e.id === id),
+  };
+});
 
 vi.mock("../../features/comment-viewer/commentStream", () => ({
   connectCommentStream: mocks.connectCommentStream,
@@ -62,7 +95,8 @@ const triggerState = (): EffectTriggerState => {
   return calls[calls.length - 1][2] as EffectTriggerState;
 };
 
-const EVENT = STREAM_EVENT_REGISTRY[0];
+// ⚠ 061p: **注入した検査用イベント**（実データは 0 本＝上のクラス JSDoc の 061p 節）。
+const EVENT = mocks.event;
 const TEMPLATE_ID = "93c76e02-1111-4222-8333-444455556666";
 const PNG: EffectTemplateMedia = {
   media: "data:image/png;base64,iVBORw0KGgo=",

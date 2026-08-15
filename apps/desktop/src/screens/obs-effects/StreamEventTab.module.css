@@ -167,3 +167,27 @@
   font-size: 12px;
   line-height: 1.7;
 }
+
+/* --- 061p: 同梱イベントが 0 本のときの「準備中」 ---
+   ⚠ 意匠は `ComingSoonScreen.module.css` に寄せてあるが、**あちらを import しない**
+   （あれは画面まるごと用のダミーページで、ヘッダーの導線の意味論を持っている）。
+   ⚠ 新しい px / weight を発明しない——絵文字とタイトルの値はこのファイルの `.thumb`（30px）と
+   `.cardTitle`（17px/800）から取っている。 */
+.comingSoon {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 24px 16px;
+  text-align: center;
+}
+.comingSoonIcon {
+  font-size: 30px;
+  line-height: 1;
+}
+.comingSoonTitle {
+  color: var(--text);
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}

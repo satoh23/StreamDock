@@ -4,7 +4,6 @@ import { MONETARY_EVENT_TYPES } from "../comment-viewer/viewerFormat";
 import {
   addKeywordCondition,
   assignedTemplateIds,
-  clearAllEffectConditions,
   clearEffectConditionsForTemplate,
   createEffectMatcher,
   DEFAULT_EFFECT_OUTPUT,
@@ -505,23 +504,12 @@ describe("effectAssignments（061j: 条件の配列）", () => {
 
   // --- 復帰導線 ---------------------------------------------------------------------------------
 
-  it("⚠⚠ 「すべて「表示しない」に戻す」で全条件が「出さない」へ戻る（復帰導線）", () => {
-    setConditionEffect("event:superchat", TPL);
-    addKeywordCondition({ text: "草", match: "contains" }, TPL);
-    const next = clearAllEffectConditions();
-    for (const c of next) expect(c.effect).toEqual(NONE);
-    expect(effectConditionCount(next)).toBe(0);
-    expect(hasEffectConditions(next)).toBe(false);
-  });
-
-  it("⚠⚠ 復帰導線でも**キーワードそのものは消さない**（リセットではない）", () => {
-    addKeywordCondition({ text: "草", match: "exact" }, TPL);
-    clearAllEffectConditions();
-    const rows = keywordRows(loadEffectConditions());
-    expect(rows).toHaveLength(1);
-    expect(rows[0].when).toEqual({ type: "keyword", text: "草", match: "exact" });
-    expect(rows[0].effect).toEqual(NONE);
-  });
+  // ⚠⚠ **061p: 「すべて「表示しない」に戻す」（`clearAllEffectConditions`）の 2 件を削除した。**
+  //   ボタンごと廃止したため（指示）。**関数も消えているので、ここに検査を残す対象が無い。**
+  //   ⚠ 復活させるときは `git show` でこの 2 件を戻すこと（①全条件が「出さない」へ戻る
+  //   ②**キーワードそのものは消さない**＝リセットではない、の 2 点を独立に固定していた）。
+  //   ⚠ **1 行ずつ「エフェクトを出さない」に戻す経路（`setConditionEffect`）は無改変**で、
+  //   061p 以降はそれが唯一の復帰手段である（上の「イベント条件」節が固定している）。
 
   it("⚠⚠ テンプレート削除時、それを使っている条件だけが「出さない」へ戻る（キーワードも対象）", () => {
     setConditionEffect("event:superchat", TPL);

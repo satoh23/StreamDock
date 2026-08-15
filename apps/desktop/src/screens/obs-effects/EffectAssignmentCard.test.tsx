@@ -55,7 +55,11 @@ vi.mock("../../features/obs-effects/effectTemplateApi", () => ({
 import { EffectAssignmentCard } from "./EffectAssignmentCard";
 import { EffectTemplateCard } from "./EffectTemplateCard";
 import { useEffectTemplates } from "./useEffectTemplates";
-import type { EffectAssignment, EffectOutput } from "./effectAssignments";
+import {
+  KEYWORD_CONDITION_MAX,
+  type EffectAssignment,
+  type EffectOutput,
+} from "./effectAssignments";
 import {
   effectSelectValue,
   isEffectTemplateMissingFromList,
@@ -472,73 +476,21 @@ describe("EffectAssignmentCard", () => {
 
   // --- 復帰導線 ---------------------------------------------------------------------------------
 
-  it("⚠⚠ 「すべて「表示しない」に戻す」で全部「出さない」へ戻る（復帰導線）", async () => {
-    // ⚠⚠ **061h で文言と戻し先が変わったが、担保は不変**＝ **no-op にする変異でレッドになること**。
-    //   ⚠ むしろ復帰導線としては強くなっている（061d-2 は解除しても組み込みが出続けたので、
-    //   配信画面を完全に静かにするには 6 種別を 1 つずつ「出さない」にするしかなかった）。
-    localStorage.setItem(
-      EFFECT_ASSIGNMENTS_KEY,
-      JSON.stringify({
-        superchat: { kind: "template", templateId: TEMPLATE_ID },
-        subscription: { kind: "none" },
-        gift: { kind: "none" },
-      }),
-    );
-    render(<Harness />);
-    await waitFor(() =>
-      expect(mocks.listEffectTemplates).toHaveBeenCalledTimes(1),
-    );
-    expect(selectFor("スーパーチャット・ビッツ").value).toBe(
-      `template:${TEMPLATE_ID}`,
-    );
-
-    fireEvent.click(
-      screen.getByRole("button", { name: "すべて「表示しない」に戻す" }),
-    );
-
-    // ⚠⚠ **no-op にする変異はこの 2 つがレッドにする**（画面と保存の両方を見る）。
-    for (const select of effectSelects()) {
-      expect(select.value).toBe("none");
-    }
-    expect(localStorage.getItem(EFFECT_ASSIGNMENTS_KEY)).toBeNull();
-  });
-
-  it("⚠⚠ テンプレートの音が配信に流れることを、割り当て画面で必ず開示する（security-review S-1）", async () => {
-    // ⚠ プレビュー枠の注意文は「音ありテンプレートをプレビューしたとき」しか出ないので、
-    //   **プレビューを見ずに割り当てる導線**では「知らないまま配信に音が出る」経路が残っていた。
-    render(<Harness />);
-    await waitFor(() =>
-      expect(mocks.listEffectTemplates).toHaveBeenCalledTimes(1),
-    );
-    expect(screen.getByText(/配信にも流れます/)).toBeInTheDocument();
-  });
-
-  it("⚠ 復帰導線には「何が起きるか」の説明を添える", async () => {
-    render(<Harness />);
-    await waitFor(() =>
-      expect(mocks.listEffectTemplates).toHaveBeenCalledTimes(1),
-    );
-    expect(
-      screen.getByText(/テンプレートは削除されません/),
-    ).toBeInTheDocument();
-  });
-
-  it("⚠⚠ 061h の移行案内を出す（旧「組み込み」が黙って止まったことに気付ける唯一の場所）", async () => {
-    // ⚠⚠ **061h レビュー Q-8 で足した回帰。** 旧版の `{"kind":"builtin-monetary"}` は
-    //   `parseAssignment` が**未知 kind として「出さない」へ倒す**ので、更新したユーザーは
-    //   自分で変えた覚えが無いのに何も出なくなる。⚠ しかも `notInList` は
-    //   `kind === "template"` のときしか立たない（旧値はここへ届く前に `{kind:"none"}` へ化ける）ので、
-    //   上の「見つかりません」警告も出ない＝**この 1 文が唯一の気付ける経路**である。
-    // ⚠ 移行の判定コードは書かない方針（＝「未知 kind は安全側へ倒す」を 2 通りに書かない）なので、
-    //   **静的な文**として全ユーザーに出る。⚠ 消してよいのは 061h が十分に行き渡ってから。
-    render(<Harness />);
-    await waitFor(() =>
-      expect(mocks.listEffectTemplates).toHaveBeenCalledTimes(1),
-    );
-    expect(
-      screen.getByText(/以前のバージョンで「組み込み（名前と金額）」のエフェクトを使っていた場合/),
-    ).toBeInTheDocument();
-  });
+  // ⚠⚠⚠ **061p: 復帰導線（「すべて「表示しない」に戻す」）の 3 件を削除した**
+  //   （①全部「出さない」へ戻る ②説明文を添える ③キーワードは消さない）。
+  //   ボタンと `clearAllEffectConditions` ごと廃止したため（指示）。
+  //   ⚠ **061p 以降の復帰手段は「条件を 1 行ずつ『エフェクトを出さない』に戻す」だけ**で、
+  //   その経路は下の「`<select>` を変えると保存される」ケースが固定している。
+  //   ⚠ **復活させるときは `git show` でこの 3 件ごと戻すこと。**
+  //
+  // ⚠⚠ **音が配信に流れる旨の開示（061d-2 security-review S-1）は
+  //   `EffectTemplateCard.test.tsx` へ移した**（文をあちらのカードへ移設したため）。
+  //   ⚠ **どちらかの画面に必ず出ていること**が S-1 の要求で、**両方から消してはいけない。**
+  //
+  // ⚠⚠ **061h の移行案内（旧「組み込み」が黙って止まった件）の回帰も削除した。**
+  //   061h レビュー Q-8 が「061h が十分に行き渡ったら消してよい」と書いていた文で、
+  //   061p の「説明が長すぎる」でその予定を前倒しした。
+  //   ⚠ **再修正トリガー＝旧版から更新した人の「何も出ない」問い合わせが実際に出たとき。**
 
   // --- 削除との連動 -----------------------------------------------------------------------------
 
@@ -812,48 +764,40 @@ describe("EffectAssignmentCard", () => {
     ).toBeInTheDocument();
   });
 
-  it("⚠⚠ 復帰導線を押しても、入力したキーワードは消えない（リセットではない）", async () => {
-    localStorage.setItem(
-      EFFECT_ASSIGNMENTS_KEY,
-      JSON.stringify([
-        {
-          id: "kw:1",
-          when: { type: "keyword", text: "草", match: "contains" },
-          effect: { kind: "template", templateId: TEMPLATE_ID },
-        },
-      ]),
-    );
-    await readyHarness();
-    fireEvent.click(
-      screen.getByRole("button", { name: "すべて「表示しない」に戻す" }),
-    );
-    expect((screen.getByLabelText("キーワード 1") as HTMLInputElement).value).toBe("草");
-    expect(storedKeywords()[0].effect).toEqual({ kind: "none" });
-  });
+  // ⚠⚠ 061p: 「復帰導線を押してもキーワードは消えない」の回帰は、
+  //   復帰導線ごと削除した（上の「復帰導線」節の注記が正）。
 
-  // --- 文言（判断 11 / 12 / 7） ------------------------------------------------------------------
+  // --- 文言 -------------------------------------------------------------------------------------
 
-  it("⚠⚠ 判断 11: 「1 コメントに出るのは 1 つだけ・上から順」を画面に書く", async () => {
+  // ⚠⚠⚠ **061p: 説明文の回帰 3 件（判断 11 / 12 / 7）を削除した。**
+  //   ①「1 コメントに出るのは 1 つだけ・上から順」②「言葉で出すと金額やイベント名の文字が出ない」
+  //   ③クールダウン（秒数は書かない）——**文そのものを画面から消した**ため（指示＝説明が長すぎる）。
+  //   ⚠ **①②③はいずれも挙動の説明であって、挙動は 1 ミリも変えていない**
+  //   （走査順・差し込み変数・`KEYWORD_COOLDOWN_MS` は `effectAssignments.test.ts` /
+  //   `effectTrigger.test.ts` が実挙動として固定している＝**仕様の担保は残っている**）。
+  //   ⚠ 消えたのは「ユーザーがそれを事前に知れること」だけである。
+
+  it("⚠⚠ 061p: 画面に残す説明は「窓が自動で開く」と「言葉の上限・正規化」だけ", async () => {
+    // ⚠⚠ **061a 以来の規律「黙って何かが起きる状態を作らない」の最後の 1 文**——
+    //   061i で表示トグルを廃止して以降、**「いつ窓が開くのか」を書いている場所はここしかない**。
+    //   ⚠ **これを消す変異はレッドにする**（061p の削減はここで止まる、という線引きである）。
     await readyHarness();
     expect(
-      screen.getByText(/上から順に最初に当てはまった条件だけが使われます/),
+      screen.getByText(/条件を 1\s*つでも設定すると、配信画面用のウィンドウが自動で開きます/),
     ).toBeInTheDocument();
+    // ⚠ 上限は「＋ が押せなくなる理由」なので残す（押せない理由を書かない＝黙って詰まる）。
+    const keywordNote = screen.getByText(/コメントに入っていたらエフェクトを出す言葉/);
+    expect(keywordNote.textContent).toContain(`${KEYWORD_CONDITION_MAX}`);
+    expect(keywordNote.textContent).toMatch(/大文字・小文字や全角・半角は区別しません/);
   });
 
-  it("⚠⚠ 判断 12: 「言葉で出したときは金額やイベント名の文字が出ない」を画面に書く", async () => {
-    // ⚠ 実コードの帰結（`amountText`/`message` が null・`eventLabel` が空 → 1 行も描かれない）を
-    //   仕様として受け入れたので、**画面で明示する**のが約束。
+  it("⚠⚠ 061p: 「条件を追加」は ＋ アイコンだが、アクセシブル名は保つ", async () => {
+    // ⚠⚠ **グリフだけのボタンは読み上げで「プラス」としか読まれない**ので、
+    //   `aria-label` で「何が増えるのか」を残す（＝この検査が名前を固定している）。
+    //   ⚠ 見た目のラベル（旧「条件を追加」の文字）は消えていることも併せて見る。
     await readyHarness();
-    expect(
-      screen.getByText(/金額やイベント名の文字は出ません/),
-    ).toBeInTheDocument();
-  });
-
-  it("⚠ 判断 7: クールダウンを説明するが、**秒数は書かない**（定数が変わっても嘘にならない）", async () => {
-    await readyHarness();
-    const note = screen.getByText(/少し間隔を空けて反応します/);
-    expect(note).toBeInTheDocument();
-    // ⚠ 「10 秒」と書くと `KEYWORD_COOLDOWN_MS` を変えた瞬間に嘘になる（061a レビュー Q-1 の規律）。
-    expect(note.textContent).not.toMatch(/\d+\s*秒/);
+    const add = screen.getByRole("button", { name: "条件を追加" });
+    expect(add).toBeInTheDocument();
+    expect(add.textContent).toBe("＋");
   });
 });

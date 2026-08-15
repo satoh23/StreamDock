@@ -20,53 +20,10 @@
   line-height: 1.5;
 }
 
-/* 前提ステータス（エフェクト窓 / コメントビューア / OBS WebSocket）の 3 行。 */
-.statusList {
-  display: grid;
-  gap: 8px;
-  margin-top: 14px;
-  padding-top: 14px;
-  border-top: 1px solid var(--border-soft);
-}
-
-.statusRow {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  font-size: 12px;
-}
-
-.statusLabel {
-  color: var(--muted);
-}
-
-/* 061i: 値と「ウィンドウを閉じる」ボタンを右側にまとめる器（判断 1 の脱出路）。
-   ⚠ `.statusRow` は `justify-content: space-between` なので、値とボタンを素で並べると
-   **3 つの子が等間隔に散る**（ラベルと値の対応が崩れる）。ここで 1 つにまとめて右端へ寄せる。
-   ⚠ ボタンが無い行では子が 1 つなので、見た目は従来と 1px も変わらない。 */
-.statusValueGroup {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.statusValue {
-  color: var(--text);
-  font-weight: 800;
-}
-
-/* 前提が満たされていない行（＝ユーザーの対処が要る）。⚠ 色だけで伝えない——
-   文言そのものが「閉じています／未検出」なので、色は補助にとどめる（a11y）。
-   ⚠ 061a レビュー（Q-8）: 旧実装は `--muted`＝**OK 状態（--text）より薄く、ラベルと同色**で、
-   「対処が要る行ほど目立たない」という逆向きだった。`--warn` 系のトークンが `theme.css` に無いので、
-   色は `--text` のまま据え置き、**下線で注意を足す**（色覚に依存しない差分＝a11y の観点でも色より強い）。
-   再修正トリガー＝`theme.css` に警告色トークンが入ったら、そちらへ差し替える。 */
-.statusValue.blocked {
-  text-decoration: underline;
-  text-decoration-style: dotted;
-  text-underline-offset: 3px;
-}
+/* ⚠⚠ **061p: 前提ステータスの意匠（`.statusList` / `.statusRow` / `.statusLabel` /
+   `.statusValueGroup` / `.statusValue` / `.statusValue.blocked`）を削除した。**
+   6 行のステータスごと画面から消えたため（指示＝情報が増えて UX が下がる）。
+   ⚠ 復活させるときは `git show` で 061l 時点の値を取ること（**新しい px / weight を発明しない**）。 */
 
 /* 「コメントビューアが閉じている」ときだけ出る案内＋導線。 */
 .prerequisite {
@@ -116,6 +73,18 @@
   align-items: center;
   gap: 10px;
   margin-top: 12px;
+}
+
+/* 061p: 「条件を追加」の ＋ グリフ（`Button` の**子**に当てるクラス）。
+   ⚠⚠ **`Button` 自身（`.secondary`）を上書きしないこと**が要点——height / padding / font-size は
+   あちらが持っており、同じ詳細度（クラス 1 つ）で上書きすると**どちらが勝つかが CSS の
+   出力順に依存する**（jsdom はレイアウトを解決しないので**テストは緑のまま壊れる**）。
+   ⇒ 子の `<span>` にだけ字の大きさを当て、ボタンの寸法は既製のまま（高さ 38px・左右 14px）にする。
+   ＝ **新しい px / weight を発明しない**（061a の要件）。 */
+.iconGlyph {
+  display: block;
+  font-size: 18px;
+  line-height: 1;
 }
 
 /* 取り込み済みテンプレートの一覧。 */

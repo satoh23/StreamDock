@@ -46,6 +46,14 @@ import styles from "./StreamEventTab.module.css";
  *
  * ⚠ **`ComingSoonScreen` は流用しない**（061i の判断のまま。あれは画面まるごと用のダミーページで、
  * ヘッダーのセクション導線の意味論を持っている）。
+ *
+ * ## ⚠⚠ 061p: 同梱イベントが 0 本になった（＝通常はこの下の「準備中」だけが出る）
+ *
+ * `STREAM_EVENT_REGISTRY` が空なので、**実機で表示されるのは「準備中です」のカード 1 枚だけ**である。
+ * ⚠ **一覧・詳細・適用・開始/終了の実装は 1 行も消していない**——次タスク（玉入れ大会）で
+ * レジストリに 1 本足せば、そのまま元の導線が生き返る。
+ * ⚠⚠ **だから検査はレジストリを差し替えて行う**（`vi.mock`）。実データが 0 本でも
+ * 「一覧 → 詳細 → 適用 → 開始」の仕様は固定したまま保つ、という意図である。
  */
 
 /** 一覧 / 詳細のローカル state（`RakurakuToolsScreen` と同型・`Screen` union は増やさない）。 */
@@ -89,6 +97,38 @@ export function StreamEventTab({
     setView({ stage: "list" });
   };
 
+  // ⚠⚠ **061p: 同梱イベントが 0 本のときは「準備中」だけを出す**（下のクラス JSDoc の 061p 節）。
+  //   ⚠ **「イベントの開催」カードも出さない**——適用できるイベントが 1 つも無いのに
+  //   「一覧から選んで『詳細を見る』→『適用』を押してください」と案内すると、
+  //   **存在しない操作を指示する**ことになる（061a レビュー Q-1 の規律の、より強い形の違反）。
+  //   ⚠ `round` は見ない（レジストリが空なら `parseStreamEventRound` が必ず `null` へ倒すので、
+  //   開催中の状態はそもそも作れない）。
+  if (STREAM_EVENT_REGISTRY.length === 0) {
+    return (
+      <section className={layout.panel}>
+        <div className={layout.panelHead}>
+          <h3>配信イベント</h3>
+          <p>視聴者が参加できるイベントを配信画面に出します。</p>
+        </div>
+        <div className={layout.panelBody}>
+          {/* ⚠ `ComingSoonScreen` は流用しない（上のクラス JSDoc）。**画面まるごとが未実装**を表す
+              ダミーページで、ヘッダーのセクション導線の意味論を持っており、`headerSections` の
+              「OBSエフェクトは準備中ページを出さない」という担保と衝突する。
+              ⚠ 見た目だけをあちらに寄せる（絵文字 1 つ＋短い 2 文・外部リソースは読み込まない）。 */}
+          <div className={styles.comingSoon}>
+            <span className={styles.comingSoonIcon} aria-hidden="true">
+              🚧
+            </span>
+            <p className={styles.comingSoonTitle}>準備中です</p>
+            <p className={styles.note}>
+              視聴者が参加できるイベントは、今後のアップデートで追加予定です。
+            </p>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
   // 詳細（未知 id は一覧へフォールバック＝`RakurakuToolsScreen` と同型）。
   if (view.stage === "detail") {
     const event = findStreamEvent(view.id);
@@ -128,11 +168,14 @@ export function StreamEventTab({
                 コメントの数は、コメントの取得中だけ増えます（取得はコメントビューアから開始します）。
               </p>
               {/* ⚠⚠ 判断 5・061i 判断 1・親 046: **終了しても窓は閉じない**（配信中に窓が消えると
-                  OBS のウィンドウキャプチャが真っ黒になる）。閉じたいときの導線は下の 1 文。 */}
+                  OBS のウィンドウキャプチャが真っ黒になる）。
+                  ⚠⚠ **061p: 「閉じ方はここ」の案内を落とした**——`ObsEffectsScreen` の
+                  「ウィンドウを閉じる」ボタンごと削除されたため、**存在しない操作の案内**になっていた
+                  （061i レビュー S-1 と同型の失敗モード。`docs/security.md` §1 の 061p 追補が正）。
+                  ⚠ **「終了しても閉じない」という事実のほうは残す**（061l の security-review が
+                  「語感から『これで全部止まった』と読まれうる」として置いた 1 文である）。 */}
               <p className={styles.note}>
-                終了しても{EFFECT_OUTPUT_LABEL.stage}
-                のウィンドウは開いたままです（閉じるときは、下の「エフェクトのウィンドウ（
-                {EFFECT_OUTPUT_LABEL.stage}）」にある「ウィンドウを閉じる」を押してください）。
+                終了しても{EFFECT_OUTPUT_LABEL.stage}のウィンドウは開いたままです。
               </p>
               <div className={styles.roundActions}>
                 <Button type="button" onClick={onEndRound}>

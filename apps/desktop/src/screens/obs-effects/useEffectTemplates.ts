@@ -15,7 +15,6 @@ import {
 } from "../../features/comment-viewer/overlaySettings";
 import {
   addKeywordCondition as addKeywordConditionToStore,
-  clearAllEffectConditions,
   clearEffectConditionsForTemplate,
   EFFECT_OUTPUTS,
   hasEffectConditions,
@@ -53,9 +52,10 @@ import { EFFECT_EVENT_LABEL } from "./effectEventRows";
  * 「エフェクトを配信画面に表示する」トグルを廃止し、あのフラグを
  * **「表示する条件が 1 件以上あるか」の派生値**にした。＝ 条件を保存する**すべての経路**が
  * [`commitConditions`] を通り、そこだけが `saveEffectOverlayEnabled` を呼ぶ。
- * ⚠⚠ **061j で経路は 3 本 → 6 本になった**（[`setConditionEffect`] / [`addKeywordCondition`] /
- * [`updateKeywordCondition`] / [`removeCondition`] / [`clearAllAssignments`] /
- * **テンプレート削除に伴う [`runDelete`]**）。⚠ **`runDelete` を忘れやすい**——忘れると
+ * ⚠⚠ **061j で経路は 3 本 → 6 本になり、⚠ 061p で 5 本になった**（[`setConditionEffect`] /
+ * [`addKeywordCondition`] / [`updateKeywordCondition`] / [`removeCondition`] /
+ * **テンプレート削除に伴う [`runDelete`]**。⚠ 061p で `clearAllAssignments` が消えた）。
+ * ⚠ **`runDelete` を忘れやすい**——忘れると
  * 「最後のテンプレートを消したのにフラグが true のまま」＝ 条件が 0 件なのに OBS へ映り続ける。
  * ⚠ **フラグを触ってよいのはここだけ**（画面の「ウィンドウを閉じる」ボタンは窓を閉じるだけで
  * この値を触らない＝**設定と窓を混ぜない**）。
@@ -97,7 +97,7 @@ export interface UseEffectTemplates {
   /** 条件 1 件の**エフェクト**を変える（イベント条件・キーワード条件の共通 API）。 */
   setConditionEffect: (id: string, effect: EffectAssignment) => void;
   /**
-   * 061k: 条件 1 件の**出力先**（コーナー／全画面）を変える。
+   * 061k: 条件 1 件の**出力先**（小さく＝コーナー窓／大きく＝ステージ窓）を変える。
    * ⚠⚠ **061j 申し送りの「条件を書き換える経路は全部 `commitConditions` を通す」の 7 本目**。
    */
   setConditionOutput: (id: string, output: EffectOutput) => void;
@@ -113,7 +113,6 @@ export interface UseEffectTemplates {
   ) => void;
   /** 条件を 1 件消す。⚠ イベント条件の id を渡しても消えない（保存層が 6 行を作り直すため）。 */
   removeCondition: (id: string) => void;
-  clearAllAssignments: () => void;
   /**
    * 061j（判断 13）: 指定テンプレートを使っている条件の**表示ラベル**（削除確認文に出す）。
    *
@@ -406,15 +405,10 @@ export function useEffectTemplates({
   );
 
   /**
-   * ⚠⚠ **復帰導線**。壊れたテンプレートで配信画面が読めなくなったときの唯一の脱出路
-   * （060d の「既定のデザインに戻す」と同じ位置づけ）。**テストで固定する。**
-   * ⚠ 061j: **キーワード条件そのものは消さない**（`effect` だけ「表示しない」へ戻る）。
+   * ⚠⚠ **061p で `clearAllAssignments`（復帰導線）を削除した。**
+   * 理由と再修正トリガーは `effectAssignments.ts` の同名の注記が正
+   * （＝ ボタンを消した以上、hook に残しても呼び手のいない経路になる）。
    */
-  const clearAllAssignments = useCallback(() => {
-    // ⚠ 061i: 条件が 0 件になるので派生値も false へ倒れる（＝OBS 側のソースが非表示になる）。
-    //   ⚠ **窓は閉じない**（判断 1）。
-    commitConditions(() => clearAllEffectConditions());
-  }, [commitConditions]);
 
   /**
    * 061j（判断 13）: 削除確認文に出す**条件のラベル**。
@@ -458,7 +452,6 @@ export function useEffectTemplates({
     addKeywordCondition,
     updateKeywordCondition,
     removeCondition,
-    clearAllAssignments,
     conditionLabelsUsing,
   };
 }

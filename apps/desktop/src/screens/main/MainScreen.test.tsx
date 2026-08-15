@@ -152,21 +152,23 @@ describe("061b: メイン画面・内蔵コメントビューアの「停止」"
 
   it("⚠ 取得を止める方法も併せて伝える（§1「その止め方を明示する導線を必ず保つこと」）", async () => {
     // ⚠ 「続いています」とだけ言って放り出すと、ユーザーは止める手段に到達できない。
-    //   止め方は 2 つ（OBSエフェクト画面で「ウィンドウを閉じる」／コメビュを開いて取得を停止する）。
     // ⚠⚠ **061i レビュー S-1 でここを書き換えた。** 旧アサーションは
     //   `toContain("エフェクトの表示を OFF")` で**061i が廃止したトグルの名前を固定していた**ため、
     //   「案内が存在しない操作を指している」という退行を**テストが守ってしまっていた**。
-    //   ⚠ **画面名まで見る**——この文が出るのはツール管理画面で、ボタンはそこに無いので、
-    //   「どこへ行けばよいか」が落ちると §1 の導線として成立しない。
+    // ⚠⚠⚠ **061p で同じ失敗モードが 2 度目に発火した。** 061i/061k のアサーションは
+    //   `toContain("OBSエフェクト")` / `toContain("ウィンドウを閉じる")` で
+    //   **061p が廃止したボタンの名前を固定していた**（＝また存在しない操作を守っていた）。
+    //   ⇒ **いまの止め方は「コメントビューアを開いて取得を停止する」1 つだけ**
+    //   （`docs/security.md` §1 の 061p 追補）。⚠ **廃止した 2 つの名前が戻らないことも見る。**
     mocks.isEffectOverlayOpen.mockResolvedValue(true);
     await openThenStop();
 
     const feedback = await screen.findByText(/コメントの取得は続いています/);
-    expect(feedback.textContent).toContain("OBSエフェクト");
-    expect(feedback.textContent).toContain("ウィンドウを閉じる");
+    expect(feedback.textContent).toContain("コメントビューアを開いて");
     expect(feedback.textContent).toContain("取得を停止");
-    // ⚠ 廃止したトグル名が「親切だから」で戻ってこないようにする。
+    // ⚠ 廃止した操作名が「親切だから」で戻ってこないようにする（061i / 061p の 2 世代ぶん）。
     expect(feedback.textContent).not.toContain("エフェクトの表示を OFF");
+    expect(feedback.textContent).not.toContain("ウィンドウを閉じる");
   });
 
   it("⚠⚠ 061k（新規 12）: **ステージ窓だけ**開いていても「取得が続いている」と伝える", async () => {
@@ -179,8 +181,10 @@ describe("061b: メイン画面・内蔵コメントビューアの「停止」"
 
     const feedback = await screen.findByText(/コメントの取得は続いています/);
     expect(feedback.textContent).not.toContain("を停止しました");
-    // ⚠ 止め方は「**2 つとも**閉じる」（片方だけ閉じても止まらない）。
-    expect(feedback.textContent).toContain("2 つとも");
+    // ⚠⚠ **061p: 「2 つとも閉じる」という止め方は無くなった**（ボタンごと廃止）。
+    //   ⇒ ステージ窓だけのときも**コーナー窓だけのときと同じ 1 つの止め方**を案内する。
+    //   ⚠ ここで固定しているのは「**窓の組み合わせで案内が変わらない**」ことである。
+    expect(feedback.textContent).toContain("コメントビューアを開いて");
   });
 
   it("⚠ 061k: 2 窓とも閉じているときだけ「停止しました」と言い切る", async () => {
