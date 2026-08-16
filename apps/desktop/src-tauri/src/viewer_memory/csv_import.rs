@@ -1,4 +1,4 @@
-//! 065a: わんコメ（OneComme）公式 CSV エクスポートのパースと 1 行ごとの検証。
+//! 065a: 取り込み元コメントビューアーの公式 CSV エクスポートのパースと 1 行ごとの検証。
 //!
 //! ## 立ち位置
 //!
@@ -7,7 +7,7 @@
 //!
 //! ## ⚠⚠ CSV は信頼できない入力である（docs/security.md §8）
 //!
-//! ユーザーが選ぶファイルであって、わんコメが書いたファイルである保証は無い（アプリ定義コマンドは
+//! ユーザーが選ぶファイルであって、取り込み元が書き出したファイルである保証は無い（アプリ定義コマンドは
 //! ACL 対象外＝全窓から任意パスで呼べる）。したがって:
 //!
 //! - 全文字列列を trim ＋ `reject_control_chars` に通す。
@@ -27,7 +27,7 @@
 //! §8 の 061c 節は `deny_unknown_fields` で未知フィールドを**拒否**せよと書いているが、向きが逆である。
 //! あちらは「第三者が書いた manifest の書き間違いを黙殺しない」ため。こちらは
 //! **同じ製品が版ごとに列を増減させ、順序すら動く**ことが実測で分かっているためで、未知列を拒否すると
-//! わんコメが 1 列足しただけで取り込めなくなる。**守るべきは「必要なものが在ること」**であって
+//! 取り込み元が 1 列足しただけで取り込めなくなる。**守るべきは「必要なものが在ること」**であって
 //! 「余計なものが無いこと」ではない。
 
 use chrono::{DateTime, Duration, SecondsFormat};
@@ -91,14 +91,14 @@ const MAX_SHORT_TEXT_CHARS: usize = 200;
 /// ⚠ 親 065 / 065a が挙げていたのは `id` / `service` / `lcts` の 3 つだが、**9 つに広げてある**。
 /// 理由: 数値 5 列と `interval` がヘッダごと無いと、全行が「値が空欄」として `skipped_invalid` に
 /// 落ち、ユーザーには `{0, 0, 0, 61}` としか伝わらない（**原因が分からない**）。
-/// ヘッダで落とせば「わんコメの版が違う」と言える。⚠ **厳しくする方向**なので線引きは変えていない。
+/// ヘッダで落とせば「取り込み元の版が違う」と言える。⚠ **厳しくする方向**なので線引きは変えていない。
 /// ⚠ ここに列を足すときは「その列が無いと機能が成立しないか」で判断すること
 /// （例: `memo` / `nickname` / `label` は無くても引き継ぎは成立するので**入れない**）。
 const REQUIRED_COLUMNS: [&str; 9] = [
     "id", "service", "lcts", "tc", "tgc", "amount", "atdDays", "atdLives", "interval",
 ];
 
-/// わんコメの `id` プレフィックスと StreamDock の provider の対応。
+/// 取り込み元 CSV の `id` プレフィックスと StreamDock の provider の対応。
 ///
 /// ⚠⚠ **`tw-` は未検証の推定**（親 065。実データで確認できたのは `yt-` だけ）。だからこそ
 /// **プレフィックスと `service` 列の両方が一致すること**を要求し、片方でも合わなければ取り込まない。
@@ -112,18 +112,18 @@ pub struct ImportedViewer {
     pub id: String,
     pub provider: String,
     pub provider_user_id: String,
-    /// わんコメ `username`。⚠ **`@handle` であって表示名ではない**ので、既存の `name` が
+    /// CSV の `username` 列。⚠ **`@handle` であって表示名ではない**ので、既存の `name` が
     /// 非空なら上書きしない（非破壊マージ）。判断は repository 側。
     pub name: String,
     pub nickname: String,
-    /// わんコメ `memo` → `viewers.note`。
+    /// CSV の `memo` 列 → `viewers.note`。
     pub note: String,
     pub label: String,
-    /// わんコメ `lcts`（ISO8601・そのまま使う）。
+    /// CSV の `lcts` 列（ISO8601・そのまま使う）。
     pub last_comment_at: String,
     /// `lcts − interval`（ミリ秒）。⚠ **仮説を含む値**（親 065・(3)）。
     pub imported_first_seen_at: String,
-    /// わんコメ `nameHistory` の生 JSON 文字列（**パースしない**）。
+    /// CSV の `nameHistory` 列の生 JSON 文字列（**パースしない**）。
     pub imported_name_history: String,
     pub imported_comments: i64,
     pub imported_gifts: i64,
@@ -152,7 +152,7 @@ enum RowOutcome {
 }
 
 /// ヘッダ名 → 列位置。⚠ **同名の列が 2 つあるときは最初のものを採る**
-/// （わんコメが同名列を出すことは実測では無いが、決めておかないと挙動が不定になる）。
+/// （取り込み元が同名列を出すことは実測では無いが、決めておかないと挙動が不定になる）。
 ///
 /// 【意図・レビュー指摘 Q-6・修正不要】名前は `Index` だが**索引（`HashMap`）は作っておらず**、
 /// [`Self::position`] は呼ばれるたびにヘッダを線形走査する。**それで足りるから**である——
@@ -184,7 +184,7 @@ impl<'h> ColumnIndex<'h> {
     }
 }
 
-/// わんコメの CSV 全文をパースする。
+/// 取り込み元 CSV の全文をパースする。
 ///
 /// ⚠ **`raw` の BOM はここで剥がす**（Excel を経由すると付く経路がある。実測ファイルには無い）。
 /// 共有の [`crate::util::read_import_text`] で剥がしていないのは、060b の CSS 経路の既存挙動
@@ -199,18 +199,18 @@ pub fn parse(raw: &str) -> AppResult<ParsedCsv> {
     let headers = reader
         .headers()
         .map_err(|_| AppError::unsupported_file_type(
-            "この CSV のヘッダを読み取れませんでした。わんコメが出力したファイルか確認してください。",
+            "この CSV のヘッダを読み取れませんでした。コメントビューアーが書き出した視聴者データか確認してください。",
         ))?
         .clone();
     let index = ColumnIndex::new(&headers);
 
     // ⚠⚠ fail-closed。必須列が 1 つでも欠けていたら**1 行も取り込まない**。
-    //   わんコメのバージョン差で列が消えたときに、黙って壊れたデータを入れないため。
+    //   取り込み元の版の差で列が消えたときに、黙って壊れたデータを入れないため。
     //   ⚠ 欠けた列名はエラーに載せない（第三者データではないが、ここだけ具体的にしても
-    //     ユーザーの取れる行動〔わんコメを更新する / 出力し直す〕は変わらない・§9 の構えを崩さない）。
+    //     ユーザーの取れる行動〔取り込み元を更新する / 出力し直す〕は変わらない・§9 の構えを崩さない）。
     if REQUIRED_COLUMNS.iter().any(|c| index.position(c).is_none()) {
         return Err(AppError::unsupported_file_type(
-            "この CSV には必要な列がありません。わんコメのリスナーリストを書き出したファイルを選んでください。",
+            "この CSV には必要な列がありません。コメントビューアーが書き出した視聴者データのファイルを選んでください。",
         ));
     }
 
@@ -395,7 +395,7 @@ fn parse_non_negative_f64(raw: &str) -> Option<f64> {
 mod tests {
     use super::*;
 
-    // ⚠⚠ **フィクスチャはすべて合成データである**（docs/security.md §9）。実物のわんコメ CSV には
+    // ⚠⚠ **フィクスチャはすべて合成データである**（docs/security.md §9）。実物の取り込み元 CSV には
     //   第三者の視聴者 ID・表示名・メモが入っているので、**リポジトリに置かない**
     //   （`tests/fixtures/` にも置かない＝「実物を置く場所」を作らないため、ここに定数で持つ）。
     //   ID は明らかに架空の値にしてある。
@@ -739,7 +739,7 @@ mod tests {
         assert_eq!(parse(&ok).expect("上限ちょうどは通る").viewers.len(), MAX_CSV_ROWS);
     }
 
-    // ⚠ 未知の列が増えても壊れない（わんコメの版が上がって列が足されるケース）。
+    // ⚠ 未知の列が増えても壊れない（取り込み元の版が上がって列が足されるケース）。
     #[test]
     fn unknown_columns_are_ignored() {
         let csv = format!(

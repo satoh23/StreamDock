@@ -117,7 +117,7 @@ const makeViewerDetail = (): ViewerDetail => ({
     note: "",
     createdAt: "2026-08-16T10:00:00Z",
     updatedAt: "2026-08-16T12:00:00Z",
-    // 065a: わんコメからの引き継ぎ。既定は「引き継ぎ無し」（importedAt が undefined＝未取り込み）。
+    // 065a: CSV からの引き継ぎ。既定は「引き継ぎ無し」（importedAt が undefined＝未取り込み）。
     nickname: "",
     label: "",
     giftCount: 3,

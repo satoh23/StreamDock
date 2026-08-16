@@ -62,16 +62,16 @@ pub struct ViewerRecord {
     pub created_at: String,
     pub updated_at: String,
 
-    // ---- 065a: わんコメ（OneComme）の公式 CSV からの引き継ぎ ----
+    // ---- 065a: 取り込み元コメントビューアーの公式 CSV からの引き継ぎ ----
     //
     // ⚠⚠ **`imported_name_history`（生 JSON 文字列）はここに出さない。** 保管専用の列で 065b は
     //   使わないため、第三者データを IPC 境界へ載せる面を増やさない（docs/security.md §9）。
     //   表示したくなったら `nameHistory` のパース方針を決め、**§9 を再評価してから**足すこと。
-    /// わんコメのニックネーム（`name` / `note` とは別概念。未設定なら空文字）。
+    /// 取り込み元のニックネーム（`name` / `note` とは別概念。未設定なら空文字）。
     pub nickname: String,
-    /// わんコメのラベル（単一値。未設定なら空文字）。
+    /// 取り込み元のラベル（単一値。未設定なら空文字）。
     pub label: String,
-    /// わんコメ互換の統合ギフト回数（実測 ＋ 引き継ぎ）。
+    /// 取り込み元と同じ数え方の統合ギフト回数（実測 ＋ 引き継ぎ）。
     /// ⚠ `raid` と `chat` は数えない（レイドは課金ではない＝062a）。
     pub gift_count: u32,
     /// 参加配信数（実測 ＋ 引き継ぎ）。
@@ -81,22 +81,22 @@ pub struct ViewerRecord {
     pub stream_count: u32,
     /// 参加日数（実測 ＋ 引き継ぎ）。
     /// ⚠⚠ **実測分は UTC 日で数える**（日本時間の朝の配信は UTC で 2 日に割れる）。引き継ぎ分の
-    ///   `atdDays` はわんコメのローカル日と思われ、**左右で「1 日」の定義が揃っていない近似**である。
+    ///   `atdDays` は取り込み元のローカル日と思われ、**左右で「1 日」の定義が揃っていない近似**である。
     pub active_days: u32,
-    /// 引き継いだ累積コメント数（わんコメ `tc`）。`total_comments` にはこの値が加算済み。
+    /// 引き継いだ累積コメント数（CSV の `tc` 列）。`total_comments` にはこの値が加算済み。
     pub imported_comments: u32,
-    /// 引き継いだギフト回数（わんコメ `tgc`）。`gift_count` にはこの値が加算済み。
+    /// 引き継いだギフト回数（CSV の `tgc` 列）。`gift_count` にはこの値が加算済み。
     pub imported_gifts: u32,
-    /// 引き継いだギフト累計額（わんコメ `amount`）。
+    /// 引き継いだギフト累計額（CSV の `amount` 列）。
     /// ⚠⚠ **単位不明**（CSV に通貨情報が無く、円ではなく YouTube の Jewels の可能性が高い）。
     ///   `superchat_amount` / `bits_amount` には**一切加算していない**。
     ///   **065b は単位を付けて表示しないこと**（「1000 円」と読ませない）。
     pub imported_gift_amount: f64,
-    /// 引き継いだ参加日数（わんコメ `atdDays`）。`active_days` にはこの値が加算済み。
+    /// 引き継いだ参加日数（CSV の `atdDays` 列）。`active_days` にはこの値が加算済み。
     pub imported_active_days: u32,
-    /// 引き継いだ参加配信数（わんコメ `atdLives`）。`stream_count` にはこの値が加算済み。
+    /// 引き継いだ参加配信数（CSV の `atdLives` 列）。`stream_count` にはこの値が加算済み。
     pub imported_stream_count: u32,
-    /// 引き継いだ初回来訪時刻の**推定値**（わんコメ `lcts − interval`）。
+    /// 引き継いだ初回来訪時刻の**推定値**（CSV の `lcts − interval`）。
     /// ⚠⚠ **仮説を含む**（`interval` を「初回コメントからの経過時間」と読んだ解釈。親 065・(3)）。
     ///   `first_seen_at` とは**合成していない**——表示側で `MIN(first_seen_at, imported_first_seen_at)`
     ///   を採ること。⚠ `first_seen_at` は実測分の `MIN(published_at)` で毎回上書きされるので、

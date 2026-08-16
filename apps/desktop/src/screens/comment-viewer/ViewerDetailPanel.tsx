@@ -12,6 +12,8 @@ import {
   fmtDateTime,
   fmtNumber,
   fmtSuperchat,
+  fmtImportedAmount,
+  firstVisitAt,
   commentAmount,
 } from "./viewerFormat";
 import styles from "./CommentViewerApp.module.css";
@@ -90,6 +92,17 @@ export function ViewerDetailPanel({
   }, [id]);
 
   const v = detail?.viewer;
+
+  // 065b: 「初回来訪」は実測 `firstSeenAt` と引き継ぎ推定 `importedFirstSeenAt` の**古いほう**を採る。
+  // ⚠⚠ 合成が必須である理由（`first_seen_at` は再計算で毎回上書きされる）と、**辞書順で比較しては
+  //   いけない**理由（オフセット混在）は `viewerFormat.firstVisitAt` の doc が正。
+  // ⚠ `v` が未取得の間は下の JSX ごと描画されないので、ここでは空文字で通しておく。
+  // ⚠⚠ `importedFirstSeenAt` は binding 上 `?: string` だが **実行時に届くのは `null`**（レビュー Q-1）。
+  //   `firstVisitAt` 側が `string | null` を受けて緩い比較で落とすので、ここは素通しでよい。
+  const firstVisit = firstVisitAt({
+    firstSeenAt: v?.firstSeenAt ?? "",
+    importedFirstSeenAt: v?.importedFirstSeenAt,
+  });
 
   const saveNote = async () => {
     setNoteSaving(true);
@@ -177,14 +190,71 @@ export function ViewerDetailPanel({
                     ? ` / 最終 ${fmtDateTime(v.lastSubscriptionAt)}`
                     : ""}
                 </span>
-                <span className={styles.statLabel}>初回コメント</span>
+                {/* 065b: 取り込み元と同じ数え方の統合ギフト回数（実測 ＋ 引き継ぎ）。⚠ `raid` と `chat` は数えない
+                    （レイドは課金ではない＝062a）。⚠ **回数は実測・引き継ぎとも正確**なので、下の 2 つと違って
+                    ラベルに「（概算）」を付けない——全部に付けると「どれが本当に怪しいのか」が消える。 */}
+                <span className={styles.statLabel}>ギフト</span>
                 <span className={styles.statValue}>
-                  {fmtDateTime(v.firstSeenAt)}
+                  {fmtNumber(v.giftCount)} 回
+                </span>
+                {/* ⚠⚠ **ラベル自体で近似だと示している**（穴 H の決定）。
+                    理由 1: `streamCount` は **062b 以前のデータで多めに出る**——当時の `session_id` はコメビュ窓の
+                      マウント単位で、窓を開き直すたびに別 id だった。062b はバックフィルしないと決めているので
+                      **歪みは永久に残る**（申し送り 2）。
+                    理由 2: `activeDays` は**足し算の左右で「1 日」の定義が違う**——実測分は UTC 日で数える
+                      （日本時間の朝の配信は UTC で 2 日に割れる）が、引き継ぎ分の `atdDays` は取り込み元の
+                      ローカル日と思われる。壊れた時刻の行は黙って落ちるので少なめにも出うる（申し送り 3）。
+                    ⚠ **注記では説明しない**（この窓は説明文を全廃した＝062c）。⚠ 値側に「約」を混ぜないのは、
+                      既存の集計行が全部「ラベル＋数値」で揃っているため（混ぜると項目ごとに書式が割れる）。 */}
+                <span className={styles.statLabel}>参加配信数（概算）</span>
+                <span className={styles.statValue}>
+                  {fmtNumber(v.streamCount)}
+                </span>
+                <span className={styles.statLabel}>参加日数（概算）</span>
+                <span className={styles.statValue}>
+                  {fmtNumber(v.activeDays)} 日
+                </span>
+                {/* 065b: 「初回コメント」から改名した。⚠ 合成後の値は引き継ぎ推定（`lcts − interval`）を
+                    含みうるので、**コメント時刻と言い切れない**。合成が必須である理由と、辞書順で比較しては
+                    いけない理由は `viewerFormat.firstVisitAt` の doc が正。 */}
+                <span className={styles.statLabel}>初回来訪</span>
+                <span className={styles.statValue}>
+                  {fmtDateTime(firstVisit.iso)}
+                  {firstVisit.fromImport ? "（インポート分）" : ""}
                 </span>
                 <span className={styles.statLabel}>最終コメント</span>
                 <span className={styles.statValue}>
                   {fmtDateTime(v.lastCommentAt)}
                 </span>
+                {/* 065b: 引き継ぎ由来の 2 行は **`importedAt` が非 NULL のときだけ**出す
+                    （NULL＝引き継ぎ無し＝申し送り 7。0 や空を見せない）。
+                    ⚠⚠ 取り込んだギフト累計は **単位を付けない**——CSV に通貨情報が無く、円ではなく Jewels の
+                      可能性が高い（親 065・(2)）。`fmtSuperchat` を流用すると通貨記号が付いて嘘になるので、
+                      専用の `fmtImportedAmount`（単位なし・整数丸め）を通す。
+                    ⚠ `importedComments` / `importedGifts` / `importedActiveDays` / `importedStreamCount` は
+                      **出さない**——上の `総コメント数` / `ギフト` / `参加日数` / `参加配信数` に**加算済み**で、
+                      内訳を並べると「どちらが本当の値か」が増えるだけだから（065b の完了条件にも無い）。 */}
+                {/* ⚠⚠ **`!= null` は意図的に緩い比較**（レビュー Q-1）。binding は `?: string` だが
+                    serde に `skip_serializing_if` が無いので **実行時に届くのは `null`**。
+                    `!== undefined` へ「厳密化」すると引き継ぎの無い全視聴者にこの 2 行が出て、
+                    `fmtDateTime(null)` が **`1970/1/1 9:00:00`** を表示する（実測）。
+                    ⚠ この不変条件は `ViewerDetailPanel.test.tsx` の「importedAt が null でも印を出さない」が固定。 */}
+                {v.importedAt != null && (
+                  <>
+                    <span className={styles.statLabel}>
+                      インポートしたギフト累計
+                    </span>
+                    <span className={styles.statValue}>
+                      {fmtImportedAmount(v.importedGiftAmount)}
+                    </span>
+                    <span className={styles.statLabel}>
+                      インポート日時
+                    </span>
+                    <span className={styles.statValue}>
+                      {fmtDateTime(v.importedAt)}
+                    </span>
+                  </>
+                )}
               </div>
             </div>
           </div>

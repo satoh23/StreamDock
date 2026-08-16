@@ -1238,6 +1238,19 @@
   border: 1px solid var(--border-soft);
   border-radius: var(--radius);
   overflow: hidden;
+  /* ⚠⚠ **065b（実機不具合）: これが無いと「視聴者が増えると見切れるのにスクロールできない」になる。**
+     `.settingsView` は「flex 縦積み ＋ overflow-y: auto」そのもので、その直下にこの表が居る。flex の子は
+     既定で縮むが、通常は自動最小サイズが縮みを止める——**ところが overflow が visible 以外だとその自動最小
+     サイズが 0 になる**ので、`overflow: hidden` を持つこの表は残りスペースまで潰され、溢れた行を自分で
+     クリップする。⇒ 何も溢れないので `.settingsView` はスクロールバーすら出さない。
+     ⚠ `.card` が 035c で `flex-shrink: 0` を持つのとまったく同じ理由で、**035c / 043c / 047c に続く 4 回目**。
+     ⚠⚠ 062c は SummaryView 側で同じ罠を踏み、`.summarySection`（器）で受けて「`.viewerTable` 自体
+     （＝ViewersView と共有）には手を入れずに済ませている」と書いた。**その結果 ViewersView 側だけが
+     無防備のまま残った**のが今回の不具合である。⇒ ここで直接持たせて、器の有無に依存しない形にした。
+     ⚠ 062c の `.summarySection` は**残してある**（二重でも無害で、あちらは見出し＋表＋注記をまとめる器でもある）。
+     ⚠ この宣言は `scripts/check-css-guards.mjs` の **(1-b)** が要求している（消すと `pnpm check:css` が落ちる。
+     (1) は `.item` 専用で、このクラスは見ていない——それが 4 回目を生んだ穴そのもの）。 */
+  flex-shrink: 0;
 }
 
 .viewerHead,
@@ -1284,6 +1297,36 @@
   outline-offset: -2px;
 }
 
+/* 065b レビュー Q-4: 名前セルの**器**。名前・ニックネーム・ラベルバッジをこの中に横並べる。
+   ⚠⚠ **`.vName` を flex 化して済ませてはいけない。** `.vName` は **SummaryView の貢献者一覧・
+   レイド一覧とも共有**（`SummaryView.tsx` の 2 箇所）で、あちらは中に 1 つのテキストしか持たない。
+   flex 化すると素のテキストが**匿名 flex アイテム**になり、`text-overflow: ellipsis` が当たらなくなる
+   （匿名アイテムは名前が付けられないのでスタイルできない）＝共有先の省略表示が黙って壊れる。
+   ⇒ **器を 1 枚外に足して `.vName` は「省略される名前そのもの」のまま残す**（`.themeList`／`.themeName`、
+   `.tipHead`／`.tipName` と同じ、このファイル既存の作法）。⇒ **SummaryView 側は無改変で済む。**
+   ⚠ 列は増えていない（`.viewerHead` と `.viewerRow` は別グリッドで、増やすとヘッダ↔行がズレる）。
+   ⚠ `min-width: 0` はグリッドセルとして縮めるために必須（無いと min-content で列がはみ出す）。
+   ⚠ この構造は `scripts/check-css-guards.mjs` の (1-c) が固定している（jsdom は省略表示を再現しないため）。 */
+.vNameCell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+/* ⚠⚠ **バッジは縮ませない**（065b レビュー Q-4 の中心）。flex アイテムは既定で縮むので、これが無いと
+   長い名前に押されてラベルが潰れ、**省略記号ごと画面から消える**（「付けたはずのラベルが見えない」）。
+   ⇒ 縮む役は `.vName` と `.vMuted`（どちらも ellipsis を持つ）だけが引き受ける。
+   ⚠ `.badge` 本体には書かない——25 箇所以上で共有しており、ここ以外の flex 文脈まで巻き込むため
+   （`.viewerHead .vNum` と同じ「この器の中でだけ効かせる」書き方）。 */
+.vNameCell .badge {
+  flex: none;
+}
+
+/* 名前そのもの。⚠ **省略表示（ellipsis）はこのクラスが持つ**——上の器ではなく。
+   ⚠ SummaryView の貢献者一覧・レイド一覧は**この クラスを器なしで**使っており、あちらではこの
+   ブロック単体で省略が効いている。⇒ ここから `overflow` / `text-overflow` / `white-space` を
+   器へ移すと、共有先 2 箇所の省略表示が壊れる（(1-c) がレッドになる）。 */
 .vName {
   min-width: 0;
   overflow: hidden;

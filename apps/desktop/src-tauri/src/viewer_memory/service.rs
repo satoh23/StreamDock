@@ -175,7 +175,7 @@ pub fn clear(conn: &Connection) -> AppResult<()> {
     Ok(())
 }
 
-// ---- 065a: わんコメ（OneComme）公式 CSV からの引き継ぎ ----
+// ---- 065a: 取り込み元コメントビューアーの公式 CSV からの引き継ぎ ----
 
 /// 065a: 取り込み元 CSS ならぬ CSV の受け入れ規則（拡張子・上限・文言）。
 ///
@@ -197,7 +197,7 @@ const CSV_IMPORT_SPEC: crate::util::ImportFileSpec = crate::util::ImportFileSpec
     msg_read_failed: "CSV ファイルを読み取れませんでした。",
     msg_not_a_file: "ファイルを選んでください。",
     msg_too_large: "CSV ファイルが大きすぎます。8MB 以内にしてください。",
-    msg_not_utf8: "この CSV ファイルは UTF-8 として読み取れません。わんコメが出力したファイルか確認してください。",
+    msg_not_utf8: "この CSV ファイルは UTF-8 として読み取れません。コメントビューアーが書き出したファイルか確認してください。",
 };
 
 /// 検証済みの取り込み元（読み終えた CSV の本文）。
@@ -243,7 +243,7 @@ pub fn read_import_csv(raw_path: &str) -> AppResult<CsvImportSource> {
 /// 「取り込み中フラグを立てて他コマンドへ即座に『取り込み中』を返す」を先に検討すること
 /// （分割するとロールバック単位が壊れ、①が成立しなくなる）。
 ///
-/// ⚠ **わんコメへは一切接続しない。** ここがやるのは「既にディスク上にあるファイルを読んだ文字列」の
+/// ⚠ **取り込み元のアプリへは一切接続しない。** ここがやるのは「既にディスク上にあるファイルを読んだ文字列」の
 /// パースと upsert だけである（docs/security.md §5 の 065a 追補・⑪）。
 pub fn import_csv(conn: &Connection, source: &CsvImportSource) -> AppResult<ViewerImportResult> {
     // ⚠ パースは DB を触る前に済ませる（必須列が無ければ 1 行も入れずにここで落ちる＝fail-closed）。
@@ -611,7 +611,7 @@ mod tests {
         assert_eq!(remaining, 0, "combo 更新済みのコメントも CASCADE で消える");
     }
 
-    // ---- 065a: わんコメ CSV の取り込み（経路の通し）----
+    // ---- 065a: 取り込み元 CSV の取り込み（経路の通し）----
     //
     // ⚠⚠ **フィクスチャはすべて合成データ**（docs/security.md §9）。実物の CSV には第三者の
     //   視聴者 ID・表示名・メモが入るので**リポジトリに置かない**（`tests/fixtures/` にも置かない）。
@@ -725,7 +725,7 @@ mod tests {
         );
     }
 
-    // ⚠ `lcts` のほうが新しければ `last_comment_at` は前へ進む（わんコメだけが観測した回のぶん）。
+    // ⚠ `lcts` のほうが新しければ `last_comment_at` は前へ進む（取り込み元だけが観測した回のぶん）。
     #[test]
     fn a_newer_lcts_moves_the_last_comment_at_forward() {
         let conn = test_conn();

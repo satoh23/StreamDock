@@ -80,11 +80,11 @@ pub fn clear_viewers(db: State<'_, DbState>) -> AppResult<()> {
     result
 }
 
-/// 065a: わんコメ（OneComme）の公式 CSV エクスポートを読んで `viewers` へ引き継ぐ。
+/// 065a: 取り込み元コメントビューアーの公式 CSV エクスポートを読んで `viewers` へ引き継ぐ。
 ///
-/// ⚠⚠ **StreamDock はわんコメへ一切接続しない。** 読むのは**ユーザーが dialog で選んだ 1 ファイル**だけで、
+/// ⚠⚠ **StreamDock は取り込み元のアプリへ一切接続しない。** 読むのは**ユーザーが dialog で選んだ 1 ファイル**だけで、
 /// **新規 egress ゼロ・新規宛先ゼロ・新規 capability ゼロ**（`dialog:allow-open` は 060b で付与済み・
-/// `fs:*` はゼロのまま）。`onecomme.db` の直読みも HTTP API 連携も**採らないと決めている**
+/// `fs:*` はゼロのまま）。取り込み元アプリの DB の直読みも HTTP API 連携も**採らないと決めている**
 /// （規約上の線引きは `docs/tasks/065-onecomme-viewer-import.md`・docs/security.md ⑪ の 065a 節）。
 ///
 /// ⚠ **単一目的**（§3）。汎用の `read_file(path)` 型ではない——読める形は `.csv` に限られ、

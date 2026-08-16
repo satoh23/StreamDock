@@ -310,3 +310,83 @@ export interface ViewerIdSource {
 
 export const viewerIdOf = (c: ViewerIdSource): string =>
   `${c.source}:${c.author.id.trim()}`;
+
+/**
+ * 065b: CSV から取り込んだギフト累計（`ViewerRecord.importedGiftAmount`）の表示整形。
+ *
+ * ⚠⚠ **`fmtSuperchat` を流用しないこと。** あちらは通貨コードを後置するが、この値は**単位が不明**である
+ * （取り込み元 CSV に通貨情報が無く、円ではなく YouTube の Jewels の可能性が高い＝親 065・(2)）。
+ * 通貨記号が付いた瞬間に「1000 円」という嘘になる。だから**単位を一切付けない**。
+ *
+ * ⚠ **整数へ丸める。** 065a はこの列にだけ上限を課しておらず（`f64`・有限かつ非負のみ）、素の
+ * `toLocaleString("ja-JP")` は**小数 3 桁まで出す**（実測: `1234.5678` → `1,234.568`）。単位不明の値に
+ * 小数を出すのは「そこまで精度がある」という別の嘘になるので、`maximumFractionDigits: 0` で落とす
+ * （実測: `1234.5678` → `1,235`）。
+ *
+ * ⚠ **桁が大きくても丸めたり省略したりしない。** `toLocaleString` は指数表記にしないので読めるし
+ * （実測: `1e21` → `1,000,000,000,000,000,000,000`）、隠すと「引き継いだのに 0」と区別が付かなくなる。
+ * ⚠ 非有限（NaN / Infinity）は `"-"`。Rust 側が弾いているので到達しないはずだが、`fmtNumber` は
+ * そのまま `"NaN"` を画面に出してしまうため防御として置く。
+ */
+export const fmtImportedAmount = (n: number): string =>
+  Number.isFinite(n)
+    ? n.toLocaleString("ja-JP", { maximumFractionDigits: 0 })
+    : "-";
+
+/**
+ * 065b: 「初回来訪」の合成。実測の `firstSeenAt` と引き継ぎ推定の `importedFirstSeenAt` の**古いほう**を返し、
+ * 引き継ぎ由来かどうかも返す（画面が「（インポート分）」を後置するため）。
+ *
+ * ⚠ **合成は必須である。** `first_seen_at` は再計算 SQL で実測分の `MIN(published_at)` に**毎回上書き**される
+ * ので、引き継ぎだけの視聴者が初めてコメントした瞬間に「初回来訪日」が今日へ飛ぶ（065a は
+ * `imported_first_seen_at` を独立列に置き、合成は読み出し側の仕事と決めている）。
+ *
+ * ⚠⚠ **比較は必ずパースして行う。辞書順で比較しないこと。** `importedFirstSeenAt` は常に `Z` 形式だが、
+ * `firstSeenAt` は provider 由来で `+09:00` 形が混ざりうる（065a の穴 D / 穴 L と同じ罠）。
+ * 実測: `firstSeenAt = "2026-08-16T08:00:00+09:00"`（= 1786834800000）と
+ * `importedFirstSeenAt = "2026-08-15T23:29:04.288Z"`（= 1786836544288）で、
+ * **辞書順は前者 < 後者 が false**（＝引き継ぎ側を古いと誤判定する）が、**パース比較では true**（＝正しい）。
+ *
+ * ⚠ **同値のときは実測を優先する**（`fromImport: false`）。引き継ぎだけの視聴者は `first_seen_at` にも
+ * `lcts` が入るため両者が近い値になりうるが、そこで「引き継ぎ由来」と主張する根拠は無い。
+ * ⚠ パースできない側は候補から外す。両方壊れていれば `firstSeenAt` をそのまま返し、`fmtDateTime` の
+ * 「パースできなければ原文のまま」という既存の劣化に乗せる。
+ */
+export interface FirstVisitInput {
+  firstSeenAt: string;
+  /**
+   * ⚠⚠ **実行時に届くのは `null` であって `undefined` ではない**（レビュー Q-1・実測）。
+   * `model.rs` の `imported_first_seen_at` は `#[ts(optional)]` が付いているので **binding の型は
+   * `?: string`** になるが、**`#[serde(skip_serializing_if)]` は付いていない**ので serde は
+   * `Option::None` を **JSON `null`** で送る。⇒ 型が「undefined しか来ない」と嘘をついている。
+   * ⚠ だからこの入力型だけは `null` を明示的に受ける（binding は生成物なので触らない）。
+   * ⚠⚠ **`?: string` を信じて下の `== null` を `=== undefined` へ「厳密化」しないこと。**
+   *   `new Date(null).getTime()` は **NaN ではなく 0**（実測）なので NaN ガードをすり抜け、
+   *   **引き継ぎの無い全視聴者の初回来訪が `1970/1/1 9:00:00（インポート分）` になる**（実測）。
+   * ⚠ この不変条件は `viewerFormat.test.ts` の「null（serde の実出力）でも実測を返す」が固定している。
+   * 再修正トリガー＝DTO 側に `skip_serializing_if = "Option::is_none"` を入れて実際に undefined を
+   *   送る形へ揃えたら、この `| null` は落としてよい（波及範囲が `viewer_memory` 外にも及ぶため別課題）。
+   */
+  importedFirstSeenAt?: string | null;
+}
+
+export interface FirstVisit {
+  /** 表示する時刻（そのまま `fmtDateTime` へ渡す）。 */
+  iso: string;
+  /** 引き継ぎ推定側が採られたか（true のとき画面に「（インポート分）」を出す）。 */
+  fromImport: boolean;
+}
+
+export const firstVisitAt = (v: FirstVisitInput): FirstVisit => {
+  const measured: FirstVisit = { iso: v.firstSeenAt, fromImport: false };
+  const raw = v.importedFirstSeenAt;
+  // ⚠⚠ **`== null` は意図的に緩い比較**（`null` と `undefined` の両方を落とす）。実際に届くのは
+  //   `null` のほうで、理由と「厳密化してはいけない」根拠は `FirstVisitInput` の doc が正。
+  if (raw == null || raw === "") return measured;
+  const importedMs = new Date(raw).getTime();
+  if (Number.isNaN(importedMs)) return measured;
+  const imported: FirstVisit = { iso: raw, fromImport: true };
+  const measuredMs = new Date(v.firstSeenAt).getTime();
+  if (Number.isNaN(measuredMs)) return imported;
+  return importedMs < measuredMs ? imported : measured;
+};

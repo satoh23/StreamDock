@@ -428,7 +428,11 @@ export function SummaryView({ onBack }: SummaryViewProps) {
           {/* ---- 貢献者一覧（マスト）---- */}
           {/* ⚠ (1)(2)(3) 対策: `.settingsView` は「flex 縦積み＋overflow:auto」そのもの。`.card` が
               `flex-shrink: 0` を持つのと同じ理由で、表のセクションも縮まないようにラップする
-              （`.viewerTable` は `overflow: hidden` を持つので、縮むと中身がクリップされる）。 */}
+              （`.viewerTable` は `overflow: hidden` を持つので、縮むと中身がクリップされる）。
+              ⚠⚠ **065b 追記**: `.viewerTable` 自体にも `flex-shrink: 0` を持たせた（ガード (1-b)）。
+              ここで器に頼る形にしたせいで、**器を持たない ViewersView 側だけが無防備のまま残り**、
+              「視聴者が増えると見切れてスクロールできない」という実機不具合になった（4 回目の再発）。
+              ⇒ このラップは**二重になったが残してある**（無害で、見出し＋表＋注記をまとめる器でもあるため）。 */}
           <section className={styles.summarySection}>
             <h2 className={styles.summaryHeading}>
               課金・サブスクをしてくれた人

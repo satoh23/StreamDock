@@ -4,6 +4,7 @@ import type {
   ListViewersInput,
   RecordResult,
   ViewerDetail,
+  ViewerImportResult,
   ViewerRecord,
 } from "./types";
 
@@ -76,4 +77,21 @@ export function deleteViewer(id: string): Promise<void> {
 /** 全視聴者を削除する（プライバシー手段の全消去）。 */
 export function clearViewers(): Promise<void> {
   return invoke<void>("clear_viewers");
+}
+
+/**
+ * 065b: 他のコメントビューアーが書き出した CSV（視聴者データ）を取り込んで `viewers` を upsert する。
+ *
+ * 060b の `importOverlayTheme` と**同型**＝`@tauri-apps/plugin-dialog` の `open()` が返した**生パス**を
+ * そのまま渡すだけで、検証（UNC 拒否 → 拡張子 → is_file → サイズ上限 → 実バイト再チェック → UTF-8 →
+ * 必須 9 列）はすべて Rust 側が行う。⚠ **frontend は取り込み前のファイルを読む手段を持たない**
+ * （`open()` はパス文字列しか返さず `fs:*` は 1 つも付与されていない）＝**プレビューは実装できない**。
+ *
+ * ⚠ 戻り値は**件数だけ**（`ViewerImportResult`）。視聴者名・メモ・ニックネーム・ラベル・ID は
+ * 1 つも載っていない（docs/security.md §9・065a の設計）。
+ */
+export function importViewerMemoryCsv(
+  path: string,
+): Promise<ViewerImportResult> {
+  return invoke<ViewerImportResult>("import_viewer_memory_csv", { path });
 }

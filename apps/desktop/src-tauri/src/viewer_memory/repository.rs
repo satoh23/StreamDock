@@ -10,7 +10,7 @@ use super::model::{NewViewerComment, RecordResult, ViewerCommentRecord, ViewerRe
 
 /// SELECT で取得する viewers テーブルの全カラム（複数クエリで共有）。
 ///
-/// ⚠⚠ 065a: **`imported_name_history` は意図的に入れていない。** わんコメ由来の生 JSON 文字列を
+/// ⚠⚠ 065a: **`imported_name_history` は意図的に入れていない。** 取り込み元由来の生 JSON 文字列を
 /// 保管しているだけの列で、`ViewerRecord`（＝ IPC で frontend へ渡る DTO）には出さない
 /// （065b は使わない・第三者データを IPC 境界へ載せる面を増やさない＝docs/security.md §9）。
 /// 表示したくなったときは、まず `nameHistory` のパース方針を決め、**§9 を再評価してから**足すこと。
@@ -54,7 +54,7 @@ const VIEWER_COMMENT_COLUMNS: &str =
 ///   【再修正トリガ】発火済み・**未対応**。065a は「first/last の式は変えない」と決めているので**別課題**として残す。
 ///     直し方は二択: ①`comment_times` に倣い「SQL は値を取り出すだけ・比較は Rust」へ寄せる
 ///     ②保存時に `published_at` を UTC 正規化する（既存行の移行を伴う）。**038 側に起票すること。**
-/// 【065a】わんコメからの引き継ぎ（`imported_*`）を**加算する 4 列**を足した（他の列も式も不変）。
+/// 【065a】CSV からの引き継ぎ（`imported_*`）を**加算する 4 列**を足した（他の列も式も不変）。
 ///   - `total_comments` / `gift_count` / `stream_count` / `active_days` の 4 つだけが
 ///     `COUNT(...) + COALESCE(imported_*, 0)` になる。`imported_*` は**この UPDATE が触らない列**なので、
 ///     再計算が何度走っても引き継ぎ値は消えない（＝065a の中心。038a の recompute-on-write 契約は不変）。
@@ -65,7 +65,7 @@ const VIEWER_COMMENT_COLUMNS: &str =
 ///   - ⚠ `gift_count` の集合に **`raid` と `chat` を入れない**（レイドは課金ではない＝062a の決定）。
 ///   - ⚠⚠ **`active_days` は UTC 日で数える**（SQLite の `date()` はオフセットを UTC へ正規化する。実測:
 ///     `date('2026-08-16T02:00:00+09:00')` = `2026-08-15`）。⇒ 日本時間の朝の配信（08:00–10:00 JST）は
-///     **UTC で 2 日に割れる**。さらに引き継ぎ側の `atdDays` は（ほぼ確実に）**わんコメのローカル日**なので、
+///     **UTC で 2 日に割れる**。さらに引き継ぎ側の `atdDays` は（ほぼ確実に）**取り込み元のローカル日**なので、
 ///     **足し算の左右で「1 日」の定義が揃っていない近似**である。`date(published_at,'localtime')` を
 ///     採らなかったのは端末 TZ で値が動くため（同じデータでも端末ごとに違う・旅行/DST で過去の値が変わる・
 ///     テストが環境依存になる）。
@@ -188,7 +188,7 @@ pub fn init(conn: &Connection) -> rusqlite::Result<()> {
     //      `RECOMPUTE_VIEWER_AGGREGATES_SQL` の doc コメントを正とする）。
     crate::util::ensure_column(conn, "viewer_comments", "raid_viewer_count", "INTEGER")?;
 
-    // 065a: わんコメ（OneComme）の公式 CSV エクスポートから引き継ぐ値と、それを足し込んだ集計。
+    // 065a: 取り込み元コメントビューアーの公式 CSV エクスポートから引き継ぐ値と、それを足し込んだ集計。
     //   ⚠ 識別子（テーブル名・カラム名・型宣言）は**すべてコンパイル時定数**でユーザー入力を渡さない（§8）。
     //   ⚠ **既存列の意味論は 1 つも変えていない**（`total_comments` は総コメント数のままで、そこへ
     //     引き継ぎ分が加算されるだけ。レイドを数える決定〔062a〕も不変）。
@@ -341,7 +341,7 @@ fn row_to_viewer(row: &rusqlite::Row<'_>) -> rusqlite::Result<ViewerRecord> {
         note: row.get("note")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
-        // 065a: わんコメからの引き継ぎ分。⚠ `imported_name_history` は **DTO に出さない**ので
+        // 065a: CSV からの引き継ぎ分。⚠ `imported_name_history` は **DTO に出さない**ので
         //   `VIEWER_COLUMNS` にも入っておらず、ここでも読まない（理由は同定数の doc）。
         nickname: row.get("nickname")?,
         label: row.get("label")?,
@@ -627,7 +627,7 @@ pub fn update_note(
     Ok(affected)
 }
 
-/// 065a: わんコメ CSV の 1 行を `viewers` へ upsert する。**新規に作ったなら `true`** を返す。
+/// 065a: 取り込み元 CSV の 1 行を `viewers` へ upsert する。**新規に作ったなら `true`** を返す。
 ///
 /// ⚠ **1 行ぶんの SQL を 1 か所にまとめてある**（呼び出し側〔service〕がトランザクションを張る）。
 ///
@@ -1434,7 +1434,7 @@ mod tests {
         assert!(is_long_absence("2026-01-01T00:00:00Z", "2026-03-01T00:00:00Z"));
     }
 
-    // ---- 065a: わんコメからの引き継ぎ（列追加・再計算 SQL の加算・バックフィル）----
+    // ---- 065a: CSV からの引き継ぎ（列追加・再計算 SQL の加算・バックフィル）----
     //
     // ⚠ 段 1 の時点では取り込みコマンドがまだ無いので、`imported_*` は直接書いて検証する
     //   （段 2 で CSV パース経由の同じ性質をテストし直す）。

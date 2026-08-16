@@ -16,6 +16,9 @@ import {
   authorInitial,
   // 062a: 「レイドを課金扱いしない」を集合そのもので固定するために引く。
   MONETARY_EVENT_TYPES,
+  // 065b: CSV 引き継ぎの表示整形。
+  fmtImportedAmount,
+  firstVisitAt,
 } from "./viewerFormat";
 
 /**
@@ -411,5 +414,155 @@ describe("062a レイドの表示上の位置づけ", () => {
         author: { name: "RaiderChannel" },
       }),
     ).toBeNull();
+  });
+});
+
+/**
+ * 065b: CSV から取り込んだギフト累計の整形。
+ *
+ * あるべき挙動（親 065・(2) ／ 065a の DTO doc ／ 申し送り 4）:
+ * - **単位を一切付けない**（CSV に通貨情報が無く、円ではなく Jewels の可能性が高い）
+ * - **整数へ丸める**（065a はこの列にだけ上限を課しておらず、素の toLocaleString は小数 3 桁まで出す）
+ * - 桁が大きくても**隠さない**（隠すと「引き継いだのに 0」と区別が付かない）
+ */
+describe("065b fmtImportedAmount（取り込んだギフト累計）", () => {
+  it("⚠⚠ 通貨記号を付けない（fmtSuperchat を流用していないことの担保）", () => {
+    expect(fmtImportedAmount(1000)).toBe("1,000");
+    // 対照群: fmtSuperchat は通貨を後置する＝差し替えたらこのテストが落ちる。
+    expect(fmtSuperchat(1000, "JPY")).toBe("1,000 JPY");
+  });
+
+  it("⚠ 小数は整数へ丸める（単位不明の値に小数を出さない）", () => {
+    expect(fmtImportedAmount(1234.5678)).toBe("1,235");
+    expect(fmtImportedAmount(0.4)).toBe("0");
+    expect(fmtImportedAmount(0.5)).toBe("1");
+  });
+
+  it("0 は 0 のまま出す（「引き継ぎ額なし」を空欄にしない）", () => {
+    expect(fmtImportedAmount(0)).toBe("0");
+  });
+
+  it("⚠ 桁が大きくても指数表記にせず、丸めも省略もしない", () => {
+    expect(fmtImportedAmount(1e21)).toBe("1,000,000,000,000,000,000,000");
+    expect(fmtImportedAmount(1e21)).not.toContain("e");
+  });
+
+  it("⚠ 非有限は「-」へ劣化する（fmtNumber は NaN をそのまま画面に出してしまう）", () => {
+    expect(fmtImportedAmount(Number.NaN)).toBe("-");
+    expect(fmtImportedAmount(Number.POSITIVE_INFINITY)).toBe("-");
+    // 対照群: fmtNumber は防御を持たない＝この関数を fmtNumber に差し替えたら落ちる。
+    expect(fmtNumber(Number.NaN)).toBe("NaN");
+  });
+});
+
+/**
+ * 065b: 「初回来訪」の合成（実測 firstSeenAt と引き継ぎ推定 importedFirstSeenAt の古いほう）。
+ *
+ * ⚠⚠ **辞書順で比較してはいけない**（065a の穴 D / 穴 L と同じ罠）。`importedFirstSeenAt` は常に `Z` 形式だが
+ * `firstSeenAt` は provider 由来で `+09:00` 形が混ざりうるため、文字列比較だと**古いほうを新しいと判定する**。
+ */
+describe("065b firstVisitAt（初回来訪の合成）", () => {
+  // ⚠⚠ **辞書順だと逆の結果になる実データ形**。前者は 1786834800000、後者は 1786836544288 で
+  //   **前者が古い**が、文字列比較では "2026-08-16T…" > "2026-08-15T…" なので後者が選ばれてしまう。
+  const MEASURED_OLDER = "2026-08-16T08:00:00+09:00";
+  const IMPORTED_NEWER = "2026-08-15T23:29:04.288Z";
+
+  it("⚠⚠ オフセット混在でも古いほうを選ぶ（辞書順だと逆になるケースを直接踏む）", () => {
+    // 前提の実証: 辞書順で比べると「実測のほうが新しい」と誤判定する。
+    expect(MEASURED_OLDER < IMPORTED_NEWER).toBe(false);
+    expect(new Date(MEASURED_OLDER).getTime()).toBeLessThan(
+      new Date(IMPORTED_NEWER).getTime(),
+    );
+
+    expect(
+      firstVisitAt({
+        firstSeenAt: MEASURED_OLDER,
+        importedFirstSeenAt: IMPORTED_NEWER,
+      }),
+    ).toEqual({ iso: MEASURED_OLDER, fromImport: false });
+  });
+
+  it("引き継ぎ推定のほうが古ければそちらを採り、引き継ぎ由来と分かる形にする", () => {
+    expect(
+      firstVisitAt({
+        firstSeenAt: "2026-08-16T00:00:00Z",
+        importedFirstSeenAt: "2024-03-02T12:15:04.000Z",
+      }),
+    ).toEqual({ iso: "2024-03-02T12:15:04.000Z", fromImport: true });
+  });
+
+  it("引き継ぎが無ければ実測をそのまま返す（undefined / 空文字）", () => {
+    const measured = { iso: "2026-08-16T00:00:00Z", fromImport: false };
+    expect(firstVisitAt({ firstSeenAt: "2026-08-16T00:00:00Z" })).toEqual(
+      measured,
+    );
+    expect(
+      firstVisitAt({
+        firstSeenAt: "2026-08-16T00:00:00Z",
+        importedFirstSeenAt: undefined,
+      }),
+    ).toEqual(measured);
+    expect(
+      firstVisitAt({
+        firstSeenAt: "2026-08-16T00:00:00Z",
+        importedFirstSeenAt: "",
+      }),
+    ).toEqual(measured);
+  });
+
+  // ⚠⚠ **これが本番で実際に届く形**（レビュー Q-1）。`model.rs` は `#[ts(optional)]` を付けているので
+  //   binding の型は `?: string` になるが、**`#[serde(skip_serializing_if)]` は付いていない**ので
+  //   serde は `Option::None` を **JSON `null`** で送る。⇒ 型が「undefined しか来ない」と嘘をついている。
+  // ⚠⚠ `new Date(null).getTime()` は **NaN ではなく 0**（実測）なので、`== null` を `=== undefined` へ
+  //   「厳密化」すると NaN ガードをすり抜け、**引き継ぎの無い全視聴者が 1970 年（インポート分）になる**。
+  //   このテストはその厳密化を殺すためだけに在る。
+  it("⚠⚠ null（serde が実際に送る形）でも実測を返す — 型を信じた厳密化を殺す", () => {
+    expect(
+      firstVisitAt({
+        firstSeenAt: "2026-08-16T00:00:00Z",
+        importedFirstSeenAt: null,
+      }),
+    ).toEqual({ iso: "2026-08-16T00:00:00Z", fromImport: false });
+    // 前提の実証: null は NaN にならないので、NaN ガードだけでは落とせない。
+    expect(new Date(null as unknown as string).getTime()).toBe(0);
+    expect(Number.isNaN(new Date(null as unknown as string).getTime())).toBe(
+      false,
+    );
+  });
+
+  it("⚠ 同値なら実測を優先する（引き継ぎ由来だと主張する根拠が無い）", () => {
+    // 引き継ぎだけの視聴者は first_seen_at にも lcts が入るため、両者が同値になりうる。
+    expect(
+      firstVisitAt({
+        firstSeenAt: "2026-08-15T23:29:04.288Z",
+        importedFirstSeenAt: "2026-08-15T23:29:04.288Z",
+      }),
+    ).toEqual({ iso: "2026-08-15T23:29:04.288Z", fromImport: false });
+    // 表記違いで同時刻のときも同じ（パース比較なので等しいと判定される）。
+    expect(
+      firstVisitAt({
+        firstSeenAt: "2026-08-16T08:29:04.288+09:00",
+        importedFirstSeenAt: "2026-08-15T23:29:04.288Z",
+      }).fromImport,
+    ).toBe(false);
+  });
+
+  it("⚠ パースできない側は候補から外し、両方壊れていても壊れず劣化する", () => {
+    expect(
+      firstVisitAt({
+        firstSeenAt: "2026-08-16T00:00:00Z",
+        importedFirstSeenAt: "bogus",
+      }),
+    ).toEqual({ iso: "2026-08-16T00:00:00Z", fromImport: false });
+    expect(
+      firstVisitAt({
+        firstSeenAt: "bogus",
+        importedFirstSeenAt: "2024-03-02T12:15:04.000Z",
+      }),
+    ).toEqual({ iso: "2024-03-02T12:15:04.000Z", fromImport: true });
+    // 両方壊れていれば実測を原文のまま返す（fmtDateTime が原文フォールバックする既存挙動に乗る）。
+    expect(
+      firstVisitAt({ firstSeenAt: "bogus", importedFirstSeenAt: "also-bogus" }),
+    ).toEqual({ iso: "bogus", fromImport: false });
   });
 });

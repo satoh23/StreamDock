@@ -1,8 +1,18 @@
 # 065a わんコメ CSV 取り込みの Rust データ層（列追加・再計算 SQL 改訂・パース・コマンド）
 
-> 状態: **実装済み・外部レビュー反映済み（2026-08-16）／⏳ 実機確認は未実施**。
-> ⚠⚠ **「完了」ではない。** 実機確認（下記 ⏳ 節）が済むまでこの表記を強めないこと——
-> レビューの結論は「**065b の最初の一歩を最小導線にして、そこで実 CSV を 1 回通す**」（task-board 申し送り 9）。
+> 状態: **実装済み・外部レビュー反映済み（2026-08-16）／✅ 疎通確認は 065b (0) で完了（2026-08-16）**。
+>
+> ⚠ **「疎通確認が済んだ」であって「機能の目的が実証された」ではない。** 実測は
+> **`imported=61 / updated=0 / skippedUnsupported=0 / skippedInvalid=0`**（実物の CSV・61 名）で、
+> ✅ **実 CSV は必須 9 列を満たす**（本タスク最大の未検証点が解消した／065a 側の修正は不要）。
+> ⚠⚠ **ただし `updated = 0` ＝ 61 名全員が新規行**だったので、**`yt-UCxxx` → `youtube:UCxxx` の突合が
+> 既存行に当たることは実データで一度も起きていない**（実証は実コード読解に留まる）。
+> ⇒ **「引き継いだ視聴者がコメントして初見バッジが出ない」（下記 ⑤・親 065 の主目的）は未実証のまま。**
+> ⚠ `tw-` の当否と backfill 所要時間も未取得。詳細は [docs/progress.md](../progress.md) の **065b 節**が正。
+>
+> ⚠⚠ **下記「⏳ 実機確認の手順」の ① には誤りが 2 つあった（本文は訂正済み）**——
+> identifier は **`com.tetsuya.stream-dock`**（`com.stream-dock.app` ではない）／
+> **WAL ではない**ので `-wal` / `-shm` は無く `cp` 1 本で完全なバックアップになる。
 > **実装の結論・穴の一覧・変異の実測・`cargo tree` の出力・外部レビューの反映は
 > [docs/progress.md](../progress.md) の 065a 節が正。**
 > 本ファイルの以下の記述は着手前の計画であり、**実装で判明した前提との差は次節にまとめてある**。
@@ -42,10 +52,13 @@
 ⚠⚠ **事前に DB をバックアップし、確認後に必ず復元すること。**
 
 ```bash
-# ① バックアップ（macOS）
-DB=~/Library/Application\ Support/com.stream-dock.app/stream-dock.db
-# ⚠ 実際の識別子は tauri.conf.json の identifier を確認すること
+# ① バックアップ（macOS）⚠ **アプリを終了した状態で行う**
+DB=~/Library/Application\ Support/com.tetsuya.stream-dock/stream-dock.db
+# ⚠⚠ 識別子は tauri.conf.json の `identifier` が正（当初 `com.stream-dock.app` と書いていたのは誤り・065b で訂正）
+# ⚠ WAL は使っていない（lib.rs の PRAGMA は foreign_keys のみ）ので `-wal` / `-shm` は存在せず、
+#   この 1 ファイルのコピーで完全なバックアップになる。
 cp "$DB" ~/Desktop/stream-dock.db.bak && shasum "$DB" ~/Desktop/stream-dock.db.bak
+# ⚠⚠ 2 行のハッシュが一致することを目で確認してからアプリを起動すること。
 
 pnpm --filter ./apps/desktop tauri dev
 ```
