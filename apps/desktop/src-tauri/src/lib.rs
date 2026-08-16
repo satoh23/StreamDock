@@ -916,6 +916,8 @@ pub fn run() {
             viewer_memory::commands::update_viewer_note,
             viewer_memory::commands::delete_viewer,
             viewer_memory::commands::clear_viewers,
+            // 065a: わんコメ CSV の引き継ぎ（読み取り専用・外部通信ゼロ・capability 差分ゼロ）。
+            viewer_memory::commands::import_viewer_memory_csv,
             // 062b: 配信セッション（「1 回の配信」の境界）。すべて単一目的で、capability は増えない
             //（アプリ定義コマンドは ACL 列挙不要）。
             stream_session::commands::start_stream_session,

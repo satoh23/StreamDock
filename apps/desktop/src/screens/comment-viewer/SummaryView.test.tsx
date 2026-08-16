@@ -117,6 +117,17 @@ const makeViewerDetail = (): ViewerDetail => ({
     note: "",
     createdAt: "2026-08-16T10:00:00Z",
     updatedAt: "2026-08-16T12:00:00Z",
+    // 065a: わんコメからの引き継ぎ。既定は「引き継ぎ無し」（importedAt が undefined＝未取り込み）。
+    nickname: "",
+    label: "",
+    giftCount: 3,
+    streamCount: 1,
+    activeDays: 1,
+    importedComments: 0,
+    importedGifts: 0,
+    importedGiftAmount: 0,
+    importedActiveDays: 0,
+    importedStreamCount: 0,
   } satisfies ViewerRecord,
   comments: [],
 });

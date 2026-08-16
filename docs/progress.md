@@ -23199,3 +23199,237 @@ COMMENT_SIDECAR_MOCK=1 pnpm --filter ./apps/desktop tauri dev
 | `pnpm test` | ✅ **72 files / 1683 tests**・`check:css` OK |
 | `pnpm check:bindings` | ✅ exit 0 |
 | 変異「説明文を 1 本書き戻す」 | ✅ **レッド**（新しい担保が効いている） |
+
+## 065a わんコメ CSV 取り込みの Rust データ層（2026-08-16・**引き継ぎのベースライン列＋再計算 SQL への加算**）
+
+親 [065](tasks/065-onecomme-viewer-import.md) の線引き（**公式 CSV の読み取りのみ・`onecomme.db` の直読みと
+HTTP API 連携は採らない**）に従って、Rust 側のデータ層を作った。UI は 065b。
+**2 段に割って実装**（CLAUDE.md「1 回の作業で複数機能をまとめない」）——段 1＝列追加と再計算 SQL、
+段 2＝CSV パースと取り込みコマンド。段 1 の完了時にいったん止めて報告している。
+
+### 着手前の調査で見つかった、タスクファイルに無かった前提（穴 A〜L）
+
+タスクファイルは穴 A〜I を挙げていたが、**実コードと `sqlite3` の実挙動を確かめた結果、
+新たに 3 つ（J・K・L）が出た**。J は踏むと機能が丸ごと動かない。
+
+| 穴 | 結論 | 根拠 |
+|---|---|---|
+| **A** パス検証が private・CSS 専用 | ✅ 追認。**案 ③ を採用**＝`util.rs` に共有コアを置き、060b の 2 関数は**薄いラッパとして残す** | `validate_source_path` / `read_source_css` はいずれも `fn`（private）。`pub` なのは CSS 専用の `read_import_source` だけ。⚠ さらに **060b にはこの 2 つを名指しする契約テストが 4 本**あり、①（丸ごと移す）だと防波堤ごと書き換えることになる。③なら**規則は util の 1 か所・契約テスト 4 本は緑のまま** |
+| **B** 引き継ぎ直後に「久しぶり」が出る | ✅ 追認。**①受容**（意味論としては正しい）。⚠ タスクファイルの「抑止には新しい状態が要る」は**訂正**——`viewer_comments` の行の有無を見れば新しい状態は不要（②-a）。採らなかったのは `record_comment` の判定＝038c の領分だから | `first_time` は `viewers` 行の有無、`long_absence` は `prior_last` との差。CSV 行の `last_comment_at` は `lcts` |
+| **C** `active_days` の日境界 | ✅ 追認。**①UTC 日を採用**（`localtime` は端末 TZ 依存でテストが環境依存になる）。壊れた時刻が黙って落ちるのも**受容**（水増しより安全側） | 実測: `date('2026-08-16T02:00:00+09:00')`=`2026-08-15` ／ `date('bogus')`=**NULL** ／ 4 行（有効 2＋bogus＋NULL）で `COUNT(DISTINCT date(p))`=**1** |
+| **D** 再計算 SQL の doc が古い | ✅ 追認。**doc のみ訂正**（式は 1 文字も変えず、別課題として起票要と明記） | 実測: `MAX('2026-01-01T12:00:00Z','2026-01-01T05:00:00-08:00')` は**前者**を返すが、新しいのは後者（13:00 UTC）。062b の `comment_times` の doc が同じことを書いている |
+| **E** `stream_count` の水増し | ✅ 追認。**①受容**（②は 062b 以前が丸ごと 0＝実在する観測を捨てる、逆方向の嘘） | 062b はバックフィルしないと決めている |
+| **F** `ViewerRecord` に何を出すか | ✅ 追認。**12 列を出し、`imported_name_history` は出さない**（065b は使わない・生の第三者 JSON を IPC 境界に載せない） | barrel は 6 型を再エクスポート。`ViewerImportResult` を 1 行追加 |
+| **G** `csv` の推移依存 | ✅ 追認（`Cargo.lock` に無い＝新規取得）。**実出力を下に貼った** | crates.io 到達可（index に 200） |
+| **H** `COALESCE` が冗長 | ✅ 追認。**残したうえで「実際は NOT NULL・防御として置いている」と doc に書いた** | `ensure_column` の `NOT NULL DEFAULT 0` は既存行も 0 で埋める |
+| **I** 実物 CSV の扱い | ✅ 追認。**合成データをテストコード内の定数として持つ**（`tests/fixtures/` にも置かない＝「実物を置く場所」を作らない） | 列順 2 パターン・引用内改行・BOM はすべて合成で再現できた |
+| **J** ⚠⚠ **新規**: コメント 0 件の視聴者に全再計算を当てると `NOT NULL` 違反でトランザクションが全ロールバック | **取り込みと backfill は「`viewer_comments` に行がある視聴者」だけへ流す** | 実測: `NOT NULL constraint failed: viewers.first_seen_at (19)`。⚠ **062a の doc が案 (c) を却下した理由①と同じ失敗**。CSV 取り込みは `viewer_comments` を作らないので、引き継ぎだけの視聴者は**必ず**コメント 0 件 |
+| **K** ⚠⚠ **新規**: 新しい集計 3 列が既存視聴者で 0 のまま | **列を新規に足したときだけ 1 回 backfill する**（`RECOMPUTE_VIEWER_AGGREGATES_SQL` を 1 人ずつ流す＝式の複製ゼロ） | 再計算は `record_comment` からしか走らない ⇒ もう来ない常連さんは「参加配信数 0」で永久固定され、065b の一覧が壊れて見える |
+| **L** ⚠⚠ **新規**: マージ規則の「新しいほう」を SQL の `MAX` で書くと穴 D と同じ罠を新規コードで踏む | **比較は Rust の `DateTime::parse_from_rfc3339`**（062b の `comment_times` と同じ作法） | `last_comment_at` はオフセット付きが混ざりうる／`lcts` は常に `Z` 形式 |
+
+### 決定（1〜13）
+
+| # | 決定 |
+|---|---|
+| 1 | 穴 A＝**案 ③**（util.rs へ共有コア＋060b は薄いラッパ）。`ImportFileSpec` / `validate_import_path` / `read_import_text` |
+| 2 | 穴 B＝**受容**。テストで「そうなること」を記録として固定（`long_absence_fires_for_an_imported_viewer_by_design`） |
+| 3 | 穴 C＝**UTC 日**。壊れた時刻の黙殺も受容し、テストに bogus 行を必ず入れる |
+| 4 | 穴 D＝doc を全面訂正（**式は不変**）。別課題として 038 側に起票要 |
+| 5 | 穴 E＝**受容**。doc・DTO・申し送りの 3 か所に「多めに出る」と書いた |
+| 6 | 穴 F＝12 列を DTO へ。`imported_name_history` は `VIEWER_COLUMNS` にも入れない（読まない） |
+| 7 | 穴 G＝下記の実出力 |
+| 8 | 穴 I＝合成データをテスト内定数で持つ |
+| 9 | 上限＝**8MiB / 20,000 行**（実測 61 行・14.6KB＝245 バイト/行の 328 倍）。行数超過は**切り詰めず拒否** |
+| 10 | **ヘッダ索引 ＋ 明示 `get`**（serde 連携は使わない）。⚠ 未知列は無視・必須列の欠落は拒否という非対称は**意図**（061c の `deny_unknown_fields` とは向きが逆で、理由が違う） |
+| 11 | **段を割った**（段 1＝スキーマと再計算／段 2＝取り込み経路） |
+| 12 | security.md は**⑪ 配下の 065a 節／§5 の追補／§10** の 3 か所。⚠ タスクファイルは「⑫として追補」と書いていたが、既存構造は ⑪ 配下のネストなので**そちらに合わせた** |
+| 13 | 穴 K＝**列が新規に追加されたときだけ backfill**。⚠ 判定は `ensure_column` の**前**に取る（後だと必ず「もう在る」になる） |
+| 追加 | 必須列を **3 → 9 に広げた**（`tc` 等のヘッダごと無い CSV だと全行 `skipped_invalid` になって**原因が伝わらない**）。⚠ 厳しくする方向なので線引きは変えていない |
+| 追加 | 戻り値の型名を `ImportResult` → **`ViewerImportResult`**（barrel から再エクスポートすると何の取り込みか分からなくなる。先例＝`OverlayThemeImportResult`） |
+
+### 列マッピング（全 22 列・最終版）
+
+| # | わんコメ | 判定 | 保存先 | 検証 |
+|---|---|---|---|---|
+| 1 | `id` | ✅ 必須 | `viewers.id` / `provider` / `provider_user_id` | trim・制御文字・**200 文字**・`yt-`/`tw-`・**`service` と一致** |
+| 2 | `username` | ✅ | `name`（**非破壊マージ**） | trim・制御文字・200 文字 |
+| 3 | `icon` | ❌ | — | アバター URL（038a 方針・§9） |
+| 4 | `badges` | ❌ | — | 受け皿なし |
+| 5 | `nickname` | ✅ | `nickname`（非破壊マージ） | trim・制御文字・200 文字 |
+| 6 | `lang` | ❌ | — | 翻訳設定 |
+| 7 | `service` | ✅ 必須 | `provider`（新規行のみ） | `youtube` / `twitch` のみ |
+| 8 | `memo` | ✅ | `note`（非破壊マージ） | trim・制御文字・**1,000 文字** |
+| 9 | `nameHistory` | ✅ | `imported_name_history`（**生 JSON・パースしない**） | 制御文字 or 4KiB 超は**空文字**（行は落とさない） |
+| 10 | `allowIcon` | ❌ | — | 全行空 |
+| 11 | `interval` | ✅ 必須 | `imported_first_seen_at` の材料 | **空欄は 0**・負値/失敗は行スキップ。⚠ **回数の上限は当てない**（経過時間なので 3 年＝1e11 に達しうる） |
+| 12 | `lcts` | ✅ 必須 | `last_comment_at` / `first_seen_at`（新規行） | `parse_from_rfc3339` が通ること |
+| 13 | `tc` | ✅ 必須 | `imported_comments` | **1 億まで**・空欄/失敗/負値は行スキップ（**0 で代替しない**） |
+| 14 | `tgc` | ✅ 必須 | `imported_gifts` | 同上 |
+| 15 | `amount` | ✅ 必須 | `imported_gift_amount`（**単位不明**） | 有限・非負。⚠ 既存の金額列に**一切加算しない** |
+| 16 | `lst` | ❌ | — | 全行 `#` |
+| 17 | `anonymity` | ❌ | — | 全行空 |
+| 18 | `label` | ✅ | `label`（非破壊マージ） | trim・制御文字・200 文字 |
+| 19 | `screenName` | ❌ | — | 全行空 |
+| 20 | `atdDays` | ✅ 必須 | `imported_active_days` | #13 と同じ |
+| 21 | `atdLives` | ✅ 必須 | `imported_stream_count` | #13 と同じ |
+| 22 | `lstLive` | ❌ | — | videoId |
+
+### 再計算 SQL の改訂（**変更は 4 行のみ**）
+
+```
+total_comments = COUNT(*)                        + COALESCE(imported_comments, 0)      ← 変更
+gift_count     = COUNT(課金 6 種別)               + COALESCE(imported_gifts, 0)         ← 新規
+stream_count   = COUNT(DISTINCT session_id)      + COALESCE(imported_stream_count, 0)  ← 新規
+active_days    = COUNT(DISTINCT date(published)) + COALESCE(imported_active_days, 0)   ← 新規
+```
+
+**触らない列（18）**: `id` / `provider` / `provider_user_id` / `name` / `note` / `created_at` /
+`nickname` / `label` / `imported_*`（7 列）/ `imported_at`、および `bits_*` / `superchat_*` /
+`subscription_count` / `is_member` / `last_subscription_at`（式は不変）。
+`first_seen_at` / `last_comment_at` も**式を変えていない**（⚠ 値は従来どおり上書きされる）。
+
+### security-review（必須）で見つけた欠陥 2 件 ⚠⚠
+
+**自己レビューだが、実際にコード欠陥を 2 件見つけて修正した**（判定＝修正後「問題なし」）。
+
+1. ⚠⚠ **`tc` が `u32::MAX` を超える CSV で、視聴者一覧が丸ごと開けなくなる**（**修正必須**・実測で再現）。
+   `ViewerRecord` は集計 4 列を `u32` で読むため、大きな値が列に入ると `list_viewers` と `get_viewer` が
+   **両方とも `StorageFailed`** で落ちる。取り込みは `imported: 1` と**成功扱いで返る**ので原因が見えず、
+   一覧が開けないので **UI からその行を消すこともできない**。
+   実測ログ: `PROBE import = { imported: 1, ... }` / `PROBE list = Err(StorageFailed)`
+   ⇒ **回数系に 1 億の上限**を入れた。⚠ `u32::MAX` ぎりぎりにしなかったのは、集計が
+   `COUNT(*) + imported_*` なので**加算で溢れる**から。修正後は `skipped_invalid: 1` / `list = Ok(0)`。
+   ⚠ **`interval` には当てていない**（経過時間なので 3 年＝約 1e11 ミリ秒に達しうる。回数の上限を
+   当てると**常連さんほど取り込めなくなる**）。
+2. ⚠ **自由入力列に長さ上限が無く、1 行の `memo` に数 MB を入れた CSV が作れる**（サイズ上限 8MiB は
+   ファイル全体にしか効かない）。065b の一覧描画が止まる（060b が `MAX_CSS_BYTES` を置いた理由と同じ形）。
+   ⇒ `memo` 1,000 文字・その他 200 文字。**切り詰めず行ごとスキップ**（ユーザーのメモを黙って削らない）。
+   ⚠ **`update_viewer_note` にも同じ上限が無い**のは**既存の課題**（本タスクでは触っていない）。
+
+その他の確認結果:
+- **外部通信ゼロ**（`csv` の推移依存に async/HTTP 系なし・わんコメへ接続しない・新規宛先ゼロ）
+- **capability 差分ゼロ**（`dialog:allow-open` は 060b で付与済み・`fs:*` はゼロのまま）
+- **§3 単一目的**（読んだ内容を 1 バイトも返さない＝`list_viewers`/`get_viewer` はパスを取らないので、
+  060b の「2 本合成で任意ファイル読み取り」の形が**構造的に成立しない**）
+- **§9**: `log_command_err` は `ErrorCode::log_message()` の固定文言だけを記録し **`details` を書かない**
+  ⇒ ファイル名すらログ DB に残らない。戻り値も件数のみ（`{:?}` と JSON の両方でテスト固定）
+- **削除手段の非退行**: 追加はすべて `viewers` の列なので `delete_viewer` / `clear_viewers` が取り残しゼロで有効
+- ⚠ **同じ id の行が CSV に 2 つあると 1 件目が 2 件目に上書きされる**（`imported: 1` ＋ `updated: 1` と数える）。
+  実害は無いので受容（実データでは起きない）
+
+### `cargo tree` の実出力（穴 G・「入っていないはず」で済ませない）
+
+```
+$ cargo tree -p csv
+csv v1.4.0
+├── csv-core v0.1.13
+│   └── memchr v2.8.2
+├── itoa v1.0.18
+├── ryu v1.0.23
+└── serde_core v1.0.228
+
+$ cargo tree -p csv | grep -iE "tokio|hyper|reqwest|async|mio|futures"
+(ヒットなし)
+```
+**`Cargo.lock` に増えたのは 3 crate だけ**（`csv` 1.4.0 / `csv-core` 0.1.13 / `ryu` 1.0.23。
+`memchr` / `itoa` / `serde_core` は既存）。`Cargo.toml` の差分はコメントを除くと **`csv = "1"` の 1 行のみ**。
+
+### 変異の実測（**17 行 / 19 変異すべてレッド**・件数ではなく「何を固定できたか」）
+
+⚠ 見出しを「13 件」と書いていたのは誤り（表は 17 行あり、`M-L1/L2/L3` の行が 3 変異を束ねるので実数 19）。
+
+| 変異 | レッドになったテスト |
+|---|---|
+| M-1 `+ COALESCE(imported_comments, 0)` を外す | `imported_totals_survive_recompute` ほか 3 本 |
+| M-L1/L2/L3 `active_days` / `stream_count` / `gift_count` の加算を**個別に**外す | それぞれ対応するテスト（4 つの加算が**独立に**固定されている） |
+| M-5 `gift_count` の集合に `'raid'` を足す | `gift_count_excludes_raid_and_chat` ほか 2 本 |
+| M-8 backfill を消す（穴 K） | `a_database_created_before_065a_gains_the_new_columns_and_is_backfilled` |
+| M-K2 backfill 判定を列追加の**後ろ**で行う | 同上 |
+| M-J backfill の `EXISTS` 絞り込みを外す（穴 J） | `backfill_does_not_break_on_viewers_without_comments` |
+| M-C1 `active_days` を `localtime` にする | `active_days_counts_utc_days_...` ほか 1 本（JST 環境で 2 日 → 1 日に潰れる） |
+| **M-2 ⚠⚠ UNC 判定を拡張子チェックの後ろへ動かす** | **util 側と 060b 側の両方**（`network_paths_are_refused_before_the_extension_is_even_checked` ＋ `network_paths_are_refused_before_the_filesystem_is_touched`）＝**案 ③ の狙いどおり** |
+| M-3 `imported_*` を加算にする | `importing_the_same_csv_twice_does_not_double_count` |
+| M-4 非破壊マージを無条件上書きに | `the_merge_never_overwrites_what_the_streamer_already_has` |
+| M-6 必須列の検証を外す | `a_csv_without_the_required_columns_imports_nothing` |
+| M-7 取り込み時の再計算からコメント有無の条件を外す（穴 J） | `imports_a_new_viewer_with_its_baseline_totals` ほか 3 本（**取り込みが丸ごと失敗する**） |
+| **M-9 時刻比較を辞書順へ戻す（穴 L）** | `the_newer_timestamp_is_decided_by_parsing_not_by_string_comparison` |
+| M-10 数値のパース失敗を `unwrap_or(0)` に | `broken_numbers_skip_the_row_instead_of_defaulting_to_zero` |
+| M-11 ヘッダ索引を「1 回目の列順」に固定 | `csv_import` の **6 本**（列位置で読む実装への回帰を構造的に塞げている） |
+| M-12 回数の上限を外す（review 指摘 1） | `counts_beyond_the_supported_range_...` ＋ `the_count_limit_applies_to_every_counter_column` |
+| M-13 文字数の上限を外す（review 指摘 2） | `over_long_free_text_skips_the_row_instead_of_being_truncated` |
+
+⚠ **固定できていないこと**（過大に主張しない）:
+- **穴 D の doc 訂正はコメントなので変異で検知できない**（式を 1 文字も変えていないため、
+  守るべき挙動がそもそも無い）。
+- `imported_gift_amount` は**上限を課していない**（`f64` なので DTO の marshalling では落ちないが、
+  巨大な値の表示は 065b の責任になる）。
+- **同じ id の重複行**の扱いはテストで固定していない（実データで起きないため受容）。
+
+### 検証
+
+| コマンド | 結果 |
+|---|---|
+| `cargo check` | ✅ |
+| `cargo test` | ✅ **417 passed / 0 failed**（ベースライン 366 → **+51**） |
+| `pnpm typecheck` / `lint` | ✅ |
+| `pnpm test` | ✅ **72 files / 1684 tests** |
+| `pnpm check:bindings` | ✅ exit 0（⚠⚠ **binding に差分があるときは `git add` してから打つこと**。`git diff --exit-code` はワークツリー vs **インデックス**を見るので、①**新規** binding は `git add -N` しないとそもそも見に行かず〔062b 申し送り 7〕、②**変更された既存** binding は未ステージだと生成物にドリフトが無くても必ず落ちる。実測: `git add -N` だけだと exit 1・`git add` すると exit 0。ステージして判定し、インデックスは元へ戻した） |
+| capabilities / `tauri.conf.json` / sidecar / CI | ✅ **差分ゼロ** |
+| `package.json` / `pnpm-lock.yaml` | ✅ **差分ゼロ** |
+| `Cargo.toml` | ✅ **`csv = "1"` の 1 行のみ**（＋理由コメント） |
+| リポジトリ内の `.csv` | ✅ **ゼロ**（実物は置いていない） |
+
+⚠ **`ViewerRecord` に必須フィールドが増えたため、frontend のテスト用ファクトリ 3 ファイルに追随が要った**
+（`SummaryView.test.tsx` / `ViewerDetailPanel.test.tsx` / `ViewersView.test.tsx`。挙動は変えていない）。
+
+### 外部レビューの反映（2026-08-16・security-review ＋ code-review）
+
+自己レビューとは別に、差分全体（21 ファイル）へ外部レビューを掛けた。総合判定は
+**セキュリティ＝軽微な懸念あり（本差分内に修正必須なし）**。反映した内容:
+
+**コードを直したもの**
+
+| # | 指摘 | 対処 |
+|---|---|---|
+| Q-1 ⚠⚠ | **060b の文言が 1 か所退行していた。** 共有化で `read_source_css` の失敗文言が「CSS ファイルを読み取れませんでした。」→「指定された CSS ファイルが見つかりません。」に変わっていた（エラーコードは同じなので**既存テストは全部緑のまま**＝レビューでしか捕まらない形）。「1 バイトも変えていない」という当初の主張は誤り | `ImportFileSpec` に **`msg_read_failed` を追加**して 060b の旧文言を復元。060b の 9 文言をリテラルで固定する `the_shared_import_core_did_not_change_any_060b_wording` を追加 |
+| Q-2 ⚠⚠ | **自分で試していない変異が 5 件生き残っていた**（レビュー側が実測）: ①`nickname` ②`label` の非破壊マージを無条件上書きにしても緑 ③`imported_first_seen_at` を `DO UPDATE` から外しても緑 ④`clamp_name_history` の制御文字判定を外しても緑 ⑤`ColumnIndex::position` の `trim()` を外しても緑 | テストを 4 本追加（`the_merge_protects_the_nickname_and_label_too` / `re_importing_refreshes_the_estimated_first_seen_at` / `the_header_names_are_matched_after_trimming` ＋ `a_broken_name_history_...` に制御文字ケースを追加） |
+| Q-3 ⚠⚠ | **「トランザクション境界を確認する」と書いたテストが、トランザクションに到達していなかった。** 行数上限も `parse` の中で落ちるので、必須列エラーと同じくパース段階で終わる＝**「全行 1 トランザクション」を守るテストが 1 本も無かった** | コメントの誤りを訂正し、テスト用トリガーで 2 行目を失敗させる `a_failure_on_a_later_row_rolls_back_the_rows_already_written` を追加（`&tx` → `conn` の変異はここだけがレッドになる） |
+
+**他タスク領域の欠陥 2 件も、依頼者の指示でその場で修正した**（当初は起票のみの予定だった）
+
+| # | 指摘 | 対処 |
+|---|---|---|
+| S-1 ⚠⚠ | **`bits_amount` に `tc` と同種の `u32` 欠陥があった**（申し送り 1「他の `u32` 経路に同種の欠陥は無いか」への回答＝**あった**）。`monetary.amount` は範囲検証ゼロで `viewer_comments.amount` へ入り、`currency='BITS'` の合計が `ViewerRecord.bits_amount`（`u32`）で読めなくなる。**実測: `amount = -1, currency = "BITS"` の 1 件で `list_viewers` / `get_viewer` が両方 `StorageFailed`**（`tc` の 42 億超えより到達コストが桁違いに低い） | **2 層で塞いだ**。①入口＝`service::MAX_COMMENT_AMOUNT`（有限・非負・1 億以内。0 で代替せず**コメントごと弾く**）②出口＝`repository::read_u32_clamped`（範囲外を丸めて読む＝**既に壊れた DB でも一覧が開いて削除できる**）。⚠ **入口だけでは足りない**（SUM は件数で溢れる）／**出口だけでも足りない**（壊れた値が保存され続ける）。⚠ 丸めは `bits_amount` だけ（`COUNT(*)` 由来まで広げると本物のバグを隠す）。`superchat_amount` も `read_finite_f64` で `inf` を 0 に倒す（`serde_json` が非有限 `f64` を `null` にする嘘を防ぐ）。テスト 2 本＋security.md §8 追補 |
+| S-2 ⚠⚠ | **`extract_app_icon` が UNC を弾いていなかった。** `path` を受け取る 3 本のうちこれだけが共有コアを通らず `p.exists()` を直接叩く＝060b S-4 と同じ NTLM 流出経路 | `util::is_network_path` を **`p.exists()` より前**に置いた（ベストエフォート契約は不変）。⚠⚠ **最初に書いた挙動テストは順序変異を捕まえられなかった**——戻り値が `Option` なので判定を後ろへ動かしても `None` のままで緑を保つ（実測で判明）。⇒ **ソースの出現順で固定する契約テスト** `the_network_path_guard_comes_before_any_filesystem_access` に差し替えた（overlay_theme の契約テストと同じ作法）。テスト 3 本 |
+
+**修正せず、意図・理由・再修正トリガーをコメントで残したもの**
+
+| # | 指摘 | 判断 |
+|---|---|---|
+| S-3 | 最大 20,000 行の upsert ＋ 再計算を **DB ロックを保持したまま**行う | **設計として妥当**（全か無かを保つ／1 トランザクションで fsync 無し／行数に上限あり）。⚠ ただし**上限があるのは行数だけで 1 人あたりのコメント数は青天井**である点を `import_csv` の doc に追記。再修正トリガーは「分割ではなく取り込み中フラグ」 |
+| S-4 | **backfill が失敗すると起動しない／次回以降は二度と走らない**（列は別トランザクションで確定済みなので判定が `false` になる） | **受容**。理由 3 点と「集計が埋まっているかで判定し直す」という再修正トリガーを `backfill_new_aggregates` の doc に追記 |
+| Q-6 | `ColumnIndex` が名前に反して索引を作らず毎回線形走査 | **受容**（20,000 行でも数百万回の `&str` 比較＝計測できない差）。意図と再修正トリガーを doc に追記 |
+| Q-7 | `clean_text` が空文字メッセージで `AppError` を作って捨てている | **受容**（`Option` に落とすので中身を誰も見ない／制御文字の定義を 2 か所に持たないため直書きしない）。「この形を真似して増やさない」と明記 |
+| Q-9 | `update_viewer_note` に長さ上限が無く、**CSV 経路とで規律が非対称** | **本タスクでは触らない**（038 側へ起票）。⚠ 「手入力だから安全」ではなく「**同じ穴が 2 か所にあり、自分が新設した側だけ塞いだ**」が正確、と `update_note` の doc に明記。⚠ S-1 と違って**一覧が開けなくなる類の故障ではない**（描画が重くなるだけ）ので、その場で直す対象からは外した |
+| Q-11 | `ImportFileSpec` が `&'static str` を 10 個持つ形 | **今回は変えない**（Q-1 の対処で 11 個になった）。3 本目の取り込み経路が増えるときに「対象名だけ持たせて文言は組み立てる」へ寄せるか判断する |
+| S-5 / Q-4 / Q-5 | security.md の「構造的に成立しない」が言い過ぎ／変異件数「13 件」が表の 17 行と不一致／`check:bindings` の申し送りが新規 binding にしか触れていない | いずれも**記述を訂正**（下記 docs の修正） |
+| S-6 | `imported_gift_amount` に上限が無い | **対応済み**（`model.rs` の DTO doc と task-board 申し送り 4 に記載済み・追記不要） |
+
+**レビューが確認した「良かった点」**（＝退行させてはいけない担保）:
+`cargo tree` の実出力で async/HTTP/tokio 系ゼロ・わんコメへの接続経路ゼロ（`Connection::open` の新規呼び出しゼロ）・
+capability / CSP / sidecar / CI の差分ゼロ・UNC 順序が util と 060b の 2 か所からテストされていること・
+`log_command_err` が `details` を書かないのでファイル名すらログに残らないこと・SQL の識別子が全部定数であること・
+穴 J の分岐が漏れる経路が 3 つの呼び出し元すべてで塞がっていること・「そう決めた」3 本のテストが
+**対照群を持っているので追認になっていない**こと。
+
+### ⏳ 未実施
+
+- **実機確認**（依頼者の環境で行う。実物の CSV を使う唯一の場面）。手順は 065a のタスクファイルに列挙した。
+  ⚠ レビューの結論＝**この状態を「完了」と書かないこと**。未検証の中核は ①実 CSV のヘッダが必須 9 列を
+  満たすか ②61 名での `skipped_*` の出方 ③`tw-` の推定 ④既存 DB での backfill 所要時間 の 4 点で、
+  **①が外れると 065b を作った直後に全行弾かれる**。⇒ **065b の最初の一歩を「dialog → invoke だけの最小導線」に
+  して、そこで実 CSV を 1 回通す**（申し送り 9）。
+- **065b（UI）**。本タスクはコマンドと binding まで。
+- **038 側へ起票した 2 件**（Q-9 `update_viewer_note` の上限 / 穴 D のオフセット混在）。
+  ⚠ S-1（`bits_amount`）と S-2（`extract_app_icon` の UNC）は**起票ではなくその場で修正した**
+  （依頼者の指示。どちらも「一覧が丸ごと開けない」「資格情報が飛ぶ」という**放置できない類**だったため）。

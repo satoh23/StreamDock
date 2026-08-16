@@ -83,9 +83,33 @@ fn encode_png_base64(mut dynamic: image::DynamicImage) -> Option<String> {
 /// `.lnk`/`.bat` 拒否）。ただし本コマンドはベストエフォートのため `AppError` ではなく
 /// `Option`（NG は `None`）で返し、呼び出し側で `Ok(None)` にフォールバックする。
 /// `process/service.rs::validate_executable`（起動系）は 017 で確定済みのため変更しない。
+///
+/// ## ⚠⚠ UNC / ネットワークパスは**ディスクに触る前**に拒否する（レビュー指摘 S-2）
+///
+/// `extract_app_icon` はアプリ定義コマンド＝**ACL 対象外で全窓から任意文字列で呼べる**ので、`path` が
+/// dialog 由来である保証は無い。Windows で `\\evil.example\share\x.exe` を渡されると、下の
+/// `p.exists()` の時点で **OS が攻撃者ホストへ SMB 接続し、既定設定では NTLM でユーザー/マシンの
+/// 資格情報ハッシュが飛ぶ**——ユーザー操作ゼロ・ダイアログ非経由の egress で、docs/security.md §1 の
+/// 趣旨に直接反する。**060b security-review S-4 が `import_overlay_theme` で塞いだのと同じ穴**であり、
+/// 065a の共有化（`util::validate_import_path`）が**取り込み経路 2 本しか通していなかった**ため
+/// `path` を受け取る 3 本目である本経路だけが漏れていた。
+///
+/// ⚠⚠ **判定は `p.exists()` より前に置くこと。順序は挙動テストでは固定できない。**
+/// 本関数は `Option` を返すので、判定を後ろへ動かしても**戻り値は `None` のまま**で
+/// `icon_paths_on_network_shares_are_refused` は緑のまま通る——しかし `.exists()` を呼んだ時点で
+/// もう SMB 接続は起きており、NTLM ハッシュは飛んでいる（＝守りたかったものは失われている）。
+/// ⇒ 060b は `ValidationError` / `UnsupportedFileType` のコード差で順序を観測できるが、ここは
+/// 観測できる差が無いので **`the_network_path_guard_comes_before_any_filesystem_access` が
+/// ソースの出現順で固定している**（overlay_theme の契約テストと同じ作法）。
+/// ⚠ 判定そのものは [`crate::util::is_network_path`] にしかない（規則を複製しない・061c S-1）。
+/// ⚠ ベストエフォート契約は変えていない（NG は `None` → frontend は文字フォールバック）。
 fn validate_icon_path(path: &str) -> Option<PathBuf> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
+        return None;
+    }
+    // ⚠⚠ **ディスクにもネットワークにも触る前に落とす**（上の doc が理由・S-4 と同じ要件）。
+    if crate::util::is_network_path(trimmed) {
         return None;
     }
     let p = Path::new(trimmed);
@@ -461,5 +485,128 @@ mod windows {
             px.swap(0, 2);
         }
         Some((width, height, buf))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// テスト専用の一時ディレクトリ（`Drop` で片付ける）。
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new() -> Self {
+            let path = std::env::temp_dir()
+                .join("stream-dock-icon-path-test")
+                .join(uuid::Uuid::new_v4().to_string());
+            std::fs::create_dir_all(&path).expect("一時ディレクトリを作れない");
+            TempDir(path)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// ⚠ needle は必ず実行時に組む（`include_str!` は自ファイルを読むので、リテラルをそのまま書くと
+    /// テスト自身の本文にヒットして常に緑になる。overlay_theme の契約テストと同じ作法）。
+    const ICON_RS: &str = include_str!("icon.rs");
+
+    // ⚠⚠ **UNC / ネットワークパスは拒否する**（レビュー指摘 S-2・060b S-4 と同じ要件）。
+    //   `extract_app_icon` は ACL 対象外＝全窓から任意文字列で呼べるので、Windows で UNC を渡されると
+    //   `exists()` の時点で SMB 接続が起き、既定設定では NTLM で資格情報ハッシュが飛ぶ。
+    #[test]
+    fn icon_paths_on_network_shares_are_refused() {
+        let dir = TempDir::new();
+        let real = dir.0.join("app.exe");
+        std::fs::write(&real, b"x").expect("テスト用ファイルを書けない");
+
+        // 前提: 通常の絶対パスなら通る（過剰に弾いていないこと）。
+        assert!(
+            validate_icon_path(&real.to_string_lossy()).is_some(),
+            "ローカルの実ファイルを弾いた"
+        );
+
+        // ⚠ 実在するファイルでも、ネットワークパス形式で指せば拒否される
+        //   （macOS は `//foo` を `/foo` と同一視するので、実ファイルを `//` 形式で指せる）。
+        let as_network = format!("/{}", real.to_string_lossy());
+        assert!(
+            crate::util::is_network_path(&as_network),
+            "前提: この形が UNC 判定に掛かること"
+        );
+        assert!(
+            validate_icon_path(&as_network).is_none(),
+            "⚠ 実在するファイルでもネットワークパス形式なら拒否すること"
+        );
+
+        // 混在形も含めて拒否する（Windows は `/` と `\` を等価な区切りとして扱う・061c S-1）。
+        for bad in [
+            r"\\evil.example\share\x.exe",
+            "//evil.example/share/x.exe",
+            r"\/evil.example\share\x.exe",
+            r"/\evil.example/share/x.exe",
+            r"\\?\UNC\evil.example\share\x.exe",
+        ] {
+            assert!(validate_icon_path(bad).is_none(), "ネットワークパスを通した: {bad:?}");
+        }
+    }
+
+    // ⚠⚠ **判定が「ディスクに触る前」にあること。これは挙動テストでは固定できない。**
+    //   本関数は `Option` を返すので、UNC 判定を `p.exists()` の**後ろ**へ動かしても
+    //   **戻り値は `None` のままで、上のテストは緑のまま通る**——しかし `exists()` を呼んだ時点で
+    //   もう SMB 接続は起きており、NTLM ハッシュは飛んでいる（＝守りたいものは失われている）。
+    //   ⇒ 060b が `ValidationError` / `UnsupportedFileType` のコード差で順序を観測しているのに対し、
+    //     ここは観測できる差が無いので**ソースの出現順で固定する**
+    //     （overlay_theme の `exactly_one_place_sanitizes_and_exactly_one_place_writes` と同じ作法）。
+    //   ⚠ このテストを消すと、順序の要件を守るものが**何も無くなる**。
+    #[test]
+    fn the_network_path_guard_comes_before_any_filesystem_access() {
+        // 本番コードだけを見る（テスト本文にヒットさせない）。
+        let test_marker = format!("#[cfg({})]", "test");
+        let production = ICON_RS.split(&test_marker).next().expect("本番部分が取れない");
+
+        let start = production
+            .find(&format!("fn {}", "validate_icon_path"))
+            .expect("validate_icon_path が見つからない");
+        let body = &production[start..];
+        let body = &body[..body.find("\n}\n").expect("関数の終わりが見つからない")];
+
+        let guard = body
+            .find(&format!("{}(", "is_network_path"))
+            .expect("⚠⚠ UNC 判定が validate_icon_path から消えている（060b S-4 と同じ穴が開く）");
+        let touches_disk = body
+            .find(&format!(".{}()", "exists"))
+            .expect("実在チェックが見つからない（この関数の形が変わったならテストも見直すこと）");
+
+        assert!(
+            guard < touches_disk,
+            "⚠⚠ UNC 判定が `.exists()` より後ろにある。\
+             戻り値は `None` のままなので挙動テストでは気づけないが、`.exists()` を呼んだ時点で\
+             SMB 接続と NTLM ハッシュの送出は既に起きている（docs/security.md §5 の 060b S-4）"
+        );
+    }
+
+    // 既存の検証（非空・絶対・実在・`.lnk`/`.bat` 拒否）が UNC 判定の追加で退行していないこと。
+    #[test]
+    fn the_existing_icon_path_rules_still_hold() {
+        let dir = TempDir::new();
+        assert!(validate_icon_path("   ").is_none(), "空白のみ");
+        assert!(validate_icon_path("relative/app.exe").is_none(), "相対パス");
+        assert!(
+            validate_icon_path(&dir.0.join("missing.exe").to_string_lossy()).is_none(),
+            "不在"
+        );
+        for ext in ["lnk", "bat"] {
+            let path = dir.0.join(format!("app.{ext}"));
+            std::fs::write(&path, b"x").expect("テスト用ファイルを書けない");
+            assert!(validate_icon_path(&path.to_string_lossy()).is_none(), ".{ext} は対象外");
+        }
+        assert!(
+            validate_icon_path(&dir.0.to_string_lossy()).is_none(),
+            "ディレクトリ（.app 以外）"
+        );
     }
 }

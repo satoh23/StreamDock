@@ -37,6 +37,17 @@ const makeViewer = (over: Partial<ViewerRecord> = {}): ViewerRecord => ({
   note: "",
   createdAt: "2026-07-20T10:00:00Z",
   updatedAt: "2026-07-25T10:00:00Z",
+  // 065a: わんコメからの引き継ぎ。既定は「引き継ぎ無し」（importedAt が undefined＝未取り込み）。
+  nickname: "",
+  label: "",
+  giftCount: 0,
+  streamCount: 1,
+  activeDays: 1,
+  importedComments: 0,
+  importedGifts: 0,
+  importedGiftAmount: 0,
+  importedActiveDays: 0,
+  importedStreamCount: 0,
   ...over,
 });
 const makeDetail = (viewer: ViewerRecord): ViewerDetail => ({ viewer, comments: [] });

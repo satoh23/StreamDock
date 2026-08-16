@@ -8,6 +8,8 @@
 //! （docs/security.md §9 の保存ポリシーを視聴者メモリに限って解禁・「コメントビューア方針」⑪）。tools と
 //! 同型のレイヤード構成（commands / service / repository / model）。
 pub mod commands;
+/// 065a: わんコメ（OneComme）公式 CSV エクスポートのパース（DB に触らない純関数層）。
+pub mod csv_import;
 pub mod model;
 pub mod repository;
 pub mod service;

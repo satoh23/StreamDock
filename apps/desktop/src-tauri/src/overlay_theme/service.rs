@@ -26,9 +26,9 @@ use rusqlite::Connection;
 use tauri::{AppHandle, Manager};
 
 use crate::error::{AppError, AppResult};
-use crate::util::{
-    is_network_path, now_rfc3339, reject_control_chars, require_non_empty, with_filename_detail,
-};
+// ⚠ 065a: `is_network_path` / `with_filename_detail` はここから消えたが、**規則が消えたのではない**
+//   ——`CSS_IMPORT_SPEC` 経由で `util::validate_import_path` が引き続き両方を使う（そちらが唯一の定義）。
+use crate::util::{now_rfc3339, reject_control_chars, require_non_empty};
 
 use super::model::{OverlayThemeImportResult, OverlayThemeOrigin, OverlayThemeRecord};
 use super::repository;
@@ -224,85 +224,46 @@ fn managed_path(dir: &Path, file_name: &str) -> AppResult<PathBuf> {
 /// ⚠ trim するのは `tools::service` の `executable_path` に揃えるため。帰結として
 /// **前後に空白を含むファイル名は取り込めない**（macOS では正当な名前）が、既存のパス検証と
 /// 挙動を分けるほうの害が大きいので一貫性を採る。
+/// 060b がテーマ CSS を取り込むときの受け入れ規則（拡張子・上限・文言）。
+///
+/// ⚠⚠ **065a で検証の実体を [`util::validate_import_path`] / [`util::read_import_text`] へ寄せた。**
+/// この定数が持つのは「`.css` であること」「**256KB**（[`MAX_CSS_BYTES`]）であること」「文言」だけで、
+/// **検証の 6 段とその順序は util 側の 1 か所にしかない**。
+/// 移した理由＝065a が `.csv` で 2 本目の取り込み経路を作ったから。順序ごと複製すると、
+/// とくに「**UNC 判定を拡張子より前に置く**」（security-review S-4）が片方だけ崩れても
+/// **コンパイルもテストも通ってしまう**（`is_network_path` を共有ヘルパへ出した 061c S-1 と同じ判断）。
+/// ⚠ **挙動・文言・エラーコードは 1 バイトも変えていない**（下のテスト群がそのまま緑であることが担保）。
+const CSS_IMPORT_SPEC: crate::util::ImportFileSpec = crate::util::ImportFileSpec {
+    extension: "css",
+    max_bytes: MAX_CSS_BYTES,
+    msg_missing: "CSS ファイルが選択されていません",
+    msg_control: "ファイルパスに制御文字は使用できません",
+    msg_network: "ネットワーク上のファイルは取り込めません。ローカルにコピーしてから選んでください。",
+    msg_extension: "CSS ファイル（.css）を選んでください。",
+    msg_not_found: "指定された CSS ファイルが見つかりません。",
+    // ⚠ **`msg_not_found` と別文言なのは 060b の挙動を 1 バイトも変えないため**（共有化の初版はここを
+    //   1 つにまとめてしまい、`read_source_css` の文言が静かに変わっていた）。この 2 つを揃えないこと。
+    msg_read_failed: "CSS ファイルを読み取れませんでした。",
+    msg_not_a_file: "ファイルを選んでください。",
+    msg_too_large: "CSS ファイルが大きすぎます。256KB 以内にしてください。",
+    msg_not_utf8: "この CSS ファイルは UTF-8 として読み取れません。テキストファイルか確認してください。",
+};
+
+/// dialog 由来の生パスを検証する（§7 / §8）。**規則の実体は [`util::validate_import_path`]**。
+///
+/// ⚠ **この薄いラッパを消さないこと。** `read_import_source` からの呼び出し名を
+/// `validate_source_path(raw_path)` のまま保つことで、下の契約テストと
+/// `network_paths_are_refused_before_the_filesystem_is_touched` が**そのまま効き続ける**
+/// ——つまり「UNC が拡張子より前」を **060b 側からも** 直接テストできる状態を維持している。
 fn validate_source_path(raw: &str) -> AppResult<PathBuf> {
-    let trimmed = raw.trim();
-    require_non_empty(trimmed, "CSS ファイルが選択されていません")?;
-    reject_control_chars(trimmed, "ファイルパスに制御文字は使用できません")?;
-
-    // ⚠⚠ **UNC / ネットワークパスは触る前に拒否する**（security-review S-4）。
-    // `import_overlay_theme` はアプリ定義コマンド＝**ACL 対象外で全 5 窓から呼べる**ので、
-    // `path` が dialog 由来である保証は無い（Rust からは確かめようがない）。Windows で
-    // `\\evil.example\share\x.css` を渡されると、下の `fs::metadata` の時点で
-    // **OS が攻撃者ホストへ SMB 接続し、既定設定では NTLM でユーザー/マシンの資格情報ハッシュが飛ぶ**
-    // ——ユーザー操作ゼロ・ダイアログ非経由で、§1 の趣旨（アプリが外へ出ない）に直接反する。
-    // ⚠ 拡張子チェックより**前**に置くこと（`.css` 以外でも接続は起きてしまうため）。
-    // ⚠⚠ 判定は `util::is_network_path` に集約してある（061c security-review S-1）。以前はここで
-    // `starts_with("\\\\") || starts_with("//")` を直接見ていたが、**Windows は `/` と `\` を
-    // 等価な区切りとして扱う**ので `\/server\share` / `/\server/share` という混在形が素通りしていた。
-    // 規則を 2 か所（060b / 061c）に複製すると片方だけ古くなるため、共有ヘルパへ寄せている。
-    if is_network_path(trimmed) {
-        return Err(AppError::validation(
-            "ネットワーク上のファイルは取り込めません。ローカルにコピーしてから選んでください。",
-        ));
-    }
-
-    let path = PathBuf::from(trimmed);
-    let has_css_extension = path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("css"));
-    if !has_css_extension {
-        return Err(with_filename_detail(
-            AppError::unsupported_file_type("CSS ファイル（.css）を選んでください。"),
-            &path,
-        ));
-    }
-
-    let metadata = std::fs::metadata(&path).map_err(|_| {
-        with_filename_detail(
-            AppError::path_not_found("指定された CSS ファイルが見つかりません。"),
-            &path,
-        )
-    })?;
-    if !metadata.is_file() {
-        return Err(with_filename_detail(
-            AppError::validation("ファイルを選んでください。"),
-            &path,
-        ));
-    }
-    // 読む前に落とす（4GB のファイルをメモリへ載せない）。
-    if metadata.len() > MAX_CSS_BYTES {
-        return Err(with_filename_detail(
-            AppError::validation("CSS ファイルが大きすぎます。256KB 以内にしてください。"),
-            &path,
-        ));
-    }
-    Ok(path)
+    crate::util::validate_import_path(raw, &CSS_IMPORT_SPEC)
 }
 
-/// 検証済みパスから CSS を読む。
+/// 検証済みパスから CSS を読む（TOCTOU の実バイト再チェック込み・実体は [`util::read_import_text`]）。
+///
+/// ⚠ BOM はここでは剥がさない（従来どおり [`validate_css_body`] の仕事）。
 fn read_source_css(path: &Path) -> AppResult<String> {
-    let bytes = std::fs::read(path).map_err(|_| {
-        with_filename_detail(
-            AppError::path_not_found("CSS ファイルを読み取れませんでした。"),
-            path,
-        )
-    })?;
-    // ⚠ metadata を見てから read するまでにファイルが伸びうる（TOCTOU）ので、実バイト長で取り直す。
-    if bytes.len() as u64 > MAX_CSS_BYTES {
-        return Err(with_filename_detail(
-            AppError::validation("CSS ファイルが大きすぎます。256KB 以内にしてください。"),
-            path,
-        ));
-    }
-    String::from_utf8(bytes).map_err(|_| {
-        with_filename_detail(
-            AppError::unsupported_file_type(
-                "この CSS ファイルは UTF-8 として読み取れません。テキストファイルか確認してください。",
-            ),
-            path,
-        )
-    })
+    crate::util::read_import_text(path, &CSS_IMPORT_SPEC)
 }
 
 // --- 取り込み -------------------------------------------------------------------------------
@@ -1186,6 +1147,40 @@ mod tests {
         let dir = TempDir::new();
         let ok_path = dir.write("theme.css", b".a{color:red}");
         assert!(validate_source_path(&ok_path.to_string_lossy()).is_ok());
+    }
+
+    // ⚠⚠ **065a で検証の実体を `util` へ寄せたときに、060b のユーザー向け文言が退行していないこと。**
+    //   エラーコードは共有化の前後で変わらないので、**文言だけが静かに変わっても既存テストは全部緑**である
+    //   （実際、共有化の初版は `read_source_css` の失敗文言を `msg_not_found` と同じものに変えてしまい、
+    //    レビューで初めて気づいた）。⇒ ここで 060b が出す 9 文言をリテラルで固定する。
+    //   ⚠ **この 9 本は「060b が変わっていないこと」の担保なので、util 側の都合で書き換えないこと。**
+    #[test]
+    fn the_shared_import_core_did_not_change_any_060b_wording() {
+        assert_eq!(CSS_IMPORT_SPEC.extension, "css");
+        assert_eq!(CSS_IMPORT_SPEC.max_bytes, MAX_CSS_BYTES);
+        assert_eq!(CSS_IMPORT_SPEC.msg_missing, "CSS ファイルが選択されていません");
+        assert_eq!(CSS_IMPORT_SPEC.msg_control, "ファイルパスに制御文字は使用できません");
+        assert_eq!(
+            CSS_IMPORT_SPEC.msg_network,
+            "ネットワーク上のファイルは取り込めません。ローカルにコピーしてから選んでください。"
+        );
+        assert_eq!(CSS_IMPORT_SPEC.msg_extension, "CSS ファイル（.css）を選んでください。");
+        assert_eq!(CSS_IMPORT_SPEC.msg_not_found, "指定された CSS ファイルが見つかりません。");
+        // ⚠⚠ 「読む前に見つからない」と「読む段階で失敗した」は**別の文言**である（退行はここで起きた）。
+        assert_eq!(CSS_IMPORT_SPEC.msg_read_failed, "CSS ファイルを読み取れませんでした。");
+        assert_ne!(
+            CSS_IMPORT_SPEC.msg_read_failed, CSS_IMPORT_SPEC.msg_not_found,
+            "⚠ 2 つを同じ文言にすると permission denied を「見つかりません」と誤って断定する"
+        );
+        assert_eq!(CSS_IMPORT_SPEC.msg_not_a_file, "ファイルを選んでください。");
+        assert_eq!(
+            CSS_IMPORT_SPEC.msg_too_large,
+            "CSS ファイルが大きすぎます。256KB 以内にしてください。"
+        );
+        assert_eq!(
+            CSS_IMPORT_SPEC.msg_not_utf8,
+            "この CSS ファイルは UTF-8 として読み取れません。テキストファイルか確認してください。"
+        );
     }
 
     #[test]

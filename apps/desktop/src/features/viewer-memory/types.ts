@@ -7,3 +7,5 @@ export type { ListViewersInput } from "./bindings/ListViewersInput";
 export type { ViewerSort } from "./bindings/ViewerSort";
 // 038c: record_comment の判定結果（初見／久しぶり）。
 export type { RecordResult } from "./bindings/RecordResult";
+// 065a: わんコメ CSV 取り込みの結果。⚠ **件数だけ**で視聴者名・メモ・ID は載っていない（§9）。
+export type { ViewerImportResult } from "./bindings/ViewerImportResult";

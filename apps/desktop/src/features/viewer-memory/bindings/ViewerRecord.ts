@@ -38,6 +38,19 @@ totalComments: number,
 bitsCount: number, 
 /**
  * bits の合計枚数。
+ *
+ * ⚠⚠ **この列は 2 層で守られている（security-review S-1 への対処）。片方だけ消さないこと。**
+ * 中身は `CAST(SUM(amount) AS INTEGER)` で、`amount` は `CommentViewDto.monetary.amount`（f64）＝
+ * **`ViewerRecord` の集計のうち唯一 frontend 由来の実数が入る列**である。守りが無いと `u32` に
+ * 収まらない値や**負値**が 1 件入るだけで `list_viewers` / `get_viewer` が**両方とも `StorageFailed`**
+ * で落ち、**視聴者一覧が丸ごと開けなくなる**（実測: `amount = -1, currency = "BITS"` の 1 件で再現）。
+ * 記録側は成功扱いで返るので原因が見えず、一覧が開けないので UI からその行を消すこともできない。
+ * - **入口**: `service::MAX_COMMENT_AMOUNT`（有限・非負・1 億以内。超えたらコメントごと弾く）
+ * - **出口**: `repository::read_u32_clamped`（範囲外を丸めて読む＝既に壊れた DB でも一覧が開く）
+ *
+ * ⚠ 入口だけでは足りない（SUM なので件数が増えれば合計は溢れる）し、出口だけでも足りない
+ * （壊れた値が保存され続ける）。065a が `imported_*` に `MAX_IMPORTED_COUNT` を入れたのと同じ機序で、
+ * **こちらは SUM である点だけが違う**——だから上限 1 つでは閉じず、2 層になっている。
  */
 bitsAmount: number, 
 /**
@@ -67,4 +80,65 @@ lastSubscriptionAt?: string,
 /**
  * 配信者が残すメモ。
  */
-note: string, createdAt: string, updatedAt: string, };
+note: string, createdAt: string, updatedAt: string, 
+/**
+ * わんコメのニックネーム（`name` / `note` とは別概念。未設定なら空文字）。
+ */
+nickname: string, 
+/**
+ * わんコメのラベル（単一値。未設定なら空文字）。
+ */
+label: string, 
+/**
+ * わんコメ互換の統合ギフト回数（実測 ＋ 引き継ぎ）。
+ * ⚠ `raid` と `chat` は数えない（レイドは課金ではない＝062a）。
+ */
+giftCount: number, 
+/**
+ * 参加配信数（実測 ＋ 引き継ぎ）。
+ * ⚠⚠ **062b 以前のデータでは多めに出る**——当時の `session_id` はコメビュ窓のマウント単位で、
+ *   窓を開き直すたびに別 id になっていた。062b はバックフィルしないと決めているので歪みは残る。
+ *   065b で表示するときは「参加配信数」を厳密な値として説明しないこと。
+ */
+streamCount: number, 
+/**
+ * 参加日数（実測 ＋ 引き継ぎ）。
+ * ⚠⚠ **実測分は UTC 日で数える**（日本時間の朝の配信は UTC で 2 日に割れる）。引き継ぎ分の
+ *   `atdDays` はわんコメのローカル日と思われ、**左右で「1 日」の定義が揃っていない近似**である。
+ */
+activeDays: number, 
+/**
+ * 引き継いだ累積コメント数（わんコメ `tc`）。`total_comments` にはこの値が加算済み。
+ */
+importedComments: number, 
+/**
+ * 引き継いだギフト回数（わんコメ `tgc`）。`gift_count` にはこの値が加算済み。
+ */
+importedGifts: number, 
+/**
+ * 引き継いだギフト累計額（わんコメ `amount`）。
+ * ⚠⚠ **単位不明**（CSV に通貨情報が無く、円ではなく YouTube の Jewels の可能性が高い）。
+ *   `superchat_amount` / `bits_amount` には**一切加算していない**。
+ *   **065b は単位を付けて表示しないこと**（「1000 円」と読ませない）。
+ */
+importedGiftAmount: number, 
+/**
+ * 引き継いだ参加日数（わんコメ `atdDays`）。`active_days` にはこの値が加算済み。
+ */
+importedActiveDays: number, 
+/**
+ * 引き継いだ参加配信数（わんコメ `atdLives`）。`stream_count` にはこの値が加算済み。
+ */
+importedStreamCount: number, 
+/**
+ * 引き継いだ初回来訪時刻の**推定値**（わんコメ `lcts − interval`）。
+ * ⚠⚠ **仮説を含む**（`interval` を「初回コメントからの経過時間」と読んだ解釈。親 065・(3)）。
+ *   `first_seen_at` とは**合成していない**——表示側で `MIN(first_seen_at, imported_first_seen_at)`
+ *   を採ること。⚠ `first_seen_at` は実測分の `MIN(published_at)` で毎回上書きされるので、
+ *   **引き継ぎだけの視聴者が初めてコメントすると「初回来訪日」が今日へ飛ぶ**（合成表示が必須）。
+ */
+importedFirstSeenAt?: string, 
+/**
+ * 取り込み日時（**NULL＝引き継ぎ無し**の判別に使う）。
+ */
+importedAt?: string, };

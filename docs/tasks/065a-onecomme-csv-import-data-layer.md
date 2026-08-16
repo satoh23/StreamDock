@@ -1,6 +1,87 @@
 # 065a わんコメ CSV 取り込みの Rust データ層（列追加・再計算 SQL 改訂・パース・コマンド）
 
-> 状態: **未着手（実装サブタスク）**。分割・線引きは親 [065](065-onecomme-viewer-import.md) を正とする。
+> 状態: **実装済み・外部レビュー反映済み（2026-08-16）／⏳ 実機確認は未実施**。
+> ⚠⚠ **「完了」ではない。** 実機確認（下記 ⏳ 節）が済むまでこの表記を強めないこと——
+> レビューの結論は「**065b の最初の一歩を最小導線にして、そこで実 CSV を 1 回通す**」（task-board 申し送り 9）。
+> **実装の結論・穴の一覧・変異の実測・`cargo tree` の出力・外部レビューの反映は
+> [docs/progress.md](../progress.md) の 065a 節が正。**
+> 本ファイルの以下の記述は着手前の計画であり、**実装で判明した前提との差は次節にまとめてある**。
+
+## ⚠ 着手前の想定と、実装で判明した事実の差
+
+着手前の調査で、本ファイルに書かれていない前提が **3 つ**見つかった（`sqlite3` と実コードで確認済み）。
+**穴 J は踏むと機能が丸ごと動かない。**
+
+| | 内容 | 対処 |
+|---|---|---|
+| **穴 J** ⚠⚠ | **コメント 0 件の視聴者へ `RECOMPUTE_VIEWER_AGGREGATES_SQL` を当てると、`first_seen_at`（`TEXT NOT NULL`）へ `MIN` の NULL が入り NOT NULL 違反 → トランザクション全体がロールバック**（実測）。本タスクは `viewer_comments` を 1 件も作らないので、**引き継ぎだけの視聴者は必ずコメント 0 件**＝ 素直に書くと**1 行も取り込めない**。⚠ 062a の doc が案 (c) を却下した理由①と同じ失敗 | 取り込みと backfill は **`viewer_comments` に行がある視聴者だけ**へ流す |
+| **穴 K** ⚠⚠ | (2) の新しい集計 3 列（`gift_count` / `stream_count` / `active_days`）は、**既に居る視聴者では 0 のまま埋まらない**（再計算は `record_comment` からしか走らない）。⇒ もう来ない常連さんが「参加配信数 0」で永久固定され、065b の一覧が壊れて見える | **列を新規に追加したときだけ 1 回 backfill**。⚠ 判定は `ensure_column` の**前**に取る |
+| **穴 L** ⚠⚠ | (6) の「`last_comment_at` は新しいほうを採る」を SQL の `MAX` で書くと、**穴 D と同じ罠を新規コードで踏む**（`last_comment_at` はオフセット付きが混ざりうる／`lcts` は常に `Z`） | 比較は **Rust の `DateTime::parse_from_rfc3339`**（062b の `comment_times` と同じ作法） |
+
+本ファイルの記述からの**変更点**:
+
+- **(5) の必須列を `id` / `service` / `lcts` の 3 つ → 9 つに広げた**（`tc` / `tgc` / `amount` / `atdDays` /
+  `atdLives` / `interval` を追加）。3 つのままだと数値列のヘッダごと無い CSV で**全行 `skipped_invalid`** に
+  なり、ユーザーには `{0,0,0,61}` としか伝わらない（原因が分からない）。⚠ **厳しくする方向**なので線引きは不変。
+- **(5) の戻り値の型名を `ImportResult` → `ViewerImportResult`**（barrel から再エクスポートすると
+  何の取り込みか分からなくなる。先例＝`OverlayThemeImportResult`）。
+- **(5) の「`validate_source_path` 相当」は複製せず、`util.rs` の共有コアへ寄せた**（穴 A・案 ③）。
+  060b の `validate_source_path` / `read_source_css` は**名前・可視性・引数・文言を変えずに委譲**するので、
+  既存の契約テスト 4 本は緑のまま。⚠ **6 段の順序は util の 1 か所にしかない**。
+- **(8) の security.md は「⑫として追補」ではなく ⑪ 配下のネストへ**（既存構造に合わせた）。
+- **上限の具体値**: ファイル **8MiB** / **20,000 行**。⚠ さらに security-review で
+  **回数系 1 億・`memo` 1,000 文字・その他 200 文字**の上限を追加した（下記）。
+- **(9) に加えて security-review でコード欠陥を 2 件検出・修正**した:
+  ① ⚠⚠ `tc` が `u32::MAX` を超える CSV で**視聴者一覧が丸ごと開けなくなる**（`ViewerRecord` は集計列を
+  `u32` で読むため `list_viewers` / `get_viewer` が両方落ちる。取り込みは成功扱いで返るので原因が見えず、
+  一覧が開けないので UI から消せない）。② 自由入力列に長さ上限が無く、**1 行の `memo` に数 MB** を
+  入れた CSV が作れる。詳細は progress.md の 065a 節。
+
+## ⏳ 実機確認の手順（依頼者の環境で実施・**実物の CSV を使う唯一の場面**）
+
+⚠⚠ **事前に DB をバックアップし、確認後に必ず復元すること。**
+
+```bash
+# ① バックアップ（macOS）
+DB=~/Library/Application\ Support/com.stream-dock.app/stream-dock.db
+# ⚠ 実際の識別子は tauri.conf.json の identifier を確認すること
+cp "$DB" ~/Desktop/stream-dock.db.bak && shasum "$DB" ~/Desktop/stream-dock.db.bak
+
+pnpm --filter ./apps/desktop tauri dev
+```
+
+② 実物の CSV を取り込む → `viewers` に 61 行できる
+```bash
+sqlite3 "$DB" "SELECT COUNT(*) FROM viewers WHERE imported_at IS NOT NULL;"
+sqlite3 "$DB" "SELECT id, total_comments, imported_comments, gift_count, stream_count, active_days
+               FROM viewers WHERE imported_at IS NOT NULL ORDER BY imported_comments DESC LIMIT 5;"
+```
+③ もう一度同じ CSV を取り込む → **`imported_*` が二重加算されない**（②と同じ値）
+④ ⚠⚠ 取り込んだ視聴者のコメントを 1 件記録 → **`total_comments` が `imported_comments + 1`**
+   （⚠ **0 や 1 に戻ったら再計算 SQL の加算が効いていない**＝本タスクの中心）
+⑤ ⚠⚠ **その視聴者に初見バッジが出ない**（親 065 の主目的）
+⑥ ⚠ 「久しぶり」は**穴 B の決定どおり出る**（`lcts` が 1 ヶ月以上前なら出る＝受容した挙動）
+⑦ 既存 DB（実装前のデータがある状態）で起動してもエラーが出ない
+   ⚠ **穴 K の backfill が走る**ので、既存視聴者の `stream_count` / `active_days` が 0 でなくなること
+   ```bash
+   sqlite3 "$DB" "SELECT COUNT(*) FROM viewers WHERE stream_count = 0 AND total_comments > 0;"  # 0 が期待
+   ```
+⑧ ⚠ `lsof -i` で外部 ESTABLISHED が増えないこと（**わんコメへ接続していないことの実証**）
+⑨ ⚠ アプリのログに視聴者名・メモ・フルパスが出ていないこと
+```bash
+sqlite3 "$DB" "SELECT level, category, operation, message FROM app_logs ORDER BY id DESC LIMIT 20;"
+```
+
+⚠⚠ **後始末**（必須）
+```bash
+cp ~/Desktop/stream-dock.db.bak "$DB" && shasum "$DB" ~/Desktop/stream-dock.db.bak   # バイト一致を確認
+git status --short && find . -name "*.csv" -not -path "./node_modules/*" -not -path "*/target/*"
+```
+⚠ **実物の CSV をリポジトリ配下にコピーしていないこと**も併せて確認する。
+
+---
+
+> 状態（原文）: **未着手（実装サブタスク）**。分割・線引きは親 [065](065-onecomme-viewer-import.md) を正とする。
 >
 > **必読前提**: 親 [065](065-onecomme-viewer-import.md)（**規約の線引き・CSV の実測結果・設計判断の理由は
 > すべて親が正**）、[038a](038a-viewer-memory-data-layer.md) と

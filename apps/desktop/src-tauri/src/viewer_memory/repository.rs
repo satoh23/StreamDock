@@ -9,9 +9,17 @@ use rusqlite::{Connection, OptionalExtension};
 use super::model::{NewViewerComment, RecordResult, ViewerCommentRecord, ViewerRecord, ViewerSort};
 
 /// SELECT で取得する viewers テーブルの全カラム（複数クエリで共有）。
+///
+/// ⚠⚠ 065a: **`imported_name_history` は意図的に入れていない。** わんコメ由来の生 JSON 文字列を
+/// 保管しているだけの列で、`ViewerRecord`（＝ IPC で frontend へ渡る DTO）には出さない
+/// （065b は使わない・第三者データを IPC 境界へ載せる面を増やさない＝docs/security.md §9）。
+/// 表示したくなったときは、まず `nameHistory` のパース方針を決め、**§9 を再評価してから**足すこと。
 const VIEWER_COLUMNS: &str = "id, provider, provider_user_id, name, first_seen_at, last_comment_at, \
     total_comments, bits_count, bits_amount, superchat_count, superchat_amount, superchat_currency, \
-    subscription_count, is_member, last_subscription_at, note, created_at, updated_at";
+    subscription_count, is_member, last_subscription_at, note, created_at, updated_at, \
+    nickname, label, gift_count, stream_count, active_days, \
+    imported_comments, imported_gifts, imported_gift_amount, imported_active_days, \
+    imported_stream_count, imported_first_seen_at, imported_at";
 
 /// SELECT で取得する viewer_comments テーブルの全カラム。
 const VIEWER_COMMENT_COLUMNS: &str =
@@ -30,8 +38,51 @@ const VIEWER_COMMENT_COLUMNS: &str =
 ///   （＝取りこぼしゼロ・退行ゼロ・列追加なし）。累計月数/ギフト件数（wire の monthCount/giftCount）は
 ///   表示用途で通すのみで**端末保存しない**近似（is_member＋回数のみ）。
 ///   【再修正トリガ】membership/gift を別カウントで持ちたい要件が出たら列追加＋038 表示波及を検討（Q7）。
-/// 【前提】first/last は published_at の辞書順比較（全 provider が UTC・同形 ISO8601 を送る前提）。
-///   【再修正トリガ】provider 間で TZ/フォーマットがぶれて first/last がずれるなら正規化して比較する（Q5・038c 波及）。
+/// 【前提 → ⚠⚠ 既に偽であることが実証済み。065a で doc だけ訂正した（式は 1 文字も変えていない）】
+///   first/last は published_at の**辞書順比較**である。当初は「全 provider が UTC・同形 ISO8601 を送る」
+///   前提を置き、ずれたら正規化する（Q5）を再修正トリガーにしていた。**このトリガーは 062b で発火済みで、
+///   まだ誰も直していない。**
+///   - 062b の `stream_session::repository::comment_times` の doc が「`published_at` はプラットフォーム由来
+///     （Twitch は `Z` 形式）で、しかも**オフセット付き（`+09:00` / `-08:00`）が混ざりうる**。SQL の `MAX` は
+///     単なる文字列比較なので、この混在で**最新でない行を「最新」として選ぶ**」と明記している。
+///     062b 自身は SQL の `MAX` を捨て、Rust の `DateTime::parse_from_rfc3339` で最大値を決める形へ逃げた。
+///   - 実測（sqlite3）: `MAX('2026-01-01T12:00:00Z', '2026-01-01T05:00:00-08:00')` は**前者**を返すが、
+///     実際に新しいのは後者（13:00 UTC）である。
+///   ⇒ **オフセット混在時に `first_seen_at` / `last_comment_at` がずれる**。`is_long_absence` はこの
+///     `last_comment_at` を基準にするので **038c の「久しぶり」判定にも波及する**。
+///   ⚠⚠ **この doc を読んで「UTC 前提だから安全」と判断しないこと。それがこの訂正の目的である。**
+///   【再修正トリガ】発火済み・**未対応**。065a は「first/last の式は変えない」と決めているので**別課題**として残す。
+///     直し方は二択: ①`comment_times` に倣い「SQL は値を取り出すだけ・比較は Rust」へ寄せる
+///     ②保存時に `published_at` を UTC 正規化する（既存行の移行を伴う）。**038 側に起票すること。**
+/// 【065a】わんコメからの引き継ぎ（`imported_*`）を**加算する 4 列**を足した（他の列も式も不変）。
+///   - `total_comments` / `gift_count` / `stream_count` / `active_days` の 4 つだけが
+///     `COUNT(...) + COALESCE(imported_*, 0)` になる。`imported_*` は**この UPDATE が触らない列**なので、
+///     再計算が何度走っても引き継ぎ値は消えない（＝065a の中心。038a の recompute-on-write 契約は不変）。
+///   - ⚠ **`COALESCE` は冗長である。** `imported_*` は `INTEGER NOT NULL DEFAULT 0` で `ensure_column` が
+///     既存行も 0 で埋めるため、実際には NULL になりえない。**防御として残しているだけ**で、
+///     「この列は NULL があり得る」と読まないこと（本当に NULL 可なのは `imported_first_seen_at` で、
+///     この SQL は 1 度も触らない）。
+///   - ⚠ `gift_count` の集合に **`raid` と `chat` を入れない**（レイドは課金ではない＝062a の決定）。
+///   - ⚠⚠ **`active_days` は UTC 日で数える**（SQLite の `date()` はオフセットを UTC へ正規化する。実測:
+///     `date('2026-08-16T02:00:00+09:00')` = `2026-08-15`）。⇒ 日本時間の朝の配信（08:00–10:00 JST）は
+///     **UTC で 2 日に割れる**。さらに引き継ぎ側の `atdDays` は（ほぼ確実に）**わんコメのローカル日**なので、
+///     **足し算の左右で「1 日」の定義が揃っていない近似**である。`date(published_at,'localtime')` を
+///     採らなかったのは端末 TZ で値が動くため（同じデータでも端末ごとに違う・旅行/DST で過去の値が変わる・
+///     テストが環境依存になる）。
+///   - ⚠⚠ **壊れた `published_at` は `date()` が NULL を返し、`COUNT(DISTINCT ...)` が黙って落とす**
+///     （実測: 有効 2 行 ＋ bogus ＋ NULL で結果 1）。**エラーにならない**＝`active_days` は少なめに出る。
+///     `service::record_comment` は `published_at` に `require_non_empty` しか掛けていないので実際に到達しうる。
+///     水増しより安全側なので**受容**する（`active_days_counts_utc_days_and_ignores_broken_timestamps` が固定）。
+///   - ⚠ **`stream_count = COUNT(DISTINCT session_id)` は 062b 以前のデータで水増しされる。**
+///     062b 以前の `session_id` は**コメビュ窓のマウント単位**（窓を開き直すたびに別 id）だったため、
+///     1 回の配信が複数セッションとして数えられる。062b は**バックフィルしないと決めている**
+///     （セッションを捏造しない）ので、**この歪みは永久に残る**。`stream_sessions` に行がある
+///     `session_id` だけ数える案は、062b 以前が丸ごと 0 になる＝逆方向の嘘なので採らなかった。
+///   - ⚠⚠ **コメント 0 件の視聴者へこの SQL を当ててはいけない。** `first_seen_at` / `last_comment_at` は
+///     **`TEXT NOT NULL`** なので `MIN/MAX` が NULL を返し、**NOT NULL 制約違反 → トランザクション全体が
+///     ロールバック**する（実測済み。062a が案 (c) を却下した理由①と同じ失敗）。CSV 取り込みは
+///     `viewer_comments` の行を 1 件も作らないため、**引き継ぎだけの視聴者は必ずコメント 0 件**である。
+///     ⇒ 取り込み経路と [`backfill_new_aggregates`] は、**`viewer_comments` に行がある視聴者だけ**へ流す。
 /// 【043e】新規挿入時（step3）と、jewels の combo 更新で既存行を UPDATE した後の 2 箇所から呼ぶため定数化した
 ///   （SQL 本文は 043a 時点から 1 文字も変えていない）。combo 更新でも「行から全再計算」なので、
 ///   total_comments = COUNT(*) は変わらず、置き換わった amount だけが集計へ反映される。
@@ -52,7 +103,14 @@ const VIEWER_COMMENT_COLUMNS: &str =
 ///     【再修正トリガ】「総コメント数」にレイドが混ざるのが実運用で問題になったら、(b) 単独ではなく
 ///     `first_seen_at` / `last_comment_at` の NOT NULL をどう扱うかまで含めて 038 側の課題として起票する。
 const RECOMPUTE_VIEWER_AGGREGATES_SQL: &str = "UPDATE viewers SET
-            total_comments = (SELECT COUNT(*) FROM viewer_comments WHERE viewer_id = ?1),
+            total_comments = (SELECT COUNT(*) FROM viewer_comments WHERE viewer_id = ?1)
+                             + COALESCE(imported_comments, 0),
+            gift_count = (SELECT COUNT(*) FROM viewer_comments WHERE viewer_id = ?1 AND event_type IN ('superchat', 'membership', 'subscription', 'gift', 'donation', 'jewels'))
+                             + COALESCE(imported_gifts, 0),
+            stream_count = (SELECT COUNT(DISTINCT session_id) FROM viewer_comments WHERE viewer_id = ?1)
+                             + COALESCE(imported_stream_count, 0),
+            active_days = (SELECT COUNT(DISTINCT date(published_at)) FROM viewer_comments WHERE viewer_id = ?1)
+                             + COALESCE(imported_active_days, 0),
             bits_count = (SELECT COUNT(*) FROM viewer_comments WHERE viewer_id = ?1 AND currency = 'BITS'),
             bits_amount = (SELECT CAST(COALESCE(SUM(amount), 0) AS INTEGER) FROM viewer_comments WHERE viewer_id = ?1 AND currency = 'BITS'),
             superchat_count = (SELECT COUNT(*) FROM viewer_comments WHERE viewer_id = ?1 AND event_type = 'superchat' AND currency IS NOT NULL AND currency <> 'BITS'),
@@ -129,7 +187,132 @@ pub fn init(conn: &Connection) -> rusqlite::Result<()> {
     //     （`total_comments` は `COUNT(*)` のままレイド行も数える＝穴 G の決定 (a)。理由は
     //      `RECOMPUTE_VIEWER_AGGREGATES_SQL` の doc コメントを正とする）。
     crate::util::ensure_column(conn, "viewer_comments", "raid_viewer_count", "INTEGER")?;
+
+    // 065a: わんコメ（OneComme）の公式 CSV エクスポートから引き継ぐ値と、それを足し込んだ集計。
+    //   ⚠ 識別子（テーブル名・カラム名・型宣言）は**すべてコンパイル時定数**でユーザー入力を渡さない（§8）。
+    //   ⚠ **既存列の意味論は 1 つも変えていない**（`total_comments` は総コメント数のままで、そこへ
+    //     引き継ぎ分が加算されるだけ。レイドを数える決定〔062a〕も不変）。
+    //   ⚠ **新テーブルも新規 FK も作らない**。すべて `viewers` の列なので、既存の削除手段
+    //     （`delete_viewer` / `clear_viewers`）が**取り残しゼロで効いたまま**である（§9・⑪）。
+    //   ⚠ `imported_*` は「引き継ぎのベースライン」で、`RECOMPUTE_VIEWER_AGGREGATES_SQL` が
+    //     **触らない列**。だから再計算が何度走っても消えない（＝065a の中心）。
+    //   ⚠⚠ `imported_first_seen_at` を独立列にしてあるのは、その値が**仮説を含む**ため
+    //     （`lcts − interval` を「初回コメントからの経過時間」と読んだ解釈。親 065・(3)）。
+    //     解釈が外れてもこの 1 列を NULL にするだけで戻せる。**`first_seen_at` へ直接書かないこと。**
+    //   ⚠ `imported_gift_amount` は**単位不明**（CSV に通貨情報が無い）。`superchat_amount` /
+    //     `bits_amount` には**一切加算しない**（「1000 円」と「1000 jewels」が足し合わさるため）。
+    //
+    // ⚠ 下のバックフィル判定は**列を足す前**に取る（足した後だと必ず「存在する」になり、
+    //   065a より前に作られた DB が永久に 0 のままになる）。代表として `gift_count` を見る
+    //   ——13 列は同じループで一括追加されるので、1 つでも欠けていれば全部欠けている。
+    let needs_aggregate_backfill = {
+        let mut stmt = conn.prepare("SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2")?;
+        !stmt.exists(rusqlite::params!["viewers", "gift_count"])?
+    };
+    for (column, decl) in [
+        ("nickname", "TEXT NOT NULL DEFAULT ''"),
+        ("label", "TEXT NOT NULL DEFAULT ''"),
+        ("imported_comments", "INTEGER NOT NULL DEFAULT 0"),
+        ("imported_gifts", "INTEGER NOT NULL DEFAULT 0"),
+        ("imported_gift_amount", "REAL NOT NULL DEFAULT 0"),
+        ("imported_active_days", "INTEGER NOT NULL DEFAULT 0"),
+        ("imported_stream_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("imported_first_seen_at", "TEXT"),
+        ("imported_name_history", "TEXT NOT NULL DEFAULT ''"),
+        ("imported_at", "TEXT"),
+        ("gift_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("stream_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("active_days", "INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        crate::util::ensure_column(conn, "viewers", column, decl)?;
+    }
+
+    // 065a: **新しい集計 3 列は、既に居る視聴者では 0 のまま埋まらない**（再計算は `record_comment` から
+    //   しか走らないため）。⇒ もう来ない常連さんは「参加配信数 0 / 参加日数 0」で永久に固定され、
+    //   065b の一覧が**明らかに壊れて見える**。列を新規に足したこの 1 回だけ再計算する。
+    //   ⚠ 判定は `gift_count` の**追加前**に取ること（`ensure_column` の後に見ると必ず存在する）。
+    if needs_aggregate_backfill {
+        backfill_new_aggregates(conn)?;
+    }
     Ok(())
+}
+
+/// 065a: `gift_count` / `stream_count` / `active_days` を既存の視聴者へ 1 回だけ埋める。
+///
+/// ⚠⚠ **`RECOMPUTE_VIEWER_AGGREGATES_SQL` を 1 人ずつ流すのが要点**である。4 つの集計式をここへ
+/// 書き写して「全視聴者を 1 本の UPDATE で」やるほうが速いが、それは**式が 2 か所に分かれる**
+/// ということで、片方だけが古くなる（`validate_source_path` のコメントが 060b / 061c について
+/// 戒めているのと同じ形）。**同じ定数を通せば、式のドリフトが構造的に起きない。**
+///
+/// ⚠⚠ **`viewer_comments` に行がある視聴者だけへ流す。** コメント 0 件の視聴者に当てると
+/// `first_seen_at` / `last_comment_at`（`TEXT NOT NULL`）へ `MIN/MAX` の NULL が入り、
+/// **NOT NULL 制約違反 → 起動時の init が失敗してアプリが立ち上がらない**。
+/// ⚠ コメント 0 件の `viewers` 行は**実在しうる**——`record_comment` の step1（upsert）は
+/// 重複コメント id の判定より前にあるので、既存 id を別の viewer_id で再送されると
+/// 「視聴者行だけ作られてコメントは入らない」状態になる（同関数の S-4 注記）。
+///
+/// ⚠ 副作用として、対象視聴者の `updated_at` が 1 回だけ更新される（スキーマ変更イベントなので受容）。
+/// ⚠ 1 トランザクションにまとめてあるのは、視聴者ごとに fsync すると起動が目に見えて遅くなるため。
+///
+/// ## ⚠⚠ 失敗したときに起きること（レビュー指摘 S-4・受容）
+///
+/// 本関数の `Err` は `init()` → `lib.rs` の `setup()` まで `?` で伝わるので、**その回はアプリが起動しない**。
+/// ⚠ ただし `ensure_column` の 13 列は本関数より前に**別トランザクションで確定済み**なので、
+/// 次回起動では `needs_aggregate_backfill` が `false` になり、**バックフィルは二度と走らない**
+/// ——アプリは起動するが、集計 3 列は 0 のまま静かに残る（自動リトライは無い）。
+/// この形を受容したのは、①バックフィル自体は 1 トランザクションなので DB が壊れることは無い
+/// ②「起動できない」より「一部の集計が 0」のほうが害が小さい ③リトライ用のフラグ列を足すと
+/// 「マイグレーション基盤を持たない」という既存流儀を崩す、の 3 点による。
+/// 【再修正トリガ】実機で「参加配信数が 0 のままの視聴者が居る」と言われたら、
+/// **列の有無ではなく「集計が埋まっているか」を判定条件にする**（例: `stream_count = 0 AND
+/// total_comments > 0` の視聴者だけを 1 人ずつ流し直す）。⚠ その場合は毎起動で走るので所要時間を測ること。
+///
+/// ⚠ 所要時間は「コメントを持つ視聴者数 × その人のコメント数」で伸びる（1 人につき相関サブクエリ 12 本）。
+/// 上限は無い＝**大規模 DB では起動が体感で遅くなりうる**。実測が要るのは実機確認の⑦。
+fn backfill_new_aggregates(conn: &Connection) -> rusqlite::Result<()> {
+    let now = crate::util::now_rfc3339();
+    let tx = conn.unchecked_transaction()?;
+    let ids: Vec<String> = {
+        let mut stmt = tx.prepare(
+            "SELECT id FROM viewers \
+             WHERE EXISTS(SELECT 1 FROM viewer_comments WHERE viewer_id = viewers.id)",
+        )?;
+        let rows = stmt.query_map([], |row| row.get(0))?;
+        rows.collect::<rusqlite::Result<Vec<String>>>()?
+    };
+    for id in &ids {
+        tx.execute(RECOMPUTE_VIEWER_AGGREGATES_SQL, rusqlite::params![id, now])?;
+    }
+    tx.commit()
+}
+
+/// ⚠⚠ **`u32` の DTO 列を「行が読めなくならない形」で読む（security-review S-1 の 2 層目）。**
+///
+/// `rusqlite` の `row.get::<_, u32>` は列の値が `u32` の範囲外（負値・42.9 億超）だと
+/// `IntegralValueOutOfRange` を返す。**それは 1 行の失敗では済まない**——`list` は
+/// `rows.collect()` で束ねるので、**壊れた行が 1 つあると視聴者一覧が丸ごと `StorageFailed` になり、
+/// UI からその行を消すこともできなくなる**（実測: `amount = -1, currency = "BITS"` のコメント 1 件で再現）。
+///
+/// ⇒ **範囲外は丸めて読む。** 表示が不正確になるより、**一覧が開いて当該行を削除できる**ほうが良い
+/// （065a の CSV 経路が「数値を勝手に丸めない」で通しているのと**逆の判断**だが、対象が違う——
+/// あちらは*これから保存する値*で、こちらは*既に保存されてしまった値の表示*である。
+/// 入口を丸めると嘘のデータが増えるが、出口を丸めるのは復旧手段を残すためである）。
+///
+/// ⚠ 入口（[`super::service`] の `MAX_COMMENT_AMOUNT`）と**両方**要る。入口だけだと既に壊れた DB が
+/// 救われず、出口だけだと壊れた値が保存され続ける。**片方だけ消さないこと。**
+/// 【再修正トリガ】丸めが実際に発火していることが分かったら（＝表示が `4294967295` に張り付いたら）、
+/// 入口の上限か `bits_amount` の型そのもの（`u32` → `#[ts(type = "number")]` 付きの `i64`）を見直す。
+fn read_u32_clamped(row: &rusqlite::Row<'_>, column: &str) -> rusqlite::Result<u32> {
+    let raw: i64 = row.get(column)?;
+    Ok(raw.clamp(0, u32::MAX as i64) as u32)
+}
+
+/// ⚠ 非有限の `f64`（`inf`）を 0 に倒して読む。`serde_json` は非有限の `f64` を `null` へ落とすので、
+/// そのまま通すと **binding の型は `number` なのに実体は `null`** という嘘になる（S-1 と同じ出口側の防御）。
+/// ⚠ SQLite は `NaN` を NULL として保存するので、ここに来るのは `inf` だけである。
+fn read_finite_f64(row: &rusqlite::Row<'_>, column: &str) -> rusqlite::Result<f64> {
+    let raw: f64 = row.get(column)?;
+    Ok(if raw.is_finite() { raw } else { 0.0 })
 }
 
 fn row_to_viewer(row: &rusqlite::Row<'_>) -> rusqlite::Result<ViewerRecord> {
@@ -142,9 +325,15 @@ fn row_to_viewer(row: &rusqlite::Row<'_>) -> rusqlite::Result<ViewerRecord> {
         last_comment_at: row.get("last_comment_at")?,
         total_comments: row.get("total_comments")?,
         bits_count: row.get("bits_count")?,
-        bits_amount: row.get("bits_amount")?,
+        // ⚠⚠ **`bits_amount` だけは丸めて読む**（理由は [`read_u32_clamped`]）。この列は
+        //   `CAST(SUM(amount) AS INTEGER)` で、`amount` は frontend 由来の f64 が入る唯一の集計である。
+        //   ⚠ 他の `u32` 列を素の `row.get` のままにしてあるのは**意図**——`COUNT(*)` 由来（`total_comments` /
+        //   `bits_count` / `superchat_count` / `subscription_count`）は負にも巨大にもならず、
+        //   `gift_count` / `stream_count` / `active_days` / `imported_*` は取り込み側の
+        //   `MAX_IMPORTED_COUNT` で押さえてある。**丸めを全列へ広げると本物のバグを隠す。**
+        bits_amount: read_u32_clamped(row, "bits_amount")?,
         superchat_count: row.get("superchat_count")?,
-        superchat_amount: row.get("superchat_amount")?,
+        superchat_amount: read_finite_f64(row, "superchat_amount")?,
         superchat_currency: row.get("superchat_currency")?,
         subscription_count: row.get("subscription_count")?,
         is_member: row.get("is_member")?,
@@ -152,6 +341,20 @@ fn row_to_viewer(row: &rusqlite::Row<'_>) -> rusqlite::Result<ViewerRecord> {
         note: row.get("note")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
+        // 065a: わんコメからの引き継ぎ分。⚠ `imported_name_history` は **DTO に出さない**ので
+        //   `VIEWER_COLUMNS` にも入っておらず、ここでも読まない（理由は同定数の doc）。
+        nickname: row.get("nickname")?,
+        label: row.get("label")?,
+        gift_count: row.get("gift_count")?,
+        stream_count: row.get("stream_count")?,
+        active_days: row.get("active_days")?,
+        imported_comments: row.get("imported_comments")?,
+        imported_gifts: row.get("imported_gifts")?,
+        imported_gift_amount: row.get("imported_gift_amount")?,
+        imported_active_days: row.get("imported_active_days")?,
+        imported_stream_count: row.get("imported_stream_count")?,
+        imported_first_seen_at: row.get("imported_first_seen_at")?,
+        imported_at: row.get("imported_at")?,
     })
 }
 
@@ -422,6 +625,146 @@ pub fn update_note(
         rusqlite::params![id, note, now],
     )?;
     Ok(affected)
+}
+
+/// 065a: わんコメ CSV の 1 行を `viewers` へ upsert する。**新規に作ったなら `true`** を返す。
+///
+/// ⚠ **1 行ぶんの SQL を 1 か所にまとめてある**（呼び出し側〔service〕がトランザクションを張る）。
+///
+/// ## マージ規則（ここを間違えるとユーザーの編集が消える）
+///
+/// | 対象 | 規則 |
+/// |---|---|
+/// | `imported_*` 7 列 | **常に上書き**（加算しない）＝同じ CSV を何度取り込んでも結果が同じ（冪等） |
+/// | `name` / `nickname` / `note` / `label` | **CSV が非空 かつ 既存が空のときだけ**書く（非破壊マージ） |
+/// | `last_comment_at` | 既存と `lcts` の**新しいほう**（[`later_timestamp`] が Rust で判定する） |
+/// | `first_seen_at` | **既存行では触らない**（実測値を壊さない）。新規行のみ `lcts` |
+/// | `provider` / `provider_user_id` / `created_at` | 新規行のみ |
+/// | `imported_at` / `updated_at` | 常に更新 |
+///
+/// ⚠⚠ **`name` を無条件で上書きしないこと。** CSV の `username` は `@handle` であって表示名ではないので、
+/// コメント受信で得た `display_name` を潰すと一覧の表示が退化する（親 065 の列マッピング）。
+///
+/// ## ⚠⚠ 再計算を当ててよい相手は「コメントを持つ視聴者」だけ
+///
+/// 取り込みは `viewer_comments` の行を **1 件も作らない**（コメントを捏造しない）ので、引き継ぎだけの
+/// 視聴者は必ずコメント 0 件になる。そこへ [`RECOMPUTE_VIEWER_AGGREGATES_SQL`] を当てると
+/// `first_seen_at` / `last_comment_at`（`TEXT NOT NULL`）へ `MIN/MAX` の NULL が入り、
+/// **NOT NULL 制約違反 → トランザクション全体がロールバック → 1 行も取り込まれない**（実測済み）。
+/// ⇒ コメント 0 件のときは、集計 4 列に `imported_*` をそのまま入れた upsert が**最終値**である。
+///
+/// ⚠ コメントを持つ視聴者では再計算のあとに `last_comment_at` を書き戻す。再計算は
+/// `MAX(published_at)`（＝実測のみ）で上書きしてしまい、CSV の `lcts` が消えるため。
+/// ⚠ **この書き戻しは保護されない**——その視聴者が次にコメントした瞬間、`record_comment` の再計算が
+/// また `MAX(published_at)` にする。意図どおりである（`last_comment_at` は「実測の最終」列で、
+/// 引き継ぎ値の保管先は `imported_first_seen_at` 側だけ）。
+pub fn upsert_imported_viewer(
+    conn: &Connection,
+    v: &super::csv_import::ImportedViewer,
+    now: &str,
+) -> rusqlite::Result<bool> {
+    // 既存かどうかと、**再計算を当ててよい相手か**（コメントを持つか）を 1 回で読む。
+    let existing: Option<(String, bool)> = conn
+        .query_row(
+            "SELECT last_comment_at,
+                    EXISTS(SELECT 1 FROM viewer_comments WHERE viewer_id = ?1)
+             FROM viewers WHERE id = ?1",
+            rusqlite::params![v.id],
+            |row| Ok((row.get(0)?, row.get::<_, i64>(1)? != 0)),
+        )
+        .optional()?;
+    let last_comment_at = match &existing {
+        Some((current, _)) => later_timestamp(current, &v.last_comment_at),
+        None => v.last_comment_at.clone(),
+    };
+
+    conn.execute(
+        "INSERT INTO viewers
+            (id, provider, provider_user_id, name, first_seen_at, last_comment_at, note,
+             created_at, updated_at, nickname, label, imported_comments, imported_gifts,
+             imported_gift_amount, imported_active_days, imported_stream_count,
+             imported_first_seen_at, imported_name_history, imported_at,
+             total_comments, gift_count, stream_count, active_days)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?8,
+                 ?11, ?12, ?15, ?14)
+         ON CONFLICT(id) DO UPDATE SET
+             imported_comments = excluded.imported_comments,
+             imported_gifts = excluded.imported_gifts,
+             imported_gift_amount = excluded.imported_gift_amount,
+             imported_active_days = excluded.imported_active_days,
+             imported_stream_count = excluded.imported_stream_count,
+             imported_first_seen_at = excluded.imported_first_seen_at,
+             imported_name_history = excluded.imported_name_history,
+             name = CASE WHEN viewers.name = '' AND excluded.name <> ''
+                         THEN excluded.name ELSE viewers.name END,
+             nickname = CASE WHEN viewers.nickname = '' AND excluded.nickname <> ''
+                             THEN excluded.nickname ELSE viewers.nickname END,
+             note = CASE WHEN viewers.note = '' AND excluded.note <> ''
+                         THEN excluded.note ELSE viewers.note END,
+             label = CASE WHEN viewers.label = '' AND excluded.label <> ''
+                          THEN excluded.label ELSE viewers.label END,
+             last_comment_at = excluded.last_comment_at,
+             total_comments = excluded.total_comments,
+             gift_count = excluded.gift_count,
+             stream_count = excluded.stream_count,
+             active_days = excluded.active_days,
+             imported_at = excluded.imported_at,
+             updated_at = excluded.updated_at",
+        rusqlite::params![
+            v.id,
+            v.provider,
+            v.provider_user_id,
+            v.name,
+            v.last_comment_at, // ?5: first_seen_at は**新規行のみ**（DO UPDATE 側に現れない）
+            last_comment_at,   // ?6
+            v.note,
+            now, // ?8: created_at / updated_at / imported_at
+            v.nickname,
+            v.label,
+            v.imported_comments,     // ?11 → total_comments の初期値も兼ねる
+            v.imported_gifts,        // ?12 → gift_count
+            v.imported_gift_amount,  // ?13
+            v.imported_active_days,  // ?14 → active_days
+            v.imported_stream_count, // ?15 → stream_count
+            v.imported_first_seen_at,
+            v.imported_name_history,
+        ],
+    )?;
+
+    // 実測コメントがある視聴者だけ、実測 ＋ 引き継ぎで数え直す（上の doc が理由）。
+    if let Some((_, true)) = existing {
+        conn.execute(RECOMPUTE_VIEWER_AGGREGATES_SQL, rusqlite::params![v.id, now])?;
+        // 再計算が `MAX(published_at)` で潰した CSV 由来の値を戻す。
+        conn.execute(
+            "UPDATE viewers SET last_comment_at = ?2 WHERE id = ?1",
+            rusqlite::params![v.id, last_comment_at],
+        )?;
+    }
+    Ok(existing.is_none())
+}
+
+/// 2 つの RFC3339 時刻のうち新しいほうを返す（判定できなければ `current` を動かさない）。
+///
+/// ⚠⚠ **SQL の `MAX()` を使わないのが要点である。** `MAX` は単なる文字列比較なので、
+/// `last_comment_at`（プラットフォーム由来・オフセット付きが混ざりうる）と `lcts`（常に `Z` 形式）を
+/// 比べると**古いほうを「新しい」と判定しうる**（実測: `MAX('...T12:00:00Z', '...T05:00:00-08:00')` は
+/// 前者を返すが、実際に新しいのは後者＝13:00 UTC）。
+/// これは `RECOMPUTE_VIEWER_AGGREGATES_SQL` の doc が「既に偽と実証済み」と書いている前提そのものなので、
+/// **新しく書くコードで同じ罠を踏まない**——062b の `stream_session::repository::comment_times` と
+/// 同じく「SQL は値を取り出すだけ・比較は Rust」に倒す。
+/// ⚠ どちらかがパース不能なら `current` を返す（壊れた値で実測を過去へ動かさない安全側）。
+fn later_timestamp(current: &str, candidate: &str) -> String {
+    let (Ok(current_dt), Ok(candidate_dt)) = (
+        DateTime::parse_from_rfc3339(current),
+        DateTime::parse_from_rfc3339(candidate),
+    ) else {
+        return current.to_string();
+    };
+    if candidate_dt > current_dt {
+        candidate.to_string()
+    } else {
+        current.to_string()
+    }
 }
 
 /// 視聴者を削除する（FK CASCADE で当該コメントも削除）。削除した行数を返す。
@@ -1089,5 +1432,347 @@ mod tests {
         assert!(!is_long_absence("2026-01-01T00:00:00Z", "garbage"), "cur 不正 → false");
         // 参考: 両端妥当で 1 ヶ月超なら通常判定は true（安全側フォールバックが誤って常に false にしていない）。
         assert!(is_long_absence("2026-01-01T00:00:00Z", "2026-03-01T00:00:00Z"));
+    }
+
+    // ---- 065a: わんコメからの引き継ぎ（列追加・再計算 SQL の加算・バックフィル）----
+    //
+    // ⚠ 段 1 の時点では取り込みコマンドがまだ無いので、`imported_*` は直接書いて検証する
+    //   （段 2 で CSV パース経由の同じ性質をテストし直す）。
+
+    /// 引き継ぎ値だけを直接書き込む（段 2 の upsert が入るまでの代役）。
+    fn set_imported(conn: &Connection, id: &str, comments: i64, gifts: i64, days: i64, streams: i64) {
+        conn.execute(
+            "UPDATE viewers SET imported_comments = ?2, imported_gifts = ?3,
+                 imported_active_days = ?4, imported_stream_count = ?5, imported_at = ?6
+             WHERE id = ?1",
+            rusqlite::params![id, comments, gifts, days, streams, "2026-08-16T00:00:00Z"],
+        )
+        .expect("引き継ぎ値を書けない");
+    }
+
+    /// CSV から作った直後の視聴者（**`viewer_comments` の行は 1 件も無い**）を模す。
+    ///
+    /// ⚠ 集計列に `imported_*` をそのまま入れるのは、この視聴者では再計算が一度も走っていないため
+    ///   （段 2 の取り込みも同じ形で書く）。
+    fn insert_imported_only_viewer(conn: &Connection, id: &str, lcts: &str, comments: i64) {
+        conn.execute(
+            "INSERT INTO viewers
+                (id, provider, provider_user_id, name, first_seen_at, last_comment_at, note,
+                 created_at, updated_at, imported_comments, total_comments, imported_at,
+                 imported_first_seen_at)
+             VALUES (?1, 'youtube', 'UCtest', '', ?2, ?2, '', ?3, ?3, ?4, ?4, ?3, ?2)",
+            rusqlite::params![id, lcts, "2026-08-16T00:00:00Z", comments],
+        )
+        .expect("引き継ぎのみの視聴者を作れない");
+    }
+
+    /// 065a 以前（＝13 列が無い）のスキーマを手で作る。⚠ `CREATE TABLE IF NOT EXISTS` は既存表に
+    /// 何もしないので、これで「既存 DB に後から列を足す」経路そのものを踏める。
+    fn pre_065a_conn() -> Connection {
+        let conn = Connection::open_in_memory().expect("in-memory SQLite を開けない");
+        conn.execute("PRAGMA foreign_keys = ON", []).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE viewers (
+                id TEXT PRIMARY KEY, provider TEXT NOT NULL, provider_user_id TEXT NOT NULL,
+                name TEXT NOT NULL, first_seen_at TEXT NOT NULL, last_comment_at TEXT NOT NULL,
+                total_comments INTEGER NOT NULL DEFAULT 0, bits_count INTEGER NOT NULL DEFAULT 0,
+                bits_amount INTEGER NOT NULL DEFAULT 0, superchat_count INTEGER NOT NULL DEFAULT 0,
+                superchat_amount REAL NOT NULL DEFAULT 0, superchat_currency TEXT,
+                subscription_count INTEGER NOT NULL DEFAULT 0, is_member INTEGER NOT NULL DEFAULT 0,
+                last_subscription_at TEXT, note TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE TABLE viewer_comments (
+                id TEXT PRIMARY KEY,
+                viewer_id TEXT NOT NULL REFERENCES viewers(id) ON DELETE CASCADE,
+                session_id TEXT NOT NULL, source TEXT NOT NULL, text TEXT NOT NULL,
+                event_type TEXT NOT NULL, amount REAL, currency TEXT, monetary_amount TEXT,
+                raid_viewer_count INTEGER, published_at TEXT NOT NULL, created_at TEXT NOT NULL
+            );",
+        )
+        .expect("065a 以前のスキーマを作れない");
+        conn
+    }
+
+    /// 065a 以前のスキーマへ、視聴者 1 人とコメントを直接入れる（`record_comment` は新列に依存するため使えない）。
+    fn seed_pre_065a_viewer(conn: &Connection, id: &str, comments: &[(&str, &str, &str)]) {
+        conn.execute(
+            "INSERT INTO viewers
+                (id, provider, provider_user_id, name, first_seen_at, last_comment_at,
+                 total_comments, note, created_at, updated_at)
+             VALUES (?1, 'twitch', 'u1', 'Alice', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z',
+                 ?2, '', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            rusqlite::params![id, comments.len() as i64],
+        )
+        .expect("旧スキーマへ視聴者を入れられない");
+        for (comment_id, session_id, published_at) in comments {
+            conn.execute(
+                "INSERT INTO viewer_comments
+                    (id, viewer_id, session_id, source, text, event_type, published_at, created_at)
+                 VALUES (?1, ?2, ?3, 'twitch', 'hi', 'chat', ?4, '2026-01-01T00:00:00Z')",
+                rusqlite::params![comment_id, id, session_id, published_at],
+            )
+            .expect("旧スキーマへコメントを入れられない");
+        }
+    }
+
+    // T-1 ⚠⚠ **本タスクの中心**。引き継いだ累積は、その人が次にコメントしても再計算で消えない。
+    //   変異 M-1（再計算 SQL から `+ COALESCE(imported_comments, 0)` を外す）はここで落ちる。
+    #[test]
+    fn imported_totals_survive_recompute() {
+        let conn = test_conn();
+        record_comment(&conn, &nc("c1", "twitch:u1", "chat", None, None, "2026-01-01T00:00:00Z")).unwrap();
+        set_imported(&conn, "twitch:u1", 7, 3, 5, 2);
+        // 引き継ぎを書いた直後はまだ再計算が走っていない（total は実測の 1 のまま）。
+        assert_eq!(viewer(&conn, "twitch:u1").total_comments, 1);
+
+        // ⚠ ここが 038a の recompute-on-write と正面からぶつかっていた箇所。
+        record_comment(&conn, &nc("c2", "twitch:u1", "chat", None, None, "2026-01-02T00:00:00Z")).unwrap();
+        let v = viewer(&conn, "twitch:u1");
+        assert_eq!(v.total_comments, 9, "実測 2 件 ＋ 引き継ぎ 7 件（0 や 2 に戻ったら加算が効いていない）");
+        assert_eq!(v.gift_count, 3, "課金 0 件 ＋ 引き継ぎ 3");
+        assert_eq!(v.stream_count, 3, "セッション 1 本 ＋ 引き継ぎ 2");
+        assert_eq!(v.active_days, 7, "実測 2 日 ＋ 引き継ぎ 5");
+        // ⚠ 引き継ぎ列そのものは再計算 SQL が触らないので不変（ここが壊れると二重加算が始まる）。
+        assert_eq!(v.imported_comments, 7);
+        assert_eq!(v.imported_gifts, 3);
+        assert_eq!(v.imported_active_days, 5);
+        assert_eq!(v.imported_stream_count, 2);
+    }
+
+    // T-1b: 再計算が**何度走っても**引き継ぎ分は 1 回しか足されない（増分ドリフトが起きない）。
+    #[test]
+    fn imported_totals_are_added_once_per_recompute_not_accumulated() {
+        let conn = test_conn();
+        record_comment(&conn, &nc("c1", "twitch:u1", "chat", None, None, "2026-01-01T00:00:00Z")).unwrap();
+        set_imported(&conn, "twitch:u1", 7, 0, 0, 0);
+        for (i, day) in ["02", "03", "04"].iter().enumerate() {
+            record_comment(
+                &conn,
+                &nc(&format!("x{i}"), "twitch:u1", "chat", None, None, &format!("2026-01-{day}T00:00:00Z")),
+            )
+            .unwrap();
+        }
+        assert_eq!(viewer(&conn, "twitch:u1").total_comments, 11, "実測 4 ＋ 引き継ぎ 7（累積しない）");
+    }
+
+    // T-2 ⚠ `gift_count` に `raid` と `chat` を入れない（レイドは課金ではない＝062a）。
+    //   変異 M-5（集合に 'raid' を足す）はここで落ちる。
+    #[test]
+    fn gift_count_excludes_raid_and_chat() {
+        let conn = test_conn();
+        record_comment(&conn, &nc("c1", "twitch:u1", "chat", None, None, "2026-01-01T00:00:00Z")).unwrap();
+        record_comment(&conn, &raid("r1", "twitch:u1", 42, "2026-01-02T00:00:00Z")).unwrap();
+        let v = viewer(&conn, "twitch:u1");
+        assert_eq!(v.gift_count, 0, "chat も raid も統合ギフト回数に入らない");
+        assert_eq!(v.total_comments, 2, "総コメント数には両方数える（062a の決定 (a) は不変）");
+    }
+
+    // T-3: 課金 6 種別はすべて `gift_count` に数える（集合を減らす変異を検知する）。
+    #[test]
+    fn gift_count_includes_the_six_paid_types() {
+        let conn = test_conn();
+        for (i, event_type) in ["superchat", "membership", "subscription", "gift", "donation", "jewels"]
+            .iter()
+            .enumerate()
+        {
+            record_comment(
+                &conn,
+                &nc(&format!("p{i}"), "twitch:u1", event_type, None, None, &format!("2026-01-0{}T00:00:00Z", i + 1)),
+            )
+            .unwrap();
+        }
+        record_comment(&conn, &nc("c9", "twitch:u1", "chat", None, None, "2026-01-08T00:00:00Z")).unwrap();
+        record_comment(&conn, &raid("r9", "twitch:u1", 5, "2026-01-09T00:00:00Z")).unwrap();
+        let v = viewer(&conn, "twitch:u1");
+        assert_eq!(v.gift_count, 6, "課金 6 種別だけを数える");
+        assert_eq!(v.total_comments, 8);
+    }
+
+    // T-4 ⚠⚠ `active_days` は **UTC 日**で数え、**壊れた `published_at` は黙って落ちる**。
+    //   どちらも「そう決めた」ことの記録である（穴 C の決定①）。
+    #[test]
+    fn active_days_counts_utc_days_and_ignores_broken_timestamps() {
+        let conn = test_conn();
+        // 8/15 23:00Z と 8/16 01:00Z は **JST では同じ 8/16**（08:00 と 10:00）だが、UTC では別の日。
+        record_comment(&conn, &nc("c1", "twitch:u1", "chat", None, None, "2026-08-15T23:00:00Z")).unwrap();
+        record_comment(&conn, &nc("c2", "twitch:u1", "chat", None, None, "2026-08-16T01:00:00Z")).unwrap();
+        // ⚠ オフセット付きは SQLite の `date()` が UTC へ正規化する（実測: date('...T02:00:00+09:00') = 08-15）
+        //   ＝ c1 と同じ UTC 日に畳まれる。
+        record_comment(&conn, &nc("c3", "twitch:u1", "chat", None, None, "2026-08-16T02:00:00+09:00")).unwrap();
+        assert_eq!(viewer(&conn, "twitch:u1").active_days, 2, "UTC 日で 08-15 と 08-16 の 2 日");
+
+        // ⚠⚠ 壊れた時刻は `date()` が NULL を返し、`COUNT(DISTINCT ...)` が**エラーにせず落とす**。
+        //   ＝ active_days は少なめに出る（水増しより安全側なので受容している）。
+        record_comment(&conn, &nc("c4", "twitch:u1", "chat", None, None, "bogus-timestamp")).unwrap();
+        let v = viewer(&conn, "twitch:u1");
+        assert_eq!(v.active_days, 2, "壊れた時刻は 1 日として数えない（黙って落ちる＝受容した挙動）");
+        assert_eq!(v.total_comments, 4, "総コメント数には数える（取りこぼしゼロ）");
+    }
+
+    // T-4b: 引き継ぎ分は実測日数へ**足される**（左右で「1 日」の定義が違う近似であることは doc が正）。
+    #[test]
+    fn active_days_adds_the_imported_baseline() {
+        let conn = test_conn();
+        record_comment(&conn, &nc("c1", "twitch:u1", "chat", None, None, "2026-08-15T23:00:00Z")).unwrap();
+        set_imported(&conn, "twitch:u1", 0, 0, 9, 0);
+        record_comment(&conn, &nc("c2", "twitch:u1", "chat", None, None, "2026-08-16T01:00:00Z")).unwrap();
+        assert_eq!(viewer(&conn, "twitch:u1").active_days, 11, "UTC 2 日 ＋ 引き継ぎ 9 日");
+    }
+
+    // T-5 ⚠ `stream_count` は `session_id` の異なり数。**062b 以前のデータでは多めに出る**ことを
+    //   決定として記録する（コメビュ窓のマウント単位で id が変わっていたため）。
+    #[test]
+    fn stream_count_counts_distinct_session_ids_including_pre_062b_inflation() {
+        let conn = test_conn();
+        // 同じ 1 回の配信中に窓を開き直した＝062b 以前は別 session_id になっていた形。
+        let mut a = nc("c1", "twitch:u1", "chat", None, None, "2026-08-16T10:00:00Z");
+        a.session_id = "mount-1".to_string();
+        let mut b = nc("c2", "twitch:u1", "chat", None, None, "2026-08-16T11:00:00Z");
+        b.session_id = "mount-2".to_string();
+        record_comment(&conn, &a).unwrap();
+        record_comment(&conn, &b).unwrap();
+        assert_eq!(
+            viewer(&conn, "twitch:u1").stream_count,
+            2,
+            "⚠ 実際は 1 配信だが 2 と数える（062b 以前の粒度をそのまま反映する＝受容した歪み）"
+        );
+    }
+
+    // T-6: 13 列は**冪等**に追加される（起動のたびに init が走るため）。
+    #[test]
+    fn the_065a_columns_are_added_idempotently() {
+        let conn = test_conn();
+        init(&conn).unwrap();
+        init(&conn).unwrap();
+        for column in [
+            "nickname", "label", "imported_comments", "imported_gifts", "imported_gift_amount",
+            "imported_active_days", "imported_stream_count", "imported_first_seen_at",
+            "imported_name_history", "imported_at", "gift_count", "stream_count", "active_days",
+        ] {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('viewers') WHERE name = ?1",
+                    rusqlite::params![column],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1, "{column} が 1 列だけ存在しない（重複追加か未追加）");
+        }
+    }
+
+    // T-7 ⚠⚠ **穴 K**。065a 以前に作られた DB では、新しい集計 3 列は再計算が走るまで 0 のままになる。
+    //   ＝ もう来ない常連さんが「参加配信数 0」で永久に固定される。列を足した 1 回だけ埋めること。
+    //   変異 M-8（バックフィルを消す）はここで落ちる。
+    #[test]
+    fn a_database_created_before_065a_gains_the_new_columns_and_is_backfilled() {
+        let conn = pre_065a_conn();
+        seed_pre_065a_viewer(
+            &conn,
+            "twitch:old",
+            &[
+                ("o1", "sess-a", "2026-08-15T23:00:00Z"),
+                ("o2", "sess-a", "2026-08-16T01:00:00Z"),
+                ("o3", "sess-b", "2026-08-16T02:00:00Z"),
+            ],
+        );
+
+        init(&conn).expect("既存 DB に対する init が失敗した");
+        let v = viewer(&conn, "twitch:old");
+        assert_eq!(v.stream_count, 2, "sess-a / sess-b の 2 本（0 のままなら埋めていない）");
+        assert_eq!(v.active_days, 2, "UTC で 08-15 と 08-16 の 2 日");
+        assert_eq!(v.total_comments, 3, "引き継ぎ 0 なので実測どおり");
+        assert_eq!(v.gift_count, 0, "課金イベントが無いので 0（この 0 は正しい 0）");
+
+        // ⚠ 2 回目の init では列が既にあるのでバックフィルは走らない（＝二重に足されない）。
+        init(&conn).expect("init が冪等でない");
+        assert_eq!(viewer(&conn, "twitch:old").stream_count, 2, "起動のたびに値が動いてはいけない");
+    }
+
+    // T-8 ⚠⚠ **穴 J**。コメント 0 件の視聴者へ全再計算を当てると `first_seen_at` へ NULL が入り、
+    //   **NOT NULL 制約違反でトランザクション全体がロールバック**する（062a が案 (c) を却下した理由①）。
+    //   ここが壊れると「起動時の init が失敗してアプリが立ち上がらない」になる。
+    //   ⚠ コメント 0 件の視聴者は実在しうる（`record_comment` の step1 が判定より前にあるため・S-4 注記）。
+    #[test]
+    fn backfill_does_not_break_on_viewers_without_comments() {
+        let conn = pre_065a_conn();
+        // コメントを 1 件も持たない視聴者（旧スキーマ）。
+        conn.execute(
+            "INSERT INTO viewers
+                (id, provider, provider_user_id, name, first_seen_at, last_comment_at,
+                 total_comments, note, created_at, updated_at)
+             VALUES ('twitch:ghost', 'twitch', 'ghost', '', '2026-01-01T00:00:00Z',
+                 '2026-01-01T00:00:00Z', 0, '', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        seed_pre_065a_viewer(&conn, "twitch:real", &[("o1", "sess-a", "2026-08-16T01:00:00Z")]);
+
+        init(&conn).expect("⚠⚠ コメント 0 件の視聴者でバックフィルが落ちた（起動不能になる）");
+
+        // 落ちなかっただけでなく、コメントを持つ視聴者はちゃんと埋まっている。
+        assert_eq!(viewer(&conn, "twitch:real").stream_count, 1);
+        // コメント 0 件の視聴者は触られず、NOT NULL 列も壊れていない。
+        let ghost = viewer(&conn, "twitch:ghost");
+        assert_eq!(ghost.stream_count, 0);
+        assert_eq!(ghost.first_seen_at, "2026-01-01T00:00:00Z", "実測が無い行の時刻を NULL で潰さない");
+    }
+
+    // T-10 ⚠⚠ **親 065 の主目的**。引き継ぎで `viewers` 行があれば、その人の初コメントに初見バッジが出ない。
+    #[test]
+    fn first_time_does_not_fire_for_an_imported_viewer() {
+        let conn = test_conn();
+        insert_imported_only_viewer(&conn, "youtube:UCtest", "2026-08-15T23:29:04.288Z", 42);
+        let r = record_comment(
+            &conn,
+            &nc("c1", "youtube:UCtest", "chat", None, None, "2026-08-16T10:00:00Z"),
+        )
+        .unwrap();
+        assert!(!r.first_time, "⚠⚠ 引き継いだ常連さんに初見バッジを出さない（本機能の一番の目的）");
+        // 引き継いだ累積は最初のコメントの後も残る。
+        assert_eq!(viewer(&conn, "youtube:UCtest").total_comments, 43, "42 ＋ 実測 1");
+    }
+
+    // T-9 ⚠⚠ **穴 B の決定①（受容）を記録として固定する。**
+    //   引き継ぎ行の `last_comment_at` は CSV の `lcts` なので、**1 ヶ月以上前の CSV を取り込むと
+    //   その人の次のコメントで「久しぶり」が出る**。意味論としては正しい（実際 1 ヶ月来ていない）ので
+    //   受容した。⚠ 実運用で誤爆が問題になったら 038 側で「観測した前回コメントだけを基準にする」を起票する
+    //   （`viewer_comments` に行があるかを見れば新しい状態は要らない）。
+    #[test]
+    fn long_absence_fires_for_an_imported_viewer_by_design() {
+        let conn = test_conn();
+        // 2 ヶ月前にエクスポートされた CSV を取り込んだ状態。
+        insert_imported_only_viewer(&conn, "youtube:UCstale", "2026-06-01T00:00:00Z", 100);
+        let r = record_comment(
+            &conn,
+            &nc("c1", "youtube:UCstale", "chat", None, None, "2026-08-16T10:00:00Z"),
+        )
+        .unwrap();
+        assert!(!r.first_time, "初見は出ない（引き継ぎ行がある）");
+        assert!(r.long_absence, "⚠ 古い CSV を取り込むと「久しぶり」が出る＝受容した挙動");
+
+        // 対照: 直前にエクスポートした CSV なら誤爆しない（実運用の通常経路）。
+        insert_imported_only_viewer(&conn, "youtube:UCfresh", "2026-08-15T23:29:04.288Z", 100);
+        let fresh = record_comment(
+            &conn,
+            &nc("c2", "youtube:UCfresh", "chat", None, None, "2026-08-16T10:00:00Z"),
+        )
+        .unwrap();
+        assert!(!fresh.first_time);
+        assert!(!fresh.long_absence, "取り込む直前にエクスポートしていればバッジは出ない");
+    }
+
+    // T-23（段 1 ぶん）: 引き継ぎ列は `viewers` の列なので、既存の削除手段がそのまま効く（§9・⑪）。
+    #[test]
+    fn deleting_an_imported_viewer_removes_every_imported_column() {
+        let conn = test_conn();
+        insert_imported_only_viewer(&conn, "youtube:UCtest", "2026-08-15T23:29:04.288Z", 42);
+        assert_eq!(delete(&conn, "youtube:UCtest").unwrap(), 1);
+        assert!(get(&conn, "youtube:UCtest").unwrap().is_none(), "行ごと消えるので引き継ぎ値も残らない");
+
+        insert_imported_only_viewer(&conn, "youtube:UCtest2", "2026-08-15T23:29:04.288Z", 7);
+        clear(&conn).unwrap();
+        let remaining: i64 = conn.query_row("SELECT COUNT(*) FROM viewers", [], |r| r.get(0)).unwrap();
+        assert_eq!(remaining, 0, "全消去でも取り残しゼロ");
     }
 }
