@@ -109,7 +109,12 @@ describe("EffectAssignmentCard", () => {
     );
   });
 
-  it("⚠⚠ 選択肢は「エフェクトを出さない」＋ OBS のソースだけ（064d: テンプレートを消した）", () => {
+  /**
+   * ⚠⚠ **063a で期待値を 1 件増やした 1 本**（元は「『出さない』＋ OBS のソースだけ」だった）。
+   * ⚠ **順序を固定していることがこのテストの意味**なので、
+   * **先頭は「エフェクトを出さない」のまま**（061h ⑦-c）、ガチャは**末尾**に足してある。
+   */
+  it("⚠⚠ 選択肢は「エフェクトを出さない」＋ OBS のソース＋ガチャ（順序も固定する）", () => {
     putObsSources([OBS_SOURCE_A]);
     render(<Harness />);
     const options = within(selectFor(EFFECT_EVENT_LABEL.superchat)).getAllByRole(
@@ -118,6 +123,7 @@ describe("EffectAssignmentCard", () => {
     expect(options.map((o) => o.textContent)).toEqual([
       "エフェクトを出さない",
       OBS_SOURCE_A,
+      "ガチャ（複数から抽選）",
     ]);
   });
 
@@ -292,12 +298,20 @@ describe("064b: 割り当て先の OBS ソース（画面）", () => {
     ).toBeTruthy();
   });
 
-  it("⚠ 一覧をまだ取っていなければ選択肢は増えない（この画面は取りに行かない）", async () => {
+  it("⚠ 一覧をまだ取っていなければ **OBS のソースの**選択肢は増えない（この画面は取りに行かない）", async () => {
     render(<Harness />);
-    // ⚠ 064d: 既定の「エフェクトを出さない」1 つだけ（テンプレートの選択肢はもう無い）。
-    expect(
-      within(selectFor(EFFECT_EVENT_LABEL.superchat)).getAllByRole("option"),
-    ).toHaveLength(1);
+    // ⚠ 064d: 一覧に由来する選択肢はゼロ（テンプレートの選択肢はもう無い）。
+    // ⚠⚠ **063a で 1 → 2 になった**——「エフェクトを出さない」と「ガチャ」は
+    //   **どちらも一覧に由来しない固定の選択肢**なので、一覧が無くても必ず在る。
+    //   ⚠ このテストが守っているのは「**この画面が OBS へ取りに行かない**」ことなので、
+    //   固定の選択肢の数が増えても意味は変わらない（減らすと意味が変わる）。
+    const options = within(
+      selectFor(EFFECT_EVENT_LABEL.superchat),
+    ).getAllByRole("option");
+    expect(options.map((o) => o.textContent)).toEqual([
+      "エフェクトを出さない",
+      "ガチャ（複数から抽選）",
+    ]);
   });
 
   it("⚠⚠ 選ぶと obs-source の割り当てが保存される", async () => {

@@ -29,7 +29,19 @@ export const TWITCH_TOKEN_ENDPOINT = "https://id.twitch.tv/oauth2/token";
 // 043a(拡張): Bits Power-ups（channel.bits.use）取得のため bits:read を追加。既存宛先内の購読追加で
 // 新規 egress 先は増えないが、OAuth スコープ拡大＝既存ユーザーは再ログインするまで Power-ups は届かない
 // （bits.use 購読は sidecar 側で非致命化し、本線配信は継続）。docs/security.md 方針①/⑦ 参照。
-export const TWITCH_SCOPES: readonly string[] = ["user:read:chat", "bits:read"];
+// 066: **チャットへの書き込み**（Helix `POST /chat/messages`）のため `user:write:chat` を追加。
+// ⚠⚠⚠ **StreamDock 初の「書き込み」スコープである**（それまでは読むだけだった）。
+// ⚠ **新規 egress 先はゼロ**（`api.twitch.tv` は既に allow-list）。増えるのは**能力**だけ。
+// ⚠⚠ **既存ユーザーは再ログインするまで送信できない**（旧トークンにこのスコープが無く 401/403 になる）。
+// 043a の `bits:read` と同じく **sidecar 側で非致命化**し、本線（コメント取得）は止めない。
+// ⚠⚠⚠ **YouTube 側は 1 文字も変えていない**（`youtube.force-ssl` は同意画面が「管理」相当になり、
+// かつ書き込みは 1 回 50 units・既定 10,000 units/日で**取得と枠を共用**するため。依頼者の決定・2026-08-22）。
+// docs/security.md §1 の追補（066）を参照。
+export const TWITCH_SCOPES: readonly string[] = [
+  "user:read:chat",
+  "bits:read",
+  "user:write:chat",
+];
 
 /** Helix/EventSub の base URL を定数で返す（env 参照なし）。 */
 export class PinnedTwitchConfigProvider implements TwitchConfigProvider {

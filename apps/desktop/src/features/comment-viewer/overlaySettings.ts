@@ -22,6 +22,16 @@ export const OVERLAY_SHOW_SOURCE_KEY =
  */
 export const OBS_AUTO_ADD_KEY = "stream-dock.comment-viewer.obs-auto-add";
 /**
+ * 066: **チャットへの書き込みを許可する**トグル（⚠⚠ **既定 OFF**・値は `"1"` のみ）。
+ *
+ * ⚠⚠⚠ **これは同意であって、壁ではない。** 壁は sidecar 側のチケット照合
+ * （`chat-send/chat-send-frame.ts`）で、そちらが未認証の loopback WS からの投稿を塞いでいる。
+ * ⚠ **このキーを見て送信を止める判断は frontend 側だけの話**なので、
+ * 「これがあるから安全」と読まないこと。
+ * ⚠ OFF は**キーごと削除**する（「未保存＝OFF」と「明示的に OFF」を潰す）。
+ */
+export const CHAT_SEND_ENABLED_KEY = "stream-dock.comment-viewer.chat-send-enabled";
+/**
  * 046b: 「固定コメントをOBSに表示」ON/OFF の保存キー（既定 OFF）。**ユーザー自身の UI 設定値**（トグルの状態）で、
  * §9 追補（046a）が対象とする第三者の個人データ（コメント本文・表示名・金額＝`pinnedComments.ts` のキー）とは
  * データの性質が違う。既存の `OBS_AUTO_ADD_KEY` と同種の非機密トグル値として扱う。

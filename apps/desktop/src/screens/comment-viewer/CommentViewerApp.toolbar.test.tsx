@@ -95,6 +95,8 @@ const mocks = vi.hoisted(() => ({
       ok: false as const,
       reason: "offline",
     })),
+    // 066: 送信は使わないが型を満たす（⚠ 既定 OFF なのでこの画面からは呼ばれない）。
+    sendChat: vi.fn(async () => ({ ok: false as const, reason: "offline" })),
   } satisfies CommentStreamHandle,
 }));
 
@@ -157,6 +159,8 @@ vi.mock("../../features/comment-viewer/voicevoxApi", () => ({
     launched: false,
     message: "",
   })),
+  // 066: 送信は使わないが型を満たす（⚠ 既定 OFF なのでこれらの画面からは呼ばれない）。
+  sendChat: vi.fn(async () => ({ ok: false as const, reason: "offline" })),
 }));
 
 // jsdom に AudioContext が無いため、読み上げキューと試聴プレイヤーは生成ごと差し替える。

@@ -83,6 +83,19 @@ const OBS_PW_CLEAR_PREFIX: &str = "COMMENT_SIDECAR_OBS_PW_CLEAR=";
 /// ⚠ 同一 PC の任意プロセスがアプリのメモリを読める前提なら破れるが、その前提では既に何でもできる。
 const THEME_TICKET_PREFIX: &str = "COMMENT_SIDECAR_THEME_TICKET=";
 
+/// 066: sidecar へ渡す **チャット送信チケット**（stdin private pipe）。
+///
+/// ⚠⚠⚠ **根拠は [`THEME_TICKET_PREFIX`] とまったく同じで、危険度はこちらが高い。**
+/// 060c の `theme-import.fetch` は「**インターネットへの GET を起こす初めての制御フレーム**」だったが、
+/// 066 の `chat-send` は「**配信のチャットへ書き込む初めての制御フレーム**」である。
+/// チケット無しだと、悪意あるページが `ws://127.0.0.1:<port>` へ繋いで
+/// **同意を一切経ずにユーザーの名前でチャットへ投稿できる**（しかも視聴者に見えて消せない）。
+///
+/// ⚠⚠ **テーマ取り込みのチケットと別に採番する。** 使い回すと「読む能力の秘密が漏れたら
+/// 書く能力も奪われる」形になり、被害範囲が繋がってしまう。
+/// ⚠ 値はプロセス起動ごとの使い捨てで、**keychain にも DB にも残さず・ログにも出さない**（§9）。
+const CHAT_TICKET_PREFIX: &str = "COMMENT_SIDECAR_CHAT_TICKET=";
+
 /// sidecar 起動インスタンスごとに払い出す世代 ID のカウンタ。
 /// 旧 sidecar の stdout 読取スレッドが遅れて `Terminated` を受けても、既に差し替わった
 /// 新 sidecar の state を消さない（世代不一致なら触らない）ための識別子に使う。
@@ -99,6 +112,10 @@ pub struct CommentSidecar {
     /// ⚠ **ポートと違って sidecar から受け取るのではなく Rust が生成して渡す**（sidecar 側が生成して
     /// stdout で返す形にすると、stdout を読める者＝実質誰でも手に入ってしまう）。
     theme_import_ticket: String,
+    /// 066: この起動インスタンスのチャット送信チケット（[`CHAT_TICKET_PREFIX`] の注記が正）。
+    ///
+    /// ⚠⚠ **`theme_import_ticket` と別の値であること**が、能力ごとに被害範囲を分けることの実体である。
+    chat_send_ticket: String,
 }
 
 /// app state（singleton）。`None` = 未起動。
@@ -146,12 +163,18 @@ pub fn ensure_started(app: &AppHandle) -> AppResult<()> {
     let theme_import_ticket = uuid::Uuid::new_v4().simple().to_string();
     let _ = child.write(format!("{THEME_TICKET_PREFIX}{theme_import_ticket}\n").as_bytes());
 
+    // 066: チャット送信チケット。⚠⚠ **テーマ取り込みとは別に採番する**（同じ値を使い回さない）。
+    // 採番も受け渡しも上とまったく同じ作法（uuid v4・stdin private pipe・非ログ・§9）。
+    let chat_send_ticket = uuid::Uuid::new_v4().simple().to_string();
+    let _ = child.write(format!("{CHAT_TICKET_PREFIX}{chat_send_ticket}\n").as_bytes());
+
     let generation = SIDECAR_GENERATION.fetch_add(1, Ordering::Relaxed);
     *guard = Some(CommentSidecar {
         child,
         port: None,
         generation,
         theme_import_ticket,
+        chat_send_ticket,
     });
     // reader スレッド起動前にロックを解放する（スレッド側は独立にロックを取り直す）。
     drop(guard);
@@ -238,6 +261,18 @@ pub fn theme_import_ticket(app: &AppHandle) -> Option<String> {
     let state = app.state::<CommentSidecarState>();
     let guard = state.lock().expect("comment sidecar mutex poisoned");
     guard.as_ref().map(|s| s.theme_import_ticket.clone())
+}
+
+/// 066: 稼働中 sidecar の**チャット送信チケット**を返す（未起動なら `None`）。
+///
+/// viewer はこれを `chat-send` フレームに載せる。⚠ [`theme_import_ticket`] と同じく
+/// **sidecar が再 spawn されると値が変わる**ので、**送信のたびに取り直すこと**。
+/// ⚠⚠ **ログにも画面にも出さない**（§9）。⚠ **テーマ取り込みのチケットと取り違えないこと**
+/// （取り違えるとどちらの能力も動かなくなる＝ fail-closed 側なので安全側ではあるが、原因が読めない）。
+pub fn chat_send_ticket(app: &AppHandle) -> Option<String> {
+    let state = app.state::<CommentSidecarState>();
+    let guard = state.lock().expect("comment sidecar mutex poisoned");
+    guard.as_ref().map(|s| s.chat_send_ticket.clone())
 }
 
 /// sidecar を停止する（idempotent）。窓クローズ・アプリ終了フックから呼ぶ。

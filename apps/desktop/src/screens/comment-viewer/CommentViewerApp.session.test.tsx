@@ -85,6 +85,8 @@ const mocks = vi.hoisted(() => {
         ok: false as const,
         reason: "offline" as const,
       })),
+      // 066: 送信は使わないが型を満たす（⚠ 既定 OFF なのでこれらの画面からは呼ばれない）。
+      sendChat: vi.fn(async () => ({ ok: false as const, reason: "offline" })),
     } satisfies CommentStreamHandle,
   };
 });
@@ -661,5 +663,41 @@ describe("062c サマリーを開いている間の記録（穴 H）", () => {
     });
 
     expect(mocks.endStreamSession).not.toHaveBeenCalled();
+  });
+
+  /**
+   * ⚠⚠⚠ **security-review 066 S-2b で足した 1 本（この経路はここでしか固定できない）。**
+   *
+   * `ChatSendCard.test.tsx` は `channel` を prop で直接受け取るので、
+   * **「画面に出している送信先」と「sidecar へ送る期待値」が同じ値か**を検証できない。
+   * ⚠⚠ S-2b の穴はまさにその配線にあった——出していたのは frontend 自身の入力値で、
+   * **未認証の loopback WS から `start-session` で宛先を差し替えられても表示は変わらない**。
+   * ⇒ いまは同じ値を `sendChat` の第 2 引数として渡し、sidecar が突き合わせている。
+   * ⚠ **この 1 本が落ちたら「差し替えに気づけない」状態に戻ったということ**である。
+   */
+  it("⚠⚠⚠ 066 S-2b: テスト送信は「画面に出している送信先」を期待値として渡す", async () => {
+    // ⚠ ユーザーが打ったチャンネル名（前後の空白は落として扱う）。入力欄は接続ピルの
+    //   ポップオーバーの中なので、ここは**保存値から復元させる**（起動時と同じ `loadChannel()` 経路）。
+    localStorage.setItem("stream-dock.comment-viewer.channel", "  MyChannel  ");
+    await renderApp();
+
+    fireEvent.click(screen.getByLabelText("設定"));
+    // ⚠⚠ 既定 OFF なので、まず明示的に有効化しないと押せない（同意）。
+    fireEvent.click(
+      screen.getByLabelText("チャットへの書き込みを許可する", { exact: false }),
+    );
+
+    // ⚠ 画面に出ている送信先。
+    expect(screen.getByText("送信先: MyChannel")).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "テスト送信" }));
+    });
+
+    // ⚠⚠⚠ **表示と同じ値が期待値として渡ること**——ここがずれると突き合わせの意味が消える。
+    expect(mocks.stream.sendChat).toHaveBeenCalledWith(
+      expect.any(String),
+      "MyChannel",
+    );
   });
 });

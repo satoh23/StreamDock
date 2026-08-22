@@ -4,6 +4,9 @@ import { MONETARY_EVENT_TYPES } from "../comment-viewer/viewerFormat";
 import {
   addKeywordCondition,
   createObsSourceMatcher,
+  GACHA_PRIZE_MAX,
+  GACHA_PRIZE_NAME_MAX_LENGTH,
+  GACHA_WEIGHT_MAX,
   isUsableKeyword,
   KEYWORD_CONDITION_MAX,
   KEYWORD_COOLDOWN_MS,
@@ -152,10 +155,24 @@ describe("effectAssignments（061j: 条件の配列）", () => {
     expect(conditions.find((c) => c.id === "event:gift")?.effect).toEqual(TPL);
   });
 
-  it("⚠⚠ 未知の kind（063 の gacha を古いビルドが読んだ場合）は「出さない」へ倒れる", () => {
+  /**
+   * ⚠⚠⚠ **063a で例を差し替えた 1 本**（元は `{ kind: "gacha", tableId: "x" }` を
+   * 「未知の kind」の例に使っていた）。
+   *
+   * ⚠⚠ **消していない・期待値も変えていない。** このテストが守っているのは
+   * 「**未知の kind は安全側（出さない）へ倒れる**」という前方互換のガードで、
+   * **061h の移行（`builtin-monetary`）と 064d の移行（`template`）を、移行コード 1 行も
+   * 書かずに済ませた仕組みそのもの**である。063a で `gacha` が**既知**になったので、
+   * 例だけを**まだ存在しない別の kind** へ移した。
+   *
+   * ⚠⚠ **「旧ビルドが gacha を読むと『出さない』へ倒れる」ことは、もうこのビルドでは
+   * 表現できない**（このビルドでは gacha は既知だから）。⚠ **前方互換が消えたわけではない**
+   * ——仕組みは生きており、次に足す kind に対して同じように働く。それを固定しているのがこの 1 本。
+   */
+  it("⚠⚠ 未知の kind（このビルドがまだ知らない将来の割り当て）は「出さない」へ倒れる", () => {
     localStorage.setItem(
       EFFECT_ASSIGNMENTS_KEY,
-      JSON.stringify([ev("superchat", { kind: "gacha", tableId: "x" })]),
+      JSON.stringify([ev("superchat", { kind: "future-thing", tableId: "x" })]),
     );
     expect(
       loadEffectConditions().find((c) => c.id === "event:superchat")?.effect,
@@ -814,6 +831,170 @@ describe("064b: 割り当て先としての OBS ソース", () => {
     expect(raw()).not.toBeNull();
     setConditionEffect("event:superchat", NONE);
     expect(raw()).toBeNull();
+  });
+
+  // --- 063a: ガチャの割り当て（穴 A / 穴 F） ----------------------------------------------
+
+  /** ガチャの割り当て 1 件（保存形と同じ形）。 */
+  const gacha = (prizes: unknown[]): unknown => ({ kind: "gacha", prizes });
+  /** 景品 1 件（保存形と同じ形）。 */
+  const prize = (
+    over: Partial<{ name: unknown; weight: unknown; sourceName: unknown }> = {},
+  ): unknown => ({
+    name: over.name ?? "大当たり",
+    weight: over.weight ?? 1,
+    sourceName: over.sourceName ?? UUID,
+  });
+  const gachaEffect = (id: string) => {
+    const effect = loadEffectConditions().find((c) => c.id === id)?.effect;
+    return effect?.kind === "gacha" ? effect : null;
+  };
+
+  it("⚠⚠ `{ kind: 'gacha' }` が正しく読める（063a で足した 3 本目の割り当て）", () => {
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify([
+        ev(
+          "superchat",
+          gacha([
+            prize({ name: "大当たり", weight: 1, sourceName: UUID }),
+            prize({ name: "はずれ", weight: 9, sourceName: UUID2 }),
+          ]),
+        ),
+      ]),
+    );
+    expect(gachaEffect("event:superchat")?.prizes).toEqual([
+      { name: "大当たり", weight: 1, sourceName: UUID },
+      { name: "はずれ", weight: 9, sourceName: UUID2 },
+    ]);
+  });
+
+  it("⚠⚠ 景品 0 件でも `gacha` のまま保つ（`none` へ潰すと設定が黙って消える）", () => {
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify([ev("superchat", gacha([]))]),
+    );
+    expect(gachaEffect("event:superchat")?.prizes).toEqual([]);
+    // ⚠ `prizes` が配列ですらない場合も同じ（0 件として読む）。
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify([ev("superchat", { kind: "gacha" })]),
+    );
+    expect(gachaEffect("event:superchat")?.prizes).toEqual([]);
+  });
+
+  it("⚠⚠ `weight` が 0 / 負 / 小数 / 上限超の景品は**その行だけ**落ちる（0 除算と『絶対に出ない景品』を作らない）", () => {
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify([
+        ev(
+          "superchat",
+          gacha([
+            prize({ name: "0", weight: 0 }),
+            prize({ name: "負", weight: -1 }),
+            prize({ name: "小数", weight: 1.5 }),
+            prize({ name: "NaN", weight: Number.NaN }),
+            prize({ name: "文字", weight: "3" }),
+            prize({ name: "上限超", weight: GACHA_WEIGHT_MAX + 1 }),
+            prize({ name: "上限", weight: GACHA_WEIGHT_MAX }),
+            prize({ name: "下限", weight: 1 }),
+          ]),
+        ),
+      ]),
+    );
+    expect(gachaEffect("event:superchat")?.prizes.map((p) => p.name)).toEqual([
+      "上限",
+      "下限",
+    ]);
+  });
+
+  it("⚠ `sourceName` が空 / 制御文字入り / 非文字列の景品は落ちる（`EffectObsSource` と同じ規則）", () => {
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify([
+        ev(
+          "superchat",
+          gacha([
+            prize({ name: "空", sourceName: "   " }),
+            prize({ name: "制御", sourceName: "a\u0000b" }),
+            prize({ name: "非文字列", sourceName: 42 }),
+            prize({ name: "ok", sourceName: `  ${UUID}  ` }),
+          ]),
+        ),
+      ]),
+    );
+    // ⚠ 生き残るのは 1 件だけで、**保存されるのは trim 済みの値**（064 レビュー S-10 と同じ理由）。
+    expect(gachaEffect("event:superchat")?.prizes).toEqual([
+      { name: "ok", weight: 1, sourceName: UUID },
+    ]);
+  });
+
+  it("⚠ 景品名が長すぎる／制御文字入りの景品は落ち、空の景品名は許される", () => {
+    const tooLong = "あ".repeat(GACHA_PRIZE_NAME_MAX_LENGTH + 1);
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify([
+        ev(
+          "superchat",
+          gacha([
+            prize({ name: tooLong }),
+            prize({ name: "a\u0000b" }),
+            prize({ name: 42 }),
+            prize({ name: "", sourceName: UUID2 }),
+          ]),
+        ),
+      ]),
+    );
+    expect(gachaEffect("event:superchat")?.prizes).toEqual([
+      { name: "", weight: 1, sourceName: UUID2 },
+    ]);
+  });
+
+  it("⚠ 景品は上限を超えたら落ちる（丸めない）", () => {
+    const prizes = Array.from({ length: GACHA_PRIZE_MAX + 5 }, (_, i) =>
+      prize({ name: `p${i}` }),
+    );
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify([ev("superchat", gacha(prizes))]),
+    );
+    expect(gachaEffect("event:superchat")?.prizes).toHaveLength(GACHA_PRIZE_MAX);
+  });
+
+  it("⚠⚠ 保存経路でも同じ検査が効く（読み込み時だけの検査にしない）", () => {
+    setConditionEffect("event:superchat", {
+      kind: "gacha",
+      prizes: [
+        { name: "落ちる", weight: 0, sourceName: UUID },
+        { name: "残る", weight: 2, sourceName: UUID2 },
+      ],
+    });
+    expect(raw()).not.toContain("落ちる");
+    expect(gachaEffect("event:superchat")?.prizes).toEqual([
+      { name: "残る", weight: 2, sourceName: UUID2 },
+    ]);
+  });
+
+  it("⚠⚠ ガチャの割り当ては 063a では**発火しない**（`select` が当たり判定の前に落とす）", () => {
+    // ⚠ 発火層（`effectTrigger.ts`）には 1 文字も触っていない＝穴 I の判断がここで固定される。
+    //   ⚠ 「当たり判定の前に落ちる」ので、キーワード条件を塞がないことも併せて確認する。
+    addKeywordCondition({ text: "ガチャ", match: "contains" }, {
+      kind: "gacha",
+      prizes: [{ name: "大当たり", weight: 1, sourceName: UUID }],
+    });
+    addKeywordCondition({ text: "ガチャ", match: "contains" }, OBS);
+    expect(obsMatch({ eventType: "chat", text: "ガチャ" })?.effect).toEqual(OBS);
+  });
+
+  it("⚠⚠ §9: 抽選履歴・当選者は 1 バイトも保存されない", () => {
+    setConditionEffect("event:superchat", {
+      kind: "gacha",
+      prizes: [{ name: "大当たり", weight: 1, sourceName: UUID }],
+    });
+    const stored = raw() ?? "";
+    for (const forbidden of ["history", "winner", "drawnAt", "当選"]) {
+      expect(stored).not.toContain(forbidden);
+    }
   });
 
   // --- §9 -------------------------------------------------------------------------------

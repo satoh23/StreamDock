@@ -25,10 +25,12 @@ import { EFFECT_EVENT_LABEL } from "./effectEventRows";
 import {
   effectSelectAssignment,
   effectSelectValue,
+  GACHA_VALUE,
   isObsSourceMissingFromList,
   NONE_VALUE,
   OBS_SOURCE_PREFIX,
 } from "./effectSelectValue";
+import { GachaPrizeTable } from "./GachaPrizeTable";
 import layout from "../formLayout.module.css";
 import styles from "./ObsEffectsScreen.module.css";
 
@@ -136,6 +138,11 @@ function ConditionEffectSelect({
             {source.name}
           </option>
         ))}
+        {/* ⚠⚠ **063a: 3 本目の割り当て**（`EffectAssignment` の union に `gacha` が入った）。
+            ⚠ **末尾に足す**——061h ⑦-c 以来「先頭は必ず『エフェクトを出さない』」で、
+            既存の選択肢の**順序を 1 つも動かさない**（`effectSelectValue` の JSDoc が正）。
+            ⚠ OBS ソースの一覧の**後ろ**に置くのは、一覧が増減しても位置が動かないため。 */}
+        <option value={GACHA_VALUE}>ガチャ（複数から抽選）</option>
       </Select>
       {obsMissing && (
         // ⚠⚠ 064b: OBS 側で**名前を変えた／消した**ときに気付ける唯一の場所。
@@ -144,6 +151,17 @@ function ConditionEffectSelect({
         <p className={styles.errorText}>
           OBS にこの名前のソースが見つかりません。名前を変えた場合は選び直してください。
         </p>
+      )}
+      {/* ⚠⚠ 063a: **ガチャの表もここに置く**（イベント条件の行・キーワード条件の行・未確定行の
+          3 か所が 1 実装を共有する＝上の JSDoc の規律そのもの）。⚠ 呼び出し側で個別に描かないこと。
+          ⚠ 表は `.gachaPanel` の `flex-basis: 100%` で**行の下へ回り込む**（`.errorText` と同じ手）。 */}
+      {effect.kind === "gacha" && (
+        <GachaPrizeTable
+          effect={effect}
+          obsSources={obsSources}
+          labelPrefix={ariaLabel}
+          onChange={onChange}
+        />
       )}
     </>
   );

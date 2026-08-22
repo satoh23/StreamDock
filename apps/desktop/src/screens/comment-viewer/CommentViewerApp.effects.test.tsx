@@ -92,6 +92,8 @@ const mocks = vi.hoisted(() => ({
       ok: false as const,
       reason: "offline",
     })),
+    // 066: 送信は使わないが型を満たす（⚠ 既定 OFF なのでこれらの画面からは呼ばれない）。
+    sendChat: vi.fn(async () => ({ ok: false as const, reason: "offline" })),
   } satisfies CommentStreamHandle,
 }));
 

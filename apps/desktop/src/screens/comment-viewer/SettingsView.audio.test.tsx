@@ -103,6 +103,9 @@ function baseProps(over: Partial<Props> = {}): Props {
     onClearObsPassword: vi.fn(),
     pinnedOverlayEnabled: false,
     onPinnedOverlayToggle: vi.fn(),
+    // 066: 送信は使わないが型を満たす（⚠ 既定 OFF なので押せない）。
+    onChatTestSend: async () => ({ ok: false, reason: "offline" }),
+    chatSendChannel: "",
     ...over,
   };
 }

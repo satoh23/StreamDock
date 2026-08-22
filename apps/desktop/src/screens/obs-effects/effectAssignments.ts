@@ -92,14 +92,77 @@ import type {
  * ——061h から積み上げてきた前方互換が、そのまま**後方互換**としても効いている
  * （移行コードを 1 行も書かずに済んだのはこの形のおかげ）。
  *
- * ⚠ **063（ガチャ）は `{ kind: "gacha"; … }` を足す**。そのとき下の [`parseAssignment`] に
- * 1 分岐足せば、**旧ビルドは「未知の kind → 出さない」へ安全側に倒れる**（＝前方互換）。
- * この前方互換があるので、保存形に `version` フィールドは持たせていない
- * （版番号にすると「版が違う＝全部捨てる」というより粗い壊れ方を新しく作ることになる）。
+ * ⚠⚠ **063a で `{ kind: "gacha"; prizes }` を足した**（[`EffectGacha`]）。予告どおり
+ * 下の [`parseAssignment`] に 1 分岐足しただけで、**旧ビルドは「未知の kind → 出さない」へ
+ * 安全側に倒れる**（＝前方互換）。この前方互換があるので、保存形に `version` フィールドは
+ * 持たせていない（版番号にすると「版が違う＝全部捨てる」というより粗い壊れ方を新しく作ることになる）。
  * ⚠ **061h の移行もこの仕組みがそのまま担う**——既に保存されている
  * `{"kind":"builtin-monetary"}` は**未知の kind として「出さない」へ倒れる**。
+ *
+ * ⚠⚠⚠ **063a: 「gacha を古いビルドが読むと『出さない』へ倒れる」ことは、
+ * もうこのビルドのテストでは表現できない**（このビルドでは gacha は既知の kind だから）。
+ * ⇒ `effectAssignments.test.ts` のガードは **gacha 以外の未知 kind** で書いてある。
+ * ⚠ **「前方互換が消えた」と誤読しないこと**——仕組み（未知 kind → 既定）はそのまま生きており、
+ * 次に足す kind に対して同じように働く。**ガードのテストを消さないこと。**
  */
-export type EffectAssignment = { kind: "none" } | EffectObsSource;
+export type EffectAssignment = { kind: "none" } | EffectObsSource | EffectGacha;
+
+/**
+ * 063a: **ガチャの景品 1 件**（＝表の 1 行）。
+ *
+ * ⚠⚠ **列は 4 つだけ**（[063s](../../../../docs/tasks/063s-tanuesa-gacha-spike.md) の (7) が正）:
+ * 景品名 / 重み / 確率（自動計算・**保存しない**）/ OBS のソース名。
+ * ⚠ たぬえさ3 が景品ごとに持っているクールタイム・利用可能ユーザー・禁止ユーザー・コンボ値は
+ * **足さない**（あちらの複雑さの側であり、クールダウンは条件ごとに [`KEYWORD_COOLDOWN_MS`] が既に持つ）。
+ *
+ * ⚠⚠ **確率をフィールドに持たないことが設計の要点である。** 保存すると重みと確率がずれ、
+ * 「画面の％と実際の当たり方が違う」という**画面から理由が読めない**壊れ方になる。
+ * 確率は常に `weight / 合計` から導出する（[`gachaDraw.ts`](./gachaDraw.ts) が唯一の持ち主）。
+ */
+export interface GachaPrize {
+  /**
+   * 景品名。⚠ **空文字を許す**（＝任意）。
+   *
+   * ⚠⚠ 本タスクの芯は「**入力の手数の少なさ**」なので、必須にしない。空のときは
+   * **OBS のソース名を表示に使う**（表示のフォールバックは [`GachaPrizeTable`] が 1 か所で持つ）。
+   * ⚠ それでも列を残すのは、OBS のソース名が `hazure_01.mp4` のような機械的な名前になりがちで、
+   * **「大当たり」と呼べないと確率表が読めなくなる**ため（063s (7) の列がそのまま生きている）。
+   */
+  name: string;
+  /**
+   * 重み。⚠ **1 以上 [`GACHA_WEIGHT_MAX`] 以下の整数**（[`parseGachaPrize`] が保証する）。
+   *
+   * ⚠⚠ **0 を許さない**——合計 0 で **0 除算**になり、かつ「絶対に出ない景品」が
+   * 表の中に黙って居座る。出したくない景品は**行ごと消す**のが唯一の作法である。
+   */
+  weight: number;
+  /** 鳴らす OBS のソース名。⚠ 検証は [`isEffectObsSourceName`]（`EffectObsSource` と同じ規則）。 */
+  sourceName: string;
+}
+
+/**
+ * 063a: **ガチャの割り当て**（＝この条件が当たったら、景品から 1 つ抽選して鳴らす）。
+ *
+ * ⚠⚠ **063s の「再開時にどこから始めるか」が推した最小形そのものである**——
+ * 064b の割り当て（条件 1 件 → OBS ソース **1 本**）を「条件 1 件 → ソース **N 本＋重み**」へ
+ * 広げただけで、**新しいテーブルもコマンドも増えない**（Rust 差分ゼロ）。
+ * ⚠ 063a 本文が書いていた `gachas` / `gacha_prizes` の 2 テーブル ＋ コマンド 9 本は**採らなかった**
+ * （判断の全文は docs/progress.md の 063a 節・穴 F が正）。
+ *
+ * ⚠⚠⚠ **063a では、この割り当ては発火しない。** [`createObsSourceMatcher`] の `select` が
+ * `null` を返す＝**当たり判定の前に落ちる**ので、バースト枠もクールダウンも消費しない
+ * （061d-2 穴 γ 以来 4 回踏んだ罠を踏まないための形）。**抽選の本発火は 063b。**
+ * ⚠ 「割り当てたのに何も出ない」が黙って起きないよう、**画面に注記を出している**
+ * （[`GachaPrizeTable`] の `gachaNote`）。⚠ **注記を先に消さないこと**（063b で挙動が入ってから消す）。
+ *
+ * ⚠ **景品 0 件でも `{ kind:"gacha", prizes: [] }` のまま保持する**（`{kind:"none"}` へ潰さない）。
+ * 潰すと「ガチャを選んだのに次に開いたら『出さない』に戻っている」＝**黙って設定が消える**。
+ * 0 件は UI が「景品がありません」と出して観測可能にする。
+ */
+export interface EffectGacha {
+  kind: "gacha";
+  prizes: readonly GachaPrize[];
+}
 
 /**
  * 未保存・不正・例外のときに使う既定。
@@ -249,9 +312,87 @@ const parseAssignment = (raw: unknown): EffectAssignment => {
     //   ⚠ sidecar も受領時に `trim()` するので、**これで両側の値が 1 つに揃う**。
     return { kind: "obs-source", sourceName: sourceName.trim() };
   }
-  // ⚠ 旧ビルドが書いた "builtin-monetary"（061h で廃止）と、未知の kind
-  //   （063 の "gacha" を古いビルドが読んだ場合を含む）。どちらも「出さない」へ倒す。
+  if (kind === "gacha") {
+    // ⚠⚠ 063a: **景品 0 件でも gacha のまま返す**（`{kind:"none"}` へ潰さない・[`EffectGacha`] の注記が正）。
+    return { kind: "gacha", prizes: parseGachaPrizes((raw as { prizes?: unknown }).prizes) };
+  }
+  // ⚠ 旧ビルドが書いた "builtin-monetary"（061h で廃止）と、未知の kind。どちらも「出さない」へ倒す。
+  //   ⚠⚠ 063a で "gacha" は**既知**になったので、この行が受けるのは
+  //   「061h の残骸」と「まだ存在しない将来の kind」である（前方互換の仕組みは変わっていない）。
   return DEFAULT_EFFECT_ASSIGNMENT;
+};
+
+// --- 063a: ガチャの制限（穴 F / 穴 D の決定） -------------------------------------------------
+
+/**
+ * 063a: 1 つのガチャに入れられる景品の数の上限。
+ *
+ * 根拠＝ [`KEYWORD_CONDITION_MAX`] と同じ「**1 画面で読める上限**」であり、
+ * ⚠ 表が条件行の下に開く形（[`GachaPrizeTable`]）なので、これ以上増えると画面が縦に破綻する。
+ * ⚠ 063a 本文の例は 50 だったが、**上限は後から上げるほうが安全**（下げると既存の設定が落ちる）
+ * ため、読める範囲の 20 から始める。**再修正トリガー＝「景品が足りない」と言われたとき。**
+ */
+export const GACHA_PRIZE_MAX = 20;
+
+/**
+ * 063a: 重みの上限。
+ *
+ * ⚠⚠ **根拠は表示の分解能である**——確率は小数第 1 位まで出す（穴 D の決定）ので、
+ * 表現できる最小の差は **0.1% ＝ 1/1000**。重みが 1000 を超えても**画面の％には現れない**ので、
+ * 大きな数を許す意味が無い（063a 本文の例は 1,000,000 だったが、根拠が書かれていなかった）。
+ * ⚠ **下限は 1**（0 を許さない＝ [`GachaPrize.weight`] の注記が正）。
+ */
+export const GACHA_WEIGHT_MAX = 1000;
+
+/**
+ * 063a: 景品名の長さ上限（**コードポイント数**）。
+ *
+ * 根拠＝ [`KEYWORD_MAX_LENGTH`]（32）と同じ「名前であって文章ではない」規律。
+ * ⚠ 表の 1 列に収める必要があるぶんキーワードより短くしてある。
+ */
+export const GACHA_PRIZE_NAME_MAX_LENGTH = 24;
+
+/**
+ * 063a: 景品 1 件を検証する。**受け入れられなければ `null`（＝その行だけ落とす）**。
+ *
+ * ⚠⚠ **落とす（丸めない）のが要点**——[`parseKeywordCondition`] と同じ規律である。
+ * 重みを 0 → 1 や 5000 → 1000 へ丸めて受け入れると、**保存した値と実際に使われる確率が違う**
+ * 状態を作る（そして画面からは読めない）。⚠ UI 側は確定時に詰めるので、ここまで来るのは
+ * **手で localStorage を編集した場合だけ**である。
+ *
+ * ⚠ **`name` だけは空文字を許す**（[`GachaPrize.name`] の注記が正）。
+ */
+const parseGachaPrize = (raw: unknown): GachaPrize | null => {
+  if (typeof raw !== "object" || raw === null) return null;
+  const item = raw as { name?: unknown; weight?: unknown; sourceName?: unknown };
+  const { name, weight, sourceName } = item;
+  if (typeof name !== "string") return null;
+  if (hasControlChar(name)) return null;
+  if ([...name].length > GACHA_PRIZE_NAME_MAX_LENGTH) return null;
+  // ⚠⚠ **0 / 負 / 小数 / NaN / 上限超はすべて落とす**（0 除算と「絶対に出ない景品」を構造的に排除する）。
+  if (typeof weight !== "number" || !Number.isSafeInteger(weight)) return null;
+  if (weight < 1 || weight > GACHA_WEIGHT_MAX) return null;
+  // ⚠ ソース名の規則は `EffectObsSource` と**同じ 1 つ**（規則を 2 通りに書かない）。
+  if (!isEffectObsSourceName(sourceName)) return null;
+  // ⚠ 保存するのは trim 済みの値（064 レビュー S-10 と同じ理由＝一覧との照合が完全一致であるため）。
+  return { name: name.trim(), weight, sourceName: sourceName.trim() };
+};
+
+/**
+ * 063a: 景品の配列を検証する。⚠ **上限を超えた分は落とす**（[`GACHA_PRIZE_MAX`]）。
+ *
+ * ⚠ 配列でなければ **0 件**（＝「景品がありません」として画面に出る）。
+ */
+const parseGachaPrizes = (raw: unknown): GachaPrize[] => {
+  if (!Array.isArray(raw)) return [];
+  const out: GachaPrize[] = [];
+  for (const item of raw) {
+    if (out.length >= GACHA_PRIZE_MAX) break;
+    const prize = parseGachaPrize(item);
+    if (prize === null) continue;
+    out.push(prize);
+  }
+  return out;
 };
 
 // --- 061j: キーワードの制限（判断 9） ---------------------------------------------------------
@@ -358,6 +499,21 @@ export function sanitizeKeywordInput(raw: string): string {
   return points.length <= KEYWORD_MAX_LENGTH
     ? stripped
     : points.slice(0, KEYWORD_MAX_LENGTH).join("");
+}
+
+/**
+ * 063a: **景品名の確定時に通す整形**（制御文字を落とし、長さを詰める）。
+ *
+ * ⚠ [`sanitizeKeywordInput`] と同じ規律（保存層は落とし、UI は詰めて書き戻す）だが、
+ * **上限が違う**ので別関数にしてある（[`GACHA_PRIZE_NAME_MAX_LENGTH`]）。
+ * ⚠ **UI 側で `slice` を書かないこと**——上限の持ち主をこの層に閉じるためにここに置いている。
+ */
+export function sanitizeGachaPrizeName(raw: string): string {
+  const stripped = stripControlChars(raw);
+  const points = [...stripped];
+  return points.length <= GACHA_PRIZE_NAME_MAX_LENGTH
+    ? stripped
+    : points.slice(0, GACHA_PRIZE_NAME_MAX_LENGTH).join("");
 }
 
 /**

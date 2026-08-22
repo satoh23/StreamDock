@@ -21,6 +21,7 @@ import { ToggleSwitch } from "../../components/ToggleSwitch";
 import { Select } from "../../components/Select";
 import { OverlayThemeCard } from "./OverlayThemeCard";
 import { useHostOs } from "../../features/platform/useHostOs";
+import { ChatSendCard } from "./ChatSendCard";
 import styles from "./CommentViewerApp.module.css";
 // 061g: ボタンの意匠は `components/compactButtons.module.css` へ移した（`ConfirmDialog` が
 // `components/` へ出たため）。⚠ 寸法・配色はこの窓の 6 ファイル計 25 箇所と `ConfirmDialog` の共有。
@@ -153,6 +154,19 @@ interface SettingsViewProps {
   // 値は CommentViewerApp が保持し localStorage 永続。ここは表示とユーザー操作の受け渡しのみ。
   pinnedOverlayEnabled: boolean;
   onPinnedOverlayToggle: (next: boolean) => void;
+  /**
+   * 066: **チャットへの書き込み**（⚠ **StreamDock 初の書き込み経路**）のテスト送信。
+   *
+   * ⚠⚠ **ここは受け渡しだけ**——トグルの state は [`ChatSendCard`] が自分で持つ
+   * （064d が `EffectAssignmentCard` で採った形と同じ＝**唯一の消費者がそのカード**なので、
+   * 画面を跨ぐ配線を作らない）。⚠ **宛先は渡らない**（sidecar が接続中の配信から決める）。
+   */
+  onChatTestSend: (message: string) => Promise<{ ok: boolean; reason?: string }>;
+  /**
+   * 066 / security-review S-2: **送信先として画面に出す**チャンネル名（表示専用）。
+   * ⚠ **宛先を決める値ではない**（[`ChatSendCard`] の `channel` の注記が正）。
+   */
+  chatSendChannel: string;
 }
 
 export function SettingsView({
@@ -196,6 +210,8 @@ export function SettingsView({
   onClearObsPassword,
   pinnedOverlayEnabled,
   onPinnedOverlayToggle,
+  onChatTestSend,
+  chatSendChannel,
 }: SettingsViewProps) {
   // 044a: OBS パスワード入力のローカル state（**この値は保存しない・保存は Rust→keychain**）。認証が必要な OBS の
   // ときだけ入力欄を出す。保存ボタンで onSetObsPassword に渡し、入力欄は即クリアして DOM/メモリに残さない（§9）。
@@ -902,6 +918,11 @@ export function SettingsView({
         requestThemeImport={onRequestThemeImport}
         requestThemeFont={onRequestThemeFont}
       />
+      {/* 066: チャットへの書き込み。⚠⚠ **末尾に置く**（060d と同じ理由＝上のカードには
+          「上の…」という位置参照の注記が 3 本あり、途中へ挿入すると指す先が変わる）。
+          ⚠ このカードも **state を自分で持つ**（トグルの唯一の消費者なので画面を跨ぐ配線を作らない）。
+          ここから渡すのは**送信の 1 本だけ**である。 */}
+      <ChatSendCard onTestSend={onChatTestSend} channel={chatSendChannel} />
     </div>
   );
 }

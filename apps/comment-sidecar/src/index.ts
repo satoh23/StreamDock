@@ -70,6 +70,19 @@ import {
   THEME_IMPORT_FETCH_FRAME,
   type ThemeFrame,
 } from "./theme-import-frame.js";
+// 066: チャットへの書き込み。⚠⚠ **判断（チケット照合・検証・スロットル）は純関数側にある**
+// （このファイルは `scripts/test-*.mjs` から import できないため・060h コミット 2 と同じ理由）。
+import {
+  CHAT_CHANNEL_MAX_CHARS,
+  CHAT_SEND_FRAME,
+  CHAT_TICKET_MAX_CHARS,
+  createChatSendThrottle,
+  handleChatSendFrame,
+  isAllowedChatMessage,
+  type ChatSendFrame,
+} from "./chat-send/chat-send-frame.js";
+import { createTwitchChatSender } from "./chat-send/twitch-chat-sender.js";
+import { TWITCH_CLIENT_ID } from "./twitch-config.js";
 
 const WS_HOST = "127.0.0.1";
 const PREFERRED_PORT = 17331;
@@ -104,6 +117,14 @@ const OBS_PW_CLEAR_STDIN_PREFIX = "COMMENT_SIDECAR_OBS_PW_CLEAR=";
 // 詳細は Rust 側 `comment_sidecar/mod.rs` の `THEME_TICKET_PREFIX` の注記。
 const THEME_TICKET_STDIN_PREFIX = "COMMENT_SIDECAR_THEME_TICKET=";
 /**
+ * 066: チャット送信チケットを Rust→stdin private pipe で受領する（非ログ・§9）。
+ *
+ * ⚠⚠⚠ **これが無いと `chat-send` は「同意を経ない書き込みトリガー」になる**——loopback WS は
+ * 未認証で、ブラウザで開いた悪意あるページも `ws://127.0.0.1:<port>` へ繋げるため。
+ * ⚠⚠ **テーマ取り込みのチケットと別にしてある**（能力ごとに秘密を分ける＝被害範囲を分ける）。
+ */
+const CHAT_TICKET_STDIN_PREFIX = "COMMENT_SIDECAR_CHAT_TICKET=";
+/**
  * 060c: 制御フレームで受け付けるチケット文字列の上限（文字数）。
  * 実物は uuid v4 の simple 形＝32 文字なので、余裕をみた値。⚠ 上限の理由は `parseControlFrame` の注記。
  */
@@ -125,6 +146,7 @@ type ControlFrame =
   // twitch=Device Code＋channel 必須 / youtube=Authorization Code＋mine=true（channel 不要）。
   | { type: "start-login"; service: Provider }
   | { type: "start-session"; service: Provider; channel?: string }
+  | ChatSendFrame
   | { type: "stop-session"; service: Provider }
   // 044a: OBS 連携。port は Rust の read-only 検出由来（非秘密）。パスワードは WS には載せず stdin で受領する。
   // 046d/061a: overlay は対象種別（comments=コメント一覧 / pinned=固定コメント / effects=エフェクト）。
@@ -250,6 +272,41 @@ function parseControlFrame(raw: string): ControlFrame | null {
         (msg as { durationMs?: unknown }).durationMs,
       ),
     };
+  }
+  if (m.type === CHAT_SEND_FRAME) {
+    // ⚠ 060c と同じ作法＝**受理条件をすべて満たすときだけ**明示構築する
+    //   （`msg` をスプレッドしないので未検証フィールドは 1 つも混入しない）。
+    // ⚠⚠ **宛先（チャンネル）は受け取らない**——送り先は sidecar が
+    //   「いま取得しているセッション」から決める。
+    //   ⚠⚠⚠ **S-2b: `expectedChannel` は「宛先」ではない。**「frontend が繋いでいるつもりの
+    //   チャンネル」で、`handleChatSendFrame` が**実際の宛先との等値検査にしか使わない**。
+    //   ⚠ **これを宛先として使う配線を書かないこと**（S-2 の穴がそのまま戻る）。
+    const f = msg as {
+      ticket?: unknown;
+      requestId?: unknown;
+      message?: unknown;
+      expectedChannel?: unknown;
+    };
+    if (
+      typeof f.ticket === "string" &&
+      f.ticket.length > 0 &&
+      f.ticket.length <= CHAT_TICKET_MAX_CHARS &&
+      typeof f.requestId === "number" &&
+      Number.isSafeInteger(f.requestId) &&
+      typeof f.expectedChannel === "string" &&
+      f.expectedChannel.trim().length > 0 &&
+      f.expectedChannel.length <= CHAT_CHANNEL_MAX_CHARS &&
+      isAllowedChatMessage(f.message)
+    ) {
+      return {
+        type: CHAT_SEND_FRAME,
+        ticket: f.ticket,
+        requestId: f.requestId,
+        message: f.message.trim(),
+        expectedChannel: f.expectedChannel.trim(),
+      };
+    }
+    return null;
   }
   if (m.type === THEME_IMPORT_FETCH_FRAME || m.type === THEME_FONT_FETCH_FRAME) {
     // 060c: 受理条件を**すべて**満たすときだけフレームを組む（`obs-enable` と同じ作法＝
@@ -526,6 +583,13 @@ async function main(): Promise<void> {
     sessionAborts.get("twitch")?.abort();
     const abort = new AbortController();
     sessionAborts.set("twitch", abort);
+    // ⚠⚠ 066: **送信先はここでしか決まらない**（`chat-send` フレームは宛先を運ばない）。
+    // ⚠⚠⚠ **security-review 066 S-2: ただし「viewer から来ない」わけではない。**
+    //   この `channel` は `start-session` 由来＝ **viewer から来ており、チケットで守られていない**。
+    //   ⇒ 未認証の loopback WS に繋いだページが `start-session` を送るだけで宛先を差し替えられる。
+    // ⚠ S-2b の対処＝ **送信時に frontend の `expectedChannel` と突き合わせる**
+    //   （`chat-send/chat-send-frame.ts` が正）。⚠⚠ **段 2 の宿題は `start-session` 自体のチケット化。**
+    chatSender.setChannel(channel);
     sendSessionState("twitch", "connecting");
     try {
       await runTwitchPipeline(
@@ -548,6 +612,8 @@ async function main(): Promise<void> {
       // 自分が現在の entry の時だけ削除する（再開始で差し替わっていたら触らない＝レース回避）。
       if (sessionAborts.get("twitch") === abort) {
         sessionAborts.delete("twitch");
+        // ⚠⚠ 066: 取得が終わったら**送信先を忘れる**（＝配信に繋いでいないときは送れない）。
+        chatSender.setChannel(null);
       }
     }
   };
@@ -605,6 +671,41 @@ async function main(): Promise<void> {
   // 060c: Rust が起動時に stdin private pipe で渡すチケット。**受領するまでは `null`＝どのフレームも通さない**
   // （fail-closed）。⚠ **ログにも WS にも出さない**（§9）。
   let themeImportTicket: string | null = null;
+  /**
+   * 066: Rust が起動時に stdin private pipe で渡すチャット送信チケット。
+   * ⚠⚠ **受領するまでは `null`＝1 通も通さない**（fail-closed）。⚠ **ログにも WS にも出さない**（§9）。
+   */
+  let chatSendTicket: string | null = null;
+  /**
+   * 066: チャット送信器。⚠⚠ **宛先は `setChannel` でしか変わらない**（viewer からは受け取らない）。
+   * ⚠ `getAccessToken` は既存の `authClient.getValidAccessToken` をそのまま使う（token の持ち主を増やさない）。
+   */
+  const chatSender = createTwitchChatSender({
+    // ⚠⚠⚠ **`authClient.refresh` を使わないこと**（security-review 066 S-1）。
+    //   `RefreshAccessTokenUsecase` は **毎回 refresh token を無条件で交換**し、
+    //   **失敗すると `tokenStore.clear(provider)` を呼ぶ**＝ `COMMENT_SIDECAR_TOKEN_CLEAR` →
+    //   **Rust が keychain を削除＝完全ログアウト**になる。
+    //   ⇒ 一時的なネットワークエラーや取得パイプライン側の refresh との競合で、
+    //   **テスト送信 1 回がユーザーをログアウトさせ、コメント取得ごと止める**。
+    // ⚠ `getValidAccessToken` は**期限切れのときだけ**交換する。
+    // ⚠⚠⚠ **S-1b（レビュー 2 巡目の訂正）: 「非破壊」と書いていたのは言い過ぎだった。**
+    //   `GetValidAccessTokenUsecase` も **交換に失敗したときは `tokenStore.clear(provider)` を呼ぶ**
+    //   （`vendor/auth/src/usecases/get-valid-access-token.usecase.ts`）。
+    //   ⇒ 正確には「**アクセストークンが生きている間は非破壊**」であって、
+    //   **期限切れ＋ refresh 失敗ならログアウトへ倒れる経路は残っている**。
+    //   ⚠ それでも `refresh` より明確に良い: あちらは**押すたびに必ず**交換を投げるが、
+    //   こちらが交換を投げるのは期限切れのときだけである。
+    //   ⚠⚠ **限界的なリスクが小さい理由**＝ `send` は `channelLogin === null` で
+    //   ここへ来る前に return するので、**テスト送信は取得セッション稼働中にしか起きない**
+    //   ＝その間は取得パイプラインが同じトークンを同じ経路で回している。
+    //   ⚠ **再修正トリガー＝自動送信（063b）を繋ぐとき**。画面を見ていない状況で走るので、
+    //   そのときは「期限切れなら交換せず再ログインを促して終わる」ラッパを検討すること。
+    // ⚠⚠ **この 1 行は `scripts/test-chat-send.mjs` の静的検査が固定している**（戻すとレッドになる）。
+    getAccessToken: () => authClient.getValidAccessToken("twitch"),
+    clientId: TWITCH_CLIENT_ID,
+  });
+  /** 066: スロットル。⚠ **sidecar 側にしか置かない**（frontend では回避される）。 */
+  const chatThrottle = createChatSendThrottle();
 
   output.setControlMessageHandler((raw, client) => {
     const frame = parseControlFrame(raw);
@@ -628,6 +729,25 @@ async function main(): Promise<void> {
         fetchThemeFont,
       });
       // ⚠ 取得先 URL も CSS 本文も**ログに出さない**（§9）。件数すら出さない。
+      return;
+    }
+    if (frame.type === CHAT_SEND_FRAME) {
+      // ⚠⚠ **判断は `chat-send/chat-send-frame.ts` の純関数**にある（チケット照合・スロットル・
+      //   結果の返し方）。⚠ **この分岐に判断を書き戻さないこと。** ここが持ってよいのは「配線」だけである。
+      // ⚠⚠ `reply` には **`sendToClient` を要求元 1 本に束ねたもの**を渡す（broadcast しない）。
+      //   オーバーレイ窓も同じ WS に繋がっており、送信結果を配る理由が無い。
+      void handleChatSendFrame({
+        frame,
+        ticket: chatSendTicket,
+        // ⚠⚠⚠ S-2b: **実際の宛先はこちら（`setChannel` の現在値）**。
+        //   `frame.expectedChannel` は等値検査にしか使わない。
+        currentChannel: () => chatSender.getChannel(),
+        reply: (message) => sendToClient(client, message),
+        throttle: chatThrottle,
+        now: () => Date.now(),
+        send: (message) => chatSender.send(message),
+      });
+      // ⚠ 本文も宛先もログに出さない（§9）。件数すら出さない。
       return;
     }
     // 044a: OBS 連携はモック/実取得のどちらとも独立。mock 分岐より前で処理して早期 return する
@@ -767,6 +887,12 @@ async function main(): Promise<void> {
         // ⚠ 空文字は受けない（受けると「長さ 0 のチケット」で誰でも通る形になる）。
         const value = line.slice(THEME_TICKET_STDIN_PREFIX.length);
         if (value.length > 0) themeImportTicket = value;
+      } else if (line.startsWith(CHAT_TICKET_STDIN_PREFIX)) {
+        // 066: チャット送信チケットを in-memory に設定（loopback WS にも出さない・非ログ・§9）。
+        // ⚠ 空文字は受けない（受けると「長さ 0 のチケット」で誰でも通る形になる）。
+        // ⚠⚠ **テーマ取り込みのチケットとは別の変数**（能力ごとに秘密を分ける）。
+        const value = line.slice(CHAT_TICKET_STDIN_PREFIX.length);
+        if (value.length > 0) chatSendTicket = value;
       }
     }
   });

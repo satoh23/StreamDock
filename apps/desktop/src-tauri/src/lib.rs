@@ -671,6 +671,21 @@ fn get_theme_import_ticket(app: AppHandle) -> Option<String> {
     comment_sidecar::theme_import_ticket(&app)
 }
 
+/// 066: **チャット送信**（`chat-send`）の制御フレームに載せる**チケット**を返す
+/// 読み取り専用コマンド（§3・単一目的・引数ゼロ）。未起動なら `None`。
+///
+/// ⚠⚠⚠ **根拠は [`get_theme_import_ticket`] とまったく同じで、守っている被害はこちらが重い。**
+/// 060c が塞いだのは「同意を経ない外部 GET（ビーコン・IP 露出）」だったが、
+/// 066 が塞ぐのは「**同意を経ずにユーザーの名前で配信のチャットへ投稿される**」ことである。
+/// ⚠ 投稿は**視聴者に見えて、消せない**——これまでの失敗（出ない・鳴らない）とは性質が違う。
+///
+/// ⚠⚠ **テーマ取り込みのチケットと別の値を返す**（能力ごとに秘密を分ける＝被害範囲を繋げない）。
+/// ⚠ 値はログにも画面にも出さない（§9）。⚠ sidecar 再起動で変わるので**送信のたびに取り直すこと**。
+#[tauri::command]
+fn get_chat_send_ticket(app: AppHandle) -> Option<String> {
+    comment_sidecar::chat_send_ticket(&app)
+}
+
 /// 032c-c: コメントビューアの VOICEVOX 読み上げ用に、**ツール管理に登録済みの VOICEVOX** を
 /// 管理付き spawn（resolve→spawn→register）で起動する薄いコマンド。`rakuraku_launch_component` と
 /// 同経路で、frontend は raw なパス/ポートを渡さず、登録済みツールを exe 名一致で解決する
@@ -876,6 +891,7 @@ pub fn run() {
             is_stage_overlay_open,
             get_comment_stream_port,
             get_theme_import_ticket,
+            get_chat_send_ticket,
             launch_voicevox_engine,
             obs_config::detect_obs_websocket_config,
             set_obs_websocket_password,

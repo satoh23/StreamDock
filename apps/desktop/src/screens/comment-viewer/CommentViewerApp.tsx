@@ -1827,6 +1827,36 @@ export function CommentViewerApp() {
    * ハンドルそのものが無い状態はここでしか分からない）。取り込み自体は成功のまま＝ fail-closed。
    * ⚠ URL も CSS 本文もここではログに出さない（§9）。
    */
+  /**
+   * 066: チャットへのテスト送信を [`SettingsView`] → [`ChatSendCard`] へ 1 本だけ渡す。
+   *
+   * ⚠⚠ **`requestThemeImport` とまったく同じ形**（`streamRef` 越しに 1 本だけ渡す）。
+   * ⚠ **宛先を渡さない**——送り先は sidecar が「いま取得しているセッション」から決める
+   * （`commentStream.ts` の `sendChat` の注記が正）。
+   * ⚠ 未接続は**ここで短文にして返す**（押したのに何も起きない、を作らない）。
+   *
+   * ⚠⚠⚠ **S-2b: `channel.trim()` を「宛先の期待値」として渡す。**
+   * これは `ChatSendCard` が「送信先」として**画面に出しているのと同じ値**であり、
+   * `handleStartSession` が `start-session` に載せるのと**同じ値**でもある。
+   * ⇒ sidecar が実際の宛先と突き合わせ、**差し替えられていたら送らない**。
+   * ⚠ **`chatSendChannel` に渡す値とここに渡す値を必ず一致させること**——
+   * 一致していないと「画面に出ている宛先」と「検査される宛先」がずれ、検査の意味が消える。
+   * ⚠ 依存に `channel` が要る（空にすると**古いチャンネルで突き合わせて必ず落ちる**）。
+   */
+  const sendChatMessage = useCallback(
+    (message: string): Promise<{ ok: boolean; reason?: string }> => {
+      const stream = streamRef.current;
+      if (!stream) {
+        return Promise.resolve({
+          ok: false,
+          reason: "コメントの取得に接続していません。",
+        });
+      }
+      return stream.sendChat(message, channel.trim());
+    },
+    [channel],
+  );
+
   const requestThemeImport = useCallback(
     (url: string, maxBytes: number) => {
       const stream = streamRef.current;
@@ -2296,6 +2326,8 @@ export function CommentViewerApp() {
           onClearObsPassword={handleClearObsPassword}
           pinnedOverlayEnabled={pinnedOverlayEnabled}
           onPinnedOverlayToggle={handlePinnedOverlayToggle}
+          onChatTestSend={sendChatMessage}
+          chatSendChannel={channel}
         />
       ) : (
         <>

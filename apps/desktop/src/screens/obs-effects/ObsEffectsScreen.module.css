@@ -202,3 +202,93 @@
 .keywordRow > .errorText {
   flex-basis: 100%;
 }
+
+/* --- 063a: ガチャの景品を編集する表 ------------------------------------------------------------ */
+
+/* ⚠⚠ **条件 1 行の「下」に開く**（`.assignmentRow` / `.keywordRow` はどちらも `flex-wrap: wrap` なので、
+   `flex-basis: 100%` で次の行へ回り込む＝`.errorText` と同じ手）。
+   ⚠ **3 枚目のタブを作らない**という判断がこの 1 宣言に乗っている（穴 G・`GachaPrizeTable.tsx` の JSDoc が正）。 */
+.gachaPanel {
+  flex-basis: 100%;
+  margin-top: 4px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border-soft);
+}
+
+/* 行の並びは `.assignmentList` / `.keywordList` に倣う（同じ画面で 3 通りの間隔を作らない）。 */
+.gachaList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+/* 1 行＝「景品名」「重み」「確率」「OBS のソース」「操作」。
+   ⚠ 警告文は行の下へ回り込ませる（`.assignmentRow` と同じ作法）。 */
+.gachaRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.gachaRow > .errorText {
+  flex-basis: 100%;
+}
+
+/* 列見出しと合計行。⚠ 値は既にこのファイルにあるもの（13px / 600 / 800）だけで組む
+   ＝ **新しい px / weight を発明しない**（061a の要件）。 */
+.gachaHead {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.gachaTotal {
+  padding-top: 10px;
+  border-top: 1px solid var(--border-soft);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+/* ⚠ `min-width` が無いと `.field input` の `width: 100%` と `flex: 1` の組み合わせで潰れる
+   （`.keywordText` と同じ理由・同じ値）。 */
+.gachaName {
+  flex: 1;
+  min-width: 160px;
+}
+
+/* 063a-3: 確率の列（**全行が入力欄**）。⚠⚠ **「重み」の列は無くなった**——画面から
+   その言葉ごと消したため（`GachaPrizeTable.tsx` の見出し行のコメントが正）。
+   ⚠ 063a-2 の「いちばん下だけ『残り』表示」は撤回済みなので、入力欄と表示テキストで
+   幅を揃える必要はもう無い。⚠ 合計行（`.gachaTotal`）とは幅を揃えること（列がずれる）。 */
+.gachaPercent {
+  flex: none;
+  width: 96px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.gachaSource {
+  flex: 1;
+  min-width: 160px;
+}
+
+.gachaActions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+}
+
+/* テスト抽選の結果。⚠⚠ **保存しない**（§9・`GachaPrizeTable.tsx` の注記が正）。 */
+.gachaResult {
+  margin-top: 12px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.5;
+}

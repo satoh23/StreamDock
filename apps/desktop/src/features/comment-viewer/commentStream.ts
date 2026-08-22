@@ -127,6 +127,27 @@ export interface CommentStreamHandle {
   /** 044a: OBS 連携 OFF（状態を idle に戻す・OBS 側のソースは消さない）。 */
   disableObs(): void;
   /**
+   * 066: **配信のチャットへ 1 通送る**（⚠⚠ **StreamDock 初の「書き込み」経路**）。
+   *
+   * ⚠⚠ **宛先を渡さない。** 送り先は sidecar が「いま取得しているセッション」から決める
+   * （`chat-send/chat-send-frame.ts` の `ChatSendFrame` の注記が正）。
+   * ⚠⚠⚠ **security-review 066 S-2: ただし「宛先が viewer から来ない」わけではない**
+   * ——その取得セッションの `channel` は `start-session` 由来で、**チケットで守られていない**。
+   * ⚠ **チケットは送信のたびに取り直す**（sidecar 再 spawn で値が変わる）。
+   * ⚠ **呼ぶ前にユーザーが明示的に有効化していること**（既定 OFF のトグル）。
+   *
+   * @param expectedChannel ⚠⚠⚠ **S-2b: 宛先ではなく「宛先の期待値」。**
+   *   **画面に「送信先」として出しているのと同じ値**を渡すこと。sidecar は実際の宛先と
+   *   突き合わせ、**食い違ったら送らない**。⚠ 当初は「画面に出すだけ」で済ませていたが、
+   *   出していたのは frontend 自身の入力値で、**差し替えられても表示が変わらない**＝
+   *   気づけなかった（＝対処になっていなかった）。⚠ **表示とここに渡す値を必ず一致させること。**
+   * @returns `{ok:true}` / `{ok:false, reason}`。⚠ `reason` は**そのまま画面に出してよい短文**。
+   */
+  sendChat(
+    message: string,
+    expectedChannel: string,
+  ): Promise<{ ok: boolean; reason?: string }>;
+  /**
    * 060c: 外部 `@import` を **1 本だけ** sidecar に取得させる（スナップショット）。
    *
    * ⚠⚠ **呼ぶ前にユーザーの明示同意を得ていること。** 同意ダイアログは `OverlayThemeCard` にあり、
@@ -184,6 +205,19 @@ const THEME_IMPORT_FETCH_FRAME = "theme-import.fetch";
 const THEME_IMPORT_RESULT_FRAME = "theme-import.result";
 const THEME_FONT_FETCH_FRAME = "theme-import.fetch-font";
 const THEME_FONT_RESULT_FRAME = "theme-import.font-result";
+/**
+ * 066: sidecar → **要求元 1 本**へ返すチャット送信の結果。
+ * ⚠ 値は sidecar 側の `chat-send/chat-send-frame.ts` の `CHAT_SEND_RESULT_FRAME` と**同じ文字列**。
+ * ⚠⚠ **片方だけ変えないこと**（変えると送信が永久に `null` で返る＝「送れたか分からない」に倒れる）。
+ */
+const CHAT_SEND_RESULT_FRAME = "chat.send.result";
+/** 066: viewer → sidecar のチャット送信フレーム種別。⚠ 上と同じ理由で sidecar 側と揃える。 */
+const CHAT_SEND_FRAME = "chat-send";
+/**
+ * 066: 送信の応答を待つ上限。⚠ `GET /users` の解決（初回のみ 2 往復）＋ 送信の 1 往復ぶんを見込む。
+ * ⚠ **短すぎると「送れているのにタイムアウト」**＝二重送信を誘発するので、余裕を取る。
+ */
+const CHAT_SEND_TIMEOUT_MS = 15_000;
 
 /**
  * 060h: 取得待ちの 1 件（CSS / フォント共通）。
@@ -216,6 +250,15 @@ export function connectCommentStream(
    */
   let pendingThemeImport: PendingThemeRequest | null = null;
   let nextThemeImportRequestId = 1;
+  /**
+   * 066: 進行中のチャット送信（**同時 1 本だけ**）。段 1 は手動のテスト送信しか無いので自然に 1 本になる。
+   * ⚠ `requestId` が一致しない結果は捨てる（stale な応答を取り違えない・060c と同じ作法）。
+   */
+  let pendingChatSend: {
+    requestId: number;
+    settle: (payload: { ok: boolean; reason?: string } | null) => void;
+  } | null = null;
+  let nextChatSendRequestId = 1;
 
   const clearRetry = (): void => {
     if (retryTimer !== null) {
@@ -316,6 +359,24 @@ export function connectCommentStream(
         if (typeof p?.linked === "boolean") {
           handlers.onLinkState?.(parsePlatform(p.platform), p.linked);
         }
+      } else if (m.type === CHAT_SEND_RESULT_FRAME) {
+        // 066: 要求元だけに unicast で届く送信結果。⚠ `requestId` が一致しないものは捨てる。
+        // ⚠⚠ payload に**本文は載っていない**（§9・sidecar 側が載せない）。
+        const p = m.payload as
+          | { requestId?: unknown; ok?: unknown; reason?: unknown }
+          | undefined;
+        if (
+          pendingChatSend !== null &&
+          p?.requestId === pendingChatSend.requestId &&
+          typeof p?.ok === "boolean"
+        ) {
+          const settle = pendingChatSend.settle;
+          pendingChatSend = null;
+          settle({
+            ok: p.ok,
+            ...(typeof p.reason === "string" ? { reason: p.reason } : {}),
+          });
+        }
       } else if (
         m.type === THEME_IMPORT_RESULT_FRAME ||
         m.type === THEME_FONT_RESULT_FRAME
@@ -377,6 +438,13 @@ export function connectCommentStream(
         const settle = pendingThemeImport.settle;
         pendingThemeImport = null;
         // ⚠ `null` ＝「応答が来なかった」。各 `request*` が `offline` へ落とす。
+        settle(null);
+      }
+      // 066: 送信の待ちも落とす（待たせても結果は来ない）。⚠ **成功へ倒さない**——
+      //   「送れたのか分からない」ときに「送れた」と出すのが最悪の壊れ方である。
+      if (pendingChatSend !== null) {
+        const settle = pendingChatSend.settle;
+        pendingChatSend = null;
         settle(null);
       }
       scheduleReconnect();
@@ -467,6 +535,77 @@ export function connectCommentStream(
     });
   };
 
+  /**
+   * 066: **配信のチャットへ 1 通送る。**
+   *
+   * ⚠⚠⚠ **宛先を送らない**（`CommentStreamHandle.sendChat` の注記が正）。
+   * ⚠⚠ **チケットは送信のたびに取り直す**（sidecar 再 spawn で値が変わる・060c と同じ規律）。
+   * ⚠ **同時 1 本**（段 1 は手動のテスト送信だけなので自然に 1 本になる）。
+   *
+   * ⚠⚠ **失敗の理由はすべて短文で返す**——「押したのに何も起きない」を作らないため。
+   * ⚠ **`null` を返さない**（テーマ取得と違い、呼び出し側が必ず画面に文を出すので、
+   * ここで「送れなかった理由」まで決めてしまう）。
+   */
+  const sendChat = async (
+    message: string,
+    expectedChannel: string,
+  ): Promise<{ ok: boolean; reason?: string }> => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      return { ok: false, reason: "コメントの取得に接続していません。" };
+    }
+    // ⚠⚠ S-2b: 期待値が空なら**送る前に落とす**（空を送っても sidecar が弾くが、
+    //   「未接続の表示のまま押した」ときの文はこちらのほうが分かりやすい）。
+    if (expectedChannel.trim().length === 0) {
+      return { ok: false, reason: "コメントの取得に接続していません。" };
+    }
+    if (pendingChatSend !== null) {
+      return { ok: false, reason: "送信中です。少し待ってください。" };
+    }
+    // ⚠⚠ チケットは**送信のたびに取り直す**（握ったまま使い回すと再起動後に黙って無視される）。
+    //   ⚠ 値はログにも画面にも出さない（§9）。
+    let ticket: string | null = null;
+    try {
+      ticket = await invoke<string | null>("get_chat_send_ticket");
+    } catch {
+      ticket = null;
+    }
+    if (ticket === null) {
+      return { ok: false, reason: "コメントの取得に接続していません。" };
+    }
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      return { ok: false, reason: "コメントの取得に接続していません。" };
+    }
+
+    const requestId = nextChatSendRequestId++;
+    const payload = await new Promise<{ ok: boolean; reason?: string } | null>(
+      (resolve) => {
+        const timer = window.setTimeout(() => {
+          if (pendingChatSend?.requestId === requestId) {
+            pendingChatSend = null;
+            resolve(null);
+          }
+        }, CHAT_SEND_TIMEOUT_MS);
+        pendingChatSend = {
+          requestId,
+          settle: (result) => {
+            window.clearTimeout(timer);
+            resolve(result);
+          },
+        };
+        send({
+          type: CHAT_SEND_FRAME,
+          ticket,
+          requestId,
+          message,
+          // ⚠⚠⚠ S-2b: **宛先ではなく期待値**（sidecar が実際の宛先と突き合わせる）。
+          expectedChannel: expectedChannel.trim(),
+        });
+      },
+    );
+    // ⚠⚠ **応答が無いときは成功へ倒さない**（「送れたか分からない」を「送れた」と出さない）。
+    return payload ?? { ok: false, reason: "送信の結果を確認できませんでした。" };
+  };
+
   return {
     disconnect(): void {
       closed = true;
@@ -504,6 +643,14 @@ export function connectCommentStream(
     },
     disableObs(): void {
       send({ type: "obs-disable" });
+    },
+    sendChat(
+      message: string,
+      expectedChannel: string,
+    ): Promise<{ ok: boolean; reason?: string }> {
+      // ⚠ 検証も整形もここではしない（**検証の持ち主は sidecar 側 1 か所**＝規則が 2 か所に割れない。
+      //   `fireObsSource` とまったく同じ規律）。
+      return sendChat(message, expectedChannel);
     },
     async requestThemeImport(
       url: string,
