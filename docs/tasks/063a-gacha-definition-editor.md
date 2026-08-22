@@ -1,6 +1,12 @@
 # 063a ガチャ定義のデータモデル＋作成 UI（表 1 枚）
 
-> 状態: **未着手（実装サブタスク）**。分割・線引きは親 [063](063-gacha-effect.md) を正とする。
+> 状態: ⚠⚠ **保留（2026-08-22・[063s](063s-tanuesa-gacha-spike.md) の結論による）**。分割・線引きは親 [063](063-gacha-effect.md) を正とする。
+>
+> ⚠⚠ **本文は 2026-08-22 時点で未改訂**（057 系と同じ作法＝状態行だけを更新した）。
+> ⚠⚠ **再開時に必ず直すこと**: **(1) の `gacha_prizes.template_id`（`effect_templates.id` / NULL＝組み込み意匠）は
+> 参照先が両方とも存在しない**——061h で組み込み意匠を廃止、**064d で `effect_templates` テーブルの作成ごと削除**。
+> ⇒ **列は「OBS のソース名」になる**（`EffectObsSource = { kind:"obs-source"; sourceName }`）。
+> ⚠ 表の列の確定版は [063s](063s-tanuesa-gacha-spike.md) の (7) が正。
 >
 > **必読前提**: 親 [063](063-gacha-effect.md)、**調査 [063s](063s-tanuesa-gacha-spike.md)（表の列と設計目標の正・着手条件）**、
 > エフェクトのテンプレート [061c](061c-effect-template-import.md) と割り当て UI [061d](061d-effect-template-ui.md)、
