@@ -1,9 +1,12 @@
 import { useState } from "react";
 import { Button } from "../../components/primitives";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
+// ⚠ 063c 段 1: 明示トグル（意匠は既製・新しい px を発明しない＝061a の要件）。
+import { ToggleSwitch } from "../../components/ToggleSwitch";
 import type { ObsSourceEntry } from "../../features/comment-viewer/overlaySettings";
 import {
   GACHA_DEFINITION_MAX,
+  STAGE_OVERLAY_WINDOW_TITLE,
   GACHA_NAME_MAX_LENGTH,
   loadEffectConditions,
   nextGachaId,
@@ -57,12 +60,27 @@ export function GachaLibraryCard({
   gachas,
   obsSources,
   onChange,
+  stageEnabled,
+  canEnableStage,
+  onStageEnabledChange,
 }: {
   gachas: readonly GachaDefinition[];
   /** 064b / 064f と同じ経路で受け取る OBS ソース一覧（`null` ＝ **まだ 1 度も取っていない**）。 */
   obsSources: readonly ObsSourceEntry[] | null;
   /** ⚠ 保存は呼び出し側（`ObsEffectsScreen`）が 1 か所で行う（064f の `obsSources` と同じ役割分担）。 */
   onChange: (gachas: readonly GachaDefinition[]) => void;
+  /**
+   * 063c 段 1: 「ガチャの演出を配信画面に出す」の現在値。
+   * ⚠⚠ **このカードは表示専用**（`obsSources` / `gachas` と同じ役割分担）——
+   * 旗の書き手は `ObsEffectsScreen` 1 か所である（`docs/security.md` §1 の 063c 追補）。
+   */
+  stageEnabled: boolean;
+  /**
+   * 063c 段 1: **ON にできるか**＝「ガチャを指す条件が 1 件以上あるか」（AND ゲートの片側）。
+   * ⚠ false でも **OFF にはできる**（下の `disabled` の式が正）。
+   */
+  canEnableStage: boolean;
+  onStageEnabledChange: (next: boolean) => void;
 }) {
   /**
    * いま景品表を開いているガチャの id（`null` ＝ どれも開いていない）。
@@ -207,6 +225,63 @@ export function GachaLibraryCard({
         </p>
       </div>
       <div className={layout.panelBody}>
+        {/* ⚠⚠⚠ **063c 段 1: `docs/security.md` §1（044a 例外）が認める 2 つ目の明示操作。**
+
+            ⚠⚠ **これは「設定を書くだけ」のトグルではない**——ON にした瞬間に
+            **配信画面用のウィンドウが開き、OBS にウィンドウキャプチャのソースが作られる**
+            （＝ OBS へ loopback の TCP 接続が張られる）。⇒ **何が起きるかを必ず書く**
+            （061a Q-1 の「黙って何かが起きる／黙って何も起きない、を作らない」）。
+
+            ⚠ **押せない条件は「ガチャを条件に割り当てていない」ときだけ**で、
+            そのときは理由を下に出す。⚠⚠ **ON のときは常に押せる**
+            （`!stageEnabled && !canEnableStage`）——ここを `!canEnableStage` だけにすると、
+            **ON のまま割り当てを消したユーザーが OFF に戻せなくなる**。
+
+            ⚠ 窓名は [`STAGE_OVERLAY_WINDOW_TITLE`] から引く（直書きすると Rust の実タイトルとずれ、
+            ⚠⚠ **ユーザーは OBS のウィンドウ一覧をこの文字列で探す**ので窓が見つからなくなる。
+            Rust の `frontend_window_title_table_matches_overlay_titles` がバイト一致を固定している）。 */}
+        <div className={styles.gachaStageSetting}>
+          <ToggleSwitch
+            label="ガチャの演出を配信画面に出す"
+            checked={stageEnabled}
+            disabled={!stageEnabled && !canEnableStage}
+            onChange={onStageEnabledChange}
+          />
+          {/* ⚠⚠ **063c 段 1 レビュー Q-4-2（修正）: OFF の説明に「窓は開いたまま」を足した。**
+              `closeStageOverlayWindow` の呼び手はプロダクションに 1 つも無い（061p で導線ごと削除）＝
+              **OFF にしても窓はアプリ終了まで閉じない**（親 046 の規律＝閉じると OBS のキャプチャが
+              真っ黒になる）。旧文は OBS 側の話しかしていなかったので、**窓も消えると読めた**。
+
+              ⚠⚠ **063c 段 1 レビュー Q-4-1（修正不要・受容）: 「コメビュ窓が閉じていると
+              OBS へは何も起きない」をここには書かない。**
+              意図＝ `enableObs` を送れる WS を持つのはコメビュ窓だけなので、
+              あの窓が閉じていると ON にしても OBS 側は変わらない（窓は開く）。
+              ⚠ 修正不要と判断した理由＝ **画面上部（タブの外）に 064f の前提案内が常に出る**
+              （`viewerOpen === false` のとき「OBSエフェクトは「コメントビューア for StreamDock」の
+              専用機能です…」＋「コメントビューアを開く」ボタン）＝ **黙って何も起きないにはならない**。
+              ⚠ ここへ同じ趣旨の文を足すと「同じことを 2 か所が言う」＝ 064f が消した重複に戻る。
+              ⚠⚠ **再修正トリガー**＝実機で「ON にしたのに OBS に出てこない」と言われたとき。
+              そのときは `viewerOpen` をこのカードへ配り、**`stageEnabled && viewerOpen === false`
+              のときだけ**「コメントビューアを開くと反映されます」を出すこと（前提案内とは別の状態である）。 */}
+          <p className={styles.note}>
+            ON にすると、配信画面用のウィンドウ（「{STAGE_OVERLAY_WINDOW_TITLE}」）が開き、
+            OBS に「ウィンドウキャプチャ」のソースとして自動で追加されます。
+            OFF にすると OBS 側では非表示になります（ソースは削除されません）。
+            配信画面用のウィンドウは開いたままになります。
+          </p>
+          {/* ⚠ 押せない理由／効いていない理由を出す（061a Q-1）。⚠⚠ **2 つは別の状態である**——
+              「まだ ON にできない」と「ON だがいまは出ない」を同じ文にしない。 */}
+          {!stageEnabled && !canEnableStage ? (
+            <p className={styles.note}>
+              上の「エフェクトを表示する条件」でガチャを割り当てると、この設定を ON にできます。
+            </p>
+          ) : stageEnabled && !canEnableStage ? (
+            <p className={styles.note}>
+              ガチャを割り当てた条件がないため、いまは配信画面に出ません。
+            </p>
+          ) : null}
+        </div>
+
         {gachas.length === 0 ? (
           <p className={styles.note}>
             ガチャがありません。「ガチャを作る」で追加してください。

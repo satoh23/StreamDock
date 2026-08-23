@@ -325,6 +325,21 @@
 /* --- 063d: ガチャの一覧（共通の下部のカード） ---------------------------------------------- */
 
 /* ⚠ 新規 CSS モジュールを作らない（`check:css` の走査から外れる・063a と同じ規律）。 */
+/* 063c 段 1: 「ガチャの演出を配信画面に出す」トグルとその説明。
+   ⚠⚠ **新しい px / radius を発明しない**（061a の要件）——余白・角丸・境界は
+   このファイルに既に在る `.prerequisite`（10px 12px / 12px / --border-soft）と同値。
+   ⚠ **一覧より上に置き、視覚的にも分ける**——これは「どのガチャの設定か」ではなく
+   **カード全体（＝ガチャ機能そのもの）の出力先の設定**だから。
+   ⚠ 色は `--surface-subtle` を敷かない（下に開く `.gachaPanel` と同色になり階層が読めなくなる）。 */
+.gachaStageSetting {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+}
+
 .gachaLibraryList {
   display: flex;
   flex-direction: column;

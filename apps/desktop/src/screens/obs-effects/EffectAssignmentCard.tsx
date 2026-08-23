@@ -206,6 +206,7 @@ interface DraftKeywordRow {
 
 export function EffectAssignmentCard({
   gachas,
+  onConditionsChange,
 }: {
   /**
    * 063d: 名前付きのガチャの一覧（表示と参照切れの判定に使う）。
@@ -216,6 +217,29 @@ export function EffectAssignmentCard({
    * ⇒ **状態は `ObsEffectsScreen` が持ち、両方へ配る**（064f の `obsSources` と同じ役割分担）。
    */
   gachas: readonly GachaDefinition[];
+  /**
+   * 063c 段 1: **条件が書き換わったことを画面へ伝える**（⚠ 中身は渡さない＝件数も条件も送らない）。
+   *
+   * ⚠⚠ **条件の state はこのカードが持つ**（064d の決定）ので、
+   * `ObsEffectsScreen` は自分では変化に気づけない。あちらが要るのは
+   * 「**ガチャを指す条件が 1 件以上あるか**」（063c 段 1 の AND ゲートの片側）だけで、
+   * ⚠ **値ではなく「変わった」という合図だけを渡す**——値を渡すと
+   * 「条件の持ち主はこのカード」という 064d の決定が骨抜きになる（画面が条件を知り始める）。
+   * ⇒ 受け取った側は `referencedGachaIds()` を**自分で読み直す**。
+   *
+   * ⚠ **省略可**（テストや、この合図を要らない呼び出し側のため）。
+   *
+   * ⚠⚠ **063c 段 1 レビュー Q-6（修正不要・受容）: 必須 prop にはしない。**
+   * 意図＝このカードは `EffectAssignmentCard.test.tsx` が**合図を要らない形で単体テストしている**ので、
+   * 必須にするとハーネス側に意味の無い `() => {}` を配ることになる。
+   * ⚠ 修正不要と判断した理由＝ **プロダクションの呼び出し側は `ObsEffectsScreen` の 1 か所だけ**で、
+   * ⚠⚠ **省略したときの壊れ方（ガチャを割り当てたのにトグルが押せないまま＝061a Q-1 が禁じた
+   * 「黙って押せない状態」）は、`GachaLibraryCard.test.tsx` の
+   * 「ガチャを条件に割り当てると押せるようになる」が実測でレッドにする**（合図を落とす変異＝6 failed）。
+   * ⚠⚠ **再修正トリガー**＝**2 人目のプロダクション呼び出し側**が現れたとき
+   * （そのときは必須 prop へ変えること——2 か所に増えた瞬間、片方だけ渡し忘れる形が現実になる）。
+   */
+  onConditionsChange?: () => void;
 }) {
   /**
    * 064d: **条件はこのカードが持つ**（旧: `useEffectTemplates` の戻り値を `ObsEffectsScreen` が配っていた）。
@@ -235,7 +259,17 @@ export function EffectAssignmentCard({
    * 「画面に出ている値」と「保存されている値」が構造的に一致する。
    * ⚠ **ここを通さずに `setConditions` を呼ばないこと**（片方だけ古くなる）。
    */
-  const commitConditions = (next: EffectConditions) => setConditions(next);
+  const commitConditions = (next: EffectConditions) => {
+    setConditions(next);
+    // ⚠⚠ 063c 段 1: 条件が書き換わったことを画面へ知らせる。
+    // ⚠⚠⚠ **063c 段 1 レビュー Q-5（訂正）: 旧コメント「保存が済んだ後に合図する／先に呼ぶと
+    //   受け手が保存前の localStorage を読む」は誤りだった。**
+    //   `setConditionEffectRaw` などの純関数は**自分の中で `saveEffectConditions` を済ませてから戻る**ので、
+    //   ここへ来た時点で localStorage は既に新しい。⇒ **この呼び出しを `setConditions` の前に置いても、
+    //   受け手（`referencedGachaIds()`）が読む値は同じ**である（変わるのは React state の更新順だけ）。
+    //   ⚠ **順序が正しさを担っていると書き残すと、次に触る人が別の場所で同じ順序を複製する。**
+    onConditionsChange?.();
+  };
   const setConditionEffect = (id: string, effect: EffectAssignment) =>
     commitConditions(setConditionEffectRaw(id, effect));
   const addKeywordCondition = (

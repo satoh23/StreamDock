@@ -106,8 +106,11 @@ describe("061a/061b/064d: EffectOverlayApp（配信イベントの出力窓）",
     armGuide();
     render(<EffectOverlayApp />);
     expect(screen.getByText(STAGE_OVERLAY_WINDOW_TITLE)).toBeInTheDocument();
+    // ⚠⚠⚠ **063c 段 1 で文言を変えた**（旧: 「この枠に配信イベントが表示されます」）。
+    //   窓が開く契機が 2 つになった（配信イベントの開始 ／ ガチャ演出のトグル ON）ので、
+    //   ⚠ **旧文はトグルから開いたユーザーには嘘**になる。理由は progress.md の 063c 段 1 節が正。
     expect(
-      screen.getByText(/この枠に配信イベントが表示されます/),
+      screen.getByText(/この枠に配信画面用のエフェクトが表示されます/),
     ).toBeInTheDocument();
   });
 
@@ -117,9 +120,14 @@ describe("061a/061b/064d: EffectOverlayApp（配信イベントの出力窓）",
     //   061i の実機確認で「ガイド本文だけが古い」を実際に踏んでいる。
     armGuide();
     render(<EffectOverlayApp />);
+    // ⚠⚠⚠ **063c 段 1: 起点が 2 つになったので、片方だけを名指しする文をやめた。**
+    //   旧文（「配信イベントを開始した直後だけ出て」）は、
+    //   **ガチャ演出のトグルから開いたユーザーには嘘**である。
     expect(
-      screen.getByText(/配信イベントを開始した直後だけ出て/),
+      screen.getByText(/配信画面への表示を始めた直後だけ出て/),
     ).toBeInTheDocument();
+    // ⚠⚠ **片方の契機だけを名指しする文へ戻す変異をここで殺す。**
+    expect(screen.queryByText(/配信イベントを開始した直後/)).toBeNull();
     // ⚠ 064d で消えた導線（テスト表示・表示トグル）を名指ししていないこと。
     expect(screen.queryByText(/テスト表示/)).toBeNull();
     expect(screen.queryByText(/表示を ON/)).toBeNull();

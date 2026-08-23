@@ -58,7 +58,13 @@ import {
   // ⚠ state にミラーせず、判断のたびに読み直す（詳細はエフェクト連携 effect の JSDoc）。
   // ⚠ 064e: `loadEffectObsAutoAdd` / `EFFECT_OBS_AUTO_ADD_KEY` の import を外した
   //   （自動反映が既定になり、**設定そのものが消えた**）。
-  loadStageOverlayEnabled,
+  // ⚠⚠⚠ 063c 段 1: **`loadStageOverlayEnabled` の import を外した。**
+  //   旗が 2 本になったので、この窓は**判定を自分で組まず** [`isStageOverlayRequired`] を通す
+  //   （`docs/security.md` §1 の 063c 追補＝「ガードは 1 つの関数」）。
+  //   ⚠ **ここに `load*` を戻さないこと**——戻した瞬間に「この窓だけが 2 本目を知らない」が作れる。
+  //   購読するキーは 3 本（開催状態 ／ ガチャの明示トグル ／ 条件＝AND ゲートの片側）。
+  EFFECT_ASSIGNMENTS_KEY,
+  GACHA_STAGE_ENABLED_KEY,
   STAGE_OVERLAY_ENABLED_KEY,
   // 064a: OBS のソースを再生する方式（main 窓からの依頼をこの窓が代行する）。
   OBS_SOURCE_LIST_REQUEST_KEY,
@@ -100,6 +106,9 @@ import {
   createEffectFireMatcher,
   loadGachaLibrary,
 } from "../obs-effects/effectAssignments";
+// ⚠⚠⚠ 063c 段 1: **`docs/security.md` §1（044a 例外）を守る唯一のガード。**
+//   この窓の 2 経路（`storage` 購読 ／ WS 接続確立時 reconcile）は必ずこれを通す。
+import { isStageOverlayRequired } from "../obs-effects/stageOverlayGuard";
 // 046a: 固定コメント（ピン留め）のピンストア。本体が唯一の書き手で、046b の固定専用オーバーレイが読み手になる。
 import {
   savePinned,
@@ -2123,6 +2132,32 @@ export function CommentViewerApp() {
   };
 
   /**
+   * 063c 段 1: **この購読が前回見た [`isStageOverlayRequired`] の値**（エッジ検出用）。
+   *
+   * ⚠⚠ **設定のミラーではない。** 判定は毎回 localStorage を直読みしており、
+   * ここが持つのは「**前回と変わったか**」だけである。
+   * ⚠⚠⚠ **初期値をマウント時のガードの値にしてあるのが要点**——`false` 固定にすると
+   * 「トグル ON の状態でこの窓を開き、そのあと OFF にした」ときに
+   * **`false → false` と見えて `hideObs("stage")` を送り損ねる**
+   * ＝ OBS 側にステージ窓のソースが**表示されたまま残る**（064 レビュー S-2 が潰した
+   * 「消し忘れ＝配信画面に出しっぱなし」と同じ最悪形）。
+   * ⚠ この初期化は localStorage を読むだけで、**OBS へは 1 バイトも送らない**。
+   *
+   * ## ⚠⚠ 063c 段 1 レビュー Q-2（修正）: **遅延初期化にした**
+   *
+   * 旧: `useRef(isStageOverlayRequired())`。⚠⚠ **`useRef` の引数は毎レンダー評価され、
+   * 2 回目以降は捨てられる**——この窓は `comments` state を持つ＝**コメント 1 件ごとに再レンダーする**ので、
+   * ⚠ ガチャのトグルが ON のときは**コメントが来るたびに `loadEffectConditions()` の
+   * JSON.parse ＋ 全件検証**が走っていた（結果は捨てられる）。
+   * ⇒ **判定は「まだ 1 度も読んでいないとき」だけ行う。**
+   * ⚠ **意味は変わっていない**（＝ マウント時のガードの値。`false` 固定にしないこと、は不変）。
+   */
+  const stageRequiredRef = useRef<boolean | null>(null);
+  if (stageRequiredRef.current === null) {
+    stageRequiredRef.current = isStageOverlayRequired();
+  }
+
+  /**
    * 061a: **エフェクト窓の OBS 自動反映を、この窓が代行する。**
    *
    * ⚠⚠ **なぜ設定は main 窓にあるのに送出はここなのか**（061a 実装で判明した構造上の制約）:
@@ -2170,6 +2205,9 @@ export function CommentViewerApp() {
    *
    * ⚠ localStorage を毎回**読み直す**（state にミラーしない）。この 2 つの設定の持ち主は main 窓なので、
    * state に写すと「main 窓で変えたのに古い値で判断する」形が作れてしまう。
+   *   ⚠⚠ **063c 段 1 の `stageRequiredRef` はこれの例外ではない**——あれは
+   *   「**前回この購読が見たガードの値**」であって設定のミラーではなく、
+   *   判定そのものは毎回 `isStageOverlayRequired()`（＝ localStorage の直読み）で行う。
    */
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
@@ -2196,9 +2234,71 @@ export function CommentViewerApp() {
       //   1 段（開始）になった**＝ `docs/security.md` §1 の 044a 例外に対する姿勢変更で、
       //   **§1 に 064e 追補を書いてある**（依頼者の指示＝「OBS に自動で反映はデフォルト機能にします」）。
       //   ⚠ 044a の comments / pinned 側のトグル（`OBS_AUTO_ADD_KEY`）は**無改変**。
-      if (e.key === STAGE_OVERLAY_ENABLED_KEY || e.key === null) {
-        if (loadStageOverlayEnabled()) {
-          scheduleObsAutoAdd("stage");
+      // ⚠⚠ **063c 段 1 レビュー S-4（修正不要・記録）: この stage レーンは `loadObsAutoAdd()` を見ない。**
+      //   ⇒ **「OBS へ自動で反映」を明示的に OFF にしているユーザーでも、ステージ窓は OBS へ追加される。**
+      //   ⚠ 意図＝ **064e が外したゲートそのもの**（既定 ON 化・依頼者の指示）であり、本段の新設ではない。
+      //   ⚠ 修正不要と判断した理由＝あちらのラベルが 045c 以降
+      //   「**「コメントをOBSに表示」ON時、OBSに自動で反映する**」＝ **コメント用**と読める文になっており、
+      //   ステージ窓の master switch としては提示されていない（`SettingsView` の該当カードが正）。
+      //   ⚠⚠ **ただし 064e の時点では stage レーンが実機で死んでいた**（`STREAM_EVENT_REGISTRY` が空）ので、
+      //   **この非対称が実際に効くのは 063c 段 1 が初めて**である。
+      //   ⚠ **再修正トリガー**＝実機で「OBS 連携を OFF にしたのに OBS を触られた」と言われたとき、
+      //   または `OBS_AUTO_ADD_KEY` のラベルを「OBS 連携全体」の意味へ戻すとき
+      //   （そのときは `docs/security.md` §1 の 044a 例外に、master switch の適用範囲を明文化すること）。
+      // ⚠⚠⚠ **063c 段 1: 契機が 3 キーになり、判定は [`isStageOverlayRequired`] 1 本になった。**
+      //   - `STAGE_OVERLAY_ENABLED_KEY` … 061l の開催状態（開始／終了／掃除 2 つ）
+      //   - `GACHA_STAGE_ENABLED_KEY` … ⚠ **063c の明示トグル**（常設・既定 OFF）
+      //   - `EFFECT_ASSIGNMENTS_KEY` … ⚠⚠ **AND ゲートの片側**
+      //     （「ガチャを指す条件が 1 件以上あるか」が変わりうる唯一のキー）
+      //   ⚠⚠⚠ **3 キー目を「窓を開く契機」と読まないこと。** 条件の変化が単独で
+      //   `scheduleObsAutoAdd` を呼ぶことはない——**明示トグルが OFF なら必ず `else` へ落ちる**
+      //   （＝ 061i にあり 064d が hook ごと削除した「条件が 0 → 1 件で旗が立つ」派生値ではない）。
+      //   ⚠ 逆向き（条件が 1 → 0 件）でここへ来ることが、
+      //   **「割り当てを全部消したら OBS への接続が残り続けない」の実体**である。
+      //   判断の全文は `stageOverlayGuard.ts` の JSDoc と `docs/security.md` §1 の 063c 追補が正。
+      if (
+        e.key === STAGE_OVERLAY_ENABLED_KEY ||
+        e.key === GACHA_STAGE_ENABLED_KEY ||
+        e.key === EFFECT_ASSIGNMENTS_KEY ||
+        e.key === null
+      ) {
+        // ⚠⚠⚠ **063c 段 1: 「変わったときだけ」OBS を触る（エッジ検出）。**
+        //
+        //   ⚠⚠ **これを外すと 064 レビュー S-1 が警告した壊れ方が別の形で復活する**——
+        //   `EFFECT_ASSIGNMENTS_KEY` を購読対象に足したので、**条件を 1 つ編集するたびに**
+        //   この分岐へ来る。レベル判定のままだと、ガチャのトグルが OFF の人が
+        //   キーワード条件を打つだけで **`hideObs("stage")` が OBS へ飛ぶ**
+        //   ＝「ユーザーが何もしていないのに OBS を触りに行く」（§1 の姿勢に反する）。
+        //   ⚠ S-1 の②が「無条件に打たない」を選んだのとまったく同じ理由である。
+        //
+        //   ⚠ **初期値は「マウント時のガードの値」**（`false` 固定にしないこと）——
+        //   固定すると「トグル ON の状態で窓を開き、その後 OFF にした」ときに
+        //   **`false → false` と見えて `hideObs` を送り損ねる**（OBS 側に出しっぱなしが残る）。
+        //   ⚠ 初期値の読み取りは localStorage だけで、**OBS へは何も送らない**。
+        const required = isStageOverlayRequired();
+        const changed = required !== stageRequiredRef.current;
+        stageRequiredRef.current = required;
+        if (required) {
+          // ⚠ 変化したときだけ。⚠⚠ 保証ベースラインは下の **WS 接続確立時 reconcile** が持つので、
+          //   ここが取りこぼしても「窓を開き直せば反映される」は成立する（061a 以来の二段構え）。
+          // ⚠⚠⚠ **063c 段 1 レビュー Q-1: `if (changed)` を外す変異はレビュー時点で全緑だった**
+          //   （＝ enable 側のエッジ検出が固定できていなかった）。⇒ 回帰ケースを足してある
+          //   （`CommentViewerApp.effects.test.tsx` の
+          //   「ガードが true のまま条件を編集しても enableObs を撃ち直さない」）。**消さないこと。**
+          //
+          // ⚠⚠ **063c 段 1 レビュー Q-3（修正不要・受容）: ここは実窓の有無を見ていない。**
+          //   意図＝この分岐は「**いま窓を開いた／これから開く**」の直後に来るもので、
+          //   `OBS_ENABLE_DELAY_MS` の猶予は**まさに窓が OBS のウィンドウ一覧へ載るのを待つため**にある。
+          //   ⚠ 修正不要と判断した理由＝ **061l / 064e からの既存構造**（`handleStartRound` も同型）で、
+          //   本段はこの形を 1 文字も変えていない。**変えるなら comments / pinned の 2 レーンと
+          //   `scheduleObsAutoAdd` を共有しているので、stage 専用の分岐を切る設計判断が要る**
+          //   （既存の storage 系ケースの前提も同時に変わる）＝ 段 1 の承認範囲を超える。
+          //   ⚠⚠ **再修正トリガー**＝実機で「窓の生成に失敗したのに OBS に空ソース
+          //   「StreamDock ステージ演出」が残った」を 1 度でも踏んだとき
+          //   （046d レビューが pinned で踏んだのと同じ壊れ方）。そのときは
+          //   `requestStageObsAutoAddIfOpen` と同じ `isStageOverlayOpen()` の確認を
+          //   **猶予タイマーの中**へ入れる（＝猶予は残したまま、送る直前に実窓を見る）。
+          if (changed) scheduleObsAutoAdd("stage");
         } else {
           clearObsEnableTimer("stage");
           // ⚠⚠⚠ **064e: `e.key !== null`（＝`clear()` ではない）を明示的に足した。**
@@ -2210,9 +2310,27 @@ export function CommentViewerApp() {
           //   ⚠ **タイマーの取り消しは `clear()` でも行う**（あちらはこのアプリ内の後始末で、
           //   OBS へは何も送らない＝Q-4 の対象外）。
           if (e.key !== null) {
-            requestObsHide("stage");
-            // ⚠ `obsState` は 4 種別で 1 本のまま（061e Q-5 の受容の範囲が 3 → 4 へ広がった）。
-            setObsState("idle");
+            // ⚠⚠ **`changed` がここの本体である**——「トグルを OFF にした」
+            //   「開催が終わった」「ガチャの割り当てが 0 件になった」の 3 つだけが送る。
+            //
+            // ⚠⚠ **063c 段 1 レビュー S-5（修正不要・受容）: `hide` 側には保証ベースラインが無い。**
+            //   意図＝下の **WS 接続確立時 reconcile は `enable` 方向しか持たない**ので、
+            //   **この窓が閉じている間に旗が落ちた**ときは OBS へ `hide` が届かない
+            //   （例: トグル ON で表示中 → コメビュ窓を閉じる → トグル OFF → 開き直す。
+            //   このとき `stageRequiredRef` の初期値は false になるので、以後も送られない）。
+            //   ⚠ 修正不要と判断した理由＝ **061a Q-4（`clear()` では OBS を触らない）が受容したのと
+            //   同じ地平**の「設定の意図が消えた状態では OBS を触りに行かない」であり、
+            //   ⚠⚠ **本段の新設ではない**（061l / 064e の時点から同じ形）。実害は
+            //   「OBS 側でソースが表示のまま残る（＝ユーザーが OBS で消せる／次の ON で整合する）」。
+            //   ⚠⚠ **再修正トリガー**＝実機で「OFF にしたのに配信画面に出しっぱなし」を踏んだとき。
+            //   そのときは reconcile を `if (required) enable / else hide` の**対称形**にする
+            //   （⚠ その時点で 061a Q-4 の受容を再評価すること——`clear()` 直後の接続でも
+            //   `hide` が飛ぶようになるため）。
+            if (changed) {
+              requestObsHide("stage");
+              // ⚠ `obsState` は 4 種別で 1 本のまま（061e Q-5 の受容の範囲が 3 → 4 へ広がった）。
+              setObsState("idle");
+            }
           } else if (!loadObsAutoAdd()) {
             // ⚠⚠ **`clear()` のときの後始末**（064e で削除した `EFFECT_OBS_AUTO_ADD_KEY` 分岐から移設）。
             //   ⚠ **OBS へは何も送らない**（Q-4）が、共有の赤字だけは畳んでよい。
@@ -2291,10 +2409,13 @@ export function CommentViewerApp() {
     // 猶予は要らない（窓は既に開いていて OBS のウィンドウ一覧に載っているはず）。
     // ⚠ 064d: 対象はステージ窓 1 つだけ（コーナー窓は取り込み機能ごと廃止）。
     // ⚠⚠ 064e: `loadEffectObsAutoAdd()` のゲートを外した（＝既定 ON）。
-    //   ⚠ **`loadStageOverlayEnabled()` は残す**——あれは「いま配信イベントを開催しているか」で、
-    //   **これが唯一の明示操作の痕跡**である（064d で意味を移した）。ここを外すと
-    //   **開催していないのに OBS へ繋ぐ**ことになり、§1 の 044a 例外を本当に破る。
-    if (loadStageOverlayEnabled()) requestStageObsAutoAddIfOpen();
+    //   ⚠ **ガードは残す**——**これが唯一の明示操作の痕跡**である。ここを外すと
+    //   **明示操作ゼロで OBS へ繋ぐ**ことになり、§1 の 044a 例外を本当に破る。
+    // ⚠⚠⚠ **063c 段 1: `loadStageOverlayEnabled()` の直読みから
+    //   [`isStageOverlayRequired`] へ差し替えた**（旗が 2 本になったため）。
+    //   ⚠ ここが旧のまま残ると「**トグルを ON にして窓を開き直しても OBS へ反映されない**」
+    //   ＝ 061e(5) が直した「保証ベースラインが保証になっていない」の再発になる。
+    if (isStageOverlayRequired()) requestStageObsAutoAddIfOpen();
     // ⚠ `requestStageObsAutoAddIfOpen` はレンダーごとに作り直されるが、読むのは ref と localStorage だけ。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streamConnected]);

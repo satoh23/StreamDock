@@ -146,6 +146,33 @@
 （⚠ (2) および [063c](063c-gacha-presentation.md) と**同じ型を広げる**ので、**持ち主を 1 つに決めること**）。
 ⚠ **既定の「書かない」を選ぶなら型は今のままでよい。**
 
+#### ⚠⚠⚠ 2026-08-23 決着: **戻り値の形は [063c](063c-gacha-presentation.md) が決める。本タスクはそれに乗ること。**
+
+**先に着手したほうが形を決める**という前提で、063c を先に着手した（段 1 完了・段 2 で型を広げる）。
+⇒ ⚠⚠ **本タスクで `decideFireSourceNames` の戻り値を独立に広げないこと**
+（2 通りに広げると「片方だけが知らないフィールドを持つ」「片方だけ §9 の判断が抜ける」が起きる）。
+
+063c 段 2 が置く形（⚠ **確定は段 2 の実装時**。着手時に `effectFire.ts` の JSDoc を必ず読み直すこと）:
+
+```ts
+export type GachaPrizeOutput =
+  | { kind: "builtin" }
+  | { kind: "obs-source"; sourceName: string };
+
+export type EffectFireResult =
+  | { kind: "obs-source"; sourceName: string }                      // 条件が直に OBS ソースを指した
+  | { kind: "gacha-prize"; prizeName: string; output: GachaPrizeOutput };  // ガチャで当たった
+```
+
+- ⚠ **関数名は `decideFireResults` へ改名される**（戻り値が「ソース名」でなくなるため）。
+- ⚠⚠ **`EffectRequestBase` は復活させない**（063b 段 1-b の返済を取り消さない）。
+  ⇒ 上記 (2) で**当選者名を出す**を選ぶなら、**`EffectRequestBase` ごとではなく
+  「投稿者名 1 フィールド」を `gacha-prize` に足す**こと。
+- ⚠⚠⚠ **はずれ（`-1`）の variant は 063c 段 2 では作らない**
+  （あちらは「はずれにも演出を出したいなら**はずれの行を足す**」という 063a の設計に乗るため）。
+  ⇒ **本タスクが「はずれを書く」を選ぶなら、3 本目の variant を足すのは本タスクの担当**である。
+  ⚠ そのときも**上の 2 本の形は変えない**こと。
+
 ## やらないこと
 
 - ⚠⚠ **YouTube への書き込み**（066 の決定 (1)・`YOUTUBE_SCOPES` は 1 文字も変えない）

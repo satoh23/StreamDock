@@ -62,24 +62,75 @@ export const PINNED_OVERLAY_ENABLED_KEY =
  * 新「**いま配信イベントでステージ窓を使っているか**」（開催状態の写し）。
  * 派生値の計算元だった `useEffectTemplates` が 064d で消えたための移設である。
  *
- * ## ⚠⚠⚠ このキーは `docs/security.md` §1（044a 例外）を守る**唯一のガード**である
+ * ## ⚠⚠⚠ このキーは `docs/security.md` §1（044a 例外）を守るガードの**片方**である
  *
  * 064e で「OBS へ自動で反映」トグルを削除した結果、**OBS へ繋ぐかどうかを決めているのはこの旗だけ**に
- * なった。§1 の追補は「**旗 true ＝ ユーザーが『開始』ボタンを押した**」という**同値**を根拠にしているので、
- * ⚠⚠ **その同値を壊す書き方をしないこと。**
+ * なった。§1 の 064e 追補は「**旗 true ＝ ユーザーが『開始』ボタンを押した**」という**同値**を根拠に
+ * しているので、⚠⚠ **その同値を壊す書き方をしないこと。**
  *
- * - **書き手は `ObsEffectsScreen` の 3 か所だけ**（`grep -rn "saveStageOverlayEnabled" src` で確認できる）:
+ * - **書き手は `ObsEffectsScreen` だけ**（`grep -rn "saveStageOverlayEnabled" src` で確認できる）。
+ *   ⚠⚠ **契機は 3 種類・呼び出しは 4 か所**である（§1 の 063c 追補で数え方を揃えた。
+ *   旧記述の「3 か所」は種類を数えていて、`grep` の件数と一致していなかった）:
  *   ①`handleStartRound`（開始 → true）②`handleEndRound`（終了 → false）
  *   ③⚠⚠ **064 レビュー S-1 で足した 2 つの掃除**（期限切れ tick ／ マウント時の取り残し修復 → false）。
  *   ⚠ ③が無いと「**終了を押さずに時間切れ**」で旗が永久に true のまま残り、
  *   **再起動時に無操作でステージ窓が復元され OBS へ繋ぐ**（＝上の同値が偽になる）。
- * - **読み手は `effectOverlayRestore`（起動時の窓復元）と `CommentViewerApp`**
- *   （`storage` 購読 ＋ WS 接続時 reconcile。`obs-enable` を送れる WS を持つのはあの窓だけ）。
+ * - **読み手は [`isStageOverlayRequired`]（`screens/obs-effects/stageOverlayGuard.ts`）だけ**である。
+ *   ⚠⚠ **063c 段 1 で読み手を 1 本に集約した**——旧: `effectOverlayRestore` と `CommentViewerApp` が
+ *   それぞれこの `load*` を直に呼んでいた。旗が 2 本になったので、**どちらも同じ 1 本のガードを通す**
+ *   （＝ §1 が「ガードは 1 つの関数」と指せる状態を保つ）。
+ *
+ * ## ⚠⚠⚠ 063c 段 1: **旗は 2 本になった。ここへ相乗りさせないこと。**
+ *
+ * ガチャ演出ぶんは [`GACHA_STAGE_ENABLED_KEY`] が持つ。⚠ **共用してはいけない**（実害が 2 つある）:
+ *   1. 上の旗を `false` へ倒す呼び出しが 3 か所ある（終了／期限切れ tick／マウント時の取り残し修復）ので、
+ *      **配信イベントを終えるとガチャ演出が黙って止まる**。
+ *      ⚠ **063c 段 1 レビュー S-2（訂正）: ここは「掃除 3 経路」と書いていた。**
+ *      同じ回で「**契機は 3 種類・呼び出しは 4 か所**」へ数え方を揃えたばかりなのに、
+ *      **「掃除」を「`false` を書く 3 経路の総称」という第 3 の意味で使っていた**
+ *      （上の①〜③では「掃除」＝3 契機のうちの 1 つ）。⇒ **語ではなく機能で書く。**
+ *   2. マウント時の取り残し修復は `round === null` で発火するので、
+ *      **`obs-effects` 画面を開くたびにガチャ用の旗が消える**。
+ * ⚠ `ObsEffectsScreen` の取り残し修復 JSDoc が「再修正トリガー＝旗の書き手が 3 か所目を持ったとき、
+ * 開催キーからの派生値に寄せるかを決め直すこと」と書いていたが、**063c 段 1 の答えは「寄せない」**である
+ * ——2 本の旗は**意味も寿命も違う**（開催中だけ／ユーザーが OFF にするまで）。
  *
  * ⚠ **旧ビルドへ戻したときはこのキーが誰にも読まれないだけ**（ステージ窓は開かない＝安全側）。
  */
 export const STAGE_OVERLAY_ENABLED_KEY =
   "stream-dock.comment-viewer.stage-overlay-enabled";
+/**
+ * 063c 段 1: **ガチャの演出を配信画面（ステージ窓）に出すかの明示トグル**
+ * （既定 OFF・値は `"true"` / `"false"`）。
+ *
+ * ## ⚠⚠⚠ これは `docs/security.md` §1（044a 例外）を守るガードの**もう片方**である
+ *
+ * §1 の **063c 追補**が正。要点だけ再掲する:
+ *
+ * - ⚠⚠ **`true` にしてよいのはユーザーの明示操作のときだけ**（[`GachaLibraryCard`] のトグル）。
+ *   ⚠⚠⚠ **「ガチャを条件に割り当てたら自動で ON」は作らないこと**——それは 061i にあり
+ *   **064d が hook（`useEffectTemplates`）ごと削除**した形で、064c も
+ *   「画面を開くだけで OBS へ TCP 接続を張る」として**意図的に却下**している。
+ * - ⚠⚠ **常設である**（開催状態の写しである [`STAGE_OVERLAY_ENABLED_KEY`] と**寿命が違う**）。
+ *   ⇒ ON のまま再起動すると `effectOverlayRestore` が窓を復元し OBS へ繋ぐ。
+ *   ⚠ これは 044a が comments / pinned に既に認めている形と**同型**である
+ *   （[`OBS_AUTO_ADD_KEY`] / [`PINNED_OVERLAY_ENABLED_KEY`]。「毎回 ON にし直させると
+ *   配信開始時に OBS ソースが取り込めない窓なし状態から始まる」という同じ理由）。
+ * - ⚠⚠⚠ **この旗だけでは窓は開かない。** [`isStageOverlayRequired`] が
+ *   **「旗 true」かつ「ガチャを指す条件が 1 件以上ある」**の連言を取る。
+ *   ⚠ **連言は接続を増やす方向へは決して働かない**（明示操作なしに true にならない）ので、
+ *   064d が消した派生値の復活には当たらない。⚠ 副次的に
+ *   **「条件からガチャの割り当てを全部外したら接続が残り続けない」**も満たす。
+ *   ⚠⚠ **063c 段 1 レビュー S-7（訂正）: 「割り当てを全部消したら」は言い過ぎだった**
+ *   （**ガチャ本体を一覧から消しても条件は残る**ので、参照切れの条件だけで連言は true のまま）。
+ *   詳細と再修正トリガーは [`isStageOverlayRequired`] の JSDoc が正。
+ * - ⚠ **`false` にする契機を減らさないこと**（旗が残ると次回起動時に無操作で OBS へ繋ぐ）。
+ *
+ * ⚠ **旧ビルドへ戻したときはこのキーが誰にも読まれないだけ**（ステージ窓は開かない＝安全側）。
+ * ⚠ **§9**: 値は `"true"` / `"false"` の 2 値のみ＝**非機密**（一括削除・エクスポートの対象が 1 本増えた）。
+ */
+export const GACHA_STAGE_ENABLED_KEY =
+  "stream-dock.comment-viewer.gacha-stage-enabled";
 /**
  * ⚠⚠⚠ **064e: `EFFECT_OBS_AUTO_ADD_KEY`（エフェクト窓を OBS へ自動反映する ON/OFF）を削除した。**
  *
@@ -106,9 +157,19 @@ export const STAGE_OVERLAY_ENABLED_KEY =
  * そのとき破線枠とセットアップ文言が 30 秒間 OBS のキャプチャに映る（ユーザー向け文言「配信中には
  * 表示されません」が守れない）。
  *
- * **書き手＝明示操作 1 つだけ**（⚠ **061i で起点が移った**。下記）。**読み手＝`EffectOverlayApp`** で、
- * マウント時に読み、直後に false へ倒す（次に開くときは出ない）。起動時の窓復元（`App.tsx`）は
- * **この旗を立てない**ので、復元経路ではガイドが出ない。
+ * **書き手＝明示操作だけ**（⚠ **061i で起点が移り、064d でさらに移った**。下記）。
+ * **読み手＝`EffectOverlayApp`** で、マウント時に読み、直後に false へ倒す（次に開くときは出ない）。
+ * 起動時の窓復元（`App.tsx`）は**この旗を立てない**ので、復元経路ではガイドが出ない。
+ *
+ * ## ⚠⚠⚠ 063c 段 1: 起点が **2 つ**になった
+ *
+ * `ObsEffectsScreen` の **①`handleStartRound`（配信イベントの開始）**と
+ * **②`handleGachaStageToggle`（「ガチャの演出を配信画面に出す」を ON）**。
+ * ⚠ **どちらも「明示操作で窓を開くとき」**なので、下の Q-1 の規律をそのまま満たしている。
+ * ⚠⚠ **`docs/security.md` §1 の 044a 例外が認める明示操作の集合と 1 対 1 で対応している**
+ * （＝ 旗を立てる場所が増えたら、それは §1 の追補が要る変更である、という対応関係）。
+ * ⚠ **`isStageOverlayRequired()` が true になる契機と混同しないこと**——
+ * あちらは AND ゲート（条件が 0 件なら false）を含むが、**ガイド旗は明示操作だけで立つ**。
  *
  * ## ⚠⚠ 061i: 起点を「テスト表示で窓を開いたとき」へ移した（判断 3）
  *
@@ -444,8 +505,10 @@ export function savePinnedOverlayEnabled(enabled: boolean): void {
 /**
  * 061k: ステージ演出窓を出すか（未保存・例外は false へフォールバック）。
  * ⚠ 意味は 064d 以降「**いま配信イベントを開催しているか**」（キーの JSDoc が正）。
- * 読み手は `effectOverlayRestore.ts`（起動時の窓復元）と `CommentViewerApp`（OBS 反映の代行）、
- * および `ObsEffectsScreen`（⚠ **旗の取り残しを直すためだけ**に読む・064 レビュー S-1）。
+ * ⚠⚠ **063c 段 1: 読み手は [`isStageOverlayRequired`] と `ObsEffectsScreen`（⚠ 旗の取り残しを
+ * 直すためだけに読む・064 レビュー S-1）の 2 つになった。**
+ * 旧: `effectOverlayRestore.ts` / `CommentViewerApp` が直に呼んでいたが、
+ * **旗が 2 本になったので、あの 2 者はガード 1 本を通す形へ寄せた**。
  * ⚠⚠ **この false 側フォールバックが §1 の fail-closed 方向である**（読めなければ OBS へ繋がない）。
  */
 export function loadStageOverlayEnabled(): boolean {
@@ -459,18 +522,57 @@ export function loadStageOverlayEnabled(): boolean {
 /**
  * 061k / 064d: ステージ演出窓を出すかを保存する（ローカルのみ・非機密・外部送信しない）。
  *
- * ⚠⚠⚠ **これは `docs/security.md` §1 を守る唯一のガードの書き手である**（キーの JSDoc が正）。
- * **呼んでよいのは `ObsEffectsScreen` の中だけ**で、呼び出しは 3 か所——
+ * ⚠⚠⚠ **これは `docs/security.md` §1 を守るガードの片方（061l ぶん）の書き手である**（キーの JSDoc が正）。
+ * **呼んでよいのは `ObsEffectsScreen` の中だけ**で、⚠ **契機は 3 種類・呼び出しは 4 か所**——
  * ①開始（true）②終了（false）③⚠ **064 レビュー S-1 の掃除 2 つ**（期限切れ／取り残し修復・false）。
  * ⚠⚠ **`true` にしてよいのは「ユーザーが『開始』を押した」瞬間だけ**である。
  * ここを増やすと「開催していないのに OBS へ繋ぐ」＝ §1 の 044a 例外を本当に破る。
  * ⚠ **`false` にする契機を減らさないこと**——旗が残ると、次回起動時に**無操作で OBS へ繋ぐ**。
  * ⚠ 不変条件の確認は `grep -rn "saveStageOverlayEnabled" src` で、
- * 実装側のヒットが本ファイルと `ObsEffectsScreen` に限られること。
+ * 実装側のヒットが本ファイルと `ObsEffectsScreen` の 4 呼び出しに限られること。
+ * ⚠⚠ **063c 段 1 でも、この 4 呼び出しは 1 文字も変えていない**（ガチャぶんは別の旗が持つ）。
  */
 export function saveStageOverlayEnabled(enabled: boolean): void {
   try {
     localStorage.setItem(STAGE_OVERLAY_ENABLED_KEY, String(enabled));
+  } catch {
+    // プライベートモード等で書けない場合は黙って無視する。
+  }
+}
+
+/**
+ * 063c 段 1: ガチャ演出を配信画面に出すか（未保存・例外は false へフォールバック）。
+ *
+ * ⚠⚠ **単独で読んでよいのは [`GachaLibraryCard`]（トグルの現在値の表示）だけ**である。
+ * ⚠⚠⚠ **「OBS へ繋いでよいか」の判定にこれを直接使わないこと**——
+ * その判定の持ち主は [`isStageOverlayRequired`] 1 本で、あちらは
+ * **「ガチャを指す条件が 1 件以上ある」との連言**を取る（§1 の 063c 追補が正）。
+ * ⚠⚠ **この false 側フォールバックが §1 の fail-closed 方向である**（読めなければ OBS へ繋がない）。
+ */
+export function loadGachaStageEnabled(): boolean {
+  try {
+    return localStorage.getItem(GACHA_STAGE_ENABLED_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 063c 段 1: 上記を保存する（ローカルのみ・非機密・外部送信しない）。
+ *
+ * ⚠⚠⚠ **これは `docs/security.md` §1 を守るガードのもう片方（063c ぶん）の書き手である。**
+ * **呼んでよいのは `ObsEffectsScreen` の中だけ**で、⚠ **呼び出しは 1 か所**
+ * （[`GachaLibraryCard`] のトグルから上がってくるハンドラ）。
+ * ⚠⚠ **`true` にしてよいのは「ユーザーがトグルを ON にした」瞬間だけ**である。
+ * ⚠⚠⚠ **派生値から立てないこと**——「ガチャを条件に割り当てたら ON」は
+ * **064d が hook ごと削除した形**であり、064c が明示的に却下した線でもある。
+ * ⚠ **`false` にする契機を減らさないこと**——旗が残ると、次回起動時に**無操作で OBS へ繋ぐ**。
+ * ⚠ 不変条件の確認は `grep -rn "saveGachaStageEnabled" src` で、
+ * 実装側のヒットが本ファイルと `ObsEffectsScreen` の 1 呼び出しに限られること。
+ */
+export function saveGachaStageEnabled(enabled: boolean): void {
+  try {
+    localStorage.setItem(GACHA_STAGE_ENABLED_KEY, String(enabled));
   } catch {
     // プライベートモード等で書けない場合は黙って無視する。
   }

@@ -5,8 +5,12 @@ import {
   //     （自動反映が既定になり、**設定そのものが消えた**）。
   //   ⚠⚠ 064 レビュー S-1: `loadStageOverlayEnabled` を足した（**旗の取り残しを直すためだけ**に読む。
   //     下の「旗の掃除」effect が正）。
+  //   ⚠⚠⚠ 063c 段 1: `loadGachaStageEnabled` / `saveGachaStageEnabled` を足した
+  //     （**2 本目の旗＝ガチャ演出の明示トグル**。この画面が唯一の書き手であることは同じ）。
+  loadGachaStageEnabled,
   loadStageOverlayEnabled,
   saveEffectOverlayGuidePending,
+  saveGachaStageEnabled,
   saveStageOverlayEnabled,
 } from "../../features/comment-viewer/overlaySettings";
 // ⚠⚠ 061p: **`closeEffectOverlayWindow` / `closeStageOverlayWindow` の import を外した**
@@ -27,6 +31,8 @@ import {
 // （docs/task-board.md の 061g に明文化してある）。
 // ⚠ 064e: `ToggleSwitch` の import を外した（この画面のトグルは 0 個になった——061i で
 //   「配信画面に表示」が、064e で「OBS へ自動で反映」が消えた）。
+// ⚠ 063c 段 1: **トグルが 1 つ戻ってきた**が、⚠⚠ **置き場所は [`GachaLibraryCard`] の中**である
+//   （この画面は state と旗の書き手だけを持つ）。⇒ ここで `ToggleSwitch` を import しないのは意図どおり。
 import { Button } from "../../components/primitives";
 // ⚠ 061i: タブ部品は **`components/` に新設**した（061g の規律＝画面を跨ぐ部品は最初からあちらへ。
 //   061l で「配信イベント」の一覧／詳細が入ると確実に生き続けるので、ここへ置いて後から移さない）。
@@ -40,6 +46,7 @@ import { EffectAssignmentCard } from "./EffectAssignmentCard";
 import { ObsSourceCard } from "./ObsSourceCard";
 import { GachaLibraryCard } from "./GachaLibraryCard";
 import {
+  referencedGachaIds,
   runGachaMigration,
   saveGachaLibrary,
   type GachaDefinition,
@@ -218,6 +225,36 @@ export function ObsEffectsScreen() {
    */
   const commitGachas = (next: readonly GachaDefinition[]) =>
     setGachas(saveGachaLibrary(next));
+
+  /**
+   * 063c 段 1: **「ガチャの演出を配信画面に出す」トグルの現在値**
+   * （＝ `docs/security.md` §1 のガードの 2 本目の旗）。
+   *
+   * ⚠⚠ **書き手はこの画面だけ**（`saveGachaStageEnabled` の呼び出しは [`handleGachaStageToggle`] 1 か所）。
+   * ⚠ 初期値は localStorage 直読み——**この読み取りは OBS へ 1 バイトも送らない**。
+   */
+  const [gachaStageEnabled, setGachaStageEnabled] =
+    useState<boolean>(loadGachaStageEnabled);
+
+  /**
+   * 063c 段 1: **AND ゲートの片側**＝「ガチャを指す条件が 1 件以上あるか」。
+   *
+   * ⚠⚠⚠ **これは「窓を開く契機」ではない。** [`isStageOverlayRequired`] の中で
+   * **明示トグルとの連言**にしか使われず、単独で true になっても何も起きない
+   * （＝ 061i にあり 064d が hook ごと削除した派生値の復活ではない）。
+   * この画面ではトグルを**押せるか**と**いま効いているか**の表示にだけ使う。
+   *
+   * ⚠⚠ **条件の state を持っているのは [`EffectAssignmentCard`] である**（064d でそう決めた）ので、
+   * あちらが書き換えたことを知る手段がこの画面には無い。⇒ **`onConditionsChange` で通知してもらう**。
+   * ⚠ 通知が無いと「ガチャを割り当てたのにトグルが押せないまま」＝
+   * **黙って押せない状態**（061a Q-1 が禁じたもの）になる。
+   */
+  const [hasGachaCondition, setHasGachaCondition] = useState<boolean>(
+    () => referencedGachaIds().length > 0,
+  );
+  const refreshGachaConditionState = useCallback(() => {
+    setHasGachaCondition(referencedGachaIds().length > 0);
+  }, []);
 
   /**
    * 061l: **開催中の配信イベント**（`null`＝開催していない・判断 5）。
@@ -408,6 +445,50 @@ export function ObsEffectsScreen() {
       setNowMs(now);
       // ⚠⚠ 064d: 窓を開く**前**に旗を立てる（窓はマウント時に旗を読む）。
       saveStageOverlayEnabled(true);
+      saveEffectOverlayGuidePending(true);
+      openStageOverlay();
+    },
+    [openStageOverlay],
+  );
+
+  /**
+   * 063c 段 1: ⚠⚠⚠ **`docs/security.md` §1（044a 例外）が認める 2 つ目の明示操作。**
+   *
+   * ON にすると ①旗を立て ②**ステージ窓を開く**（＝ OBS のウィンドウキャプチャ源が生える）。
+   * その旗を見て `CommentViewerApp` が `enableObs("stage")` を送る＝ **OBS へ TCP 接続が張られる**。
+   * ⚠⚠ **だからこれは「設定を書くだけ」のトグルではない。** 押した本人の意図＝
+   * 「ガチャの演出を配信画面に出す」であり、OBS へソースを作るのは**その操作の目的そのもの**である
+   * （045c が消した「設定を ON にしただけで窓が開く」隠れた副作用とは性質が違う——
+   * あちらは**表示とは別の設定**が窓を開いていた）。
+   *
+   * ⚠ **ガイド旗を立ててよい条件を満たしている**（061a Q-1＝「明示操作で窓を開くとき」だけ）。
+   * ⇒ [`handleStartRound`] と**同じ 3 点セット**（旗・ガイド旗・窓を開く）。
+   *
+   * ⚠⚠ **OFF で窓は閉じない**（親 046 の規律＝配信中に窓が消えると OBS のキャプチャが真っ黒）。
+   *   OBS 側のソースは `CommentViewerApp` が `hideObs("stage")` で**非表示にするだけ**（削除しない＝044a）。
+   * ⚠ **`closeStageOverlayWindow` をここに足さないこと。**
+   *
+   * ## ⚠⚠⚠ 063c 段 1 レビュー S-1: **このトグルは `docs/security.md` §1「取得の停止条件」の面にも触る**
+   *
+   * ステージ窓は Rust の **`SIDECAR_CONSUMER_LABELS`（`["comment-viewer", "stage-overlay"]`）に入っている**
+   * ＝ **開いている間は sidecar が延命され、コメントの取得（外部通信）が続く**。
+   * ⚠⚠ **`STREAM_EVENT_REGISTRY` が空の間はこの窓が開かなかったので、この面はこれまで死んでいた**——
+   * ⇒ **このトグルが、その面を実機で初めて起こす。**
+   * ⚠ 止め方の導線は**無改変**（`MainScreen` が `isStageOverlayOpen()` を見て
+   * 「コメントビューアを開いて取得を停止してください」を出す・064f の改訂どおり）。
+   * ⚠⚠ **OFF にしても窓は閉じない＝取得も止まらない**（止め方は上記 1 か所だけ）。
+   * ⚠⚠⚠ **窓を閉じる導線をここへ作るなら、`docs/security.md` §1 の「取得の停止条件」を必ず読み直すこと。**
+   *
+   * ⚠⚠⚠ **[`STAGE_OVERLAY_ENABLED_KEY`] には 1 バイトも触らない**——旗を共用すると
+   * ①配信イベントの終了がガチャ演出を黙って止める ②画面を開くたびにガチャの旗が消える
+   * （下の「旗の掃除」effect が `round === null` で発火するため）。
+   */
+  const handleGachaStageToggle = useCallback(
+    (next: boolean) => {
+      saveGachaStageEnabled(next);
+      setGachaStageEnabled(next);
+      if (!next) return;
+      // ⚠⚠ 窓を開く**前**に旗を立てる（窓はマウント時に旗を読む・`handleStartRound` と同じ順序）。
       saveEffectOverlayGuidePending(true);
       openStageOverlay();
     },
@@ -612,7 +693,12 @@ export function ObsEffectsScreen() {
 
             {/* 061d-2: イベント種別ごとの割り当て（＝061i 以降の呼び方は「エフェクトを表示する条件」）。 */}
             {/* ⚠ 063d: ガチャの一覧を渡す（選択肢と参照切れの警告に使う・上の `gachas` の注記が正）。 */}
-            <EffectAssignmentCard gachas={gachas} />
+            {/* ⚠⚠ 063c 段 1: 条件が変わったら教えてもらう（⚠ **合図だけ**・値は渡さない）。
+                下の [`GachaLibraryCard`] のトグルが押せるかの判定に使う。 */}
+            <EffectAssignmentCard
+              gachas={gachas}
+              onConditionsChange={refreshGachaConditionState}
+            />
           </div>
         ) : (
           <div className={styles.stack} role="tabpanel">
@@ -647,6 +733,9 @@ export function ObsEffectsScreen() {
           gachas={gachas}
           obsSources={obsSources.list?.sources ?? null}
           onChange={commitGachas}
+          stageEnabled={gachaStageEnabled}
+          canEnableStage={hasGachaCondition}
+          onStageEnabledChange={handleGachaStageToggle}
         />
 
         {/* ⚠⚠⚠ **064e: 「OBS へ自動で反映」カードを丸ごと削除した**（依頼者の指示＝

@@ -1,7 +1,4 @@
 import {
-  loadStageOverlayEnabled,
-} from "./overlaySettings";
-import {
   isStageOverlayOpen,
   openStageOverlayWindow,
 } from "./windowApi";
@@ -47,28 +44,51 @@ import {
  * 061a レビュー（Q-9）: `App.tsx` の `useEffect` に直書きされていたものを、**単体テストできるように
  * ここへ切り出した**。`MainWindowApp` は invoke 依存の hook を多数マウントするため、あちらでは
  * 「ユーザー操作なしに窓が開く」という 061a で唯一セキュリティ的に意味のある挙動がテストの死角に落ちていた。
+ *
+ * ## ⚠⚠⚠ 063c 段 1: **判定を自分で持たず、注入で受ける**ようになった
+ *
+ * 旧: このモジュールが `loadStageOverlayEnabled()` を直に読んでいた。
+ * ⚠⚠ **旗が 2 本になったので、直読みのままだと「この読み手だけが 2 本目を知らない」を作れる**
+ * ——そのとき壊れ方は「トグルを ON にして再起動したのに窓が復元されない」＝
+ * **配信開始時に OBS のウィンドウキャプチャが真っ黒**（親 046 の規律に真正面から当たる）。
+ * ⇒ 判定は `screens/obs-effects/stageOverlayGuard.ts` の `isStageOverlayRequired()` 1 本が持ち、
+ * ⚠ **`App.tsx` がそれを渡す**。
+ *
+ * ⚠ **`features/` から `screens/` を import しない**ための注入である
+ * （層の向きは `screens → features` の一方通行で、ここを逆流させない）。
+ * ⚠⚠ **`loadEnabled` の既定値を作らないこと**——既定を置くと、渡し忘れが
+ * **「ガードを通っていない復元」として黙って動く**（fail-open）。**必須の引数のままにする。**
+ * ⚠ **063c 段 1 レビュー Q-8（記録）: これを守っているのは `tsc` であってテストではない**
+ * （既定値を足す変異はテストでは緑のまま通る。⚠ 一方で**引数を省く変異は `pnpm typecheck` が落とす**）。
+ * ⇒ **担保としては十分**だが、「テストが守っている」と誤解して既定値を足さないこと。
+ *
+ * @param loadEnabled ⚠⚠ **`docs/security.md` §1 のガード**（`isStageOverlayRequired`）。
+ *   ⚠ **`is*Open()` の解決を待ってから呼ばれる**（下の `restore` の順序が正）。
  */
-export async function restoreEffectOverlayWindow(): Promise<void> {
+export async function restoreEffectOverlayWindow(
+  loadEnabled: () => boolean,
+): Promise<void> {
   /**
    * ⚠ 1 窓ぶんの復元。**「開いているか」を待ってから設定を読む**順序をここで閉じている
    * （2 窓ぶんに複製すると片方だけ順序を崩す変更が入りうるため、1 か所に閉じる）。
    */
   const restore = async (
     isOpen: () => Promise<boolean>,
-    loadEnabled: () => boolean,
+    enabled: () => boolean,
     open: () => Promise<void>,
   ): Promise<void> => {
     const open_ = await isOpen();
     // ⚠ ここで初めて設定を読む（上の注記）。順序を入れ替えないこと。
-    if (!loadEnabled() || open_) return;
+    if (!enabled() || open_) return;
     await open();
   };
 
   // ⚠⚠ **064d で窓は 1 つになった**（コーナー窓は取り込み機能ごと廃止）。
-  //   ⚠ `allSettled` の形は**残してある**——063（ガチャ）で 2 本目の出力窓が要るなら、
+  //   ⚠ `allSettled` の形は**残してある**——2 本目の出力窓が要るなら、
   //   ここへ 1 行足すだけで戻せる（「片方の失敗がもう片方を止めない」という性質も一緒に戻る）。
+  //   ⚠⚠ **063c 段 1 は 2 本目を作っていない**（ガチャ演出は 061l と同じステージ窓へ相乗りする）。
   const results = await Promise.allSettled([
-    restore(isStageOverlayOpen, loadStageOverlayEnabled, openStageOverlayWindow),
+    restore(isStageOverlayOpen, loadEnabled, openStageOverlayWindow),
   ]);
   // ⚠ 失敗は握りつぶさない（呼び出し側の関心事）。
   const failed = results.find((r) => r.status === "rejected");

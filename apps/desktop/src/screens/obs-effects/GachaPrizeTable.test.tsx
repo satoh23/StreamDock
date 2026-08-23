@@ -36,6 +36,13 @@ const Harness = () => {
         gachas={gachas}
         obsSources={loadObsSourceList()?.sources ?? null}
         onChange={(next) => setGachas(saveGachaLibrary(next))}
+        /* ⚠ 063c 段 1: このファイルの関心は**景品の表**なので、旗まわりは固定値でよい
+           （トグルそのものは `GachaLibraryCard.test.tsx` が固定する）。
+           ⚠⚠ **ただし `false` 固定にしてある**——`true` にすると
+           「演出の設定が景品表の検査に紛れ込んでいる」と読めてしまう。 */
+        stageEnabled={false}
+        canEnableStage={false}
+        onStageEnabledChange={() => {}}
       />
     </>
   );

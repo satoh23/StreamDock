@@ -3,6 +3,8 @@ import { render, screen, fireEvent, waitFor, act } from "@testing-library/react"
 import { ObsEffectsScreen } from "./ObsEffectsScreen";
 import {
   STAGE_OVERLAY_ENABLED_KEY,
+  // ⚠⚠ 063c 段 1: **2 本目の旗**（この画面が唯一の書き手であることを下のケース群が固定する）。
+  GACHA_STAGE_ENABLED_KEY,
   EFFECT_OVERLAY_GUIDE_PENDING_KEY,
   // 064f: 取得ボタンがこの画面（タイトル行）へ移ったので、依頼と一覧のキーをここで見る。
   EFFECT_ASSIGNMENTS_KEY,
@@ -180,13 +182,32 @@ describe("061a: ObsEffectsScreen", () => {
     ).toBeInTheDocument();
   });
 
-  it("⚠⚠ 064e: この画面にトグルは 1 つも無い", () => {
-    // ⚠ 061i で「配信画面に表示」、064e で「OBS へ自動で反映」が消えた。
-    // ⚠⚠ **後者は「機能をやめた」のではなく「既定 ON にした」**（依頼者の指示）ので、
-    //   トグルを 1 つ戻すと**設定 OFF のときに配信イベントの窓が OBS へ出なくなる**
-    //   ＝ 061l の玉入れが「開始したのに配信画面に何も出ない」に戻る。
+  /**
+   * ⚠⚠⚠ **063c 段 1 でこのケースを書き換えた**（理由は `docs/progress.md` の 063c 段 1 節が正）。
+   *
+   * 旧: 「この画面にトグルは 1 つも無い」（`queryAllByRole("switch")` が 0 件）。
+   * ⚠⚠ **063c 段 1 でトグルが 1 つ増えた**（「ガチャの演出を配信画面に出す」）ので、
+   * 件数 0 のままだと**このケースを消すしかなくなる**。⇒ **消さずに絞る。**
+   *
+   * ⚠ **旧ケースが本当に殺したかった変異は「064e が消した設定の復活」**である
+   *   （＝「OBS へ自動で反映」トグルが戻ると、**OFF のときに配信イベントの窓が OBS へ出なくなり**、
+   *   061l の玉入れが「開始したのに配信画面に何も出ない」へ戻る）。
+   * ⇒ **件数ではなくアクセシブル名で見る**ようにした。これで
+   *   ①旧トグル（「OBS へ自動で反映」「エフェクトを配信画面に表示」）の復活は**引き続きレッド**
+   *   ②063c のトグルが増えても緑、が両立する。
+   * ⚠⚠ **「switch が 0 件」へ戻さないこと**（戻すと 063c のトグルを消すことになる）。
+   */
+  it("⚠⚠ 064e / 061i: 廃止したトグル（自動反映・配信画面に表示）は戻ってこない", () => {
     render(<ObsEffectsScreen />);
-    expect(screen.queryAllByRole("switch")).toHaveLength(0);
+    for (const gone of [
+      "OBS へ自動で反映",
+      "OBSに自動で反映する",
+      "エフェクトを配信画面に表示",
+    ]) {
+      expect(screen.queryByRole("switch", { name: gone })).toBeNull();
+    }
+    // ⚠ 063c 段 1: いまこの画面に在るトグルは **1 つだけ**（増やすならここも更新すること）。
+    expect(screen.queryAllByRole("switch")).toHaveLength(1);
   });
 
   // --- 061i: タブ ------------------------------------------------------------------------------
@@ -543,11 +564,18 @@ describe("061a: ObsEffectsScreen", () => {
     expect(
       screen.queryByRole("heading", { name: "OBS へ自動で反映" }),
     ).toBeNull();
-    // ⚠ カードが持っていた文言（061e(4) の注記・061p の窓名 note）も戻らない。
+    // ⚠ カードが持っていた文言（061e(4) の注記）も戻らない。
     expect(container.textContent).not.toContain("失敗したときだけ");
-    expect(container.textContent).not.toContain("ウィンドウキャプチャ");
-    // ⚠⚠ **トグルを戻す変異も殺す**（`role="switch"` はこの画面に 1 つも無い）。
-    expect(screen.queryAllByRole("switch")).toHaveLength(0);
+    // ⚠⚠⚠ **063c 段 1: 「ウィンドウキャプチャ」の否定を外した**（理由は progress.md の 063c 段 1 節）。
+    //   旧ケースはこの語を **064e が消したカードの痕跡**として使っていたが、
+    //   ⚠ 063c 段 1 のトグルの説明が**同じ語を正当に使う**（ON にすると OBS に
+    //   「ウィンドウキャプチャ」のソースが作られる、という**起きることの説明**）。
+    //   ⇒ **語の否定ではなく、カードの同一性（見出し・固有の文言・トグル名）で見る。**
+    //   ⚠ **語の否定へ戻さないこと**——戻すと「何が起きるか説明しない」方向へ倒れ、
+    //   061a Q-1（黙って何かが起きる状態を作らない）に反する。
+    expect(container.textContent).not.toContain("OBSに自動で反映する");
+    // ⚠⚠ **旧トグルを戻す変異は名前で殺す**（件数では 063c のトグルと区別できない）。
+    expect(screen.queryByRole("switch", { name: "OBS へ自動で反映" })).toBeNull();
   });
 
   it("⚠ 064e: コメビュ窓が開いていれば前提案内も出ない（この画面は静か）", async () => {
@@ -825,6 +853,85 @@ describe("061a: ObsEffectsScreen", () => {
     await act(async () => {});
 
     expect(localStorage.getItem(STAGE_OVERLAY_ENABLED_KEY)).toBeNull();
+  });
+
+  // --- 063c 段 1: 2 本目の旗（ガチャ演出の明示トグル）の書き手 ---------------------------------
+
+  /**
+   * ⚠⚠⚠ **`docs/security.md` §1（044a 例外）が認める 2 つ目の明示操作の、実装側の固定。**
+   *
+   * ⚠ トグルそのもの（既定 OFF・押せる条件・文言）は `GachaLibraryCard.test.tsx` が固定している。
+   * ここが見るのは **この画面が「旗の唯一の書き手」であること**と、
+   * **ON が `handleStartRound` と同じ 3 点セット**（旗 → ガイド旗 → 窓を開く）であることの 2 つ。
+   */
+
+  /** ガチャを 1 件作り、スパチャの条件へ割り当てる（＝トグルが押せる状態を作る）。 */
+  const enableGachaToggleTarget = () => {
+    fireEvent.click(screen.getByRole("button", { name: "ガチャを作る" }));
+    fireEvent.change(screen.getByLabelText("スーパーチャット・ビッツのエフェクト"), {
+      target: { value: "gacha:g:1" },
+    });
+  };
+  const gachaToggle = () =>
+    screen.getByRole("switch", { name: "ガチャの演出を配信画面に出す" });
+
+  it("⚠⚠⚠ 063c: トグル ON で旗が立ち、ステージ窓が開く（明示操作＝§1 の契機）", async () => {
+    render(<ObsEffectsScreen />);
+    enableGachaToggleTarget();
+    // ⚠ この時点ではまだ何も起きていない（割り当てただけでは窓は開かない）。
+    expect(mocks.openStageOverlayWindow).not.toHaveBeenCalled();
+    expect(localStorage.getItem(GACHA_STAGE_ENABLED_KEY)).toBeNull();
+
+    fireEvent.click(gachaToggle());
+    await act(async () => {});
+
+    expect(localStorage.getItem(GACHA_STAGE_ENABLED_KEY)).toBe("true");
+    expect(mocks.openStageOverlayWindow).toHaveBeenCalledTimes(1);
+    // ⚠⚠ **ガイド旗も立つ**（061a Q-1＝明示操作で窓を開くときだけ。`handleStartRound` と同じ）。
+    expect(localStorage.getItem(EFFECT_OVERLAY_GUIDE_PENDING_KEY)).toBe("true");
+    // ⚠⚠⚠ **061l の旗には 1 バイトも触らない**（旗を共用すると、配信イベントの終了が
+    //   ガチャ演出を黙って止める／画面を開くたびにガチャの旗が消える）。
+    expect(localStorage.getItem(STAGE_OVERLAY_ENABLED_KEY)).toBeNull();
+  });
+
+  it("⚠⚠ 063c: トグル OFF で旗は落ちるが、窓は閉じない（親 046 の規律）", async () => {
+    render(<ObsEffectsScreen />);
+    enableGachaToggleTarget();
+    fireEvent.click(gachaToggle());
+    await act(async () => {});
+
+    fireEvent.click(gachaToggle());
+    await act(async () => {});
+
+    expect(localStorage.getItem(GACHA_STAGE_ENABLED_KEY)).toBe("false");
+    // ⚠⚠ **配信中に窓が消えると OBS のウィンドウキャプチャが真っ黒になる。**
+    //   OBS 側のソースは `CommentViewerApp` が `hideObs("stage")` で非表示にするだけ（削除しない）。
+    expect(mocks.closeStageOverlayWindow).not.toHaveBeenCalled();
+    // ⚠ 窓を開き直しもしない（OFF は「開く」の反対ではない）。
+    expect(mocks.openStageOverlayWindow).toHaveBeenCalledTimes(1);
+  });
+
+  it("⚠⚠⚠ 063c: ガチャを割り当てただけでは旗も窓も動かない（064d が消した派生値を戻さない）", async () => {
+    render(<ObsEffectsScreen />);
+    enableGachaToggleTarget();
+    await act(async () => {});
+
+    // ⚠⚠ **061i にあり 064d が hook ごと削除した「条件が 0 → 1 件で旗が立つ」の復活をここで殺す。**
+    expect(localStorage.getItem(GACHA_STAGE_ENABLED_KEY)).toBeNull();
+    expect(localStorage.getItem(STAGE_OVERLAY_ENABLED_KEY)).toBeNull();
+    expect(mocks.openStageOverlayWindow).not.toHaveBeenCalled();
+    expect(localStorage.getItem(EFFECT_OVERLAY_GUIDE_PENDING_KEY)).toBeNull();
+  });
+
+  it("⚠⚠ 063c: 画面を開いただけではガチャの旗に 1 バイトも書かない", async () => {
+    // ⚠ 061l 側の「取り残し修復」と違い、こちらは**掃除する対象が無い**
+    //   （常設トグルなので「取り残し」という状態が存在しない）。
+    //   ⇒ マウント時に false を書く実装を足すと、**ユーザーの設定を毎回消す**ことになる。
+    localStorage.setItem(GACHA_STAGE_ENABLED_KEY, "true");
+    render(<ObsEffectsScreen />);
+    await act(async () => {});
+
+    expect(localStorage.getItem(GACHA_STAGE_ENABLED_KEY)).toBe("true");
   });
 
   // ⚠⚠ **061p: 「「開催中のイベント」行は共通領域にある」を削除した**（行ごと廃止）。

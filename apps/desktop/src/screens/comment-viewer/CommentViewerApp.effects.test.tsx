@@ -4,6 +4,8 @@ import { render, act, fireEvent, screen, waitFor } from "@testing-library/react"
 import { CommentViewerApp } from "./CommentViewerApp";
 import {
   STAGE_OVERLAY_ENABLED_KEY,
+  // ⚠⚠ 063c 段 1: **2 本目の旗**（ガチャ演出の明示トグル）。この窓は読み手のうちの 2 経路を持つ。
+  GACHA_STAGE_ENABLED_KEY,
   // ⚠ 064e: `EFFECT_OBS_AUTO_ADD_KEY` の import を外した（自動反映が既定になり設定が消えた）。
   // 064a: OBS 側のソースを再生する方式（main 窓 → この窓）。
   OBS_SOURCE_LIST_REQUEST_KEY,
@@ -377,11 +379,13 @@ describe("061a/064d ステージ窓の OBS 自動反映（コメビュ窓が代�
   });
 
   it("⚠⚠⚠ 064e: 開催していなければ接続時に送らない（明示的に有効化した時のみ接続・§1）", async () => {
-    // ⚠⚠⚠ **`docs/security.md` §1 の 044a 例外を守る、いま唯一のガードがこれである。**
+    // ⚠⚠⚠ **`docs/security.md` §1 の 044a 例外を守るガードがこれである。**
     //   旧題は「**自動反映 OFF なら**マウント時に送らない」で、ガードは 2 枚あった
     //   （①自動反映トグル ②開催中か）。⚠ **064e で①を外した**（既定 ON）ので、
-    //   **残った 1 枚がこのケースが見ているもの**＝ `loadStageOverlayEnabled()`。
-    //   ⚠⚠ **ここを外すと「配信イベントを開始していないのに OBS へ繋ぐ」**ことになり、
+    //   **残った 1 枚がこのケースが見ているもの**だった。
+    //   ⚠⚠⚠ **063c 段 1: それが `isStageOverlayRequired()` になった**（旗が 2 本になったため）。
+    //   ここでは**どちらの旗も立っていない**ので、依然として 1 バイトも送らないことを見る。
+    //   ⚠⚠ **ここを外すと「明示操作ゼロで OBS へ繋ぐ」**ことになり、
     //   §1 の「ユーザーが明示的に有効化した時のみ」を本当に破る。**このケースを消さないこと。**
     mocks.isStageOverlayOpen.mockResolvedValue(true);
 
@@ -390,6 +394,194 @@ describe("061a/064d ステージ窓の OBS 自動反映（コメビュ窓が代�
     await act(async () => {});
 
     expect(mocks.stream.enableObs).not.toHaveBeenCalled();
+  });
+
+  // --- 063c 段 1: 2 本目の旗と AND ゲート（§1 のガードは 1 本） ---------------------------------
+
+  /** ガチャを指す条件を 1 件だけ保存する（AND ゲートの片側を満たす）。 */
+  function putGachaCondition() {
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify([
+        {
+          id: "event:superchat",
+          when: { type: "event", eventType: "superchat" },
+          effect: { kind: "gacha", gachaId: "g:1" },
+        },
+      ]),
+    );
+  }
+
+  it("⚠⚠ 063c: ガチャのトグル ON ＋ 割り当てあり → 接続時に送る（開催していなくても）", async () => {
+    // ⚠⚠⚠ **これが 063c 段 1 で新設した経路そのもの**——
+    //   064e までは「配信イベントを開催していないと OBS へ繋がらない」だった。
+    putGachaCondition();
+    localStorage.setItem(GACHA_STAGE_ENABLED_KEY, "true");
+    mocks.isStageOverlayOpen.mockResolvedValue(true);
+
+    render(<CommentViewerApp />);
+    emitConnected();
+    await act(async () => {});
+
+    expect(mocks.stream.enableObs).toHaveBeenCalledWith(4455, "stage");
+  });
+
+  it("⚠⚠⚠ 063c: 割り当てがあってもトグル OFF なら送らない（派生値だけで繋がない）", async () => {
+    // ⚠⚠ **061i にあり 064d が hook ごと削除した形／064c が却下した線を、ここで殺す。**
+    putGachaCondition();
+    mocks.isStageOverlayOpen.mockResolvedValue(true);
+
+    render(<CommentViewerApp />);
+    emitConnected();
+    await act(async () => {});
+
+    expect(mocks.stream.enableObs).not.toHaveBeenCalled();
+  });
+
+  it("⚠⚠ 063c: トグル ON でもガチャの割り当てが 0 件なら送らない（AND ゲート）", async () => {
+    // ⚠ 条件はあるが**ガチャを指していない**（OBS ソース直指定）。
+    putObsCondition();
+    localStorage.setItem(GACHA_STAGE_ENABLED_KEY, "true");
+    mocks.isStageOverlayOpen.mockResolvedValue(true);
+
+    render(<CommentViewerApp />);
+    emitConnected();
+    await act(async () => {});
+
+    expect(mocks.stream.enableObs).not.toHaveBeenCalled();
+  });
+
+  it("⚠⚠ 063c: トグルの書換を storage で受けると、猶予後に enableObs が飛ぶ", async () => {
+    vi.useFakeTimers();
+    try {
+      putGachaCondition();
+      render(<CommentViewerApp />);
+      emitConnected();
+      await act(async () => {});
+
+      emitSettingChange(GACHA_STAGE_ENABLED_KEY, "true");
+      await act(() => vi.advanceTimersByTimeAsync(10_000));
+
+      expect(mocks.stream.enableObs).toHaveBeenCalledWith(4455, "stage");
+      expect(mocks.stream.enableObs).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("⚠⚠⚠ 063c: 割り当てを全部消すと hideObs が飛ぶ（OBS への接続が残り続けない）", async () => {
+    vi.useFakeTimers();
+    try {
+      putGachaCondition();
+      localStorage.setItem(GACHA_STAGE_ENABLED_KEY, "true");
+      // ⚠ 接続時 reconcile は**実窓があるときだけ**送る（046d レビュー＝空ソースを残さない）。
+      mocks.isStageOverlayOpen.mockResolvedValue(true);
+      render(<CommentViewerApp />);
+      emitConnected();
+      await act(async () => {});
+      await act(() => vi.advanceTimersByTimeAsync(10_000));
+      expect(mocks.stream.enableObs).toHaveBeenCalledWith(4455, "stage");
+
+      // main 窓でガチャの割り当てを「出さない」へ戻した（＝条件キーが書き換わる）。
+      emitSettingChange(EFFECT_ASSIGNMENTS_KEY, JSON.stringify([]));
+
+      expect(mocks.stream.hideObs).toHaveBeenCalledWith(4455, "stage");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("⚠⚠⚠ 063c: 条件を編集しただけでは OBS を触らない（エッジ検出・064 S-1 と同型）", async () => {
+    // ⚠⚠ **ここが「条件キーを購読対象に足した」ことの代償を殺しているケースである。**
+    //   レベル判定のままだと、ガチャを使っていないユーザーが**キーワード条件を 1 つ打つたびに**
+    //   `hideObs("stage")` が OBS へ飛ぶ（＝ユーザーが何もしていないのに OBS を触りに行く）。
+    //   ⚠ 064 レビュー S-1 の②が「無条件に打たない」を選んだのとまったく同じ理由。
+    render(<CommentViewerApp />);
+    emitConnected();
+    await act(async () => {});
+
+    emitSettingChange(EFFECT_ASSIGNMENTS_KEY, JSON.stringify([]));
+    emitSettingChange(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify([
+        {
+          id: "kw:1",
+          when: { type: "keyword", text: "草", match: "contains" },
+          effect: { kind: "obs-source", sourceName: "きらきら演出" },
+        },
+      ]),
+    );
+
+    expect(mocks.stream.hideObs).not.toHaveBeenCalled();
+    expect(mocks.stream.enableObs).not.toHaveBeenCalled();
+  });
+
+  /**
+   * ⚠⚠⚠ **063c 段 1 レビュー Q-1（修正）: エッジ検出の `enable` 側が固定できていなかった。**
+   *
+   * 上のケースは**ガードが false のまま**条件を編集する形なので、殺せるのは `else` 側
+   * （`hideObs`）だけである。⚠ **`if (changed) scheduleObsAutoAdd("stage")` から `if (changed)` を
+   * 外す変異は、レビュー時点で全 1893 件が緑のまま通過した**（実測）。
+   * ⇒ そのとき起きるのは「**ガードが true で安定しているユーザーが、条件を 1 つ編集するたびに
+   * `enableObs` を OBS へ撃ち直す**」＝ `hideObs` 側で潰した失敗モードの鏡像である
+   * （`setObsState("connecting")` も毎回走るのでツールバーが点滅する）。
+   * ⇒ **ガードが true のまま条件が変わる**形で撃ち直しの有無を見る。
+   */
+  it("⚠⚠⚠ 063c: ガードが true のまま条件を編集しても enableObs を撃ち直さない（エッジ検出の enable 側）", async () => {
+    vi.useFakeTimers();
+    try {
+      putGachaCondition();
+      localStorage.setItem(GACHA_STAGE_ENABLED_KEY, "true");
+      // ⚠ 接続時 reconcile は**実窓があるときだけ**送る（046d レビュー＝空ソースを残さない）。
+      mocks.isStageOverlayOpen.mockResolvedValue(true);
+      render(<CommentViewerApp />);
+      emitConnected();
+      await act(async () => {});
+      await act(() => vi.advanceTimersByTimeAsync(10_000));
+      expect(mocks.stream.enableObs).toHaveBeenCalledTimes(1);
+
+      // ⚠⚠ **ガチャを指す条件は残したまま**、無関係なキーワード条件を 1 件足す
+      //   （＝ `isStageOverlayRequired()` は true → true で変わらない）。
+      emitSettingChange(
+        EFFECT_ASSIGNMENTS_KEY,
+        JSON.stringify([
+          {
+            id: "event:superchat",
+            when: { type: "event", eventType: "superchat" },
+            effect: { kind: "gacha", gachaId: "g:1" },
+          },
+          {
+            id: "kw:1",
+            when: { type: "keyword", text: "草", match: "contains" },
+            effect: { kind: "obs-source", sourceName: "きらきら演出" },
+          },
+        ]),
+      );
+      await act(() => vi.advanceTimersByTimeAsync(10_000));
+
+      // ⚠⚠⚠ **撃ち直していない**（`if (changed)` を外すとここがレッドになる）。
+      expect(mocks.stream.enableObs).toHaveBeenCalledTimes(1);
+      expect(mocks.stream.hideObs).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("⚠⚠ 063c: 061l の旗は無改変で効き続ける（開催中はガチャのトグルが OFF でも送る）", async () => {
+    vi.useFakeTimers();
+    try {
+      localStorage.setItem(GACHA_STAGE_ENABLED_KEY, "false");
+      render(<CommentViewerApp />);
+      emitConnected();
+      await act(async () => {});
+
+      emitSettingChange(STAGE_OVERLAY_ENABLED_KEY, "true");
+      await act(() => vi.advanceTimersByTimeAsync(10_000));
+
+      expect(mocks.stream.enableObs).toHaveBeenCalledWith(4455, "stage");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("即時反映: 表示 ON の書換を storage で受けると、猶予後に enableObs が飛ぶ", async () => {

@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
+  EFFECT_ASSIGNMENTS_KEY,
   EFFECT_OVERLAY_GUIDE_PENDING_KEY,
+  GACHA_STAGE_ENABLED_KEY,
   STAGE_OVERLAY_ENABLED_KEY,
 } from "./overlaySettings";
 
@@ -38,6 +40,17 @@ vi.mock("./windowApi", () => ({
 }));
 
 const { restoreEffectOverlayWindow } = await import("./effectOverlayRestore");
+/**
+ * ⚠⚠⚠ 063c 段 1: **本物のガードを注入する**（スタブで代用しない）。
+ *
+ * この経路は「**ユーザー操作なしに窓が開く**」唯一の経路であり、
+ * ⚠⚠ 守っているのは注入された関数そのものである。⇒ ここをスタブにすると
+ * **`docs/security.md` §1 のガードを 1 度も通さないままテストが緑になる**
+ * （`effectAssignments.test.ts` の「⚠ スタブ matcher で代用しないこと——実測」と同じ罠）。
+ */
+const { isStageOverlayRequired } = await import(
+  "../../screens/obs-effects/stageOverlayGuard"
+);
 
 beforeEach(() => {
   localStorage.clear();
@@ -51,7 +64,7 @@ describe("061a: restoreEffectOverlayWindow（起動時の窓復元）", () => {
     localStorage.setItem(STAGE_OVERLAY_ENABLED_KEY, "true");
     mocks.isStageOverlayOpen.mockResolvedValue(false);
 
-    await restoreEffectOverlayWindow();
+    await restoreEffectOverlayWindow(isStageOverlayRequired);
 
     expect(mocks.openStageOverlayWindow).toHaveBeenCalledTimes(1);
     // ⚠ 引数を渡さない＝任意ラベル/任意オプションの窓生成を frontend から要求しない（§3）。
@@ -62,7 +75,7 @@ describe("061a: restoreEffectOverlayWindow（起動時の窓復元）", () => {
     // 未保存＝既定 OFF。
     mocks.isStageOverlayOpen.mockResolvedValue(false);
 
-    await restoreEffectOverlayWindow();
+    await restoreEffectOverlayWindow(isStageOverlayRequired);
 
     expect(mocks.openStageOverlayWindow).not.toHaveBeenCalled();
   });
@@ -70,7 +83,7 @@ describe("061a: restoreEffectOverlayWindow（起動時の窓復元）", () => {
   it("⚠ 設定が明示的に false でも開かない（'false' 文字列を真と読まない）", async () => {
     localStorage.setItem(STAGE_OVERLAY_ENABLED_KEY, "false");
 
-    await restoreEffectOverlayWindow();
+    await restoreEffectOverlayWindow(isStageOverlayRequired);
 
     expect(mocks.openStageOverlayWindow).not.toHaveBeenCalled();
   });
@@ -79,7 +92,7 @@ describe("061a: restoreEffectOverlayWindow（起動時の窓復元）", () => {
     localStorage.setItem(STAGE_OVERLAY_ENABLED_KEY, "true");
     mocks.isStageOverlayOpen.mockResolvedValue(true);
 
-    await restoreEffectOverlayWindow();
+    await restoreEffectOverlayWindow(isStageOverlayRequired);
 
     expect(mocks.openStageOverlayWindow).not.toHaveBeenCalled();
   });
@@ -97,7 +110,7 @@ describe("061a: restoreEffectOverlayWindow（起動時の窓復元）", () => {
       }),
     );
 
-    const pending = restoreEffectOverlayWindow();
+    const pending = restoreEffectOverlayWindow(isStageOverlayRequired);
     // 解決前にユーザーが OFF にする。
     localStorage.setItem(STAGE_OVERLAY_ENABLED_KEY, "false");
     resolveIsOpen?.(false);
@@ -112,7 +125,7 @@ describe("061a: restoreEffectOverlayWindow（起動時の窓復元）", () => {
     localStorage.setItem(STAGE_OVERLAY_ENABLED_KEY, "true");
     mocks.isStageOverlayOpen.mockResolvedValue(false);
 
-    await restoreEffectOverlayWindow();
+    await restoreEffectOverlayWindow(isStageOverlayRequired);
 
     expect(mocks.openStageOverlayWindow).toHaveBeenCalledTimes(1);
     expect(localStorage.getItem(EFFECT_OVERLAY_GUIDE_PENDING_KEY)).toBeNull();
@@ -124,7 +137,7 @@ describe("061a: restoreEffectOverlayWindow（起動時の窓復元）", () => {
     localStorage.setItem(STAGE_OVERLAY_ENABLED_KEY, "true");
     localStorage.setItem(EFFECT_OVERLAY_GUIDE_PENDING_KEY, "true");
 
-    await restoreEffectOverlayWindow();
+    await restoreEffectOverlayWindow(isStageOverlayRequired);
 
     expect(localStorage.getItem(EFFECT_OVERLAY_GUIDE_PENDING_KEY)).toBe("true");
   });
@@ -133,7 +146,7 @@ describe("061a: restoreEffectOverlayWindow（起動時の窓復元）", () => {
     localStorage.setItem(STAGE_OVERLAY_ENABLED_KEY, "true");
     mocks.isStageOverlayOpen.mockRejectedValue(new Error("invoke failed"));
 
-    await expect(restoreEffectOverlayWindow()).rejects.toThrow();
+    await expect(restoreEffectOverlayWindow(isStageOverlayRequired)).rejects.toThrow();
     expect(mocks.openStageOverlayWindow).not.toHaveBeenCalled();
   });
 
@@ -141,7 +154,7 @@ describe("061a: restoreEffectOverlayWindow（起動時の窓復元）", () => {
     localStorage.setItem(STAGE_OVERLAY_ENABLED_KEY, "true");
     mocks.openStageOverlayWindow.mockRejectedValue(new Error("build failed"));
 
-    await expect(restoreEffectOverlayWindow()).rejects.toThrow();
+    await expect(restoreEffectOverlayWindow(isStageOverlayRequired)).rejects.toThrow();
   });
 
   // --- 061k（新規 10）: 2 窓を独立に復元する -----------------------------------------------------
@@ -152,7 +165,7 @@ describe("061a: restoreEffectOverlayWindow（起動時の窓復元）", () => {
     localStorage.setItem(STAGE_OVERLAY_ENABLED_KEY, "true");
     localStorage.setItem(STAGE_OVERLAY_ENABLED_KEY, "true");
 
-    await restoreEffectOverlayWindow();
+    await restoreEffectOverlayWindow(isStageOverlayRequired);
 
     expect(mocks.openStageOverlayWindow).toHaveBeenCalledTimes(1);
     expect(mocks.openStageOverlayWindow).toHaveBeenCalledTimes(1);
@@ -168,7 +181,7 @@ describe("061a: restoreEffectOverlayWindow（起動時の窓復元）", () => {
       return false;
     });
 
-    await restoreEffectOverlayWindow();
+    await restoreEffectOverlayWindow(isStageOverlayRequired);
 
     expect(mocks.openStageOverlayWindow).not.toHaveBeenCalled();
   });
@@ -180,8 +193,68 @@ describe("061a: restoreEffectOverlayWindow（起動時の窓復元）", () => {
     localStorage.setItem(STAGE_OVERLAY_ENABLED_KEY, "true");
     mocks.openStageOverlayWindow.mockRejectedValue(new Error("build failed"));
 
-    await expect(restoreEffectOverlayWindow()).rejects.toThrow();
+    await expect(restoreEffectOverlayWindow(isStageOverlayRequired)).rejects.toThrow();
     // ⚠⚠ **本命**: コーナーが失敗してもステージは開く。
+    expect(mocks.openStageOverlayWindow).toHaveBeenCalledTimes(1);
+  });
+
+  // --- 063c 段 1: 2 本目の旗（ガチャ演出の明示トグル）と AND ゲート -----------------------------
+
+  /** ガチャを指す条件 1 件ぶんの保存値（⚠ 形は `parseConditions` が受け取るものそのまま）。 */
+  const gachaCondition = () =>
+    JSON.stringify([
+      {
+        when: { type: "event", eventType: "superchat" },
+        effect: { kind: "gacha", gachaId: "g:1" },
+      },
+    ]);
+
+  it("⚠⚠ ガチャのトグル ON ＋ ガチャを指す条件あり → 窓を復元する（常設トグルの意味）", async () => {
+    // ⚠ 配信イベントは開催していない（`STAGE_OVERLAY_ENABLED_KEY` は未保存＝false）。
+    //   ⇒ **063c 段 1 で初めて、開催なしにステージ窓が開く経路ができた**（§1 の 063c 追補）。
+    localStorage.setItem(GACHA_STAGE_ENABLED_KEY, "true");
+    localStorage.setItem(EFFECT_ASSIGNMENTS_KEY, gachaCondition());
+
+    await restoreEffectOverlayWindow(isStageOverlayRequired);
+
+    expect(mocks.openStageOverlayWindow).toHaveBeenCalledTimes(1);
+  });
+
+  it("⚠⚠⚠ ガチャを指す条件があってもトグル OFF なら復元しない（派生値で窓を開かない）", async () => {
+    // ⚠⚠ **これが 064d で削除した `useEffectTemplates` の形の復活を殺しているケース**である
+    //   （「条件が 0 → 1 件になったら旗を立てる」＝ 064c も明示的に却下した線）。
+    localStorage.setItem(EFFECT_ASSIGNMENTS_KEY, gachaCondition());
+
+    await restoreEffectOverlayWindow(isStageOverlayRequired);
+
+    expect(mocks.openStageOverlayWindow).not.toHaveBeenCalled();
+  });
+
+  it("⚠⚠ トグル ON でもガチャを指す条件が 0 件なら復元しない（AND ゲート）", async () => {
+    // ⚠ 「割り当てを全部消したら OBS への接続が残り続けない」の起動時ぶん。
+    localStorage.setItem(GACHA_STAGE_ENABLED_KEY, "true");
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      // ⚠ 条件はあるが**ガチャを指していない**（OBS ソース直指定）。
+      JSON.stringify([
+        {
+          when: { type: "event", eventType: "superchat" },
+          effect: { kind: "obs-source", sourceName: "大当たり" },
+        },
+      ]),
+    );
+
+    await restoreEffectOverlayWindow(isStageOverlayRequired);
+
+    expect(mocks.openStageOverlayWindow).not.toHaveBeenCalled();
+  });
+
+  it("⚠ 開催中ならガチャのトグルが OFF でも復元する（061l の経路を壊していない）", async () => {
+    localStorage.setItem(STAGE_OVERLAY_ENABLED_KEY, "true");
+    localStorage.setItem(GACHA_STAGE_ENABLED_KEY, "false");
+
+    await restoreEffectOverlayWindow(isStageOverlayRequired);
+
     expect(mocks.openStageOverlayWindow).toHaveBeenCalledTimes(1);
   });
 });

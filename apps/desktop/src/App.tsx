@@ -37,6 +37,7 @@ import { OverlayApp } from "./screens/comment-viewer/OverlayApp";
 import { PinnedOverlayApp } from "./screens/comment-viewer/PinnedOverlayApp";
 import { EffectOverlayApp } from "./screens/obs-effects/EffectOverlayApp";
 import { ObsEffectsScreen } from "./screens/obs-effects/ObsEffectsScreen";
+import { isStageOverlayRequired } from "./screens/obs-effects/stageOverlayGuard";
 import { restoreEffectOverlayWindow } from "./features/comment-viewer/effectOverlayRestore";
 
 function MainWindowApp() {
@@ -105,7 +106,10 @@ function MainWindowApp() {
   // 1 本の ref チェーンに統合する。
   useEffect(() => {
     // 窓生成の失敗は他機能に影響させない（ここで完結させる）。復元できなくても設定は残るので次回に再挑戦する。
-    void restoreEffectOverlayWindow().catch(() => {});
+    // ⚠⚠⚠ 063c 段 1: **`docs/security.md` §1 のガードをここで渡す**（`isStageOverlayRequired`）。
+    //   ⚠ 渡す関数を「旗の直読み」へ差し替えないこと——**この経路はユーザー操作ゼロで窓を開く**ので、
+    //   ガードを迂回した瞬間に「無操作で OBS へ TCP 接続を張る」になる（064 レビュー S-1 の壊れ方）。
+    void restoreEffectOverlayWindow(isStageOverlayRequired).catch(() => {});
   }, []);
 
   // プリセット一覧が変わったら、選択中IDが有効か検証し、無効なら先頭（無ければ null）へ寄せる

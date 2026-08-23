@@ -4,14 +4,18 @@ import { render, screen, fireEvent, within } from "@testing-library/react";
 import {
   EFFECT_ASSIGNMENTS_KEY,
   GACHA_LIBRARY_KEY,
+  GACHA_STAGE_ENABLED_KEY,
   OBS_SOURCE_LIST_KEY,
+  loadGachaStageEnabled,
   loadObsSourceList,
+  saveGachaStageEnabled,
 } from "../../features/comment-viewer/overlaySettings";
 import { EffectAssignmentCard } from "./EffectAssignmentCard";
 import { GachaLibraryCard } from "./GachaLibraryCard";
 import {
   GACHA_DEFINITION_MAX,
   loadGachaLibrary,
+  referencedGachaIds,
   runGachaMigration,
   saveGachaLibrary,
   type GachaDefinition,
@@ -54,13 +58,35 @@ const Harness = () => {
   const [gachas, setGachas] = useState<readonly GachaDefinition[]>(() =>
     runGachaMigration(),
   );
+  /**
+   * ⚠⚠ 063c 段 1: **旗まわりも `ObsEffectsScreen` と同じ配線で再現する**
+   * （トグルの `disabled` は「条件カードの書換 → 画面が読み直す」という**跨いだ配線**に
+   * 乗っているので、スタブで代用すると**その配線自体が検査されない**）。
+   */
+  const [stageEnabled, setStageEnabled] = useState<boolean>(loadGachaStageEnabled);
+  const [hasGachaCondition, setHasGachaCondition] = useState<boolean>(
+    () => referencedGachaIds().length > 0,
+  );
   return (
     <>
-      <EffectAssignmentCard gachas={gachas} />
+      <EffectAssignmentCard
+        gachas={gachas}
+        onConditionsChange={() =>
+          setHasGachaCondition(referencedGachaIds().length > 0)
+        }
+      />
       <GachaLibraryCard
         gachas={gachas}
         obsSources={loadObsSourceList()?.sources ?? null}
         onChange={(next) => setGachas(saveGachaLibrary(next))}
+        stageEnabled={stageEnabled}
+        canEnableStage={hasGachaCondition}
+        onStageEnabledChange={(next) => {
+          // ⚠ 画面側と同じ順（保存 → state）。⚠⚠ 窓を開く invoke はここでは再現しない
+          //   （`ObsEffectsScreen.test.tsx` が固定する）。
+          saveGachaStageEnabled(next);
+          setStageEnabled(next);
+        }}
       />
     </>
   );
@@ -429,5 +455,133 @@ describe("GachaLibraryCard（063d）", () => {
     for (const forbidden of ["history", "winner", "drawnAt", "当選"]) {
       expect(raw).not.toContain(forbidden);
     }
+  });
+
+  // --- 063c 段 1: 「ガチャの演出を配信画面に出す」トグル（§1 の 2 つ目の明示操作） ---------------
+
+  /**
+   * ⚠⚠⚠ **このブロックが固定しているのは `docs/security.md` §1（044a 例外）の姿勢そのものである。**
+   *
+   * ここが緑である限り、「**ユーザーの明示操作なしにステージ窓が開き OBS へ繋ぐ**」は作れない。
+   * ⚠ 実際に窓が開くこと・旗が立つことは `ObsEffectsScreen.test.tsx` が、
+   * 旗から OBS への反映は `CommentViewerApp.effects.test.tsx` が、
+   * 起動時の復元は `effectOverlayRestore.test.ts` が固定している（**4 ファイルで 1 本の鎖**）。
+   */
+  const STAGE_TOGGLE = "ガチャの演出を配信画面に出す";
+  const assignGacha = () =>
+    fireEvent.change(selectFor(EFFECT_EVENT_LABEL.superchat), {
+      target: { value: "gacha:g:1" },
+    });
+
+  it("⚠⚠ 既定は OFF（＝明示的に有効化していないユーザーは OBS へ繋がない）", () => {
+    render(<Harness />);
+    expect(screen.getByRole("switch", { name: STAGE_TOGGLE })).toHaveAttribute(
+      "aria-checked",
+      "false",
+    );
+    expect(loadGachaStageEnabled()).toBe(false);
+    expect(localStorage.getItem(GACHA_STAGE_ENABLED_KEY)).toBeNull();
+  });
+
+  it("⚠⚠⚠ ガチャを割り当てるまで ON にできない（押せない理由も出す）", () => {
+    putObsSources();
+    render(<Harness />);
+    createGacha();
+    // ⚠ ガチャを「作った」だけでは足りない——**条件に割り当てて初めて**押せる。
+    expect(screen.getByRole("switch", { name: STAGE_TOGGLE })).toBeDisabled();
+    expect(
+      screen.getByText(
+        "上の「エフェクトを表示する条件」でガチャを割り当てると、この設定を ON にできます。",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("⚠⚠ ガチャを条件に割り当てると押せるようになる（黙って押せないままにしない）", () => {
+    putObsSources();
+    render(<Harness />);
+    createGacha();
+    assignGacha();
+    // ⚠⚠ **これが `onConditionsChange` の配線そのものである**（外すとレッド）。
+    expect(screen.getByRole("switch", { name: STAGE_TOGGLE })).toBeEnabled();
+  });
+
+  it("⚠⚠⚠ ガチャを割り当てただけでは旗が立たない（派生値で有効化しない・064d が消した形）", () => {
+    putObsSources();
+    render(<Harness />);
+    createGacha();
+    assignGacha();
+    // ⚠⚠ **押せるようになっただけ**で、旗は OFF のまま＝ OBS へは 1 バイトも向かわない。
+    expect(loadGachaStageEnabled()).toBe(false);
+    expect(screen.getByRole("switch", { name: STAGE_TOGGLE })).toHaveAttribute(
+      "aria-checked",
+      "false",
+    );
+  });
+
+  it("トグルを押すと旗が立ち、もう一度押すと落ちる（明示操作の 1 往復）", () => {
+    putObsSources();
+    render(<Harness />);
+    createGacha();
+    assignGacha();
+
+    fireEvent.click(screen.getByRole("switch", { name: STAGE_TOGGLE }));
+    expect(loadGachaStageEnabled()).toBe(true);
+
+    fireEvent.click(screen.getByRole("switch", { name: STAGE_TOGGLE }));
+    expect(loadGachaStageEnabled()).toBe(false);
+  });
+
+  it("⚠⚠ ON のまま割り当てを全部消しても OFF に戻せる（脱出路を塞がない）", () => {
+    putObsSources();
+    render(<Harness />);
+    createGacha();
+    assignGacha();
+    fireEvent.click(screen.getByRole("switch", { name: STAGE_TOGGLE }));
+    expect(loadGachaStageEnabled()).toBe(true);
+
+    // 割り当てを「出さない」へ戻す＝ガチャを指す条件が 0 件になる。
+    fireEvent.change(selectFor(EFFECT_EVENT_LABEL.superchat), {
+      target: { value: "none" },
+    });
+
+    // ⚠⚠⚠ **`disabled` の式を `!canEnableStage` だけにするとここがレッドになる**
+    //   （ON のまま押せなくなり、ユーザーが自分で OFF に戻せない）。
+    const toggle = screen.getByRole("switch", { name: STAGE_TOGGLE });
+    expect(toggle).toBeEnabled();
+    // ⚠ そして「いま出ない」理由が画面に出ている（黙って効かない、を作らない）。
+    expect(
+      screen.getByText("ガチャを割り当てた条件がないため、いまは配信画面に出ません。"),
+    ).toBeInTheDocument();
+
+    fireEvent.click(toggle);
+    expect(loadGachaStageEnabled()).toBe(false);
+  });
+
+  it("⚠ 保存済みの ON を読んで表示する（常設トグル＝再起動しても ON のまま）", () => {
+    putObsSources();
+    saveGachaStageEnabled(true);
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify([
+        {
+          when: { type: "event", eventType: "superchat" },
+          effect: { kind: "gacha", gachaId: "g:1" },
+        },
+      ]),
+    );
+    render(<Harness />);
+    expect(screen.getByRole("switch", { name: STAGE_TOGGLE })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+  });
+
+  it("⚠⚠ §9: 旗に載るのは 'true' / 'false' だけ（第三者データも景品名も入らない）", () => {
+    putObsSources();
+    render(<Harness />);
+    createGacha();
+    assignGacha();
+    fireEvent.click(screen.getByRole("switch", { name: STAGE_TOGGLE }));
+    expect(localStorage.getItem(GACHA_STAGE_ENABLED_KEY)).toBe("true");
   });
 });
