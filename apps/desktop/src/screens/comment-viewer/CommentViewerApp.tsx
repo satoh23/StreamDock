@@ -17,9 +17,11 @@ import {
 } from "../../features/comment-viewer/voicevoxPreview";
 import {
   connectCommentStream,
+  SESSION_CONTROL_UNAVAILABLE_REASON,
   type CommentStreamHandle,
   type DeviceCodePrompt,
   type ObsOverlayKind,
+  type SessionControlResult,
   type ThemeFontFetchResult,
   type ThemeImportFetchResult,
 } from "../../features/comment-viewer/commentStream";
@@ -71,8 +73,11 @@ import {
  *
  * ⚠⚠ **なぜこの窓なのか（構造上の必然）**: sidecar と WS で繋がっているのは**この窓だけ**なので、
  * OBS を鳴らせるのもこの窓だけである（064a で `ObsSourceCard` の依頼を代行しているのと同じ非対称）。
- * ⚠ エフェクト窓（テンプレートを描くレーン）は **OBS 用の条件を 1 度も見ない**
- * （`createEffectMatcher` が当たり判定の前に落とす）。
+ * ⚠⚠ **064d でエフェクト窓（テンプレートを描くレーン）は廃止された**ので、
+ * いま `decideEffects` を回すのはこの窓だけである（当時の JSDoc が書いていた
+ * `createEffectMatcher` も 064d で削除済み。名前だけが残っていたのを 063b で掃除した）。
+ * ⚠⚠⚠ **063b: ガチャもこのレーンに乗った**（2 本目のレーンを作らなかった＝出力先が同じだから。
+ * 理由の全文は `createEffectFireMatcher` の JSDoc が正）。
  *
  * ⚠⚠ **`screens/comment-viewer/` → `screens/obs-effects/` の import はここが初めて**である。
  * 逆向き（`obs-effects/` → `comment-viewer/viewerFormat`）は 061b から在り、ディレクトリとしては
@@ -88,10 +93,13 @@ import {
 import {
   createEffectTriggerState,
   createSeenEffectIds,
-  decideEffects,
   takeFreshComments,
 } from "../obs-effects/effectTrigger";
-import { createObsSourceMatcher } from "../obs-effects/effectAssignments";
+import { decideFireSourceNames } from "../obs-effects/effectFire";
+import {
+  createEffectFireMatcher,
+  loadGachaLibrary,
+} from "../obs-effects/effectAssignments";
 // 046a: 固定コメント（ピン留め）のピンストア。本体が唯一の書き手で、046b の固定専用オーバーレイが読み手になる。
 import {
   savePinned,
@@ -668,9 +676,9 @@ export function CommentViewerApp() {
   //   ここを state にすると effect が張り直されて WS が切れ、その間のコメントを落とす。
   const obsEffectStateRef = useRef(createEffectTriggerState());
   const obsEffectSeenIdsRef = useRef<Set<string>>(createSeenEffectIds());
-  // ⚠⚠ **matcher は呼ばれるたびに localStorage を読み直す**（`createObsSourceMatcher` の JSDoc が正）。
+  // ⚠⚠ **matcher は呼ばれるたびに localStorage を読み直す**（`createEffectFireMatcher` の JSDoc が正）。
   //   ＝ main 窓で条件を変えた直後の 1 件目から効く（`storage` の窓跨ぎ伝播に依存しない）。
-  const obsSourceMatcher = useMemo(() => createObsSourceMatcher(), []);
+  const effectFireMatcher = useMemo(() => createEffectFireMatcher(), []);
 
   // 058a: 通知音の出力デバイス（②-軽）。
   // - audioOutputDeviceId: ユーザーが選んだデバイス ID の永続状態（非機密・localStorage）。
@@ -1462,20 +1470,28 @@ export function CommentViewerApp() {
           incoming,
         );
         if (freshForObs.length > 0) {
-          const fires = decideEffects(
+          // ⚠⚠⚠ **063b: 発火の決定と抽選は `decideFireSourceNames` の中で完結する。**
+          //   ⚠ **ここで組み立て直さないこと**——`decideEffects` と抽選をこの窓の中で並べると、
+          //   「抽選が畳み込み・バースト上限・クールダウンの後で 1 回だけ起きる」ことを
+          //   **テストで固定できるのがこのコンポーネントだけ**になる（あちらの JSDoc が正）。
+          // ⚠ `loadGachaLibrary` を**関数のまま渡す**のは、ガチャの発火が 1 件も無いバッチで
+          //   localStorage を読まないため（＋鳴らす直前に読み直すため）。
+          // ⚠⚠ 乱数は**演出用**であって暗号用途ではない（`decideFireSourceNames` の JSDoc が正）。
+          const sourceNames = decideFireSourceNames(
             freshForObs,
             [],
             obsEffectStateRef.current,
             Date.now(),
-            obsSourceMatcher,
+            effectFireMatcher,
+            loadGachaLibrary,
+            Math.random,
           );
-          for (const fire of fires) {
+          for (const sourceName of sourceNames) {
             // ⚠ 何秒出すかは **OBS 側のメディアの長さ**が正（sidecar が聞く）。
             //   ここで渡すのは**聞けなかったときの既定**だけである。
-            requestObsSourceFire(
-              fire.sourceName,
-              OBS_SOURCE_FALLBACK_DURATION_MS,
-            );
+            //   ⚠⚠ **ガチャの景品も OBS ソース直指定とまったく同じ経路**を通る
+            //   （＝ 064a の「`GetInputList` との実在照合」の壁を景品も経由する）。
+            requestObsSourceFire(sourceName, OBS_SOURCE_FALLBACK_DURATION_MS);
           }
         }
       },
@@ -1545,7 +1561,7 @@ export function CommentViewerApp() {
     // ⚠ 059a/059b: playBatchNotification が state を依存に持つと**ここが張り直されて WS が繋ぎ直る**ので、
     // 通知音の ON/OFF 2 つとデバイス ID は ref 経由で読んでいる
     //（soundCommentEnabledRef / soundMonetaryEnabledRef / audioOutputDeviceIdRef）。
-    // ⚠ 064b: `obsSourceMatcher` は `useMemo(…, [])` で**一生変わらない**ので、deps に載せても
+    // ⚠ 064b: `effectFireMatcher` は `useMemo(…, [])` で**一生変わらない**ので、deps に載せても
     //   張り直らない（061k がエフェクト窓で `matchEffect` を deps に載せているのと同じ形）。
     // ⚠⚠ **ここに不安定な値を足さないこと**——張り直すと WS が切れて、その間のコメントを落とす。
     // ⚠ `requestObsSourceFire` を deps に載せていないのは、あれが**ref しか読まない**ため
@@ -1557,7 +1573,7 @@ export function CommentViewerApp() {
     enqueueForSpeech,
     handleRecordResult,
     playBatchNotification,
-    obsSourceMatcher,
+    effectFireMatcher,
     recordOrBufferComments,
     ensureStreamSession,
     scheduleStreamSessionEnd,
@@ -1573,6 +1589,32 @@ export function CommentViewerApp() {
     setYoutubeSessionReason(null);
     streamRef.current?.startLogin("youtube");
   };
+  /**
+   * 066 段 2: **取得セッションの制御が送れなかったら、その理由を「状態」欄に出す。**
+   *
+   * ⚠⚠⚠ **これが「穴 C」の受け皿である。** sidecar 側はチケットが一致しないフレームを黙って捨てるので、
+   * frontend が黙ると **「取得開始を押したのに何も起きない、原因不明」**になる
+   * （061a Q-1 の「黙って効かない、を作らない」の 4 度目）。
+   *
+   * ⚠ **成功時に文言を触らない**——`ok:true` は「送れた」だけで、取得が始まったかは
+   * `session.state`（→ `onSessionState` が `setSessionReason` を上書きする）が持つ。
+   * ⚠⚠ **ここで「接続中…」等を書くと、状態の持ち主が 2 か所に割れる。**
+   *
+   * ⚠⚠⚠ **レビュー Q-5（修正）: `undefined` を受ける形をやめた。**
+   * 旧実装は `result: SessionControlResult | undefined` を取り、`streamRef.current` が無いときの
+   * `undefined` を黙って成功扱いしていた。⚠ **その寛容さは実際に穴になった**——
+   * テストのモックが `undefined` を返しても素通りするので、5 ファイルのモックを
+   * `{ok:true}` へ直すまで**この関数は何も検査していなかった**。
+   * ⇒ **呼び出し側で `streamRef.current` を先に見て早期 return し、ここは常に結果を受け取る。**
+   */
+  const reportSessionControl = (
+    result: SessionControlResult,
+    setReason: (reason: string) => void,
+  ): void => {
+    if (!result.ok) {
+      setReason(result.reason ?? SESSION_CONTROL_UNAVAILABLE_REASON);
+    }
+  };
   const handleStartSession = () => {
     const ch = channel.trim();
     if (!ch) return;
@@ -1580,19 +1622,52 @@ export function CommentViewerApp() {
     // 032c-b: 取得開始はユーザー操作なので、ここで AudioContext を resume しておく。以降 sidecar から
     // （非操作起点で）届く実コメントの読み上げが suspended で無音化しないようにする単一の resume 契機。
     void ttsRef.current?.resume();
-    streamRef.current?.startSession("twitch", ch);
+    // 066 段 2: ⚠ チケット取得（`invoke`）を挟むので await する。⚠⚠ **結果を捨てないこと**（上の注記が正）。
+    //   ⚠ Q-5: **`stream` をここで確定させる**（`?.` のままだと `undefined` が下流へ漏れる）。
+    const stream = streamRef.current;
+    if (!stream) return;
+    void (async () => {
+      reportSessionControl(
+        await stream.startSession("twitch", ch),
+        setSessionReason,
+      );
+    })();
   };
   const handleStopSession = () => {
-    streamRef.current?.stopSession("twitch");
+    // ⚠ レビュー Q-3（修正）: **開始側と同じく先に理由を消す。**
+    //   消さないと「開始に失敗 → 停止は成功」のとき、**成功したのに古い失敗理由が画面に残る**
+    //   （`ok:true` では文言を触らない設計なので、ここで消さないと誰も消さない）。
+    setSessionReason(null);
+    const stream = streamRef.current;
+    if (!stream) return;
+    void (async () => {
+      reportSessionControl(await stream.stopSession("twitch"), setSessionReason);
+    })();
   };
   // 032c-d: YouTube 取得開始/停止（チャンネル名不要＝mine=true）。取得開始はユーザー操作なので TTS resume する。
   const handleYouTubeStartSession = () => {
     setYoutubeSessionReason(null);
     void ttsRef.current?.resume();
-    streamRef.current?.startSession("youtube");
+    const stream = streamRef.current;
+    if (!stream) return;
+    void (async () => {
+      reportSessionControl(
+        await stream.startSession("youtube"),
+        setYoutubeSessionReason,
+      );
+    })();
   };
   const handleYouTubeStopSession = () => {
-    streamRef.current?.stopSession("youtube");
+    // ⚠ Q-3: 上と同じ（停止側だけ理由が残る非対称を作らない）。
+    setYoutubeSessionReason(null);
+    const stream = streamRef.current;
+    if (!stream) return;
+    void (async () => {
+      reportSessionControl(
+        await stream.stopSession("youtube"),
+        setYoutubeSessionReason,
+      );
+    })();
   };
 
   // ENGINE 稼働を GET /version で定期確認する（未起動→起動誘導、起動後は自動でバナーが消える）。

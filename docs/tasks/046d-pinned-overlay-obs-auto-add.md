@@ -2,7 +2,7 @@
 
 > 状態: **実装済み（2026-07-29）**。実装記録は [`docs/progress.md`](../progress.md) の 046d 節を正とする。
 >
-> **必読前提**: [044a](044a-obs-auto-source.md)（OBS 自動ソース追加の本体）、[046b](046b-pinned-overlay-window.md)（この窓の生い立ち）、
+> **必読前提**: [044a](044a-obs-auto-source-impl.md)（OBS 自動ソース追加の本体）、[046b](046b-pinned-overlay-window.md)（この窓の生い立ち）、
 > 親 [046](046-pinned-comment-overlay.md)、[`docs/security.md`](../security.md) の「例外（044a・OBS オーバーレイソース自動追加）」。
 
 ## 経緯（先送りの撤回）

@@ -70,8 +70,11 @@ const mocks = vi.hoisted(() => {
     stream: {
       disconnect: vi.fn(),
       startLogin: vi.fn(),
-      startSession: vi.fn(),
-      stopSession: vi.fn(),
+      // 066 段 2: ⚠ **チケット取得（`invoke`）を挟むので Promise を返す。**
+      //   ⚠⚠ `vi.fn()` のままだと `undefined` が返り、呼び出し側の「失敗なら理由を出す」分岐が
+      //   **常に素通りする**（＝穴 C の受け皿がテストで守られていない状態になる）。
+      startSession: vi.fn(async () => ({ ok: true as const })),
+      stopSession: vi.fn(async () => ({ ok: true as const })),
       enableObs: vi.fn(),
       hideObs: vi.fn(),
       listObsSources: vi.fn(),
@@ -699,5 +702,86 @@ describe("062c サマリーを開いている間の記録（穴 H）", () => {
       expect.any(String),
       "MyChannel",
     );
+  });
+});
+
+/**
+ * 066 段 2（穴 C）: **取得セッションの制御が送れなかったら、その理由が画面に出ること。**
+ *
+ * ⚠⚠⚠ **これは security 対処の「受け皿」である。** sidecar 側はチケットが一致しないフレームを
+ * **黙って捨てる**（総当たりの手掛かりを与えない・060c と同じ判断）ので、
+ * frontend が黙ると **「取得開始を押したのに何も起きない、原因不明」**——
+ * `docs/tasks/066-chat-send.md` が「本機能で最も重い回帰」と名指しした形——になる。
+ *
+ * ⚠ **この 2 本が落ちたら、チケット化が「静かに壊れる機能」に変わったということ**である。
+ * ⚠⚠ `commentStream.sessionControl.test.ts` は「送らずに理由を返す」までしか見られない
+ *（あちらは `CommentViewerApp` を描画しない）。**理由が画面に出るか**はここでしか固定できない。
+ */
+describe("066 段 2: 取得セッション制御の失敗を画面に出す（穴 C）", () => {
+  /**
+   * Twitch の接続ピルを開いて、取得開始ボタンを押す。
+   *
+   * ⚠ 「コメント取得開始」は **`linked` かつチャンネル名が入っている**ときしか押せないので、
+   *   `link.state`（sidecar が keychain 復元・ログイン成功で送る）を先に流しておく。
+   */
+  async function pressStart() {
+    await act(async () => {
+      mocks.handlers.current?.onLinkState?.("twitch", true);
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Twitch/ }));
+    const start = screen.getByRole("button", { name: "コメント取得開始" });
+    expect(start).not.toBeDisabled();
+    await act(async () => {
+      fireEvent.click(start);
+    });
+  }
+
+  it("⚠⚠⚠ チケットが取れず送れなかったら、状態欄に理由が出る", async () => {
+    localStorage.setItem("stream-dock.comment-viewer.channel", "mychannel");
+    mocks.stream.startSession.mockResolvedValueOnce({
+      ok: false,
+      reason: "コメント取得プロセスに接続できていません。",
+    } as never);
+    await renderApp();
+
+    await pressStart();
+
+    expect(
+      screen.getByText(
+        /コメント取得プロセスに接続できていません。/,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("⚠ 送れたときは理由を出さない（`ok:true` は「送れた」だけで、取得の開始は session.state が持つ）", async () => {
+    localStorage.setItem("stream-dock.comment-viewer.channel", "mychannel");
+    await renderApp();
+
+    await pressStart();
+
+    expect(
+      screen.queryByText(/コメント取得プロセスに接続できていません。/),
+    ).toBeNull();
+    expect(mocks.stream.startSession).toHaveBeenCalledWith(
+      "twitch",
+      "mychannel",
+    );
+  });
+
+  it("⚠ 停止側も同じ（黙って効かない、を作らない）", async () => {
+    mocks.stream.stopSession.mockResolvedValueOnce({
+      ok: false,
+      reason: "コメント取得プロセスに接続できていません。",
+    } as never);
+    await renderApp();
+
+    fireEvent.click(screen.getByRole("button", { name: /Twitch/ }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "停止" }));
+    });
+
+    expect(
+      screen.getByText(/コメント取得プロセスに接続できていません。/),
+    ).toBeInTheDocument();
   });
 });

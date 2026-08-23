@@ -1,13 +1,8 @@
 import type { CommentViewDto } from "../../features/comment-viewer/types";
-import {
-  commentAmount,
-  composeEventMessage,
-  displayEventType,
-  eventLabel,
-  monetaryTone,
-  viewerIdOf,
-  type MonetaryTone,
-} from "../comment-viewer/viewerFormat";
+// ⚠⚠⚠ **063b 段 1-b: viewerFormat から取るものが 6 本 → `viewerIdOf` 1 本になった。**
+//   本ファイル冒頭の「置き場所」節が「注入すべき関数が 6 本あり、注入は過剰」を根拠に
+//   `screens/obs-effects/` を選んでいるが、⚠ **その根拠は弱くなった**（下記の申し送り）。
+import { viewerIdOf } from "../comment-viewer/viewerFormat";
 
 /**
  * 061b: **エフェクトの発火層**——「何で発火し、何回出すか」を決める 1 か所（純関数）。
@@ -126,8 +121,14 @@ export const CONDITION_COOLDOWN_MAX_MS = 60_000;
  * ①総称化（064b）は**インスタンスが 1 つだけ**になり ②[`EffectRequestBase`] の
  * `name` / `amountText` / `message` / `eventLabel` / `tone` は **OBS レーンでは 1 つも読まれない**。
  * §9 の「必要ないものは持ち回らない」に照らせば落とすべきだが、**064d は削除に集中する**と決めた
- * （削除と設計変更を 1 コミットに混ぜない）。⚠ **再修正トリガー＝063（ガチャ）に着手するとき**
- * ——あちらが 2 本目のレーンとして何を要るかで、残すフィールドが決まる。
+ * （削除と設計変更を 1 コミットに混ぜない）。⚠ **再修正トリガー＝063（ガチャ）に着手するとき**。
+ *
+ * ⚠⚠⚠ **063b 段 1-a: そのトリガーを引いたが、返済はこの段では行わない。**
+ * 063 は**2 本目のレーンを足さなかった**（`EffectObsSource | EffectGacha` の **1 本**に決めた・
+ * `createEffectFireMatcher` の JSDoc が正）ので、**総称化は残る**——union の 2 種が流れるためである。
+ * ⚠ 未使用フィールドの返済は **063b 段 1-b** が行う（⚠ **実際に読まれていないのは 5 つではなく 6 つで、
+ * `id` も含む**——プロダクションが読むのは `sourceName` だけである）。
+ * **発火の接続（振る舞いが変わる差分）と、型の削除（振る舞いが変わらない差分）を 1 コミットに混ぜない。**
  */
 
 /**
@@ -190,7 +191,9 @@ export interface EffectMatch<T extends object = EffectObsSource> {
  *
  * ⚠⚠ **これが「条件」を発火層へ持ち込む唯一の口である**（①）。本モジュールは
  * localStorage も `effectAssignments.ts` も import しない＝**純関数のまま**で、
- * 実体（`createEffectMatcher(output)` が返す関数）は呼び出し側が渡す。
+ * 実体（`effectAssignments.ts` の `createEffectFireMatcher()` が返す関数）は呼び出し側が渡す。
+ * ⚠ **064b〜064d の JSDoc が書いていた `createEffectMatcher` は 064d で削除済み**である
+ * （名前だけが参照として残っていたのを 063b で掃除した）。
  * ⚠ **061k で実体が「出力先で束縛された matcher」になったが、この型も `decideEffects` も無改変**
  * ——**発火層は「どの窓に出すか」を知らない**（＝`EffectRequest` に `output` が載らない）。
  * 絞り込みを発火層へ持ち込むと、**もう一方の窓の条件がバースト枠を食う**（あちらの JSDoc が正）。
@@ -204,31 +207,43 @@ export type EffectMatcher<T extends object = EffectObsSource> = (
 ) => EffectMatch<T> | null;
 
 /**
- * ⚠ **064b で export した**（`decideEffects` の戻り値が `EffectRequestBase & T` になったため、
- * 呼び出し側が型を書けるようにする）。⚠ **中身は 1 バイトも変えていない**（§9 の担保はそのまま）。
+ * ## ⚠⚠⚠ 063b 段 1-b: `EffectRequestBase` を**フィールドごと全廃した**（＝ この型はもう無い）
+ *
+ * 064b で export し、064d が「**§9 に照らせば落とすべきだが、削除と設計変更を 1 コミットに混ぜない**」と
+ * 申し送っていたフィールドを落とした。
+ * ⚠⚠ **064d / 親 063 / task-board はいずれも「未使用は 5 つ」と書いていたが、実際は 6 つだった**
+ * （`id` / `name` / `amountText` / `message` / `eventLabel` / `tone`）——**`id` も
+ * プロダクションから 1 か所も読まれていない**（`takeFreshComments` の `seenIds` は
+ * `CommentViewDto.id` を直接見るのでこの値を経由せず、React の key も 064d でエフェクト窓ごと消えた）。
+ * ⇒ **プロダクションが読むのは matcher が返したペイロードだけ**なので、
+ * [`decideEffects`] の戻り値は **`T[]`** になり、`toEffectRequest` も消えた。
+ *
+ * ⚠⚠⚠ **これは §9 の担保を 1 段強くする変更である。**
+ * 061j までの担保は「**本文を書ける場所が型として無い**」だったが、いまは
+ * **コメント由来の値が 1 つも載らない**——戻り値は
+ * **ユーザー自身が作った設定（OBS のソース名／ガチャの id）だけ**で構成される。
+ * ⚠ `effectTrigger.test.ts` の「キー集合」ケースがこれを直接固定している。
+ *
+ * ⚠⚠ **戻すときは [`decideEffects`] の中の 1 か所で組み立てること**（旧 `toEffectRequest` の位置）。
+ * **再修正トリガー**＝ 066 段 2（当選結果をチャットへ書く）を実施するとき。
+ * ⚠ そのとき要るのは**おそらく `name` だけ**だが、
+ * ⚠⚠⚠ **第三者の表示名が「端末内で持ち回る」から「チャットへ公開する」へ変わる**ので、
+ * **§9 の判断をやり直すこと**（軽レビューでは済まない）。
+ *
+ * ⚠ **`id` の 061b レビュー②の記録**（「DOM へ描く変異が生存・修正不要」）は
+ * **フィールドごと消えたので争点も消えた**。⚠ 復活させるなら、あの判断も一緒に読み直すこと。
+ *
+ * ## ⚠⚠ 申し送り（063b では**やらない**）: この層の置き場所の根拠が弱くなった
+ *
+ * 本ファイル冒頭の「置き場所」節は **`features/` → `screens/` の層の逆転を避けつつ、
+ * 課金判定・文言・配色を `viewerFormat` から取る**ために `screens/obs-effects/` を選び、
+ * ⚠ **「注入すべき関数が 6 本あり、注入は過剰」**を getter 注入（049 の `ttsQueue` の先例）を
+ * 却下する根拠にしていた。⚠⚠⚠ **本段でその 6 本が `viewerIdOf` 1 本になった**ので、
+ * **注入は過剰ではなくなった**（1 本なら安い）。
+ * ⇒ ⚠ **それでも本段では動かさない**——置き場所の変更は**発火とも §9 とも無関係な純粋な構造変更**で、
+ * 混ぜると「未使用フィールドを落とした」という差分が読めなくなる。
+ * **再修正トリガー**＝冒頭の既存 2 つに加えて、**この 3 つ目**（注入コストが 1 本まで下がった）。
  */
-export interface EffectRequestBase {
-  /**
-   * 元コメントの id。**重複発火の抑止と React の key** に使う（不透明な識別子で、本文は含まない）。
-   *
-   * ⚠ **061b レビュー②（DOM へ描く変異が生存・修正不要）**: この値を画面へ描いてもテストは緑のままだが、
-   * 直さないのは ①プラットフォームが振る不透明な識別子で、本文・表示名・金額のような第三者の
-   * 個人データではない（§9 の対象外）②描いても意匠が汚れるだけで実害が無い、の 2 点による。
-   * **再修正トリガー**＝id に投稿者を特定できる情報（チャンネル ID 等）が含まれる provider が増えたとき。
-   * そのときは §9 の対象になるので、`EffectRequest` から外して `seenIds` 側だけで扱うこと。
-   */
-  id: string;
-  /** 投稿者の表示名。 */
-  name: string;
-  /** 金額の verbatim 表示（`commentAmount` の戻り値。無ければ null）。⚠ 通貨換算も合計もしない（043c と同じ）。 */
-  amountText: string | null;
-  /** 金額を持たない種別（サブスク/メンシプ/ギフト）の日本語文（`composeEventMessage`）。無ければ null。 */
-  message: string | null;
-  /** 種別ラベル（「スーパーチャット」等）。未知種別は空文字へ無害に劣化する。 */
-  eventLabel: string;
-  /** 配色キー。⚠ **043c/047b と同じ `monetaryTone`** なので、コメント欄のカードと**同じ額が同じ色**になる。 */
-  tone: MonetaryTone;
-}
 
 /**
  * 発火層が持ち越す状態（**時間窓の判定に要る最小限**）。
@@ -314,35 +329,17 @@ export function takeFreshComments(
 }
 
 /**
- * `CommentViewDto` → `EffectRequest`。⚠ **判定・文言・配色はすべて既存の共有関数**（2 実装に分けない）。
+ * ⚠⚠⚠ **063b 段 1-b: `toEffectRequest` を削除した**（旧「`CommentViewDto` → `EffectRequest`」）。
  *
- * ⚠⚠ **061j: ここが「本文を落とす関門」である。** 入ってくる `c` は本文を持つが、
- * 出ていく `EffectRequest` は **8 キー（id / name / amountText / message / eventLabel / tone /
- * kind / templateId）だけ**で、`text` を書ける場所が型として無い。
- * ⚠ **「便利だから」で `text` を足さないこと**（`effectTrigger.test.ts` がキー集合そのものを固定している）。
+ * ⚠⚠ **061j はここを「本文を落とす関門」と呼んでいた**——入ってくる `c` は本文を持つが、
+ * 出ていく値には `text` を書ける場所が型として無い、という担保だった。
+ * ⚠⚠⚠ **いまは関門そのものが不要になった**——[`decideEffects`] は
+ * **matcher が返したペイロードをそのまま `push` する**だけで、`c` から値を 1 つも取り出さない。
+ * （唯一 `c` を読むのは `viewerIdOf` による gift の畳み込み判定だが、⚠ **その結果は戻り値に載らず
+ * [`EffectTriggerState`] に留まる**——あちらは元から「メモリのみ・永続化しない」である。）
+ * ⇒ **「本文を足せない」から「そもそもコメントから何も持ち出さない」へ変わった**（上の 段 1-b 節が正）。
+ * ⚠ **ここに変換関数を書き戻さないこと**（戻すなら [`decideEffects`] の中の 1 か所に置く）。
  */
-function toEffectRequest<T extends object>(
-  c: CommentViewDto,
-  kind: T,
-): EffectRequestBase & T {
-  return {
-    id: c.id,
-    name: c.author.name,
-    // 043c と同じ verbatim 表示（整形済み文字列を優先し、無ければ数値＋通貨）。
-    amountText: commentAmount({
-      monetaryAmount: c.monetaryAmount,
-      amount: c.monetary?.amount,
-      currency: c.monetary?.currency,
-    }),
-    // 金額を持たない種別だけ文になる（superchat/bits/donation/jewels は null が返る）。
-    message: composeEventMessage(c),
-    eventLabel: eventLabel(displayEventType(c)),
-    tone: monetaryTone(c),
-    // ⚠ 061d-2: 割り当ての解決結果をそのまま載せる（061h 以降は `kind` ＋ `templateId` の
-    //   2 フィールド）。判定は resolver の責務で、ここでは分岐しない。
-    ...kind,
-  };
-}
 
 /**
  * このバッチから出すエフェクトを決める。**`state` は破壊的に更新する**（発火した分だけ記録する）。
@@ -382,11 +379,24 @@ function toEffectRequest<T extends object>(
  * （上の 2 つの却下理由は**当時の判断の記録**として残してある。いま在る型ではない）。
  * ⚠ **帰結＝総称のインスタンスは `EffectObsSource` 1 つだけになった。**
  * **いま畳まないのは 063（ガチャ）が 2 本目のレーンを足す前提があるため**で、
- * 畳んで戻すのは往復になる。⚠ **再修正トリガー＝063 が 2 本目を足さないと決まったとき**
- * （そのとき総称を外し、[`EffectRequestBase`] の未使用フィールドもまとめて落とすこと）。
+ * 畳んで戻すのは往復になる。⚠ **再修正トリガー＝063 が 2 本目を足さないと決まったとき。**
  *
- * ⚠ **レーンごとに [`EffectTriggerState`] を別に持つこと**（呼び出し側の責務）。バースト枠と
- * クールダウンがレーン間で混ざらない＝ 061k が 2 窓で作った構えをそのまま 3 レーン目へ広げた形である。
+ * ## ⚠⚠⚠ 063b: **2 本目のレーンは足さなかった**（総称は残る）
+ *
+ * ガチャの出力先も **OBS のソース**なので（064d でエフェクト窓が廃止された結果）、2 本にすると
+ * ①**1 コメントが 2 回発火しうる**（レーンごとに「最初の 1 件」を取るため）
+ * ②**出力先が 1 つなのにバースト枠が 2 倍になる**——の 2 つが起きる。
+ * ⇒ **レーンは 1 本**にし、`select` が 2 kind を通す形にした（`createEffectFireMatcher` の JSDoc が正）。
+ * ⚠⚠ **総称は残す**——インスタンスは `EffectObsSource | EffectGacha` の **union 1 つ**だが、
+ * 「matcher が返した値がそのまま流れる（本モジュールは中身を 1 つも知らない）」という
+ * 型引数の役割は生きている。⚠ **ここに `gachaId` や `prizes` を直接書かないこと**
+ * （書いた瞬間、発火層が `effectAssignments.ts` を知ることになり純関数でなくなる）。
+ * ⚠ **抽選はこの関数の中でやらない**——理由の全文は `effectFire.ts` の JSDoc が正
+ * （要点＝はずれを表現する語彙がここに無い／解決を足すと import が循環する）。
+ *
+ * ⚠ **レーンを増やすなら [`EffectTriggerState`] を別に持つこと**（呼び出し側の責務）。バースト枠と
+ * クールダウンがレーン間で混ざらない＝ 061k が 2 窓で作った構え。
+ * ⚠⚠ **063b でレーンが 1 本に確定したので、いま state のインスタンスは 1 つだけである。**
  *
  * 塞いでいる多重発火は **4 経路**（061j でクールダウンが 4 つ目として増えた）:
  * 1. **[043e] Jewels の combo 再送** … `updated` から出さない（下記）。
@@ -401,12 +411,14 @@ export function decideEffects<T extends object = EffectObsSource>(
   state: EffectTriggerState,
   now: number,
   matchEffect: EffectMatcher<T>,
-): (EffectRequestBase & T)[] {
+): T[] {
   // ⚠⚠ **`updated` は意図的に 1 件も読まない。** [043e] の Jewels は「別メッセージが N 件届く」のではなく
   // 「**同じ 1 件が N 回更新される**」（公式 proto に "For giftEvents, the same ID may be reused to update
   // the combo count" と明記）ので、combo 更新で毎回エフェクトを出すと**1 回の課金で N 回光る**。
   // ⚠ それでも引数に残しているのは、呼び出し側が `mergeComments` の 3 バケットを**そのまま渡せる形**に
-  // しておくため（063b の抽選もこの層に乗る）。⚠ ここを `added.concat(updated)` にする変異は
+  // しておくため。⚠⚠ **063b の抽選は「この層」ではなく `effectFire.ts` に乗った**
+  // （本関数が返した＝発火が確定した後に引く。理由はあちらの JSDoc が正）。
+  // ⚠ ここを `added.concat(updated)` にする変異は
   // `effectTrigger.test.ts` の「combo 更新では出ない」がレッドにする。
   void updated;
 
@@ -426,7 +438,9 @@ export function decideEffects<T extends object = EffectObsSource>(
     }
   }
 
-  const requests: (EffectRequestBase & T)[] = [];
+  // ⚠⚠ 063b 段 1-b: **matcher が返した値をそのまま入れる配列**である
+  //   （旧 `(EffectRequestBase & T)[]`。⚠ コメント由来の値は 1 つも載らない・上の 段 1-b 節が正）。
+  const requests: T[] = [];
   for (const c of added) {
     // ⚠⚠ **061j: 課金判定（`isMonetaryEvent`）は matcher の中へ移した**（判断 5）。
     //   ここに `if (!isMonetaryEvent(c.eventType)) continue;` を書き戻すと、
@@ -474,7 +488,9 @@ export function decideEffects<T extends object = EffectObsSource>(
     // ⚠ **捨てた件数はログに出さない**（§9。出すと第三者の課金の量が端末ログに残る）。
     if (state.recentFires.length >= BURST_MAX) continue;
 
-    requests.push(toEffectRequest(c, match.effect));
+    // ⚠⚠⚠ 063b 段 1-b: **`match.effect` をそのまま載せる**（旧 `toEffectRequest(c, match.effect)`）。
+    //   ⚠ **`c` から値を足さないこと**——ここが「コメント由来の値が 1 つも載らない」の唯一の実装点である（§9）。
+    requests.push(match.effect);
     state.recentFires.push(now);
     // ⚠ **実際に出したときだけ**記録する。バーストで捨てた分まで記録すると、
     // 「1 件目が捨てられ、2 件目も畳まれて **1 回も出ない**」が起きる（出ないほうが害が大きい）。

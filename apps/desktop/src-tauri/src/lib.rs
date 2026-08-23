@@ -686,6 +686,23 @@ fn get_chat_send_ticket(app: AppHandle) -> Option<String> {
     comment_sidecar::chat_send_ticket(&app)
 }
 
+/// 066 段 2: **取得セッションの制御**（`start-session` / `stop-session`）の制御フレームに載せる
+/// **チケット**を返す読み取り専用コマンド（§3・単一目的・引数ゼロ）。未起動なら `None`。
+///
+/// ⚠⚠⚠ **これは [063f] ガチャ結果の自動送信（旧「066 段 3」）の着手条件である**
+/// （`docs/security.md` §1 の 066 節が「これを済ませずに自動送信を繋がないこと」と明記）。
+/// 段 1 の security-review S-2 が見つけた穴＝**送信の宛先を決めているのは `start-session` で、
+/// それ自体は未認証の loopback WS から誰でも送れた**、を塞ぐ。
+///
+/// ⚠ **名前が `get_start_session_ticket` ではない理由**＝ `stop-session` も同じチケットを要求するため
+/// （取得セッションの開始と停止は同じ能力で、片方だけ誰でも叩けるのは説明が付かない）。
+/// ⚠⚠ **上の 2 本とは別の値を返す**（能力ごとに秘密を分ける＝被害範囲を繋げない）。
+/// ⚠ 値はログにも画面にも出さない（§9）。⚠ sidecar 再起動で変わるので**操作のたびに取り直すこと**。
+#[tauri::command]
+fn get_session_control_ticket(app: AppHandle) -> Option<String> {
+    comment_sidecar::session_control_ticket(&app)
+}
+
 /// 032c-c: コメントビューアの VOICEVOX 読み上げ用に、**ツール管理に登録済みの VOICEVOX** を
 /// 管理付き spawn（resolve→spawn→register）で起動する薄いコマンド。`rakuraku_launch_component` と
 /// 同経路で、frontend は raw なパス/ポートを渡さず、登録済みツールを exe 名一致で解決する
@@ -892,6 +909,7 @@ pub fn run() {
             get_comment_stream_port,
             get_theme_import_ticket,
             get_chat_send_ticket,
+            get_session_control_ticket,
             launch_voicevox_engine,
             obs_config::detect_obs_websocket_config,
             set_obs_websocket_password,
@@ -1780,5 +1798,315 @@ mod sidecar_lifecycle_contract {
                 "SIDECAR_CONSUMER_LABELS の `{label}` を生成している窓が lib.rs に無い（ラベルの typo は「落ちない」方向に壊れる）"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod sidecar_ticket_contract {
+    //! 066 段 2: **Rust ↔ sidecar のチケット受け渡し（stdin private pipe）の 2 者間契約**を固定する。
+    //!
+    //! ## ⚠⚠⚠ なぜテストが要るのか（壊れ方が最悪の形をしている）
+    //!
+    //! チケットは Rust が `COMMENT_SIDECAR_<X>_TICKET=<uuid>` という**行**で sidecar の stdin へ書き、
+    //! sidecar が `line.startsWith(<同じ prefix>)` で拾う。⚠ **prefix は両側にただの文字列リテラルとして
+    //! 2 回書かれており、片方を変えても `cargo check` も `pnpm typecheck` も通る。**
+    //! そして sidecar 側は**受領していないチケットを fail-closed で黙殺する**ので、壊れ方は:
+    //!
+    //! - 060c … **テーマ取り込みが黙って効かない**
+    //! - 066 段 1 … **チャット送信が黙って効かない**
+    //! - ⚠⚠⚠ 066 段 2 … **コメントの取得が黙って始まらない**（`start-session` が捨てられる）
+    //!
+    //! 3 つ目は本アプリの本線そのもので、066 段 2 の「穴 C」が**最も重い回帰**と名指ししたものである。
+    //! ⇒ **言語をまたぐ文字列一致は機械で止める**（`overlay_window_contract` が窓タイトルで採ったのと同じ手口。
+    //! `include_str!` でソースを文字列として読む・新規依存ゼロ・`#[cfg(test)]` のみ）。
+    //!
+    //! ⚠ **再修正トリガー**＝ prefix を Rust/TS の共有定義（ビルド時生成）へ寄せたら、本モジュールは不要になる。
+
+    const LIB_RS: &str = include_str!("lib.rs");
+    const SIDECAR_MOD_RS: &str = include_str!("comment_sidecar/mod.rs");
+    const SIDECAR_INDEX_TS: &str = include_str!("../../../comment-sidecar/src/index.ts");
+
+    /// `<head>"<値>"` の `<値>` を取り出す。⚠ **`head` が 2 回以上現れたら `None`**
+    /// （宣言が複数ある＝前提が崩れているので、黙って先頭を採らない）。
+    fn literal_after(src: &str, head: &str) -> Option<String> {
+        let mut hits = src.match_indices(head);
+        let (at, _) = hits.next()?;
+        if hits.next().is_some() {
+            return None;
+        }
+        Some(src[at + head.len()..].split('"').next()?.to_string())
+    }
+
+    /// (Rust 側の定数名, sidecar 側の定数名, **Rust 側のローカル変数＝構造体フィールド＝取得関数の名前**)。
+    ///
+    /// ⚠ **4 本目のチケットを足したらここへ 1 行足すだけでよい**（下の 4 テストはこの配列を回す）。
+    /// ⚠⚠ 3 つ目の要素は「ローカル変数名」「`CommentSidecar` のフィールド名」「`pub fn` の名前」
+    /// **3 つを兼ねている**——実装がその 3 つを同じ綴りに揃えている前提に乗っている。
+    /// ⚠ 揃えるのをやめるなら、この配列をタプル 5 要素へ広げること（**揃っていないのに緑、を作らない**）。
+    const TICKET_PREFIX_CONSTS: [(&str, &str, &str); 3] = [
+        (
+            "THEME_TICKET_PREFIX",
+            "THEME_TICKET_STDIN_PREFIX",
+            "theme_import_ticket",
+        ),
+        (
+            "CHAT_TICKET_PREFIX",
+            "CHAT_TICKET_STDIN_PREFIX",
+            "chat_send_ticket",
+        ),
+        (
+            "SESSION_TICKET_PREFIX",
+            "SESSION_TICKET_STDIN_PREFIX",
+            "session_control_ticket",
+        ),
+    ];
+
+    /// Rust が書く prefix と sidecar が読む prefix が**バイト一致**していること。
+    #[test]
+    fn sidecar_ticket_stdin_prefixes() {
+        for (rust_name, ts_name, _) in TICKET_PREFIX_CONSTS {
+            let rust_head = format!("const {rust_name}: &str = \"");
+            let ts_head = format!("const {ts_name} = \"");
+            let rust_value = literal_after(SIDECAR_MOD_RS, rust_head.as_str());
+            let ts_value = literal_after(SIDECAR_INDEX_TS, ts_head.as_str());
+            assert!(
+                rust_value.is_some(),
+                "Rust 側 `{rust_name}` の宣言が comment_sidecar/mod.rs に 1 件だけ見つからない"
+            );
+            assert!(
+                ts_value.is_some(),
+                "sidecar 側 `{ts_name}` の宣言が index.ts に 1 件だけ見つからない"
+            );
+            assert_eq!(
+                rust_value, ts_value,
+                "チケットの stdin prefix が Rust と sidecar でずれている（{rust_name} / {ts_name}）\
+                 ——ずれると該当機能が**黙って**効かなくなる（session なら取得が始まらない）"
+            );
+        }
+    }
+
+    /// ⚠⚠ **3 本の prefix が互いに異なり、かつ前方一致もしないこと。**
+    ///
+    /// sidecar 側は `line.startsWith(...)` の `else if` 連鎖で振り分けるので、
+    /// **片方がもう片方の接頭辞だと、先に書いてあるほうが両方を食う**
+    /// ＝**別々に採番した意味（能力ごとに秘密を分ける）が消える**。
+    /// ⚠ 一致だけを見ていると、この形は素通りする。
+    #[test]
+    fn sidecar_ticket_stdin_prefixes_do_not_shadow_each_other() {
+        let values: Vec<String> = TICKET_PREFIX_CONSTS
+            .iter()
+            .map(|(rust_name, _, _)| {
+                let head = format!("const {rust_name}: &str = \"");
+                literal_after(SIDECAR_MOD_RS, head.as_str())
+                    .unwrap_or_else(|| panic!("`{rust_name}` の宣言が見つからない"))
+            })
+            .collect();
+        for (i, a) in values.iter().enumerate() {
+            for (j, b) in values.iter().enumerate() {
+                if i == j {
+                    continue;
+                }
+                assert!(
+                    !a.starts_with(b.as_str()),
+                    "チケットの stdin prefix `{a}` が `{b}` を接頭辞に含む（startsWith の振り分けが混線する）"
+                );
+            }
+        }
+    }
+
+    /// 行コメント（`//` / `///` 始まり）を落とす。⚠ **説明コメント自身が needle を含む**ので、
+    /// 素のソースで数えると常に多く数えてしまう（`sidecar_lifecycle_contract` と同じ対策）。
+    fn strip_line_comments(src: &str) -> String {
+        src.lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// ⚠⚠⚠ **3 本のチケットが「それぞれ独立に採番され、それぞれ stdin へ書かれる」こと。**
+    ///
+    /// ⚠ **実測ミューテーションで 2 件が生き残ったので足した**（2026-08-23・066 段 2）:
+    ///   - **M14** `let session_control_ticket = chat_send_ticket.clone();`
+    ///     … **能力ごとに秘密を分ける**という門の設計そのものが消えるのに、全テストが緑だった。
+    ///     ⚠ 「チャット送信の秘密が漏れたら取得の宛先も奪われる」＝被害範囲が繋がる。
+    ///   - **M15** stdin への `child.write(...)` を 1 行落とす
+    ///     … sidecar は受領しないチケットを **fail-closed で黙殺**するので、
+    ///     ⚠⚠⚠ **コメントの取得が黙って始まらなくなる**（066 段 2 の「穴 C」が最も重いと名指しした形）。
+    ///
+    /// ⚠ どちらも**実行時にしか現れない**（`AppHandle` が要るので `ensure_started` は単体テストできない）。
+    /// ⇒ **形を固定する**のがここの役目である。
+    #[test]
+    fn each_ticket_is_issued_and_piped_independently() {
+        let code = strip_line_comments(SIDECAR_MOD_RS);
+        let mut locals: Vec<&str> = Vec::new();
+        for (prefix, _, local) in TICKET_PREFIX_CONSTS {
+            // ① それぞれが**自前の** uuid v4 から作られていること（使い回し＝ `clone()` を殺す）。
+            let issue = format!(
+                "let {local} = {}::Uuid::new_v4().simple().to_string();",
+                "uuid"
+            );
+            assert_eq!(
+                code.matches(issue.as_str()).count(),
+                1,
+                "`{local}` が独立に採番されていない（能力ごとに秘密を分ける前提が壊れる）"
+            );
+            // ⚠⚠ レビュー S-4（追加）: **束縛は 1 回だけ**＝ シャドーイングで上書きしていないこと。
+            //   ①だけだと `let x = uuid…;` の**後ろにもう 1 本** `let x = other.clone();` を置く変異が
+            //   緑のまま通る（採番の行は残っているので count は 1 のまま）。
+            assert_eq!(
+                code.matches(format!("let {local} =").as_str()).count(),
+                1,
+                "`{local}` を複数回束縛している（シャドーイングで採番が上書きされうる）"
+            );
+            // ② それぞれが stdin private pipe へ書かれていること（書き忘れ＝該当機能が黙って死ぬ）。
+            let piped = format!("{{{prefix}}}{{{local}}}");
+            assert_eq!(
+                code.matches(piped.as_str()).count(),
+                1,
+                "`{local}` を `{prefix}` の行として stdin へ書いていない（sidecar が受領できず黙って fail-closed になる）"
+            );
+            // ③ 取得関数が**自分のフィールド**を返していること（取り違え＝別能力の秘密を配る）。
+            let accessor = format!("pub fn {local}(app: &AppHandle) -> Option<String> {{");
+            let body = code
+                .split_once(accessor.as_str())
+                .and_then(|(_, rest)| rest.split_once("\n}"))
+                .map(|(block, _)| block.to_string());
+            assert!(body.is_some(), "`pub fn {local}` が見つからない");
+            let returned = format!("s.{local}.clone()");
+            assert!(
+                body.unwrap_or_default().contains(returned.as_str()),
+                "`{local}()` が自分のフィールドを返していない（別能力のチケットを配ってしまう）"
+            );
+            // ④ ⚠⚠ レビュー S-4（追加）: **構造体へ入るのが同名のローカルそのものであること。**
+            //   ①〜③が緑でも `session_control_ticket: chat_send_ticket.clone()` と書かれると
+            //   **stdin へは正しい値が流れるのに state には別の値が入る**——sidecar 側と食い違い、
+            //   ⚠⚠⚠ **取得が黙って始まらなくなる**（frontend は「取れた」と判断して送るので穴 C も効かない）。
+            //   ⇒ **フィールド省略記法（`local,`）であること**を見る。
+            let struct_head = "Some(CommentSidecar {";
+            let struct_body = code
+                .split_once(struct_head)
+                .and_then(|(_, rest)| rest.split_once("});"))
+                .map(|(block, _)| block.to_string());
+            assert!(
+                struct_body.is_some(),
+                "`CommentSidecar` の構築が comment_sidecar/mod.rs に見つからない"
+            );
+            assert!(
+                struct_body
+                    .unwrap_or_default()
+                    .contains(format!("{local},").as_str()),
+                "`CommentSidecar` の `{local}` が同名のローカルから入っていない（別能力の秘密が state に入りうる）"
+            );
+            locals.push(local);
+        }
+        // ⑤ 3 本の名前が互いに違うこと（配列の書き間違いで①〜④が同じ 1 本を 3 回見る、を防ぐ）。
+        for (i, a) in locals.iter().enumerate() {
+            for (j, b) in locals.iter().enumerate() {
+                assert!(i == j || a != b, "チケットの名前が重複している: {a}");
+            }
+        }
+    }
+
+    /// ⚠⚠ **各チケットの Tauri コマンドが、対応する取得関数へ繋がっていること。**
+    ///
+    /// ⚠ コマンド名は frontend 側ではただの文字列リテラルなので、**繋ぎ間違えても
+    /// `cargo check` も `pnpm typecheck` も通る**。壊れ方は「別能力のチケットが返る」＝
+    /// **どちらの能力も fail-closed で黙って死ぬ**（原因が読めない側に倒れる）。
+    #[test]
+    fn each_ticket_command_returns_its_own_accessor() {
+        // ⚠ needle は実行時に組む（`include_str!("lib.rs")` はこのモジュール自身も読むため）。
+        let code = strip_line_comments(LIB_RS);
+        for (_, _, local) in TICKET_PREFIX_CONSTS {
+            let head = format!("fn get_{local}(app: AppHandle) -> Option<String> {{");
+            let body = code
+                .split_once(head.as_str())
+                .and_then(|(_, rest)| rest.split_once("\n}"))
+                .map(|(block, _)| block.to_string());
+            assert!(
+                body.is_some(),
+                "`get_{local}` コマンドが lib.rs に無い（frontend の invoke が実行時に reject される）"
+            );
+            let call = format!("{}::{local}(&app)", "comment_sidecar");
+            assert!(
+                body.unwrap_or_default().contains(call.as_str()),
+                "`get_{local}` が対応する取得関数を呼んでいない（別能力のチケットを返す）"
+            );
+            // ⚠ `generate_handler!` へ登録されていないと、そもそも呼べない（静かに壊れる）。
+            let handler_head = format!("{}![", "generate_handler");
+            let registered = code
+                .split_once(handler_head.as_str())
+                .and_then(|(_, rest)| rest.split_once(']'))
+                .map(|(block, _)| block.to_string())
+                .unwrap_or_default();
+            let entry = format!("get_{local},");
+            assert!(
+                registered.contains(entry.as_str()),
+                "`get_{local}` が generate_handler! に登録されていない"
+            );
+        }
+    }
+
+    /// 066 段 2: **`start-session` / `stop-session` のチケット照合が dev-mock より「前」にあること**（穴 A）。
+    ///
+    /// ⚠⚠⚠ 後ろに置くと `COMMENT_SIDECAR_MOCK=1` のときだけ壁が消える。
+    /// ⚠ 「dev でだけ壁が消える」は、**出荷ビルドで壁が消えていることに気づけない形**そのものである。
+    /// ⚠⚠ TS 側の単体テストでは押さえられない（`index.ts` は `main()` を top-level で呼ぶため import できない）。
+    ///
+    /// ## ⚠⚠ このテストが見ているもの／見ていないもの（レビュー S-4）
+    ///
+    /// 見ているのは **①テキスト上の前後関係**と **②照合より前に `mockSource` が 1 度も現れないこと**の 2 つ。
+    /// ②を足したのは、①だけだと次の骨抜きが**緑のまま通る**からである:
+    ///
+    /// ```text
+    /// if (!mockSource) {                       // ← 位置は前のまま
+    ///   if (!isAuthorizedSessionControl(…)) return;
+    /// }
+    /// if (mockSource) { mockSource.handleControl(frame); return; }
+    /// ```
+    ///
+    /// ⚠ **それでも「制御フローの検査」ではない**——`if (別の条件) { 照合 }` のように
+    /// **mock と無関係な条件で包む**変異は、いまも素通りする。
+    /// ⚠⚠ ここが守るのは**「dev-mock との前後関係」だけ**だと理解すること。
+    /// ⚠ **再修正トリガー**＝ `setControlMessageHandler` の中に分岐が増えて、
+    /// 照合が入れ子に入りうる形になったとき（そのときは brace 深さの比較まで踏み込む）。
+    #[test]
+    fn session_ticket_check_precedes_the_dev_mock_branch() {
+        // ⚠ 行コメント／ブロックコメントの中にも同じ語が出てくるので、コードだけに落としてから見る。
+        let code: String = SIDECAR_INDEX_TS
+            .lines()
+            .map(str::trim_start)
+            .filter(|line| {
+                !line.starts_with("//") && !line.starts_with("*") && !line.starts_with("/*")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        // ⚠⚠ **ハンドラの中だけを見る。** `mockSource` はハンドラより前で宣言されているので、
+        //   ファイル全体で探すと②が常に偽になる。
+        let handler_at = code
+            .find("setControlMessageHandler")
+            .expect("index.ts に setControlMessageHandler が見つからない");
+        let handler = &code[handler_at..];
+        let gate = format!(
+            "{}(frame.ticket, sessionControlTicket)",
+            "isAuthorizedSessionControl"
+        );
+        let mock = format!("{}.handleControl(frame)", "mockSource");
+        let gate_at = handler.find(gate.as_str());
+        let mock_at = handler.find(mock.as_str());
+        assert!(
+            gate_at.is_some(),
+            "sidecar の index.ts に取得セッション制御のチケット照合が見つからない（門が外れている）"
+        );
+        assert!(mock_at.is_some(), "dev-mock の分岐が index.ts に見つからない");
+        assert!(
+            gate_at < mock_at,
+            "チケット照合が dev-mock の分岐より後ろにある（MOCK=1 のときだけ宛先を差し替えられる）"
+        );
+        // ② ⚠⚠⚠ 照合より前に `mockSource` が現れない＝**照合が mock の条件で包まれていない**。
+        let first_mock_mention = handler.find("mockSource");
+        assert!(
+            first_mock_mention > gate_at,
+            "チケット照合より前に `mockSource` が現れる（照合が dev-mock の条件で包まれている可能性がある）"
+        );
     }
 }

@@ -9,6 +9,7 @@ import type { CommentViewDto } from "./types";
  * （frontend は raw ポート/パスを組み立てない・localhost のみ・main は no-internet）。
  *
  * - viewer→sidecar 制御: `start-login`（Device Code 開始）/ `start-session`（channel 指定で取得開始）/ `stop-session`
+ *   （⚠ **066 段 2: `start-session` / `stop-session` はチケット必須**。宛先の差し替え対策・下記 [`sendSessionControl`]）
  *   / `theme-import.fetch`（060c・外部 `@import` を 1 本だけ取得。**チケット必須**）
  * - sidecar→viewer: `device_code`（user_code / verification_uri をテキスト提示）/ `session.state` / `comments.append`
  *   / `theme-import.result`（060c・⚠ **要求元だけへの unicast**。broadcast ではない）
@@ -97,13 +98,90 @@ export type ThemeFontFetchResult =
   | { ok: true; mime: string; base64: string }
   | { ok: false; reason: string };
 
+/**
+ * 066 段 2: **取得セッションの制御（開始・停止）の結果。**
+ *
+ * ⚠⚠ **`ok: true` は「フレームを送れた」であって「取得が始まった」ではない。**
+ * 取得が始まったかは従来どおり [`CommentStreamHandlers.onSessionState`] が伝える
+ * （`connecting` → `connected`）。⚠ ここで両方を背負わせると、状態の持ち主が 2 か所になる。
+ *
+ * ⚠ `reason` は**そのまま画面に出してよい短文**（061a Q-1「黙って効かない、を作らない」）。
+ */
+export interface SessionControlResult {
+  ok: boolean;
+  reason?: string;
+}
+
+/**
+ * 066 段 2（レビュー Q-4 の修正）: **viewer → sidecar の取得セッション制御フレーム。**
+ *
+ * ⚠⚠ **旧実装は `Record<string, unknown>` だった**ので、`type: "start-sesion"` のような綴り間違いを
+ * `tsc` が 1 つも止めなかった（テストが形を固定していただけ）。
+ * ⚠⚠⚠ **このリポジトリの規律は「runtime で等価ならコンパイル時に強い方を採る」**である
+ * （`createEffectFireMatcher` の `!== "none"` を採った理由と同じ）。⇒ union で縛る。
+ *
+ * ⚠⚠ **`ticket` をここに含めないこと。** 秘密は [`connectCommentStream`] の中で
+ * `send({ ...frame, ticket })` として**最後に足す**もので、呼び出し側から渡せてはいけない
+ * （渡せると `frame` 側の `ticket` がスプレッド順しだいで本物を上書きしうる）。
+ * ⚠ **含めない限り、その上書きは型として起こせない。**
+ */
+type SessionControlOutgoingFrame =
+  | { type: "start-session"; service: CommentService; channel?: string }
+  | { type: "stop-session"; service: CommentService };
+
+/**
+ * 066 段 2: 制御チケットが取れなかったときに画面へ出す文。
+ *
+ * ⚠⚠⚠ **これが「穴 C」の対処そのものである。** sidecar 側はチケットが一致しないフレームを
+ * **黙って捨てる**（総当たりの手掛かりを与えないため・060c と同じ判断）ので、
+ * **正規の窓が黙殺される状況をこちら側で 1 つも残さない**必要がある。
+ * ⇒ 送る前にチケットを取り直し、**取れなければ送らずにこの文を返す**。
+ * ⚠ ここを `return` だけにして黙ると、**「取得開始を押したのに何も起きない、原因不明」**という
+ * 本機能で最も重い回帰になる。
+ *
+ * ⚠ 文面が「接続していません」なのは、チケットが `null` になる**主な**原因が
+ * **sidecar が起動していない（＝ Rust 側の state が `None`）**ことだから。
+ * ⚠⚠ **レビュー S-2（訂正）: 「それしかない」は言い過ぎだった。** 他に
+ * ①`invoke` 自体が失敗する ②Rust 側の mutex が poison している
+ * ③[`SESSION_CONTROL_TICKET_TIMEOUT_MS`] を超えた、の 3 つがある。
+ * ⚠ **どれも「少し待ってからもう一度」で正しい案内になる**ので文面は 1 つのままにしてあるが、
+ * **「取れない＝未起動」を前提に別の判断を組み立てないこと。**
+ */
+export const SESSION_CONTROL_UNAVAILABLE_REASON =
+  "コメント取得プロセスに接続できていません。少し待ってからもう一度お試しください。";
+
 export interface CommentStreamHandle {
   disconnect(): void;
   /** 032c-d: service 省略時は twitch（後方互換）。youtube はブラウザ同意フロー。 */
   startLogin(service?: CommentService): void;
-  /** 032c-d: service ごとに取得開始。twitch は channel 必須／youtube は channel 不要（mine=true）。 */
-  startSession(service: CommentService, channel?: string): void;
-  stopSession(service: CommentService): void;
+  /**
+   * 032c-d: service ごとに取得開始。twitch は channel 必須／youtube は channel 不要（mine=true）。
+   *
+   * ⚠⚠⚠ **066 段 2: チケット必須になった**（戻り値が `void` → `Promise<SessionControlResult>`）。
+   * `start-session` は **sidecar 側で `chatSender.setChannel` を呼ぶ唯一の経路＝
+   * チャット送信の宛先を決めるフレーム**で、未認証の loopback WS から差し替えられていた
+   * （security-review 066 S-2）。⚠ **チケットは操作のたびに取り直す**（sidecar 再 spawn で値が変わる）。
+   * ⚠⚠ **呼び出し側は結果を捨てないこと**——`ok:false` を画面に出さないと
+   * 「押したのに何も起きない」になる（穴 C・[`SESSION_CONTROL_UNAVAILABLE_REASON`] が正）。
+   */
+  startSession(
+    service: CommentService,
+    channel?: string,
+  ): Promise<SessionControlResult>;
+  /**
+   * 032c-d: service ごとに取得停止。
+   *
+   * ⚠ **066 段 2: `startSession` と同じチケットを要求する。** 乗っ取られても fail-closed 側
+   * （送信できなくなるだけ）だが、**配信中に取得を止められる**のは実害である。
+   * ⚠⚠ 「止められなくなるのでは」＝**ほぼならない**。チケットが取れない主因は sidecar 未起動で、
+   * そのときは止める対象のセッションも無い。
+   * ⚠⚠⚠ **レビュー S-2（訂正）: ただし「絶対に起きない」ではない。**
+   * Rust 側の mutex が poison した場合など、**sidecar は稼働中なのにチケットだけ取れない**状態は
+   * 理屈上作れる（段 2 以前は停止がチケット不要だったので、この失敗モードは無かった）。
+   * ⚠ **そのときも黙らない**（理由が画面に出る）ので最悪でも「窓を閉じる／アプリを終了する」で回復できる
+   * ——sidecar は ppid 監視で親の消滅を検知して self-exit する。
+   */
+  stopSession(service: CommentService): Promise<SessionControlResult>;
   /** 044a: OBS 連携を有効化し、指定ポート（read-only 検出由来・非秘密）の OBS へソースを自動追加させる。
    *  パスワードはこの WS には載せず、Rust コマンド（set_obs_websocket_password）経由で sidecar へ渡す。
    *  046d: `overlay` は対象種別。実際のソース名/窓名は **sidecar 内の表**に閉じており、ここから名前は渡さない。 */
@@ -132,7 +210,8 @@ export interface CommentStreamHandle {
    * ⚠⚠ **宛先を渡さない。** 送り先は sidecar が「いま取得しているセッション」から決める
    * （`chat-send/chat-send-frame.ts` の `ChatSendFrame` の注記が正）。
    * ⚠⚠⚠ **security-review 066 S-2: ただし「宛先が viewer から来ない」わけではない**
-   * ——その取得セッションの `channel` は `start-session` 由来で、**チケットで守られていない**。
+   * ——その取得セッションの `channel` は `start-session` 由来である。
+   * ✅ **066 段 2 でその `start-session` 自体をチケット必須にした**（[`startSession`] が正）。
    * ⚠ **チケットは送信のたびに取り直す**（sidecar 再 spawn で値が変わる）。
    * ⚠ **呼ぶ前にユーザーが明示的に有効化していること**（既定 OFF のトグル）。
    *
@@ -218,6 +297,22 @@ const CHAT_SEND_FRAME = "chat-send";
  * ⚠ **短すぎると「送れているのにタイムアウト」**＝二重送信を誘発するので、余裕を取る。
  */
 const CHAT_SEND_TIMEOUT_MS = 15_000;
+
+/**
+ * 066 段 2（レビュー S-1 の修正）: **制御チケットの取得（`invoke`）を待つ上限。**
+ *
+ * ⚠⚠⚠ **これが無いと `sessionControlChain` が永久に詰まる**——鎖のリンクが settle しないと
+ * 以後の取得開始／停止が 1 本も実行されず、しかも呼び出し側の `await` も返らないので
+ * **画面に理由すら出ない**（穴 C の最悪形。あちらの JSDoc が正）。
+ * ⚠ **超過は「取れなかった」と同じ扱い**（[`SESSION_CONTROL_UNAVAILABLE_REASON`] を返す）＝
+ * fail-closed のまま、**黙らない**。
+ * ⚠ 値の根拠＝ [`CHAT_SEND_TIMEOUT_MS`] より**十分短い**こと。あちらは Twitch API の往復を
+ * 含むが、こちらは **Rust の in-memory な文字列を 1 つ返すだけ**（ネットワークもディスクも無い）で、
+ * 正常時は数 ms しか掛からない。⚠ **長くすると「押したのに反応しない」時間がそのまま伸びる。**
+ * ⚠ **再修正トリガー**＝実測でチケット取得が 1 秒を超えるようになったとき
+ * （そのときは値を上げる前に **Rust 側が mutex を長く握っている理由**を先に調べること）。
+ */
+const SESSION_CONTROL_TICKET_TIMEOUT_MS = 5_000;
 
 /**
  * 060h: 取得待ちの 1 件（CSS / フォント共通）。
@@ -606,6 +701,106 @@ export function connectCommentStream(
     return payload ?? { ok: false, reason: "送信の結果を確認できませんでした。" };
   };
 
+  /**
+   * 066 段 2: **取得セッション制御の送信を「呼ばれた順」に直列化する鎖。**
+   *
+   * ⚠⚠⚠ **これは段 2 が持ち込んだ回帰の返済である**（自 security-review・2026-08-23）。
+   * 段 2 以前の `startSession` / `stopSession` は**同期送信**だったので順序は自明だった。
+   * チケット取得（`await invoke`）を挟んだことで、
+   * **「取得開始」→ すぐ「停止」と押したとき、2 本の `invoke` の解決順が入れ替わりうる**
+   * ⇒ ⚠⚠ **停止したのに取得が始まる**（ユーザーの**最後の**意思が消える）。
+   * ⚠ 実測で再現した（1 本目のチケット取得だけ遅らせると `stop` → `start` の順で届く）。
+   *
+   * ⚠ **`sendChat` の「同時 1 本なら拒否」方式を採らない理由**＝あちらは
+   * **落としてよい操作**（理由を返せば済む）だが、こちらは
+   * **落とすと「押したのに効かない」になる**（061a Q-1）。⇒ **拒否ではなく順番待ちにする。**
+   *
+   * ## ⚠⚠⚠ レビュー S-1（修正）: 鎖のリンクは**必ず有限時間で settle** しなければならない
+   *
+   * 順番待ちにした代償として、**1 本が永久に settle しないと以後どの取得開始／停止も実行されない**
+   * （`.then()` の待ち行列に積まれるだけ）。⚠⚠ しかも呼び出し側の `await` も返らないので
+   * **`reportSessionControl` が走らず、画面に理由すら出ない**——
+   * ⚠⚠⚠ **穴 C が名指しした「押したのに何も起きない、原因不明」そのもの**である。
+   * ⚠ **`sendChat` にこの失敗モードは無い**（あちらは `pendingChatSend` ガードを `invoke` の**後**に
+   * 置くので、固まっても後続は素通りする）。⇒ **鎖にしたこちらだけが持つ穴**だった。
+   * ⇒ **対処＝チケット取得に [`SESSION_CONTROL_TICKET_TIMEOUT_MS`] を掛ける**
+   * （下記 [`sendSessionControlNow`]）。⚠ **鎖を外して直さないこと**（順序が壊れる＝ S-3 の再来）。
+   */
+  let sessionControlChain: Promise<unknown> = Promise.resolve();
+
+  /**
+   * 066 段 2: **取得セッションの制御フレーム（`start-session` / `stop-session`）を 1 本送る。**
+   *
+   * ⚠⚠ **チケットは操作のたびに取り直す**（sidecar が再 spawn されると値が変わるので、
+   * 握ったまま使い回すと**再起動後に黙って無視される**）。060c / 066 段 1 と同じ規律。
+   * ⚠ 値はログにも画面にも出さない（§9）。
+   *
+   * ⚠⚠⚠ **失敗は必ず理由つきで返す**（穴 C）。sidecar 側はチケット不一致を黙殺するので、
+   * **正規の窓が黙殺される状況をこちら側に 1 つも残さない**のがこの関数の役目である。
+   *
+   * ⚠ **`await invoke` を挟むので、その前後で WS の状態を 2 回見る**（`sendChat` と同じ作法）。
+   * 挟んでいる間に切断されうるため、後段の検査を省くと**閉じたソケットへ送って黙って消える**。
+   *
+   * ⚠⚠⚠ **レビュー S-1（修正）: `invoke` は必ずタイムアウトさせる。**
+   * settle しない `invoke` を待つと [`sessionControlChain`] が永久に詰まる（あちらの JSDoc が正）。
+   */
+  const sendSessionControlNow = async (
+    frame: SessionControlOutgoingFrame,
+  ): Promise<SessionControlResult> => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      return { ok: false, reason: SESSION_CONTROL_UNAVAILABLE_REASON };
+    }
+    let ticket: string | null = null;
+    // ⚠⚠ **タイムアウトは「取れなかった」へ倒す**（超過しても必ず settle する＝鎖が進む）。
+    //   ⚠ タイマーは必ず片付ける（残すとテストの fake timer と実行環境の両方でゴミが残る）。
+    let ticketTimer: number | undefined;
+    try {
+      ticket = await Promise.race([
+        invoke<string | null>("get_session_control_ticket"),
+        new Promise<null>((resolve) => {
+          ticketTimer = window.setTimeout(
+            () => resolve(null),
+            SESSION_CONTROL_TICKET_TIMEOUT_MS,
+          );
+        }),
+      ]);
+    } catch {
+      ticket = null;
+    } finally {
+      if (ticketTimer !== undefined) window.clearTimeout(ticketTimer);
+    }
+    if (ticket === null) {
+      return { ok: false, reason: SESSION_CONTROL_UNAVAILABLE_REASON };
+    }
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      return { ok: false, reason: SESSION_CONTROL_UNAVAILABLE_REASON };
+    }
+    send({ ...frame, ticket });
+    // ⚠⚠ **ここは「送れた」までしか言わない**（取得が始まったかは `session.state` が持つ）。
+    return { ok: true };
+  };
+
+  /**
+   * 066 段 2: [`sendSessionControlNow`] を [`sessionControlChain`] に並べて**呼ばれた順**に流す。
+   *
+   * ⚠ **`ticket` を上書きされないよう、スプレッドの最後に置くこと**（[`sendSessionControlNow`] 内）。
+   * ⚠⚠ [`SessionControlOutgoingFrame`] に `ticket` を含めていないので、**呼び出し側からは渡せない**
+   * ＝スプレッド順への依存が**型で担保**されている（レビュー Q-4 の修正）。
+   * ⚠⚠ **鎖に reject を持ち越さない**——1 本が失敗しても後続を止めない
+   * （止めると「一度失敗したら以後ずっと押しても効かない」になる。⚠ 実際には
+   * `sendSessionControlNow` は throw しない設計だが、**鎖の性質として**塞いでおく）。
+   * ⚠⚠⚠ **この `.catch` が塞ぐのは reject だけで、「settle しない」は塞げない。**
+   * そちらは [`SESSION_CONTROL_TICKET_TIMEOUT_MS`] が塞いでいる（レビュー S-1）。
+   * ⚠ **`.catch` があるから鎖は安全、と読まないこと**——**2 つ揃って**初めて鎖が必ず進む。
+   */
+  const sendSessionControl = (
+    frame: SessionControlOutgoingFrame,
+  ): Promise<SessionControlResult> => {
+    const run = sessionControlChain.then(() => sendSessionControlNow(frame));
+    sessionControlChain = run.catch(() => undefined);
+    return run;
+  };
+
   return {
     disconnect(): void {
       closed = true;
@@ -622,11 +817,18 @@ export function connectCommentStream(
     startLogin(service?: CommentService): void {
       send({ type: "start-login", ...(service ? { service } : {}) });
     },
-    startSession(service: CommentService, channel?: string): void {
-      send({ type: "start-session", service, ...(channel ? { channel } : {}) });
+    startSession(
+      service: CommentService,
+      channel?: string,
+    ): Promise<SessionControlResult> {
+      return sendSessionControl({
+        type: "start-session",
+        service,
+        ...(channel ? { channel } : {}),
+      });
     },
-    stopSession(service: CommentService): void {
-      send({ type: "stop-session", service });
+    stopSession(service: CommentService): Promise<SessionControlResult> {
+      return sendSessionControl({ type: "stop-session", service });
     },
     enableObs(port: number, overlay: ObsOverlayKind): void {
       send({ type: "obs-enable", port, overlay });

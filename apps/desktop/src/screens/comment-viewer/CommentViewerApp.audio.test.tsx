@@ -74,8 +74,11 @@ vi.mock("../../features/comment-viewer/commentStream", () => ({
   connectCommentStream: vi.fn(() => ({
     disconnect: vi.fn(),
     startLogin: vi.fn(),
-    startSession: vi.fn(),
-    stopSession: vi.fn(),
+    // 066 段 2: ⚠ **チケット取得（`invoke`）を挟むので Promise を返す。**
+    //   ⚠⚠ `vi.fn()` のままだと `undefined` が返り、呼び出し側の「失敗なら理由を出す」分岐が
+    //   **常に素通りする**（＝穴 C の受け皿がテストで守られていない状態になる）。
+    startSession: vi.fn(async () => ({ ok: true as const })),
+    stopSession: vi.fn(async () => ({ ok: true as const })),
     enableObs: vi.fn(),
     hideObs: vi.fn(),
     disableObs: vi.fn(),

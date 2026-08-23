@@ -2,6 +2,7 @@
 //  - 起動直後に **installHttpHostGuard()** で global fetch を allow-list ガードに置換（DI 配線より前）。
 //  - reflect-metadata → tsyringe DI（env ピン留め config＋guarded ws runtime）。
 //  - 単一双方向 WS: viewer→sidecar 制御（start-login / start-session / stop-session）、
+//    ⚠ 066 段 2: **start-session / stop-session はチケット必須**（未認証 loopback WS からの宛先差し替え対策）。
 //    sidecar→viewer（device_code / session.state / comments.append）。
 //  - Device Code は polling 前に user_code / verification_uri を viewer へテキスト提示（open 廃止）。
 //  - 取得コメントは正規化して comments.append で送るのみ（端末外へ出さない）。トークン/device_code は非ログ。
@@ -82,6 +83,13 @@ import {
   type ChatSendFrame,
 } from "./chat-send/chat-send-frame.js";
 import { createTwitchChatSender } from "./chat-send/twitch-chat-sender.js";
+// 066 段 2: **取得セッションの制御（`start-session` / `stop-session`）のチケット照合**。
+// ⚠⚠ ここでも判断は純関数側にある（上の 2 本とまったく同じ理由）。
+import {
+  isAllowedSessionChannel,
+  isAllowedSessionTicket,
+  isAuthorizedSessionControl,
+} from "./session-control/session-control-frame.js";
 import { TWITCH_CLIENT_ID } from "./twitch-config.js";
 
 const WS_HOST = "127.0.0.1";
@@ -125,6 +133,18 @@ const THEME_TICKET_STDIN_PREFIX = "COMMENT_SIDECAR_THEME_TICKET=";
  */
 const CHAT_TICKET_STDIN_PREFIX = "COMMENT_SIDECAR_CHAT_TICKET=";
 /**
+ * 066 段 2: **取得セッション制御チケット**を Rust→stdin private pipe で受領する（非ログ・§9）。
+ *
+ * ⚠⚠⚠ **これが無いと `start-session` は「同意を経ない宛先の差し替え」になる**——
+ * `startSession` が `chatSender.setChannel(channel)` を呼ぶ唯一の場所で、その `channel` は
+ * **未認証の loopback WS から来る**（security-review 066 S-2）。
+ * ⚠⚠ **テーマ取り込み／チャット送信のチケットとも別**（能力ごとに秘密を分ける）。
+ * ⚠ 文字列は Rust 側 `comment_sidecar/mod.rs` の `SESSION_TICKET_PREFIX` と**バイト一致**すること
+ *   （ずれると**取得が黙って始まらなくなる**＝穴 C の最悪形。`lib.rs` の
+ *   `sidecar_ticket_stdin_prefixes` テストが固定している）。
+ */
+const SESSION_TICKET_STDIN_PREFIX = "COMMENT_SIDECAR_SESSION_TICKET=";
+/**
  * 060c: 制御フレームで受け付けるチケット文字列の上限（文字数）。
  * 実物は uuid v4 の simple 形＝32 文字なので、余裕をみた値。⚠ 上限の理由は `parseControlFrame` の注記。
  */
@@ -145,9 +165,15 @@ type ControlFrame =
   // 032c-d: start-login/start-session/stop-session に service を付与（既定 twitch＝後方互換）。
   // twitch=Device Code＋channel 必須 / youtube=Authorization Code＋mine=true（channel 不要）。
   | { type: "start-login"; service: Provider }
-  | { type: "start-session"; service: Provider; channel?: string }
+  // 066 段 2: ⚠⚠⚠ **`start-session` / `stop-session` はチケット必須**になった。
+  //   ⚠ `start-session` は **`chatSender.setChannel` を呼ぶ唯一の経路**＝**送信の宛先を決めるフレーム**で、
+  //     未認証の loopback WS から差し替えられていた（security-review 066 S-2）。
+  //   ⚠ `stop-session` も同じ能力なので同じチケットを要求する（理由は
+  //     `session-control/session-control-frame.ts` の JSDoc が正）。
+  //   ⚠⚠ **`start-login` は据え置き**（本段のスコープ外・残る穴として同 JSDoc に記録）。
+  | { type: "start-session"; service: Provider; ticket: string; channel?: string }
   | ChatSendFrame
-  | { type: "stop-session"; service: Provider }
+  | { type: "stop-session"; service: Provider; ticket: string }
   // 044a: OBS 連携。port は Rust の read-only 検出由来（非秘密）。パスワードは WS には載せず stdin で受領する。
   // 046d/061a: overlay は対象種別（comments=コメント一覧 / pinned=固定コメント / effects=エフェクト）。
   // **固定 union のみ受理**で、実ソース名/窓名は sidecar 内の表に閉じている（viewer から任意の名前は渡せない）。
@@ -211,7 +237,12 @@ function parseControlFrame(raw: string): ControlFrame | null {
     return { type: "start-login", service: parseService(m.service) };
   }
   if (m.type === "stop-session") {
-    return { type: "stop-session", service: parseService(m.service) };
+    // 066 段 2: ⚠ **形式検査だけ**（秘密との照合は `isAuthorizedSessionControl`＝送出側の分岐）。
+    //   060c / 066 段 1 と同じ作法で、**受理条件を満たすときだけ明示構築する**
+    //   （`msg` をスプレッドしないので未検証フィールドは 1 つも混入しない）。
+    const ticket = (msg as { ticket?: unknown }).ticket;
+    if (!isAllowedSessionTicket(ticket)) return null;
+    return { type: "stop-session", service: parseService(m.service), ticket };
   }
   if (m.type === "obs-enable") {
     // port は数値 [1,65535] のみ受理（host は sidecar 側で 127.0.0.1 に固定＝viewer は host を指定できない）。
@@ -362,12 +393,19 @@ function parseControlFrame(raw: string): ControlFrame | null {
   }
   if (m.type === "start-session") {
     const service = parseService(m.service);
+    // 066 段 2: ⚠⚠ **チケットの形式検査は service より前**（youtube 側だけ緩い、を作らない）。
+    //   ⚠ 秘密との照合はここではしない（`isAuthorizedSessionControl`＝送出側の分岐が持つ）。
+    const ticket = (msg as { ticket?: unknown }).ticket;
+    if (!isAllowedSessionTicket(ticket)) return null;
     // youtube はチャンネル名不要（mine=true）。twitch は channel 必須。
     if (service === "youtube") {
-      return { type: "start-session", service };
+      return { type: "start-session", service, ticket };
     }
-    if (typeof m.channel === "string") {
-      return { type: "start-session", service, channel: m.channel };
+    // 066 段 2（レビュー S-5）: ⚠⚠ **実際に宛先になる値にも上限を掛ける**
+    //   （`chat-send` の `expectedChannel` にだけ上限がある非対称を解消する）。
+    //   ⚠ **超過は切り詰めず不受理**（`isAllowedSessionChannel` の JSDoc が正）。
+    if (isAllowedSessionChannel(m.channel)) {
+      return { type: "start-session", service, ticket, channel: m.channel };
     }
     return null;
   }
@@ -585,10 +623,13 @@ async function main(): Promise<void> {
     sessionAborts.set("twitch", abort);
     // ⚠⚠ 066: **送信先はここでしか決まらない**（`chat-send` フレームは宛先を運ばない）。
     // ⚠⚠⚠ **security-review 066 S-2: ただし「viewer から来ない」わけではない。**
-    //   この `channel` は `start-session` 由来＝ **viewer から来ており、チケットで守られていない**。
-    //   ⇒ 未認証の loopback WS に繋いだページが `start-session` を送るだけで宛先を差し替えられる。
-    // ⚠ S-2b の対処＝ **送信時に frontend の `expectedChannel` と突き合わせる**
-    //   （`chat-send/chat-send-frame.ts` が正）。⚠⚠ **段 2 の宿題は `start-session` 自体のチケット化。**
+    //   この `channel` は `start-session` 由来＝ **viewer から来る**。
+    // ✅ **066 段 2 で `start-session` 自体をチケット必須にした**（2026-08-23）ので、
+    //   **未認証の loopback WS からは宛先を差し替えられなくなった**
+    //   （照合は `session-control/session-control-frame.ts`＝この関数へ来る前に済んでいる）。
+    // ⚠ S-2b の突き合わせ（`chat-send` の `expectedChannel`）も**そのまま残す**——
+    //   あれは「押した瞬間、画面の宛先と実際の宛先が一致していること」を守る別の層で、
+    //   ⚠⚠ **門を 1 枚に減らさないこと。**
     chatSender.setChannel(channel);
     sendSessionState("twitch", "connecting");
     try {
@@ -676,6 +717,12 @@ async function main(): Promise<void> {
    * ⚠⚠ **受領するまでは `null`＝1 通も通さない**（fail-closed）。⚠ **ログにも WS にも出さない**（§9）。
    */
   let chatSendTicket: string | null = null;
+  /**
+   * 066 段 2: Rust が起動時に stdin private pipe で渡す**取得セッション制御チケット**。
+   * ⚠⚠ **受領するまでは `null`＝ `start-session` も `stop-session` も 1 本も通さない**（fail-closed）。
+   * ⚠ **ログにも WS にも出さない**（§9）。⚠⚠ **上の 2 本とは別の値**である。
+   */
+  let sessionControlTicket: string | null = null;
   /**
    * 066: チャット送信器。⚠⚠ **宛先は `setChannel` でしか変わらない**（viewer からは受け取らない）。
    * ⚠ `getAccessToken` は既存の `authClient.getValidAccessToken` をそのまま使う（token の持ち主を増やさない）。
@@ -778,6 +825,21 @@ async function main(): Promise<void> {
     if (frame.type === "obs-disable") {
       obsClient.disable();
       return;
+    }
+    // 066 段 2: ⚠⚠⚠ **取得セッションの制御はチケットが一致しないと通さない**（fail-closed・黙殺）。
+    //
+    // ⚠⚠ **この検査は dev-mock の分岐より「前」に置くこと**（穴 A）。後ろに置くと
+    //   `COMMENT_SIDECAR_MOCK=1` のときだけ**チケット無しで宛先を差し替えられる**
+    //   ——「dev でだけ壁が消える」は、そのまま出荷ビルドで壁が消えていることに気づけない形である。
+    //   ⚠ モックでも通るのは、モックも **Rust が spawn した sidecar** で動くから
+    //   （`tauri dev` の env ゲート）＝ frontend は同じ `invoke` でチケットを取れる。
+    // ⚠ 判断（`ticket === null` を含む照合）は純関数側にある。**ここに書き戻さないこと。**
+    if (frame.type === "start-session" || frame.type === "stop-session") {
+      if (!isAuthorizedSessionControl(frame.ticket, sessionControlTicket)) {
+        // ⚠⚠ **返事もしない**（「チケットが違う」と返すと総当たりの手掛かりになる・060c と同じ判断）。
+        //   ⚠ 正規の窓が黙殺されないことは frontend 側で担保している（穴 C の分担は純関数の JSDoc が正）。
+        return;
+      }
     }
     // 035b（モック・一時）: ON のときは実ハンドラの手前で合成応答へ振り分けて早期 return する（実取得は起動しない）。
     // OFF（mockSource=null）ではこの 1 行を素通りし、以降の実ハンドラ本体は無改変。
@@ -893,6 +955,12 @@ async function main(): Promise<void> {
         // ⚠⚠ **テーマ取り込みのチケットとは別の変数**（能力ごとに秘密を分ける）。
         const value = line.slice(CHAT_TICKET_STDIN_PREFIX.length);
         if (value.length > 0) chatSendTicket = value;
+      } else if (line.startsWith(SESSION_TICKET_STDIN_PREFIX)) {
+        // 066 段 2: 取得セッション制御チケットを in-memory に設定（loopback WS にも出さない・非ログ・§9）。
+        // ⚠ 空文字は受けない（受けると「長さ 0 のチケット」で誰でも通る形になる）。
+        // ⚠⚠ **上の 2 本とは別の変数**（能力ごとに秘密を分ける）。
+        const value = line.slice(SESSION_TICKET_STDIN_PREFIX.length);
+        if (value.length > 0) sessionControlTicket = value;
       }
     }
   });

@@ -6,7 +6,7 @@ import {
 import { MONETARY_EVENT_TYPES } from "../comment-viewer/viewerFormat";
 import {
   addKeywordCondition,
-  createObsSourceMatcher,
+  createEffectFireMatcher,
   GACHA_DEFINITION_MAX,
   GACHA_ID_MAX_LENGTH,
   GACHA_NAME_MAX_LENGTH,
@@ -79,7 +79,7 @@ const EVENT_TYPES = [...MONETARY_EVENT_TYPES];
  * ⚠ factory をモジュールの先頭で 1 回作っているが、**返す関数は呼ばれるたびに localStorage を読む**ので
  * 各ケースの `beforeEach` でのクリアが効く（「読み直しの規律を変えていない」ことの副次的な担保）。
  */
-const resolveEffectMatch = createObsSourceMatcher();
+const resolveEffectMatch = createEffectFireMatcher();
 
 /** 保存値をそのまま読む（＝「書き戻していない」ことの確認にも使う）。 */
 const raw = (): string | null => localStorage.getItem(EFFECT_ASSIGNMENTS_KEY);
@@ -676,8 +676,8 @@ describe("effectAssignments（061j: 条件の配列）", () => {
  * 数え足すと OBS ソースしか設定していないユーザーの配信画面に透過窓が生える」だった。
  * ⚠⚠ **064 レビュー Q-6/S-6（訂正）: その前提はもう無い**——064d で条件による窓の自動 open は
  * 消え（窓が開く契機は「配信イベントの開始」だけ）、`effectConditionCount` の呼び手も
- * `EFFECT_OVERLAY_ENABLED_KEY` も存在しない。⚠ **不変条件としては残す**（063 で
- * 2 本目のレーンが入るときに同じ罠が戻るため）。
+ * `EFFECT_OVERLAY_ENABLED_KEY` も存在しない。⚠ **不変条件としては残す**
+ * （⚠⚠ **063b でレーンは 1 本に確定した**が、`{kind:"none"}` の条件を数えない規律は同じ形で生きている）。
  *
  * ⚠ ①の「state のサイズを直接数える」ケースは、fixture（`comment`）のある
  * `effectTrigger.test.ts` 側に置いてある（064 レビュー Q-3）。
@@ -686,7 +686,7 @@ describe("064b: 割り当て先としての OBS ソース", () => {
   beforeEach(() => localStorage.clear());
   afterEach(() => localStorage.clear());
 
-  const obsMatch = createObsSourceMatcher();
+  const obsMatch = createEffectFireMatcher();
 
   /** ⚠ レーン分離のケース用の最小コメント（`decideEffects` へ実データと同じ形で流すため）。 */
   const dto = (id: string, text: string): CommentViewDto => ({
@@ -769,7 +769,7 @@ describe("064b: 割り当て先としての OBS ソース", () => {
   });
 
   // --- レーンの分離（不変条件 ①） --------------------------------------------------------
-  it("OBS レーンの matcher は OBS ソースの条件にだけ当たる", () => {
+  it("matcher は OBS ソースの条件に当たる", () => {
     setConditionEffect("event:superchat", OBS);
     expect(obsMatch({ eventType: "superchat", text: "" })?.effect).toEqual(OBS);
   });
@@ -777,7 +777,7 @@ describe("064b: 割り当て先としての OBS ソース", () => {
   it("⚠⚠ 「出さない」条件は当たった扱いにならない（キーワードを塞がない）", () => {
     // ⚠⚠ これが「当たり判定の**前**に落とす」ことの観測可能な形である。
     //   後ろで捨てる実装だと、先に並ぶイベント条件が当たってしまい、ここでキーワードまで到達しない。
-    //   ⚠ 064d でレーンは 1 本になったが、**この規律は 063（ガチャ）で 2 本目が入るときに再び効く**。
+    //   ⚠⚠ 063b でレーンは 1 本に確定したので、いま `select` が落とすのは `{kind:"none"}` だけである。
     setConditionEffect("event:superchat", NONE);
     addKeywordCondition({ text: "草", match: "contains" }, OBS);
     expect(
@@ -808,10 +808,12 @@ describe("064b: 割り当て先としての OBS ソース", () => {
    * クールダウン（`lastConditionAt`）を食う**ようになり、
    * 「OBS のソースが数回鳴っただけで直後の投げ銭が捨てられる」が起きる
    * （061d-2 穴 γ ／ 061j 穴 η と同型）。
-   * ⇒ **実 matcher（`createObsSourceMatcher`）を通したうえで、state に 1 バイトも触れていない**
+   * ⇒ **実 matcher（`createEffectFireMatcher`）を通したうえで、state に 1 バイトも触れていない**
    * ことを直接数える。⚠ **スタブ matcher で代用しないこと**——規則の持ち主は
    * `createConditionMatcher` の `continue` なので、そこを通らないテストでは変異を殺せない（実測）。
-   * ⚠ **再修正トリガー＝063 で 2 本目のレーンが入るとき**（そのとき両レーンぶん置くこと）。
+   * ⚠⚠ **063b: 2 本目のレーンは入らなかった**（`select` が 2 kind を通す 1 本レーンに決めた）。
+   * ⇒ **このケースが守るのは「`{kind:\"none\"}` の条件が枠を食わない」**であり、
+   * 「ガチャの条件が OBS の枠を食わない」は**もはや守るべき性質ではない**（同じレーンなので共有が正しい）。
    */
   it("⚠⚠ 宛て先でない条件は、バースト枠もクールダウンもギフト畳みも消費しない", () => {
     // ⚠ 「出さない」条件だけを用意する（＝ OBS レーンから見て「自分宛てではない」）。
@@ -1212,13 +1214,50 @@ describe("064b: 割り当て先としての OBS ソース", () => {
     );
   });
 
-  it("⚠⚠ ガチャの割り当ては 063d でも**発火しない**（`select` が当たり判定の前に落とす）", () => {
+  it("⚠⚠⚠ 063b: ガチャの割り当ても matcher を通る（063d までは `select` が落としていた）", () => {
     addKeywordCondition(
       { text: "ガチャ", match: "contains" },
       { kind: "gacha", gachaId: "g:1" },
     );
+    // ⚠ 走査順がそのまま優先順位（先に保存したガチャが勝つ）＝ OBS ソースと同じ規則。
     addKeywordCondition({ text: "ガチャ", match: "contains" }, OBS);
-    expect(obsMatch({ eventType: "chat", text: "ガチャ" })?.effect).toEqual(OBS);
+    expect(obsMatch({ eventType: "chat", text: "ガチャ" })?.effect).toEqual({
+      kind: "gacha",
+      gachaId: "g:1",
+    });
+  });
+
+  it("⚠⚠⚠ 063b（穴 A の担保・その 1）: matcher は抽選を 1 度も行わない", () => {
+    // ⚠⚠ **`select` の中で引く実装に変えると、当たっていない条件でも乱数が回る。**
+    //   matcher の戻り値は**引く前の `EffectGacha` のまま**でなければならない
+    //   （＝ここに `sourceName` が現れたら、どこかで引いてしまっている）。
+    addKeywordCondition(
+      { text: "ガチャ", match: "contains" },
+      { kind: "gacha", gachaId: "g:1" },
+    );
+    const match = obsMatch({ eventType: "chat", text: "ガチャ" });
+    expect(match?.effect).toEqual({ kind: "gacha", gachaId: "g:1" });
+    expect(JSON.stringify(match)).not.toContain("sourceName");
+  });
+
+  it("⚠⚠ 063b: 未知の kind は matcher まで届かない（前方互換のガードが生きている）", () => {
+    // ⚠⚠⚠ **このケースが守っているのは `select` ではなく [`parseAssignment`] である**
+    //   （063b の実装中に判明した訂正）。`readConditions` が必ず `parseConditions` を通すので、
+    //   **未知の kind は `select` へ届く前に `{kind:"none"}` へ潰れている**。
+    //   ⚠ ＝ `select` を allow-list にしても `!== "none"` にしても**このケースは緑のまま**
+    //   （ミューテーションで実測済み）。⚠ **それでもこのケースは消さないこと**——
+    //   061h / 064d の移行をコード 1 行も書かずに済ませた仕組み本体がここだからである。
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify([
+        {
+          id: "kw:1",
+          when: { type: "keyword", text: "ガチャ", match: "contains" },
+          effect: { kind: "future-lane", sourceName: "x" },
+        },
+      ]),
+    );
+    expect(obsMatch({ eventType: "chat", text: "ガチャ" })).toBeNull();
   });
 
   it("⚠⚠ §9: 抽選履歴・当選者は 1 バイトも保存されない", () => {

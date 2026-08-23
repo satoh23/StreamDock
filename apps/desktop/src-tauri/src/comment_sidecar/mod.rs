@@ -96,6 +96,25 @@ const THEME_TICKET_PREFIX: &str = "COMMENT_SIDECAR_THEME_TICKET=";
 /// ⚠ 値はプロセス起動ごとの使い捨てで、**keychain にも DB にも残さず・ログにも出さない**（§9）。
 const CHAT_TICKET_PREFIX: &str = "COMMENT_SIDECAR_CHAT_TICKET=";
 
+/// 066 段 2: sidecar へ渡す **取得セッション制御チケット**（stdin private pipe）。
+///
+/// ⚠⚠⚠ **根拠は [`THEME_TICKET_PREFIX`] / [`CHAT_TICKET_PREFIX`] と同じで、これは「門の 1 枚目を
+/// 送信の手前まで広げる」ものである。** 066 段 1 の security-review S-2 が見つけた穴——
+/// **送信の宛先（`broadcaster_id`）を決めているのは `start-session` フレームで、
+/// それ自体はチケットで守られていなかった**——を塞ぐ。
+/// ⇒ チケット無しだと、ブラウザで開いた悪意あるページが `ws://127.0.0.1:<port>` へ繋いで
+/// `start-session` を送るだけで**宛先を自分のチャンネルへ差し替えられる**。
+///
+/// ⚠⚠ **段 1 の対処（送信時の `expectedChannel` 突き合わせ）では足りない**——
+/// あれが守るのは「**ユーザーが押した瞬間**、画面の宛先と sidecar の宛先が一致していること」だけで、
+/// **自動送信（063f・旧「066 段 3」）はユーザーが画面を見ていないときに走る**。
+///
+/// ⚠⚠ **上の 2 本とも別に採番する。** 使い回すと「読む能力の秘密が漏れたら取得の宛先も奪われる」形になる。
+/// ⚠ 値はプロセス起動ごとの使い捨てで、**keychain にも DB にも残さず・ログにも出さない**（§9）。
+/// ⚠⚠ **文字列は sidecar 側 `index.ts` の `SESSION_TICKET_STDIN_PREFIX` とバイト一致すること**
+/// （ずれると**取得が黙って始まらなくなる**。`lib.rs` の `sidecar_ticket_stdin_prefixes` が固定している）。
+const SESSION_TICKET_PREFIX: &str = "COMMENT_SIDECAR_SESSION_TICKET=";
+
 /// sidecar 起動インスタンスごとに払い出す世代 ID のカウンタ。
 /// 旧 sidecar の stdout 読取スレッドが遅れて `Terminated` を受けても、既に差し替わった
 /// 新 sidecar の state を消さない（世代不一致なら触らない）ための識別子に使う。
@@ -116,6 +135,11 @@ pub struct CommentSidecar {
     ///
     /// ⚠⚠ **`theme_import_ticket` と別の値であること**が、能力ごとに被害範囲を分けることの実体である。
     chat_send_ticket: String,
+    /// 066 段 2: この起動インスタンスの**取得セッション制御チケット**（[`SESSION_TICKET_PREFIX`] の注記が正）。
+    ///
+    /// ⚠⚠ **上の 2 本のどちらとも別の値であること。** 3 本が別々であることが
+    /// 「能力ごとに被害範囲を分ける」の実体で、**同じにした瞬間に 3 つの門が 1 つの秘密に潰れる**。
+    session_control_ticket: String,
 }
 
 /// app state（singleton）。`None` = 未起動。
@@ -168,6 +192,32 @@ pub fn ensure_started(app: &AppHandle) -> AppResult<()> {
     let chat_send_ticket = uuid::Uuid::new_v4().simple().to_string();
     let _ = child.write(format!("{CHAT_TICKET_PREFIX}{chat_send_ticket}\n").as_bytes());
 
+    // 066 段 2: 取得セッション制御チケット。⚠⚠ **上の 2 本のどちらとも別に採番する。**
+    // ⚠⚠⚠ **ポート報告（sidecar の stdout）より前に書いていること**が重要である——
+    //   frontend が WS を張れるのはポートを受け取ってからなので、
+    //   「チケットを持たない正規の窓」という状態が生まれない（fail-closed の黙殺が正規経路に当たらない）。
+    // 採番も受け渡しも上とまったく同じ作法（uuid v4・stdin private pipe・非ログ・§9）。
+    let session_control_ticket = uuid::Uuid::new_v4().simple().to_string();
+    // ⚠⚠⚠ レビュー S-3（修正）: **この 1 本だけ書き込み失敗を握り潰さない。**
+    //   失敗すると sidecar は `sessionControlTicket = null` のままで `start-session` を**黙殺**するが、
+    //   ⚠⚠ Rust 側の state にはチケットが入るので **frontend は「取れた」と判断して送ってしまう**
+    //   ＝ 穴 C の対処（取れなければ理由を出す）が効かず、**コメントが黙って取れなくなる**。
+    //   ⚠ 契約テスト（`sidecar_ticket_contract`）はソース文字列を見るだけなので**実行時の失敗は拾えない**。
+    // ⚠⚠ **上の 2 本を同じ形にしていないのは、被害の重さが違うからである**——
+    //   あちらが落ちても「テーマが取り込めない」「チャットが送れない」で、どちらも
+    //   **ユーザーが操作した画面にその場で結果が出る**（黙って死ぬのはこの 3 本目だけ）。
+    //   ⚠ **再修正トリガー＝あちらにも「操作の外で効く」経路ができたとき。**
+    // ⚠⚠⚠ **値は出さない**（§9）。出すのは「書けなかった」という事実だけである。
+    if child
+        .write(format!("{SESSION_TICKET_PREFIX}{session_control_ticket}\n").as_bytes())
+        .is_err()
+    {
+        eprintln!(
+            "[comment-sidecar] failed to pipe the session-control ticket; \
+             comment fetching will be silently rejected by the sidecar"
+        );
+    }
+
     let generation = SIDECAR_GENERATION.fetch_add(1, Ordering::Relaxed);
     *guard = Some(CommentSidecar {
         child,
@@ -175,6 +225,7 @@ pub fn ensure_started(app: &AppHandle) -> AppResult<()> {
         generation,
         theme_import_ticket,
         chat_send_ticket,
+        session_control_ticket,
     });
     // reader スレッド起動前にロックを解放する（スレッド側は独立にロックを取り直す）。
     drop(guard);
@@ -273,6 +324,19 @@ pub fn chat_send_ticket(app: &AppHandle) -> Option<String> {
     let state = app.state::<CommentSidecarState>();
     let guard = state.lock().expect("comment sidecar mutex poisoned");
     guard.as_ref().map(|s| s.chat_send_ticket.clone())
+}
+
+/// 066 段 2: 稼働中 sidecar の**取得セッション制御チケット**を返す（未起動なら `None`）。
+///
+/// viewer はこれを `start-session` / `stop-session` フレームに載せる。
+/// ⚠ 上の 2 本と同じく **sidecar が再 spawn されると値が変わる**ので、**操作のたびに取り直すこと**。
+/// ⚠⚠ **ログにも画面にも出さない**（§9）。
+/// ⚠⚠⚠ **`None`（sidecar 未起動）を「今回だけ通す」に読み替えないこと**——
+/// frontend は `None` なら**送らずに画面へ理由を出す**（穴 C）。
+pub fn session_control_ticket(app: &AppHandle) -> Option<String> {
+    let state = app.state::<CommentSidecarState>();
+    let guard = state.lock().expect("comment sidecar mutex poisoned");
+    guard.as_ref().map(|s| s.session_control_ticket.clone())
 }
 
 /// sidecar を停止する（idempotent）。窓クローズ・アプリ終了フックから呼ぶ。

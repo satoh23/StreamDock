@@ -2,7 +2,6 @@ import { describe, it, expect } from "vitest";
 import type { CommentViewDto } from "../../features/comment-viewer/types";
 import type {
   EffectObsSource as EffectObsSourcePayload,
-  EffectRequestBase,
 } from "./effectTrigger";
 import {
   CONDITION_COOLDOWN_MAX_MS,
@@ -105,16 +104,33 @@ const feedOneByOne = (
   comments: CommentViewDto[],
   state = createEffectTriggerState(),
   at = T0,
-): (EffectRequestBase & EffectObsSourcePayload)[] =>
-  comments.flatMap((c) => decideEffects([c], [], state, at, TPL));
+  matcher: EffectMatcher = TPL,
+  // ⚠ 063b 段 1-b: 戻り値は **matcher が返したペイロードだけ**になった（旧 `EffectRequestBase & …`）。
+): EffectObsSourcePayload[] =>
+  comments.flatMap((c) => decideEffects([c], [], state, at, matcher));
+
+/**
+ * ⚠⚠⚠ **063b 段 1-b: 「どの発火がどのコメント由来か」を見分けるための stub。**
+ *
+ * 戻り値からコメント由来の値が全部消えたので、`out.map(e => e.name)` のような
+ * **投稿者で見分ける書き方ができなくなった**。⚠ 「件数だけ」に落とすと
+ * 「1 件目を 2 回出す」変異が生き残るので、⚠⚠ **matcher が唯一見られる `text` を
+ * ペイロードへ写して見分ける**（`EffectMatcher` は `{eventType, text}` しか受け取らない）。
+ * ⚠ **これは stub の中だけの話である**——本番の matcher（`createEffectFireMatcher`）は
+ * 本文をペイロードに載せない（§9・`EffectMatch` に載せる場所が型として無い）。
+ */
+const echoMatcher: EffectMatcher = ({ text }) => ({
+  effect: { kind: "obs-source", sourceName: text },
+  conditionId: "event:superchat",
+  cooldownMs: 0,
+});
 
 describe("061b: decideEffects（発火層）", () => {
   it("課金コメントからエフェクトを 1 件出す", () => {
     const out = decideEffects([comment()], [], createEffectTriggerState(), T0, TPL);
-    expect(out).toHaveLength(1);
-    expect(out[0].name).toBe("視聴者A");
-    expect(out[0].amountText).toBe("¥1,000");
-    expect(out[0].eventLabel).toBe("スーパーチャット");
+    // ⚠⚠ 063b 段 1-b: 出るのは **matcher が返したペイロードそのもの**である
+    //   （旧: 投稿者名・金額・種別ラベルも載っていた。⚠ **§9 で全廃した**）。
+    expect(out).toEqual([KIND]);
   });
 
   it("⚠⚠ 061j: 課金判定は matcher の責務になった（発火層は種別を 1 つも知らない）", () => {
@@ -134,27 +150,18 @@ describe("061b: decideEffects（発火層）", () => {
     ).toHaveLength(1);
   });
 
-  it("⚠⚠ ビッツで出る（`isMonetaryEvent(displayEventType(c))` と書くと出なくなる）", () => {
-    // ⚠ 059b が通知音で踏んだ誤りと同型。`displayEventType` は superchat+BITS を "bits" へ振り替えるが
-    // "bits" は `MONETARY_EVENT_TYPES` に無い（あの Set は**生の eventType に適用する述語**）。
-    // ここが落ちるなら `decideEffects` の課金判定が `displayEventType` を噛ませてしまっている。
-    const out = decideEffects(
-      [
-        comment({
-          eventType: "superchat",
-          monetaryAmount: "100 bits",
-          monetary: { amount: 100, currency: "BITS" },
-        }),
-      ],
-      [],
-      createEffectTriggerState(),
-      T0,
-      TPL,
-    );
-    expect(out).toHaveLength(1);
-    expect(out[0].eventLabel).toBe("ビッツ");
-    expect(out[0].tone).toBe("bits");
-  });
+  /**
+   * ⚠⚠⚠ **063b 段 1-b: 「ビッツで出る」ケースをここから削除した。**
+   *
+   * 旧ケースは `out[0].eventLabel === "ビッツ"` / `out[0].tone === "bits"` を見ていたが、
+   * ⚠⚠ **そのフィールドは §9 で全廃した**（`effectTrigger.ts` の 段 1-b 節が正）。
+   * ⚠ 残る `toHaveLength(1)` は `TPL`（どんなコメントでも出す stub）では**何も検出しない**ので、
+   * ケースごと落とすのが正直である。
+   * ⚠ **失われたカバレッジはゼロ**——罠（`displayEventType` を噛ませるとビッツが落ちる）の担保は
+   * 2 か所に在る: 本ファイルの「**matcher は生の eventType と本文を受け取る（ビッツは superchat として引ける）**」と、
+   * `effectAssignments.test.ts` の「**OBS レーンでも課金ゲートは同じ**」。
+   * ラベル・配色そのものは `viewerFormat.test.ts`（57 ケース）が持ち主である。
+   */
 
   it("⚠⚠ `updated` からは 1 件も出さない（043e の combo 再送で光り続けない）", () => {
     const jewels = comment({
@@ -194,11 +201,18 @@ describe("061b: decideEffects（発火層）", () => {
   });
 
   it("⚠ 別の投稿者の gift は畳まれない（他人の贈与を巻き添えで消さない）", () => {
-    const out = feedOneByOne([
-      comment({ id: "g1", eventType: "gift", author: { id: "u1", name: "A" } }),
-      comment({ id: "g2", eventType: "gift", author: { id: "u2", name: "B" } }),
-    ]);
-    expect(out.map((e) => e.name)).toEqual(["A", "B"]);
+    // ⚠ 063b 段 1-b: 投稿者名は戻り値に載らなくなったので、**本文で見分ける**（`echoMatcher`）。
+    //   ⚠⚠ 件数だけを見ると「1 件目を 2 回出す」変異が生き残る。
+    const out = feedOneByOne(
+      [
+        comment({ id: "g1", text: "A の贈与", eventType: "gift", author: { id: "u1", name: "A" } }),
+        comment({ id: "g2", text: "B の贈与", eventType: "gift", author: { id: "u2", name: "B" } }),
+      ],
+      createEffectTriggerState(),
+      T0,
+      echoMatcher,
+    );
+    expect(out.map((e) => e.sourceName)).toEqual(["A の贈与", "B の贈与"]);
   });
 
   it("⚠ 畳み込みの判定キーは表示名ではなく安定 ID（改名しても畳まれる／同名でも別人は畳まれない）", () => {
@@ -371,9 +385,13 @@ describe("061b: decideEffects（発火層）", () => {
 
   // --- §9: EffectRequest が持つもの -------------------------------------------------------------
 
-  it("⚠⚠ EffectRequest に本文（text）とアバターが含まれない（§9・テストで固定する）", () => {
-    // ⚠ ここを落とすと、後から「便利だから」で `text` が足されて配信画面に第三者の自由入力が
-    // 大写しになる（親 061 の判断が静かに崩れる）。**キー集合そのもの**を固定する。
+  it("⚠⚠⚠ 063b 段 1-b: 戻り値に**コメント由来の値が 1 つも載らない**（§9・キー集合で固定）", () => {
+    // ⚠⚠⚠ **061j の担保より 1 段強い。** 061j は「**本文を書ける場所が型として無い**」だったが、
+    //   段 1-b で `EffectRequestBase` を全廃したので、いまは
+    //   **投稿者名・金額・種別ラベル・配色・元コメントの id も 1 つも載らない**
+    //   ＝ 出ていくのは**ユーザー自身が作った設定**（OBS のソース名／ガチャの id）だけである。
+    // ⚠ ここを落とすと、後から「便利だから」で `text` や `name` が足されて
+    //   配信画面に第三者の自由入力が大写しになる（親 061 の判断が静かに崩れる）。
     const out = decideEffects(
       [
         comment({
@@ -386,65 +404,34 @@ describe("061b: decideEffects（発火層）", () => {
       T0,
       TPL,
     );
-    // ⚠ 064d: 発火先が OBS ソース 1 種類になったので、載るのは `kind` と `sourceName`。
-    expect(Object.keys(out[0]).sort()).toEqual(
-      [
-        "amountText",
-        "eventLabel",
-        "id",
-        "kind",
-        "message",
-        "name",
-        "sourceName",
-        "tone",
-      ].sort(),
-    );
+    // ⚠⚠ **matcher が返したペイロードのキーとちょうど一致する**（余分が 1 つも無い）。
+    expect(Object.keys(out[0]).sort()).toEqual(["kind", "sourceName"].sort());
+    expect(Object.keys(out[0]).sort()).toEqual(Object.keys(KIND).sort());
     const dump = JSON.stringify(out[0]);
     expect(dump).not.toContain("第三者の自由入力です");
     expect(dump).not.toContain("data:image");
+    // ⚠ 投稿者名・金額・元コメントの id も出ない（段 1-b で落とした 6 つ）。
+    expect(dump).not.toContain("視聴者A");
+    expect(dump).not.toContain("1,000");
+    expect(dump).not.toContain("c1");
   });
 
-  it("⚠ 金額を持たない種別は composeEventMessage の文を持つ（文言を 2 実装に分けない）", () => {
-    const out = decideEffects(
-      [
-        comment({
-          id: "sub1",
-          source: "twitch",
-          eventType: "subscription",
-          monetaryAmount: undefined,
-          monetary: undefined,
-          monthCount: 3,
-          tier: 1,
-        }),
-      ],
-      [],
-      createEffectTriggerState(),
-      T0,
-      TPL,
-    );
-    expect(out[0].amountText).toBeNull();
-    expect(out[0].message).toBe("視聴者Aさんがサブスクを3ヶ月継続しました（Tier1）");
-    expect(out[0].eventLabel).toBe("サブスク");
-  });
-
-  it("⚠ 配色は monetaryTone と同一（コメント欄のカードと同じ額が同じ色になる）", () => {
-    const t6 = decideEffects(
-      [comment({ monetaryAmount: "¥10,000", monetary: { amount: 10000, currency: "JPY" } })],
-      [],
-      createEffectTriggerState(),
-      T0,
-      TPL,
-    );
-    expect(t6[0].tone).toBe("t6");
-    const t0 = decideEffects(
-      [comment({ id: "x", monetaryAmount: "¥100", monetary: { amount: 100, currency: "JPY" } })],
-      [],
-      createEffectTriggerState(),
-      T0,
-      TPL,
-    );
-    expect(t0[0].tone).toBe("t0");
-  });
+  /**
+   * ⚠⚠⚠ **063b 段 1-b: 「文言（`composeEventMessage`）」と「配色（`monetaryTone`）」の
+   * 2 ケースをここから削除した。**
+   *
+   * どちらも `out[0].message` / `out[0].tone` を見ていたが、⚠⚠ **そのフィールドは §9 で全廃した**
+   * （`effectTrigger.ts` の 段 1-b 節が正）。
+   * ⚠ 旧ケースの主張は「**文言と配色を 2 実装に分けない**（発火層も共有関数を使う）」だったが、
+   * ⚠⚠⚠ **発火層はもう `viewerFormat` の文言・配色関数を 1 本も呼ばない**ので、
+   * **主張する対象そのものが無くなった**（残るのは gift 畳み込み用の `viewerIdOf` だけ）。
+   *
+   * ⚠ **失われたカバレッジはゼロ**——`composeEventMessage` / `monetaryTone` / `eventLabel` の
+   * 持ち主は `viewerFormat.test.ts`（57 ケース）で、そちらが
+   * 「サブスクを3ヶ月継続しました（Tier2）」もティア配色も直接固定している。
+   * ⚠ コメント欄のカード・ティッカー・読み上げ側の消費は
+   * `CommentList.test.tsx` / `MonetaryTicker.test.tsx` / `speechText.test.ts` が持つ。
+   */
 
   it("⚠ 063 への拡張余地として kind を持つ（064d 以降の唯一の variant は obs-source）", () => {
     const out = decideEffects([comment()], [], createEffectTriggerState(), T0, TPL);
@@ -517,34 +504,20 @@ describe("061b: decideEffects（発火層）", () => {
     expect(out).toEqual([]);
   });
 
-  it("⚠ matcher が返した発火先がそのまま載る（キー集合は 8 個）", () => {
+  it("⚠ matcher が返した発火先が**そのまま**載る（063b 段 1-b: 足しも引きもしない）", () => {
+    const effect = { kind: "obs-source", sourceName: "tpl-1" } as const;
     const out = decideEffects(
       [comment()],
       [],
       createEffectTriggerState(),
       T0,
-      () => ({
-        effect: { kind: "obs-source", sourceName: "tpl-1" },
-        conditionId: "event:superchat",
-        cooldownMs: 0,
-      }),
+      () => ({ effect, conditionId: "event:superchat", cooldownMs: 0 }),
     );
-    expect(out).toHaveLength(1);
-    expect(Object.keys(out[0]).sort()).toEqual(
-      [
-        "amountText",
-        "eventLabel",
-        "id",
-        "kind",
-        "message",
-        "name",
-        "sourceName",
-        "tone",
-      ].sort(),
-    );
-    // ⚠ 本文・アバターは**テンプレート経路でも**載らない（§9）。
-    const dump = JSON.stringify(out[0]);
-    expect(dump).not.toContain("本文です");
+    // ⚠⚠ **`toEqual` で丸ごと一致**＝ `decideEffects` が値を 1 つも足していないことの固定
+    //   （旧: `EffectRequestBase` の 6 つが載っていたので、キー集合を列挙して比べるしかなかった）。
+    expect(out).toEqual([effect]);
+    // ⚠ 本文は載らない（§9）。
+    expect(JSON.stringify(out[0])).not.toContain("本文です");
   });
 
   it("⚠ matcher は生の eventType と本文を受け取る（ビッツは superchat として引ける）", () => {
@@ -682,10 +655,16 @@ describe("061b: decideEffects（発火層）", () => {
   it("⚠⚠ 「出さない」種別が枠を食って、出すはずの種別が捨てられることが無い", () => {
     const state = createEffectTriggerState();
     // 「サブスクは出さない／スーパーチャットはテンプレート」という条件。
+    // ⚠ 063b 段 1-b: **ペイロードに種別を写して**「出たのがスパチャであること」を見分ける
+    //   （旧 `out[0].id` は戻り値から消えた）。
     const resolve: EffectMatcher = ({ eventType }) =>
       eventType === "subscription"
         ? null
-        : { effect: KIND, conditionId: `event:${eventType}`, cooldownMs: 0 };
+        : {
+            effect: { kind: "obs-source", sourceName: eventType },
+            conditionId: `event:${eventType}`,
+            cooldownMs: 0,
+          };
 
     // サブスクをバースト上限より多く流す（全部「出さない」）。
     for (let i = 0; i < EFFECT_MAX_CONCURRENT + 2; i++) {
@@ -706,8 +685,7 @@ describe("061b: decideEffects（発火層）", () => {
     }
     // 直後のスーパーチャットは**必ず出る**（判定が後ろにあると枠が尽きて捨てられる）。
     const out = decideEffects([comment({ id: "sc" })], [], state, T0, resolve);
-    expect(out).toHaveLength(1);
-    expect(out[0].id).toBe("sc");
+    expect(out).toEqual([{ kind: "obs-source", sourceName: "superchat" }]);
   });
 
   it("⚠ 「出す」種別は従来どおりバースト上限で切られる（穴 γ の対処で上限が緩んでいない）", () => {
@@ -766,12 +744,14 @@ describe("061b: decideEffects（発火層）", () => {
   it("⚠⚠ 新規 7: イベント条件（`cooldownMs: 0`）にはクールダウンが効かない", () => {
     // ⚠ 課金は 1 件ずつが重要（スパチャ 2 連投の 2 件目を落としたくない）。
     const state = createEffectTriggerState();
+    // ⚠ 063b 段 1-b: id は戻り値に載らなくなったので、**本文で見分ける**（`echoMatcher`）。
     const out = feedOneByOne(
-      [comment({ id: "s1" }), comment({ id: "s2" })],
+      [comment({ id: "s1", text: "1 件目" }), comment({ id: "s2", text: "2 件目" })],
       state,
       T0,
+      echoMatcher,
     );
-    expect(out.map((r) => r.id)).toEqual(["s1", "s2"]);
+    expect(out.map((r) => r.sourceName)).toEqual(["1 件目", "2 件目"]);
     // ⚠ `cooldownMs > 0` の判定を外して全条件に効かせる変異は、この 1 行がレッドにする。
     expect(state.lastConditionAt.size).toBe(0);
   });
@@ -974,7 +954,7 @@ describe("064b: OBS のソースを鳴らすレーン", () => {
     ).toHaveLength(1);
   });
 
-  it("⚠⚠ 本文は戻り値に載らない（§9・キー集合はテンプレートのときと同じ 6 ＋ ペイロード）", () => {
+  it("⚠⚠ 本文は戻り値に載らない（§9・063b 段 1-b: 載るのはペイロードだけ）", () => {
     const out = decideEffects(
       [comment({ text: "これは第三者の本文です" })],
       [],
@@ -982,9 +962,8 @@ describe("064b: OBS のソースを鳴らすレーン", () => {
       T0,
       OBS,
     );
-    expect(Object.keys(out[0]).sort()).toEqual(
-      ["amountText", "eventLabel", "id", "kind", "message", "name", "sourceName", "tone"].sort(),
-    );
+    // ⚠⚠ 段 1-b で `EffectRequestBase` の 6 つが消えたので、**キーはペイロードの 2 つだけ**。
+    expect(Object.keys(out[0]).sort()).toEqual(["kind", "sourceName"].sort());
     expect(JSON.stringify(out[0])).not.toContain("第三者");
   });
 });

@@ -158,11 +158,12 @@ export interface GachaPrize {
  * 指す先が消えているときの扱いも 064b と揃える＝**警告を出して「出さない」へ倒す**
  * （黙って別のガチャへ化けさせない）。
  *
- * ⚠⚠⚠ **063d でも、この割り当ては発火しない。** [`createObsSourceMatcher`] の `select` が
- * `null` を返す＝**当たり判定の前に落ちる**ので、バースト枠もクールダウンも消費しない
- * （061d-2 穴 γ 以来 4 回踏んだ罠を踏まないための形）。**抽選の本発火は 063b。**
- * ⚠ 「割り当てたのに何も出ない」が黙って起きないよう、**画面に注記を出している**
- * （[`GachaPrizeTable`] の先頭の note）。⚠ **注記を先に消さないこと**（063b で挙動が入ってから消す）。
+ * ⚠⚠⚠ **063b で発火するようになった**（063a / 063d では [`createEffectFireMatcher`] の `select` が
+ * `null` を返し、**当たり判定の前に落ちて**いた）。⚠ いまは `select` がこの kind も通し、
+ * **発火が確定してから** `effectFire.ts` の [`decideFireSourceNames`] が 1 回だけ引く。
+ * ⚠⚠ **ここ（`select`）で引かないことが要点である**——`select` は当たり判定の**前**に呼ばれるので、
+ * 引くと「当たっていない条件でも引く」「はずれが次の条件へ落ちる」の 2 つが同時に起きる（穴 A）。
+ * ⚠ 「割り当てたのに何も出ない」と読める注記（[`GachaPrizeTable`] の先頭の note）は **063b で外した。**
  *
  * ⚠ **景品 0 件のガチャを指していても `{ kind:"gacha" }` のまま保持する**（`{kind:"none"}` へ潰さない）。
  * 潰すと「ガチャを選んだのに次に開いたら『出さない』に戻っている」＝**黙って設定が消える**。
@@ -1234,54 +1235,96 @@ export function runGachaMigration(): GachaDefinition[] {
  */
 
 /**
- * 064b: **OBS 側のソースを鳴らすレーンの matcher**（`decideEffects` に渡す）。
+ * 064b → **063b で 2 kind を通すよう広げた**: **発火する条件を引く matcher**（`decideEffects` に渡す）。
  *
  * ## ⚠⚠ このレーンを回すのはコメビュ窓である
  *
  * sidecar と WS で繋がっているのは**コメビュ窓だけ**なので、OBS を鳴らせるのもあの窓だけ
  * （064a の `ObsSourceCard` が localStorage 経由で代行させているのと同じ構造上の非対称）。
- * ⇒ **エフェクト窓は OBS レーンを 1 度も見ない**（上の [`createEffectMatcher`] が弾く）。
  *
- * ## ⚠ 064d: レーンは 1 本だけになった
+ * ## ⚠⚠⚠ 063b: レーンは 1 本のままで、`select` が 2 つの kind を通す
  *
- * 064b の時点では「エフェクト窓に描くレーン」と共存していたので、
- * **相手のレーンの条件を当たり判定の前に落とす**ことが最重要の不変条件だった。
- * 064d で取り込み機能ごと消えたので、**いま条件が持つ発火先は OBS ソースだけ**である。
- * ⚠ **それでも `select` で絞る形は残してある**——063（ガチャ）が 2 本目のレーンとして入る予定で、
- * そのとき「当たり判定の前に落とす」を**作り直さずに済む**（061d-2 穴 γ 以来 4 回踏んだ罠）。
+ * 064b〜064d の JSDoc は**「063（ガチャ）が 2 本目のレーンとして入る予定」**と書いていたが、
+ * ⚠⚠ **それは「ガチャが別の窓に描く」と思われていた頃の見込みである**。
+ * 064d でエフェクト窓が廃止され、**ガチャの出力先も OBS のソース**になった
+ * ＝ **出力先が同じ**なので、2 本にすると次の 2 つが壊れる:
+ *   1. ⚠⚠ **1 コメントが 2 回発火しうる**（レーンごとに「最初の 1 件」を取るため）
+ *   2. ⚠ **バースト枠が 2 倍になる**（出力先は 1 つなので、画面上の同時表示が [`EFFECT_MAX_CONCURRENT`] を超える）
+ * ⇒ **レーンは 1 本**（`T = EffectObsSource | EffectGacha`）。**バースト枠とクールダウンは共有されるのが正しい。**
+ * ⚠ **`EffectTriggerState` をもう 1 組作らないこと**（061d-2 穴 γ ／ 061j 穴 η ／ 061k と同型の罠を、
+ * そもそも作らない形＝レーンが 1 本なら state も 1 本しか要らない）。
  *
- * ## ⚠⚠ レーンごとに `EffectTriggerState` を分けること（呼び出し側の責務）
+ * ## ⚠⚠⚠ `select` を `!== "none"` で書く理由（**allow-list にしないこと**）
  *
- * 061k が 2 窓で作った構えと同じ＝**バースト枠とクールダウンはレーンごとに独立**である。
- * 共有すると「OBS のソースが 3 回鳴っただけで、直後の投げ銭がエフェクト窓で捨てられる」が起きる
- * （061d-2 穴 γ ／ 061j 穴 η ／ 061k と同型で **4 例目**）。
+ * ⚠⚠ **063b の実装中に、当初の判断（allow-list にする）が誤りだと分かった。** 当初の根拠は
+ * 「matcher 自身が**未知 kind に対する 2 枚目の網**になる」だったが、⚠⚠⚠ **それは成立しない**——
+ * [`readConditions`] は必ず [`parseConditions`] → [`parseAssignment`] を通すので、
+ * **未知の kind はここへ届く前に `{kind:"none"}` へ潰れている**（＝ allow-list は runtime では到達不能）。
+ * ⚠ **ミューテーションで実測した**: `select` を allow-list から `!== "none"` へ緩める変異は
+ * **1 件もレッドにならない**（＝ 2 つは runtime で等価）。
+ *
+ * ⇒ **runtime で等価なら、コンパイル時に強い方を採る。** 差が出るのは
+ * **[`EffectAssignment`] に 4 本目の variant が入ったとき**である（実測）:
+ *   - **`!== "none"`** … 絞り込みの結果が戻り値の型と合わなくなり **`tsc` が落ちる**
+ *     ＝ **「この kind を鳴らすのか」を必ず判断させる**
+ *   - **allow-list** … ⚠ **落ちない**。新しい kind は**黙って鳴らないだけ**になり、
+ *     「割り当てたのに何も起きない」を画面のどこにも出さずに作る（061a Q-1 が最も嫌う形）
+ * ⚠⚠ **「コンパイルを落として判断を強制する」は、このリポジトリでは事故ではなく設計された網である**
+ * （062a の `EVENT_TYPE_MAP` の `Record` 型強制／063e 穴 H の `Record<CommentEventType, …>` 2 箇所と同型）。
+ * ⚠ **安全側（鳴らさない）へ倒れることは失われない**——それは [`parseAssignment`] が
+ * **1 枚目の網として既に担保している**（`effectFire.test.ts` の「未知の `kind` では何も鳴らない」が固定）。
+ * ⚠ さらに `effectFire.ts` の `never` 網が**2 枚目のコンパイル時ゲート**になる。
+ *
+ * ⚠ `select` が `null` を返した条件は**当たった扱いにしない**＝バースト枠もクールダウンも消費しない
+ * （下記 [`createConditionMatcher`] が正）。
+ *
+ * ## ⚠⚠⚠ 063b: ここで**抽選しないこと**（穴 A）
+ *
+ * ガチャを「引いて `EffectObsSource` へ解決してから返す」形にしてはいけない。
+ * [`createConditionMatcher`] を読むと **`select` は `condition.when` の照合より前に呼ばれる**ので:
+ *   1. **当たっていない条件でも引く**（走査した条件の数だけ乱数が回る）
+ *   2. ⚠⚠⚠ **はずれが `null` になり「レーン違い」と区別できず、次の条件へ落ちる**
+ *      ＝ **ガチャを外したら、下に並んだ別の条件が代わりに発火する**
+ * ⚠ 2 は「出ない」を見るテストでは殺せない（**出てはいる**）。
+ * ⇒ **抽選は発火が確定してから**（`effectFire.ts` の `decideFireSourceNames` が正）。
  *
  * ## §9
  *
  * ⚠⚠ **OBS へ渡るのは `sourceName` だけ**＝**ユーザー自身が OBS で付けた名前**である。
  * コメント本文は照合に使って**その場で捨てる**（`EffectMatchInput` が本文を受けるが、
  * `EffectMatch` は本文を載せられない＝型で担保）。
+ * ⚠ ガチャでも同じ——載るのは `gachaId`（**ユーザー自身が作ったガチャの識別子**）だけである。
  */
-export function createObsSourceMatcher(): EffectMatcher<EffectObsSource> {
+export function createEffectFireMatcher(): EffectMatcher<
+  EffectObsSource | EffectGacha
+> {
+  // ⚠⚠ **キャストを書かないこと。** キャスト無しで通ることが、
+  //   「4 本目の variant が入ったらここで `tsc` が落ちる」の担保そのものである。
   return createConditionMatcher((condition) =>
-    condition.effect.kind === "obs-source" ? condition.effect : null,
+    condition.effect.kind !== "none" ? condition.effect : null,
   );
 }
 
 /**
- * 064b: **条件の走査そのもの**（レーンの違いは `select` の 1 関数だけに閉じる）。
+ * 064b: **条件の走査そのもの**（通す kind の違いは `select` の 1 関数だけに閉じる）。
  *
- * ⚠⚠ **[`createEffectMatcher`] と [`createObsSourceMatcher`] が 1 実装を共有するために切り出した。**
+ * ⚠⚠ **064b の時点では [`createEffectFireMatcher`] と、エフェクト窓側の matcher が
+ * 1 実装を共有するために切り出した**（⚠ **後者は 064d で削除済み**——名前だけが
+ * 長らく JSDoc に残っていたのを 063b で掃除した）。⚠ **切り出しの理由はいまも生きている**:
  * 走査を 2 通り書くと、課金ゲート・走査順・「最初の 1 件だけ」・クールダウンの規則が
  * **片方だけ緩む**（061d-2 レビュー S-4 以来の規律）。
  *
- * ⚠⚠ **`select` は「自分のレーン宛てか」と「何を発火させるか」を同時に答える。**
+ * ⚠⚠ **`select` は「発火に使う kind か」と「何を発火させるか」を同時に答える。**
  * `null` を返した条件は**当たった扱いにしない**＝
  *   1. 判断 11 の「『出さない』条件はキーワードを塞がない」がそのまま維持される
- *   2. ⚠⚠ **もう一方のレーンの条件が、このレーンのバースト枠とクールダウンを食わない**
- *      （＝当たり判定の**前**に落ちる。上の [`createObsSourceMatcher`] の JSDoc が正）
+ *   2. ⚠⚠ **通さない kind の条件が、バースト枠とクールダウンを食わない**
+ *      （＝当たり判定の**前**に落ちる。上の [`createEffectFireMatcher`] の JSDoc が正）
  * ⚠ **「出ない」だけを見るテストでは 2 の変異は殺せない**（`recentFires` / `lastConditionAt` /
  * `lastGiftAt` のサイズを直接数えること）。
+ *
+ * ⚠⚠⚠ **`select` の呼び出しがループの先頭にあること（＝ `condition.when` の照合より前）が、
+ * 「ここで抽選してはいけない」の理由そのものである**（上の穴 A）。⚠ **この順序を入れ替えないこと**
+ * ——入れ替えると 2 の不変条件（枠を食わない）が壊れる。
  */
 function createConditionMatcher<T extends object>(
   select: (condition: EffectCondition) => T | null,
@@ -1298,10 +1341,11 @@ function createConditionMatcher<T extends object>(
     const text = normalizeForMatch(input.text);
 
     for (const { condition, normalized } of conditions) {
-      // ⚠⚠ **061k（判断 5）/ 064b: 自分のレーン宛てでない条件は、当たり判定の前に落とす。**
-      //   ⚠ ここを `decideEffects` の後ろ（＝`EffectRequest` を捨てる形）へ動かすと、
-      //   **もう一方のレーンの条件がこのレーンのバースト枠とクールダウンを消費する**（上記 JSDoc）。
+      // ⚠⚠ **061k（判断 5）/ 064b: 発火に使わない kind の条件は、当たり判定の前に落とす。**
+      //   ⚠ ここを `decideEffects` の後ろ（＝戻り値を捨てる形）へ動かすと、
+      //   **「出さない」条件がバースト枠とクールダウンを消費する**（上記 JSDoc）。
       //   ⚠ 「出ない」だけを見るテストでは**この変異は殺せない**（state のサイズを数えること）。
+      // ⚠⚠⚠ 063b: **この行より後ろで抽選しないこと**（`select` の中も同じ・穴 A）。
       const effect = select(condition);
       if (effect === null) continue;
       if (condition.when.type === "event") {
