@@ -1,4 +1,7 @@
-import { EFFECT_ASSIGNMENTS_KEY } from "../../features/comment-viewer/overlaySettings";
+import {
+  EFFECT_ASSIGNMENTS_KEY,
+  GACHA_LIBRARY_KEY,
+} from "../../features/comment-viewer/overlaySettings";
 import {
   isMonetaryEvent,
   MONETARY_EVENT_TYPES,
@@ -141,26 +144,63 @@ export interface GachaPrize {
 }
 
 /**
- * 063a: **ガチャの割り当て**（＝この条件が当たったら、景品から 1 つ抽選して鳴らす）。
+ * 063a → **063d で作り直した**: **ガチャの割り当て**（＝この条件が当たったら 1 回引く）。
  *
- * ⚠⚠ **063s の「再開時にどこから始めるか」が推した最小形そのものである**——
- * 064b の割り当て（条件 1 件 → OBS ソース **1 本**）を「条件 1 件 → ソース **N 本＋重み**」へ
- * 広げただけで、**新しいテーブルもコマンドも増えない**（Rust 差分ゼロ）。
- * ⚠ 063a 本文が書いていた `gachas` / `gacha_prizes` の 2 テーブル ＋ コマンド 9 本は**採らなかった**
- * （判断の全文は docs/progress.md の 063a 節・穴 F が正）。
+ * ⚠⚠⚠ **063d: 景品をここに直付けするのをやめ、[`GachaDefinition`] を id で指す形にした。**
+ * 063a は `{ kind:"gacha"; prizes }` だったが、そうすると
+ * **同じガチャをスパチャとビッツに設定するには景品表を 2 回入力する**ことになり、
+ * ⚠ **編集も 2 箇所**で、**片方を忘れると確率が静かにずれる**（画面のどこにも出ない）。
+ * 条件は最大 26 本（イベント 6 ＋ [`KEYWORD_CONDITION_MAX`]）あるので、増えるほど破綻する。
+ * ⇒ **ガチャ本体は [`GACHA_LIBRARY_KEY`] の一覧が持ち、割り当ては `gachaId` を指すだけ**にした。
+ * ⚠ これは 063a が明示的に先送りした点である（「再修正トリガー＝ガチャを複数保存して使い回したくなったとき」）。
  *
- * ⚠⚠⚠ **063a では、この割り当ては発火しない。** [`createObsSourceMatcher`] の `select` が
+ * ⚠⚠ **形は 064b の `EffectObsSource` とまったく同じ**（`<select>` の値は `gacha:<id>`）。
+ * 指す先が消えているときの扱いも 064b と揃える＝**警告を出して「出さない」へ倒す**
+ * （黙って別のガチャへ化けさせない）。
+ *
+ * ⚠⚠⚠ **063d でも、この割り当ては発火しない。** [`createObsSourceMatcher`] の `select` が
  * `null` を返す＝**当たり判定の前に落ちる**ので、バースト枠もクールダウンも消費しない
  * （061d-2 穴 γ 以来 4 回踏んだ罠を踏まないための形）。**抽選の本発火は 063b。**
  * ⚠ 「割り当てたのに何も出ない」が黙って起きないよう、**画面に注記を出している**
- * （[`GachaPrizeTable`] の `gachaNote`）。⚠ **注記を先に消さないこと**（063b で挙動が入ってから消す）。
+ * （[`GachaPrizeTable`] の先頭の note）。⚠ **注記を先に消さないこと**（063b で挙動が入ってから消す）。
  *
- * ⚠ **景品 0 件でも `{ kind:"gacha", prizes: [] }` のまま保持する**（`{kind:"none"}` へ潰さない）。
+ * ⚠ **景品 0 件のガチャを指していても `{ kind:"gacha" }` のまま保持する**（`{kind:"none"}` へ潰さない）。
  * 潰すと「ガチャを選んだのに次に開いたら『出さない』に戻っている」＝**黙って設定が消える**。
- * 0 件は UI が「景品がありません」と出して観測可能にする。
  */
 export interface EffectGacha {
   kind: "gacha";
+  /**
+   * 指している [`GachaDefinition.id`]。⚠ **一覧に無い id でも保持する**
+   * （消えたガチャを指したまま警告を出すのが 064b と同じ規律で、黙って別のガチャへ化けさせないため）。
+   */
+  gachaId: string;
+}
+
+/**
+ * 063d: **名前付きのガチャ 1 件**（＝複数の条件から使い回せる本体）。
+ *
+ * ⚠⚠ **「テンプレート」と呼ばないこと。** [064d](../../../../docs/tasks/064d-remove-template-import.md) が
+ * `effect_templates` / `template_id` / `EffectAssignment` の `template` variant を**全削除済み**で、
+ * docs 上「テンプレート」は**消した取り込み機能**を指す。同じ語を使うと、
+ * ⚠ 旧 063a 本文が `template_id` 前提で壊れていたのと**同じ種類の混乱**を作る。
+ * ⇒ 画面の文言も「ガチャを選ぶ」「ガチャを作る」で統一する。
+ *
+ * ⚠ **保存先は [`GACHA_LIBRARY_KEY`]**（条件のキーとは別・063d 穴 S）。
+ */
+export interface GachaDefinition {
+  /**
+   * id。⚠ **`"g:" + n`**（n ＝ **保存済みの最大 n + 1**。⚠⚠ **削除しても詰めない**）。
+   *
+   * ⚠ 採番規則を `kw:n`（[`EffectCondition`] の「id の決め方」）と**同じにしてある**理由は 2 つ:
+   *   1. `crypto.randomUUID()` は**判断 3 で既に却下済み**（jsdom / vitest での有無がバージョン依存＝
+   *      テストが環境で割れる／id が毎回変わるとアサーションが書けない）
+   *   2. ⚠⚠⚠ **id を再利用すると、削除したガチャを指していた条件が、
+   *      新しく作った別のガチャを黙って指す**——`kw:n` を詰めないのとまったく同じ危険である
+   */
+  id: string;
+  /** 表示名。⚠ **空を許さない**（[`GACHA_NAME_MAX_LENGTH`] 以内）——`<select>` の選択肢に出るため。 */
+  name: string;
+  /** 景品。⚠ 型も検証も 063a のまま無改変（[`parseGachaPrize`]）。 */
   prizes: readonly GachaPrize[];
 }
 
@@ -313,8 +353,22 @@ const parseAssignment = (raw: unknown): EffectAssignment => {
     return { kind: "obs-source", sourceName: sourceName.trim() };
   }
   if (kind === "gacha") {
-    // ⚠⚠ 063a: **景品 0 件でも gacha のまま返す**（`{kind:"none"}` へ潰さない・[`EffectGacha`] の注記が正）。
-    return { kind: "gacha", prizes: parseGachaPrizes((raw as { prizes?: unknown }).prizes) };
+    // ⚠⚠ 063d: **指す先が一覧に無くても gacha のまま返す**（`{kind:"none"}` へ潰さない・
+    //   [`EffectGacha`] の注記が正）。一覧に無いことの警告は UI が出す（064b と同じ規律）。
+    const gachaId = (raw as { gachaId?: unknown }).gachaId;
+    if (typeof gachaId === "string") {
+      const trimmed = gachaId.trim();
+      if (trimmed.length > 0 && trimmed.length <= GACHA_ID_MAX_LENGTH) {
+        return { kind: "gacha", gachaId: trimmed };
+      }
+    }
+    // ⚠⚠⚠ **063a 形式（`{kind:"gacha", prizes:[…]}`）はここへ落ちる＝「出さない」になる。**
+    //   ⚠ **これは移行が済んでいれば起きない**——[`migrateLegacyGachas`] が
+    //   **`parseAssignment` を通す前の生の JSON**に対して働き、`prizes` を一覧へ移してから
+    //   `gachaId` に書き換える。⚠⚠ **移行より先に保存すると景品が消える**ので、
+    //   **保存を起こす画面より前に [`runGachaMigration`] を必ず 1 回走らせること**
+    //   （`ObsEffectsScreen` が担当・そちらの注記が正）。
+    return DEFAULT_EFFECT_ASSIGNMENT;
   }
   // ⚠ 旧ビルドが書いた "builtin-monetary"（061h で廃止）と、未知の kind。どちらも「出さない」へ倒す。
   //   ⚠⚠ 063a で "gacha" は**既知**になったので、この行が受けるのは
@@ -377,6 +431,130 @@ const parseGachaPrize = (raw: unknown): GachaPrize | null => {
   // ⚠ 保存するのは trim 済みの値（064 レビュー S-10 と同じ理由＝一覧との照合が完全一致であるため）。
   return { name: name.trim(), weight, sourceName: sourceName.trim() };
 };
+
+/**
+ * 063d: 1 つの窓に置けるガチャの数の上限。
+ *
+ * 根拠＝共通の下部に**一覧として並ぶ**ので「**1 画面で読める**」（[`GACHA_PRIZE_MAX`] と同じ規律）。
+ * ⚠ **上限は後から上げるほうが安全**（下げると既存の設定が落ちる）。
+ * ⚠ **再修正トリガー＝「ガチャが足りない」と言われたとき。**
+ */
+export const GACHA_DEFINITION_MAX = 10;
+
+/**
+ * 063d: ガチャ名の長さ上限（**コードポイント数**）。
+ *
+ * 根拠＝ `<select>` の選択肢と一覧の行の**両方に収まること**。
+ * ⚠ [`GACHA_PRIZE_NAME_MAX_LENGTH`] と同値だが**別定数にしてある**——収まる場所が違うので、
+ * 片方だけ変えたくなる日が来る（同じ定数を共有すると、そのとき必ず両方動く）。
+ */
+export const GACHA_NAME_MAX_LENGTH = 24;
+
+/**
+ * 063d: `gachaId` として受け付ける長さの上限。
+ * ⚠ 実物は `"g:" + n` なので数文字だが、**手で localStorage を編集された場合**に
+ * 長大な文字列を握らないための上限である（`CHAT_TICKET_MAX_CHARS` と同じ位置づけ）。
+ */
+export const GACHA_ID_MAX_LENGTH = 64;
+
+/** 063d: id の接頭辞。⚠ `kw:` と同じ作法（[`GachaDefinition.id`] の注記が正）。 */
+const GACHA_ID_PREFIX = "g:";
+
+/**
+ * 063d: **次に使うガチャの id**。⚠ **見えている最大 n + 1**（削除しても詰めない）。
+ *
+ * ⚠⚠ **詰めないことが「削除したガチャを指していた条件が、別のガチャを黙って指す」ことを防ぐ。**
+ * `nextKeywordId` とまったく同じ規律である（あちらはクールダウンの取り違えを防いでいる）。
+ *
+ * ⚠⚠⚠ **`nextKeywordId` の「例外」をここには持ち込めない。**
+ * 061j は「**全部消したときは `kw:1` に戻る**」を受容していた——その時点で
+ * **引き継ぐ相手（条件）が存在しない**からである。⚠ ガチャは違う:
+ * **消してもそれを指していた条件は `gachaId` を持ったまま残る**（064b と同じく参照を保つため）。
+ * ⇒ 一覧が空になった瞬間に `g:1` へ戻すと、**次に作ったガチャを古い参照が黙って指す**。
+ * ⚠⚠ **これは実際にテストで踏んだ**（`GachaLibraryCard.test.tsx` の「作り直しても化けない」）。
+ *
+ * @param usedIds ⚠⚠⚠ **一覧に無くても「まだ誰かが指している」id**（＝条件が持つ `gachaId` と、
+ *   **画面がこのセッションで発行した id**）。
+ *   ⚠⚠ **レビュー Q-2（修正）: 既定値 `= []` を外して必須引数にした。**
+ *   旧実装は省略できたので「渡し忘れると黙って穴が開く」形で、⚠ **実際に
+ *   [`migrateLegacyGachas`] が渡し忘れていた**（レビュー Q-1・移行時に古い参照と衝突しうる）。
+ *   ⇒ **型で強制する**＝呼び出し側は「見るべき id が無い」ときも明示的に `[]` を書く。
+ *   ⚠ **既定値を戻さないこと。**
+ */
+export function nextGachaId(
+  gachas: readonly GachaDefinition[],
+  usedIds: readonly string[],
+): string {
+  let max = 0;
+  const seen = [...gachas.map((g) => g.id), ...usedIds];
+  for (const id of seen) {
+    const n = gachaIdNumber(id);
+    if (n !== null && n > max) max = n;
+  }
+  return `${GACHA_ID_PREFIX}${max + 1}`;
+}
+
+/**
+ * 063d: ガチャの id か（`g:<非負整数>`）。⚠ **[`keywordIdNumber`] とまったく同じ形**である。
+ *
+ * ⚠⚠ **レビュー Q-2（修正）: 旧実装は `Number(id.slice(2))` だった**ので、
+ * `g:0x10`（→16）・`g:1e3`（→1000）・`g: 5`（→5）を通し、`kw:` 側（`/^\d+$/`）より緩かった。
+ * 採番の規則を 2 通りに書かないため、**同じ述語の形へ揃えてある**。
+ * ⚠ 緩いままだと、手で編集された id が採番の最大値を不当に押し上げうる。
+ */
+const gachaIdNumber = (id: unknown): number | null => {
+  if (typeof id !== "string" || !id.startsWith(GACHA_ID_PREFIX)) return null;
+  const rest = id.slice(GACHA_ID_PREFIX.length);
+  if (!/^\d+$/.test(rest)) return null;
+  const n = Number(rest);
+  return Number.isSafeInteger(n) ? n : null;
+};
+
+/**
+ * 063d: **いま条件が指しているガチャ id**（一覧に無いものも含む）。
+ * ⚠ [`nextGachaId`] に渡して**消した id を再利用しない**ために使う。
+ */
+export function referencedGachaIds(): string[] {
+  return loadEffectConditions()
+    .map((c) => (c.effect.kind === "gacha" ? c.effect.gachaId : null))
+    .filter((id): id is string => id !== null);
+}
+
+/**
+ * 063d（レビュー Q-1・修正）: **生の保存値が指しているガチャ id**。
+ *
+ * ⚠⚠⚠ **[`referencedGachaIds`] と分けてある理由＝あちらは `loadEffectConditions()` を通す**ので、
+ * **移行前の生 JSON には使えない**（`parseAssignment` が 063a 形式を「出さない」へ落とすのと同じ層）。
+ * ⚠ [`migrateLegacyGachas`] は**純関数**（localStorage を読まない）なので、
+ * 渡された `rawConditions` から自分で集める必要がある。
+ *
+ * ⚠⚠ **これが無いと穴 W が移行経路で再発する**——一覧から消えたガチャを指す条件（`gachaId`）と、
+ * 同じ保存値の中の 063a 形式が同居しているとき、移行が採番した id が**古い参照と衝突**し、
+ * **その条件が移行で作られた別のガチャを黙って指す**。
+ */
+const rawReferencedGachaIds = (rawConditions: readonly unknown[]): string[] => {
+  const out: string[] = [];
+  for (const item of rawConditions) {
+    if (typeof item !== "object" || item === null) continue;
+    const effect = (item as { effect?: unknown }).effect;
+    if (typeof effect !== "object" || effect === null) continue;
+    const gachaId = (effect as { gachaId?: unknown }).gachaId;
+    if (typeof gachaId === "string") out.push(gachaId);
+  }
+  return out;
+};
+
+/**
+ * 063d: **ガチャ名の確定時に通す整形**（制御文字を落とし、長さを詰める）。
+ * ⚠ [`sanitizeGachaPrizeName`] と同じ規律だが、**上限が違う**ので別関数にしてある。
+ */
+export function sanitizeGachaName(raw: string): string {
+  const stripped = stripControlChars(raw);
+  const points = [...stripped];
+  return points.length <= GACHA_NAME_MAX_LENGTH
+    ? stripped
+    : points.slice(0, GACHA_NAME_MAX_LENGTH).join("");
+}
 
 /**
  * 063a: 景品の配列を検証する。⚠ **上限を超えた分は落とす**（[`GACHA_PRIZE_MAX`]）。
@@ -815,6 +993,233 @@ export function removeCondition(id: string): EffectConditions {
   saveEffectConditions(next);
   return loadEffectConditions();
 }
+
+// --- 063d: 名前付きのガチャの一覧（`GACHA_LIBRARY_KEY`） ---------------------------------------
+
+/**
+ * 063d: ガチャ 1 件を検証する。**受け入れられなければ `null`（＝その 1 件だけ落とす）**。
+ *
+ * ⚠⚠ **落とす（丸めない）のが要点**——[`parseGachaPrize`] とまったく同じ規律である。
+ * ⚠ **`name` は空を許さない**（景品名とはここが違う）——`<select>` の選択肢に出るので、
+ * 空だと**選べないガチャ**が一覧に並ぶ。
+ * ⚠ 景品の検証は [`parseGachaPrizes`] をそのまま通す（規則を 2 通りに書かない）。
+ *
+ * ## ⚠ security-review S-2: **`id` の「形」は検証していない**（意図的）
+ *
+ * `keywordIdNumber` が `kw:<数字>` を要求するのに対し、ここは**非空・[`GACHA_ID_MAX_LENGTH`] 以下**
+ * しか見ない（制御文字も落とさない）。⚠ **修正不要と判断した理由は 3 つ**:
+ *   1. **`id` は OS にも wire にも渡らない**（OBS へ渡るのは `sourceName` だけで、そちらは
+ *      `isEffectObsSourceName` ＋ sidecar の 2 枚の壁を必ず通る）。DOM へは React が
+ *      エスケープして載せるので、値の中身で壊れる経路が無い。
+ *   2. **厳しくすると手で編集された保存値を「落とす」方向に働く**——`g:` 以外の id を持つ
+ *      ガチャが**景品ごと消える**ので、いまの緩さのほうが安全側である。
+ *   3. **採番は既に守られている**——[`nextGachaId`] は `g:<数字>` だけを見る（`gachaIdNumber`）ので、
+ *      規約外の id は**最大値を押し上げられない**＝ 穴 W の側から見た危険は無い。
+ * ⚠ **再修正トリガー＝ `id` を localStorage 以外（ファイル名・URL・IPC の引数）へ渡すようになったとき。**
+ * そのときは `gachaIdNumber` と同じ形の検査をここへ足すこと。
+ */
+const parseGachaDefinition = (raw: unknown): GachaDefinition | null => {
+  if (typeof raw !== "object" || raw === null) return null;
+  const item = raw as { id?: unknown; name?: unknown; prizes?: unknown };
+  if (typeof item.id !== "string") return null;
+  const id = item.id.trim();
+  if (id.length === 0 || id.length > GACHA_ID_MAX_LENGTH) return null;
+  if (typeof item.name !== "string") return null;
+  if (hasControlChar(item.name)) return null;
+  const name = item.name.trim();
+  if (name.length === 0 || [...name].length > GACHA_NAME_MAX_LENGTH) return null;
+  return { id, name, prizes: parseGachaPrizes(item.prizes) };
+};
+
+/**
+ * 063d: ガチャの配列を検証する。⚠ **上限を超えた分と、id が重複した分は落とす**。
+ *
+ * ⚠⚠ **id の重複を落とす理由**＝重複すると「どちらのガチャを指しているか」が決まらず、
+ * 条件が**黙って別のガチャを指す**（064b が「黙って別のソースへ化けない」としたのと同じ危険）。
+ * ⚠ **先勝ち**（`parseConditions` のイベント条件と同じ作法）。
+ */
+const parseGachaDefinitions = (raw: unknown): GachaDefinition[] => {
+  if (!Array.isArray(raw)) return [];
+  const out: GachaDefinition[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    if (out.length >= GACHA_DEFINITION_MAX) break;
+    const gacha = parseGachaDefinition(item);
+    if (gacha === null || seen.has(gacha.id)) continue;
+    seen.add(gacha.id);
+    out.push(gacha);
+  }
+  return out;
+};
+
+/**
+ * 063d: 保存済みのガチャの一覧を読む。**未保存・不正 JSON・例外はすべて 0 件**へ倒す。
+ *
+ * ⚠ **読むだけでは書き戻さない**（`loadEffectConditions` と同じ規律）。
+ */
+export function loadGachaLibrary(): GachaDefinition[] {
+  try {
+    const raw = localStorage.getItem(GACHA_LIBRARY_KEY);
+    if (raw === null) return [];
+    return parseGachaDefinitions(JSON.parse(raw) as unknown);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 063d: ガチャの一覧を保存する（ローカルのみ・外部送信しない）。
+ *
+ * ⚠⚠ **検証は [`parseGachaDefinitions`] を通す**——保存時と読み込み時で**同じ 1 つの規則**を使う
+ * （063a / 061d-2 レビュー S-4 と同じ理由＝検証を 2 か所に分けると片方だけ緩む）。
+ * ⚠ **0 件になったらキーごと削除する**（`saveEffectConditions` と同じ作法＝
+ * 「未保存」と「明示的に空」を同じ状態に潰す）。
+ */
+export function saveGachaLibrary(gachas: readonly GachaDefinition[]): GachaDefinition[] {
+  try {
+    const normalized = parseGachaDefinitions(gachas);
+    if (normalized.length === 0) localStorage.removeItem(GACHA_LIBRARY_KEY);
+    else localStorage.setItem(GACHA_LIBRARY_KEY, JSON.stringify(normalized));
+  } catch {
+    // 書けない環境ではガチャが保存されないだけ（表示は続く）。
+  }
+  return loadGachaLibrary();
+}
+
+/**
+ * 063d: **063a 形式（`{kind:"gacha", prizes:[…]}`）を一覧へ移す純関数**。⚠⚠⚠ **本タスク最大の危険箇所**。
+ *
+ * ⚠⚠ **受け取るのは `parseAssignment` を通す前の「生の JSON」である。**
+ * [`parseAssignment`] は 063a 形式を**「出さない」へ落とす**ので、
+ * パース済みの条件を渡すと**景品が既に失われている**。⚠ **引数を `EffectConditions` に変えないこと。**
+ *
+ * ⚠ **前方互換の既存ガード（未知の `kind` → 出さない）は今回だけ効かない**——
+ * あれは `kind` が変わるときの話で、今回は**既知の `kind` の中身が変わる**からである。
+ * ⇒ 061h / 064d のように「移行コードを書かずに済む」形にはならない。
+ *
+ * ⚠⚠⚠ **同じ景品構成でもまとめない**（063d 穴 Q）——「別々に設定した 2 つ」なのか
+ * 「同じつもりの 2 つ」なのかは**保存値からは判別できない**。勝手にまとめると
+ * **片方を編集したらもう片方も変わる**という、ユーザーが頼んでいない共有を作る。
+ * ⇒ **1 つずつ移す。まとめるのはユーザーの操作に任せる**（画面で選び直せば済む）。
+ *
+ * ⚠ 上限（[`GACHA_DEFINITION_MAX`]）に達したら**それ以上は移さない**。移せなかった分は
+ * `parseAssignment` が「出さない」へ落とす（＝景品は失われる）。⚠ 受容する理由＝
+ * 063a はまだ発火せず、**10 件を超える inline ガチャが存在しうる期間がごく短い**ため。
+ *
+ * @returns 移すものが 1 つも無ければ `null`（＝**呼び出し側は何も書かない**）。
+ */
+export function migrateLegacyGachas(
+  rawConditions: unknown,
+  library: readonly GachaDefinition[],
+): { conditions: unknown[]; library: GachaDefinition[]; migrated: number } | null {
+  if (!Array.isArray(rawConditions)) return null;
+  const nextLibrary: GachaDefinition[] = [...library];
+  const conditions: unknown[] = [];
+  let migrated = 0;
+  // ⚠⚠⚠ レビュー Q-1（修正）: **移行が採番する前に、生の保存値が既に指している id を集める。**
+  //   旧実装は `nextGachaId(nextLibrary)` を **`usedIds` なしで**呼んでいたので、
+  //   「一覧から消えたガチャを指す条件」と「063a 形式の条件」が同居していると、
+  //   **前者の参照が、移行で作られた後者のガチャを黙って指す**（＝穴 W の移行版）。
+  //   ⚠ **この配列を渡すのをやめないこと。**
+  const usedIds = rawReferencedGachaIds(rawConditions);
+
+  for (const item of rawConditions) {
+    if (typeof item !== "object" || item === null) {
+      conditions.push(item);
+      continue;
+    }
+    const effect = (item as { effect?: unknown }).effect;
+    if (typeof effect !== "object" || effect === null) {
+      conditions.push(item);
+      continue;
+    }
+    const e = effect as { kind?: unknown; prizes?: unknown; gachaId?: unknown };
+    // ⚠ 「`kind` が gacha」かつ「`prizes` が配列」かつ「`gachaId` を持たない」＝ 063a 形式。
+    //   ⚠⚠ `gachaId` があるものには触らない（**移行は 1 回きり＝この関数は冪等である**）。
+    if (
+      e.kind !== "gacha" ||
+      !Array.isArray(e.prizes) ||
+      typeof e.gachaId === "string"
+    ) {
+      conditions.push(item);
+      continue;
+    }
+    if (nextLibrary.length >= GACHA_DEFINITION_MAX) {
+      // ⚠ 上限に達した。移さずそのまま置く（`parseAssignment` が「出さない」へ落とす）。
+      conditions.push(item);
+      continue;
+    }
+    const id = nextGachaId(nextLibrary, usedIds);
+    migrated += 1;
+    nextLibrary.push({
+      id,
+      // ⚠ 名前は連番。⚠⚠ **景品の中身から名前を作らない**（作ると穴 Q の「まとめる」に近づく）。
+      name: sanitizeGachaName(`移行したガチャ ${migrated}`),
+      prizes: parseGachaPrizes(e.prizes),
+    });
+    conditions.push({ ...(item as object), effect: { kind: "gacha", gachaId: id } });
+  }
+
+  if (migrated === 0) return null;
+  return { conditions, library: nextLibrary, migrated };
+}
+
+/**
+ * 063d: 移行を**1 回だけ**実行して、ガチャの一覧を返す（⚠ **冪等**）。
+ *
+ * ⚠⚠⚠ **保存を起こす画面より前に必ず 1 回呼ぶこと。**
+ * [`parseAssignment`] は 063a 形式を「出さない」へ落とすので、
+ * **移行より先に `saveEffectConditions` が走ると景品が消える**。
+ * ⚠ いまの唯一の呼び出し元は `ObsEffectsScreen`（`useState` の初期化＝子より先に走る）である。
+ *
+ * ⚠ 2 回目以降は [`migrateLegacyGachas`] が `null` を返すので**何も書かない**
+ * （React StrictMode の二重呼び出しでも安全）。
+ *
+ * ## ⚠⚠ security-review S-1: **この関数は「読むだけでは書き戻さない」規律の唯一の例外である**
+ *
+ * 移行が 1 件でも起きると、下で `saveEffectConditions` が**保存値全体を書き戻す**ので、
+ * [`parseConditions`] が落とす値（**未知 kind の将来の割り当て・21 件目以降のキーワード条件・
+ * 壊れた条件行**）が、**画面を開いただけで恒久的に消える**。
+ * ＝ 前方互換の性質が「読み取り時は保持」から「**移行が 1 度走ったら破棄**」へ変わっている。
+ *
+ * ⚠ **受容する理由**＝落ちる値はもともと `parseAssignment` が「出さない」へ倒していた
+ * **inert なもの**で、消えても挙動は 1 ミリも変わらない。⚠⚠ **それでも明記するのは、
+ * ここが「ユーザー操作なしに保存値を破壊的に書き換える唯一の経路」だから**である。
+ * ⚠ **再修正トリガー＝保存形に「読めないが保持したい」値（サーバ由来の設定など）が入るとき。**
+ * そのときは移行対象の条件だけを差し替え、他の要素は生のまま通すこと。
+ */
+export function runGachaMigration(): GachaDefinition[] {
+  const library = loadGachaLibrary();
+  let rawConditions: unknown;
+  try {
+    const raw = localStorage.getItem(EFFECT_ASSIGNMENTS_KEY);
+    if (raw === null) return library;
+    rawConditions = JSON.parse(raw) as unknown;
+  } catch {
+    return library;
+  }
+  const result = migrateLegacyGachas(rawConditions, library);
+  if (result === null) return library;
+  // ⚠ 先に一覧を保存する——順序が逆だと、条件だけ `gachaId` になって
+  //   **指す先が無い**状態で落ちたときに景品が復元できない。
+  const savedLibrary = saveGachaLibrary(result.library);
+  // ⚠⚠ 条件は **`parseConditions` を通してから**保存する（生の JSON を直接書かない＝
+  //   保存時と読み込み時で同じ規則を使うという `saveEffectConditions` の担保を外さない）。
+  saveEffectConditions(parseConditions(result.conditions).map((m) => m.condition));
+  return savedLibrary;
+}
+
+/**
+ * ⚠⚠ **レビュー Q-6 で `isGachaMissingFromLibrary` を削除した（063d の実装直後）。**
+ *
+ * 「その `gachaId` が一覧に無いか」を答える述語を**この層にも置いていた**が、
+ * まったく同じ実装が `effectSelectValue.ts` の [`isGachaMissingFromList`] にもあり、
+ * ⚠⚠ **画面が使っていたのは後者だけ**で、こちらは**テストからしか呼ばれていなかった**
+ * （＝規則が 2 通りあり、しかも固定されていたのは使われていない方）。
+ * ⇒ **表示の受け皿を決める述語なので、持ち主は `effectSelectValue.ts` 1 か所**に寄せた
+ * （[`isObsSourceMissingFromList`] の隣＝ OBS ソースと同じ場所に並ぶ）。
+ * ⚠ **ここへ書き戻さないこと**（061d-2 レビュー S-4 の「検証を 2 か所に分けると片方だけ緩む」）。
+ */
 
 /**
  * ⚠⚠ **061p で `clearAllEffectConditions`（すべての条件を「表示しない」に戻す）を削除した。**

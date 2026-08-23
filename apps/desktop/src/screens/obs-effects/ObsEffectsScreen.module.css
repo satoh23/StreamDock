@@ -205,9 +205,12 @@
 
 /* --- 063a: ガチャの景品を編集する表 ------------------------------------------------------------ */
 
-/* ⚠⚠ **条件 1 行の「下」に開く**（`.assignmentRow` / `.keywordRow` はどちらも `flex-wrap: wrap` なので、
+/* ⚠⚠ **ガチャ 1 件の「下」に開く**（`.gachaLibraryRow` は `flex-wrap: wrap` なので、
    `flex-basis: 100%` で次の行へ回り込む＝`.errorText` と同じ手）。
-   ⚠ **3 枚目のタブを作らない**という判断がこの 1 宣言に乗っている（穴 G・`GachaPrizeTable.tsx` の JSDoc が正）。 */
+   ⚠⚠⚠ **063d: 開く場所が「条件 1 行の下」から「ガチャ 1 件の下」へ移った**——
+   ガチャ本体が一覧へ移り、**編集の入口が 1 か所**になったため
+   （条件行に開いたままだと、同じガチャを 2 条件へ割り当てたとき**同じ表が 2 か所に開く**）。
+   ⚠ **3 枚目のタブを作らない**という判断は 063d でも維持している（穴 V・`GachaLibraryCard.tsx` の JSDoc が正）。 */
 .gachaPanel {
   flex-basis: 100%;
   margin-top: 4px;
@@ -217,47 +220,76 @@
   border: 1px solid var(--border-soft);
 }
 
-/* 行の並びは `.assignmentList` / `.keywordList` に倣う（同じ画面で 3 通りの間隔を作らない）。 */
+/* ⚠⚠⚠ **表全体で 1 つの grid**（063d で直した・063a から在った実バグ）。
+   ⚠ **列の定義はここ 1 か所だけ**にする——行ごとに grid にすると
+   **grid のトラックはコンテナ単位なので列が共有されず**、見出し行（操作列が空）と
+   景品の行（ボタン 3 つ）で `1fr` の配分が変わって**見出しが入力欄と揃わない**。
+   ⇒ 行は `display: contents` にして、**すべてのセルがこの 1 つの grid に乗る**。
+   ⚠ 幅の値は既にこのファイルに在るもの（160px / 96px）を使う＝**新しい px を発明しない**。
+   ⚠⚠ **行ごとの grid / flex に戻さないこと。** 戻すと見出しのズレが再発する
+   （⚠ jsdom はレイアウトを解決しないので**テストは全部緑のまま**＝目視でしか気づけない）。 */
 .gachaList {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) 96px minmax(160px, 1fr) auto;
+  align-items: center;
   gap: 10px;
   margin-top: 10px;
 }
 
-/* 1 行＝「景品名」「重み」「確率」「OBS のソース」「操作」。
-   ⚠ 警告文は行の下へ回り込ませる（`.assignmentRow` と同じ作法）。 */
+/* 1 行＝「景品名」「出る確率」「当たったら」「操作」。
+   ⚠⚠ **行そのものは箱を持たない**（`display: contents`）——列を共有するため（上の `.gachaList` が正）。
+   ⚠ 帰結: **行に padding / border / background を当てても効かない**
+   （当てたいときは下の `.gachaTotal > *` のように**セル側**へ当てること）。
+   ⚠ 色と字の大きさは**継承される**ので、`.gachaHead` / `.gachaTotal` の指定はそのまま効く。 */
 .gachaRow {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
+  display: contents;
 }
 
-.gachaRow > .errorText {
-  flex-basis: 100%;
+/* 警告文は行の全幅を使って下へ回り込む（flex の `flex-basis: 100%` に相当）。
+   ⚠⚠⚠ **レビュー Q-5（修正）: セレクタを `.gachaRow >` から `.gachaList >` へ広げた。**
+   合計超過の警告（「合計が X% 多いです」）は**行の中ではなく `.gachaList` の直下**にあるので、
+   `.gachaRow >` では当たらず、**grid の自動配置で第 1 列に押し込まれていた**
+   （flex の頃は全幅だったので、063d の grid 化で新しく入った退行である）。
+   ⚠ 行は `display: contents` なので**行の中の警告文も `.gachaList` の直接の grid item** になる
+   ＝ **この 1 本のセレクタで両方に効く**（規則を 2 通りに書かない）。
+   ⚠⚠ **`.gachaRow >` へ戻さないこと。** */
+.gachaList > .errorText {
+  grid-column: 1 / -1;
 }
 
 /* 列見出しと合計行。⚠ 値は既にこのファイルにあるもの（13px / 600 / 800）だけで組む
-   ＝ **新しい px / weight を発明しない**（061a の要件）。 */
+   ＝ **新しい px / weight を発明しない**（061a の要件）。
+   ⚠ 行は `display: contents` なので**色と字の大きさ（継承されるもの）だけ**をここに置く。 */
 .gachaHead {
   color: var(--muted);
   font-size: 11px;
 }
 
 .gachaTotal {
-  padding-top: 10px;
-  border-top: 1px solid var(--border-soft);
   color: var(--text);
   font-size: 13px;
   font-weight: 800;
 }
 
-/* ⚠ `min-width` が無いと `.field input` の `width: 100%` と `flex: 1` の組み合わせで潰れる
-   （`.keywordText` と同じ理由・同じ値）。 */
+/* ⚠⚠ 合計行の区切り線は**セル側**へ当てる（行に当てても `display: contents` では効かない）。
+   ⚠⚠ **レビュー Q-5（修正）: `align-self: stretch` を足した。** `.gachaList` が
+   `align-items: center` なので、⚠ **空の `.gachaActions` セル（高さ 0）だけ線が行の縦中央に浮く**
+   （4 セルで線の高さが揃わない）。⚠ 線が `column-gap` の 10px で 4 本に分かれるのは
+   **grid にした帰結として受容する**——1 本に見せるには全幅の擬似行を挟むことになり、
+   セルの数（＝列の対応）を崩すほうが危ない。 */
+.gachaTotal > * {
+  align-self: stretch;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-soft);
+}
+
+/* ⚠ 幅は `.gachaList` の `grid-template-columns` が決める（ここでは指定しない＝二重定義にしない）。
+   ⚠ レビュー Q-12: **持ち主は `.gachaRow` ではなく `.gachaList`** である
+   （`.gachaRow` は `display: contents` で箱を持たない＝今回の学びそのもの）。
+   ⚠⚠ `min-width: 0` を置くのは、grid の既定（`auto`＝中身より縮まない）だと
+   **長い OBS ソース名で列が押し広げられる**ため（`.templateName` と同じ理由）。 */
 .gachaName {
-  flex: 1;
-  min-width: 160px;
+  min-width: 0;
 }
 
 /* 063a-3: 確率の列（**全行が入力欄**）。⚠⚠ **「重み」の列は無くなった**——画面から
@@ -265,21 +297,18 @@
    ⚠ 063a-2 の「いちばん下だけ『残り』表示」は撤回済みなので、入力欄と表示テキストで
    幅を揃える必要はもう無い。⚠ 合計行（`.gachaTotal`）とは幅を揃えること（列がずれる）。 */
 .gachaPercent {
-  flex: none;
-  width: 96px;
+  min-width: 0;
   color: var(--text);
   font-size: 13px;
   font-weight: 600;
 }
 
 .gachaSource {
-  flex: 1;
-  min-width: 160px;
+  min-width: 0;
 }
 
 .gachaActions {
   display: flex;
-  flex: none;
   align-items: center;
   gap: 10px;
 }
@@ -291,4 +320,64 @@
   font-size: 13px;
   font-weight: 600;
   line-height: 1.5;
+}
+
+/* --- 063d: ガチャの一覧（共通の下部のカード） ---------------------------------------------- */
+
+/* ⚠ 新規 CSS モジュールを作らない（`check:css` の走査から外れる・063a と同じ規律）。 */
+.gachaLibraryList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* 1 件ぶんの行。⚠ 景品表（`.gachaPanel`）は `flex-basis: 100%` で下へ回り込む。
+   ⚠⚠ **新しい px / radius を発明しない**（061a の要件）——余白と角丸は
+   このファイルに既に在る `.prerequisite` / `.gachaPanel`（10px 12px / 12px）と同値にする。
+   ⚠ **背景は敷かない**——中に開く `.gachaPanel` が `--surface-subtle` なので、
+   同じ色を二重に敷くと**入れ子であることが読めなくなる**（枠だけで階層を出す）。 */
+.gachaLibraryRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+}
+
+/* 名前の入力欄。⚠ 行の残り幅を取る（操作ボタンと件数は固定幅）。 */
+.gachaLibraryName {
+  flex: 1;
+  min-width: 160px;
+}
+
+/* ⚠ レビュー Q-4: 名前を受け付けなかった理由は**行の下へ回り込ませる**
+   （`.assignmentRow > .errorText` / `.keywordRow > .errorText` と同じ手・同じ値）。 */
+.gachaLibraryRow > .errorText {
+  flex-basis: 100%;
+}
+
+/* 操作ボタン。⚠⚠ **縮ませない・折り返さない**（`.templateRow > button` と同じ理由＝
+   `.gachaLibraryName` が `flex: 1`（基準 0）で負の余白をまったく吸収しないので、
+   幅が足りないと**ボタン側が縮んでラベルが切れる**）。
+   ⚠ jsdom はレイアウトを解決しないので、ここを外してもテストは全部緑のまま通る。 */
+.gachaLibraryActions {
+  display: flex;
+  flex: none;
+  gap: 10px;
+}
+
+.gachaLibraryActions > button {
+  flex: none;
+  white-space: nowrap;
+}
+
+/* 景品の件数。⚠ 畳んでいても読めるようにする（開かないと分からない、を作らない）。
+   ⚠ 並びは「名前 → 件数 → 操作」（`.templateRow` の name → meta → buttons と同じ作法）。 */
+.gachaLibraryCount {
+  flex: none;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
 }

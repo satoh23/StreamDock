@@ -6,7 +6,6 @@ import {
   GACHA_PRIZE_MAX,
   GACHA_PRIZE_NAME_MAX_LENGTH,
   sanitizeGachaPrizeName,
-  type EffectGacha,
   type GachaPrize,
 } from "./effectAssignments";
 import {
@@ -92,17 +91,23 @@ const percentInputValue = (weight: number): string =>
   String(gachaWeightToPercent(weight));
 
 export function GachaPrizeTable({
-  effect,
+  prizes,
   obsSources,
   labelPrefix,
   onChange,
 }: {
-  effect: EffectGacha;
+  /**
+   * ⚠⚠ 063d: **受け取るのは景品の配列だけ**（`EffectGacha` でも `GachaDefinition` でもない）。
+   * この表は「景品を編集する」ことしか知らない＝ **ガチャがどこにぶら下がっているかに依存しない**。
+   * ⚠ 063a では割り当て（`EffectGacha`）を直接受けていたが、063d でガチャ本体が
+   * 一覧へ移ったので、**在り処に依存しない形へ 1 段下げた**（表そのものは 1 行も変えていない）。
+   */
+  prizes: readonly GachaPrize[];
   /** 064b と同じ経路で受け取る OBS ソース一覧（`null` ＝ **まだ 1 度も取っていない**）。 */
   obsSources: readonly ObsSourceEntry[] | null;
-  /** aria-label の接頭辞（条件行ごとに一意にするため。例: 「スーパーチャットのガチャ」）。 */
+  /** aria-label の接頭辞（**ガチャごとに一意**にするため。例: 「大当たりガチャ」）。 */
   labelPrefix: string;
-  onChange: (effect: EffectGacha) => void;
+  onChange: (prizes: readonly GachaPrize[]) => void;
 }) {
   /**
    * ⚠⚠⚠ **保存値をそのまま描く。揃えない・直さない。**
@@ -113,7 +118,6 @@ export function GachaPrizeTable({
    * ⚠⚠ **「描く前に揃える」処理を書き戻さないこと。** 打った数字がそのまま残ることが
    * この画面の唯一の約束である（[`gachaDraw.ts`](./gachaDraw.ts) の `GACHA_PERCENT_SCALE` の注記が正）。
    */
-  const prizes = effect.prizes;
   const total = gachaTotalWeight(prizes);
   /** ⚠ 合計が 100% を超えている＝**そのままでは抽選できない**（⚠ 入力は戻さない）。 */
   const overAllocated = isGachaOverAllocated(prizes);
@@ -158,8 +162,7 @@ export function GachaPrizeTable({
    * 063a-2 は合計 1000 へ正規化していたが、それが「**打った数字が勝手に変わる**」の正体だった。
    * ⇒ **受け取った値をそのまま渡す**（合計の超過は画面で伝える）。
    */
-  const commit = (next: readonly GachaPrize[]) =>
-    onChange({ kind: "gacha", prizes: next });
+  const commit = (next: readonly GachaPrize[]) => onChange(next);
 
   const replacePrize = (index: number, prize: GachaPrize) =>
     commit(prizes.map((p, i) => (i === index ? prize : p)));

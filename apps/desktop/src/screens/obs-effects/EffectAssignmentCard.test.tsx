@@ -6,6 +6,7 @@ import {
   OBS_SOURCE_LIST_KEY,
 } from "../../features/comment-viewer/overlaySettings";
 import { EffectAssignmentCard } from "./EffectAssignmentCard";
+import type { GachaDefinition } from "./effectAssignments";
 import {
   KEYWORD_CONDITION_MAX,
   type EffectAssignment,
@@ -78,8 +79,21 @@ const storedById = (id: string): StoredCondition | undefined =>
 const storedKeywords = (): StoredCondition[] =>
   stored().filter((c) => c.when.type === "keyword");
 
-/** 064d: カードは props を取らない（条件の state を自分で持つ）。 */
-const Harness = () => <EffectAssignmentCard />;
+/**
+ * ⚠⚠ **063d: カードはガチャの一覧だけを props で受ける**（条件の state は自分で持つ）。
+ * ⚠ 既定は空配列＝「ガチャを 1 つも作っていない」状態で、
+ * **既存のテストはこの状態のまま通る**（＝ガチャを足しても既存の選択肢の意味を変えていない）。
+ */
+const GACHA_A: GachaDefinition = {
+  id: "g:1",
+  name: "大当たりガチャ",
+  prizes: [],
+};
+const Harness = ({
+  gachas = [],
+}: {
+  gachas?: readonly GachaDefinition[];
+} = {}) => <EffectAssignmentCard gachas={gachas} />;
 
 const effectSelects = (): HTMLSelectElement[] =>
   screen
@@ -110,21 +124,57 @@ describe("EffectAssignmentCard", () => {
   });
 
   /**
-   * ⚠⚠ **063a で期待値を 1 件増やした 1 本**（元は「『出さない』＋ OBS のソースだけ」だった）。
+   * ⚠⚠ **063a で期待値を 1 件増やし、063d でさらに作り直した 1 本。**
    * ⚠ **順序を固定していることがこのテストの意味**なので、
    * **先頭は「エフェクトを出さない」のまま**（061h ⑦-c）、ガチャは**末尾**に足してある。
+   * ⚠⚠ 063d: ガチャの選択肢は**固定 1 個**ではなく、**一覧に登録されたぶんだけ**出る。
    */
-  it("⚠⚠ 選択肢は「エフェクトを出さない」＋ OBS のソース＋ガチャ（順序も固定する）", () => {
+  it("⚠⚠ 選択肢は「エフェクトを出さない」＋ OBS のソース＋登録済みのガチャ（順序も固定する）", () => {
     putObsSources([OBS_SOURCE_A]);
-    render(<Harness />);
+    render(<Harness gachas={[GACHA_A]} />);
     const options = within(selectFor(EFFECT_EVENT_LABEL.superchat)).getAllByRole(
       "option",
     );
     expect(options.map((o) => o.textContent)).toEqual([
       "エフェクトを出さない",
       OBS_SOURCE_A,
-      "ガチャ（複数から抽選）",
+      "ガチャ: 大当たりガチャ",
     ]);
+  });
+
+  /**
+   * ⚠⚠⚠ **063d で足した 1 本（穴 R）。**
+   *
+   * 指しているガチャが**一覧から消えている**とき、`<option>` を自前で足さないと
+   * **ブラウザが先頭（「エフェクトを出さない」）を選び**、
+   * 「消えたガチャを指していた」という事実そのものが画面から消える（061h ⑦-c と同型）。
+   * ⚠ **黙って別のガチャへ化けないこと**が、この 1 本の意味である。
+   */
+  it("⚠⚠⚠ 消えたガチャを指していたら、警告を出しつつ値を保つ（先頭へ化けない）", () => {
+    putObsSources([OBS_SOURCE_A]);
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify([
+        {
+          id: "event:superchat",
+          when: { type: "event", eventType: "superchat" },
+          effect: { kind: "gacha", gachaId: "g:9" },
+        },
+      ]),
+    );
+    render(<Harness gachas={[GACHA_A]} />);
+    const select = selectFor(EFFECT_EVENT_LABEL.superchat);
+    expect(select.value).toBe("gacha:g:9");
+    expect(
+      within(select)
+        .getAllByRole("option")
+        .map((o) => o.textContent),
+    ).toContain("ガチャ（削除されました）");
+    expect(
+      screen.getByText(
+        "このガチャは削除されています。下の「ガチャ」から選び直してください。",
+      ),
+    ).toBeInTheDocument();
   });
 
   // --- 既定と保存 -------------------------------------------------------------------------------
@@ -301,17 +351,16 @@ describe("064b: 割り当て先の OBS ソース（画面）", () => {
   it("⚠ 一覧をまだ取っていなければ **OBS のソースの**選択肢は増えない（この画面は取りに行かない）", async () => {
     render(<Harness />);
     // ⚠ 064d: 一覧に由来する選択肢はゼロ（テンプレートの選択肢はもう無い）。
-    // ⚠⚠ **063a で 1 → 2 になった**——「エフェクトを出さない」と「ガチャ」は
-    //   **どちらも一覧に由来しない固定の選択肢**なので、一覧が無くても必ず在る。
+    // ⚠⚠ **063a で 1 → 2 になり、063d で 1 に戻った**——063a のガチャは
+    //   「一覧に由来しない固定の選択肢」だったが、⚠ 063d では
+    //   **ガチャも一覧（`gachas`）に由来する**ようになったので、
+    //   ガチャを 1 つも作っていなければ選択肢も出ない。
     //   ⚠ このテストが守っているのは「**この画面が OBS へ取りに行かない**」ことなので、
-    //   固定の選択肢の数が増えても意味は変わらない（減らすと意味が変わる）。
+    //   固定の選択肢が「出さない」1 つに戻っても意味は変わらない。
     const options = within(
       selectFor(EFFECT_EVENT_LABEL.superchat),
     ).getAllByRole("option");
-    expect(options.map((o) => o.textContent)).toEqual([
-      "エフェクトを出さない",
-      "ガチャ（複数から抽選）",
-    ]);
+    expect(options.map((o) => o.textContent)).toEqual(["エフェクトを出さない"]);
   });
 
   it("⚠⚠ 選ぶと obs-source の割り当てが保存される", async () => {

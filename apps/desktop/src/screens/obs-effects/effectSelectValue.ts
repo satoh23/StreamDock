@@ -1,4 +1,4 @@
-import type { EffectAssignment } from "./effectAssignments";
+import type { EffectAssignment, GachaDefinition } from "./effectAssignments";
 
 /**
  * 061j (0): **割り当ての値 ⇄ `<select>` の `value`** の組み立て（`EffectAssignmentCard` の表示規則）。
@@ -38,14 +38,17 @@ export const NONE_VALUE = "none";
 export const OBS_SOURCE_PREFIX = "obs:";
 
 /**
- * 063a: **ガチャ**（複数の OBS ソースから重み付きで 1 つ抽選する）。
+ * 063d: **ガチャ**は `gacha:<id>` で表す（複数の OBS ソースから重み付きで 1 つ抽選する）。
  *
- * ⚠⚠ **プレフィックス付きにしない**（`gacha:<id>` にしない）——景品はこの割り当て自身が
- * 配列で持っており（`EffectGacha.prizes`）、**指す先の id が存在しない**。
- * ⚠ 別テーブル方式（`gachas.id` を参照する形）を採らなかった判断が、この 1 行に乗っている
- * （docs/progress.md の 063a 節・穴 F が正）。
+ * ⚠⚠⚠ **063a の `GACHA_VALUE = "gacha"`（接頭辞なし）は廃止した**（063d 穴 T）。
+ * あの注記は「**指す先の id が存在しない**」ことを理由にしていたが、
+ * 063d で **ガチャ本体が [`GachaDefinition`] として一覧に載り、id ができた**ので、
+ * ⚠ **あの理由ごと嘘になった。**
+ *
+ * ⚠⚠ **値を取り出すのは `slice` であって `split(":")` ではない**（[`OBS_SOURCE_PREFIX`] と同じ罠）。
+ * ⚠ id は `"g:" + n` なので**それ自体が `:` を含む**——`split` で割ると必ず壊れる。**3 例目である。**
  */
-export const GACHA_VALUE = "gacha";
+export const GACHA_SOURCE_PREFIX = "gacha:";
 
 /**
  * 割り当ての値 → `<select>` の `value`。
@@ -67,12 +70,34 @@ export function effectSelectValue(
       ? `${OBS_SOURCE_PREFIX}${effect.sourceName}`
       : NONE_VALUE;
   }
-  // ⚠⚠ 063a: **ガチャは一覧の有無に依存しない**（選択肢が常に 1 つあり、消えることがない）。
-  //   ⚠ 景品が 0 件でも `NONE_VALUE` へ落とさないこと——落とすと
-  //   「ガチャを選んで景品を入れる前に画面を開き直すと『出さない』に戻っている」
-  //   ＝**黙って設定が消える**（`EffectGacha` の注記が正）。
-  if (effect.kind === "gacha") return GACHA_VALUE;
+  // ⚠⚠ 063d: **ガチャは指す先が一覧に無くても `NONE_VALUE` へ落とさない。**
+  //   ⚠ OBS ソース（上）は落とすのに、ここは落とさない——**意図的な非対称**である:
+  //   OBS の一覧は「まだ取っていない」ことがあり、落とさないと**未取得のうちは全部
+  //   選択肢に無い値**になってしまう。一方**ガチャの一覧は常に読めている**ので、
+  //   落とすと「消えたガチャを指していた」という事実そのものが画面から消える。
+  //   ⇒ **値は保ち、呼び出し側が「一覧に無い id ぶんの `<option>`」と警告を出す**
+  //   （`GachaPrizeTable` の OBS ソース列とまったく同じ手＝黙って別のガチャへ化けない）。
+  if (effect.kind === "gacha") return `${GACHA_SOURCE_PREFIX}${effect.gachaId}`;
   return NONE_VALUE;
+}
+
+/** 063d: ガチャ 1 件の `<select>` の `value`。⚠ 組み立てはこのモジュールに閉じる（061j (0) の規律）。 */
+export function gachaSelectValue(gachaId: string): string {
+  return `${GACHA_SOURCE_PREFIX}${gachaId}`;
+}
+
+/**
+ * 063d: その割り当てが**一覧に無いガチャ**を指しているか。
+ *
+ * ⚠ [`isObsSourceMissingFromList`] と同じ位置づけだが、**断言してよい条件が違う**——
+ * OBS の一覧は「まだ取っていない」ことがあるので呼び出し側が `!== null` を併せて見るが、
+ * **ガチャの一覧は常に読めている**（localStorage）ので、**そのまま警告してよい**。
+ */
+export function isGachaMissingFromList(
+  effect: EffectAssignment,
+  gachas: readonly GachaDefinition[],
+): boolean {
+  return effect.kind === "gacha" && !gachas.some((g) => g.id === effect.gachaId);
 }
 
 /**
@@ -123,10 +148,15 @@ export function isObsSourceMissingFromList(
  * ⚠ 未知の値・空の名前はすべて **`{kind:"none"}`**（＝「出さない」へ倒す・061h からの向き）。
  */
 export function effectSelectAssignment(value: string): EffectAssignment {
-  // ⚠⚠ 063a: **景品ゼロで生やす**（`<select>` は「ガチャにする」意思だけを表し、中身は表が持つ）。
-  //   ⚠ ここで景品の既定値（空行 1 件など）を作らないこと——保存層が
-  //   「`sourceName` が空の景品は落とす」ので、**作った瞬間に消える行**を画面に出すことになる。
-  if (value === GACHA_VALUE) return { kind: "gacha", prizes: [] };
+  // ⚠⚠ 063d: **ガチャは id を指すだけ**（`<select>` は「どのガチャか」だけを表し、中身は一覧が持つ）。
+  //   ⚠ ここで景品を作らないこと——景品の持ち主は [`GachaDefinition`] 1 か所である。
+  //   ⚠⚠ **分解は `slice`**（id は `"g:" + n` で **`:` を含む**ので `split` は必ず壊れる）。
+  if (value.startsWith(GACHA_SOURCE_PREFIX)) {
+    const gachaId = value.slice(GACHA_SOURCE_PREFIX.length);
+    // ⚠ 空 id は作らない（「出さない」へ倒すという答えを 1 つに保つ・`obs:` と同じ）。
+    if (gachaId.length === 0) return { kind: "none" };
+    return { kind: "gacha", gachaId };
+  }
   if (value.startsWith(OBS_SOURCE_PREFIX)) {
     const sourceName = value.slice(OBS_SOURCE_PREFIX.length);
     // ⚠ 空名は保存層（`parseAssignment`）でも落ちるが、**ここでも作らない**

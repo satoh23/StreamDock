@@ -1,27 +1,62 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, fireEvent, within } from "@testing-library/react";
 import {
-  EFFECT_ASSIGNMENTS_KEY,
+  GACHA_LIBRARY_KEY,
   OBS_SOURCE_LIST_KEY,
 } from "../../features/comment-viewer/overlaySettings";
+import { useState } from "react";
 import { EffectAssignmentCard } from "./EffectAssignmentCard";
-import { GACHA_PRIZE_MAX } from "./effectAssignments";
-import { GACHA_VALUE } from "./effectSelectValue";
+import { GachaLibraryCard } from "./GachaLibraryCard";
+import {
+  GACHA_PRIZE_MAX,
+  runGachaMigration,
+  saveGachaLibrary,
+  type GachaDefinition,
+} from "./effectAssignments";
+import { loadObsSourceList } from "../../features/comment-viewer/overlaySettings";
 import { EFFECT_EVENT_LABEL } from "./effectEventRows";
 
 /**
- * 063a: **ガチャの表**（条件 1 行の割り当てが「ガチャ」のときに開く表）の仕様テスト。
+ * ⚠⚠ **`ObsEffectsScreen` そのものは描かない。**
+ * あの画面は前提ステータスのために Tauri の `invoke` を叩く effect を持っており、
+ * ここで描くと**未処理 rejection が毎ケース出る**（テストは緑のまま、ログだけが汚れる）。
+ * ⇒ **ガチャに関する配線だけ**を同じ形で再現する
+ * （状態は画面が持ち、条件カードと一覧カードの両方へ配る＝`ObsEffectsScreen` と同じ役割分担）。
+ * ⚠ **配線そのもの**（共通の下部に置く／同じ一覧を両方が読む）は
+ * `ObsEffectsScreen.test.tsx` が別に固定している。
+ */
+const Harness = () => {
+  const [gachas, setGachas] = useState<readonly GachaDefinition[]>(() =>
+    runGachaMigration(),
+  );
+  return (
+    <>
+      <EffectAssignmentCard gachas={gachas} />
+      <GachaLibraryCard
+        gachas={gachas}
+        obsSources={loadObsSourceList()?.sources ?? null}
+        onChange={(next) => setGachas(saveGachaLibrary(next))}
+      />
+    </>
+  );
+};
+
+/**
+ * 063a: **ガチャの表**（景品名・出る確率・当たったら）の仕様テスト。
  *
  * ⚠⚠ **この 1 ファイルが固定している最重要の不変条件は 4 つ。**
  *
  * ① ⚠⚠ **「条件を追加」に相当する操作が無い**——行を足す＝景品を足す、だけ
  *    （要望⑦の芯そのもの。ボタンは「景品を追加」1 つで、途中に確定操作が挟まらない）。
- * ② ⚠⚠ **確率は自動計算・編集不可・常時表示**（入力欄が生えていないこと）。
+ * ② ⚠⚠⚠ **入力した％が補正されない**（063a-3 の芯・各行が独立）。
  * ③ ⚠⚠ **OBS 側に無いソース名は警告される**（064b と同じ文・黙って別のソースへ化けない）。
  * ④ ⚠⚠ **§9: テスト抽選の結果は 1 バイトも保存されない**。
  *
- * ⚠ **タブは増えていない**（穴 G）ので、入口は既存の「エフェクトを表示する条件」カードである。
- * ⇒ このテストは `EffectAssignmentCard` 越しに表を触る（＝実際の導線と同じ経路を通る）。
+ * ⚠⚠⚠ **063d で入口が変わった。** 063a では「条件行の割り当てをガチャにすると、その行の下に
+ * 表が開く」形だったが、063d で**ガチャ本体が一覧（`GachaLibraryCard`）へ移った**ので、
+ * ⇒ このテストは **`ObsEffectsScreen` 越しに「ガチャを作る」→「景品を編集」** で表を触る
+ * （＝実際の導線と同じ経路を通る、という方針は 063a から変えていない）。
+ * ⚠ **表の中身（`GachaPrizeTable`）は 1 行も変えていない**ので、各 `it` の中身も無改変である。
  *
  * テストは外部通信も OS 操作も IPC も行わない（localStorage だけの純粋な画面）。
  */
@@ -38,17 +73,11 @@ const putObsSources = (names: string[] = [OBS_SOURCE_A, OBS_SOURCE_B]) =>
     }),
   );
 
-/** 割り当ての `<select>`（スーパーチャットの行）。 */
-const assignSelect = () =>
-  screen.getByLabelText(
-    `${EFFECT_EVENT_LABEL.superchat}のエフェクトのエフェクト`.replace(
-      "のエフェクトのエフェクト",
-      "のエフェクト",
-    ),
-  ) as HTMLSelectElement;
-
-/** aria-label の接頭辞（`ConditionEffectSelect` が渡す `ariaLabel` と同じ文字列）。 */
-const PREFIX = `${EFFECT_EVENT_LABEL.superchat}のエフェクト`;
+/**
+ * ⚠ 063d: `labelPrefix` は**ガチャ名**になった（063a では条件名だった）。
+ * `GachaLibraryCard` が最初に作るガチャの既定名と同じ文字列。
+ */
+const PREFIX = "新しいガチャ 1";
 
 const nameInput = (n: number) =>
   screen.getByLabelText(`${PREFIX} 景品 ${n} の名前`) as HTMLInputElement;
@@ -58,7 +87,7 @@ const sourceSelect = (n: number) =>
   screen.getByLabelText(`${PREFIX} 景品 ${n} の OBS のソース`) as HTMLSelectElement;
 
 // ⚠⚠ レビュー Q-063a-7: この 2 つのボタンも **`labelPrefix` 付き**である
-//   （付けないとガチャを 2 つ設定した瞬間に同名のボタンが 2 個になる）。
+//   （付けないとガチャを 2 つ開いた瞬間に同名のボタンが 2 個になる）。
 const addPrizeButton = () =>
   screen.getByRole("button", { name: `${PREFIX} 景品を追加` });
 const testDrawButton = () =>
@@ -68,25 +97,52 @@ const testDrawButton = () =>
 const REASON = "0.1〜100 の数字で入れてください（例: 10）。";
 const reasonText = () => screen.getByText(REASON);
 
-/** 保存値から、スーパーチャットの割り当てを読む（⚠ 生の JSON を読む）。 */
+/**
+ * 保存値から**最初のガチャ**を読む（⚠ 生の JSON を読む）。
+ * ⚠⚠ 063d: 読む先が `EFFECT_ASSIGNMENTS_KEY` から [`GACHA_LIBRARY_KEY`] に変わった
+ * （ガチャ本体は条件ではなく一覧が持つ）。
+ */
 interface StoredPrize {
   name: string;
   weight: number;
   sourceName: string;
 }
-const storedGacha = (): { kind: string; prizes?: StoredPrize[] } | undefined => {
-  const raw = localStorage.getItem(EFFECT_ASSIGNMENTS_KEY);
+const storedGacha = ():
+  | { id: string; name: string; prizes?: StoredPrize[] }
+  | undefined => {
+  const raw = localStorage.getItem(GACHA_LIBRARY_KEY);
   if (raw === null) return undefined;
-  const list = JSON.parse(raw) as {
+  return (JSON.parse(raw) as GachaDefinition[])[0] as unknown as {
     id: string;
-    effect: { kind: string; prizes?: StoredPrize[] };
-  }[];
-  return list.find((c) => c.id === "event:superchat")?.effect;
+    name: string;
+    prizes?: StoredPrize[];
+  };
 };
 
-/** ガチャに切り替えて、景品を `count` 件足す。⚠ **足す操作はボタン 1 つだけ**であることを含意する。 */
+/**
+ * ⚠ 063d: 保存済みのガチャを 1 件仕込んで開く（＝「前に作ってあった」状況を作る）。
+ * ⚠⚠ 仕込む先は [`GACHA_LIBRARY_KEY`]（063a は条件のキーに直付けしていた）。
+ */
+const seedGacha = (prizes: StoredPrize[]) => {
+  localStorage.setItem(
+    GACHA_LIBRARY_KEY,
+    JSON.stringify([{ id: "g:1", name: PREFIX, prizes }]),
+  );
+};
+/** 仕込んだガチャの景品表を開く。 */
+const openSeededGacha = () =>
+  fireEvent.click(
+    screen.getByRole("button", { name: `${PREFIX} の景品を編集` }),
+  );
+
+/** ⚠ 063d: ガチャを 1 つ作る（作ると自動で開く）。 */
+const createGacha = () => {
+  fireEvent.click(screen.getByRole("button", { name: "ガチャを作る" }));
+};
+
+/** ガチャを作って、景品を `count` 件足す。⚠ **足す操作はボタン 1 つだけ**であることを含意する。 */
 const openGachaWithPrizes = (count: number) => {
-  fireEvent.change(assignSelect(), { target: { value: GACHA_VALUE } });
+  createGacha();
   for (let i = 0; i < count; i++) fireEvent.click(addPrizeButton());
 };
 
@@ -96,7 +152,7 @@ const setPercent = (n: number, value: string) => {
   fireEvent.blur(percentInput(n));
 };
 
-/** 各行の入力欄に出ている％（＝最後の行を除く）。 */
+/** 各行の入力欄に出ている％。 */
 const percentValues = (): string[] =>
   screen
     .getAllByRole("spinbutton")
@@ -119,39 +175,51 @@ describe("GachaPrizeTable（063a）", () => {
 
   // --- ① 表 1 枚で完結する ---------------------------------------------------------------------
 
-  it("⚠⚠ ガチャを選ぶと表が開き、景品 0 件では「景品がありません」が出る", () => {
+  it("⚠⚠ ガチャを作ると表が開き、景品 0 件では「景品がありません」が出る", () => {
     putObsSources();
-    render(<EffectAssignmentCard />);
-    fireEvent.change(assignSelect(), { target: { value: GACHA_VALUE } });
+    render(<Harness />);
+    createGacha();
     expect(screen.getByText("景品がありません。")).toBeInTheDocument();
-    // ⚠⚠ 0 件でも `gacha` のまま保存される（`none` へ潰すと設定が黙って消える）。
-    expect(storedGacha()).toEqual({ kind: "gacha", prizes: [] });
+    // ⚠⚠ 063d: 景品 0 件でも**一覧に残る**（作った直後に消えると「押したのに増えない」になる）。
+    expect(storedGacha()).toEqual({ id: "g:1", name: PREFIX, prizes: [] });
   });
 
   /**
    * ⚠⚠⚠ **ミューテーション M7 が生存したので足した 1 本**（061h ⑦-c とまったく同型の穴）。
    *
    * `effectSelectValue` の gacha 分岐を消しても、**表そのものは描かれ続ける**
-   * （表の条件は `effect.kind === "gacha"` で、`<select>` の値とは別経路だから）。
+   * （表は一覧側に開くので、条件の `<select>` の値とは別経路だから）。
    * ⇒ 表が出ていることだけを見ていると、**`<select>` が「エフェクトを出さない」を指したまま
-   * 表が開いている**という状態を検知できない。⚠ その状態は
+   * ガチャが割り当たっている**という状態を検知できない。⚠ その状態は
    * 「ガチャを設定したのに、開き直すと『出さない』に見える」＝ユーザーが**設定が消えたと誤解する**。
    * ⚠ **値のアサーションを消さないこと。**
+   *
+   * ⚠⚠ 063d: 指す先が `"gacha"`（固定）から **`gacha:<id>`** になった。
    */
-  it("⚠⚠ ガチャを選ぶと `<select>` の値も「ガチャ」を指す（保存値から作り直しても同じ）", () => {
+  it("⚠⚠ 条件にガチャを割り当てると `<select>` が `gacha:<id>` を指す（作り直しても同じ）", () => {
     putObsSources();
-    const view = render(<EffectAssignmentCard />);
-    fireEvent.change(assignSelect(), { target: { value: GACHA_VALUE } });
-    expect(assignSelect().value).toBe(GACHA_VALUE);
-    // ⚠ 画面を作り直しても保存値から復元される（＝一覧の有無に依存しない選択肢である）。
+    const view = render(<Harness />);
+    createGacha();
+    const select = screen.getByLabelText(
+      `${EFFECT_EVENT_LABEL.superchat}のエフェクト`,
+    ) as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "gacha:g:1" } });
+    expect(select.value).toBe("gacha:g:1");
+    // ⚠ 画面を作り直しても保存値から復元される。
     view.unmount();
-    render(<EffectAssignmentCard />);
-    expect(assignSelect().value).toBe(GACHA_VALUE);
+    render(<Harness />);
+    expect(
+      (
+        screen.getByLabelText(
+          `${EFFECT_EVENT_LABEL.superchat}のエフェクト`,
+        ) as HTMLSelectElement
+      ).value,
+    ).toBe("gacha:g:1");
   });
 
   it("⚠⚠ 「景品を追加」を押すだけで行が足せる（＝『条件を追加』に相当する操作が無い）", () => {
     putObsSources();
-    render(<EffectAssignmentCard />);
+    render(<Harness />);
     openGachaWithPrizes(3);
     expect(nameInput(1)).toBeInTheDocument();
     expect(nameInput(3)).toBeInTheDocument();
@@ -164,8 +232,8 @@ describe("GachaPrizeTable（063a）", () => {
   });
 
   it("⚠ OBS の一覧が無いと景品を追加できない（押せない理由も出す）", () => {
-    render(<EffectAssignmentCard />);
-    fireEvent.change(assignSelect(), { target: { value: GACHA_VALUE } });
+    render(<Harness />);
+    createGacha();
     expect(addPrizeButton()).toBeDisabled();
     expect(
       screen.getByText(
@@ -181,7 +249,7 @@ describe("GachaPrizeTable（063a）", () => {
    */
   it("⚠⚠⚠ 景品を足しても、既にある行の％は 1 ミリも変わらない", () => {
     putObsSources();
-    render(<EffectAssignmentCard />);
+    render(<Harness />);
     openGachaWithPrizes(1);
     setPercent(1, "55");
     fireEvent.click(addPrizeButton());
@@ -191,12 +259,12 @@ describe("GachaPrizeTable（063a）", () => {
 
   it("⚠ 景品は上限まで（上限に達したら追加ボタンが押せず、理由が出る）", () => {
     putObsSources();
-    render(<EffectAssignmentCard />);
+    render(<Harness />);
     // ⚠ 063a-3 では「残り」が尽きて足せなくなることは**もう無い**（各行が独立し、超過は
     //   合計行の赤字で伝えるだけ）。それでも足すたびに 1% へ下げているのは、
     //   **20 行を既定 10% のまま並べると合計 200% の異常な状態でテストが進んでしまう**ためで、
     //   ⚠ ここで見たいのは「**上限に達したら押せなくなり、理由が出る**」ことだけである。
-    fireEvent.change(assignSelect(), { target: { value: GACHA_VALUE } });
+    createGacha();
     fireEvent.click(addPrizeButton());
     for (let n = 2; n <= GACHA_PRIZE_MAX; n++) {
       fireEvent.click(addPrizeButton());
@@ -213,7 +281,7 @@ describe("GachaPrizeTable（063a）", () => {
 
   it("⚠⚠ ％をそのまま入力できる（10% / 30% と入れると合計 40.0%・残りは「何も出ない」）", () => {
     putObsSources();
-    render(<EffectAssignmentCard />);
+    render(<Harness />);
     openGachaWithPrizes(2);
     setPercent(1, "10");
     setPercent(2, "30");
@@ -232,7 +300,7 @@ describe("GachaPrizeTable（063a）", () => {
    */
   it("⚠⚠⚠ 合計が 100% を超えても入力は戻らない（打った数字がそのまま残る）", () => {
     putObsSources();
-    render(<EffectAssignmentCard />);
+    render(<Harness />);
     openGachaWithPrizes(2);
     setPercent(1, "80");
     setPercent(2, "70");
@@ -243,7 +311,7 @@ describe("GachaPrizeTable（063a）", () => {
 
   it("⚠⚠ 超過は赤字で伝え、テスト抽選だけ止める（直し方も書く）", () => {
     putObsSources();
-    render(<EffectAssignmentCard />);
+    render(<Harness />);
     openGachaWithPrizes(2);
     setPercent(1, "80");
     setPercent(2, "70");
@@ -259,7 +327,7 @@ describe("GachaPrizeTable（063a）", () => {
 
   it("⚠⚠⚠ 入力の順番に依存しない（先に上げてから下げられる）", () => {
     putObsSources();
-    render(<EffectAssignmentCard />);
+    render(<Harness />);
     openGachaWithPrizes(3);
     // ⚠ 063a-2 では 1 行目を 90 にした時点で戻されていた（他の行が 10+10 あるため）。
     setPercent(1, "90");
@@ -272,7 +340,7 @@ describe("GachaPrizeTable（063a）", () => {
 
   it("⚠ 0.1% 刻みで入れられる（1% の激レアが作れる）", () => {
     putObsSources();
-    render(<EffectAssignmentCard />);
+    render(<Harness />);
     openGachaWithPrizes(1);
     setPercent(1, "0.1");
     expect(percentValues()).toEqual(["0.1"]);
@@ -281,7 +349,7 @@ describe("GachaPrizeTable（063a）", () => {
 
   it("⚠⚠ 0% / 負 / 数値でない / 100% 超は受け付けない（その行だけで成立しない値）", () => {
     putObsSources();
-    render(<EffectAssignmentCard />);
+    render(<Harness />);
     openGachaWithPrizes(1);
     setPercent(1, "25");
     for (const bad of ["0", "-1", "", "abc", "0.04", "101"]) {
@@ -303,7 +371,7 @@ describe("GachaPrizeTable（063a）", () => {
    */
   it("⚠⚠⚠ 受け付けなかったときは理由が画面に出る（黙って元の値へ戻さない）", () => {
     putObsSources();
-    render(<EffectAssignmentCard />);
+    render(<Harness />);
     openGachaWithPrizes(1);
     setPercent(1, "25");
 
@@ -337,7 +405,7 @@ describe("GachaPrizeTable（063a）", () => {
    */
   it("⚠⚠ 未確定の入力は並べ替え・削除で破棄される（別の行へ書き込まれない）", () => {
     putObsSources();
-    render(<EffectAssignmentCard />);
+    render(<Harness />);
     openGachaWithPrizes(2);
     setPercent(1, "10");
     setPercent(2, "20");
@@ -355,7 +423,7 @@ describe("GachaPrizeTable（063a）", () => {
 
   it("⚠⚠ 画面に「重み」という言葉が出ない（たぬえさの用語をそのまま出さない）", () => {
     putObsSources();
-    render(<EffectAssignmentCard />);
+    render(<Harness />);
     openGachaWithPrizes(2);
     expect(screen.queryByText(/重み/)).not.toBeInTheDocument();
     for (const el of screen.getAllByRole("spinbutton")) {
@@ -365,7 +433,7 @@ describe("GachaPrizeTable（063a）", () => {
 
   it("⚠⚠ 合計行は**実際の合計**を出す（063a-2 の固定表記「100%」はやめた）", () => {
     putObsSources();
-    render(<EffectAssignmentCard />);
+    render(<Harness />);
     openGachaWithPrizes(3);
     // ⚠⚠ 固定表記だと「足りていない」ことが読めない＝**はずれの割合が見えない**。
     expect(totalText()).toBe("30.0%");
@@ -376,7 +444,7 @@ describe("GachaPrizeTable（063a）", () => {
 
   it("⚠ 景品名は任意（空欄のまま保存でき、表示は OBS のソース名で代替する）", () => {
     putObsSources();
-    render(<EffectAssignmentCard />);
+    render(<Harness />);
     openGachaWithPrizes(1);
     expect(storedGacha()?.prizes?.[0]?.name).toBe("");
     fireEvent.change(nameInput(1), { target: { value: "大当たり" } });
@@ -386,7 +454,7 @@ describe("GachaPrizeTable（063a）", () => {
 
   it("⚠ 景品を並べ替えられる／削除できる", () => {
     putObsSources();
-    render(<EffectAssignmentCard />);
+    render(<Harness />);
     openGachaWithPrizes(2);
     fireEvent.change(nameInput(1), { target: { value: "A" } });
     fireEvent.blur(nameInput(1));
@@ -410,21 +478,10 @@ describe("GachaPrizeTable（063a）", () => {
 
   it("⚠⚠ OBS 側に無いソース名は警告が出る（黙って別のソースへ化けない）", () => {
     // ⚠ 一覧に無い名前を持つ景品を保存済みにしてから開く（＝OBS 側で名前を変えた状況）。
-    localStorage.setItem(
-      EFFECT_ASSIGNMENTS_KEY,
-      JSON.stringify([
-        {
-          id: "event:superchat",
-          when: { type: "event", eventType: "superchat" },
-          effect: {
-            kind: "gacha",
-            prizes: [{ name: "消えた", weight: 1, sourceName: "むかしの演出" }],
-          },
-        },
-      ]),
-    );
+    seedGacha([{ name: "消えた", weight: 1, sourceName: "むかしの演出" }]);
     putObsSources([OBS_SOURCE_A]);
-    render(<EffectAssignmentCard />);
+    render(<Harness />);
+    openSeededGacha();
     expect(
       screen.getByText(
         "OBS にこの名前のソースが見つかりません。名前を変えた場合は選び直してください。",
@@ -440,20 +497,9 @@ describe("GachaPrizeTable（063a）", () => {
   });
 
   it("⚠ 一覧をまだ取っていないときは「無い」と断言しない（064b と同じ規律）", () => {
-    localStorage.setItem(
-      EFFECT_ASSIGNMENTS_KEY,
-      JSON.stringify([
-        {
-          id: "event:superchat",
-          when: { type: "event", eventType: "superchat" },
-          effect: {
-            kind: "gacha",
-            prizes: [{ name: "x", weight: 1, sourceName: OBS_SOURCE_A }],
-          },
-        },
-      ]),
-    );
-    render(<EffectAssignmentCard />);
+    seedGacha([{ name: "x", weight: 1, sourceName: OBS_SOURCE_A }]);
+    render(<Harness />);
+    openSeededGacha();
     expect(
       screen.queryByText(
         "OBS にこの名前のソースが見つかりません。名前を変えた場合は選び直してください。",
@@ -465,7 +511,7 @@ describe("GachaPrizeTable（063a）", () => {
 
   it("⚠⚠ テスト抽選の結果は画面に出るだけで、OBS を鳴らさず、保存もされない（§9）", () => {
     putObsSources();
-    render(<EffectAssignmentCard />);
+    render(<Harness />);
     openGachaWithPrizes(2);
     fireEvent.change(nameInput(1), { target: { value: "大当たり" } });
     fireEvent.blur(nameInput(1));
@@ -484,12 +530,13 @@ describe("GachaPrizeTable（063a）", () => {
       expect(value).not.toContain("テスト抽選");
     }
     // ⚠ 割り当ての保存値は景品の定義だけ（履歴のフィールドが生えていない）。
-    expect(Object.keys(storedGacha() ?? {})).toEqual(["kind", "prizes"]);
+    // ⚠⚠ 063d: 保存されるのは **id / name / prizes の 3 つだけ**（履歴も当選者も入らない）。
+    expect(Object.keys(storedGacha() ?? {})).toEqual(["id", "name", "prizes"]);
   });
 
   it("⚠ テスト抽選は累計の内訳を出す（1 回では確率の体感が確かめられないため）", () => {
     putObsSources();
-    render(<EffectAssignmentCard />);
+    render(<Harness />);
     openGachaWithPrizes(2);
     fireEvent.change(nameInput(1), { target: { value: "当たり" } });
     fireEvent.blur(nameInput(1));
@@ -511,7 +558,7 @@ describe("GachaPrizeTable（063a）", () => {
 
   it("⚠⚠⚠ どれにも当たらなかったら「何も出ない」と出る（黙って無反応にしない）", () => {
     putObsSources();
-    render(<EffectAssignmentCard />);
+    render(<Harness />);
     openGachaWithPrizes(1);
     setPercent(1, "10");
     vi.spyOn(Math, "random").mockReturnValue(0.9);
@@ -521,33 +568,47 @@ describe("GachaPrizeTable（063a）", () => {
 
   it("⚠ 景品 0 件ではテスト抽選を押せない", () => {
     putObsSources();
-    render(<EffectAssignmentCard />);
-    fireEvent.change(assignSelect(), { target: { value: GACHA_VALUE } });
+    render(<Harness />);
+    createGacha();
     expect(testDrawButton()).toBeDisabled();
   });
 
   // --- 前方互換・他の条件行 ---------------------------------------------------------------------
 
-  it("⚠ ガチャはキーワード条件の行にも同じように開く（1 実装を共有している）", () => {
+  /**
+   * ⚠⚠⚠ **063d で意味が変わった 1 本**（旧: 「ガチャはキーワード条件の行にも同じように開く」）。
+   *
+   * 063a では条件行の下に表が開いたので、「イベント行とキーワード行が 1 実装を共有する」ことを
+   * ここで固定していた。⚠ 063d で**表は一覧側の 1 か所だけ**になったので、その論点は消えた。
+   * ⇒ 代わりに、**同じ規律が守っている本体**——`labelPrefix` が
+   * **ガチャごとに違い、2 つ目を開いても取り違えない**——を固定する（レビュー Q-063a-7 と同型）。
+   */
+  it("⚠⚠ 2 つ目のガチャを開いても、景品の入力欄を取り違えない（labelPrefix がガチャ名）", () => {
     putObsSources();
-    render(<EffectAssignmentCard />);
-    fireEvent.click(screen.getByRole("button", { name: "条件を追加" }));
-    const keywordInput = screen.getByLabelText("キーワード 1");
-    fireEvent.change(keywordInput, { target: { value: "ガチャ" } });
-    fireEvent.blur(keywordInput);
-    fireEvent.change(screen.getByLabelText("キーワード 1 のエフェクト"), {
-      target: { value: GACHA_VALUE },
-    });
-    // ⚠⚠ レビュー Q-063a-7: **追加ボタンの名前も条件行ごとに違う**（`labelPrefix` 付き）。
-    //   ⚠ この 1 本が「同じ画面に 2 つのガチャ表が並んでも取り違えない」ことの証拠でもある
-    //   ——ここで `${PREFIX}`（スーパーチャット側）を使うと**別の表のボタンを押してしまう**。
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "キーワード 1 のエフェクト 景品を追加",
-      }),
-    );
+    render(<Harness />);
+    // 1 つ目を作って景品を 1 件入れる。
+    openGachaWithPrizes(1);
+    setPercent(1, "40");
+    // 2 つ目を作る（⚠ 作ると自動で開き、1 つ目は閉じる＝同時に 1 つだけ）。
+    createGacha();
     expect(
-      screen.getByLabelText("キーワード 1 のエフェクト 景品 1 の名前"),
+      screen.getByLabelText("新しいガチャ 2 の名前"),
     ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "新しいガチャ 2 景品を追加" }),
+    );
+    fireEvent.change(
+      screen.getByLabelText("新しいガチャ 2 景品 1 の出る確率"),
+      { target: { value: "5" } },
+    );
+    fireEvent.blur(screen.getByLabelText("新しいガチャ 2 景品 1 の出る確率"));
+
+    // ⚠⚠ **1 つ目のガチャは 1 ミリも変わっていない**（＝取り違えていない）。
+    const stored = JSON.parse(
+      localStorage.getItem(GACHA_LIBRARY_KEY) ?? "[]",
+    ) as GachaDefinition[];
+    expect(stored.map((g) => g.id)).toEqual(["g:1", "g:2"]);
+    expect(stored[0].prizes.map((p) => p.weight)).toEqual([400]);
+    expect(stored[1].prizes.map((p) => p.weight)).toEqual([50]);
   });
 });

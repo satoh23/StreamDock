@@ -5,6 +5,7 @@ import {
   STAGE_OVERLAY_ENABLED_KEY,
   EFFECT_OVERLAY_GUIDE_PENDING_KEY,
   // 064f: 取得ボタンがこの画面（タイトル行）へ移ったので、依頼と一覧のキーをここで見る。
+  EFFECT_ASSIGNMENTS_KEY,
   OBS_SOURCE_LIST_KEY,
   OBS_SOURCE_LIST_REQUEST_KEY,
   STREAM_EVENT_ROUND_KEY,
@@ -211,10 +212,14 @@ describe("061a: ObsEffectsScreen", () => {
     // ⚠⚠ **064e: 3 つ目（「OBS へ自動で反映」）が消え、1 つ目の名前が変わった。**
     //   ⇒ **`slice` をやめて全件と比べる**——`slice(0, 3)` のままだと
     //   「カードが 1 枚戻ってきた」変異が**先頭 3 件が合っている限り生存する**（064e で実際に
-    //   カードを消したので、いま `<h3>` は 2 つしかない＝件数そのものが仕様になった）。
+    //   カードを消したので、件数そのものが仕様になった）。
+    // ⚠⚠⚠ **063d で「ガチャ」が 3 枚目として増えた**（タブの外＝両タブから参照される共有物だから）。
+    //   ⚠ **順序も仕様である**——ガチャは**タブの中の 2 枚より後**（＝共通の下部）に出ること。
+    //   ⚠ タブの中へ動かす変異は、この並びが変わるのでここで落ちる。
     expect(headings).toEqual([
       "エフェクトを手動再生",
       "エフェクトを表示する条件",
+      "ガチャ",
     ]);
     // ⚠ 061p: 旧名（「エフェクトのテンプレート」）は戻ってこない。
     expect(
@@ -825,4 +830,42 @@ describe("061a: ObsEffectsScreen", () => {
   // ⚠⚠ **061p: 「「開催中のイベント」行は共通領域にある」を削除した**（行ごと廃止）。
   //   ⚠ **開催状態の持ち主が `ObsEffectsScreen` であること自体は変えていない**
   //   （タブへ props で渡し、開始のステージ窓 open もこの画面のキューを通る＝上のケース群が固定）。
+
+  /**
+   * ⚠⚠⚠ **レビュー Q-3: 063d のガチャ移行が「子より先に走る」ことを、ここだけが固定する。**
+   *
+   * `ObsEffectsScreen` は `runGachaMigration()` を **`useState` の初期化関数**で呼ぶ。
+   * ⚠ `useEffect` へ動かすと **effect は子の render の後に走る**ので、
+   * `EffectAssignmentCard` が**移行前の保存値**を読み、`parseAssignment` が 063a 形式を
+   * 「出さない」へ落とした結果を state に固めてしまう（＝割り当てが黙って消える）。
+   *
+   * ⚠⚠ **この 1 本を書くまで、その順序依存を守る検査は 1 つも無かった**
+   * （`GachaPrizeTable.test.tsx` / `GachaLibraryCard.test.tsx` のハーネスは
+   * **同じ形を真似ているだけ**で、本物の画面が壊れても緑のまま通る）。
+   * ⚠ **実測**: `useEffect` へ動かす変異でこのケースだけが `value === "none"` で落ちる。
+   * ⚠⚠⚠ **このケースを消さないこと。**
+   */
+  it("⚠⚠⚠ Q-3: 063a 形式で開くと、条件の <select> が移行後のガチャを指す（移行は子より先）", () => {
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify([
+        {
+          id: "event:superchat",
+          when: { type: "event", eventType: "superchat" },
+          effect: {
+            kind: "gacha",
+            prizes: [{ name: "大当たり", weight: 100, sourceName: "きらきら演出" }],
+          },
+        },
+      ]),
+    );
+    render(<ObsEffectsScreen />);
+    expect(
+      (
+        screen.getByLabelText(
+          "スーパーチャット・ビッツのエフェクト",
+        ) as HTMLSelectElement
+      ).value,
+    ).toBe("gacha:g:1");
+  });
 });

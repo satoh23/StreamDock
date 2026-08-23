@@ -38,6 +38,12 @@ import { EffectAssignmentCard } from "./EffectAssignmentCard";
 // 064a: OBS 側のソースを再生する方式（064d 以降、エフェクトの唯一の出し方）。
 // ⚠⚠ 064f: **一覧の状態はこの画面が持つ**（取得ボタンがタイトル行へ移り、カードと 2 か所で読むため）。
 import { ObsSourceCard } from "./ObsSourceCard";
+import { GachaLibraryCard } from "./GachaLibraryCard";
+import {
+  runGachaMigration,
+  saveGachaLibrary,
+  type GachaDefinition,
+} from "./effectAssignments";
 import { useObsSourceList } from "./useObsSourceList";
 // ⚠ 061l: 「配信イベント」タブの中身（061i から枠だけだった場所）。
 //   ⚠⚠ **開催状態はこの画面が持ち、タブへ渡す**（前提ステータスの行と同じ値を出すため・下の JSDoc）。
@@ -182,6 +188,36 @@ const EFFECT_TABS: readonly TabItem[] = [
 export function ObsEffectsScreen() {
   /** いま出しているタブ。⚠ 061i: **状態はこの画面が持つ**（`Tabs` は表示専用）。 */
   const [tab, setTab] = useState<string>(EFFECT_TABS[0].id);
+
+  /**
+   * 063d: **名前付きのガチャの一覧**（⚠ **状態の持ち主はこの画面**）。
+   *
+   * ⚠⚠ **2 者が同じ一覧を読む**ので、ここが持つしかない:
+   *   - [`GachaLibraryCard`]（下部）… 作る・名前を変える・景品を編集する・消す
+   *   - [`EffectAssignmentCard`]（タブの中）… `<select>` の選択肢と**参照切れの警告**
+   * ⚠ `obsSources` のように「各カードが localStorage を読んで `storage` で追従」にはできない——
+   * **`storage` は他窓の書換でしか飛ばない**ので、**同じ窓で作ったガチャが条件の選択肢に出てこない**。
+   * ⇒ 064f が `obsSources` で採った「**画面が持ち、カードは表示専用**」と同じ形にする。
+   *
+   * ⚠⚠⚠ **初期化で [`runGachaMigration`] を呼ぶのが重要である。**
+   * `parseAssignment` は 063a 形式（`{kind:"gacha", prizes}`）を「出さない」へ落とすので、
+   * **移行より先に条件が保存されると景品が消える**。
+   * ⚠ `useState` の初期化関数は**この画面の render 本体で走る**＝
+   * 子（`EffectAssignmentCard` の `loadEffectConditions()`）より**必ず先**である。
+   * ⚠⚠ **この呼び出しを `useEffect` へ動かさないこと**（effect は子の render の**後**に走るので、
+   * 子が移行前の保存値を読んでしまう）。
+   * ⚠ [`runGachaMigration`] は冪等なので、StrictMode の二重呼び出しでも安全である。
+   */
+  const [gachas, setGachas] = useState<readonly GachaDefinition[]>(() =>
+    runGachaMigration(),
+  );
+  /**
+   * ⚠⚠ **ガチャを書き換える経路はすべてここを通す**（061j 申し送りの `commitConditions` と同じ規律）。
+   * `saveGachaLibrary` は**保存して読み直した結果**を返すので、戻り値をそのまま state にすると
+   * 「画面に出ている値」と「保存されている値」が構造的に一致する。
+   */
+  const commitGachas = (next: readonly GachaDefinition[]) =>
+    setGachas(saveGachaLibrary(next));
 
   /**
    * 061l: **開催中の配信イベント**（`null`＝開催していない・判断 5）。
@@ -575,7 +611,8 @@ export function ObsEffectsScreen() {
             <ObsSourceCard state={obsSources} />
 
             {/* 061d-2: イベント種別ごとの割り当て（＝061i 以降の呼び方は「エフェクトを表示する条件」）。 */}
-            <EffectAssignmentCard />
+            {/* ⚠ 063d: ガチャの一覧を渡す（選択肢と参照切れの警告に使う・上の `gachas` の注記が正）。 */}
+            <EffectAssignmentCard gachas={gachas} />
           </div>
         ) : (
           <div className={styles.stack} role="tabpanel">
@@ -592,6 +629,25 @@ export function ObsEffectsScreen() {
             />
           </div>
         )}
+
+        {/* ⚠⚠⚠ **063d: ガチャの一覧は「共通の下部」（両タブの外）に置く。**
+
+            ## ⚠⚠ なぜ 3 枚目のタブにしないのか（063d 穴 V）
+
+            063a は 穴 G で「3 枚目のタブにすると**共通の下部＝出力窓の設定がガチャにも掛かって見える**」
+            としてタブ追加を却下していた。⚠ **その共通の下部は 064e / 064f で既に空になっており、
+            却下の理由そのものは失効している**（下のコメント 2 本がその記録である）。
+
+            ⚠⚠ **それでも結論は変えない。理由が別に立つからである**——ガチャは
+            「コメントで出すエフェクト」でも「配信イベント」でもなく、**両方のタブから参照される共有物**である。
+            3 枚目のタブにすると「**3 種類目のエフェクト**」に見え、それは嘘になる。
+            ⇒ **タブの外に置くことが、この構造をそのまま表している。**
+            ⚠ **タブへ動かさないこと。** */}
+        <GachaLibraryCard
+          gachas={gachas}
+          obsSources={obsSources.list?.sources ?? null}
+          onChange={commitGachas}
+        />
 
         {/* ⚠⚠⚠ **064e: 「OBS へ自動で反映」カードを丸ごと削除した**（依頼者の指示＝
             「そもそも OBS に作成した物を自動で再生する機能に変わったのでいらないのでは？」）。

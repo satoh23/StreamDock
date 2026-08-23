@@ -19,18 +19,19 @@ import {
   updateKeywordCondition as updateKeywordConditionRaw,
   type EffectAssignment,
   type EffectConditions,
+  type GachaDefinition,
   type EffectKeywordMatch,
 } from "./effectAssignments";
 import { EFFECT_EVENT_LABEL } from "./effectEventRows";
 import {
   effectSelectAssignment,
   effectSelectValue,
-  GACHA_VALUE,
+  gachaSelectValue,
+  isGachaMissingFromList,
   isObsSourceMissingFromList,
   NONE_VALUE,
   OBS_SOURCE_PREFIX,
 } from "./effectSelectValue";
-import { GachaPrizeTable } from "./GachaPrizeTable";
 import layout from "../formLayout.module.css";
 import styles from "./ObsEffectsScreen.module.css";
 
@@ -100,12 +101,15 @@ import styles from "./ObsEffectsScreen.module.css";
 function ConditionEffectSelect({
   effect,
   obsSources,
+  gachas,
   ariaLabel,
   onChange,
 }: {
   effect: EffectAssignment;
   /** 064b: 064a で取得済みの OBS ソース（`null` ＝ **まだ 1 度も取っていない**）。 */
   obsSources: readonly ObsSourceEntry[] | null;
+  /** 063d: 名前付きのガチャの一覧。⚠ **常に読めている**ので `null` を取らない（OBS ソースとの違い）。 */
+  gachas: readonly GachaDefinition[];
   ariaLabel: string;
   onChange: (effect: EffectAssignment) => void;
 }) {
@@ -115,6 +119,9 @@ function ConditionEffectSelect({
   //   （OBS の一覧は 064a の「OBS のソースを取得」でしか更新されない）。
   const obsMissing =
     obsSources !== null && isObsSourceMissingFromList(effect, obsSources);
+  // ⚠⚠ 063d: **ガチャの一覧は常に読めている**（localStorage）ので、OBS ソースと違って
+  //   「まだ取っていない」状態が無い＝ **そのまま断言してよい**。
+  const gachaMissing = isGachaMissingFromList(effect, gachas);
   return (
     <>
       <Select
@@ -138,11 +145,25 @@ function ConditionEffectSelect({
             {source.name}
           </option>
         ))}
-        {/* ⚠⚠ **063a: 3 本目の割り当て**（`EffectAssignment` の union に `gacha` が入った）。
+        {/* ⚠⚠ **063d: ガチャは「一覧に登録されたぶんだけ」選択肢になる**（063a は固定 1 個だった）。
             ⚠ **末尾に足す**——061h ⑦-c 以来「先頭は必ず『エフェクトを出さない』」で、
             既存の選択肢の**順序を 1 つも動かさない**（`effectSelectValue` の JSDoc が正）。
             ⚠ OBS ソースの一覧の**後ろ**に置くのは、一覧が増減しても位置が動かないため。 */}
-        <option value={GACHA_VALUE}>ガチャ（複数から抽選）</option>
+        {gachas.map((gacha) => (
+          <option key={gachaSelectValue(gacha.id)} value={gachaSelectValue(gacha.id)}>
+            ガチャ: {gacha.name}
+          </option>
+        ))}
+        {/* ⚠⚠⚠ 063d: **一覧に無いガチャを指しているときは、その値ぶんの `<option>` を自前で出す。**
+            出さないと**ブラウザが先頭（＝「エフェクトを出さない」）を選び**、
+            「消えたガチャを指していた」という事実そのものが画面から消える
+            （061h ⑦-c で踏んだ "ask for a reset" とまったく同じ罠）。
+            ⚠ **黙って別のガチャへ化けさせない**——`GachaPrizeTable` の OBS ソース列と同じ手である。 */}
+        {gachaMissing && effect.kind === "gacha" && (
+          <option value={gachaSelectValue(effect.gachaId)}>
+            ガチャ（削除されました）
+          </option>
+        )}
       </Select>
       {obsMissing && (
         // ⚠⚠ 064b: OBS 側で**名前を変えた／消した**ときに気付ける唯一の場所。
@@ -152,16 +173,18 @@ function ConditionEffectSelect({
           OBS にこの名前のソースが見つかりません。名前を変えた場合は選び直してください。
         </p>
       )}
-      {/* ⚠⚠ 063a: **ガチャの表もここに置く**（イベント条件の行・キーワード条件の行・未確定行の
-          3 か所が 1 実装を共有する＝上の JSDoc の規律そのもの）。⚠ 呼び出し側で個別に描かないこと。
-          ⚠ 表は `.gachaPanel` の `flex-basis: 100%` で**行の下へ回り込む**（`.errorText` と同じ手）。 */}
-      {effect.kind === "gacha" && (
-        <GachaPrizeTable
-          effect={effect}
-          obsSources={obsSources}
-          labelPrefix={ariaLabel}
-          onChange={onChange}
-        />
+      {/* ⚠⚠⚠ 063d: **景品の表はここから外した。** 063a は条件行の下に開いていたが、
+          ガチャ本体が一覧（`GachaLibraryCard`）へ移ったので、**編集の入口は 1 か所**にする。
+          ⚠ 条件行に開いたままにすると、同じガチャを 2 条件に割り当てたとき
+          **同じ表が 2 か所に開き、どちらを直しても両方変わることが画面から読めない**。
+          ⚠ **ここに表を戻さないこと。** */}
+      {gachaMissing && (
+        // ⚠⚠ 063d 穴 R: ガチャを消したときに気付ける唯一の場所（064b の OBS ソースと同じ手）。
+        //   ⚠ 発火は `select` が落とすだけ（＝配信中は無言）なので、ここに出さないと
+        //   「設定したのに鳴らない」の理由がどこからも読めない。
+        <p className={styles.errorText}>
+          このガチャは削除されています。下の「ガチャ」から選び直してください。
+        </p>
       )}
     </>
   );
@@ -181,7 +204,19 @@ interface DraftKeywordRow {
   effect: EffectAssignment;
 }
 
-export function EffectAssignmentCard() {
+export function EffectAssignmentCard({
+  gachas,
+}: {
+  /**
+   * 063d: 名前付きのガチャの一覧（表示と参照切れの判定に使う）。
+   *
+   * ⚠⚠ **`obsSources` と違って localStorage を自分で読まない。** 一覧を書き換えるのは
+   * **同じ窓の [`GachaLibraryCard`]** で、⚠ `storage` イベントは**他窓の書換でしか飛ばない**＝
+   * 自分で読むと「ガチャを作ったのに条件の選択肢に出てこない」になる。
+   * ⇒ **状態は `ObsEffectsScreen` が持ち、両方へ配る**（064f の `obsSources` と同じ役割分担）。
+   */
+  gachas: readonly GachaDefinition[];
+}) {
   /**
    * 064d: **条件はこのカードが持つ**（旧: `useEffectTemplates` の戻り値を `ObsEffectsScreen` が配っていた）。
    *
@@ -339,6 +374,7 @@ export function EffectAssignmentCard() {
                 <ConditionEffectSelect
                   effect={condition.effect}
                   obsSources={obsSources}
+                  gachas={gachas}
                   ariaLabel={`${label}のエフェクト`}
                   onChange={(effect) => setConditionEffect(condition.id, effect)}
                 />
@@ -422,6 +458,7 @@ export function EffectAssignmentCard() {
                 <ConditionEffectSelect
                   effect={condition.effect}
                   obsSources={obsSources}
+                  gachas={gachas}
                   ariaLabel={`キーワード ${n} のエフェクト`}
                   onChange={(effect) => setConditionEffect(condition.id, effect)}
                 />
@@ -471,6 +508,7 @@ export function EffectAssignmentCard() {
               <ConditionEffectSelect
                 effect={draftRow.effect}
                 obsSources={obsSources}
+                gachas={gachas}
                 ariaLabel={`キーワード ${keywordConditions.length + 1} のエフェクト`}
                 onChange={(effect) => setDraftRow({ ...draftRow, effect })}
               />
