@@ -1400,6 +1400,38 @@ mod overlay_window_contract {
             "frontend の STAGE_OVERLAY_WINDOW_TITLE が実在しない窓名 `{title}` を案内している（OBS のウィンドウ一覧で見つからない）"
         );
     }
+
+    /// ⚠⚠⚠ **063c 段 2-a: frontend が持つステージ窓の「ラベル」が、実際の窓生成と一致していること。**
+    ///
+    /// ## なぜテストが要るのか（typo が「落ちない方向」に壊れる）
+    ///
+    /// 063c 段 2-a で frontend が**窓 label を文字列で持つようになった**
+    /// （`gachaStageEvent.ts` の `emitTo(<label>, …)` ＝ 当選結果をステージ窓だけへ届ける）。
+    /// ⚠⚠ **`emitTo` は宛先の窓が存在しなくても例外を投げない**ので、ラベルを間違えると
+    /// **「演出が永久に出ないが、OBS は正常に鳴る」**という、画面からもログからも理由が読めない
+    /// 壊れ方になる（ユニットテストも全部緑のまま通る）。
+    ///
+    /// ⚠ 守り方は `consumer_labels_are_windows_that_actually_exist` と同型で、
+    /// **`WebviewWindowBuilder::new(&app, "<label>"` に実在すること**を突き合わせる。
+    /// ⚠ needle は実行時に組む（`include_str!("lib.rs")` の自己ヒット対策・このモジュールの規律）。
+    #[test]
+    fn frontend_stage_overlay_label_matches_window_builder() {
+        let head = format!("const {} = \"", "STAGE_OVERLAY_WINDOW_LABEL");
+        let label = EFFECT_ASSIGNMENTS_TS
+            .split_once(head.as_str())
+            .and_then(|(_, rest)| rest.split_once('"'))
+            .map(|(value, _)| value);
+        assert!(
+            label.is_some(),
+            "effectAssignments.ts に STAGE_OVERLAY_WINDOW_LABEL が見つからない（frontend が窓ラベルを直書きしている可能性）"
+        );
+        let label = label.unwrap_or("");
+        let needle = format!("{}::new(&app, \"{label}\"", "WebviewWindowBuilder");
+        assert!(
+            LIB_RS.contains(needle.as_str()),
+            "frontend の STAGE_OVERLAY_WINDOW_LABEL `{label}` を生成している窓が lib.rs に無い（`emitTo` は宛先が無くても例外を投げないので、演出が黙って出なくなる）"
+        );
+    }
 }
 
 #[cfg(test)]

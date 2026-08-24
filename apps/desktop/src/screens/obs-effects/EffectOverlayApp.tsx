@@ -1,9 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { connectCommentStream } from "../../features/comment-viewer/commentStream";
 import {
+  GACHA_PLACEMENT_DEFAULT,
+  GACHA_PRIZE_COLOR_DEFAULT,
   STREAM_EVENT_ROUND_KEY,
   loadEffectOverlayGuidePending,
+  loadGachaPlacement,
+  loadGachaPrizeColor,
   saveEffectOverlayGuidePending,
+  type GachaPlacement,
 } from "../../features/comment-viewer/overlaySettings";
 import { findStreamEvent } from "../../features/obs-effects/streamEventRegistry";
 import {
@@ -17,6 +22,14 @@ import {
 } from "../../features/obs-effects/streamEventRound";
 import { STAGE_OVERLAY_WINDOW_TITLE } from "./effectAssignments";
 import { createSeenEffectIds, takeFreshComments } from "./effectTrigger";
+import { GachaEffectStage } from "./GachaEffectStage";
+// ⚠⚠⚠ 063c 段 5-a: **層はプレビューと共有の部品**（あちらの JSDoc が「なぜ」を持つ）。
+import { GachaStageLayer } from "./GachaStageLayer";
+import {
+  listenGachaStageResult,
+  type GachaStageResult,
+} from "./gachaStageEvent";
+import { gachaStageView } from "./gachaStagePlayback";
 // ⚠ **意匠のためではなく、透過の :global ルールをこの窓にも効かせるために import する。**
 // 背景透過（`html[data-overlay="1"]` の `background: transparent` と `overflow: hidden`）は
 // `OverlayApp.module.css` にしか定義されておらず、その 1 枚が**バンドルに含まれていること**が前提になる。
@@ -63,6 +76,45 @@ const SETUP_GUIDE_VISIBLE_MS = 30_000;
  * ⚠⚠ **開催していない間はタイマーを張らない**（061a 以来「配信中にタイマーを残さない」＝判断 11）。
  */
 const STREAM_EVENT_TICK_MS = 1000;
+
+/**
+ * ⚠⚠⚠ **063c 段 2-b: 演出の時計を進める間隔**（ミリ秒）。
+ *
+ * ⚠ **段の切り替えもコマ送りも、この 1 本のタイマーだけで動く**
+ * （何を出すかは経過時間から `gachaStageView` が決める＝純関数）。
+ * ⚠⚠ `setTimeout` の連鎖にしないのは、**「途中でアンマウント」「秒数 0」「次の当選が来た」が
+ * 絡んだときの正しさがコンポーネントの中でしか確かめられなくなる**ため（あちらの JSDoc が正）。
+ *
+ * ⚠ 値の根拠＝**コマ送りの最小間隔（120ms）より細かいこと**。
+ * ⚠⚠ **当選を出している間しか回らない**（何も出ていなければタイマーを張らない＝判断 11）。
+ */
+const GACHA_TICK_MS = 60;
+
+/**
+ * ⚠⚠⚠ **063c 段 2-a: 同時に当たったときに溜めておける件数**（＝キューの長さ）。
+ *
+ * ## なぜキューなのか（後勝ちを却下した理由）
+ *
+ * 063b のバースト上限は **5 秒に 3 件**なので、**ほぼ同時に 3 件当たりうる**。
+ * ⚠⚠ **後勝ち（新しい結果で上書き）にすると「当たったのに一瞬で消える」**——
+ * 課金してガチャを回した視聴者の当たりが、直後の別の当たりに潰される。
+ * ⇒ **1 件ずつ順に出す**（061a が「同時再生しない・1 度に 1 つ」と決めたのと同じ結論）。
+ *
+ * ## ⚠ なぜ上限が要るのか
+ *
+ * 上限が無いと、荒れたときに**キューが伸び続けて「10 分前の当たり」が出る**。
+ * ⚠⚠ **溢れたぶんは捨てる**（古いほうを捨てない＝ 先に当たった人が先に出る）。
+ * ⚠ **3 ＝ バースト上限と同じ**にしてある。バーストが 5 秒に 3 件なので、
+ * **同じ 5 秒に発生しうる最大件数をちょうど飲み込める**（それ以上溜まるのは異常事態）。
+ * ⚠ **再修正トリガー＝実機で「当たりが出ない」と言われたとき**（そのとき結果の表示時間も一緒に見直す）。
+ */
+const GACHA_QUEUE_MAX = 3;
+
+/** 063c 段 2-a: キューに並んだ当選 1 件。⚠ `seq` は **React の key と表示タイマーの識別子**にだけ使う。 */
+interface GachaStageItem {
+  seq: number;
+  result: GachaStageResult;
+}
 
 /**
  * 061l（判断 8）: **配信イベントの描画**。⚠⚠ **受け取るのは `{ count, remainingMs }` と、
@@ -162,7 +214,9 @@ export function EffectOverlayApp() {
   //   - `App.tsx` の起動時復元で開いた窓 → **出ない**（＝配信直前にアプリを起動しても配信画面を汚さない）
   // ⚠ **読むのは初期化子・倒すのは下の effect** と分けてある。初期化子で消すと StrictMode の
   // 二重レンダーで 2 回目が旗を見失い、dev だけガイドが出なくなる（実装時に踏みうる罠）。
-  const [guideVisible, setGuideVisible] = useState(loadEffectOverlayGuidePending);
+  const [guideVisible, setGuideVisible] = useState(
+    loadEffectOverlayGuidePending,
+  );
 
   /**
    * 061l（判断 5）: **開催中の配信イベント**（`null`＝開催していない）。
@@ -192,6 +246,43 @@ export function EffectOverlayApp() {
    *   そのとき書込頻度の間引き（秒 1 回など）まで含めて設計し直すこと。
    */
   const [eventCount, setEventCount] = useState(0);
+
+  /**
+   * ⚠⚠⚠ **063c 段 2-a: 出す順番待ちの当選と、次に配る `seq`。**
+   *
+   * ⚠⚠ **1 つの state にまとめてあるのは、更新関数を純粋に保つため**である——
+   * `seq` を `useRef` の加算で採ると **更新関数が副作用を持つ**ので、
+   * StrictMode が更新関数を 2 回呼ぶ dev で **番号が飛ぶ／同じ番号が 2 件に付く**。
+   * ⚠ **`prev` だけから次を決められる形にしておくこと。**
+   *
+   * ⚠ **永続しない**（`eventCount` と同じ理由＝窓を閉じれば消えてよい。むしろ
+   * 「窓を開き直したら古い当たりが出る」は 063c (2) が localStorage 案を却下した理由そのもの）。
+   */
+  const [gachaStage, setGachaStage] = useState<{
+    queue: readonly GachaStageItem[];
+    nextSeq: number;
+  }>({ queue: [], nextSeq: 1 });
+  /** いま出している当選（⚠ **先頭が「出ているもの」**＝ 出し終わったら先頭を捨てる）。 */
+  const gachaCurrent = gachaStage.queue[0] ?? null;
+  /**
+   * ⚠⚠ 063c 段 2-b: **この当選を出し始めてからの経過**（ミリ秒）。
+   * ⚠ 演出の状態はこれ 1 本で、**何を出すかは [`gachaStageView`] が導出する**（状態を 2 つ持たない）。
+   */
+  const [gachaElapsedMs, setGachaElapsedMs] = useState(0);
+  /**
+   * ⚠⚠⚠ **063c 段 4: 見た目の設定（配置・文字色）は「当選が出始めた瞬間」に読む**（マウント時ではない）。
+   * ⇒ **main 窓で変えた直後の 1 件目から効く**（`loadGachas` を関数のまま渡している
+   * `decideFireResults` と同じ規律＝**使う直前に読み直す**）。
+   * ⚠ `storage` を購読していないのはこのためで、購読は要らない。
+   * ⚠⚠ **段 4-a で「抽選中の長さ」の state は消えた**（設定ではなくなり定数になったため）。
+   */
+  const [gachaLook, setGachaLook] = useState<{
+    placement: GachaPlacement;
+    prizeColor: string;
+  }>({
+    placement: GACHA_PLACEMENT_DEFAULT,
+    prizeColor: GACHA_PRIZE_COLOR_DEFAULT,
+  });
   /**
    * 061l: `onComments`（マウント時 1 回だけ張るハンドラ）から読むための開催状態のミラー。
    *
@@ -226,6 +317,86 @@ export function EffectOverlayApp() {
   useEffect(() => {
     saveEffectOverlayGuidePending(false);
   }, []);
+
+  // ⚠⚠⚠ **063c 段 2-a: 当選結果の購読**（コメビュ窓 → この窓・`gachaStageEvent.ts` が正）。
+  //
+  // ⚠⚠ **この窓は抽選をしない。** 受け取った結果をそのまま出すだけである
+  //   （引き直すと「演出は A、OBS は B」という実機でしか見えない食い違いが生まれる）。
+  // ⚠ **マウント時 1 回だけ張る**（deps 空）。⚠⚠ `listen` は Promise なので、
+  //   **解決前にアンマウントされたら即座に解除する**（そうしないと購読が漏れて
+  //   StrictMode の二重マウントで 1 件の当選が 2 回キューに入る）。
+  // ⚠ 失敗しても**何も出さない**（この窓は透過・最背面で、何か出すと OBS にそのまま映る）。
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let disposed = false;
+    void listenGachaStageResult((result) => {
+      // ⚠⚠ **更新関数は純粋**（上の `gachaStage` の注記が正）。
+      //   ⚠ **溢れたら捨てる**——古いほうを捨てないので「先に当たった人が先に出る」。
+      setGachaStage((prev) =>
+        prev.queue.length >= GACHA_QUEUE_MAX
+          ? prev
+          : {
+              queue: [...prev.queue, { seq: prev.nextSeq, result }],
+              nextSeq: prev.nextSeq + 1,
+            },
+      );
+    })
+      .then((fn) => {
+        if (disposed) fn();
+        else unlisten = fn;
+      })
+      .catch(() => {
+        // ⚠ 演出が出ないだけ（§9・この窓は `console.*` へ 1 バイトも出さない）。
+      });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  // ⚠⚠ 063c 段 2-b: **当選 1 件ぶんの時計**。
+  //   ⚠ 依存は **`seq` だけ**（オブジェクトを deps に置くと、同じ当選で毎レンダー張り直して
+  //   **演出が永久に先頭へ巻き戻る**）。
+  //   ⚠⚠ **cleanup で必ず止める**（061a 以来の「配信中にタイマーを残さない」＝判断 11）。
+  //   ⚠⚠⚠ **見た目の設定はここで 1 回だけ読む**（上の `gachaLook` の注記が正）。
+  const gachaCurrentSeq = gachaCurrent?.seq ?? null;
+  useEffect(() => {
+    if (gachaCurrentSeq === null) return;
+    setGachaElapsedMs(0);
+    setGachaLook({
+      placement: loadGachaPlacement(),
+      prizeColor: loadGachaPrizeColor(),
+    });
+    const timer = window.setInterval(() => {
+      setGachaElapsedMs((prev) => prev + GACHA_TICK_MS);
+    }, GACHA_TICK_MS);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [gachaCurrentSeq]);
+
+  /** いま出すもの（⚠ **`null` ＝ この当選は出し終わった**）。 */
+  const gachaView =
+    gachaCurrent === null ? null : gachaStageView(gachaElapsedMs);
+
+  // ⚠⚠ 出し終わったら先頭を捨てて、次の 1 件へ進む。
+  //   ⚠ **描画の途中で state を書き換えない**ため effect にしてある（レンダー中に呼ぶと
+  //   React が同じレンダーをやり直し、`gachaView` の導出が 2 回走る）。
+  //
+  // ⚠⚠⚠ **ここで時計も一緒に 0 へ戻すのが要点である**（実装中にテストで踏んだ）。
+  //   時計のリセットを上の `seq` 依存の effect だけに任せると、
+  //   **同じ更新の波の中で「次の 1 件が先頭になったのに、時計はまだ前の 1 件のぶん」**という
+  //   一瞬が生まれ、その 1 回のレンダーで `gachaView` が `null` になって
+  //   ⚠⚠ **次の当選が 1 ピクセルも出ないまま捨てられる**（キューに 2 件以上あるときだけ起きる）。
+  //   ⇒ **捨てるのと同時に戻す。** ⚠ 上の effect と二重に 0 を書くが、どちらも冪等である。
+  useEffect(() => {
+    if (gachaCurrent !== null && gachaView === null) {
+      setGachaStage((prev) => ({ ...prev, queue: prev.queue.slice(1) }));
+      setGachaElapsedMs(0);
+      // ⚠ 見た目の設定は**次の 1 件が先頭になった時点**で `seq` 依存の effect が読み直す
+      //   （ここで読むと、まだ出していない当選の設定を先に固定してしまう）。
+    }
+  }, [gachaCurrent, gachaView]);
 
   // ⚠⚠ 061b: sidecar の loopback WS へ**読み取り専用**で接続する（`OverlayApp` と同じ構え・上のクラス JSDoc）。
   //
@@ -354,9 +525,10 @@ export function EffectOverlayApp() {
   // ⚠ イベントが出たらセットアップ用ガイドを畳む——ガイドは「まだ何も出ていない窓の位置」を
   //   示すためのもので、実物が出た時点で役目が終わる（破線枠とカードを同居させない）。
   //   ⚠ `SETUP_GUIDE_VISIBLE_MS` による自動消灯は fail-safe としてそのまま残す。
+  //   ⚠⚠ 063c 段 2-a: **ガチャの当選でも畳む**（実物が出た時点で役目が終わるのは同じ）。
   useEffect(() => {
-    if (eventView !== null) setGuideVisible(false);
-  }, [eventView]);
+    if (eventView !== null || gachaCurrent !== null) setGuideVisible(false);
+  }, [eventView, gachaCurrent]);
 
   // セットアップ用ガイドを一定時間で畳む（上の SETUP_GUIDE_VISIBLE_MS の JSDoc が判断の根拠）。
   // ⚠ cleanup で必ず取り消す（StrictMode の二重実行でもタイマーが残らない）。
@@ -379,8 +551,46 @@ export function EffectOverlayApp() {
           「イベント層が DOM 順で前＝下」という前後関係そのものが消えた）。 */}
       {eventView !== null && (
         <div className={styles.eventLayer}>
-          <StreamEventView title={eventView.title} progress={eventView.progress} />
+          <StreamEventView
+            title={eventView.title}
+            progress={eventView.progress}
+          />
         </div>
+      )}
+      {/* ⚠⚠⚠ **063c 段 2-a: ガチャの当選を出す層。**
+          ⚠ `.gachaLayer` の `position: absolute; inset: 0` も **(10-r) が固定している**
+          （`.eventLayer` と同じ理由＝ jsdom はレイアウトを解決しないので、CSS だけを壊す変更を
+          止められるのはあちらだけ）。
+          ⚠⚠ **DOM 順で配信イベントより後＝ガチャが上に重なる**（063c (4) の「重ねる」の決定。
+          イベントは上端・ガチャは中央なので実際には重ならないが、**万一重なったら
+          ガチャを前に出す**——当たりは一瞬しか出ないのに対し、イベントは開催中ずっと出ているため）。
+          ⚠⚠⚠ **ここに「そのソースが OBS に見つかりません」を出さないこと**（063c レビュー Q-12 追記 2 の決定）——
+          この層は **OBS のキャプチャに映る＝視聴者に読める**ので、技術的なエラーを出すと
+          **配信事故そのものになる**。⚠ 上書き先が消えていることの警告は
+          **設定画面（`GachaPrizeTable` の「そのソースは OBS に見つかりません」）が唯一の持ち主**である。
+          ⚠ `output` をペイロードに載せてあるのは、段 2-b で**演出の出し分け**（組み込み／OBS ソース）に使うためで、
+          エラー表示のためではない。 */}
+      {gachaCurrent !== null && gachaView !== null && (
+        // ⚠⚠⚠ **063c 段 4-c: 配置は「層の寄せ方」で決まる**（`.gachaStage` に幅が在るので効く）。
+        //   ⚠ 幅を `100%` へ戻すと**どの配置を選んでも中央のまま**になる（CSS 側の注記が正）。
+        // ⚠⚠⚠ **063c 段 5-a: この層は設定画面のプレビューと同じ部品である。**
+        //   ⚠ ここを裸の `<div>` に戻すと、**プレビューと実機が別物になる**経路が復活する。
+        <GachaStageLayer placement={gachaLook.placement}>
+          {/* ⚠ 景品名は**ユーザー自身の入力**（§9）。
+              ⚠⚠⚠ **063c 段 3: `viewerName` だけが第三者データである**——
+              **本文・視聴者 id・金額はペイロードに載る場所が型として無い**
+              （`GachaStageResult` の注記と `docs/security.md` §9 追補が正）。
+              ⚠⚠ **`key` に `seq` を置く**——置かないと次の当選で DOM が使い回され、
+              **落下やポップの CSS アニメーションが 2 件目以降で走らない**。 */}
+          <GachaEffectStage
+            key={gachaCurrent.seq}
+            view={gachaView}
+            prizeLabel={gachaCurrent.result.prizeLabel}
+            viewerName={gachaCurrent.result.viewerName}
+            rare={gachaCurrent.result.rare}
+            prizeColor={gachaLook.prizeColor}
+          />
+        </GachaStageLayer>
       )}
       {guideVisible && (
         // ⚠ 破線の枠は「ここがキャプチャ範囲」を示すためのもので、意匠ではない。
@@ -403,7 +613,8 @@ export function EffectOverlayApp() {
             <br />
             OBS で「ソースを追加 → ウィンドウキャプチャ」を選び、
             <br />
-            ウィンドウの一覧から「{STAGE_OVERLAY_WINDOW_TITLE}」を指定してください。
+            ウィンドウの一覧から「{STAGE_OVERLAY_WINDOW_TITLE}
+            」を指定してください。
           </p>
           {/* ⚠⚠ **この文だけは OBS のキャプチャに数十秒そのまま映る**ので、
               画面内の案内文より嘘の害が大きい（配信を見ている視聴者にも読める）。

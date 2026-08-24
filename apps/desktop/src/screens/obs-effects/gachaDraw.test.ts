@@ -9,7 +9,9 @@ import {
   gachaTotalPercentText,
   gachaTotalWeight,
   gachaWeightToPercent,
+  GACHA_RARE_MAX_PERCENT,
   isGachaOverAllocated,
+  isGachaRarePrize,
 } from "./gachaDraw";
 
 /**
@@ -29,10 +31,12 @@ import {
  * 合計 0 は景品 0 件のときだけだが、**その 1 経路を型ではなくテストで塞ぐ**。
  */
 
+// ⚠ 063c 段 2-a: `sourceName` → `output`。⚠⚠ **抽選は出力先を 1 バイトも見ない**ので、
+//   ここは「型として要る」だけである（見るようになったらこのテストが嘘になる）。
 const p = (weight: number, name = `p${weight}`): GachaPrize => ({
   name,
   weight,
-  sourceName: `src-${name}`,
+  output: { kind: "obs-source", sourceName: `src-${name}` },
 });
 
 /** 重みの並びから、各行の確率表示を取り出す。 */
@@ -69,14 +73,20 @@ describe("gachaDraw（063a: 確率の表示）", () => {
   });
 
   it("⚠ 重みを変えると確率がその場で変わる（保存された確率を読んでいない）", () => {
-    expect(gachaProbabilityText(1, gachaTotalWeight([p(1), p(1)]))).toBe("50.0%");
-    expect(gachaProbabilityText(1, gachaTotalWeight([p(1), p(3)]))).toBe("25.0%");
+    expect(gachaProbabilityText(1, gachaTotalWeight([p(1), p(1)]))).toBe(
+      "50.0%",
+    );
+    expect(gachaProbabilityText(1, gachaTotalWeight([p(1), p(3)]))).toBe(
+      "25.0%",
+    );
   });
 
   it("⚠⚠ 合計が 0 でも 0 除算しない（景品 0 件）", () => {
     expect(gachaTotalWeight([])).toBe(0);
     expect(gachaProbabilityText(1, 0)).toBe(GACHA_PROBABILITY_UNAVAILABLE_TEXT);
-    expect(gachaProbabilityText(1, -1)).toBe(GACHA_PROBABILITY_UNAVAILABLE_TEXT);
+    expect(gachaProbabilityText(1, -1)).toBe(
+      GACHA_PROBABILITY_UNAVAILABLE_TEXT,
+    );
   });
 });
 
@@ -91,7 +101,7 @@ describe("gachaDraw（063a-3: ％はその行だけの値）", () => {
     weights.map((weight, i) => ({
       name: `p${i}`,
       weight,
-      sourceName: `src-${i}`,
+      output: { kind: "obs-source", sourceName: `src-${i}` } as const,
     }));
 
   it("⚠⚠ ％と重みは 1 対 1（0.1% 刻み・他の行に依存しない）", () => {
@@ -127,7 +137,7 @@ describe("gachaDraw（063a-3: 分母は 1000 固定＝「はずれ」がある�
     weights.map((weight, i) => ({
       name: `p${i}`,
       weight,
-      sourceName: `src-${i}`,
+      output: { kind: "obs-source", sourceName: `src-${i}` } as const,
     }));
 
   it("⚠⚠⚠ 打った％がそのまま当たる確率になる（合計で割らない）", () => {
@@ -164,5 +174,59 @@ describe("gachaDraw（063a-3: 分母は 1000 固定＝「はずれ」がある�
 
   it("⚠ 景品 0 件は `-1`", () => {
     expect(drawGachaPrizeIndex([], () => 0.5)).toBe(-1);
+  });
+});
+
+/**
+ * ⚠⚠⚠ **063c 段 3: 「レア！」を出してよいかの判定。**
+ *
+ * ⚠⚠ **これが「レア！」の表示を嘘にしない根拠である**——分母が 1000 固定なので
+ * `weight` は**ユーザーが設定画面に打った％そのもの**であり、
+ * ⚠ **他の行を 1 つも見ない**（合計で割った相対確率ではない＝穴 D）。
+ *
+ * ⚠⚠⚠ **境界を含めないこと**（`<` であって `<=`）。
+ * 含めると「10% と打った景品は毎回レア」になり、**きりのいい既定値がレア扱い**になる。
+ */
+describe("063c 段 3: isGachaRarePrize", () => {
+  const w = (...weights: number[]): GachaPrize[] =>
+    weights.map((weight, i) => ({
+      name: `p${i}`,
+      weight,
+      output: { kind: "builtin" } as const,
+    }));
+
+  it("⚠⚠⚠ 10% ちょうどはレアではない（境界を含めない）", () => {
+    expect(isGachaRarePrize(gachaPercentToWeight(GACHA_RARE_MAX_PERCENT))).toBe(
+      false,
+    );
+    // ⚠ 1 目盛り（0.1%）下ならレア。
+    expect(
+      isGachaRarePrize(gachaPercentToWeight(GACHA_RARE_MAX_PERCENT) - 1),
+    ).toBe(true);
+  });
+
+  it.each([
+    [1, true],
+    [50, true],
+    [99, true],
+    [100, false],
+    [101, false],
+    [500, false],
+    [1000, false],
+  ])("重み %i → レア: %s", (weight, expected) => {
+    expect(isGachaRarePrize(weight)).toBe(expected);
+  });
+
+  /**
+   * ⚠⚠ **他の行を足してもレア判定は動かない。**
+   * ⚠ 相対確率（`weight / total`）で判定する実装に変えると、
+   * **「他の景品を足したらレアになった／レアでなくなった」**が起きる。
+   */
+  it("⚠⚠⚠ 他の景品が何件あってもレア判定は変わらない", () => {
+    const rare = 99;
+    expect(isGachaRarePrize(rare)).toBe(true);
+    // ⚠ 合計が 10% しかない構成でも、20% を占めていても、判定は同じ。
+    expect(gachaTotalWeight(w(rare, 1))).toBe(100);
+    expect(isGachaRarePrize(rare)).toBe(true);
   });
 });

@@ -14,6 +14,8 @@ import type {
   PresetRecord,
 } from "../../features/presets/types";
 import { Button } from "../../components/primitives";
+// ⚠ 063c 段 5-g レビュー Q-1: 選択欄の意匠の持ち主は `Select.module.css` 1 枚である（下の JSX の注記が正）。
+import { Select } from "../../components/Select";
 import { PreviewCard, type PreviewRowData } from "../../components/PreviewCard";
 import { useTutorial } from "../../features/tutorial/useTutorial";
 import layout from "../formLayout.module.css";
@@ -402,8 +404,17 @@ export function AddToolScreen({
                 <>
                   <div className={layout.field}>
                     <label>登録先プリセット</label>
-                    <select
+                    {/* ⚠⚠⚠ **063c 段 5-g レビュー Q-1: ネイティブ `<select>` から [`Select`] へ移した。**
+                        段 5-g が `formLayout.module.css` の `.field select` を「マッチする要素がゼロだから」と
+                        削除したが、⚠⚠ **この画面の 2 つがまさにその要素だった**（＝高さ・角丸・背景・
+                        `appearance:none` が丸ごと落ちて、隣の `<input>` と揃わない素の選択ボックスになる）。
+                        ⇒ **意匠の持ち主を `Select.module.css` 1 枚へ寄せて解消する**（規則を 2 枚に戻さない）。
+                        ⚠ これで `scripts/check-css-guards.mjs` の (10-s) の前提
+                        「native `<select>` は `components/Select.tsx` だけ」が**初めて真になる**
+                        （その前提自体も (10-s) が検査するようにした）。 */}
+                    <Select
                       value={targetPreset}
+                      ariaLabel="登録先プリセット"
                       disabled={!hasPresets}
                       onChange={(e) => setTargetPreset(e.target.value)}
                     >
@@ -413,7 +424,7 @@ export function AddToolScreen({
                         </option>
                       ))}
                       <option value="">プリセットには追加しない</option>
-                    </select>
+                    </Select>
                     <div className={layout.fieldHelp}>
                       {hasPresets
                         ? "選んだプリセットにこのツールを登録します。"
@@ -424,8 +435,12 @@ export function AddToolScreen({
                   {isRealPreset && (
                     <div className={layout.field}>
                       <label>追加位置</label>
-                      <select
+                      {/* ⚠ 上と同じ理由（レビュー Q-1）。⚠⚠ **`.field` の中に置いてよい**——
+                          `.field select` を消したので詳細度の罠（0,1,1 が `.selectCustom` の 0,1,0 に勝つ）は
+                          もう無い。⚠⚠⚠ **`.field select` を書き戻さないこと**（罠が復活する）。 */}
+                      <Select
                         value={insertMode}
+                        ariaLabel="追加位置"
                         onChange={(e) =>
                           setInsertMode(e.target.value as InsertMode)
                         }
@@ -433,7 +448,7 @@ export function AddToolScreen({
                         <option value="tail">末尾に追加</option>
                         <option value="head">先頭に追加</option>
                         <option value="parallel">並行（順番なし）</option>
-                      </select>
+                      </Select>
                     </div>
                   )}
                 </>

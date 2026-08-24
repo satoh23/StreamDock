@@ -1,15 +1,21 @@
 import type { CommentViewDto } from "../../features/comment-viewer/types";
-import type { EffectGacha, GachaDefinition } from "./effectAssignments";
+import {
+  gachaPrizeLabel,
+  type EffectGacha,
+  type GachaDefinition,
+  type GachaPrizeOutput,
+} from "./effectAssignments";
 import {
   decideEffects,
   type EffectMatcher,
   type EffectObsSource,
   type EffectTriggerState,
 } from "./effectTrigger";
-import { drawGachaPrizeIndex } from "./gachaDraw";
+import { drawGachaPrizeIndex, isGachaRarePrize } from "./gachaDraw";
 
 /**
- * 063b: **「決めた発火」を「鳴らす OBS のソース名」へ翻訳する 1 か所**（純関数）。
+ * 063b: **「決めた発火」を「実際に出すもの」へ翻訳する 1 か所**（純関数）。
+ * ⚠ 063c 段 2-a で戻り値が `string[]`（ソース名）から [`EffectFireResult`]`[]` へ広がった。
  *
  * ## ⚠⚠⚠ なぜこのモジュールが要るのか（抽選の位置がここでしか固定できない）
  *
@@ -77,17 +83,101 @@ import { drawGachaPrizeIndex } from "./gachaDraw";
  *
  * ## §9
  *
- * ⚠⚠ **戻り値は `sourceName` の配列だけ**＝**ユーザー自身が OBS で付けた名前**である。
+ * ⚠⚠ **戻り値に載るのは「ユーザー自身が入力した文字列」だけ**＝
+ * OBS で自分が付けたソース名と、自分が付けた景品名である（[`EffectFireResult`] の注記が正）。
  * **第三者のコメント本文も表示名も 1 バイトも通らない**（型として載せる場所が無い）。
  * ⚠⚠ **抽選履歴・当選者・視聴者 id を 1 つも保存しない**（この関数は localStorage を**書かない**）。
- * ⚠ 景品名もここには現れない（鳴らすのに要るのはソース名だけ）。
+ * ⚠⚠⚠ **063c 段 2-a 訂正: 「景品名はここには現れない」は成立しなくなった**——
+ * 当選景品の名前を**配信画面に出す**のが 063c の目的なので、戻り値が景品名を運ぶ。
+ * ⚠ **運んでよい理由＝景品名はユーザー自身の入力だから**であり、この 1 点が §9 の線である。
  */
 
 /** 063b: 発火として流れる値（⚠ **レーンは 1 本**・理由は `createEffectFireMatcher` の JSDoc が正）。 */
 export type EffectFire = EffectObsSource | EffectGacha;
 
 /**
- * ガチャ 1 件を引いて、鳴らすソース名を返す（⚠ **はずれ・見つからない・景品 0 件はすべて `null`**）。
+ * ⚠⚠⚠ **063c 段 2-a: 発火 1 件の結果**（旧: `string`＝ OBS のソース名だけ）。
+ *
+ * ## なぜ広げたのか
+ *
+ * 旧 `decideFireSourceNames` の戻り値は **`string[]`（鳴らす OBS のソース名）**で、
+ * ⚠ **景品名を運べなかった**。063c は**景品名そのもの**を配信画面に出すので、
+ * 発火層の戻り値を広げるほかない（063c レビュー Q-12 追記 1）。
+ * ⚠⚠ **同じ拡張を [063f](../../../../docs/tasks/063f-gacha-chat-output.md)（当選結果をチャットへ書く）も
+ * 必要としている**ので、**先に着手する 063c が形を決め、063f はこれに乗る**
+ * （2 通りに広げると、片方だけが知らないフィールドを持つ・片方だけ §9 の判断が抜ける）。
+ *
+ * ## ⚠⚠ [`EffectRequestBase`] を復活させていない
+ *
+ * 063b 段 1-b は「**コメント由来の値が 1 つも載らない**」ところまで返済した。
+ * ⚠⚠⚠ **その返済を無かったことにしないため、足したのは 2 フィールドだけ**である——
+ * `name` / `amountText` / `message` / `eventLabel` / `tone` / `id` を**1 つも戻していない**。
+ * ⚠ **ここに「誰が引いたか」を足さないこと**（§9・抽選履歴と当選者を持たないという 063c の制約）。
+ */
+export interface EffectFireResult {
+  /**
+   * 出力先。⚠ **ガチャ以外の発火（条件に OBS ソースを直指定）は必ず `{kind:"obs-source"}`**。
+   * ⚠⚠ `{kind:"builtin"}` はガチャの景品にしか現れない（条件の直指定に組み込みの選択肢は無い）。
+   */
+  output: GachaPrizeOutput;
+  /**
+   * ⚠⚠ **ガチャ由来のときだけ非 `null`**（＝ [`GachaFireDetail`]）。
+   * ⚠ 条件に OBS ソースを直指定した発火は **`null`**＝「ガチャではない」の意味であり、
+   * **「名前が無い」ではない**（無名の景品は [`GACHA_UNNAMED_PRIZE_LABEL`] になる）。
+   * ⇒ **受け手はこの `null` でガチャ演出を出すかどうかを決める。**
+   *
+   * ⚠⚠⚠ **063c 段 3: 3 つを 1 つのオブジェクトへまとめた**（旧: `prizeLabel: string | null` 1 本）。
+   * まとめない形（`prizeLabel` / `viewerName` / `rare` を横に並べる）は
+   * **「ガチャではないのに `rare: true`」という状態が型で作れてしまう**。
+   * ⇒ **3 つは同時に意味を持ち、同時に意味を失う**ので、`null` になる単位を 1 つにした。
+   */
+  gacha: GachaFireDetail | null;
+}
+
+/**
+ * ⚠⚠⚠ **063c 段 3: ガチャ由来の発火 1 件について、演出が要る値。**
+ *
+ * ⚠⚠ **ここへフィールドを足すときは必ず `docs/security.md` §9 を読むこと**——
+ * このオブジェクトは**そのままステージ窓（＝ OBS のキャプチャに映る面）へ運ばれる**。
+ */
+export interface GachaFireDetail {
+  /**
+   * 当選景品の表示名。⚠ **決めるのは [`gachaPrizeLabel`] 1 か所**（ここで組み立て直さない）。
+   * ⚠ **ユーザー自身の入力**である（景品名／自分が OBS で付けたソース名）。
+   */
+  prizeLabel: string;
+  /**
+   * ⚠⚠⚠ **引いた視聴者の表示名**（`null` ＝ 空・取得できなかった）。
+   *
+   * ⚠⚠⚠ **これは第三者の個人データである**（`docs/security.md` §9 の追補が正）。
+   * 061b 段 1-b は「発火の戻り値にコメント由来の値を 1 つも載せない」まで返済したが、
+   * ⚠ **063c 段 3 で「表示名 1 本だけ」を戻した**——依頼者の要望
+   * 「**どのユーザーのガチャなのかが分かるようにしたい**」に、
+   * 名前以外で答える方法が無いため。
+   * ⚠⚠ **戻したのは表示名だけである**——**コメント本文・視聴者 id・金額・アバターは
+   * 型として載せる場所を作っていない**（この 1 フィールドが§9 の線そのもの）。
+   * ⚠ 長さは [`GACHA_VIEWER_NAME_MAX`] で切る（[`stageViewerName`] が唯一の入口）。
+   */
+  viewerName: string | null;
+  /**
+   * ⚠⚠ **その景品の確率が [`GACHA_RARE_MAX_PERCENT`] 未満か**（演出の「レア！」を出すかどうか）。
+   * ⚠ 判定の持ち主は [`isGachaRarePrize`] 1 か所で、**閾値をここにも演出側にも書かない**。
+   */
+  rare: boolean;
+}
+
+/**
+ * ⚠⚠⚠ **063c 段 3: 演出へ運ぶ表示名の最大文字数**（超えたぶんは切って `…` を付ける）。
+ *
+ * ⚠⚠ **これは検証ではない**（§8 の「2 通り目の検証を作らない」に抵触しない）——
+ * **制御文字の拒否と trim は Rust 側の取り込みが既に済ませている**（`docs/security.md` ⑪）。
+ * ここがやるのは **①配信画面のレイアウトを守る ②§9 の露出を短くする**の 2 つだけである。
+ * ⚠ 20 文字は「主要サービスの表示名がだいたい収まる長さ」であって、**規格ではない**。
+ */
+export const GACHA_VIEWER_NAME_MAX = 20;
+
+/**
+ * ガチャ 1 件を引いて、[`EffectFireResult`] を返す（⚠ **はずれ・見つからない・景品 0 件はすべて `null`**）。
  *
  * ⚠⚠ **抽選は [`drawGachaPrizeIndex`] をそのまま使う**（063a）。置き換えると
  * 「テスト抽選で見た確率」と「本番の確率」が別実装になり、
@@ -102,22 +192,57 @@ export type EffectFire = EffectObsSource | EffectGacha;
  * `loadGachaLibrary` の中で既に済ませている。ここで 2 通り目を書くと**片方だけ緩む**。
  * ⚠ ソース名の実在照合は sidecar 側（064a の `GetInputList` 突き合わせ）が壁なので、
  * **景品の `sourceName` も OBS ソース直指定とまったく同じ経路**を通る。
+ * ⚠⚠⚠ **063c 段 2-a: `{kind:"builtin"}` の景品はその経路へ入らない**——
+ * wire に 1 バイトも載らず、ステージ窓が自分で描く（[`GachaPrizeOutput`] の注記が正）。
  */
-function drawGachaSourceName(
+function drawGachaResult(
   fire: EffectGacha,
   gachas: readonly GachaDefinition[],
   random: () => number,
-): string | null {
+  viewerName: string | null,
+): EffectFireResult | null {
   const gacha = gachas.find((g) => g.id === fire.gachaId);
   if (gacha === undefined) return null;
   const index = drawGachaPrizeIndex(gacha.prizes, random);
   // ⚠⚠ `-1` ＝ **はずれ**（合計が 100% 未満なら正常に起きる）／景品 0 件も同じ `-1`。
   if (index < 0) return null;
-  return gacha.prizes[index].sourceName;
+  const prize = gacha.prizes[index];
+  // ⚠⚠ 063c 段 2-a: **表示名の規則をここに書かないこと**（[`gachaPrizeLabel`] が唯一の持ち主）。
+  //   ⚠ 書くと「設定画面の表の名前」と「配信画面に出る名前」が別実装になる。
+  // ⚠⚠ 063c 段 3: **レアかどうかも同じ規律**（閾値は [`isGachaRarePrize`] だけが知っている）。
+  return {
+    output: prize.output,
+    gacha: {
+      prizeLabel: gachaPrizeLabel(prize),
+      viewerName,
+      rare: isGachaRarePrize(prize.weight),
+    },
+  };
 }
 
 /**
- * このバッチで**鳴らす OBS のソース名**を決める。⚠ **`state` は [`decideEffects`] が破壊的に更新する。**
+ * ⚠⚠⚠ **063c 段 3: 演出へ運ぶ表示名を作る唯一の入口**（`null` ＝ 出さない）。
+ *
+ * ⚠⚠ **ここが `docs/security.md` §9 追補の実装点である。**
+ * **`c` から読むのは `author.name` の 1 本だけ**——本文・視聴者 id・金額・アバターは読まない
+ * （読まないことを**この関数の短さで見えるように**してある）。
+ *
+ * ⚠ **切るときはコードポイント単位**（`[...name]`）で数える。`slice` で切ると
+ * **絵文字や結合文字を途中で割って壊れた文字が配信画面に出る**（表示名に絵文字は普通に入る）。
+ * ⚠⚠ **検証は書かない**（§8）——制御文字の拒否と trim は Rust 側の取り込みが済ませている。
+ */
+function stageViewerName(c: CommentViewDto): string | null {
+  const chars = [...c.author.name];
+  if (chars.length === 0) return null;
+  if (chars.length <= GACHA_VIEWER_NAME_MAX) return c.author.name;
+  return `${chars.slice(0, GACHA_VIEWER_NAME_MAX).join("")}…`;
+}
+
+/**
+ * このバッチの**発火の結果**を決める。⚠ **`state` は [`decideEffects`] が破壊的に更新する。**
+ *
+ * ⚠⚠ **063c 段 2-a で `decideFireSourceNames` から改名した**（戻り値が `string[]` から
+ * [`EffectFireResult`]`[]` になり、「ソース名を決める」という名前が嘘になったため）。
  *
  * @param added   まだ発火判定に通していないコメント（`takeFreshComments` を通したもの）
  * @param updated ⚠ **1 件も読まない**（[043e] の Jewels combo 再送。[`decideEffects`] が捨てる）
@@ -131,9 +256,9 @@ function drawGachaSourceName(
  *   ⚠ 「不正防止に `crypto.getRandomValues` では」への答え＝ **当選結果は端末内で完結し、
  *   視聴者側は結果を検証も予測もできない**（配信画面に出るだけ）ので、予測困難性に守る対象が無い。
  *   ⚠ **引数で受けるのはテストで確率を固定するため**（直接 `Math.random` を呼ぶと規則を固定できない）。
- * @returns 鳴らすソース名（⚠ **はずれた発火はここに現れない**＝ 戻り値の長さは発火の件数と一致しない）
+ * @returns 発火の結果（⚠ **はずれた発火はここに現れない**＝ 戻り値の長さは発火の件数と一致しない）
  */
-export function decideFireSourceNames(
+export function decideFireResults(
   added: CommentViewDto[],
   updated: CommentViewDto[],
   state: EffectTriggerState,
@@ -141,47 +266,86 @@ export function decideFireSourceNames(
   matchEffect: EffectMatcher<EffectFire>,
   loadGachas: () => readonly GachaDefinition[],
   random: () => number,
-): string[] {
-  // ⚠⚠ **多重発火の抑制 4 経路はすべてこの 1 行の向こう側にある**
-  //   （①`updated` を読まない ②同一投稿者の gift の畳み込み ③バースト上限 ④条件ごとのクールダウン）。
-  //   ⚠ **ガチャのために作り直さないこと**（061d-2 レビュー S-4 の「同じ規則を 2 通りに書かない」）。
-  const fires = decideEffects<EffectFire>(added, updated, state, now, matchEffect);
-  // ⚠ ガチャが 1 件も無いバッチで localStorage を読まないための早期 return。
-  if (fires.length === 0) return [];
-
+): EffectFireResult[] {
   // ⚠ 一覧はバッチ内で 1 回だけ読む（同じバッチの中でガチャが書き換わることはない）。
+  //   ⚠⚠ ガチャの発火が 1 件も無いバッチでは **`loadGachas` を 1 度も呼ばない**（`null` のまま）。
   let gachas: readonly GachaDefinition[] | null = null;
-  const sourceNames: string[] = [];
-  for (const fire of fires) {
-    switch (fire.kind) {
-      case "obs-source":
-        sourceNames.push(fire.sourceName);
-        break;
-      case "gacha": {
-        // ⚠⚠ **抽選はここ**＝ 畳み込み・バースト上限・クールダウンを**すべて通った後**である。
-        //   ⚠ ここより前（`select` の中／`decideEffects` の中／ループの外）へ動かさないこと。
-        if (gachas === null) gachas = loadGachas();
-        const sourceName = drawGachaSourceName(fire, gachas, random);
-        // ⚠ はずれ・一覧に無い・景品 0 件は**何も鳴らさない**（枠は既に消費済み＝上記「発火＝1 回引いた」）。
-        if (sourceName !== null) sourceNames.push(sourceName);
-        break;
-      }
-      default: {
-        // ⚠⚠ **前方互換の 3 枚目**（1 枚目＝`parseAssignment` の未知 kind → `none`、
-        //   2 枚目＝`createEffectFireMatcher` の `!== "none"`）。⚠ **`never` なので kind が増えると
-        //   コンパイルが落ちる**＝「知らない発火先が黙って捨てられる／黙って鳴る」の両方を型で塞ぐ。
-        // ⚠⚠⚠ **レビュー Q-6（訂正）: これは「同時に落ちる 2 枚目」ではなく「順に落ちる 2 段目」である。**
-        //   `EffectFire` は `EffectAssignment` から**導出していない手書きの union** なので、
-        //   `EffectAssignment` に 4 本目を足しても**ここは落ちない**。実測で落ちるのは
-        //   `createEffectFireMatcher` の 1 か所だけ（`TS2322`）。
-        //   ⚠ そこを直す → 戻り型を広げる → `decideFireSourceNames` の引数と合わなくなる →
-        //   `EffectFire` を広げる → **そこで初めてこの `never` が落ちる**、という連鎖になる。
-        //   ⚠⚠ **結論は変わらない**（どのみち判断を強制される）が、
-        //   **「4 本目を足した瞬間に 2 か所落ちる」とは読まないこと。**
-        const unreachable: never = fire;
-        void unreachable;
+  const results: EffectFireResult[] = [];
+  // ⚠⚠⚠ **063c 段 3: [`decideEffects`] を「コメント 1 件ずつ」呼ぶ。**
+  //
+  //   ⚠ **バッチごと渡した場合と結果は完全に同じである**——あちらの本体は `added` を回すループで、
+  //   ループの外にあるのは**時間窓の掃除だけ**（`now` が同じなら何度走らせても同じ＝冪等）。
+  //   ⚠⚠ 既存テストの `comments.flatMap((c) => decideEffects([c], ...))` が同じ前提に立っている。
+  //
+  //   **なぜそうするのか＝「どのコメントがこの発火を起こしたか」を知るため**である（§9 追補・表示名）。
+  //   ⚠⚠⚠ **却下した案: `decideEffects` の戻り値を `{ effect, viewerName }` へ広げる。**
+  //   あれは **061b 段 1-b が「戻り値にコメント由来の値を 1 つも載せない」を実装している唯一の場所**で、
+  //   広げると **§9 の線が発火層まで後退する**（＝ OBS レーン・イベントレーンも名前を運べる形になる）。
+  //   ⇒ **線は 063c が持つこの関数に留めた**（あちらは 1 バイトも変えていない）。
+  //
+  //   ⚠⚠⚠ **`decideEffects` に「バッチ全体を見る規則」を足すなら、先にここを直すこと**
+  //   （例: 1 バッチあたりの上限）。足した瞬間、1 件ずつ渡す本関数だけがその規則をすり抜ける。
+  //
+  //   ## ⚠ 計算量（063c 段 5 レビュー ②・受容）
+  //
+  //   1 件ずつ呼ぶと、あちらの**時間窓の掃除がコメントの数だけ走る**。⚠ それでも問題にならない:
+  //     - `recentFires` … **要素数は最大 3**（`BURST_MAX` 未満のときしか push されない）。
+  //     - `lastGiftAt` … 5 秒窓に居る gift 投稿者だけ。
+  //     - `lastConditionAt` … 条件の件数（ユーザーが作った数）。
+  //   ⇒ 増えるのは **O(コメント数 × (gift 投稿者数 ＋ 条件数))** で、
+  //   ⚠⚠ **`matchEffect` が元から O(コメント数 × 条件数)** なので**オーダーは変わっていない**。
+  //   ⚠ バーストで悪化しない理由が構造的（`recentFires` が 3 で頭打ち）である点が効いている。
+  //   ⚠⚠ **再修正トリガー＝あちらの掃除が「窓の中の件数」に比例しなくなったとき**
+  //   （例: `lastConditionAt` を条件ごとの履歴配列にする）。そのときは掃除だけを
+  //   ループの外へ出す形（`decideEffects` を分割する）を先に検討すること。
+  for (const comment of added) {
+    // ⚠⚠ **多重発火の抑制 4 経路はすべてこの 1 行の向こう側にある**
+    //   （①`updated` を読まない ②同一投稿者の gift の畳み込み ③バースト上限 ④条件ごとのクールダウン）。
+    //   ⚠ **ガチャのために作り直さないこと**（061d-2 レビュー S-4 の「同じ規則を 2 通りに書かない」）。
+    const fires = decideEffects<EffectFire>(
+      [comment],
+      updated,
+      state,
+      now,
+      matchEffect,
+    );
+    if (fires.length === 0) continue;
+    // ⚠ 表示名を取り出すのは**発火が確定した後**（＝出さないコメントの名前は 1 文字も触らない）。
+    const viewerName = stageViewerName(comment);
+    for (const fire of fires) {
+      switch (fire.kind) {
+        case "obs-source":
+          // ⚠⚠ 063c 段 2-a: **条件への直指定は `gacha: null`**＝「ガチャではない」の明示。
+          //   ⚠ ここに景品名や表示名を作らないこと
+          //   （ガチャを経由していないので当たった景品が存在せず、演出も出ない）。
+          results.push({ output: fire, gacha: null });
+          break;
+        case "gacha": {
+          // ⚠⚠ **抽選はここ**＝ 畳み込み・バースト上限・クールダウンを**すべて通った後**である。
+          //   ⚠ ここより前（`select` の中／`decideEffects` の中／ループの外）へ動かさないこと。
+          if (gachas === null) gachas = loadGachas();
+          const result = drawGachaResult(fire, gachas, random, viewerName);
+          // ⚠ はずれ・一覧に無い・景品 0 件は**何も鳴らさない**（枠は既に消費済み＝上記「発火＝1 回引いた」）。
+          if (result !== null) results.push(result);
+          break;
+        }
+        default: {
+          // ⚠⚠ **前方互換の 3 枚目**（1 枚目＝`parseAssignment` の未知 kind → `none`、
+          //   2 枚目＝`createEffectFireMatcher` の `!== "none"`）。⚠ **`never` なので kind が増えると
+          //   コンパイルが落ちる**＝「知らない発火先が黙って捨てられる／黙って鳴る」の両方を型で塞ぐ。
+          // ⚠⚠⚠ **レビュー Q-6（訂正）: これは「同時に落ちる 2 枚目」ではなく「順に落ちる 2 段目」である。**
+          //   `EffectFire` は `EffectAssignment` から**導出していない手書きの union** なので、
+          //   `EffectAssignment` に 4 本目を足しても**ここは落ちない**。実測で落ちるのは
+          //   `createEffectFireMatcher` の 1 か所だけ（`TS2322`）。
+          //   ⚠ そこを直す → 戻り型を広げる → `decideFireSourceNames` の引数と合わなくなる →
+          //   `EffectFire` を広げる → **そこで初めてこの `never` が落ちる**、という連鎖になる。
+          //   ⚠⚠ **結論は変わらない**（どのみち判断を強制される）が、
+          //   **「4 本目を足した瞬間に 2 か所落ちる」とは読まないこと。**
+          const unreachable: never = fire;
+          void unreachable;
+        }
       }
     }
   }
-  return sourceNames;
+  return results;
 }

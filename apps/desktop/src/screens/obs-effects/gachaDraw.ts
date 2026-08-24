@@ -127,6 +127,32 @@ export function gachaProbabilityText(weight: number, total: number): string {
   return `${((weight / total) * 100).toFixed(1)}%`;
 }
 
+/**
+ * ⚠⚠⚠ **063c 段 3: 「レア」とみなす確率の上限（％）。** これ**未満**なら演出に「レア！」が出る。
+ *
+ * ⚠⚠ **10.0% ちょうどはレアではない**（`<` であって `<=` ではない）。
+ * 境界を含めると「10% と打った景品は毎回レア」になり、**既定的な値がレア扱い**になる。
+ */
+export const GACHA_RARE_MAX_PERCENT = 10;
+
+/**
+ * 063c 段 3: **その景品が「レア」か**（重みだけで決まる・⚠ **他の行を 1 つも見ない**）。
+ *
+ * ⚠⚠⚠ **これが「レア！」の表示を嘘にしない根拠である。**
+ * [`drawGachaPrizeIndex`] の**分母は 1000 固定**なので、`weight` は
+ * **ユーザーが設定画面に打った％そのもの**であり、⚠ **合計で割った相対確率ではない**
+ * （＝「他の行を足したら 9.7% になった」が起きない・063a-3 の穴 D）。
+ * ⇒ 画面に出る「レア！」は**ユーザー自身が決めた確率**だけを根拠にしている。
+ *
+ * ⚠⚠ **判定はここ 1 か所である**（`effectFire.ts` が呼ぶ）。
+ * 演出側（`GachaEffectStage`）に閾値を持ち込まないこと——持ち込むと
+ * 「抽選が思っているレア度」と「絵が主張するレア度」が別実装になる。
+ * ⚠ **「大当たり！」を却下した理由（どの景品でも同じ文字が出る）はここには当たらない。**
+ */
+export function isGachaRarePrize(weight: number): boolean {
+  return gachaWeightToPercent(weight) < GACHA_RARE_MAX_PERCENT;
+}
+
 /** 063a-3: 合計の表示（⚠ **丸めた％の和ではなく、重みの合計から 1 回で出す**）。 */
 export function gachaTotalPercentText(prizes: readonly GachaPrize[]): string {
   return `${gachaWeightToPercent(gachaTotalWeight(prizes)).toFixed(1)}%`;
@@ -143,7 +169,7 @@ export function gachaTotalPercentText(prizes: readonly GachaPrize[]): string {
  * **本タスクの唯一の差別化点（％が信用できること）が壊れる**。
  *
  * ⚠⚠⚠ **063b: 置き換えなかった。** いまの呼び出しは**プロダクション 2 か所だけ**である——
- * [`GachaPrizeTable`] のテスト抽選と、`effectFire.ts` の `decideFireSourceNames`（配信中の発火）。
+ * [`GachaPrizeTable`] のテスト抽選と、`effectFire.ts` の `decideFireResults`（配信中の発火）。
  * ⚠ **3 か所目を作らないこと**（`grep -rn "drawGachaPrizeIndex" apps/desktop/src` で確認できる）。
  * ⚠⚠ **配信中の呼び出し位置は「発火が確定した後」でなければならない**
  * （`select` の中で引くと、当たっていない条件でも引き、はずれが次の条件へ落ちる。

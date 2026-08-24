@@ -27,6 +27,9 @@ import {
   sanitizeKeywordInput,
   saveEffectConditions,
   setConditionEffect,
+  gachaPrizeLabel,
+  GACHA_UNNAMED_PRIZE_LABEL,
+  type GachaPrize,
   updateKeywordCondition,
   type EffectCondition,
   type EffectConditions,
@@ -860,7 +863,14 @@ describe("064b: 割り当て先としての OBS ソース", () => {
       GACHA_LIBRARY_KEY,
       JSON.stringify([{ id: "g:1", name, prizes }]),
     );
-  /** 景品 1 件（保存形と同じ形）。 */
+  /**
+   * 景品 1 件（⚠⚠ **063d 以前の保存形＝ `sourceName` 直付け**）。
+   *
+   * ⚠⚠⚠ **063c 段 2-a: ここを新しい形に変えないこと。** この関数が旧形式を書き続けることで、
+   * 下のケース群がそのまま **`parseGachaPrizeOutput` の後方互換の検査**になっている
+   * （＝ すでに保存されているデータが新しいビルドで読めることを、既存のケースが毎回確かめる）。
+   * ⚠ 新しい形（`output`）のケースは別の `describe` に足してある。
+   */
   const prize = (
     over: Partial<{ name: unknown; weight: unknown; sourceName: unknown }> = {},
   ): unknown => ({
@@ -868,6 +878,9 @@ describe("064b: 割り当て先としての OBS ソース", () => {
     weight: over.weight ?? 1,
     sourceName: over.sourceName ?? UUID,
   });
+  /** ⚠ 期待値用: 旧形式が読まれた結果（＝ `{kind:"obs-source"}` へ翻訳される）。 */
+  const obsOut = (sourceName: string) =>
+    ({ kind: "obs-source", sourceName }) as const;
   /** 保存された 1 件目のガチャ。 */
   const storedGacha = () => loadGachaLibrary()[0];
   /** 条件に割り当てられたガチャ id（`null` ＝ ガチャではない）。 */
@@ -882,8 +895,8 @@ describe("064b: 割り当て先としての OBS ソース", () => {
       prize({ name: "はずれ", weight: 9, sourceName: UUID2 }),
     ]);
     expect(storedGacha()?.prizes).toEqual([
-      { name: "大当たり", weight: 1, sourceName: UUID },
-      { name: "はずれ", weight: 9, sourceName: UUID2 },
+      { name: "大当たり", weight: 1, output: obsOut(UUID) },
+      { name: "はずれ", weight: 9, output: obsOut(UUID2) },
     ]);
   });
 
@@ -911,7 +924,7 @@ describe("064b: 割り当て先としての OBS ソース", () => {
     expect(storedGacha()?.prizes.map((p) => p.name)).toEqual(["上限", "下限"]);
   });
 
-  it("⚠ `sourceName` が空 / 制御文字入り / 非文字列の景品は落ちる（`EffectObsSource` と同じ規則）", () => {
+  it("⚠ 旧形式の `sourceName` が空 / 制御文字入り / 非文字列の景品は落ちる（`EffectObsSource` と同じ規則）", () => {
     putGacha([
       prize({ name: "空", sourceName: "   " }),
       prize({ name: "制御", sourceName: "a\u0000b" }),
@@ -919,7 +932,7 @@ describe("064b: 割り当て先としての OBS ソース", () => {
       prize({ name: "ok", sourceName: `  ${UUID}  ` }),
     ]);
     expect(storedGacha()?.prizes).toEqual([
-      { name: "ok", weight: 1, sourceName: UUID },
+      { name: "ok", weight: 1, output: obsOut(UUID) },
     ]);
   });
 
@@ -932,7 +945,7 @@ describe("064b: 割り当て先としての OBS ソース", () => {
       prize({ name: "", sourceName: UUID2 }),
     ]);
     expect(storedGacha()?.prizes).toEqual([
-      { name: "", weight: 1, sourceName: UUID2 },
+      { name: "", weight: 1, output: obsOut(UUID2) },
     ]);
   });
 
@@ -995,8 +1008,8 @@ describe("064b: 割り当て先としての OBS ソース", () => {
         id: "g:1",
         name: "のこる",
         prizes: [
-          { name: "落ちる", weight: 0, sourceName: UUID },
-          { name: "残る", weight: 2, sourceName: UUID2 },
+          { name: "落ちる", weight: 0, output: { kind: "obs-source", sourceName: UUID } },
+          { name: "残る", weight: 2, output: { kind: "obs-source", sourceName: UUID2 } },
         ],
       },
     ]);
@@ -1004,7 +1017,7 @@ describe("064b: 割り当て先としての OBS ソース", () => {
       "落ちる",
     );
     expect(storedGacha()?.prizes).toEqual([
-      { name: "残る", weight: 2, sourceName: UUID2 },
+      { name: "残る", weight: 2, output: obsOut(UUID2) },
     ]);
   });
 
@@ -1099,7 +1112,7 @@ describe("064b: 割り当て先としての OBS ソース", () => {
       {
         id: "g:1",
         name: "移行したガチャ 1",
-        prizes: [{ name: "大当たり", weight: 100, sourceName: UUID }],
+        prizes: [{ name: "大当たり", weight: 100, output: obsOut(UUID) }],
       },
     ]);
     expect(assignedGachaId("event:superchat")).toBe("g:1");
@@ -1265,7 +1278,9 @@ describe("064b: 割り当て先としての OBS ソース", () => {
       {
         id: "g:1",
         name: "大当たりガチャ",
-        prizes: [{ name: "大当たり", weight: 1, sourceName: UUID }],
+        prizes: [
+          { name: "大当たり", weight: 1, output: { kind: "obs-source", sourceName: UUID } },
+        ],
       },
     ]);
     setConditionEffect("event:superchat", { kind: "gacha", gachaId: "g:1" });
@@ -1297,3 +1312,109 @@ const _shape: EffectCondition = {
   effect: { kind: "none" },
 };
 void _shape;
+
+
+/**
+ * ⚠⚠⚠ **063c 段 2-a: 景品の出力先（[`GachaPrizeOutput`]）の保存形。**
+ *
+ * ⚠ 上の 063d の describe が**旧形式（`sourceName` 直付け）が読めること**を丸ごと担っているので、
+ * ここが担うのは **新形式・未知の形・両方が入っているとき**の 3 つである。
+ */
+describe("063c 段 2-a: 景品の出力先（GachaPrizeOutput）", () => {
+  beforeEach(() => localStorage.clear());
+  afterEach(() => localStorage.clear());
+
+  /** ⚠ **生の JSON を書く**（保存関数を通すと新形式に正規化されてしまい、読み込み側を試せない）。 */
+  const putRawPrizes = (prizes: readonly unknown[]) =>
+    localStorage.setItem(
+      GACHA_LIBRARY_KEY,
+      JSON.stringify([{ id: "g:1", name: "g", prizes }]),
+    );
+  const stored = (): readonly GachaPrize[] => loadGachaLibrary()[0]?.prizes ?? [];
+
+  it("⚠ 新形式の `{kind:\"builtin\"}` が読める", () => {
+    putRawPrizes([{ name: "当たり", weight: 1, output: { kind: "builtin" } }]);
+    expect(stored()).toEqual([
+      { name: "当たり", weight: 1, output: { kind: "builtin" } },
+    ]);
+  });
+
+  it("⚠ 新形式の `{kind:\"obs-source\"}` は trim される（旧形式と同じ規則）", () => {
+    putRawPrizes([
+      { name: "A", weight: 1, output: { kind: "obs-source", sourceName: "  花火  " } },
+    ]);
+    expect(stored()).toEqual([
+      { name: "A", weight: 1, output: { kind: "obs-source", sourceName: "花火" } },
+    ]);
+  });
+
+  it("⚠⚠ `output` が在れば旧 `sourceName` は無視される（片方だけが真実）", () => {
+    putRawPrizes([
+      {
+        name: "A",
+        weight: 1,
+        output: { kind: "builtin" },
+        sourceName: "旧いソース名",
+      },
+    ]);
+    expect(stored()).toEqual([
+      { name: "A", weight: 1, output: { kind: "builtin" } },
+    ]);
+    expect(JSON.stringify(stored())).not.toContain("旧いソース名");
+  });
+
+  it("⚠⚠⚠ 未知の kind は**その行だけ落ちる**（組み込みへ倒さない）", () => {
+    putRawPrizes([
+      { name: "未知", weight: 1, output: { kind: "webhook", url: "http://x" } },
+      { name: "空 kind", weight: 1, output: {} },
+      { name: "残る", weight: 1, output: { kind: "builtin" } },
+    ]);
+    expect(stored().map((p) => p.name)).toEqual(["残る"]);
+  });
+
+  it("⚠ `output.sourceName` が不正なら落ちる（旧形式と同じ 1 つの規則）", () => {
+    putRawPrizes([
+      { name: "空", weight: 1, output: { kind: "obs-source", sourceName: "   " } },
+      { name: "制御", weight: 1, output: { kind: "obs-source", sourceName: "a\u0000b" } },
+      { name: "非文字列", weight: 1, output: { kind: "obs-source", sourceName: 42 } },
+    ]);
+    expect(stored()).toEqual([]);
+  });
+
+  it("⚠⚠ 保存経路でも同じ検査が効く（読み込み時だけの検査にしない）", () => {
+    saveGachaLibrary([
+      {
+        id: "g:1",
+        name: "g",
+        prizes: [
+          { name: "残る", weight: 1, output: { kind: "builtin" } },
+          // ⚠ 型を欺いて不正値を保存経路へ流す（手で localStorage を編集した場合に相当）。
+          { name: "落ちる", weight: 1, output: { kind: "obs-source", sourceName: "" } },
+        ] as unknown as GachaPrize[],
+      },
+    ]);
+    expect(stored().map((p) => p.name)).toEqual(["残る"]);
+  });
+
+  it("⚠⚠ 表示名の規則は `gachaPrizeLabel` 1 か所（名前 → ソース名 → 既定）", () => {
+    expect(
+      gachaPrizeLabel({ name: "大当たり", weight: 1, output: { kind: "builtin" } }),
+    ).toBe("大当たり");
+    expect(
+      gachaPrizeLabel({
+        name: "",
+        weight: 1,
+        output: { kind: "obs-source", sourceName: "花火" },
+      }),
+    ).toBe("花火");
+    expect(
+      gachaPrizeLabel({ name: "", weight: 1, output: { kind: "builtin" } }),
+    ).toBe(GACHA_UNNAMED_PRIZE_LABEL);
+  });
+
+  it("⚠⚠⚠ 表示名が空文字にならない（配信画面の景品名が空のまま出ない）", () => {
+    expect(
+      gachaPrizeLabel({ name: "", weight: 1, output: { kind: "builtin" } }).length,
+    ).toBeGreaterThan(0);
+  });
+});

@@ -1,6 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { StrictMode } from "react";
-import { render, act, fireEvent, screen, waitFor } from "@testing-library/react";
+import {
+  render,
+  act,
+  fireEvent,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { CommentViewerApp } from "./CommentViewerApp";
 import {
   STAGE_OVERLAY_ENABLED_KEY,
@@ -14,6 +20,8 @@ import {
   // 064b: コメントの条件が当たったら OBS のソースを鳴らす（この窓が発火の持ち主）。
   OBS_SOURCE_FALLBACK_DURATION_MS,
   EFFECT_ASSIGNMENTS_KEY,
+  // ⚠ 063c 段 2-a: ガチャ本体（景品の出力先）を仕込むため。
+  GACHA_LIBRARY_KEY,
 } from "../../features/comment-viewer/overlaySettings";
 import type { CommentViewDto } from "../../features/comment-viewer/types";
 import type {
@@ -100,6 +108,14 @@ const mocks = vi.hoisted(() => ({
     // 066: 送信は使わないが型を満たす（⚠ 既定 OFF なのでこれらの画面からは呼ばれない）。
     sendChat: vi.fn(async () => ({ ok: false as const, reason: "offline" })),
   } satisfies CommentStreamHandle,
+  // ⚠⚠ 063c 段 2-a: 当選結果をステージ窓へ送る経路（**窓間イベント**）。
+  //   ⚠ モックしないと jsdom で Tauri の IPC を叩きに行く（実装側が握りつぶすので落ちはしないが、
+  //   **送ったこと自体を観測できない**＝「送っていない」変異が殺せない）。
+  emitGachaStageResult: vi.fn(),
+}));
+
+vi.mock("../obs-effects/gachaStageEvent", () => ({
+  emitGachaStageResult: mocks.emitGachaStageResult,
 }));
 
 // ⚠ モジュールを丸ごと差し替えるので、実モジュールの export 面を全て埋める（toolbar テストと同じ方針）。
@@ -195,7 +211,6 @@ vi.mock("../../features/stream-session/streamSessionApi", () => {
   };
 });
 
-
 vi.mock("../../features/platform/useHostOs", () => ({
   useHostOs: () => "macos",
 }));
@@ -215,9 +230,7 @@ vi.mock("../../features/comment-viewer/audioOutputApi", () => ({
 function emitSettingChange(key: string, value: string) {
   localStorage.setItem(key, value);
   act(() => {
-    window.dispatchEvent(
-      new StorageEvent("storage", { key, newValue: value }),
-    );
+    window.dispatchEvent(new StorageEvent("storage", { key, newValue: value }));
   });
 }
 
@@ -361,7 +374,9 @@ describe("061a/064d ステージ窓の OBS 自動反映（コメビュ窓が代�
       expect(screen.getByText(OBS_ERROR_TEXT)).toBeInTheDocument();
       // 届かない送信はしない（固着の芽を作らない）。
       expect(mocks.stream.enableObs).not.toHaveBeenCalled();
-      expect(screen.queryByText("OBSに接続しています…")).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("OBSに接続しています…"),
+      ).not.toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }
@@ -1014,7 +1029,7 @@ describe("061e OBS 連携の失敗がツールバーに出る（共有 obsState 
   });
   // --- 061k（新規 9）: ステージ窓ぶんの連携 --------------------------------------------------------
 
-  it("⚠⚠ 新規 9: stage キーの `storage` で `enableObs(\"stage\")` を出す（`\"effects\"` を巻き添えにしない）", async () => {
+  it('⚠⚠ 新規 9: stage キーの `storage` で `enableObs("stage")` を出す（`"effects"` を巻き添えにしない）', async () => {
     vi.useFakeTimers();
     try {
       mocks.isStageOverlayOpen.mockResolvedValue(true);
@@ -1037,7 +1052,7 @@ describe("061e OBS 連携の失敗がツールバーに出る（共有 obsState 
     }
   });
 
-  it("⚠⚠ 新規 9: stage キーが false になったら `hideObs(\"stage\")` を出す（`\"effects\"` は触らない）", async () => {
+  it('⚠⚠ 新規 9: stage キーが false になったら `hideObs("stage")` を出す（`"effects"` は触らない）', async () => {
     localStorage.setItem(STAGE_OVERLAY_ENABLED_KEY, "true");
     render(<CommentViewerApp />);
     emitConnected();
@@ -1068,7 +1083,7 @@ describe("061e OBS 連携の失敗がツールバーに出る（共有 obsState 
     expect(mocks.stream.enableObs).not.toHaveBeenCalledWith(4455, "effects");
   });
 
-  it("⚠ 新規 9: ステージ窓が実在しないなら `enableObs(\"stage\")` を送らない（空ソースを残さない）", async () => {
+  it('⚠ 新規 9: ステージ窓が実在しないなら `enableObs("stage")` を送らない（空ソースを残さない）', async () => {
     // ⚠ 046d レビューと同じ理由——設定 ON ／ 窓なしで送ると sidecar 側 `ensureOverlaySource` が
     //   先に `CreateInput` してから窓を探して失敗し、**キャプチャ対象未設定の空ソースが OBS に残る**。
     localStorage.setItem(STAGE_OVERLAY_ENABLED_KEY, "true");
@@ -1283,7 +1298,10 @@ describe("064b: コメントで OBS のソースを鳴らす", () => {
     await act(async () => {});
 
     emitComments([
-      superchat({ text: "これは第三者の本文です", author: { id: "u9", name: "第三者の名前" } }),
+      superchat({
+        text: "これは第三者の本文です",
+        author: { id: "u9", name: "第三者の名前" },
+      }),
     ]);
 
     expect(mocks.stream.fireObsSource).toHaveBeenCalledTimes(1);
@@ -1301,5 +1319,181 @@ describe("064b: コメントで OBS のソースを鳴らす", () => {
     emitComments([superchat()]);
 
     expect(mocks.stream.fireObsSource.mock.calls[0][0]).toBe(4455);
+  });
+});
+
+/**
+ * ⚠⚠⚠ **063c 段 2-a: 当選結果の配り先**（OBS を鳴らす／ステージ窓へ送る）。
+ *
+ * ⚠ この窓が持つ責務は **「`decideFireResults` の戻り値を配ること」だけ**である
+ * （抽選も表示名の決定もこの窓は持たない）。⇒ ここが固定するのは配り方の 4 点:
+ *   1. **`obs-source` は OBS を鳴らす**（064a の実在照合の壁を通る経路）
+ *   2. ⚠⚠⚠ **`builtin` は OBS へ 1 バイトも出さない**（壁の向こうへ行かない）
+ *   3. **ガチャ由来はステージ窓へ送る**（景品の表示名つき）
+ *   4. ⚠⚠ **条件への直指定は送らない**（`gacha === null` ＝ ガチャではない）
+ */
+describe("063c 段 2-a: 当選結果の配り先", () => {
+  /** 100% で 1 件だけ当たるガチャを仕込む（⚠ `Math.random` に依存せず結果が決まる）。 */
+  const putGacha = (
+    output: { kind: "builtin" } | { kind: "obs-source"; sourceName: string },
+    name = "大当たり",
+    weight = 1000,
+  ) => {
+    localStorage.setItem(
+      GACHA_LIBRARY_KEY,
+      JSON.stringify([
+        { id: "g:1", name: "ガチャ", prizes: [{ name, weight, output }] },
+      ]),
+    );
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify([
+        {
+          id: "event:superchat",
+          when: { type: "event", eventType: "superchat" },
+          effect: { kind: "gacha", gachaId: "g:1" },
+        },
+      ]),
+    );
+  };
+
+  const fire = async () => {
+    render(<CommentViewerApp />);
+    emitConnected();
+    await act(async () => {});
+    emitComments([superchat()]);
+  };
+
+  it("⚠ ガチャで OBS ソースが当たったら、直指定と同じ経路で鳴らす", async () => {
+    putGacha({ kind: "obs-source", sourceName: OBS_ASSIGNED_SOURCE });
+    await fire();
+    expect(mocks.stream.fireObsSource).toHaveBeenCalledWith(
+      4455,
+      OBS_ASSIGNED_SOURCE,
+      OBS_SOURCE_FALLBACK_DURATION_MS,
+    );
+  });
+
+  it("⚠⚠⚠ 組み込みの景品は OBS へ 1 バイトも出ない（064a の壁の向こうへ行かない）", async () => {
+    putGacha({ kind: "builtin" });
+    await fire();
+    expect(mocks.stream.fireObsSource).not.toHaveBeenCalled();
+    // ⚠ それでも演出は出る（＝「何も起きない」ではない）。
+    expect(mocks.emitGachaStageResult).toHaveBeenCalledTimes(1);
+  });
+
+  it("⚠⚠ ガチャ由来はステージ窓へ景品の表示名つきで送る", async () => {
+    putGacha({ kind: "obs-source", sourceName: OBS_ASSIGNED_SOURCE }, "特賞");
+    await fire();
+    // ⚠⚠ **`toHaveBeenCalledWith` で丸ごと一致**＝ **ペイロードにこれ以外が載っていない**ことの固定。
+    //   ⚠⚠⚠ ここへ勝手にフィールドが増えると必ずレッドになる（§9 の網）。
+    expect(mocks.emitGachaStageResult).toHaveBeenCalledWith({
+      prizeLabel: "特賞",
+      output: { kind: "obs-source", sourceName: OBS_ASSIGNED_SOURCE },
+      viewerName: "視聴者A",
+      // ⚠ 100%（weight 1000）の景品なので**レアではない**。
+      rare: false,
+    });
+  });
+
+  /**
+   * ⚠⚠⚠ **063c 段 3: 確率が低い景品のときだけ `rare: true` を送る。**
+   * ⚠ **10.0% ちょうどはレアではない**（`isGachaRarePrize` が `<` で見る）ので、
+   * ここは**境界の 1 つ内側**（9.9% ＝ weight 99）で見る。
+   */
+  it("⚠⚠ 10% 未満の景品は rare: true で送る", async () => {
+    // ⚠ 9.9% の景品なので**素の `Math.random` では当たらない**（分母は 1000 固定）。
+    //   ⇒ 当てるところは固定して、**見るのは `rare` の値だけ**にする。
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    try {
+      putGacha({ kind: "builtin" }, "極小", 99);
+      await fire();
+      expect(mocks.emitGachaStageResult).toHaveBeenCalledWith(
+        expect.objectContaining({ prizeLabel: "極小", rare: true }),
+      );
+    } finally {
+      random.mockRestore();
+    }
+  });
+
+  it("⚠⚠ 条件への直指定はステージ窓へ送らない（ガチャではない）", async () => {
+    putObsCondition();
+    await fire();
+    expect(mocks.stream.fireObsSource).toHaveBeenCalledTimes(1);
+    expect(mocks.emitGachaStageResult).not.toHaveBeenCalled();
+  });
+
+  /**
+   * ⚠⚠⚠ **063c 段 3 で §9 の線が動いた。** 段 2-a までは「第三者データは 1 バイトも渡さない」
+   * だったが、依頼者の要望「**どのユーザーのガチャなのかが分かるようにしたい**」により
+   * **表示名 1 本だけ**が渡るようになった（`docs/security.md` §9 追補が根拠）。
+   *
+   * ⚠⚠ **このテストは「渡らないこと」から「表示名だけが渡ること」へ書き換えたものである。**
+   * ⚠ 消さないこと——**線がどこに在るかをコードで表現している唯一の場所**であり、
+   * 本文や視聴者 id が混ざり込んだ瞬間にレッドになる網でもある。
+   */
+  it("⚠⚠⚠ §9: ステージ窓へ渡る第三者データは表示名だけ（本文・視聴者 id は 1 バイトも渡さない）", async () => {
+    putGacha({ kind: "builtin" });
+    render(<CommentViewerApp />);
+    emitConnected();
+    await act(async () => {});
+    emitComments([
+      superchat({
+        text: "これは第三者の本文です",
+        author: { id: "u9", name: "第三者の名前" },
+      }),
+    ]);
+    const args = JSON.stringify(mocks.emitGachaStageResult.mock.calls[0]);
+    // ⚠⚠ **本文と視聴者 id は渡らない**（型として載せる場所が無い）。
+    expect(args).not.toContain("これは第三者の本文です");
+    expect(args).not.toContain("u9");
+    // ⚠⚠⚠ **表示名は渡る**（＝ 063c 段 3 が意図して開けた唯一の穴）。
+    expect(mocks.emitGachaStageResult).toHaveBeenCalledWith(
+      expect.objectContaining({ viewerName: "第三者の名前" }),
+    );
+  });
+
+  /** ⚠ 名前が空でも**当選そのものは必ず出す**（付加情報だけを落とす）。 */
+  it("⚠ 表示名が空なら viewerName は null（当選は出る）", async () => {
+    putGacha({ kind: "builtin" });
+    render(<CommentViewerApp />);
+    emitConnected();
+    await act(async () => {});
+    emitComments([superchat({ author: { id: "u1", name: "" } })]);
+    expect(mocks.emitGachaStageResult).toHaveBeenCalledWith(
+      expect.objectContaining({ viewerName: null }),
+    );
+  });
+
+  it("⚠ はずれ（合計 100% 未満で外れた）では OBS もステージ窓も動かない", async () => {
+    localStorage.setItem(
+      GACHA_LIBRARY_KEY,
+      JSON.stringify([
+        {
+          id: "g:1",
+          name: "ガチャ",
+          // ⚠ 0.1%（＝ 1/1000）なので、`Math.random` がどう転んでもほぼ必ず外れる。
+          prizes: [{ name: "極小", weight: 1, output: { kind: "builtin" } }],
+        },
+      ]),
+    );
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify([
+        {
+          id: "event:superchat",
+          when: { type: "event", eventType: "superchat" },
+          effect: { kind: "gacha", gachaId: "g:1" },
+        },
+      ]),
+    );
+    const spy = vi.spyOn(Math, "random").mockReturnValue(0.99);
+    try {
+      await fire();
+    } finally {
+      spy.mockRestore();
+    }
+    expect(mocks.stream.fireObsSource).not.toHaveBeenCalled();
+    expect(mocks.emitGachaStageResult).not.toHaveBeenCalled();
   });
 });

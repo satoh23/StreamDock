@@ -8,10 +8,15 @@ import {
   //   ⚠⚠⚠ 063c 段 1: `loadGachaStageEnabled` / `saveGachaStageEnabled` を足した
   //     （**2 本目の旗＝ガチャ演出の明示トグル**。この画面が唯一の書き手であることは同じ）。
   loadGachaStageEnabled,
+  loadGachaPlacement,
+  loadGachaPrizeColor,
   loadStageOverlayEnabled,
   saveEffectOverlayGuidePending,
   saveGachaStageEnabled,
+  saveGachaPlacement,
+  saveGachaPrizeColor,
   saveStageOverlayEnabled,
+  type GachaPlacement,
 } from "../../features/comment-viewer/overlaySettings";
 // ⚠⚠ 061p: **`closeEffectOverlayWindow` / `closeStageOverlayWindow` の import を外した**
 //   （前提ステータスの「ウィンドウを閉じる」ごと削除したため。⚠ `windowApi` 側の口と Rust の
@@ -31,7 +36,8 @@ import {
 // （docs/task-board.md の 061g に明文化してある）。
 // ⚠ 064e: `ToggleSwitch` の import を外した（この画面のトグルは 0 個になった——061i で
 //   「配信画面に表示」が、064e で「OBS へ自動で反映」が消えた）。
-// ⚠ 063c 段 1: **トグルが 1 つ戻ってきた**が、⚠⚠ **置き場所は [`GachaLibraryCard`] の中**である
+// ⚠ 063c 段 1: **トグルが 1 つ戻ってきた**が、⚠⚠ **置き場所は [`GachaStageCard`] の中**である
+//   （⚠ 063c 段 4-d までは `GachaLibraryCard` に在った）
 //   （この画面は state と旗の書き手だけを持つ）。⇒ ここで `ToggleSwitch` を import しないのは意図どおり。
 import { Button } from "../../components/primitives";
 // ⚠ 061i: タブ部品は **`components/` に新設**した（061g の規律＝画面を跨ぐ部品は最初からあちらへ。
@@ -45,6 +51,7 @@ import { EffectAssignmentCard } from "./EffectAssignmentCard";
 // ⚠⚠ 064f: **一覧の状態はこの画面が持つ**（取得ボタンがタイトル行へ移り、カードと 2 か所で読むため）。
 import { ObsSourceCard } from "./ObsSourceCard";
 import { GachaLibraryCard } from "./GachaLibraryCard";
+import { GachaStageCard } from "./GachaStageCard";
 import {
   referencedGachaIds,
   runGachaMigration,
@@ -233,8 +240,43 @@ export function ObsEffectsScreen() {
    * ⚠⚠ **書き手はこの画面だけ**（`saveGachaStageEnabled` の呼び出しは [`handleGachaStageToggle`] 1 か所）。
    * ⚠ 初期値は localStorage 直読み——**この読み取りは OBS へ 1 バイトも送らない**。
    */
-  const [gachaStageEnabled, setGachaStageEnabled] =
-    useState<boolean>(loadGachaStageEnabled);
+  const [gachaStageEnabled, setGachaStageEnabled] = useState<boolean>(
+    loadGachaStageEnabled,
+  );
+
+  /**
+   * 063c 段 4: **演出の見た目**（配置・景品名の色）。
+   *
+   * ⚠⚠ **これは §1 のガードではない**（[`gachaStageEnabled`] と混同しないこと）——
+   * 見た目だけで、**OBS へ繋ぐかどうかに 1 ミリも関与しない**。
+   * ⇒ 「書き手は 1 か所」のような不変条件も無い。
+   * ⚠ 値の担保（未知の id を既定へ倒す）は `overlaySettings.ts` の load/save が持つ。
+   * ⚠⚠ **段 4-a で「抽選中の秒数」の state は消えた**（設定ではなくなり定数になったため）。
+   */
+  const [gachaPlacement, setGachaPlacement] =
+    useState<GachaPlacement>(loadGachaPlacement);
+  /**
+   * ⚠⚠ 063c 段 5-e: 景品名の色は **`#rrggbb` そのもの**（段 4-b の id ではない）。
+   * ⚠ 値の担保（壊れた値・古い id を既定へ倒す）は `parseGachaPrizeColor` が持つ。
+   */
+  const [gachaPrizeColor, setGachaPrizeColor] =
+    useState<string>(loadGachaPrizeColor);
+  /**
+   * ⚠ 保存してから state を更新する（`handleGachaStageToggle` と同じ順序）。
+   * ⚠⚠ **save は一覧に無い id を保存しない**ので、`load` で読み直して
+   * **保存されたものだけを画面へ出す**（＝「選んだのに保存されていない」を作らない）。
+   */
+  const handleGachaPlacementChange = useCallback((next: GachaPlacement) => {
+    saveGachaPlacement(next);
+    setGachaPlacement(loadGachaPlacement());
+  }, []);
+  // ⚠⚠ **保存してから読み直す**（`handleGachaPlacementChange` と同じ）——
+  //   `saveGachaPrizeColor` は文法に合わない値を保存しないので、読み直すことで
+  //   **「選んだのに保存されていない」を画面に作らない**。
+  const handleGachaPrizeColorChange = useCallback((next: string) => {
+    saveGachaPrizeColor(next);
+    setGachaPrizeColor(loadGachaPrizeColor());
+  }, []);
 
   /**
    * 063c 段 1: **AND ゲートの片側**＝「ガチャを指す条件が 1 件以上あるか」。
@@ -733,9 +775,19 @@ export function ObsEffectsScreen() {
           gachas={gachas}
           obsSources={obsSources.list?.sources ?? null}
           onChange={commitGachas}
+        />
+
+        {/* ⚠⚠⚠ **063c 段 4-d: 「何が当たるか」と「どう見えるか」を別のカードに切った。**
+            依頼者の指摘＝「**項目が増えることで画面が複雑になってしまっている**」。
+            ⚠ 上（`GachaLibraryCard`）が景品と確率、ここが演出。⚠⚠ **混ぜ戻さないこと。** */}
+        <GachaStageCard
           stageEnabled={gachaStageEnabled}
           canEnableStage={hasGachaCondition}
           onStageEnabledChange={handleGachaStageToggle}
+          placement={gachaPlacement}
+          onPlacementChange={handleGachaPlacementChange}
+          prizeColor={gachaPrizeColor}
+          onPrizeColorChange={handleGachaPrizeColorChange}
         />
 
         {/* ⚠⚠⚠ **064e: 「OBS へ自動で反映」カードを丸ごと削除した**（依頼者の指示＝

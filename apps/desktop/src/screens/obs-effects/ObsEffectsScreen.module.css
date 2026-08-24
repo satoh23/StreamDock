@@ -340,6 +340,163 @@
   border-radius: 12px;
 }
 
+/* ⚠⚠⚠ 063c 段 4 / **段 5-g**: 演出の見た目の選択欄（配置・文字色）。
+   ⚠⚠ **選択欄の意匠は `Select` が持つ**ので、ここは**並びと余白だけ**を持つ
+   （`.keywordText` と同じ役割分担＝**新しい px を発明しない**）。
+
+   ⚠⚠⚠ **段 4-d の `layout.field` はやめた。** あれは 2 つの事故を同時に起こしていた:
+     1. ラベルを `<span>` に入れたので `.field label` が当たらず、**素の本文サイズで横に並んだ**
+     2. **`.field select`（詳細度 0,1,1）が `Select.module.css` の `.selectCustom`（0,1,0）に勝ち**、
+        高さ・角丸・文字・背景・padding を丸ごと上書きしていた
+   ⇒ 依頼者＝「**明らかにここのドロップダウンやテキストだけ周りから浮いています**」。
+   ⚠ **`Select` を `.field` の子孫に置かないこと**（この画面の他の `Select` はすべて素で置かれている）。
+   ⚠⚠ 063c 段 4-a で `.gachaSpinField`（抽選中の秒数）は設定ごと消えた。 */
+.gachaLookFields {
+  display: flex;
+  flex-wrap: wrap;
+  /* ⚠ 縦に折り返したときの間隔でもある。`layout.form` の 14px と揃えてある。 */
+  gap: 14px;
+}
+.gachaLookField {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* ⚠⚠ ラベル。**値は `formLayout.module.css` の `.field label` と同値**にしてある
+   （12px / 800 / 下 6〜7px）——**新しい意匠を作らない**のが要件だから。
+   ⚠ `<label>` ではなく `<span>` なのは、`for` の無い `<label>` を増やさないため
+   （アクセシブル名は `Select` / `<input>` の `aria-label` が持っている）。 */
+.gachaLookLabel {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+/* ⚠⚠⚠ 063c 段 5-e: **景品名の色**（自由色）。
+   ⚠ 色見本そのものは `<input type="color">` が描くので、ここは**大きさと枠だけ**。 */
+.gachaColorRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.gachaColorInput {
+  width: 56px;
+  height: 32px;
+  /* ⚠ padding を 0 にすると WebKit が色面を枠いっぱいに描いて**枠が消えて見える**。 */
+  padding: 2px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--surface);
+  cursor: pointer;
+}
+.gachaColorInput:focus-visible {
+  outline: 2px solid var(--primary-soft-border);
+  outline-offset: 1px;
+}
+/* ⚠ いま何色かを文字でも出す（`.note` と同じ大きさ＝新しい px を発明しない）。 */
+.gachaColorValue {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+/* ⚠⚠ 見本の色。⚠ 背景色は**同梱の静的な表**から `style` で入る（保存値ではない）。 */
+.gachaColorPresets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.gachaColorPreset {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  cursor: pointer;
+}
+/* ⚠ いま選ばれている見本。⚠⚠ **枠線の色では表さない**（見本自体が色なので埋もれる）。 */
+.gachaColorPresetOn {
+  outline: 2px solid var(--primary-soft-border);
+  outline-offset: 1px;
+}
+.gachaColorPreset:focus-visible {
+  outline: 2px solid var(--primary-soft-border);
+  outline-offset: 1px;
+}
+
+/* ⚠⚠⚠ 063c 段 4-d: **演出のプレビュー**。
+   ⚠ 中身は**配信画面と同じ 1280×720 を `transform: scale()` で縮めたもの**なので、
+   ここが持つのは**切り取る枠**だけである（中の意匠は `EffectOverlayApp.module.css`）。
+   ⚠⚠ **枠のサイズは tsx が px で渡す**（縮小率と 1 か所で決まっていないと、
+   拡大率がずれて「プレビューと実機で見え方が違う」が起きる）。 */
+/* ⚠⚠⚠ 段 5-g: **プレビューを 1 つの箱にまとめる**（`.gachaStageSetting` と同じ枠・同じ角丸）。
+   ⚠ 「レア！」のスイッチが箱の外に在ると、**保存される設定に見える**（実際は保存されない）。 */
+.gachaPreviewBox {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+}
+.gachaPreviewItem {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.gachaPreviewHead {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+/* ⚠ 枠と再生ボタンの縦積み。⚠⚠ `align-items: flex-start` ＝ **ボタンを枠幅まで伸ばさない**。 */
+.gachaPreview {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+.gachaPreviewFrame {
+  position: relative;
+  /* ⚠ はみ出した 1280×720 を切る（`scale` は箱の大きさを変えないため）。 */
+  overflow: hidden;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  /* ⚠⚠ **市松模様で「透過」であることを示す**（配信画面では背景が透ける）。
+     ⚠ 単色で塗ると「黒い背景が出る」と誤解される。⚠⚠⚠ 生 hex を書かない規律のため、
+     トークンから作る（`--surface-subtle` はほぼ透明なので、`--border-soft` を混ぜて格子にする）。 */
+  background-color: var(--surface);
+  background-image:
+    linear-gradient(45deg, var(--border-soft) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--border-soft) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--border-soft) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--border-soft) 75%);
+  background-size: 16px 16px;
+  background-position:
+    0 0,
+    0 8px,
+    8px -8px,
+    -8px 0;
+}
+.gachaPreviewStage {
+  position: absolute;
+  top: 0;
+  left: 0;
+  /* ⚠⚠⚠ **既定（中央）のままにすると、縮めた絵が枠の外へずれる。** */
+  transform-origin: top left;
+}
+
+/* ⚠⚠⚠ 063c 段 5-d: **止まっている間はアニメーションを 1 本も走らせない。**
+   依頼者＝「**自動で再生されるのは分かりにくいし画面が喧しい**」。
+   ⚠⚠ `animation-play-state: paused` では**駄目**である——入場アニメーション（`gachaPop`）を
+   0% で止めると `opacity: 0` のまま固まり、**静止画そのものが消える**。
+   ⇒ **`animation: none`**（＝アニメーション前の素の状態＝最終形で出る）。
+   ⚠ `!important` を使わずに勝たせるため、**クラス 2 つ**で詳細度を上げてある
+   （`.gachaSparkle` などは 0,1,0・ここは 0,2,0）。 */
+.gachaPreviewFrame .gachaPreviewStill * {
+  animation: none;
+}
+
 .gachaLibraryList {
   display: flex;
   flex-direction: column;

@@ -101,7 +101,8 @@ import {
   createSeenEffectIds,
   takeFreshComments,
 } from "../obs-effects/effectTrigger";
-import { decideFireSourceNames } from "../obs-effects/effectFire";
+import { decideFireResults } from "../obs-effects/effectFire";
+import { emitGachaStageResult } from "../obs-effects/gachaStageEvent";
 import {
   createEffectFireMatcher,
   loadGachaLibrary,
@@ -1375,16 +1376,11 @@ export function CommentViewerApp() {
   // 047: ティッカーのピルを押して全文ダイアログを開いたときに既読化する。同じ id を 2 度押しても Set を
   // 作り直さない（＝参照が変わらず無駄な再レンダを起こさない）。
   const handleMonetaryRead = useCallback((id: string) => {
-    setReadMonetaryIds((prev) =>
-      prev.has(id) ? prev : new Set(prev).add(id),
-    );
+    setReadMonetaryIds((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
   }, []);
 
   // 046a: メニュー文言（「上部に固定」/「固定解除」）の出し分け用。CommentList は表示のためだけに参照する。
-  const pinnedIds = useMemo(
-    () => new Set(pinned.map((p) => p.id)),
-    [pinned],
-  );
+  const pinnedIds = useMemo(() => new Set(pinned.map((p) => p.id)), [pinned]);
 
   // 032c-b: Twitch コメント取得 sidecar の単一双方向 WS に接続する。受信コメントは表示へ流し
   // （単一注入点 mergeComments）、新規追加分（added）を TTS キューへ enqueue して読み上げる。
@@ -1479,14 +1475,14 @@ export function CommentViewerApp() {
           incoming,
         );
         if (freshForObs.length > 0) {
-          // ⚠⚠⚠ **063b: 発火の決定と抽選は `decideFireSourceNames` の中で完結する。**
+          // ⚠⚠⚠ **063b: 発火の決定と抽選は `decideFireResults` の中で完結する。**
           //   ⚠ **ここで組み立て直さないこと**——`decideEffects` と抽選をこの窓の中で並べると、
           //   「抽選が畳み込み・バースト上限・クールダウンの後で 1 回だけ起きる」ことを
           //   **テストで固定できるのがこのコンポーネントだけ**になる（あちらの JSDoc が正）。
           // ⚠ `loadGachaLibrary` を**関数のまま渡す**のは、ガチャの発火が 1 件も無いバッチで
           //   localStorage を読まないため（＋鳴らす直前に読み直すため）。
-          // ⚠⚠ 乱数は**演出用**であって暗号用途ではない（`decideFireSourceNames` の JSDoc が正）。
-          const sourceNames = decideFireSourceNames(
+          // ⚠⚠ 乱数は**演出用**であって暗号用途ではない（`decideFireResults` の JSDoc が正）。
+          const results = decideFireResults(
             freshForObs,
             [],
             obsEffectStateRef.current,
@@ -1495,12 +1491,35 @@ export function CommentViewerApp() {
             loadGachaLibrary,
             Math.random,
           );
-          for (const sourceName of sourceNames) {
-            // ⚠ 何秒出すかは **OBS 側のメディアの長さ**が正（sidecar が聞く）。
-            //   ここで渡すのは**聞けなかったときの既定**だけである。
-            //   ⚠⚠ **ガチャの景品も OBS ソース直指定とまったく同じ経路**を通る
-            //   （＝ 064a の「`GetInputList` との実在照合」の壁を景品も経由する）。
-            requestObsSourceFire(sourceName, OBS_SOURCE_FALLBACK_DURATION_MS);
+          for (const result of results) {
+            // ⚠⚠⚠ **063c 段 2-a: OBS を先に鳴らし、演出は後で投げる。**
+            //   ⚠ 順序に意味がある——`emitGachaStageResult` は投げっぱなしだが、
+            //   **本線（OBS）より前に置くと、将来ここに `await` を足した人が本線を止められる**。
+            if (result.output.kind === "obs-source") {
+              // ⚠ 何秒出すかは **OBS 側のメディアの長さ**が正（sidecar が聞く）。
+              //   ここで渡すのは**聞けなかったときの既定**だけである。
+              //   ⚠⚠ **ガチャの景品も OBS ソース直指定とまったく同じ経路**を通る
+              //   （＝ 064a の「`GetInputList` との実在照合」の壁を景品も経由する）。
+              requestObsSourceFire(
+                result.output.sourceName,
+                OBS_SOURCE_FALLBACK_DURATION_MS,
+              );
+            }
+            // ⚠⚠ **ガチャ由来のときだけステージ窓へ送る**（`gacha === null` ＝
+            //   条件に OBS ソースを直指定した発火＝**ガチャではない**ので演出を出さない）。
+            // ⚠⚠⚠ **`{kind:"builtin"}` の景品はここだけを通る**——上の `requestObsSourceFire` を
+            //   通らないので **OBS へは 1 バイトも出ない**（064a の壁の向こうへ行かない）。
+            // ⚠⚠⚠ **063c 段 3: `viewerName` が「配信画面に第三者の表示名が出る」唯一の経路**である
+            //   （`docs/security.md` §9 追補が正）。⚠ **ここで `result.gacha` を分解し直して
+            //   本文や視聴者 id を足さないこと**——足せる値は `decideFireResults` の戻り値に無い。
+            if (result.gacha !== null) {
+              emitGachaStageResult({
+                prizeLabel: result.gacha.prizeLabel,
+                output: result.output,
+                viewerName: result.gacha.viewerName,
+                rare: result.gacha.rare,
+              });
+            }
           }
         }
       },
@@ -1650,7 +1669,10 @@ export function CommentViewerApp() {
     const stream = streamRef.current;
     if (!stream) return;
     void (async () => {
-      reportSessionControl(await stream.stopSession("twitch"), setSessionReason);
+      reportSessionControl(
+        await stream.stopSession("twitch"),
+        setSessionReason,
+      );
     })();
   };
   // 032c-d: YouTube 取得開始/停止（チャンネル名不要＝mine=true）。取得開始はユーザー操作なので TTS resume する。
@@ -1941,37 +1963,31 @@ export function CommentViewerApp() {
     [channel],
   );
 
-  const requestThemeImport = useCallback(
-    (url: string, maxBytes: number) => {
-      const stream = streamRef.current;
-      if (!stream) {
-        return Promise.resolve<ThemeImportFetchResult>({
-          ok: false,
-          reason: "offline",
-        });
-      }
-      return stream.requestThemeImport(url, maxBytes);
-    },
-    [],
-  );
+  const requestThemeImport = useCallback((url: string, maxBytes: number) => {
+    const stream = streamRef.current;
+    if (!stream) {
+      return Promise.resolve<ThemeImportFetchResult>({
+        ok: false,
+        reason: "offline",
+      });
+    }
+    return stream.requestThemeImport(url, maxBytes);
+  }, []);
 
   /**
    * 060h: `@font-face` の `src` が指すフォント実体の取得を sidecar へ依頼する（**1 本だけ**）。
    * ⚠ 経路も判断も `requestThemeImport` と同一で、違うのは sidecar 側のガードとレート枠だけ。
    */
-  const requestThemeFont = useCallback(
-    (url: string, maxBytes: number) => {
-      const stream = streamRef.current;
-      if (!stream) {
-        return Promise.resolve<ThemeFontFetchResult>({
-          ok: false,
-          reason: "offline",
-        });
-      }
-      return stream.requestThemeFont(url, maxBytes);
-    },
-    [],
-  );
+  const requestThemeFont = useCallback((url: string, maxBytes: number) => {
+    const stream = streamRef.current;
+    if (!stream) {
+      return Promise.resolve<ThemeFontFetchResult>({
+        ok: false,
+        reason: "offline",
+      });
+    }
+    return stream.requestThemeFont(url, maxBytes);
+  }, []);
 
   // 044a: オーバーレイ表示 OFF 連動。OBS 側ソースを**削除せず非表示**にする（ON で requestObsAutoAdd が再表示）。
   // port は既知の検出値（無ければ既定 4455）を使う。sidecar 側は best-effort（該当なし/未起動は idle）。

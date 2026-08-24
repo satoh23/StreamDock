@@ -36,13 +36,9 @@ const Harness = () => {
         gachas={gachas}
         obsSources={loadObsSourceList()?.sources ?? null}
         onChange={(next) => setGachas(saveGachaLibrary(next))}
-        /* ⚠ 063c 段 1: このファイルの関心は**景品の表**なので、旗まわりは固定値でよい
-           （トグルそのものは `GachaLibraryCard.test.tsx` が固定する）。
-           ⚠⚠ **ただし `false` 固定にしてある**——`true` にすると
-           「演出の設定が景品表の検査に紛れ込んでいる」と読めてしまう。 */
-        stageEnabled={false}
-        canEnableStage={false}
-        onStageEnabledChange={() => {}}
+        /* ⚠⚠ 063c 段 4-d: **演出まわりの props は無くなった**（`GachaStageCard` へ出たため）。
+           このファイルの関心は**景品の表**なので、あちらは描かない
+           （描くとプレビューのタイマーが回り、景品表の検査に無関係な時間依存が入る）。 */
       />
     </>
   );
@@ -90,8 +86,12 @@ const nameInput = (n: number) =>
   screen.getByLabelText(`${PREFIX} 景品 ${n} の名前`) as HTMLInputElement;
 const percentInput = (n: number) =>
   screen.getByLabelText(`${PREFIX} 景品 ${n} の出る確率`) as HTMLInputElement;
+// ⚠ 063c 段 2-a: アクセシブル名を「OBS のソース」から「当たったら」へ広げた
+//   （選べるものが**組み込みの演出**と **OBS のソース**の 2 種類になったので、旧名は片方しか指さない）。
 const sourceSelect = (n: number) =>
-  screen.getByLabelText(`${PREFIX} 景品 ${n} の OBS のソース`) as HTMLSelectElement;
+  screen.getByLabelText(
+    `${PREFIX} 景品 ${n} の当たったら`,
+  ) as HTMLSelectElement;
 
 // ⚠⚠ レビュー Q-063a-7: この 2 つのボタンも **`labelPrefix` 付き**である
 //   （付けないとガチャを 2 つ開いた瞬間に同名のボタンが 2 個になる）。
@@ -109,14 +109,19 @@ const reasonText = () => screen.getByText(REASON);
  * ⚠⚠ 063d: 読む先が `EFFECT_ASSIGNMENTS_KEY` から [`GACHA_LIBRARY_KEY`] に変わった
  * （ガチャ本体は条件ではなく一覧が持つ）。
  */
+/**
+ * ⚠⚠ 063c 段 2-a: **旧形式（`sourceName` 直付け）と新形式（`output`）の両方を表せる形**にした。
+ * ⚠ 仕込み（`seedGacha`）は**旧形式のまま**にしてあるので、
+ * 画面越しに `parseGachaPrizeOutput` の後方互換が毎回通る。
+ */
 interface StoredPrize {
   name: string;
   weight: number;
-  sourceName: string;
+  sourceName?: string;
+  output?: { kind: "builtin" } | { kind: "obs-source"; sourceName: string };
 }
 const storedGacha = ():
-  | { id: string; name: string; prizes?: StoredPrize[] }
-  | undefined => {
+  { id: string; name: string; prizes?: StoredPrize[] } | undefined => {
   const raw = localStorage.getItem(GACHA_LIBRARY_KEY);
   if (raw === null) return undefined;
   return (JSON.parse(raw) as GachaDefinition[])[0] as unknown as {
@@ -125,6 +130,9 @@ const storedGacha = ():
     prizes?: StoredPrize[];
   };
 };
+
+/** 保存されている景品の配列（⚠ 生の JSON）。 */
+const storedPrizes = (): StoredPrize[] => storedGacha()?.prizes ?? [];
 
 /**
  * ⚠ 063d: 保存済みのガチャを 1 件仕込んで開く（＝「前に作ってあった」状況を作る）。
@@ -233,25 +241,50 @@ describe("GachaPrizeTable（063a）", () => {
     // ⚠ 押した瞬間に保存できる行になっている（未確定行の仕組みを持ち込んでいない）。
     expect(storedGacha()?.prizes).toHaveLength(3);
     // ⚠⚠⚠ **063a-3: 新しい行は末尾に既定 10% で入り、他の行には 1 ミリも触らない。**
-    expect(storedGacha()?.prizes?.map((p) => p.weight)).toEqual([100, 100, 100]);
+    expect(storedGacha()?.prizes?.map((p) => p.weight)).toEqual([
+      100, 100, 100,
+    ]);
     expect(percentValues()).toEqual(["10", "10", "10"]);
     expect(missText()).toBe("何も出ない: 70.0%");
   });
 
-  it("⚠ OBS の一覧が無いと景品を追加できない（押せない理由も出す）", () => {
+  /**
+   * ⚠⚠⚠ **063c 段 2-a（穴 γ）で意図的に反転させたケース**
+   * （旧題「⚠ OBS の一覧が無いと景品を追加できない（押せない理由も出す）」）。
+   *
+   * ⚠ **旧ケースは仕様そのものが逆になった**——「鳴らすものが無い状態から始まる」を解消するのが
+   * 063 の目的なのに、**OBS を 1 度も起動していないと景品を作れない**のが旧仕様だった。
+   * ⚠⚠ **案内文を消したのではなく差し替えた**ので、その 1 文もここで固定する
+   * （061a Q-1＝黙って選べない状態を作らない）。旧文が復活したら落ちる。
+   */
+  it("⚠⚠⚠ 穴 γ: OBS の一覧が無くても景品を追加できる（既定は組み込みの演出）", () => {
     render(<Harness />);
     createGacha();
-    expect(addPrizeButton()).toBeDisabled();
+    expect(addPrizeButton()).toBeEnabled();
+    // ⚠ 旧文（＝押せない理由）は二度と出ない。
     expect(
-      screen.getByText(
+      screen.queryByText(
         "景品を追加するには、先に OBS のソースを取得してください。",
       ),
+    ).toBeNull();
+    // ⚠ 代わりに「まだ選べないものがある理由」を出す。
+    expect(
+      screen.getByText(
+        "「当たったら」で OBS のソースを選ぶには、先に OBS のソースを取得してください。いまは組み込みの演出だけが選べます。",
+      ),
     ).toBeInTheDocument();
+
+    fireEvent.click(addPrizeButton());
+    // ⚠⚠ 足した行は**組み込み**（一覧の先頭に黙って結び付かない）。
+    expect(sourceSelect(1).value).toBe("builtin");
+    expect(storedPrizes()).toEqual([
+      { name: "", weight: 100, output: { kind: "builtin" } },
+    ]);
   });
 
   /**
    * ⚠⚠ **063a-2 にあった「残りが足りないと追加できない」は、063a-3 で概念ごと消えた。**
-   * 各行が独立になったので、**足せない理由は「上限」と「OBS のソースが無い」だけ**である。
+   * ⚠ **063c 段 2-a 訂正: 足せない理由は「上限」だけ**になった（穴 γ・上のケースが正）。
    * ⚠ 代わりに「**足しても他の行が変わらない**」を固定する（ここが 063a-2 との違いそのもの）。
    */
   it("⚠⚠⚠ 景品を足しても、既にある行の％は 1 ミリも変わらない", () => {
@@ -324,7 +357,9 @@ describe("GachaPrizeTable（063a）", () => {
     setPercent(2, "70");
     expect(totalText()).toBe("150.0%");
     expect(screen.getByText(/合計が 50\.0% 多いです/)).toBeInTheDocument();
-    expect(screen.getByText(/どれかの確率を下げてください/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/どれかの確率を下げてください/),
+    ).toBeInTheDocument();
     expect(testDrawButton()).toBeDisabled();
     // ⚠ 下げれば直る（＝直し方が画面のとおりに効く）。
     setPercent(2, "20");
@@ -419,9 +454,7 @@ describe("GachaPrizeTable（063a）", () => {
 
     // ⚠ **blur させずに**（＝確定させずに）1 行目を打ちかけたまま並べ替える。
     fireEvent.change(percentInput(1), { target: { value: "99" } });
-    fireEvent.click(
-      screen.getByLabelText(`${PREFIX} 景品 1 を下へ`),
-    );
+    fireEvent.click(screen.getByLabelText(`${PREFIX} 景品 1 を下へ`));
 
     // ⚠⚠ 打ちかけの 99 は**どの行にも入らない**（並びだけが入れ替わる）。
     expect(storedGacha()?.prizes?.map((p) => p.weight)).toEqual([200, 100]);
@@ -501,6 +534,60 @@ describe("GachaPrizeTable（063a）", () => {
         .getAllByRole("option")
         .map((o) => o.textContent),
     ).toContain("むかしの演出");
+  });
+
+  /**
+   * ⚠⚠⚠ **063c 段 2-a: 「当たったら」で組み込みと OBS のソースを選び分けられる。**
+   *
+   * ⚠ 061h が全廃した組み込み演出を**部分的に戻す**ぶん、
+   * 「**上書きを設定したのに組み込みが出る**」を作らないことが要件である
+   * （[`GachaPrizeOutput`] の注記が正）。⇒ **選んだものがそのまま保存される**ことを固定する。
+   */
+  it("⚠⚠ 組み込み → OBS のソース → 組み込み と往復できる（選んだものがそのまま保存される）", () => {
+    putObsSources();
+    render(<Harness />);
+    openGachaWithPrizes(1);
+    expect(sourceSelect(1).value).toBe("builtin");
+
+    fireEvent.change(sourceSelect(1), {
+      target: { value: `obs:${OBS_SOURCE_B}` },
+    });
+    expect(storedPrizes()[0].output).toEqual({
+      kind: "obs-source",
+      sourceName: OBS_SOURCE_B,
+    });
+
+    fireEvent.change(sourceSelect(1), { target: { value: "builtin" } });
+    expect(storedPrizes()[0].output).toEqual({ kind: "builtin" });
+  });
+
+  it("⚠ 「組み込みの演出」は一覧が 0 件でも選択肢に在る（先頭）", () => {
+    render(<Harness />);
+    openGachaWithPrizes(1);
+    const options = within(sourceSelect(1))
+      .getAllByRole("option")
+      .map((o) => (o as HTMLOptionElement).value);
+    expect(options[0]).toBe("builtin");
+  });
+
+  it("⚠⚠⚠ 組み込みの景品に「OBS に見つかりません」を出さない（照合する対象が無い）", () => {
+    putObsSources([OBS_SOURCE_A]);
+    render(<Harness />);
+    openGachaWithPrizes(1);
+    expect(sourceSelect(1).value).toBe("builtin");
+    expect(
+      screen.queryByText(
+        "OBS にこの名前のソースが見つかりません。名前を変えた場合は選び直してください。",
+      ),
+    ).toBeNull();
+  });
+
+  it("⚠⚠ 旧形式（sourceName 直付け）の景品は OBS のソースとして開く（後方互換）", () => {
+    seedGacha([{ name: "むかし", weight: 1, sourceName: OBS_SOURCE_A }]);
+    putObsSources();
+    render(<Harness />);
+    openSeededGacha();
+    expect(sourceSelect(1).value).toBe(`obs:${OBS_SOURCE_A}`);
   });
 
   it("⚠ 一覧をまだ取っていないときは「無い」と断言しない（064b と同じ規律）", () => {
@@ -598,9 +685,7 @@ describe("GachaPrizeTable（063a）", () => {
     setPercent(1, "40");
     // 2 つ目を作る（⚠ 作ると自動で開き、1 つ目は閉じる＝同時に 1 つだけ）。
     createGacha();
-    expect(
-      screen.getByLabelText("新しいガチャ 2 の名前"),
-    ).toBeInTheDocument();
+    expect(screen.getByLabelText("新しいガチャ 2 の名前")).toBeInTheDocument();
     fireEvent.click(
       screen.getByRole("button", { name: "新しいガチャ 2 景品を追加" }),
     );

@@ -66,8 +66,22 @@
   font-size: 12px;
   font-weight: 800;
 }
-.field input,
-.field select {
+/* ⚠⚠⚠ **063c 段 5-g: `.field select` を削除した（`select` を書かないこと）。**
+
+   このアプリの JSX には**ネイティブの `<select>` が 1 つも無い**（選択欄はすべて
+   `components/Select.tsx` ＝ `<span class=selectWrap><select class=selectCustom>` である）。
+   ⚠⚠ そのため `.field select` は**使われる規則ではなく、罠として在った**——
+   `Select` を `.field` の中へ置いた瞬間に、⚠⚠⚠ **詳細度 0,1,1 が `Select.module.css` の
+   `.selectCustom`（0,1,0）に勝って**、高さ・角丸・文字サイズ・背景・padding を丸ごと上書きする。
+   ⚠ 実際に 063c 段 4-d の `GachaStageCard` がこれを踏み、**その画面でそこだけ別部品に見えた**
+   （依頼者＝「明らかにここのドロップダウンやテキストだけ周りから浮いています」）。
+   ⚠ しかも `padding` が潰れるので、**シェブロン `▾` の下へ文字が潜り込める**状態にもなっていた。
+
+   ⇒ **削除した時点でマッチする要素はゼロ**なので、**どの画面の見た目も 1 ピクセルも変わらない**。
+   ⚠⚠⚠ **書き戻さないこと。** `scripts/check-css-guards.mjs` の (10-s) が
+   「このファイルに `select` のセレクタが無いこと」を全走査で固定している。
+   ⚠ 選択欄の意匠が要るなら **`Select.module.css` を直すこと**（持ち主はあの 1 枚である）。 */
+.field input {
   width: 100%;
   height: 40px;
   padding: 0 12px;
@@ -77,9 +91,6 @@
   background: var(--control-bg);
   border: 1px solid var(--border-soft);
   font-size: 13px;
-}
-.field select {
-  appearance: none;
 }
 .field input::placeholder {
   color: var(--text-faint);

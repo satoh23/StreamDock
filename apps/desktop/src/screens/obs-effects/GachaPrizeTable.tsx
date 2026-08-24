@@ -5,12 +5,14 @@ import type { ObsSourceEntry } from "../../features/comment-viewer/overlaySettin
 import {
   GACHA_PRIZE_MAX,
   GACHA_PRIZE_NAME_MAX_LENGTH,
+  gachaPrizeLabel,
   sanitizeGachaPrizeName,
   type GachaPrize,
 } from "./effectAssignments";
 import {
-  effectSelectAssignment,
-  gachaPrizeSelectValue,
+  GACHA_PRIZE_BUILTIN_VALUE,
+  gachaPrizeOutputFromSelectValue,
+  gachaPrizeOutputSelectValue,
   isObsSourceMissingFromList,
   OBS_SOURCE_PREFIX,
 } from "./effectSelectValue";
@@ -49,11 +51,17 @@ import styles from "./ObsEffectsScreen.module.css";
  * 「条件 1 件 → ソース 1 本」が「条件 1 件 → ソース N 本＋重み」へ広がっただけに見える
  * （063s の「再開時にどこから始めるか」が推した形）。
  *
- * ## ⚠ 新しい行を足すのに OBS の一覧が要る
+ * ## ⚠⚠⚠ 063c 段 2-a（穴 γ）: **新しい行を足すのに OBS の一覧は要らなくなった**
  *
- * 景品は **`sourceName` が必須**（無い景品は保存層が落とす）なので、
- * ⚠⚠ **一覧が取れていない／0 件のときは ＋ を押せない**（押せても保存できない行が生えるだけ）。
- * ⇒ ボタンを `disabled` にし、**理由を書く**（061a Q-1 の規律＝黙って押せない状態を作らない）。
+ * 旧本文はこうだった——「景品は `sourceName` が必須なので、一覧が取れていない／0 件のときは
+ * ＋ を押せない」。⚠⚠ **それが 063 の目的と正面から衝突していた**（「鳴らすものが無い状態から
+ * 始まる」を解消するのが 063 なのに、**OBS を 1 度も起動していないと景品を作れない**）。
+ * ⇒ 景品の出力先が [`GachaPrizeOutput`] になり、**新しい行の既定は「組み込みの演出」**なので、
+ * **一覧が 0 件でも保存できる行が生える**＝押せなくする理由が消えた。
+ *
+ * ⚠ **一覧が無いことの案内は消していない**——「足せない」から
+ * 「**OBS のソースを選べない（組み込みだけ選べる）**」へ**内容を差し替えた**
+ * （061a Q-1 の規律＝黙って選べない状態を作らない）。
  * ⚠ 061j のキーワード行が採った「未確定行（`DraftKeywordRow`）」の仕組みは**持ち込まない**
  * ——あちらは「打ち終わるまで保存できない」ためのもので、こちらは**選ぶだけで確定できる**。
  */
@@ -153,9 +161,9 @@ export function GachaPrizeTable({
   const [tally, setTally] = useState<Record<string, number>>({});
   const tallyTotal = Object.values(tally).reduce((a, b) => a + b, 0);
 
-  /** 表示に使う名前。⚠ **空なら OBS のソース名**（`GachaPrize.name` の注記が正・規則はここ 1 か所）。 */
-  const prizeLabel = (prize: GachaPrize): string =>
-    prize.name.length > 0 ? prize.name : prize.sourceName;
+  /* ⚠⚠ 063c 段 2-a: **表示名のローカル実装を撤去した**（`gachaPrizeLabel` が唯一の持ち主）。
+     当選景品の名前が**配信画面にも出る**ようになったので、この画面の中に規則を置いたままだと
+     「設定画面の表」と「配信画面」で別の名前が出る（あちらの JSDoc が正）。 */
 
   /**
    * ⚠⚠⚠ **書き戻しは必ずここを通す。** ⚠ **ここで％を直さないこと**——
@@ -187,25 +195,37 @@ export function GachaPrizeTable({
     setPercentErrors({});
   };
 
-  /** 景品は `sourceName` が必須なので、**一覧が無い／0 件のときは行を足せない**（理由は画面に出す）。 */
-  const hasObsSources = obsSources !== null && obsSources.length > 0;
   /**
-   * ⚠⚠ **「残りが足りないから足せない」をやめた**（063a-3）。
-   * 063a-2 は残りから分けてもらう形だったので残量ガードが要ったが、
-   * いまは**各行が独立**なので、**足せない理由は「上限」と「OBS のソースが無い」だけ**である。
+   * ⚠⚠⚠ **063c 段 2-a（穴 γ）: 景品を足すのに OBS の一覧は要らなくなった。**
+   *
+   * 旧: `canAddPrize = 上限未満 && hasObsSources`。景品は `sourceName` が必須だったので、
+   * **一覧が取れていない／0 件なら ＋ を押せなかった**（押せても保存できない行が生えるだけだった）。
+   * ⚠⚠ **それが 063 の目的と正面から衝突していた**——「**鳴らすものが無い状態から始まる**」を
+   * 解消するために組み込み演出を用意したのに、**OBS を 1 度も起動していないと景品を作れない**。
+   * ⇒ 新しい行の既定は [`GachaPrizeOutput`] の `{kind:"builtin"}` なので、
+   * **一覧が 0 件でも「保存できない行」にはならない**＝ガードの理由そのものが消えた。
+   *
+   * ⚠ **足せない理由は「上限」だけ**になった。
+   * ⚠⚠ **`hasObsSources` は消していない**——「OBS のソースを**選ぶ**ときだけ」へ縮めた
+   * （下の `<select>` の選択肢と、一覧未取得のときの自前 `<option>` に使う）。
    */
-  const canAddPrize = prizes.length < GACHA_PRIZE_MAX && hasObsSources;
+  const hasObsSources = obsSources !== null && obsSources.length > 0;
+  const canAddPrize = prizes.length < GACHA_PRIZE_MAX;
 
   /**
    * 景品を 1 つ足す。⚠⚠ **末尾に足すだけ**（063a-2 の「最後の行の手前へ挿入」は不要になった＝
    * 「残り」担当の行がもう無いため）。⚠ **他の行の値には 1 ミリも触らない。**
    */
   const addPrize = () => {
-    if (!canAddPrize || obsSources === null) return;
+    if (!canAddPrize) return;
     dropDrafts();
+    // ⚠⚠⚠ **063c 段 2-a: 既定は「組み込みの演出」**（旧: `obsSources[0].name`）。
+    //   ⚠ 一覧の先頭を既定にすると、**押しただけで無関係なソースに結び付く**うえ、
+    //   ⚠⚠ 一覧が 0 件のときに既定を作れない（それが穴 γ のガードの由来だった）。
+    //   ⇒ **常に組み込み**にすると、OBS の状態に一切依存せず「押せば必ず正しい行が 1 本増える」。
     commit([
       ...prizes,
-      { name: "", weight: DEFAULT_PRIZE_WEIGHT, sourceName: obsSources[0].name },
+      { name: "", weight: DEFAULT_PRIZE_WEIGHT, output: { kind: "builtin" } },
     ]);
   };
 
@@ -299,7 +319,7 @@ export function GachaPrizeTable({
    * ⚠⚠⚠ **抽選の確率は本番とまったく同じである**——どちらも [`drawGachaPrizeIndex`] を呼び、
    * 分母は `GACHA_PERCENT_SCALE` 固定。**ここで見た当たり方が配信中の当たり方**であり、
    * それが 063 唯一の差別化点（％が信用できること）そのものなので、
-   * ⚠ **どちらか一方を別実装にしないこと**（本番側は `effectFire.ts` の `decideFireSourceNames` が正）。
+   * ⚠ **どちらか一方を別実装にしないこと**（本番側は `effectFire.ts` の `decideFireResults` が正）。
    *
    * ⚠ レビュー Q-063a-10: `tally` を**表示名でキーにしている**ので、同名の景品
    * （名前が空で OBS ソースも同じ場合を含む）は**合算される**。**意図的にこのままにしている**——
@@ -313,7 +333,7 @@ export function GachaPrizeTable({
     const index = drawGachaPrizeIndex(prizes, Math.random);
     // ⚠⚠⚠ 063a-3: `-1` は「**何も当たらなかった**」（合計が 100% 未満なら必ず起きる）。
     //   ⚠ **黙って何もしないのが最悪**なので、「はずれ」として数える。
-    const label = index < 0 ? MISS_LABEL : prizeLabel(prizes[index]);
+    const label = index < 0 ? MISS_LABEL : gachaPrizeLabel(prizes[index]);
     setLastDraw(label);
     setTally((prev) => ({ ...prev, [label]: (prev[label] ?? 0) + 1 }));
   };
@@ -322,7 +342,7 @@ export function GachaPrizeTable({
     <div className={styles.gachaPanel}>
       {/* ⚠⚠⚠ **063b で「配信中の自動抽選はまだ動きません」の 1 文を消した**——
           063a / 063d では `select` が当たり判定の前に落としていたが、いまはこのガチャを
-          条件に割り当てると**配信中に実際に引かれる**（`effectFire.ts` の `decideFireSourceNames`）。
+          条件に割り当てると**配信中に実際に引かれる**（`effectFire.ts` の `decideFireResults`）。
           ⚠⚠ **「チャットへの書き込みには対応していません」は残す**——当選結果をチャットへ書く機能
           （**063f**・旧「066 段 3」）はまだ無いので、いまも嘘ではない。
           ⚠⚠⚠ **2026-08-23 訂正: その前提だった 066 段 2（`start-session` のチケット化）は完了した。**
@@ -333,6 +353,11 @@ export function GachaPrizeTable({
         合計が 100%
         に足りないぶんは「何も出ない（はずれ）」になります。はずれにも演出を出したいときは、はずれの行を足してください。
         いまは当たったときに配信画面へ出すことだけができます（チャットへの書き込みには対応していません）。
+        {/* ⚠⚠ **063c 段 2-a: 既定が「組み込みの演出」になったことを書く**（061a Q-1＝
+            黙って何かが起きる状態を作らない。押しただけで OBS のソースに結び付かない、という
+            `addPrize` の決定がユーザーから見える唯一の場所である）。 */}
+        新しい景品は StreamDock の組み込みの演出で出ます。「当たったら」で自分の OBS
+        のソースに変えることもできます。
       </p>
 
       {prizes.length === 0 ? (
@@ -353,19 +378,27 @@ export function GachaPrizeTable({
           </div>
           {prizes.map((prize, index) => {
             const n = index + 1;
+            // ⚠⚠ 063c 段 2-a: **`obs-source` の景品だけを照合する。**
+            //   ⚠⚠⚠ 組み込みの景品を「一覧に無い」と言わないこと——
+            //   組み込みは OBS のソースを指していないので、**照合する対象がそもそも無い**。
             const missing =
+              prize.output.kind === "obs-source" &&
               obsSources !== null &&
-              isObsSourceMissingFromList(
-                { kind: "obs-source", sourceName: prize.sourceName },
-                obsSources,
-              );
+              isObsSourceMissingFromList(prize.output, obsSources);
             // ⚠⚠ 一覧に無い名前でも `<option>` を出す（出さないとブラウザが先頭を選び、
             //   **黙って別のソースへ化ける**）。⚠ 警告は下に出す。
             //   ⚠ `missing` は一覧が未取得のとき常に `false` なので、**未取得も自前の option が要る**。
-            const needsOwnOption = obsSources === null || missing;
-            const options = needsOwnOption
-              ? [...(obsSources ?? []).map((s) => s.name), prize.sourceName]
-              : (obsSources ?? []).map((s) => s.name);
+            //   ⚠⚠ 063c 段 2-a: **組み込みの景品には自前の option が要らない**
+            //   （選ばれている値は `builtin` で、それは常に選択肢の先頭に在るため）。
+            const ownOptionName =
+              prize.output.kind === "obs-source" &&
+              (obsSources === null || missing)
+                ? prize.output.sourceName
+                : null;
+            const options = [
+              ...(obsSources ?? []).map((s) => s.name),
+              ...(ownOptionName === null ? [] : [ownOptionName]),
+            ];
             return (
               <div key={index} className={styles.gachaRow}>
                 <span className={`${layout.field} ${styles.gachaName}`}>
@@ -420,15 +453,25 @@ export function GachaPrizeTable({
                 </span>
                 <span className={styles.gachaSource}>
                   <Select
-                    value={gachaPrizeSelectValue(prize.sourceName)}
-                    ariaLabel={`${labelPrefix} 景品 ${n} の OBS のソース`}
+                    value={gachaPrizeOutputSelectValue(prize.output)}
+                    // ⚠⚠ 063c 段 2-a: **アクセシブル名を「OBS のソース」から広げた**
+                    //   （選べるものが 2 種類になったので、旧名は片方しか指していない）。
+                    ariaLabel={`${labelPrefix} 景品 ${n} の当たったら`}
                     onChange={(e) => {
-                      // ⚠ 分解は `effectSelectAssignment` に閉じる（`slice` をここに書かない）。
-                      const next = effectSelectAssignment(e.target.value);
-                      if (next.kind !== "obs-source") return;
-                      replacePrize(index, { ...prize, sourceName: next.sourceName });
+                      // ⚠ 分解は `effectSelectValue.ts` に閉じる（`slice` をここに書かない）。
+                      const next = gachaPrizeOutputFromSelectValue(e.target.value);
+                      // ⚠ 受け付けられない値は**何もしない**（黙ってどちらかへ倒さない）。
+                      if (next === null) return;
+                      replacePrize(index, { ...prize, output: next });
                     }}
                   >
+                    {/* ⚠⚠⚠ **063c 段 2-a: 「組み込みの演出」を先頭に置く。**
+                        ⚠ 先頭である理由＝**新しい行の既定がこれ**だから（`addPrize`）。
+                        ⚠⚠ **`<option>` の順序を「一覧に無い名前を出す」ための前提にしていない**
+                        （061h ⑦-c の罠は `gachaPrizeOutputSelectValue` が値を明示することで塞いである）。 */}
+                    <option value={GACHA_PRIZE_BUILTIN_VALUE}>
+                      組み込みの演出
+                    </option>
                     {options.map((name) => (
                       <option
                         key={`${OBS_SOURCE_PREFIX}${name}`}
@@ -540,13 +583,21 @@ export function GachaPrizeTable({
       </div>
 
       {/* ⚠ 押せない理由を書く（061a Q-1）。⚠ 一覧の取り直しボタンは持たない
-          （064a の `ObsSourceCard` が唯一の持ち主・同じ操作を 2 か所に置かない）。 */}
+          （064a の `ObsSourceCard` が唯一の持ち主・同じ操作を 2 か所に置かない）。
+          ⚠⚠⚠ **063c 段 2-a（穴 γ）: 「先に OBS のソースを取得してください」を削除した。**
+          既定が組み込みの演出になったので、**OBS を 1 度も起動していなくても景品を作れる**＝
+          あの 1 文は嘘になった。⚠ **押せない理由は上限だけ**になっている。 */}
+      {prizes.length >= GACHA_PRIZE_MAX ? (
+        <p className={styles.note}>景品は {GACHA_PRIZE_MAX} 個までです。</p>
+      ) : null}
+      {/* ⚠⚠ **穴 γ の「差し替えた案内」**（上のクラス JSDoc が正）。
+          ⚠ 「押せない理由」ではなく「**まだ選べないものがある理由**」である。
+          ⚠ 一覧の取り直しボタンはここに置かない（064a の `ObsSourceCard` が唯一の持ち主）。 */}
       {!hasObsSources ? (
         <p className={styles.note}>
-          景品を追加するには、先に OBS のソースを取得してください。
+          「当たったら」で OBS
+          のソースを選ぶには、先に OBS のソースを取得してください。いまは組み込みの演出だけが選べます。
         </p>
-      ) : prizes.length >= GACHA_PRIZE_MAX ? (
-        <p className={styles.note}>景品は {GACHA_PRIZE_MAX} 個までです。</p>
       ) : null}
 
       {lastDraw !== null && (

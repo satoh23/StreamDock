@@ -30,7 +30,8 @@ export const OBS_AUTO_ADD_KEY = "stream-dock.comment-viewer.obs-auto-add";
  * 「これがあるから安全」と読まないこと。
  * ⚠ OFF は**キーごと削除**する（「未保存＝OFF」と「明示的に OFF」を潰す）。
  */
-export const CHAT_SEND_ENABLED_KEY = "stream-dock.comment-viewer.chat-send-enabled";
+export const CHAT_SEND_ENABLED_KEY =
+  "stream-dock.comment-viewer.chat-send-enabled";
 /**
  * 046b: 「固定コメントをOBSに表示」ON/OFF の保存キー（既定 OFF）。**ユーザー自身の UI 設定値**（トグルの状態）で、
  * §9 追補（046a）が対象とする第三者の個人データ（コメント本文・表示名・金額＝`pinnedComments.ts` のキー）とは
@@ -131,6 +132,129 @@ export const STAGE_OVERLAY_ENABLED_KEY =
  */
 export const GACHA_STAGE_ENABLED_KEY =
   "stream-dock.comment-viewer.gacha-stage-enabled";
+
+/**
+ * ⚠⚠⚠ **063c 段 4-a: `GACHA_SPIN_MS_KEY`（抽選中の長さ）を削除した。**
+ *
+ * 依頼者の指示＝「**ガチャを回す速度の設定はいらない。常にデフォルトで良い。
+ * この設定値を変えることによるメリットが配信者になく、逆に項目が増えることで画面が複雑になってしまっている**」。
+ * ⚠ 長さは [`GACHA_SPIN_MS`]（`gachaStagePlayback.ts`）の定数になった。
+ *
+ * ⚠⚠ **既に保存されている `stream-dock.comment-viewer.gacha-spin-ms` は読まれないまま残る。**
+ * 消す仕組みは作らない（**非機密の数値 1 つ**で、移行スクリプトを 1 本作るほうが害が大きい）。
+ * ⚠ 一括削除・エクスポートを作るときは、**このキーが残っている端末がある**ことだけ覚えておくこと。
+ */
+
+/**
+ * ⚠⚠ **063c 段 4-c: ガチャ演出を配信画面のどこへ出すか。**
+ *
+ * ## ⚠ これは**ガードではない**（[`GACHA_STAGE_ENABLED_KEY`] と混同しないこと）
+ *
+ * 隣に並ぶ 2 本の旗は `docs/security.md` §1（044a 例外）を守るガードだが、
+ * ⚠⚠ **このキーは「見た目の位置」だけ**で、**OBS へ繋ぐかどうかに 1 ミリも関与しない**。
+ * ⇒ `isStageOverlayRequired()` は**このキーを読まない**（読ませないこと＝ガードの入力を増やさない）。
+ *
+ * ⚠⚠⚠ **自由座標にしていない理由**＝ ①座標入力は「範囲外を打たれたとき」の受け皿が要り、
+ * **063a-2 が捨てられた「フォーム側が補正される」形**を新しく作ることになる
+ * ②**OBS 側でソースそのものを動かせる**ので、自由座標は二重管理になる。
+ *
+ * ⚠ §9: 値は **3 つの id のどれか**で、第三者データは 1 バイトも載らない。
+ */
+export const GACHA_PLACEMENT_KEY = "stream-dock.comment-viewer.gacha-placement";
+
+/** 063c 段 4-c: 配置の id（⚠ **保存される文字列そのもの**なので、変えると既存の設定が既定へ倒れる）。 */
+export type GachaPlacement = "left" | "center" | "right";
+
+/** 063c 段 4-c: 選べる配置（⚠ **表示の並び順がそのまま画面の並び**）。 */
+export const GACHA_PLACEMENTS: readonly {
+  id: GachaPlacement;
+  label: string;
+}[] = [
+  { id: "left", label: "左寄せ" },
+  { id: "center", label: "中央" },
+  { id: "right", label: "右寄せ" },
+];
+
+/** 063c 段 4-c: 既定の配置。⚠ **中央**＝段 3 までの見え方（設定を足しただけで絵が動かない）。 */
+export const GACHA_PLACEMENT_DEFAULT: GachaPlacement = "center";
+
+/**
+ * ⚠⚠ **063c 段 4-b / 段 5-e: 景品名の文字色。**
+ *
+ * ## ⚠⚠⚠ **段 5-e で「6 択の id」から「自由な色」へ変えた**
+ *
+ * 依頼者の指示＝「**色はユーザーが指定できるようにするべき。例えばカラーパレットが出せるなら
+ * それが最も UX が良い**」。⇒ 保存するのは **`#rrggbb` の 16 進 6 桁だけ**である。
+ *
+ * ## ⚠⚠ 段 4-b が id を保存していた理由の**片方は、いまも守られている**
+ *
+ * 守っているもの＝「**localStorage の中身が `style` へそのまま届く経路を作らない**」。
+ * ⚠⚠⚠ **[`parseGachaPrizeColor`] を通らない値は 1 バイトも `style` へ行かない**し、
+ * 通る値の文法は **`#` ＋ 16 進 6 桁**だけで、`url(…)` も `var(…)` も `;` も**表現できない**
+ * （＝ CSS 値の注入が成立しない）。⚠ **読む側も書く側も、必ずこの関門を通すこと。**
+ *
+ * ⚠⚠ **捨てたのはもう片方**＝「選べる色すべてに縁取りとの相性を確認できる」。
+ * ⇒ **読めない色（黒など）も選べるようになった。** 依頼者が受け入れた上での変更である。
+ * 緩和は 2 つだけ: **既定はゴールド**／**[`GACHA_PRIZE_COLORS`] を見本として画面に並べる**。
+ *
+ * ⚠⚠ **これは「読めない」の主因ではない。** 主因は**下地と縁取りが無かったこと**で、
+ * そちらは CSS 側（`EffectOverlayApp.module.css`）が直している。
+ * ⚠⚠⚠ **色だけ足して縁取りを外さないこと**——外すと**どの色を選んでも背景次第で負ける**。
+ *
+ * ⚠ §9: 値は **色 1 つ**で、第三者データは 1 バイトも載らない（＝非機密の表示設定）。
+ */
+export const GACHA_PRIZE_COLOR_KEY =
+  "stream-dock.comment-viewer.gacha-prize-color";
+
+/**
+ * 見本の色の id。
+ *
+ * ⚠⚠ **段 5-e 以降、これは「保存される値」ではない。** 保存されるのは色そのもの（`#rrggbb`）で、
+ * この id が残っているのは **段 4-b で保存された古い値を移行するため**である
+ * （[`parseGachaPrizeColor`] の後半）。⚠ **新しい id を足しても保存形は変わらない。**
+ */
+export type GachaPrizeColorId =
+  "gold" | "white" | "sky" | "pink" | "lime" | "orange";
+
+/**
+ * 063c 段 4-b / 段 5-e: **見本の色**（＝設定画面に並べるプリセット）。
+ *
+ * ⚠⚠ **`css` に生の hex が書いてあるのはここだけ**である。
+ * `EffectOverlayApp.module.css` は「生 hex / rgba() を書かない（`theme.css` のトークンのみ）」を
+ * 守っており、⚠ **この表の値は CSS 変数 `--gacha-prize-color` 経由で流し込む**。
+ * ⚠⚠⚠ **`theme.css` のトークンを使わない理由**＝ あれは**アプリ画面の明暗に追従する**ので、
+ * **配信画面（背景が視聴者ごとに違う透過窓）では意味が変わってしまう**
+ * ——実際に段 3 までの `--accent-text` が**金の光に負けて読めなかった**のがその実例である。
+ * ⇒ **配信画面の色は、アプリのテーマから独立させる。**
+ *
+ * ⚠ どれも**縁取り（濃い影）と組み合わせる前提**で選んである（明度が高い色に寄せてある）。
+ * ⚠⚠ **段 5-e 以降、この表は「選べる色の全部」ではなく「押せば入る見本」**である
+ * （自由入力があるので、ここに無い色も保存されうる）。
+ */
+export const GACHA_PRIZE_COLORS: readonly {
+  id: GachaPrizeColorId;
+  label: string;
+  css: string;
+}[] = [
+  { id: "gold", label: "ゴールド", css: "#ffd76a" },
+  { id: "white", label: "ホワイト", css: "#ffffff" },
+  { id: "sky", label: "スカイブルー", css: "#7fd4ff" },
+  { id: "pink", label: "ピンク", css: "#ff9ecb" },
+  { id: "lime", label: "ライム", css: "#b6f36a" },
+  { id: "orange", label: "オレンジ", css: "#ffab5c" },
+];
+
+/**
+ * 063c 段 5-e: **受け付ける色の文法**（⚠⚠⚠ **これが唯一の関門である**）。
+ *
+ * ⚠ `#` ＋ 16 進 6 桁のみ。⚠⚠ **3 桁（`#fff`）も 8 桁（透明度つき）も受けない**——
+ * 受ける形を増やすほど「`style` に入りうる文字列の集合」が広がるし、
+ * **透明度は演出の読みやすさを黙って壊す**（薄い色を選べてしまう）。
+ */
+const GACHA_PRIZE_COLOR_PATTERN = /^#[0-9a-f]{6}$/i;
+
+/** 063c 段 5-e: 既定の文字色。⚠ **ゴールド**＝演出の金の光と喧嘩せず、縁取りと合わせて最も読める。 */
+export const GACHA_PRIZE_COLOR_DEFAULT = "#ffd76a";
 /**
  * ⚠⚠⚠ **064e: `EFFECT_OBS_AUTO_ADD_KEY`（エフェクト窓を OBS へ自動反映する ON/OFF）を削除した。**
  *
@@ -578,6 +702,82 @@ export function saveGachaStageEnabled(enabled: boolean): void {
   }
 }
 
+/**
+ * 063c 段 4-c: 配置を読む。⚠ **未保存・未知の id はすべて既定（中央）へ倒す**。
+ *
+ * ⚠⚠ **「知らない値は既定へ」が唯一の規則**である（`parseGachaPrizeOutput` の未知 `kind` と同じ規律）。
+ * ⚠ 倒す先を「左」などにしないこと——**設定した覚えのない位置に出る**のは、中央に出るより分かりにくい。
+ */
+export function loadGachaPlacement(): GachaPlacement {
+  try {
+    const raw = localStorage.getItem(GACHA_PLACEMENT_KEY);
+    const hit = GACHA_PLACEMENTS.find((p) => p.id === raw);
+    return hit?.id ?? GACHA_PLACEMENT_DEFAULT;
+  } catch {
+    return GACHA_PLACEMENT_DEFAULT;
+  }
+}
+
+/**
+ * 063c 段 4-c: 配置を保存する（ローカルのみ・非機密・外部送信しない）。
+ *
+ * ⚠ **一覧に無い id は保存しない**（読み込み側と同じ 1 つの表を使う＝検査を 2 通りに分けない）。
+ * ⚠⚠ **これは §1 のガードではない**ので、`saveGachaStageEnabled` のような
+ * 「呼び出しは 1 か所」という不変条件は無い（OBS へ繋ぐかどうかに関与しないため）。
+ */
+export function saveGachaPlacement(placement: GachaPlacement): void {
+  if (!GACHA_PLACEMENTS.some((p) => p.id === placement)) return;
+  try {
+    localStorage.setItem(GACHA_PLACEMENT_KEY, placement);
+  } catch {
+    // プライベートモード等で書けない場合は黙って無視する。
+  }
+}
+
+/**
+ * 063c 段 5-e: **保存値 → 実際に使ってよい色**。
+ *
+ * ⚠⚠⚠ **`style` へ届く色は必ずここを通る**（`localStorage` の生の値が直接届く経路は無い）。
+ * ⚠ 未保存・壊れた値・古い id はすべて**既定へ倒す**（`undefined` を返さない——
+ * 返すと `style` から色ごと消え、**テーマ由来の読めない色へ戻る**＝段 3 までの不具合そのもの）。
+ *
+ * ⚠⚠ **後半の移行は段 4-b の保存値のためだけに在る**（`"sky"` などの id）。
+ * ⚠ 消してよいのは「段 4-b を使ったユーザーがもう居ない」と言い切れるときだけである。
+ */
+export function parseGachaPrizeColor(raw: string | null): string {
+  if (raw === null) return GACHA_PRIZE_COLOR_DEFAULT;
+  if (GACHA_PRIZE_COLOR_PATTERN.test(raw)) return raw.toLowerCase();
+  const legacy = GACHA_PRIZE_COLORS.find((c) => c.id === raw);
+  return legacy?.css ?? GACHA_PRIZE_COLOR_DEFAULT;
+}
+
+/** 063c 段 5-e: 景品名の色を読む。⚠ 検査は [`parseGachaPrizeColor`] 1 か所（2 通りに書かない）。 */
+export function loadGachaPrizeColor(): string {
+  try {
+    return parseGachaPrizeColor(localStorage.getItem(GACHA_PRIZE_COLOR_KEY));
+  } catch {
+    return GACHA_PRIZE_COLOR_DEFAULT;
+  }
+}
+
+/**
+ * 063c 段 5-e: 景品名の色を保存する（ローカルのみ・非機密・外部送信しない）。
+ *
+ * ⚠⚠⚠ **文法に合わない値は保存しない**（読み込み側と**同じ 1 つの正規表現**を使う＝
+ * 検査を 2 通りに分けない）。⚠ 大文字で来ても**小文字に正規化して**入れる
+ * （`#FFD76A` と `#ffd76a` が別の保存値になると、見本の選択状態が一致しなくなる）。
+ * ⚠ **これは §1 のガードではない**ので、`saveGachaStageEnabled` のような
+ * 「呼び出しは 1 か所」という不変条件は無い（OBS へ繋ぐかどうかに関与しないため）。
+ */
+export function saveGachaPrizeColor(color: string): void {
+  if (!GACHA_PRIZE_COLOR_PATTERN.test(color)) return;
+  try {
+    localStorage.setItem(GACHA_PRIZE_COLOR_KEY, color.toLowerCase());
+  } catch {
+    // プライベートモード等で書けない場合は黙って無視する。
+  }
+}
+
 /* ⚠ 064e: `loadEffectObsAutoAdd` / `saveEffectObsAutoAdd` を削除した
    （設定そのものが消えた。理由は上の `EFFECT_OBS_AUTO_ADD_KEY` 跡地の JSDoc が正）。 */
 
@@ -617,7 +817,6 @@ export function saveEffectOverlayGuidePending(pending: boolean): void {
 /* ⚠ 064 レビュー S-6: テスト発火の 5 関数（`requestEffectTestFire` / `saveEffectTestFirePending` /
    `takeEffectTestFirePending` / `saveStageTestFirePending` / `takeStageTestFirePending`）を削除した
    （テスト表示ごと消えて呼び手が 0 になっていた。理由は上の `EFFECT_TEST_FIRE_KEY` 跡地の JSDoc が正）。 */
-
 
 /**
  * 060d: テーマ id として受け入れる形（uuid v4）。

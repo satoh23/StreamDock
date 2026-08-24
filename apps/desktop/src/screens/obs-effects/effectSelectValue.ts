@@ -1,4 +1,8 @@
-import type { EffectAssignment, GachaDefinition } from "./effectAssignments";
+import type {
+  EffectAssignment,
+  GachaDefinition,
+  GachaPrizeOutput,
+} from "./effectAssignments";
 
 /**
  * 061j (0): **割り当ての値 ⇄ `<select>` の `value`** の組み立て（`EffectAssignmentCard` の表示規則）。
@@ -115,6 +119,49 @@ export function isGachaMissingFromList(
  */
 export function gachaPrizeSelectValue(sourceName: string): string {
   return `${OBS_SOURCE_PREFIX}${sourceName}`;
+}
+
+/**
+ * ⚠⚠⚠ **063c 段 2-a: 「組み込みの演出」を表す `<select>` の値。**
+ *
+ * ⚠ **接頭辞を持たない固定値**である（[`NONE_VALUE`] と同じ作法）——
+ * 指す先が無い（＝ StreamDock 自身が描く）ので、`obs:` / `gacha:` のような**引数が要らない**。
+ * ⚠⚠ **`NONE_VALUE`（"none"）と別の文字列にしてあること**が要点である——
+ * 同じにすると「組み込みの演出」と「出さない」が同一の値になり、
+ * **当たったのに何も出ない**（あるいはその逆）が黙って起きる。
+ */
+export const GACHA_PRIZE_BUILTIN_VALUE = "builtin";
+
+/**
+ * 063c 段 2-a: 景品の出力先 → `<select>` の `value`。
+ *
+ * ⚠ [`gachaPrizeSelectValue`] を内側で使う（`obs:` の**組み立ては 1 か所**という 061j (0) の規律）。
+ * ⚠⚠ **一覧に無い名前でも `NONE_VALUE` へ落とさない**（[`gachaPrizeSelectValue`] の注記が正＝
+ * 景品の行には「出さない」の選択肢が無いので、落とす先が無い）。
+ */
+export function gachaPrizeOutputSelectValue(output: GachaPrizeOutput): string {
+  return output.kind === "builtin"
+    ? GACHA_PRIZE_BUILTIN_VALUE
+    : gachaPrizeSelectValue(output.sourceName);
+}
+
+/**
+ * 063c 段 2-a: `<select>` の `value` → 景品の出力先（[`gachaPrizeOutputSelectValue`] の逆）。
+ * ⚠ 受け付けられない値は **`null`**（＝**その変更を無視する**）。
+ *
+ * ⚠⚠ **分解を自前で書かず [`effectSelectAssignment`] へ委ねている**のが要点である——
+ * `obs:` の切り出しを `slice` で 1 か所に閉じるという約束（[`OBS_SOURCE_PREFIX`] の注記）は
+ * 景品の行にも効く。⚠ **ここに `slice` を書かないこと。**
+ *
+ * ⚠ `gacha:`（ガチャの入れ子）も `none`（出さない）も **`null` へ落ちる**——
+ * 景品の出力先はこの 2 種類だけで、**未知の値を黙ってどちらかへ倒さない**。
+ */
+export function gachaPrizeOutputFromSelectValue(
+  value: string,
+): GachaPrizeOutput | null {
+  if (value === GACHA_PRIZE_BUILTIN_VALUE) return { kind: "builtin" };
+  const next = effectSelectAssignment(value);
+  return next.kind === "obs-source" ? next : null;
 }
 
 /**

@@ -152,26 +152,40 @@
 ⇒ ⚠⚠ **本タスクで `decideFireSourceNames` の戻り値を独立に広げないこと**
 （2 通りに広げると「片方だけが知らないフィールドを持つ」「片方だけ §9 の判断が抜ける」が起きる）。
 
-063c 段 2 が置く形（⚠ **確定は段 2 の実装時**。着手時に `effectFire.ts` の JSDoc を必ず読み直すこと）:
+#### ✅⚠⚠⚠ 2026-08-23: **063c 段 2-a で確定した**（下記が実物。上の草案は採らなかった）
 
 ```ts
-export type GachaPrizeOutput =
-  | { kind: "builtin" }
-  | { kind: "obs-source"; sourceName: string };
+export type GachaPrizeOutput = { kind: "builtin" } | EffectObsSource;
 
-export type EffectFireResult =
-  | { kind: "obs-source"; sourceName: string }                      // 条件が直に OBS ソースを指した
-  | { kind: "gacha-prize"; prizeName: string; output: GachaPrizeOutput };  // ガチャで当たった
+export interface EffectFireResult {
+  output: GachaPrizeOutput;
+  /** ⚠⚠ null ＝ **ガチャではない**（条件への直指定）。「無名」ではない */
+  prizeLabel: string | null;
+}
 ```
 
-- ⚠ **関数名は `decideFireResults` へ改名される**（戻り値が「ソース名」でなくなるため）。
+⚠⚠ **草案（`kind:"obs-source" | "gacha-prize"` の union）と違う形になった理由**:
+
+- **union にすると `output` を持つ枝と持たない枝ができる**ので、呼び出し側が
+  「OBS を鳴らすか」を**2 か所で分岐**することになる。⇒ **`output` は常に在る**形にした。
+- ⚠⚠⚠ **「ガチャかどうか」は `prizeLabel === null` で読める**（＝ union の判別子が要らない）。
+  ⚠ **`null` を「無名」の意味に使っていない**——無名の景品は
+  `GACHA_UNNAMED_PRIZE_LABEL`（"当たり"）になるので、`null` は**ガチャを経由していない**ことだけを表す。
+- ⚠ フィールド名は `prizeName` ではなく **`prizeLabel`**（＝ [`gachaPrizeLabel`] が
+  「景品名 → OBS のソース名 → 既定」の 3 段で**決めた後の表示名**であることを名前で示す）。
+
+⇒ ⚠⚠ **本タスクは `prizeLabel` をそのまま文面に使えばよい**（表示名の規則を再実装しないこと）。
+
+- ⚠ **関数名は `decideFireResults` へ改名済み**（戻り値が「ソース名」でなくなったため）。
 - ⚠⚠ **`EffectRequestBase` は復活させない**（063b 段 1-b の返済を取り消さない）。
   ⇒ 上記 (2) で**当選者名を出す**を選ぶなら、**`EffectRequestBase` ごとではなく
   「投稿者名 1 フィールド」を `gacha-prize` に足す**こと。
-- ⚠⚠⚠ **はずれ（`-1`）の variant は 063c 段 2 では作らない**
-  （あちらは「はずれにも演出を出したいなら**はずれの行を足す**」という 063a の設計に乗るため）。
-  ⇒ **本タスクが「はずれを書く」を選ぶなら、3 本目の variant を足すのは本タスクの担当**である。
-  ⚠ そのときも**上の 2 本の形は変えない**こと。
+- ⚠⚠⚠ **はずれ（`-1`）は 063c 段 2-a でも表現していない**（実物でも「要素が出ない」だけ）。
+  あちらは「はずれにも演出を出したいなら**はずれの行を足す**」という 063a の設計に乗っている。
+  ⇒ **本タスクが「はずれを書く」を選ぶなら、それを足すのは本タスクの担当**である。
+  ⚠⚠ そのときも**上の 2 フィールドの意味を変えないこと**——
+  たとえば `prizeLabel: null` を「はずれ」に転用すると、**「ガチャではない」と区別できなくなる**
+  （`CommentViewerApp` がその `null` で演出の有無を決めている）。⇒ **3 つ目のフィールドで表すこと。**
 
 ## やらないこと
 

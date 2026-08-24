@@ -18,6 +18,11 @@ dist-ssr
 # 手元で .github/scripts/make-latest-json.mjs を試すとリポジトリ root に残るため無視する。
 release-body.md
 
+# 063c 段 5 レビュー Q-1(9): 依頼者が Claude へ渡すために置く元素材の作業置き場。
+# ⚠ 素材の「正」は docs/assets-source/ 側である（gacha-sheet.png はここのファイルと sha256 が一致した）。
+# ⚠⚠ 2.6MB の同一バイト列を 2 つコミットしかけたので無視対象にする（git の履歴からは二度と消せない）。
+.claude/source/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

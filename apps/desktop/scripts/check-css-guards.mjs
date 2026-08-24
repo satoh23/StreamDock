@@ -2071,12 +2071,49 @@ for (const rel of [VIEWER_CSS, OVERLAY_CSS]) {
 //   ⚠ こちらを外すと、イベントが `.root` の flex（中央寄せ）に巻き込まれて
 //   **セットアップ用ガイドやテンプレートと重なる**が、**コンポーネントテストは全部緑のまま**である。
 //   ⚠ **層を増やしたらここへ足すこと**（(10-d) の「窓を増やすたびに足す」と同じ運用）。
+//   ⚠⚠⚠ **063c 段 2-a で 3 枚目（`.gachaLayer`＝ガチャの当選）を足した**ので、その 2 宣言も固定する。
+//   ⚠ 外れたときの壊れ方は `.eventLayer` と同じで、**当選が窓の中央ではなく
+//   イベントの下へ押し出される**（＝配信画面での位置が変わる）が、**テストは全部緑のまま**である。
 {
   const effectCss = read(EFFECT_OVERLAY_CSS);
   const expectations = [
     [".root", "position", "relative", "イベント層の基準（無いと窓に解決される）"],
     [".eventLayer", "position", "absolute", "配信イベントを通常フローの外へ出す層（061l・判断 7）"],
     [".eventLayer", "inset", "0", "層を窓いっぱいに広げる（061l・判断 7）"],
+    [".gachaLayer", "position", "absolute", "ガチャの当選を通常フローの外へ出す層（063c 段 2-a）"],
+    [".gachaLayer", "inset", "0", "層を窓いっぱいに広げる（063c 段 2-a）"],
+    // ⚠⚠⚠ **063c 段 4-c: これが「配置（左寄せ／中央／右寄せ）」を成立させている 1 宣言である。**
+    //   ⚠ `width: 100%` に戻すと **`.gachaLayer` の `justify-content` を変えても中身が 1 ピクセルも動かない**
+    //   ＝ **設定欄は出ているのに何も起きない**（依頼者が段 3 まで踏んでいた状態そのもの）。
+    //   ⚠⚠ **jsdom はレイアウトを解決しない**ので、`GachaLibraryCard.test.tsx` も
+    //   `EffectOverlayApp.gacha.test.tsx` も**全部緑のまま通る**（クラスは付くから）。
+    //   ⇒ **止められるのはこの検査だけ。**
+    // ⚠ 第 3 要素は**正規表現**なので、`min()` の括弧はエスケープすること（素の `(` はグループになる）。
+    [
+      ".gachaStage",
+      "width",
+      "min\\(100%,\\s*720px\\)",
+      "配置を成立させる幅（063c 段 4-c）",
+    ],
+    // ⚠⚠⚠ **063c 段 5-a: 縁取りの定義は「演出の器そのもの」に在ること。**
+    //   ⚠ 段 4 まではこれが `.gachaLayer`（＝配信画面の窓だけが描く層）に在ったため、
+    //     **層を描いていない設定画面のプレビューでは `var(--gacha-outline)` が無効値になり、
+    //     縁取りも文字の下地も丸ごと消えていた**（依頼者＝「めちゃくちゃ見えない」）。
+    //   ⚠⚠ **jsdom はカスケードを解決しない**ので、変数が未定義でもテストは全部緑のまま通る。
+    //     ⇒ **止められるのはこの検査だけ。**
+    //   ⚠ 値の先頭 3 語だけを見る（影の距離は意匠なので固定しない。固定したいのは**在ること**）。
+    [
+      ".gachaStage",
+      "--gacha-outline",
+      "0 2px 6px",
+      "どこに置いても文字が読めること（063c 段 5-a）",
+    ],
+    [
+      ".gachaStage",
+      "--gacha-card-scrim",
+      "rgba",
+      "文字の後ろの下地（063c 段 5-a）",
+    ],
   ];
   for (const [selector, prop, valuePattern, role] of expectations) {
     const body = ruleBody(effectCss, selector);
@@ -2096,6 +2133,154 @@ for (const rel of [VIEWER_CSS, OVERLAY_CSS]) {
           `この検査だけ**（コンポーネントテストは全部緑のまま通ります）。` +
           `判断の全文は \`EffectOverlayApp.module.css\` の各ルールの注記と docs/progress.md の` +
           ` 061d-2 節（＋層が 1 枚になった経緯は 061h 節）が正。`,
+      );
+    }
+  }
+}
+
+// (10-s) ⚠⚠⚠ **選択欄の意匠の持ち主を 1 枚に保つ**（063c 段 5-g）。
+//
+//   このアプリの JSX には**ネイティブの `<select>` が 1 つも無い**——選択欄はすべて
+//   `components/Select.tsx`（`<span class=selectWrap><select class=selectCustom>`）である。
+//   ⚠⚠ したがって `.field select` のような**要素セレクタは「使われる規則」ではなく「罠」**になる:
+//   `Select` を `.field` の中へ置いた瞬間に、⚠⚠⚠ **詳細度 0,1,1 が `.selectCustom`（0,1,0）に勝ち**、
+//   高さ・角丸・文字サイズ・背景・padding が**丸ごと上書きされる**。
+//
+//   ⚠ 063c 段 4-d の `GachaStageCard` が実際にこれを踏み、**その画面でそこだけ別部品に見えた**
+//   （依頼者＝「明らかにここのドロップダウンやテキストだけ周りから浮いています」）。
+//   ⚠⚠ **jsdom はカスケードもレイアウトも解決しない**ので、
+//   **戻してもコンポーネントテストは 1 件も落ちない**（段 5 の変異テストで実測＝唯一測れなかった項目）。
+//   ⇒ **止められるのはこの検査だけ。**
+//
+//   ⚠ 検査の形は **2 本立て**である（下記 (10-s-1) / (10-s-2)）。
+//   ⚠⚠ **本当に native `<select>` を書く日が来たら、まず「なぜ `Select.tsx` では駄目か」を書くこと。**
+//
+// ⚠⚠⚠ **063c 段 5-g レビュー ③④: 前提そのものを検査していなかった。**
+//   段 5-g は (10-s-1) だけを置き、「native `<select>` は 1 つも無い」という**前提は人間の目**に
+//   委ねていた。⚠ ところがその前提は当時**偽**で、`screens/add-tool/AddToolScreen.tsx` に
+//   `<div class=field>` 直下の native `<select>` が 2 つ残っていた
+//   （＝ `.field select` の削除は「どの画面の見た目も変わらない」ではなく、**あの画面を壊していた**）。
+//   ⚠⚠ **段 5 の変異テスト 15 件はどれもこれを殺せない**——変異は「規則を書き戻す」側しか触らず、
+//   **前提が偽であることは変異ではないから**である。
+//   ⇒ (10-s-2) を足して、**前提のほうを機械で固定する**。
+{
+  // --- (10-s-1) CSS 側: 要素セレクタ `select` を書かない ---------------------------------------
+  //   ⚠ `.select…`（クラス）は対象外（直前が `.` なので下の正規表現に一致しない）。
+  //   ⚠⚠ 区切りに `(` も入れてある＝ `:global(select)` / `:is(select)` も捕まえる
+  //   （レビュー Q-2 の実測でここが漏れていた。CSS モジュールでは `:global(...)` が
+  //   **ハッシュ化を外す**ので、要素セレクタの罠としては素の `select` とまったく同じ強さになる）。
+  const BARE_ELEMENT_SELECT = /(^|[\s,>+~(])select(?![A-Za-z0-9_-])/;
+  for (const rel of collectModuleCss("src")) {
+    const css = read(rel);
+    // ⚠ 宣言ブロックを除いた「セレクタ部分」だけを見る（値に `select` が出ても誤検出しない。
+    //   ⚠⚠ `read()` は `stripCssComments` 済みなので、コメント中の "native select" も拾わない）。
+    // ⚠⚠⚠ **レビュー Q-2: 区切りを `}` だけにすると at-rule の中の 1 本目を見逃す。**
+    //   `m` フラグが無いので `^` はファイル先頭でしか一致せず、`@media (…) {` の直後にある
+    //   **最初のルールのセレクタだけ**が走査から漏れていた（2 本目以降は直前が `}` なので拾えていた）。
+    //   ⇒ 区切りに `{` も入れる（＝ at-rule のプレリュードの直後も「セレクタの始まり」として扱う）。
+    // ⚠⚠ **末尾の `{` は必ず先読み（`(?=\{)`）にすること。** 消費してしまうと
+    //   `@media (…) {` の `{` が「そのルールの終端」として食われ、**次の一致の区切りに使えなくなる**
+    //   （正規表現の一致は重ならないため）＝ 区切りに `{` を足しただけでは 1 本目は拾えない（実測）。
+    // ⚠ at-rule のプレリュード自身（`@media (max-width: 600px)`）は要素 `select` を含まないので
+    //   誤検出しない。
+    for (const m of css.matchAll(/(^|[{}])([^{}]*)(?=\{)/g)) {
+      const selector = m[2] ?? "";
+      if (!BARE_ELEMENT_SELECT.test(selector)) continue;
+      fail(
+        `${rel}: セレクタ \`${selector.trim().replace(/\s+/g, " ")}\` が` +
+          `**要素セレクタ \`select\`** を含んでいます（063c 段 5-g・(10-s)）。` +
+          `⚠ このアプリの JSX にネイティブの \`<select>\` は 1 つも無く、選択欄はすべて ` +
+          `\`components/Select.tsx\` です。⚠⚠ この形の規則は使われず、` +
+          `**\`Select\` を \`.field\` 等の中へ置いたときだけ発火して ` +
+          `\`Select.module.css\` の意匠を詳細度で上書きする罠**になります` +
+          `（063c 段 4-d で実際に踏み、その画面でそこだけ見た目が違いました）。` +
+          `⇒ **選択欄の意匠は \`components/Select.module.css\` 1 枚が持つこと。**`,
+      );
+    }
+  }
+
+  // --- (10-s-2) JSX 側: native `<select>` の持ち主は `components/Select.tsx` だけ ----------------
+  //   ⚠⚠ **これが (10-s-1) の前提そのものである。** 前提が偽だと (10-s-1) は
+  //   「使われない規則を禁止している」のではなく「**使われている規則を禁止している**」ことになり、
+  //   ⚠⚠⚠ **その画面の意匠を戻す修正まで静的検査がブロックする**（レビュー Q-1 が現実に起きた形）。
+  //   ⚠ 対象はテストも含む（テストが native `<select>` を描くと、本番の不在が意味を失う——
+  //   `collectTsSources` の JSDoc が持つ 060d S-5 の教訓と同型）。
+  const SELECT_OWNER_TSX = "src/components/Select.tsx";
+  /**
+   * ⚠⚠ **文字列リテラルの中身を落とす**（`collectTsSources` は**コメントしか剥がさない**）。
+   *
+   * ⚠ これが無いと、`it("⚠ 保存済みの割り当てが \`<select>\` に復元される", …)` のような
+   * **テスト名の中の `<select>`** を JSX と誤認する（実測で 3 ファイルが誤検出された）。
+   * ⚠⚠ **既知の限界**は `stripTsComments` と同じ性質のもの＝ テンプレートリテラルの中に
+   * JSX を書くと見落とす（このリポジトリにその形は無い）。厳密にしたくなったら、
+   * `stripTsComments` の JSDoc が示すとおり **素の TS パーサ（`typescript` は devDependency 済み）**
+   * で読むこと。**新規依存は要らない。**
+   */
+  const stripStringLiterals = (s) =>
+    s
+      .replace(/"(?:\\.|[^"\\\n])*"/g, '""')
+      .replace(/'(?:\\.|[^'\\\n])*'/g, "''")
+      .replace(/`(?:\\.|[^`\\])*`/g, "``");
+  for (const [rel, withComments] of collectTsSources("src")) {
+    if (rel === SELECT_OWNER_TSX) continue;
+    // ⚠ コメント（`collectTsSources`）と文字列（上）を落としてから見る＝ JSX だけが残る。
+    const source = stripStringLiterals(withComments);
+    if (!/<select[\s/>]/.test(source)) continue;
+    fail(
+      `${rel}: JSX に**ネイティブの \`<select>\`** が在ります（063c 段 5-g・(10-s-2)）。` +
+        `⚠ 選択欄の意匠は \`components/Select.module.css\` 1 枚が持つ約束で、` +
+        `\`formLayout.module.css\` の \`.field select\` はその前提のもとに削除されています` +
+        `（(10-s-1)）。⚠⚠ ここで native \`<select>\` を書くと、**その要素だけ意匠が付かず**` +
+        `隣の \`<input>\` と高さも角丸も揃いません（jsdom では 1 件も落ちないので気づけません）。` +
+        `⇒ **\`components/Select.tsx\` を使うこと。** ` +
+        `⚠⚠⚠ どうしても native が要るなら、**先に「なぜ \`Select.tsx\` では駄目か」を書き、` +
+        `(10-s-1) の前提が変わることを (10-s) の JSDoc へ反映してから**この検査を緩めること。`,
+    );
+  }
+}
+
+// (10-u) ⚠⚠⚠ **`--gacha-prize-color` の消費先を `color:` 1 か所に固定する**
+//   （063c 段 5-e・security-review S-2）。
+//
+//   段 5-e で **`localStorage` の値が CSS 宣言へ入る経路**が 1 本できた
+//   （景品名の文字色。関門は `features/comment-viewer/overlaySettings.ts` の `parseGachaPrizeColor` 1 つで、
+//   通る文法は `#` ＋ 16 進 6 桁のみ＝ `url(…)` も `var(…)` も `;` も表現できない）。
+//   ⚠ **今日 egress が 0 本である根拠は「関門」だけではない**——もう半分は
+//   **`var(--gacha-prize-color)` を受けているのが `color:` だけ**（`color` は `url()` を受けない）という
+//   事実のほうに乗っている。⚠⚠ ところが**そちらは今まで何にも固定されていなかった**。
+//
+//   ⚠⚠⚠ **`background-image` / `cursor` / `list-style-image` / `mask` など `url()` を受けるプロパティで
+//   使った瞬間、透過窓（`csp: null`）から実 egress が成立する**——これは
+//   `docs/security.md` のレビュー必須条件「オーバーレイへのユーザー CSS の注入」（060d）が
+//   **名指ししている的そのもの**であり、§1「外部通信をしない」に直接反する。
+//   ⚠⚠ **jsdom はカスケードを解決しない**ので、消費先を移す変更でコンポーネントテストは 1 件も落ちない。
+//   ⇒ **止められるのはこの検査だけ。**
+//
+//   ⚠ 検査の形＝ `src/**/*.module.css` を全走査し、`var(--gacha-prize-color` を含む宣言の
+//   **プロパティ名が `color` 以外なら fail**。⚠⚠ 走査先を 1 枚に決め打ちしないのは、
+//   意匠を別モジュールへ切り出した瞬間に検査の外へ出るため（(10-r) が抱えている弱点を繰り返さない）。
+{
+  const PRIZE_COLOR_VAR = "--gacha-prize-color";
+  for (const rel of collectModuleCss("src")) {
+    const css = read(rel);
+    // ⚠ 宣言 1 つ＝ `プロパティ名 : 値 ;`。⚠⚠ `read()` は `stripCssComments` 済みなので
+    //   コメント中の言及（`.gachaPrize` の JSDoc 等）は拾わない。
+    for (const m of css.matchAll(/([-\w]+)\s*:\s*([^;{}]*)/g)) {
+      const prop = m[1] ?? "";
+      const value = m[2] ?? "";
+      // ⚠ 定義側（`--gacha-prize-color: …`）ではなく**使用側**（`var(--gacha-prize-color…)`）だけを見る。
+      if (!value.includes(`var(${PRIZE_COLOR_VAR}`)) continue;
+      if (prop === "color") continue;
+      fail(
+        `${rel}: \`${prop}: ${value.trim().replace(/\s+/g, " ")}\` が ` +
+          `\`var(${PRIZE_COLOR_VAR})\` を **\`color\` 以外のプロパティ**で使っています` +
+          `（063c 段 5-e・(10-u)）。⚠⚠⚠ この変数の値は **localStorage の保存値**` +
+          `（\`parseGachaPrizeColor\` が \`#rrggbb\` だけを通す）で、` +
+          `**\`url()\` を受けるプロパティで使うと透過窓から実 egress が成立します**` +
+          `（\`csp: null\`・docs/security.md §1 と、レビュー必須条件「オーバーレイへのユーザー CSS の注入」）。` +
+          `⇒ **消費先は \`color:\` 1 か所に留めること。** ` +
+          `⚠ 広げる必要があるなら、先に docs/security.md の §9（063c 段 5-e の項）を読み直し、` +
+          `**全文を提示して承認を得てから**条文と本検査の両方を直すこと。`,
       );
     }
   }

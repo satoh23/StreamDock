@@ -13,6 +13,14 @@ import type { AppUpdateStatus } from "./bindings/AppUpdateStatus";
  * リポジトリ初の Tauri イベント利用なので、購読の入口を 1 箇所に閉じ込めておく。
  * `useAppUpdate.ts` が `UnlistenFn` を **type-only** で import しているのは対象外
  * （型は実行時に何も引き込まない・055d review Q-14）。
+ *
+ * ⚠⚠⚠ **2026-08-23（063c 段 2-a）訂正: 値 import は 2 本になった。**
+ * 2 本目は `screens/obs-effects/gachaStageEvent.ts`（**窓間イベントの入口**＝当選結果を
+ * コメビュ窓からステージ窓へ `emitTo` で渡す）。⚠ 用途が違う——**こちらは Rust → frontend の通知**、
+ * あちらは **frontend → frontend（窓間）**である。
+ * ⚠⚠ **3 本目を作らないこと。** 新しい購読が要るなら、
+ * 「Rust からの通知」ならこのファイル、「窓間」なら `gachaStageEvent.ts` へ寄せる
+ * （入口が散ると「誰がどの窓に何を撒いているか」が追えなくなる、という 055d の理由がそのまま生きている）。
  */
 
 /**

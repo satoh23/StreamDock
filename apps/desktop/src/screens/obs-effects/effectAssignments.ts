@@ -126,8 +126,9 @@ export interface GachaPrize {
   /**
    * 景品名。⚠ **空文字を許す**（＝任意）。
    *
-   * ⚠⚠ 本タスクの芯は「**入力の手数の少なさ**」なので、必須にしない。空のときは
-   * **OBS のソース名を表示に使う**（表示のフォールバックは [`GachaPrizeTable`] が 1 か所で持つ）。
+   * ⚠⚠ 本タスクの芯は「**入力の手数の少なさ**」なので、必須にしない。空のときの表示は
+   * [`gachaPrizeLabel`] が 1 か所で決める（⚠⚠ **063c 段 2-a で `GachaPrizeTable` から移した**——
+   * 当たった景品の名前が**配信画面にも出る**ようになったので、規則の持ち主が画面の中では足りない）。
    * ⚠ それでも列を残すのは、OBS のソース名が `hazure_01.mp4` のような機械的な名前になりがちで、
    * **「大当たり」と呼べないと確率表が読めなくなる**ため（063s (7) の列がそのまま生きている）。
    */
@@ -139,9 +140,76 @@ export interface GachaPrize {
    * 表の中に黙って居座る。出したくない景品は**行ごと消す**のが唯一の作法である。
    */
   weight: number;
-  /** 鳴らす OBS のソース名。⚠ 検証は [`isEffectObsSourceName`]（`EffectObsSource` と同じ規則）。 */
-  sourceName: string;
+  /**
+   * ⚠⚠⚠ **063c 段 2-a: `sourceName: string` を [`GachaPrizeOutput`] へ置き換えた。**
+   * 「当たったら何が起きるか」は **OBS のソースを鳴らす**か **組み込みの演出を出す**かの 2 択になった。
+   */
+  output: GachaPrizeOutput;
 }
+
+/**
+ * ⚠⚠⚠ **063c 段 2-a: 景品 1 件が当たったときの出力先。**
+ *
+ * ## なぜ union にしたか（061h の最悪形を両方向で塞ぐ）
+ *
+ * 063 の出発点は「**鳴らすものが無い状態から始まる**」＝ OBS に素材を 1 つも登録していない人は
+ * ガチャを作れても**何も起きない**、という 063s の痛点である。⇒ **組み込みの演出**を用意した。
+ * ⚠⚠ ただし [061h](../../../../docs/tasks/061h-builtin-effect-removal.md) が組み込み演出を全廃した
+ * 理由は生きているので、**両方向を同時に塞ぐ**こと（063c (3) の完了条件）:
+ *
+ * 1. **上書きを設定したのに組み込みが出る**を作らない … `{kind:"obs-source"}` を選んだ景品で
+ *    組み込みへフォールバックしない（ここが union であることが構造的な担保）。
+ * 2. ⚠ **上書き先の OBS ソースが消えているとき、黙って組み込みへ倒れない** …
+ *    061h が消した「壊れているのに組み込みが出て、動いているように見える」がそのまま復活する。
+ *    ⇒ **画面に「そのソースは OBS に見つかりません」を出す**（[`isObsSourceMissingFromList`] ＋
+ *    [`GachaPrizeTable`] の警告。064c が既に持っている語彙）。
+ *
+ * ## ⚠⚠ 形は [`EffectAssignment`] と同じにしてある
+ *
+ * `obs-source` の枝は **[`EffectObsSource`] そのもの**（別の形を作らない）。
+ * ⇒ [`isObsSourceMissingFromList`] も [`gachaPrizeSelectValue`] も**そのまま使える**＝語彙が増えない。
+ * ⚠ 「ガチャ全体で 1 つのトグル」案は却下した（「A は組み込み、B は自分のソース」の混在ができない）。
+ *
+ * ## ⚠⚠⚠ `builtin` は 064a の実在照合（壁）を通らない
+ *
+ * OBS のソース名は sidecar の `GetInputList` 突き合わせを必ず通るが、
+ * **`builtin` は wire に 1 バイトも載らない**（ステージ窓が自分で描く）ので、その壁を**通過しない**。
+ * ⚠ これは**バイパスではなく、そもそも壁の向こうへ行かない**ということである
+ * （`docs/security.md` §1 の 063c 追補の `{kind:"builtin"}` の項が正）。
+ * ⚠⚠ **再評価トリガー＝組み込み演出が OBS へ何かを送るようになったとき**（＝そのときは壁の対象になる）。
+ */
+export type GachaPrizeOutput = { kind: "builtin" } | EffectObsSource;
+
+/**
+ * 063a → **063c 段 2-a でここへ移した**: 景品の**表示名**（＝画面にも配信画面にも出る名前）。
+ *
+ * ⚠⚠ **規則の持ち主はこの 1 関数だけである。** 元は [`GachaPrizeTable`] の中のローカル関数
+ * （`prize.name.length > 0 ? prize.name : prize.sourceName`）だったが、
+ * ⚠⚠⚠ **063c 段 2-a で当選景品の名前が「配信画面」にも出るようになった**ので、
+ * 画面の中に置いたままだと**設定画面と配信画面で違う名前が出る**——
+ * しかも `{kind:"builtin"}` には代わりに使えるソース名が無いので、
+ * **片方だけが「無名の景品をどう呼ぶか」を決める**ことになる。
+ *
+ * ⚠ フォールバックの順は **景品名 → OBS のソース名 → [`GACHA_UNNAMED_PRIZE_LABEL`]**。
+ * ⚠⚠ **空文字を返さないこと**——返すと配信画面の景品名の器が**空のまま出る**
+ * （⚠ 063c 段 5-b で「が当たりました」を消したので、いまは**読める文字が 1 つも無い**状態になる）。
+ *
+ * ⚠ §9: 戻り値は**ユーザー自身が入力した文字列**だけである（景品名／自分が OBS で付けたソース名）。
+ * **第三者の表示名もコメント本文も、この関数の入力に載る経路が型として無い。**
+ */
+export function gachaPrizeLabel(prize: GachaPrize): string {
+  if (prize.name.length > 0) return prize.name;
+  if (prize.output.kind === "obs-source") return prize.output.sourceName;
+  return GACHA_UNNAMED_PRIZE_LABEL;
+}
+
+/**
+ * 063c 段 2-a: 名前も OBS のソース名も無い景品（＝組み込み演出で名前を空にした行）の表示名。
+ *
+ * ⚠ 「はずれ」ではない——**当たってはいる**ので、はずれの表記（`GachaPrizeTable` の `MISS_LABEL`）
+ * と**別の文字列にしてある**。混ぜると配信画面で「当たったのに『何も出ない』と出る」。
+ */
+export const GACHA_UNNAMED_PRIZE_LABEL = "当たり";
 
 /**
  * 063a → **063d で作り直した**: **ガチャの割り当て**（＝この条件が当たったら 1 回引く）。
@@ -160,7 +228,7 @@ export interface GachaPrize {
  *
  * ⚠⚠⚠ **063b で発火するようになった**（063a / 063d では [`createEffectFireMatcher`] の `select` が
  * `null` を返し、**当たり判定の前に落ちて**いた）。⚠ いまは `select` がこの kind も通し、
- * **発火が確定してから** `effectFire.ts` の [`decideFireSourceNames`] が 1 回だけ引く。
+ * **発火が確定してから** `effectFire.ts` の [`decideFireResults`] が 1 回だけ引く。
  * ⚠⚠ **ここ（`select`）で引かないことが要点である**——`select` は当たり判定の**前**に呼ばれるので、
  * 引くと「当たっていない条件でも引く」「はずれが次の条件へ落ちる」の 2 つが同時に起きる（穴 A）。
  * ⚠ 「割り当てたのに何も出ない」と読める注記（[`GachaPrizeTable`] の先頭の note）は **063b で外した。**
@@ -242,6 +310,26 @@ export type EffectKeywordMatch = "contains" | "exact";
  * コーナー窓（テンプレート専用）を廃止して**窓が 1 つになった**ので、表ではなく定数 1 本にしてある。
  */
 export const STAGE_OVERLAY_WINDOW_TITLE = "StreamDock ステージ演出";
+
+/**
+ * ⚠⚠⚠ **063c 段 2-a: ステージ窓の「ラベル」**（＝ Tauri の窓 label。上のタイトルとは別物）。
+ *
+ * ⚠⚠ **frontend が窓 label を文字列で持つのはこれが初めてである。** 用途はただ 1 つ、
+ * [`emitGachaStageResult`] が `emitTo(<この値>, …)` で**当選結果をステージ窓だけへ届ける**こと。
+ *
+ * ⚠⚠⚠ **typo が「落ちない方向」に壊れる**——`emitTo` は宛先が存在しなくても
+ * **例外を投げずに何も起きない**ので、間違えると「**演出が永久に出ないが、OBS は正常に鳴る**」
+ * という、画面からもログからも理由が読めない壊れ方になる。
+ * ⇒ Rust の `overlay_window_contract::frontend_stage_overlay_label_matches_window_builder` が
+ * **この値と `WebviewWindowBuilder::new(&app, "…")` のバイト一致**を固定している
+ * （`SIDECAR_CONSUMER_LABELS` の typo を同じ理由で潰している
+ * `consumer_labels_are_windows_that_actually_exist` と同型の守り方）。
+ *
+ * ⚠ **タイトル（上）と混同しないこと**——ユーザーが OBS で探すのはタイトル、
+ * アプリが窓を名指しするのがラベルで、**変えてよい条件がまったく違う**
+ * （タイトルは日本語で変えうる／ラベルは Rust の窓生成と一致していなければならない）。
+ */
+export const STAGE_OVERLAY_WINDOW_LABEL = "stage-overlay";
 
 /**
  * 061j: 条件 1 件の**いつ出すか**。
@@ -416,21 +504,79 @@ export const GACHA_PRIZE_NAME_MAX_LENGTH = 24;
  * **手で localStorage を編集した場合だけ**である。
  *
  * ⚠ **`name` だけは空文字を許す**（[`GachaPrize.name`] の注記が正）。
+ *
+ * ## ⚠⚠⚠ 063c 段 2-a: 保存形が広がったが、**検証はこの 1 か所のまま**である
+ *
+ * `sourceName: string` → [`GachaPrizeOutput`]（`builtin` / `obs-source` の union）。
+ * ⚠⚠ **本タスクで 2 通り目の検証を新設していない**（063c (3) の制約・§8）——
+ * 出力先の検証は [`parseGachaPrizeOutput`] に閉じ、**ソース名の規則は [`isEffectObsSourceName`] のまま**
+ * （`EffectObsSource` と同じ 1 つ）である。
  */
 const parseGachaPrize = (raw: unknown): GachaPrize | null => {
   if (typeof raw !== "object" || raw === null) return null;
-  const item = raw as { name?: unknown; weight?: unknown; sourceName?: unknown };
-  const { name, weight, sourceName } = item;
+  const item = raw as {
+    name?: unknown;
+    weight?: unknown;
+    output?: unknown;
+    sourceName?: unknown;
+  };
+  const { name, weight } = item;
   if (typeof name !== "string") return null;
   if (hasControlChar(name)) return null;
   if ([...name].length > GACHA_PRIZE_NAME_MAX_LENGTH) return null;
   // ⚠⚠ **0 / 負 / 小数 / NaN / 上限超はすべて落とす**（0 除算と「絶対に出ない景品」を構造的に排除する）。
   if (typeof weight !== "number" || !Number.isSafeInteger(weight)) return null;
   if (weight < 1 || weight > GACHA_WEIGHT_MAX) return null;
-  // ⚠ ソース名の規則は `EffectObsSource` と**同じ 1 つ**（規則を 2 通りに書かない）。
-  if (!isEffectObsSourceName(sourceName)) return null;
-  // ⚠ 保存するのは trim 済みの値（064 レビュー S-10 と同じ理由＝一覧との照合が完全一致であるため）。
-  return { name: name.trim(), weight, sourceName: sourceName.trim() };
+  const output = parseGachaPrizeOutput(item.output, item.sourceName);
+  if (output === null) return null;
+  return { name: name.trim(), weight, output };
+};
+
+/**
+ * 063c 段 2-a: 景品の**出力先**を検証する。⚠ 受け入れられなければ `null`（＝**その行だけ落ちる**）。
+ *
+ * ## ⚠⚠ 後方互換（063d 以前に保存された景品を読む）
+ *
+ * 063d までの景品は `{name, weight, sourceName}` で、`output` を持たない。
+ * ⇒ **`output` が無い（＝オブジェクトでない）ときだけ `sourceName` を見て `{kind:"obs-source"}` にする。**
+ * ⚠⚠ **移行スクリプトを書かないこと**——[`migrateLegacyGachas`] のような**書き換える移行**は
+ * 「移行より先に保存すると消える」という 063d 穴 W の危険を新しく作る。
+ * ここは**読むたびに翻訳する**（`parseAssignment` の未知 kind と同じく、読み込み層で吸収する）ので、
+ * ⚠ **旧データを書き換えないまま新しいビルドで正しく動く。**
+ *
+ * ## ⚠⚠⚠ 前方互換（新しい保存値を古いビルドが読む）＝ **`builtin` の行は落ちる**
+ *
+ * 古いビルドの `parseGachaPrize` は `sourceName` を必須にしているので、
+ * **`{kind:"builtin"}` の景品は `null`＝その行だけ落ちる**（他の行と、ガチャ本体は残る）。
+ * ⚠ **受容する**。063d 穴 P（旧ビルドで開いて保存すると `gachaId` が消える）と同型で、
+ * ⚠⚠ **`{kind:"obs-source"}` の景品＝いま保存されている全データは、古いビルドでも素通りする**
+ * （`sourceName` を読む枝がそのまま生きているため）ので、**壊れるのは新機能を使った行だけ**である。
+ * ⚠ 逆に「古いビルドのために `sourceName` も併記する」案は却下した——
+ * **同じ事実の書き手が 2 つになり、片方だけ更新される日が必ず来る**（064 レビュー S-10 と同じ罠）。
+ *
+ * ⚠ **未知の kind は `null`（＝落とす）。** ⚠⚠ **`{kind:"builtin"}` へ倒さないこと**——
+ * 倒すと「将来の出力先が、古いビルドでは黙って組み込み演出になる」＝
+ * 061h が消した「壊れているのに動いているように見える」そのものになる。
+ */
+const parseGachaPrizeOutput = (
+  raw: unknown,
+  legacySourceName: unknown,
+): GachaPrizeOutput | null => {
+  if (typeof raw === "object" && raw !== null) {
+    const kind = (raw as { kind?: unknown }).kind;
+    if (kind === "builtin") return { kind: "builtin" };
+    if (kind === "obs-source") {
+      const sourceName = (raw as { sourceName?: unknown }).sourceName;
+      // ⚠ ソース名の規則は `EffectObsSource` と**同じ 1 つ**（規則を 2 通りに書かない）。
+      if (!isEffectObsSourceName(sourceName)) return null;
+      // ⚠ 保存するのは trim 済みの値（064 レビュー S-10 と同じ理由＝一覧との照合が完全一致であるため）。
+      return { kind: "obs-source", sourceName: sourceName.trim() };
+    }
+    return null;
+  }
+  // ⚠ 063d 以前の形（`sourceName` 直付け）。上の JSDoc「後方互換」が正。
+  if (!isEffectObsSourceName(legacySourceName)) return null;
+  return { kind: "obs-source", sourceName: legacySourceName.trim() };
 };
 
 /**
@@ -1286,7 +1432,7 @@ export function runGachaMigration(): GachaDefinition[] {
  *   2. ⚠⚠⚠ **はずれが `null` になり「レーン違い」と区別できず、次の条件へ落ちる**
  *      ＝ **ガチャを外したら、下に並んだ別の条件が代わりに発火する**
  * ⚠ 2 は「出ない」を見るテストでは殺せない（**出てはいる**）。
- * ⇒ **抽選は発火が確定してから**（`effectFire.ts` の `decideFireSourceNames` が正）。
+ * ⇒ **抽選は発火が確定してから**（`effectFire.ts` の `decideFireResults` が正）。
  *
  * ## §9
  *
