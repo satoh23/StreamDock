@@ -610,3 +610,32 @@
   font-size: 11px;
   white-space: nowrap;
 }
+
+/* ⚠⚠⚠ 063f 段 1-b: 「高度な設定」の折りたたみ（`GachaLibraryCard` の末尾）。
+   依頼者の指示＝「**高度な設定は普段は折りたたみされてるかたちで**」。
+   ⚠ **新しい px を発明しない**——枠・角丸・余白は `.gachaStageSetting` と同値、
+   文字は `.note` と同値にしてある（061a 以来の要件）。 */
+.gachaAdvanced {
+  margin-top: 14px;
+}
+
+/* ⚠ 三角（マーカー）は残す——**折りたためることが見て分かる**必要がある
+   （消すと「ただの見出し」に見えて、誰も開かない）。 */
+.gachaAdvanced > summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--muted);
+  user-select: none;
+}
+
+/* ⚠⚠ `.gachaStageSetting` と同じ箱にする（同じ画面の中で枠の意匠を 2 種類にしない）。 */
+.gachaAdvancedBody {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+}

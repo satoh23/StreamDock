@@ -33,6 +33,27 @@ export const OBS_AUTO_ADD_KEY = "stream-dock.comment-viewer.obs-auto-add";
 export const CHAT_SEND_ENABLED_KEY =
   "stream-dock.comment-viewer.chat-send-enabled";
 /**
+ * ⚠⚠⚠ **063f: ガチャの当選結果を配信のチャットへ自動で書き込むトグル**（⚠⚠ **既定 OFF**・値は `"1"` のみ）。
+ *
+ * ## ⚠⚠ なぜ [`CHAT_SEND_ENABLED_KEY`] を流用しないのか
+ *
+ * 流用すると「**テスト送信を試したら自動送信も始まった**」になり、
+ * ユーザーが同意した範囲を**本人の想定を越えて広げる**。
+ * ⚠⚠⚠ **本キーと [`CHAT_SEND_ENABLED_KEY`] は AND である**——
+ * **両方が ON のときだけ 1 通も出る**（`docs/security.md` §1 の 063f 追補が正）。
+ * ⚠ 063c 段 1 の AND ゲートと同じ規律で、**この連言は送信を増やす方向へ決して働かない**
+ * （どちらの旗も明示操作なしには true にならない）。
+ *
+ * ⚠⚠ **これは同意であって、壁ではない**（[`CHAT_SEND_ENABLED_KEY`] の注記がそのまま当てはまる）。
+ * 壁は sidecar 側のチケット照合で、そちらが未認証の loopback WS からの投稿を塞いでいる。
+ * ⚠ OFF は**キーごと削除**する（「未保存＝OFF」と「明示的に OFF」を潰す）。
+ *
+ * ⚠ **値が `"true"` ではなく `"1"` なのは [`CHAT_SEND_ENABLED_KEY`] に揃えたため**
+ * （チャット送信の 2 枚は同じ綴りにしてある。`OBS_AUTO_ADD_KEY` 系の `"true"` とは別系統）。
+ */
+export const GACHA_CHAT_ENABLED_KEY =
+  "stream-dock.comment-viewer.gacha-chat-enabled";
+/**
  * 046b: 「固定コメントをOBSに表示」ON/OFF の保存キー（既定 OFF）。**ユーザー自身の UI 設定値**（トグルの状態）で、
  * §9 追補（046a）が対象とする第三者の個人データ（コメント本文・表示名・金額＝`pinnedComments.ts` のキー）とは
  * データの性質が違う。既存の `OBS_AUTO_ADD_KEY` と同種の非機密トグル値として扱う。
@@ -636,6 +657,67 @@ export function saveObsAutoAdd(enabled: boolean): void {
     localStorage.setItem(OBS_AUTO_ADD_KEY, String(enabled));
   } catch {
     // プライベートモード等で書けない場合は黙って無視する。
+  }
+}
+
+/**
+ * 066: **チャットへの書き込みを許可する**トグルを読み込む。⚠⚠ **未保存・例外はすべて false（OFF）**。
+ *
+ * ⚠⚠⚠ **063f で読み手が 2 つになったので、規則をここへ寄せた。**
+ * 旧実装は `ChatSendCard` が `localStorage.getItem(...) === "1"` を直に書いていたが、
+ * 自動送信（`CommentViewerApp`）が**同じ判定を独立に書く**と、
+ * 片方だけ緩めたときに「画面は OFF なのに送られる」が起きる。⇒ **判定の持ち主は 1 つ。**
+ * ⚠ **読めなかったら OFF へ倒す**（061h の「読めなかったら安全側」・こちらの安全側は「送らない」）。
+ */
+export function loadChatSendEnabled(): boolean {
+  try {
+    return localStorage.getItem(CHAT_SEND_ENABLED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+/** 066: 「チャットへの書き込みを許可する」を保存する。⚠ **OFF はキーごと削除**（上の注記が正）。 */
+export function saveChatSendEnabled(enabled: boolean): void {
+  try {
+    if (enabled) localStorage.setItem(CHAT_SEND_ENABLED_KEY, "1");
+    else localStorage.removeItem(CHAT_SEND_ENABLED_KEY);
+  } catch {
+    // 書けない環境では設定が残らないだけ（既定＝OFF で続く）。
+  }
+}
+
+/**
+ * ⚠⚠⚠ **063f: 「ガチャの当選結果をチャットへ自動で書き込む」が有効か**（＝**2 枚の AND**）。
+ *
+ * ⚠⚠ **この 1 関数が「1 通でも出てよいか」の唯一の判定である。**
+ * [`loadChatSendEnabled`]（同意の 1 枚目）と [`GACHA_CHAT_ENABLED_KEY`]（2 枚目）の**両方**が
+ * ON のときだけ true を返す。⚠ **呼び出し側で片方だけ見る形を作らないこと**——
+ * 作った瞬間、`docs/security.md` §1 の 063f 追補が「門は 2 枚」と書いた根拠が 1 枚に減る。
+ * ⚠ 読めなかったら false（＝送らない）。
+ */
+export function loadGachaChatEnabled(): boolean {
+  if (!loadChatSendEnabled()) return false;
+  try {
+    return localStorage.getItem(GACHA_CHAT_ENABLED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 063f: 自動送信トグルを保存する。⚠ **OFF はキーごと削除**。
+ *
+ * ⚠⚠ **ここでは AND を見ない**（保存は「2 枚目の旗そのもの」の操作である）。
+ * 親トグルが OFF のときにこの旗が true で残っていても、
+ * [`loadGachaChatEnabled`] が AND で false を返すので 1 通も出ない。
+ */
+export function saveGachaChatEnabled(enabled: boolean): void {
+  try {
+    if (enabled) localStorage.setItem(GACHA_CHAT_ENABLED_KEY, "1");
+    else localStorage.removeItem(GACHA_CHAT_ENABLED_KEY);
+  } catch {
+    // 書けない環境では設定が残らないだけ（既定＝OFF で続く）。
   }
 }
 

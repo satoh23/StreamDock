@@ -54,6 +54,11 @@ import {
   saveObsAutoAdd,
   loadPinnedOverlayEnabled,
   savePinnedOverlayEnabled,
+  // ⚠⚠⚠ 063f: **自動送信の同意（2 枚の AND）を読む唯一の関数。**
+  //   ⚠ state にミラーせず、**送る直前に読み直す**（`loadGachaLibrary` と同じ規律＝
+  //   設定画面でトグルを切った直後の 1 件目から効く）。
+  //   ⚠⚠ **ここで `CHAT_SEND_ENABLED_KEY` を直に読む形を作らないこと**（AND が片方だけになる）。
+  loadGachaChatEnabled,
   // 061a: エフェクト窓の設定は **main 窓（`ObsEffectsScreen`）が書き手**で、この窓は読み手。
   // ⚠ state にミラーせず、判断のたびに読み直す（詳細はエフェクト連携 effect の JSDoc）。
   // ⚠ 064e: `loadEffectObsAutoAdd` / `EFFECT_OBS_AUTO_ADD_KEY` の import を外した
@@ -104,6 +109,13 @@ import {
 import { rememberChannelPointRewards } from "../../features/comment-viewer/channelPointRewards";
 import { decideFireResults } from "../obs-effects/effectFire";
 import { emitGachaStageResult } from "../obs-effects/gachaStageEvent";
+import {
+  buildGachaChatMessage,
+  type GachaChatSource,
+} from "../obs-effects/gachaChatMessage";
+// ⚠⚠⚠ 063f 段 1-b: **チャットへの投稿を「演出で結果が見える」まで遅らせる**ための尺。
+//   ⚠ 秒数はここに書かない（演出の尺の持ち主は `gachaStagePlayback.ts` 1 か所）。
+import { gachaChatDelayMs } from "../obs-effects/gachaStagePlayback";
 import {
   createEffectFireMatcher,
   loadGachaLibrary,
@@ -514,6 +526,40 @@ export function CommentViewerApp() {
   >(null);
   // 032c-b: チャンネル名は localStorage から復元し、変更のたびに保存する（窓を閉じても空欄化しない）。
   const [channel, setChannel] = useState(() => loadChannel());
+  /**
+   * ⚠⚠⚠ **063f: 受信 effect（マウント専用）から「宛先の期待値」を読むための ref。**
+   *
+   * ⚠⚠ **`channel` を受信 effect の deps に足さないこと**——足すと**キー入力のたびに
+   * WS が張り直り、その間のコメントを落とす**（`soundCommentEnabledRef` と同じ理由）。
+   * ⚠ **`ChatSendCard` が「送信先」として画面に出す値・`handleStartSession` が
+   * `start-session` に載せる値と同一の変数**であることが、S-2b の突き合わせの前提である
+   * （表示と検査の値がずれると、検査の意味が消える）。
+   */
+  const channelRef = useRef(channel);
+  /**
+   * ⚠⚠⚠ **063f: 直近の「自動送信」の結果**（`null` ＝まだ 1 度も走っていない）。
+   *
+   * ⚠⚠⚠ **自動送信はユーザーが画面を見ていないときに走る**ので、失敗をその場で見せる相手がいない。
+   * ⇒ **最後の 1 件だけを設定画面に残す**（061a Q-1「黙って効かない、を作らない」）。
+   * ⚠⚠ **§9: 送った本文も宛先も持たない。** 持つのは `ok` と、
+   * **sidecar が作った定型の短文**（`reason`）だけである。
+   * ⚠⚠⚠ **state にしか置かない**（localStorage にも DB にも書かない＝窓を閉じれば消える）。
+   * ⚠ **記録にしないこと**——1 件を上書きし続ける形が「残さない」の実装そのものである。
+   */
+  const [gachaChatResult, setGachaChatResult] = useState<{
+    ok: boolean;
+    text: string;
+  } | null>(null);
+  /**
+   * ⚠⚠⚠ **063f 段 1-b: 投稿待ちのタイマー**（演出のネタバレを防ぐための遅延）。
+   *
+   * ⚠⚠ **窓を閉じたら送らない**ためにここで束ねる。⚠ 溜まり続けないよう、
+   * **発火したものは自分で外す**（当たるたびに 1 件増えて、数秒後に 1 件減る）。
+   * ⚠ 遅延中に取得が止まっても**タイマーは消さない**——`sendChat` が
+   * 「コメントの取得に接続していません。」を返し、**その理由が画面に出る**ほうが正しい
+   * （黙って消すと「なぜ書き込まれなかったのか」が読めなくなる・061a Q-1）。
+   */
+  const gachaChatTimersRef = useRef<Set<number>>(new Set());
 
   // 034d: OBS オーバーレイ窓の開閉状態（045b でトグルの置き場所は本体ツールバーへ移設。開＝ON / 閉＝OFF）。
   // 045b 後も state はこの窓に置いたまま（handleObsAutoAddToggle が未開判定に参照する）。窓の実状態と同期させ、
@@ -753,6 +799,11 @@ export function CommentViewerApp() {
 
   useEffect(() => {
     saveChannel(channel);
+  }, [channel]);
+
+  // ⚠ 063f: 受信 effect（マウント専用）から最新の宛先を読むための ref 同期（059a/059b と同じ形）。
+  useEffect(() => {
+    channelRef.current = channel;
   }, [channel]);
 
   // 058a: 選んだ出力デバイスを localStorage に永続化する（再オープン・再起動で復元）。
@@ -1372,6 +1423,23 @@ export function CommentViewerApp() {
    */
   useEffect(() => clearSessionEndTimer, [clearSessionEndTimer]);
 
+  /**
+   * ⚠⚠⚠ **063f 段 1-b: 窓を閉じたら、投稿待ちのタイマーを全部捨てる。**
+   *
+   * ⚠⚠ **捨てないと「コメントビューアを閉じたのに数秒後にチャットへ書き込まれる」**が起きる
+   * ——⚠ **書き込みは視聴者に見えて、あとから消せない**（`docs/security.md` §1 の 066 節）ので、
+   * 「閉じたのに出た」は本機能でいちばん説明が付かない壊れ方である。
+   * ⚠ 045c が踏んだ「取り消し漏れ」と同じ形なので、**取り消しはループで書く**
+   * （[`clearObsEnableTimer`] の注記が正＝種別が増えても cleanup は無改変）。
+   */
+  useEffect(() => {
+    const timers = gachaChatTimersRef.current;
+    return () => {
+      for (const id of timers) window.clearTimeout(id);
+      timers.clear();
+    };
+  }, []);
+
   // 046a: コメント行の右クリックメニューから呼ばれる**固定トグル**。既に固定済みの id なら解除、そうでなければ
   // 先頭（最新）に足して PINNED_LIMIT でクランプする（046a では 1＝直前の固定を置き換える単一ピン）。
   // toPinned が author.avatar を落とすので、localStorage に data URI は載らない。
@@ -1545,6 +1613,29 @@ export function CommentViewerApp() {
                 output: result.output,
                 viewerName: result.gacha.viewerName,
                 rare: result.gacha.rare,
+              });
+              // ⚠⚠⚠ **063f: チャットへの自動送信は最後に置く**（＝ 066 の門の 3 枚目を外す 1 行）。
+              //   ⚠ 順序に意味がある——**本線（OBS）と演出をどちらも済ませてから**投げるので、
+              //   将来ここに `await` を足した人がいても本線が先に終わっている
+              //   （`emitGachaStageResult` を後ろに置いた理由と同じ規律の 2 段目）。
+              // ⚠⚠⚠ **063f 段 3: `viewerName` も渡すようになった**（依頼者の判断・2026-08-29
+              //   ＝「**誰のガチャで何が当たったかがわからないと話にならない**」）。
+              //   ⇒ `docs/security.md` §9 に
+              //   **「追補の追補（063f・当選者の表示名を配信のチャットへ出す）」**を書いた
+              //   （⚠ **全文を提示して承認を得てから書き込んだ**）。
+              // ⚠⚠ **渡すのは 3 つだけである**——**本文・視聴者 id・金額・アバターは渡さない**
+              //   （[`GachaChatSource`] の型がそれを塞いでいる）。
+              //   ⚠ **正直に書く**: ここに `result.gacha` を丸ごと渡しても**コンパイルは通る**
+              //   （構造的部分型なので余剰フィールドは無視される）。
+              //   ⚠⚠ **それでも 3 つを明示的に書き出しているのは、
+              //   「何が端末外へ出るのか」を発火の現場で目に見えるようにするため**であり、
+              //   ⚠⚠⚠ **型を広げるときにここが自動で追従しないようにするため**でもある。
+              // ⚠ 名前は [`stageViewerName`] が **20 文字で切った後**の値をそのまま渡す
+              //   （⚠⚠ **ここで切り直さないこと**）。
+              sendGachaChat({
+                prizeLabel: result.gacha.prizeLabel,
+                rare: result.gacha.rare,
+                viewerName: result.gacha.viewerName,
               });
             }
           }
@@ -2057,6 +2148,156 @@ export function CommentViewerApp() {
       sourceName,
       durationMs,
     );
+  };
+
+  /**
+   * ⚠⚠⚠ **063f: ガチャの当選 1 件を配信のチャットへ書く**（＝ **066 の「門の 3 枚目」を外す 1 か所**）。
+   *
+   * 判断の全文は `docs/security.md` §1 の「追補（063f）」が正。ここが守っているのは 5 つ:
+   *
+   * 1. ⚠⚠⚠ **同意が 2 枚とも ON のときだけ送る**（[`loadGachaChatEnabled`] が AND の唯一の持ち主）。
+   *    ⚠ **送る直前に読む**——設定画面でトグルを切った直後の 1 件目から効かせるため
+   *    （`loadGachaLibrary` を関数のまま渡しているのと同じ規律）。
+   *    ⚠⚠ **ここで `CHAT_SEND_ENABLED_KEY` を直に見る形へ展開しないこと**（AND が 1 枚に減る）。
+   * 2. ⚠⚠ **呼ぶのはガチャ由来の発火だけ**（呼び出し側が `result.gacha !== null` で絞る）。
+   *    ⚠ `gacha === null` は「**ガチャではない**（条件に OBS ソースを直指定）」の意味である。
+   * 3. ⚠⚠⚠ **本文に載るのは「景品名」と「引いた人の表示名」だけである**——
+   *    ⚠⚠ **コメント本文・視聴者 id・金額・アバターは型として渡せない**
+   *    （[`buildGachaChatMessage`] の [`GachaChatSource`] が §9 の線そのもの）。
+   *    ⚠⚠⚠ **063f 段 3 で表示名だけが線の向こう側へ移った**（§9 の追補が根拠）。
+   *    ⚠ **ここで `gacha` をそのまま渡す形へ広げないこと**（次に足す人の関門が消える）。
+   * 4. ⚠⚠⚠ **`expectedChannel` に渡すのは `channelRef.current`**＝
+   *    `ChatSendCard` が「送信先」として画面に出しているのと同じ値である（S-2b）。
+   *    ⚠⚠ **これは「宛先」ではなく「宛先の期待値」**で、宛先は sidecar が
+   *    `setChannel` の現在値から決める。⚠ **宛先として使う配線を書かないこと**（066 S-2）。
+   *    ⚠⚠⚠ **sidecar に現在の宛先を聞いてそれを渡す形にしないこと**——
+   *    自分が答えた値と自分を比べることになり、**突き合わせが恒真になって消える。**
+   * 5. ⚠⚠⚠ **本線（OBS の演出）を止めない。** 戻り値は `void` で、
+   *    **呼び出し側が `await` を書けない**（`emitGachaStageResult` と同じ構え）。
+   *
+   * ## §9
+   *
+   * ⚠⚠ **送った本文も結果も保存しない**（結果は [`gachaChatResult`] の state 1 件のみ・窓を閉じれば消える）。
+   * ⚠ 画面に出すのは **sidecar が作った定型の短文**だけで、本文も宛先も載せない。
+   * ⚠⚠ **ログに出さない**（件数すら出さない）。
+   *
+   * ## ⚠⚠⚠ バーストで落ちる分について（**2026-08-30・security-review S-1 で訂正した**）
+   *
+   * ガチャは **5 秒に最大 3 件**まで発火しうる。同一バッチの当選は**同じ遅延**で予約されるので、
+   * **3 本のタイマーが同じ tick で発火する**。
+   *
+   * ⚠⚠⚠ **旧記述「`sendChat` は同時 1 本なので 2 件目以降はチケット取得すら走らずに `{ok:false}`
+   * で返る」は誤りだった。** `commentStream.ts` の `sendChat` は
+   * **`pendingChatSend !== null` のガードと、その代入のあいだに `await invoke` を挟む**ため、
+   * 同じ tick の 3 本は**全部ガードを通過する**（TOCTOU）。⇒ **sidecar へは最大 3 フレーム出る。**
+   *
+   * ⚠⚠ **それでも Twitch へ届くのは 1 通だけである**——落としているのは
+   * **sidecar 側のスロットル**（最短 3 秒／30 秒に 5 通／**直前と同じ本文を拒否**）**だけ**であり、
+   * ⚠ **frontend 側は 1 本も落としていない**。**この理解のほうが正しい**
+   * （`docs/security.md` §1 の 063f 追補「スロットルは sidecar 側にしかない」とも整合する）。
+   *
+   * ⚠⚠ **既知の副作用**: 上書きされた `pendingChatSend` のせいで、
+   * **成功した 1 通目の結果フレームが `requestId` 不一致で捨てられ**、
+   * [`gachaChatResult`] には**拒否された最後の 1 件**が出る
+   * ⇒ **「投稿されたのに『失敗しました』と出る」**。⚠ **視聴者に見える書き込み自体は 1 通で正しい。**
+   * ⚠⚠⚠ **再修正トリガー＝`commentStream.ts` の `sendChat` で予約を `await` の前へ移すとき**
+   * （＝ 066 の資産なので本タスクでは触らない・段 2 と同じ枠。直した時点でこの節ごと書き直すこと）。
+   *
+   * ⚠⚠ **落ちた分は捨てる**（キューに溜めない・まとめない）——まとめると
+   * **重複拒否を迂回する形**になり、Twitch のアンチスパムに対して StreamDock が回避側に回る。
+   * ⚠ 落ちても **OBS の演出は出続ける**（本線を止めない＝上記 5）。
+   *
+   * ## ⚠ 宣言がこの位置（呼び出し側より後ろ）にあることについて
+   *
+   * **意図**: 呼ぶのは**マウント専用 effect のクロージャ**（発火ループ）で、
+   * あれが走るのはコンポーネント本体を評価し終えた後なので、**実行時 TDZ には当たらない**。
+   * `const` 関数式のまま、関連する `sendChatMessage` の隣に置いてある。
+   *
+   * **なぜ直さないか**（2026-08-30・security-review Q-6 で検証済み）:
+   * マウント時の 1 個目のクロージャが固定されるが、閉じ込めているのは
+   * `streamRef` / `channelRef` / `gachaChatTimersRef`（**ref オブジェクトは再代入されない**）・
+   * `setGachaChatResult`（安定）・**モジュールスコープの関数**だけなので、**stale にならない**。
+   *
+   * ⚠⚠⚠ **再修正トリガー＝この関数が state を直接読むようになったとき**
+   * （`channel` や `gachaChatResult` を ref 経由でなく読む形にした瞬間、
+   * **マウント時の値で固まる**）。⚠ その形にするなら `useCallback` にして
+   * ref 経由の読み出しへ倒すか、宣言を effect より前へ移すこと。
+   * ⚠ この危険は **lint に守られていない**（effect の deps に載らないため）。
+   */
+  const sendGachaChat = (gacha: GachaChatSource): void => {
+    // ⚠⚠ 1: 同意の 2 枚（AND）。⚠ **予約の前に 1 度見る**ので、OFF のときは
+    //   タイマーすら作らない（＝アプリが何かを予約している状態を作らない）。
+    //   ⚠⚠⚠ **ただしこれは本番の関門ではない**——本番は下の「発火時にもう一度読む」ほうである。
+    if (!loadGachaChatEnabled()) return;
+    // ⚠⚠ 3: **渡せるのは `prizeLabel` / `rare` / `viewerName` の 3 つだけ**である。
+    //   ⚠⚠⚠ **2026-08-30 訂正**: ここは長らく「表示名を渡す場所が型として無い（2 フィールドだけ）」と
+    //   書いていたが、**段 3（2026-08-29）で `viewerName` が入ったので嘘になっていた**。
+    //   ⚠⚠ **いま型が塞いでいるのは、コメント本文・視聴者 id・投げ銭金額・アバター**である
+    //   （[`GachaChatSource`] に載っていないので、この先で読もうとするとコンパイルが落ちる）。
+    const message = buildGachaChatMessage(gacha);
+
+    /**
+     * ⚠⚠⚠ **063f 段 1-b: 演出で結果が見えるまで投稿を遅らせる。**
+     *
+     * 実機の指摘＝「**エフェクトで結果が見える前にチャットに結果が流れてしまう**」（2026-08-29）。
+     * ⇒ **演出を出す設定のときだけ**、[`gachaChatDelayMs`]（結果が見える時刻 ＋ 読む間）だけ待つ。
+     * ⚠ **秒数も足し算もここに持たない**（演出の尺を変えたら片方だけ古くなる）。
+     *
+     * ⚠ **判定は [`isStageOverlayRequired`] を流用する**（新しい述語を作らない）——
+     * あれが「ステージ窓へ繋ぐべきか」を決めている唯一の関数で、
+     * **true のときだけ演出が再生される**＝ネタバレが起きうる条件そのものである。
+     * ⚠⚠ **演出を出さない人を待たせない**（0 ms ＝ 従来どおり即時）。
+     *
+     * ## ⚠⚠ 正直に書いておく限界 2 つ
+     *
+     * 1. **連続当選では演出がキューで順番待ちになる**（上限 3 件）のに、**遅延は固定**である。
+     *    ⇒ 2 件目以降は理屈上ズレる。⚠ ただし **sidecar のスロットル（最短 3 秒）**が
+     *    2 件目以降を落とすので、実機で表面化しにくい。
+     *    ⚠⚠⚠ **2026-08-30 訂正: ここに「`sendChat` の同時 1 本ガードが先に落とす」と
+     *    書いていたのは誤り**である（上の「バーストで落ちる分について」が正）。
+     *    ⇒ **落としているのは sidecar 側だけ**で、frontend は 1 本も落としていない。
+     *    ⚠⚠⚠ **完全に合わせるにはステージ窓から「終わった」を返してもらう必要があるが、採らない**
+     *    ——①窓が閉じていると**永久に投稿されない** ②`gachaStageEvent.ts` が
+     *    「伝達は 1 方向」と明記した設計を壊す。
+     * 2. **演出トグルを OFF にした直後**は窓が開いたまま残る（`closeStageOverlayWindow` に
+     *    プロダクションの呼び手が無い）ので、**その間だけ遅延なしでネタバレする**。
+     *    ⚠ 既存の受容済みエッジケースと同じものである。
+     */
+    const delayMs = isStageOverlayRequired() ? gachaChatDelayMs() : 0;
+
+    const timer = window.setTimeout(() => {
+      gachaChatTimersRef.current.delete(timer);
+      // ⚠⚠⚠ **同意は「送る直前」にもう一度読む。** 遅延中にトグルを OFF にしたら**送らない**
+      //   （`loadGachaLibrary` を鳴らす直前に読み直しているのと同じ規律）。
+      //   ⚠ **この 1 行を消さないこと**——消すと「OFF にしたのに数秒後に書き込まれる」が起きる。
+      if (!loadGachaChatEnabled()) return;
+      const stream = streamRef.current;
+      if (!stream) return;
+      // ⚠⚠⚠ 5: **投げっぱなし**（`void`）。⚠ ここを `await` にしないこと——
+      //   本線（OBS の演出）を止めない、という §1 追補の制約はこの形でしか守れない。
+      void stream
+        // ⚠⚠ 4: 宛先ではなく**期待値**。⚠ **遅延の後に読む**ので、
+        //   途中でチャンネルを変えたら**新しい値**で突き合わせる（画面の表示とも一致する）。
+        .sendChat(message, channelRef.current.trim())
+        .then((r) => {
+          setGachaChatResult({
+            ok: r.ok,
+            // ⚠ 失敗の理由は sidecar が作った短文をそのまま出す（本文も token も載っていない・§9）。
+            text: r.ok
+              ? "ガチャの結果をチャットに書き込みました。"
+              : (r.reason ?? "チャットへの書き込みに失敗しました。"),
+          });
+        })
+        .catch(() => {
+          // ⚠ `sendChat` は throw しない設計だが、**未処理の rejection を残さない**
+          //   （`emitGachaStageResult` の `.catch()` と同じ理由＝拒否理由に本文が載りうる・§9）。
+          setGachaChatResult({
+            ok: false,
+            text: "チャットへの書き込みに失敗しました。",
+          });
+        });
+    }, delayMs);
+    gachaChatTimersRef.current.add(timer);
   };
 
   // 045c レビュー（回帰）: 仕掛かり中の猶予タイマーを取り消す。表示 OFF・自動反映 OFF・アンマウントで呼ぶ。
@@ -2574,6 +2815,7 @@ export function CommentViewerApp() {
           onPinnedOverlayToggle={handlePinnedOverlayToggle}
           onChatTestSend={sendChatMessage}
           chatSendChannel={channel}
+          gachaChatResult={gachaChatResult}
         />
       ) : (
         <>

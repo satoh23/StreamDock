@@ -8,6 +8,10 @@ import {
   GACHA_SPIN_FRAME_MS,
   GACHA_SPIN_FRAMES,
   GACHA_SPIN_MS,
+  // ⚠ 063f: チャットへ書くまでの待ち時間（演出の尺から導く）。
+  GACHA_CHAT_EXTRA_DELAY_MS,
+  gachaChatDelayMs,
+  gachaStageResultVisibleMs,
   gachaStageTotalMs,
   gachaStageView,
 } from "./gachaStagePlayback";
@@ -119,5 +123,41 @@ describe("063c 段 2-b: gachaStageView", () => {
     const total = gachaStageTotalMs();
     expect(gachaStageView(total - 1)).not.toBeNull();
     expect(gachaStageView(total)).toBeNull();
+  });
+
+  /**
+   * ⚠⚠⚠ **063f: チャットへ書くまでの待ち時間。**
+   *
+   * ⚠⚠ **この 3 本が「ネタバレしない」ことの根拠である**——
+   * ①結果が見える時刻ちょうどでは**まだ書かない** ②その後に書く
+   * ③⚠⚠⚠ **結果が画面から消える前に書く**（消えたあとだと演出とチャットが繋がらない）。
+   */
+  describe("063f: チャットへ書くまでの待ち時間", () => {
+    it("⚠⚠ 結果が見えるのは「抽選中 ＋ 開封」の時点", () => {
+      expect(gachaStageResultVisibleMs()).toBe(GACHA_SPIN_MS + GACHA_OPEN_MS);
+      // ⚠ ちょうどその時刻から `result` になっている（境界の裏取り）。
+      expect(gachaStageView(gachaStageResultVisibleMs())).toEqual({
+        phase: "result",
+      });
+    });
+
+    it("⚠⚠⚠ 結果が見えた「あと」に書く（見えた瞬間ではない）", () => {
+      expect(gachaChatDelayMs()).toBeGreaterThan(gachaStageResultVisibleMs());
+      // ⚠ 依頼者の指示（2026-08-29）＝「秒数を後 1.5 秒遅らせてください」。
+      expect(gachaChatDelayMs() - gachaStageResultVisibleMs()).toBe(
+        GACHA_CHAT_EXTRA_DELAY_MS,
+      );
+    });
+
+    /**
+     * ⚠⚠⚠ **結果が画面に出ているあいだに書く。**
+     * ⚠ ここを超えると**結果が消えたあとにチャットが動く**ことになり、
+     * 「演出とチャットが同時に盛り上がる」という依頼者の選択が壊れる
+     * （＝ 全長 [`gachaStageTotalMs`] まで待つ案を採らなかった理由そのもの）。
+     */
+    it("⚠⚠⚠ 演出が終わる前に書く（結果が消えてからにならない）", () => {
+      expect(gachaChatDelayMs()).toBeLessThan(gachaStageTotalMs());
+      expect(gachaStageView(gachaChatDelayMs())).toEqual({ phase: "result" });
+    });
   });
 });

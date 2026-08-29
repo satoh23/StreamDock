@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { Button } from "../../components/primitives";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
+// ⚠ 063f 段 1-b: 「高度な設定」の中のトグル 1 つだけに使う（画面を跨ぐ部品は `components/`・061g）。
+import { ToggleSwitch } from "../../components/ToggleSwitch";
 import type { ObsSourceEntry } from "../../features/comment-viewer/overlaySettings";
 import {
   GACHA_DEFINITION_MAX,
@@ -57,12 +59,29 @@ export function GachaLibraryCard({
   gachas,
   obsSources,
   onChange,
+  chatEnabled,
+  chatSendAllowed,
+  onChatEnabledChange,
 }: {
   gachas: readonly GachaDefinition[];
   /** 064b / 064f と同じ経路で受け取る OBS ソース一覧（`null` ＝ **まだ 1 度も取っていない**）。 */
   obsSources: readonly ObsSourceEntry[] | null;
   /** ⚠ 保存は呼び出し側（`ObsEffectsScreen`）が 1 か所で行う（064f の `obsSources` と同じ役割分担）。 */
   onChange: (gachas: readonly GachaDefinition[]) => void;
+  /**
+   * ⚠⚠⚠ **063f 段 1-b: 「ガチャの結果をチャットに書き込む」の現在値**（同意の 2 枚目）。
+   * ⚠⚠ **書き手は `ObsEffectsScreen` 1 か所**（`saveGachaChatEnabled` をここで呼ばないこと）。
+   */
+  chatEnabled: boolean;
+  /**
+   * ⚠⚠⚠ **親（コメビュ設定の「チャットへの書き込みを許可する」）が ON か。**
+   *
+   * ⚠⚠ **同意は 2 枚の AND で、片方はこの窓に無い**（`docs/security.md` §1「追補（063f）」）。
+   * ⇒ **OFF のときは操作させず、どこで許可するのかを画面に出す**
+   * ——出さないと「ON にしたのに書き込まれない」が読めない（061a Q-1）。
+   */
+  chatSendAllowed: boolean;
+  onChatEnabledChange: (next: boolean) => void;
 }) {
   /**
    * いま景品表を開いているガチャの id（`null` ＝ どれも開いていない）。
@@ -306,6 +325,71 @@ export function GachaLibraryCard({
             ガチャは {GACHA_DEFINITION_MAX} 個までです。
           </p>
         )}
+
+        {/* ⚠⚠⚠ **063f 段 1-b: 高度な設定（既定で閉じる）。**
+
+            依頼者の指示（2026-08-29）＝「**ガチャ設定のカードに『高度な設定』として、
+            ガチャ結果をチャット欄に投稿する（ツイッチ限定）機能欄を作って欲しい。
+            高度な設定は普段は折りたたみされてるかたちで**」。
+
+            ⚠⚠ **上の JSDoc の「このカードは景品と確率だけを持つ」に対する、意図的な 3 つ目**である
+            ——063c 段 4-d が「**何が当たるか**」と「**どう見えるか**」で切ったのに、ここへ
+            「**どこへ知らせるか**」が入る。⚠ **黙って混ぜたのではない**: 依頼者が
+            「ガチャ機能でしか使わないのでまとめたい」と判断し、**普段の画面を複雑にしないために
+            折りたたんだ**。⇒ ⚠⚠⚠ **畳みを外さないこと**（外すと 4-d の指摘がそのまま戻る）。
+
+            ⚠⚠⚠ **既定 OFF だからこそ畳んでよい。** 既定 ON の設定を畳むと
+            「**本人が見ていない同意**」になる（`docs/security.md` §1「追補（063f）」）。 */}
+        <details className={styles.gachaAdvanced}>
+          {/* ⚠⚠⚠ **2026-08-30・security-review S-2: 畳んだままでも「いま ON か」が読めるようにした。**
+              既定 OFF なので畳んでよい、という判断は変えていない（上のコメントが正）が、
+              ⚠⚠ **一度 ON にしたあとは、閉じた画面から「自動で書き込まれる状態にある」ことが
+              読めなかった**——`docs/security.md` §1「追補（063f）」が禁じた
+              「**本人が見ていない同意**」が、既定 OFF とは別の経路で復活する形だった。
+              ⚠ **親が OFF なら子は効かない**ので、AND が成立しているときだけ出す。
+              ⚠⚠⚠ **この表示を消さないこと。** 消すなら畳みも外すこと（どちらか一方は要る）。 */}
+          <summary>
+            高度な設定
+            {chatEnabled && chatSendAllowed ? "（チャットへの書き込み: ON）" : ""}
+          </summary>
+          <div className={styles.gachaAdvancedBody}>
+            <ToggleSwitch
+              label="ガチャの結果をチャットに書き込む（Twitch のみ）"
+              checked={chatEnabled}
+              disabled={!chatSendAllowed}
+              onChange={onChatEnabledChange}
+            />
+            {/* ⚠⚠⚠ **何が起きるかを先に言う**（061a Q-1）。
+                ⚠⚠⚠ **063f 段 3: 「引いた人の表示名も書く」ことを必ず明記すること。**
+                `docs/security.md` §9 の「追補の追補（063f）」が
+                **「同意の中身が画面から読めなければ、それは同意になっていない」**と定めている。
+                ⚠⚠ **ここを薄めたら、このトグルは同意として成立しなくなる。**
+                ⚠ 旧文「引いた人の名前は書きません」は段 3 で**嘘になった**ので消した。 */}
+            <p className={styles.note}>
+              ⚠ 当たったときに、あなたのアカウント名で配信のチャットへ景品名と引いた人の表示名を書き込みます。
+              書き込みは視聴者に見え、あとから消せません。
+            </p>
+            {/* ⚠⚠ 演出とチャットの順序（段 1-b の実機指摘）。⚠ 秒数は書かない
+                （`gachaStagePlayback.ts` が持つ値なので、ここに書くと尺を変えたとき嘘になる）。 */}
+            <p className={styles.note}>
+              演出を出す設定のときは、配信画面に結果が出てからチャットに書き込みます。
+              短い間に何度も当たったぶんは書き込まれません（演出は出ます）。
+            </p>
+            {/* ⚠⚠⚠ **同意の 2 枚目はこの窓に無い。** どこで許可するのかを必ず出す。 */}
+            {!chatSendAllowed ? (
+              <p className={styles.note}>
+                コメントビューアの設定にある「チャットに書き込む」で
+                書き込みを許可すると、この設定を ON にできます。
+              </p>
+            ) : (
+              /* ⚠ 結果をここに出せない理由＝ **この画面は WS を持たない**（064a の非対称）。
+                 ⚠⚠ localStorage で運ぶのは §9 に反する（送信結果を端末に残さない）。 */
+              <p className={styles.note}>
+                書き込みの結果は、コメントビューアの設定に出ます。
+              </p>
+            )}
+          </div>
+        </details>
       </div>
 
       {/* ⚠⚠⚠ 063d 穴 R: **使用中のガチャを黙って壊さない。**

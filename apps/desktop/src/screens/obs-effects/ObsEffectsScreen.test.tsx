@@ -216,11 +216,108 @@ describe("061a: ObsEffectsScreen", () => {
     expect(
       screen.queryAllByRole("switch").map((el) => el.getAttribute("aria-label")),
     ).toEqual([
-      // ⚠⚠⚠ **これだけが §1（044a 例外）のガードである**（ON で窓が開き OBS へ繋ぐ）。
+      // ⚠⚠⚠ **063f 段 1-b で増えた 3 つ目。これは `docs/security.md` §1 の
+      //   「追補（063f）」が言う**同意の 2 枚目**である**（＝ 門そのもの）。
+      //   ⚠ ただし 044a のガード（OBS へ繋ぐ）とは**別の門**で、
+      //   こちらが守っているのは **「配信のチャットへ書き込む」**ほうである。
+      //   ⚠⚠ **単独では 1 通も出ない**——親（コメビュ設定の「チャットへの書き込みを許可する」）
+      //   との **AND** で、判定の持ち主は `loadGachaChatEnabled` 1 か所。
+      //   ⚠ 「高度な設定」の中（既定で折りたたみ）に在るが、**DOM には常に居る**ので
+      //   この検査には出る（＝畳んでも隠れて増やせない）。
+      "ガチャの結果をチャットに書き込む（Twitch のみ）",
+      // ⚠⚠⚠ **これが §1（044a 例外）のガードである**（ON で窓が開き OBS へ繋ぐ）。
       "ガチャの演出を配信画面に出す",
       // ⚠ プレビューの見え方を変えるだけ（保存しない）。
       "プレビューで「レア！」を出す",
     ]);
+  });
+
+  /**
+   * ⚠⚠⚠ **063f 段 1-b: 「送れないのに ON に見える」を作らない。**
+   *
+   * この画面のトグルは **AND（[`loadGachaChatEnabled`]）で初期化する**。
+   * ⚠⚠ 子の旗だけで読むと、**親（コメビュ設定の「チャットへの書き込みを許可する」）が
+   * OFF なのに ON に見える**トグルができ、⚠⚠⚠ **画面が嘘をつく**
+   * （ユーザーは「設定したのに書き込まれない」としか分からない・061a Q-1）。
+   *
+   * ⚠ 親が OFF のとき子の旗は `ChatSendCard` 側が消すので**実際には両者は一致する**が、
+   * **一致に依存しないことをここで固定する**（片方が壊れても安全側へ倒れる）。
+   */
+  it("⚠⚠⚠ 063f: 子の旗だけが残っていても、親が OFF なら OFF・操作不可で出る", () => {
+    localStorage.setItem("stream-dock.comment-viewer.gacha-chat-enabled", "1");
+    render(<ObsEffectsScreen />);
+    const sw = screen.getByRole("switch", {
+      name: "ガチャの結果をチャットに書き込む（Twitch のみ）",
+    });
+    expect(sw).not.toBeChecked();
+    expect(sw).toBeDisabled();
+  });
+
+  /** ⚠ 親が ON なら、子の旗どおりに出る（AND のもう半分）。 */
+  it("⚠ 063f: 親が ON なら子の旗どおりに出る", () => {
+    localStorage.setItem("stream-dock.comment-viewer.chat-send-enabled", "1");
+    localStorage.setItem("stream-dock.comment-viewer.gacha-chat-enabled", "1");
+    render(<ObsEffectsScreen />);
+    const sw = screen.getByRole("switch", {
+      name: "ガチャの結果をチャットに書き込む（Twitch のみ）",
+    });
+    expect(sw).toBeChecked();
+    expect(sw).toBeEnabled();
+  });
+
+  /**
+   * ⚠⚠⚠ **063f 段 1-b: 親は「別の窓」が書くので、`storage` で追従する。**
+   *
+   * ⚠⚠ 追従しないと「コメビュ側で許可したのに、この画面はいつまでも
+   * 『許可されていません』と言う」——**こちら側で 061a Q-1 を作ってしまう**。
+   * ⚠ 別 webview 間で `storage` が飛ぶことは 063c 段 1 の実機確認で確かめてある。
+   */
+  it("⚠⚠⚠ 063f: 別の窓が親を ON にしたら、その場で操作できるようになる", () => {
+    render(<ObsEffectsScreen />);
+    const sw = () =>
+      screen.getByRole("switch", {
+        name: "ガチャの結果をチャットに書き込む（Twitch のみ）",
+      });
+    expect(sw()).toBeDisabled();
+    act(() => {
+      localStorage.setItem("stream-dock.comment-viewer.chat-send-enabled", "1");
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key: "stream-dock.comment-viewer.chat-send-enabled",
+          newValue: "1",
+        }),
+      );
+    });
+    expect(sw()).toBeEnabled();
+  });
+
+  /**
+   * ⚠⚠⚠ **親を OFF にした側は子の旗も消す**（`ChatSendCard`）。
+   * ⇒ この画面が開いていたら、**その場でトグルも落ちる**必要がある
+   * （落とさないと「ON に見えるのに 1 通も出ない」）。
+   */
+  it("⚠⚠⚠ 063f: 別の窓が親を OFF にしたら、その場でトグルも落ちる", () => {
+    localStorage.setItem("stream-dock.comment-viewer.chat-send-enabled", "1");
+    localStorage.setItem("stream-dock.comment-viewer.gacha-chat-enabled", "1");
+    render(<ObsEffectsScreen />);
+    const sw = () =>
+      screen.getByRole("switch", {
+        name: "ガチャの結果をチャットに書き込む（Twitch のみ）",
+      });
+    expect(sw()).toBeChecked();
+    act(() => {
+      // ⚠ 親の側（`ChatSendCard`）がやることと同じ＝ 2 本とも消す。
+      localStorage.removeItem("stream-dock.comment-viewer.chat-send-enabled");
+      localStorage.removeItem("stream-dock.comment-viewer.gacha-chat-enabled");
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key: "stream-dock.comment-viewer.chat-send-enabled",
+          newValue: null,
+        }),
+      );
+    });
+    expect(sw()).not.toBeChecked();
+    expect(sw()).toBeDisabled();
   });
 
   // --- 061i: タブ ------------------------------------------------------------------------------

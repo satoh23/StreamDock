@@ -28,6 +28,14 @@ import type {
   CommentStreamHandle,
   CommentStreamHandlers,
 } from "../../features/comment-viewer/commentStream";
+// ⚠⚠ 063f: **本文の持ち主はここではない**——テスト側で文面を組み立て直すと、
+//   本体の文言を変えたときに**テストだけが古い文を主張して緑のまま**になる。⇒ 実物を呼ぶ。
+import { buildGachaChatMessage } from "../obs-effects/gachaChatMessage";
+// ⚠⚠ 063f 段 1-b: **演出の尺は `gachaStagePlayback.ts` が持つ**。
+//   ⚠ ここに秒数を直書きすると、尺を変えたとき**テストだけが古い期待値で緑のまま**になる。
+import { gachaChatDelayMs } from "../obs-effects/gachaStagePlayback";
+// ⚠⚠ 063f 段 3: 表示名を切る長さの持ち主は `effectFire.ts` の 1 か所（テストもそこから引く）。
+import { GACHA_VIEWER_NAME_MAX } from "../obs-effects/effectFire";
 
 /**
  * 061a: **エフェクト窓の OBS 自動反映をコメビュ窓が代行する**配線の仕様テスト。
@@ -106,7 +114,14 @@ const mocks = vi.hoisted(() => ({
       reason: "offline",
     })),
     // 066: 送信は使わないが型を満たす（⚠ 既定 OFF なのでこれらの画面からは呼ばれない）。
-    sendChat: vi.fn(async () => ({ ok: false as const, reason: "offline" })),
+    // ⚠⚠⚠ **063f: 実物の型（`CommentStreamHandle["sendChat"]`）で宣言し直した。**
+    //   旧実装は `vi.fn(async () => …)` で**引数ゼロ**だったので `mock.calls[0]` が `[]` 型になり、
+    //   ⚠ **`calls[0][0]`（送った本文）が取り出せない＝ §9 の網（本文に表示名が入らないこと）が
+    //   そもそも書けなかった。** ⚠⚠ **本体の型から引くこと**（引数を手で書き写すと静かにずれる）。
+    sendChat: vi.fn<CommentStreamHandle["sendChat"]>(async () => ({
+      ok: false,
+      reason: "offline",
+    })),
   } satisfies CommentStreamHandle,
   // ⚠⚠ 063c 段 2-a: 当選結果をステージ窓へ送る経路（**窓間イベント**）。
   //   ⚠ モックしないと jsdom で Tauri の IPC を叩きに行く（実装側が握りつぶすので落ちはしないが、
@@ -1633,5 +1648,636 @@ describe("063c 段 2-a: 当選結果の配り先", () => {
     }
     expect(mocks.stream.fireObsSource).not.toHaveBeenCalled();
     expect(mocks.emitGachaStageResult).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * ⚠⚠⚠ **063f: ガチャの当選結果を配信のチャットへ自動で書き込む。**
+ *
+ * ## ⚠⚠⚠ この 1 ファイルが持つべき担保（`ChatSendCard.test.tsx` では書けないもの）
+ *
+ * `docs/security.md` §1 の「追補（063f）」で **066 の門の 3 枚目（自動送信の経路が 1 本も無い）
+ * を外した**ので、残る 2 枚が本当に効いているかを**送信の現場**で固定する:
+ *
+ * ① ⚠⚠⚠ **同意の 2 枚が AND である**——どちらか一方だけ ON では **1 通も出ない**。
+ * ② ⚠⚠ **送るのはガチャ由来の発火だけ**（条件への OBS ソース直指定では出ない）。
+ * ③ ⚠⚠⚠ **本線（OBS の演出）を止めない**——送信が失敗しても・返ってこなくても鳴る。
+ * ④ ⚠⚠⚠ **§9: 本文に第三者由来の文字列が 1 バイトも入らない**（表示名も本文も視聴者 id も）。
+ * ⑤ ⚠ **`expectedChannel` は画面に出しているのと同じ値**（S-2b の突き合わせが生きている）。
+ * ⑥ ⚠ **送信の本文も結果も localStorage に残さない**（§9・送ったものの記録を作らない）。
+ */
+describe("063f: ガチャの当選をチャットへ自動送信する", () => {
+  /** ⚠ 100% で当たるガチャ＋スパチャ条件（上の 063c ブロックと同じ仕込み方）。 */
+  const putGacha = (name = "大当たり", weight = 1000) => {
+    localStorage.setItem(
+      GACHA_LIBRARY_KEY,
+      JSON.stringify([
+        {
+          id: "g:1",
+          name: "ガチャ",
+          prizes: [{ name, weight, output: { kind: "builtin" } }],
+        },
+      ]),
+    );
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify([
+        {
+          id: "event:superchat",
+          when: { type: "event", eventType: "superchat" },
+          effect: { kind: "gacha", gachaId: "g:1" },
+        },
+      ]),
+    );
+  };
+
+  /** ⚠⚠ 同意の 2 枚。**片方だけ立てる形も試せるように分けてある。** */
+  const allowChat = () =>
+    localStorage.setItem("stream-dock.comment-viewer.chat-send-enabled", "1");
+  const allowAuto = () =>
+    localStorage.setItem("stream-dock.comment-viewer.gacha-chat-enabled", "1");
+  /** ⚠ 期待値（＝画面の「送信先」）が空だと `sendChat` は送る前に落ちるので、必ず入れる。 */
+  const putChannel = () =>
+    localStorage.setItem("stream-dock.comment-viewer.channel", "  MyChannel  ");
+
+  /**
+   * ⚠⚠⚠ **063f 段 1-b: 投稿は `setTimeout` で予約されるようになった**（演出のネタバレ防止）。
+   *
+   * ⚠⚠ 演出を出さない設定でも **`setTimeout(…, 0)`** を通るので、
+   * **`emitComments` の直後に `sendChat` を見ると「まだ呼ばれていない」ことがある**
+   * ——⚠ **実際にフレークになった**（同じテストが単独では緑、4 ファイル同時ではレッド）。
+   * ⇒ **マクロタスクを 1 回流してから見る。**
+   * ⚠ **`await act(async () => {})` では足りない**（あれはマイクロタスクしか流さない）。
+   */
+  const flushSend = async () => {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  };
+
+  const fire = async (comment = superchat()) => {
+    render(<CommentViewerApp />);
+    emitConnected();
+    await act(async () => {});
+    await act(async () => {
+      emitComments([comment]);
+    });
+    await flushSend();
+  };
+
+  it("⚠⚠⚠ 同意が 2 枚とも OFF なら 1 通も送らない（既定 OFF の担保）", async () => {
+    putChannel();
+    putGacha();
+    await fire();
+    expect(mocks.stream.sendChat).not.toHaveBeenCalled();
+    // ⚠ それでも演出は出る（＝機能そのものは動いている状態での 0 件である）。
+    expect(mocks.emitGachaStageResult).toHaveBeenCalledTimes(1);
+  });
+
+  it("⚠⚠⚠ 書き込み許可だけ ON では 1 通も送らない（AND の片側）", async () => {
+    putChannel();
+    allowChat();
+    putGacha();
+    await fire();
+    expect(mocks.stream.sendChat).not.toHaveBeenCalled();
+  });
+
+  it("⚠⚠⚠ 自動送信だけ ON では 1 通も送らない（AND のもう片側）", async () => {
+    putChannel();
+    allowAuto();
+    putGacha();
+    await fire();
+    expect(mocks.stream.sendChat).not.toHaveBeenCalled();
+  });
+
+  it("⚠⚠ 2 枚とも ON なら当選 1 件につき 1 通だけ送る", async () => {
+    putChannel();
+    allowChat();
+    allowAuto();
+    putGacha("特賞");
+    await fire();
+    expect(mocks.stream.sendChat).toHaveBeenCalledTimes(1);
+    // ⚠ 本文は `buildGachaChatMessage` が決める（ここで文面を組み立て直さない）。
+    expect(mocks.stream.sendChat).toHaveBeenCalledWith(
+      // ⚠ 063f 段 3: 表示名も入る（モックのコメントの投稿者は「視聴者A」）。
+      buildGachaChatMessage({
+        prizeLabel: "特賞",
+        rare: false,
+        viewerName: "視聴者A",
+      }),
+      // ⚠⚠⚠ ⑤ **画面に出しているのと同じ値**（trim 済み）。
+      "MyChannel",
+    );
+  });
+
+  /**
+   * ⚠⚠⚠ **2026-08-30・security-review Q-3 で追加した。**
+   *
+   * ⚠⚠ **同一バッチの複数当選は、これまで 1 本もテストが無かった**——にもかかわらず
+   * `sendGachaChat` の JSDoc が最も長く論じているのがこのケースだった。
+   * ⚠⚠⚠ **その論述（「`sendChat` は同時 1 本なので 2 件目以降はチケット取得すら走らない」）は
+   * 誤りで、レビューで実測により否定された**（S-1）。⇒ **本テストは「実際の振る舞い」を固定する。**
+   *
+   * ## ⚠ ここが固定していること
+   *
+   * 1. ⚠⚠⚠ **本線は 2 件とも通る**（演出は当選のぶんだけ出る）——これが最重要である。
+   * 2. **`sendChat` は 2 回呼ばれる**（frontend は 1 本も落としていない）。
+   *    ⚠⚠ **落とすのは sidecar のスロットルだけ**なので、Twitch へ届くのは 1 通になる
+   *    （＝ `docs/security.md` §1 の 063f 追補「スロットルは sidecar 側にしかない」と整合）。
+   * 3. ⚠⚠ **frontend が件数を数えたり、まとめたり、溜めたりしていない**
+   *    （まとめると重複拒否の迂回になる＝追補の再修正トリガー ④）。
+   *
+   * ## ⚠⚠⚠ 再修正トリガー
+   *
+   * **`commentStream.ts` の `sendChat` で `pendingChatSend` の予約を `await` の前へ移したとき**
+   * ——そのとき 2 件目は `{ok:false,"送信中です"}` で即返るようになるので、
+   * ⚠ **`sendChat` の呼び出し回数は 2 のままだが、sidecar へ出るフレームが 1 本に減る。**
+   * ⇒ **この JSDoc ごと書き直すこと**（回数だけ直して意味を古いまま残さない）。
+   */
+  it("⚠⚠⚠ 同一バッチで 2 件当選しても、本線は 2 件とも通り frontend は 1 本も落とさない", async () => {
+    putChannel();
+    allowChat();
+    allowAuto();
+    putGacha("特賞");
+    render(<CommentViewerApp />);
+    emitConnected();
+    await act(async () => {});
+    await act(async () => {
+      // ⚠ 同じバッチに 2 件（バースト上限は 5 秒に 3 件なので 2 件は通る）。
+      emitComments([
+        superchat({ id: "c1", author: { id: "u1", name: "視聴者A" } }),
+        superchat({ id: "c2", author: { id: "u2", name: "視聴者B" } }),
+      ]);
+    });
+    await flushSend();
+
+    // ⚠⚠⚠ 1: **本線（演出）は 2 件とも出る**（チャットの都合で当選を握り潰さない）。
+    expect(mocks.emitGachaStageResult).toHaveBeenCalledTimes(2);
+    // ⚠⚠ 2: frontend は 1 本も落とさない（＝「同時 1 本で 2 件目が落ちる」は成立しない）。
+    expect(mocks.stream.sendChat).toHaveBeenCalledTimes(2);
+    // ⚠⚠⚠ 3: **本文は当選ごとに別で、引いた人の表示名がそれぞれ入る**
+    //   （＝ まとめたり、片方を捨てて 1 通にしたりしていない）。
+    expect(mocks.stream.sendChat).toHaveBeenNthCalledWith(
+      1,
+      buildGachaChatMessage({
+        prizeLabel: "特賞",
+        rare: false,
+        viewerName: "視聴者A",
+      }),
+      "MyChannel",
+    );
+    expect(mocks.stream.sendChat).toHaveBeenNthCalledWith(
+      2,
+      buildGachaChatMessage({
+        prizeLabel: "特賞",
+        rare: false,
+        viewerName: "視聴者B",
+      }),
+      "MyChannel",
+    );
+  });
+
+  it("⚠⚠ レア景品なら文面が変わる（`rare` が運ばれている）", async () => {
+    putChannel();
+    allowChat();
+    allowAuto();
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    try {
+      putGacha("極小", 99);
+      await fire();
+    } finally {
+      random.mockRestore();
+    }
+    expect(mocks.stream.sendChat).toHaveBeenCalledWith(
+      buildGachaChatMessage({
+        prizeLabel: "極小",
+        rare: true,
+        viewerName: "視聴者A",
+      }),
+      "MyChannel",
+    );
+  });
+
+  it("⚠⚠⚠ 条件への OBS ソース直指定（ガチャではない）では送らない", async () => {
+    putChannel();
+    allowChat();
+    allowAuto();
+    putObsCondition();
+    await fire();
+    expect(mocks.stream.fireObsSource).toHaveBeenCalledTimes(1);
+    expect(mocks.stream.sendChat).not.toHaveBeenCalled();
+  });
+
+  /**
+   * ⚠⚠ **はずれ・一覧に無い `gachaId`・景品 0 件は、現行の型では区別できない**
+   * （`drawGachaResult` が 3 つとも `null` を返し、結果に積まれない）。
+   * ⇒ **「どれも 1 通も送らない」までが、ここで固定できることの全部**である。
+   */
+  it("⚠ はずれでは送らない", async () => {
+    putChannel();
+    allowChat();
+    allowAuto();
+    putGacha("極小", 1);
+    const spy = vi.spyOn(Math, "random").mockReturnValue(0.99);
+    try {
+      await fire();
+    } finally {
+      spy.mockRestore();
+    }
+    expect(mocks.stream.sendChat).not.toHaveBeenCalled();
+  });
+
+  it("⚠ 一覧に無い gachaId では送らない", async () => {
+    putChannel();
+    allowChat();
+    allowAuto();
+    localStorage.setItem(GACHA_LIBRARY_KEY, JSON.stringify([]));
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify([
+        {
+          id: "event:superchat",
+          when: { type: "event", eventType: "superchat" },
+          effect: { kind: "gacha", gachaId: "g:missing" },
+        },
+      ]),
+    );
+    await fire();
+    expect(mocks.stream.sendChat).not.toHaveBeenCalled();
+    expect(mocks.emitGachaStageResult).not.toHaveBeenCalled();
+  });
+
+  it("⚠ 景品 0 件では送らない", async () => {
+    putChannel();
+    allowChat();
+    allowAuto();
+    localStorage.setItem(
+      GACHA_LIBRARY_KEY,
+      JSON.stringify([{ id: "g:1", name: "ガチャ", prizes: [] }]),
+    );
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify([
+        {
+          id: "event:superchat",
+          when: { type: "event", eventType: "superchat" },
+          effect: { kind: "gacha", gachaId: "g:1" },
+        },
+      ]),
+    );
+    await fire();
+    expect(mocks.stream.sendChat).not.toHaveBeenCalled();
+  });
+
+  /**
+   * ⚠⚠⚠ **③ 本線を止めない（その 1）: 送信が失敗しても OBS と演出は動く。**
+   * ⚠ 「チャットが送れなくても景品は鳴る」は 063f の完了条件そのものである。
+   */
+  it("⚠⚠⚠ 送信に失敗しても OBS の演出は出る", async () => {
+    putChannel();
+    allowChat();
+    allowAuto();
+    mocks.stream.sendChat.mockResolvedValueOnce({
+      ok: false,
+      reason: "送信の間隔が短すぎます。少し待ってください。",
+    });
+    putGacha();
+    await fire();
+    expect(mocks.stream.sendChat).toHaveBeenCalledTimes(1);
+    expect(mocks.emitGachaStageResult).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * ⚠⚠⚠ **③ 本線を止めない（その 2）: 送信が「永久に返ってこなくても」演出は出る。**
+   *
+   * ⚠⚠ **これが `await` していないことの担保である**——`sendGachaChat` を
+   * `await` する変異を入れると、この 1 本だけがレッドになる
+   * （失敗を返す上のケースは `await` してもグリーンのままなので、**あちらでは殺せない**）。
+   */
+  it("⚠⚠⚠ 送信が返ってこなくても OBS の演出は出る（await していない）", async () => {
+    putChannel();
+    allowChat();
+    allowAuto();
+    // ⚠ 解決しない Promise を返す（＝ Twitch の往復が詰まっている状態）。
+    mocks.stream.sendChat.mockReturnValueOnce(
+      new Promise<{ ok: false; reason: string }>(() => {}),
+    );
+    putGacha();
+    await fire();
+    expect(mocks.emitGachaStageResult).toHaveBeenCalledTimes(1);
+    expect(mocks.stream.fireObsSource).not.toHaveBeenCalled();
+  });
+
+  /**
+   * ⚠⚠⚠ **④ §9: 本文に第三者由来の文字列が 1 バイトも入らない。**
+   *
+   * ⚠⚠ **表示名も入らない**——`docs/security.md` §9 の「追補の追補（063c 段 3）」の
+   * 再評価トリガー ③ が「表示名が端末外（配信サービス）へ出る形」を**範囲外**としているため。
+   * ⚠ **同じ発火でステージ窓には表示名が渡る**（あちらは端末内）ことも同時に見る＝
+   * **線が「どこへ出るか」で引かれている**ことをコードで表現している唯一の場所である。
+   */
+  it("⚠⚠⚠ §9: 送る本文に入るのは表示名だけ（本文・視聴者 id は 1 文字も入らない）", async () => {
+    putChannel();
+    allowChat();
+    allowAuto();
+    putGacha();
+    await fire(
+      superchat({
+        text: "これは第三者の本文です",
+        author: { id: "u9", name: "第三者の名前" },
+      }),
+    );
+    const sent = String(mocks.stream.sendChat.mock.calls[0]?.[0] ?? "");
+    // ⚠⚠⚠ **063f 段 3: 表示名は入る**（依頼者の判断・`docs/security.md` §9 の
+    //   「追補の追補（063f）」が根拠）。⚠ **これが線の向こう側へ移った唯一の項目である。**
+    expect(sent).toContain("第三者の名前");
+    // ⚠⚠⚠ **ここから先は 1 文字も入らない**（型として渡す場所が無い）。
+    //   ⚠ **この 3 行を消さないこと**——線がどこに在るかをコードで表現している場所である。
+    expect(sent).not.toContain("これは第三者の本文です");
+    expect(sent).not.toContain("u9");
+    expect(sent).not.toContain("¥1,000");
+    // ⚠⚠ **端末内（ステージ窓）へも同じ表示名が渡る**（段 3 で解禁済み・こちらは元から）。
+    expect(mocks.emitGachaStageResult).toHaveBeenCalledWith(
+      expect.objectContaining({ viewerName: "第三者の名前" }),
+    );
+  });
+
+  /**
+   * ⚠⚠⚠ **表示名は `stageViewerName` が 20 文字で切った後の値でなければならない。**
+   *
+   * ⚠⚠ **生の `author.name` を使うと、長い名前がそのままチャットへ流れる**
+   * ——`docs/security.md` §9 の追補が「**最大 20 文字で切り、超過分は `…`**」と定めており、
+   * ⚠ **切る規則の持ち主は `effectFire.ts` の 1 か所**である。
+   */
+  it("⚠⚠⚠ §9: 長い表示名は 20 文字で切られた形で送られる（生の名前を使わない）", async () => {
+    putChannel();
+    allowChat();
+    allowAuto();
+    putGacha();
+    const longName = "あ".repeat(GACHA_VIEWER_NAME_MAX + 5);
+    await fire(superchat({ author: { id: "u9", name: longName } }));
+    const sent = String(mocks.stream.sendChat.mock.calls[0]?.[0] ?? "");
+    expect(sent).toContain(`${"あ".repeat(GACHA_VIEWER_NAME_MAX)}…`);
+    // ⚠⚠ **生の名前そのものは出ない**（切られている）。
+    expect(sent).not.toContain(longName);
+  });
+
+  /** ⚠ 表示名が空でも**当選そのものは送る**（名前の部分だけ落ちる）。 */
+  it("⚠⚠ 表示名が空でも当選は送る（代替名を作らない）", async () => {
+    putChannel();
+    allowChat();
+    allowAuto();
+    putGacha("特賞");
+    await fire(superchat({ author: { id: "u1", name: "" } }));
+    expect(mocks.stream.sendChat).toHaveBeenCalledWith(
+      buildGachaChatMessage({
+        prizeLabel: "特賞",
+        rare: false,
+        viewerName: null,
+      }),
+      "MyChannel",
+    );
+  });
+
+  /**
+   * ⚠⚠⚠ **同意は「送る直前」に読む**（マウント時の写しを掴まない）。
+   *
+   * ⚠⚠ **これが無いと「設定画面で ON にしたのに、窓を開き直すまで書き込まれない」**が起きる
+   * ——`loadGachaLibrary` を関数のまま渡している（＝鳴らす直前に読み直す）のと同じ規律である。
+   * ⚠ 逆向き（OFF にした直後も送り続ける）のほうが重い：**同意を外したのに書き込みが続く。**
+   */
+  it("⚠⚠⚠ 途中で同意が入った直後の当選から効く（マウント時の写しを掴んでいない）", async () => {
+    putChannel();
+    putGacha();
+    // ⚠ **保存はゼロの状態で描画する**（＝マウント時に読んだら必ず false）。
+    render(<CommentViewerApp />);
+    emitConnected();
+    await act(async () => {});
+
+    // ⚠ 1 件目は同意が無いので送らない（＝この時点の写しは false）。
+    await act(async () => {
+      emitComments([superchat()]);
+    });
+    await flushSend();
+    expect(mocks.stream.sendChat).not.toHaveBeenCalled();
+
+    // ⚠⚠⚠ **063f 段 1-b: 親はこの窓、子は「OBSエフェクト」画面（＝別の窓）にある。**
+    //   ⇒ 親は画面から操作し、**子は別窓が書いた状態を localStorage で再現する**
+    //   （この窓に子のトグルはもう無い）。
+    fireEvent.click(screen.getByLabelText("設定"));
+    fireEvent.click(
+      screen.getByLabelText("チャットへの書き込みを許可する", { exact: false }),
+    );
+    allowAuto();
+
+    // ⚠⚠ **窓を開き直していない**のに、次の当選から効くこと。
+    await act(async () => {
+      emitComments([superchat({ id: "c2" })]);
+    });
+    await flushSend();
+    expect(mocks.stream.sendChat).toHaveBeenCalledTimes(1);
+  });
+
+  /** ⚠⚠ ⑥ §9: 本文も結果も端末に残さない（送ったものの記録を作らない）。 */
+  it("⚠⚠ §9: 送った本文も結果も localStorage に残らない", async () => {
+    putChannel();
+    allowChat();
+    allowAuto();
+    putGacha("特賞");
+    await fire();
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i) ?? "";
+      const value = localStorage.getItem(key) ?? "";
+      expect(value).not.toContain("が当たりました");
+      expect(value).not.toContain("視聴者A");
+    }
+  });
+
+  /**
+   * ⚠⚠⚠ **直近の結果が設定画面に出る**（061a Q-1「黙って効かない、を作らない」）。
+   * ⚠ 自動送信は**画面を見ていないときに走る**ので、あとから読めることが唯一の対処である。
+   */
+  it("⚠⚠ 失敗の理由が設定画面に残る", async () => {
+    putChannel();
+    allowChat();
+    allowAuto();
+    mocks.stream.sendChat.mockResolvedValueOnce({
+      ok: false,
+      reason: "直前と同じ内容は送れません（Twitch 側で弾かれるため）。",
+    });
+    putGacha();
+    await fire();
+    fireEvent.click(screen.getByLabelText("設定"));
+    // ⚠⚠⚠ **完全一致で見る**（部分一致にしない）。
+    //   ⚠ §9: 出してよいのは **sidecar が作った定型の短文だけ**で、
+    //   **送った本文をここへ足すと必ずレッドになる**——部分一致だと足しても緑のまま通る
+    //   （実際に変異させて確認した。⚠ 緩めないこと）。
+    expect(
+      await screen.findByText(
+        "ガチャの自動書き込み: 直前と同じ内容は送れません（Twitch 側で弾かれるため）。",
+      ),
+    ).toBeInTheDocument();
+  });
+});
+
+/**
+ * ⚠⚠⚠ **063f 段 1-b: 演出より先にチャットへ流さない（ネタバレ防止）。**
+ *
+ * 実機の指摘（2026-08-29）＝「**エフェクトで結果が見える前にチャットに結果が流れてしまう**」。
+ * ⇒ **演出を出す設定のときだけ**、[`gachaChatDelayMs`] だけ投稿を遅らせる
+ * （＝ 結果が見える時刻 ＋ 読む間。⚠ **約 6.17 秒**——依頼者の指示で 1.5 秒 → 3.5 秒と伸ばした）。
+ * ⚠⚠ **秒数はここに書かない**（`gachaChatDelayMs()` から引く）ので、値を変えてもこの 4 本は緑のまま。
+ *
+ * ⚠⚠ **秒数をこのファイルに直書きしない**——`gachaStagePlayback.ts` から引く
+ * （演出の尺を変えたときに**テストだけが古い期待値で緑のまま**になるのを防ぐ）。
+ */
+describe("063f 段 1-b: 演出が見えるまでチャットへ投稿しない", () => {
+  const putGacha = () => {
+    localStorage.setItem(
+      GACHA_LIBRARY_KEY,
+      JSON.stringify([
+        {
+          id: "g:1",
+          name: "ガチャ",
+          prizes: [
+            { name: "大当たり", weight: 1000, output: { kind: "builtin" } },
+          ],
+        },
+      ]),
+    );
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify([
+        {
+          id: "event:superchat",
+          when: { type: "event", eventType: "superchat" },
+          effect: { kind: "gacha", gachaId: "g:1" },
+        },
+      ]),
+    );
+  };
+  /** ⚠ 同意の 2 枚 ＋ 宛先の期待値（空だと送る前に落ちる）。 */
+  const allowAll = () => {
+    localStorage.setItem("stream-dock.comment-viewer.chat-send-enabled", "1");
+    localStorage.setItem("stream-dock.comment-viewer.gacha-chat-enabled", "1");
+    localStorage.setItem("stream-dock.comment-viewer.channel", "MyChannel");
+  };
+  /** ⚠⚠ **演出が出る状態**にする（＝ `isStageOverlayRequired()` が true）。 */
+  const enableStage = () => {
+    localStorage.setItem(GACHA_STAGE_ENABLED_KEY, "true");
+  };
+
+  const fire = async () => {
+    render(<CommentViewerApp />);
+    emitConnected();
+    await act(async () => {});
+    await act(async () => {
+      emitComments([superchat()]);
+    });
+  };
+
+  it("⚠⚠⚠ 演出が出る設定なら、結果が見えるまで 1 通も送らない", async () => {
+    vi.useFakeTimers();
+    try {
+      allowAll();
+      enableStage();
+      putGacha();
+      await fire();
+      // ⚠⚠ **演出は即座に出る**（本線は止めていない）。
+      expect(mocks.emitGachaStageResult).toHaveBeenCalledTimes(1);
+      // ⚠⚠⚠ **1 ms 手前ではまだ送っていない**（＝遅延が本当に効いている）。
+      await act(async () => {
+        vi.advanceTimersByTime(gachaChatDelayMs() - 1);
+      });
+      expect(mocks.stream.sendChat).not.toHaveBeenCalled();
+      // ⚠ 結果が見えた瞬間に 1 通。
+      await act(async () => {
+        vi.advanceTimersByTime(1);
+      });
+      expect(mocks.stream.sendChat).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("⚠⚠ 演出を出さない設定なら待たせない（従来どおり即時）", async () => {
+    vi.useFakeTimers();
+    try {
+      allowAll();
+      // ⚠ `enableStage()` を呼ばない＝ `isStageOverlayRequired()` は false。
+      putGacha();
+      await fire();
+      await act(async () => {
+        vi.advanceTimersByTime(0);
+      });
+      expect(mocks.stream.sendChat).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * ⚠⚠⚠ **遅延中にトグルを OFF にしたら送らない。**
+   * ⚠ 同意を「送る**直前**」に読み直していることの担保で、
+   * ここを予約時の 1 回だけにすると「**OFF にしたのに数秒後に書き込まれる**」が起きる。
+   */
+  it("⚠⚠⚠ 待っているあいだに同意を外したら送らない", async () => {
+    vi.useFakeTimers();
+    try {
+      allowAll();
+      enableStage();
+      putGacha();
+      await fire();
+      // ⚠ 待っているあいだに、別の窓（OBSエフェクト画面）で OFF にされた状況。
+      localStorage.removeItem("stream-dock.comment-viewer.gacha-chat-enabled");
+      await act(async () => {
+        vi.advanceTimersByTime(gachaChatDelayMs() + 1);
+      });
+      expect(mocks.stream.sendChat).not.toHaveBeenCalled();
+      // ⚠ 演出のほうは出たまま（本線を止めない）。
+      expect(mocks.emitGachaStageResult).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * ⚠⚠⚠ **窓を閉じたら送らない。**
+   * ⚠ **書き込みは視聴者に見えて、あとから消せない**ので、
+   * 「コメントビューアを閉じたのに数秒後に書き込まれた」は最も説明が付かない壊れ方である。
+   *
+   * ## ⚠⚠ 正直に書く: **この 1 本は cleanup そのものを固定していない**
+   *
+   * アンマウントで **`streamRef.current` が `null` になる**ので、
+   * タイマーを捨て忘れても**発火時に `if (!stream) return;` で落ちて結局送らない**
+   * ——⚠ **実測で確認した**（cleanup から `clearTimeout` を外す変異が**生存する**）。
+   * ⚠⚠ **`vi.getTimerCount()` で件数を見る形も試したが駄目だった**——
+   * アンマウント後も**無関係なタイマーが 20 件残っている**（ポーリング等）ので、
+   * 1 件の増減がノイズに埋もれる。⚠ **同じ手を再試行しないこと。**
+   *
+   * ⇒ ⚠⚠⚠ **それでも cleanup を置いているのは、`stream` を予約時に閉じ込める形へ
+   * 書き換えた瞬間に「閉じたのに書き込む」が復活するから**である（多層防御の 2 枚目）。
+   * ⚠ **この 1 本が固定しているのは「閉じたら送らない」という振る舞いのほう**である。
+   */
+  it("⚠⚠⚠ 待っているあいだに窓を閉じたら送らない", async () => {
+    vi.useFakeTimers();
+    try {
+      allowAll();
+      enableStage();
+      putGacha();
+      const view = render(<CommentViewerApp />);
+      emitConnected();
+      await act(async () => {});
+      await act(async () => {
+        emitComments([superchat()]);
+      });
+      view.unmount();
+      await act(async () => {
+        vi.advanceTimersByTime(gachaChatDelayMs() + 1000);
+      });
+      expect(mocks.stream.sendChat).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

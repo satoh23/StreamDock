@@ -90,6 +90,8 @@ function baseProps(over: Partial<Props> = {}): Props {
     onPinnedOverlayToggle: vi.fn(),
     onChatTestSend: async () => ({ ok: false, reason: "offline" }),
     chatSendChannel: "",
+    // 063f: 自動送信の直近結果（表示専用）。⚠ 既定は「まだ 1 度も走っていない」。
+    gachaChatResult: null,
     ...over,
   };
 }

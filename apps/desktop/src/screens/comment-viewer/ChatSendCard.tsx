@@ -1,7 +1,11 @@
 import { useState } from "react";
 import { Button } from "../../components/primitives";
 import { ToggleSwitch } from "../../components/ToggleSwitch";
-import { CHAT_SEND_ENABLED_KEY } from "../../features/comment-viewer/overlaySettings";
+import {
+  loadChatSendEnabled,
+  saveChatSendEnabled,
+  saveGachaChatEnabled,
+} from "../../features/comment-viewer/overlaySettings";
 import styles from "./CommentViewerApp.module.css";
 
 /**
@@ -13,13 +17,23 @@ import styles from "./CommentViewerApp.module.css";
  * 定めて既定を反転させたのも、実害がその範囲に収まっていたから）。
  * ⚠⚠ **書き込みは視聴者に見えて、消せない。** ⇒ **誤爆の重さがまったく違う。**
  *
- * ## ⚠⚠ 門は 3 枚（どれも外さないこと）
+ * ## ⚠⚠⚠ 門は **2 枚**（⚠ **063f で 3 枚目が無くなった**・どちらも外さないこと）
  *
  * 1. **チケット**（Rust が採番 → stdin private pipe → sidecar が照合）…
  *    未認証の loopback WS へ繋いだだけのページが投稿する経路を塞ぐ。**これが壁である。**
- * 2. **このトグル（既定 OFF）** … ユーザーの明示的な同意。⚠ **既定を ON にしないこと。**
- * 3. ⚠⚠⚠ **自動送信の経路が 1 本も無い** … 段 1 で送信を起こせるのは**このボタンだけ**である。
- *    ⚠ **063b で自動送信を繋ぐときは、必ずここへ戻って 3 枚目が無くなることを意識すること。**
+ * 2. **このカードのトグル（既定 OFF）** … ユーザーの明示的な同意。⚠ **既定を ON にしないこと。**
+ *    ⚠⚠⚠ **063f でトグルは 2 つになった**（「書き込みを許可する」＋「ガチャの結果を自動で書き込む」）。
+ *    **両方が ON のときだけ自動送信が 1 通出る**（AND・判定の持ち主は `loadGachaChatEnabled` 1 か所）。
+ *    ⚠⚠⚠ **063f 段 1-b: 2 枚目は「OBSエフェクト」画面（`GachaLibraryCard` の「高度な設定」）へ移った**
+ *    ——依頼者の指示「**ガチャ機能でしか使わない予定なのでまとめたい**」。
+ *    ⚠⚠ **同意の 2 枚が別々の窓に分かれた**ので、**あちらには親（このトグル）の状態を出してある**。
+ *    ⚠ **このカードに残っているのは「親」と「自動送信の結果表示」と「在り処の案内」**である。
+ * 3. ~~**自動送信の経路が 1 本も無い**~~ … ⚠⚠⚠ **2026-08-29・063f で外した。**
+ *    送信を起こせるのは**このボタンだけ**ではなくなり、**ガチャの当選**でも起きる
+ *    （`CommentViewerApp` の `sendGachaChat`）。⚠ **ユーザーが画面を見ていないときに走る。**
+ *    ⚠⚠ **残る 2 枚で足りると判断した根拠は `docs/security.md` §1 の「追補（063f）」が正**
+ *    ——ここに書き写さないこと（2 通りに書くと片方だけ古くなる）。
+ *    ⚠⚠⚠ **送信の契機をさらに増やすときは、必ずあの追補を読み直すこと。**
  *
  * ## ⚠ Twitch だけである
  *
@@ -30,9 +44,11 @@ import styles from "./CommentViewerApp.module.css";
  *
  * ## §9
  *
- * ⚠ 保存するのは**このトグルの真偽値だけ**。⚠⚠ **送った文も結果も保存しない**
+ * ⚠ 保存するのは**トグル 2 つの真偽値だけ**。⚠⚠ **送った文も結果も保存しない**
  * （結果は state のみ＝窓を閉じれば消える）。⚠ チケットは**ここには 1 度も現れない**
  * （`commentStream.ts` が送信のたびに Rust から取り直す）。
+ * ⚠⚠⚠ **063f: 自動送信の結果も同じ扱いである**（[`gachaChatResult`] は親の state で、
+ * **最後の 1 件を上書きし続ける**＝ **送ったものの記録を残さない**）。⚠ **記録にしないこと。**
  */
 
 /** テスト送信の既定文。⚠ **視聴者に見える**ので、意味が伝わる短文にする。 */
@@ -41,6 +57,7 @@ const TEST_MESSAGE = "StreamDock のテスト送信です";
 export function ChatSendCard({
   onTestSend,
   channel,
+  gachaChatResult,
 }: {
   /** ⚠ `CommentStreamHandle.sendChat`。**宛先は渡さない**（sidecar が接続中の配信から決める）。 */
   onTestSend: (message: string) => Promise<{ ok: boolean; reason?: string }>;
@@ -60,24 +77,30 @@ export function ChatSendCard({
    * （不一致なら送らずに理由が返る）。⚠ **表示と突き合わせの値が同じであることが、この対処の全て**である。
    * ⚠ **この表示を消さないこと**（消すと「なぜ送れないのか」が画面から読めなくなる）。
    * ✅ **段 2（`start-session` のチケット化）は完了した**（2026-08-23）。
-   * ⚠⚠ **残るのは自動送信（`docs/tasks/063f-gacha-chat-output.md`・旧「066 段 3」）で、
-   * そのとき「自動送信の経路が 1 本も無い」という門の 3 枚目が無くなる**
-   * （⚠ **063f が正**。`docs/tasks/066-chat-send.md` 側は移設済みで内容を持たない・
-   * `docs/security.md` §1 の 066 節も併せて読むこと）。
+   * ✅ ⚠⚠⚠ **自動送信（`docs/tasks/063f-gacha-chat-output.md`・旧「066 段 3」）も入った**
+   * （2026-08-29）＝ **門の 3 枚目は無くなった**（上の「門は 2 枚」の節が正）。
+   * ⚠⚠ **突き合わせの重みはむしろ増している**——自動送信には「押した瞬間」が無く、
+   * `CommentViewerApp` は**この表示と同じ `channel` state**を期待値として渡している。
+   * ⚠ **表示に使う値と、あちらが渡す値をずらさないこと**（ずれると検査の意味が消える）。
    */
   channel: string;
+  /**
+   * ⚠⚠⚠ **063f: 直近の「自動送信」の結果**（`null` ＝まだ 1 度も走っていない）。
+   *
+   * ⚠⚠⚠ **自動送信はユーザーが画面を見ていないときに走る**ので、
+   * **失敗をその場で見せる相手がいない**。⇒ **最後の 1 件をここに残す**のが対処である
+   * （061a Q-1「黙って効かない、を作らない」）。
+   * ⚠⚠ **上の `result`（テスト送信の結果）と別枠にしてある**——混ぜると
+   * 「押していないのにテスト送信の結果が変わった」ように見える。
+   * ⚠ **§9: 本文も宛先も載っていない**（`ok` と定型の短文だけ）。**保存もしない。**
+   */
+  gachaChatResult: { ok: boolean; text: string } | null;
 }) {
   /**
    * ⚠⚠ **既定 OFF。** 読み取りに失敗したら OFF へ倒す（061h の「読めなかったら安全側」と同じ向き。
    * ⚠ こちらは「安全側＝送らない」である）。
    */
-  const [enabled, setEnabled] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem(CHAT_SEND_ENABLED_KEY) === "1";
-    } catch {
-      return false;
-    }
-  });
+  const [enabled, setEnabled] = useState<boolean>(() => loadChatSendEnabled());
   /** ⚠ 送信の結果。**state にしか置かない**（§9・窓を閉じれば消える）。 */
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(
     null,
@@ -87,14 +110,18 @@ export function ChatSendCard({
   const toggle = (next: boolean): void => {
     setEnabled(next);
     setResult(null);
-    try {
-      // ⚠ OFF は**キーごと消す**（「未保存＝OFF」と「明示的に OFF」を同じ状態に潰す・
-      //   `saveOverlayTheme(null)` と同じ判断）。
-      if (next) localStorage.setItem(CHAT_SEND_ENABLED_KEY, "1");
-      else localStorage.removeItem(CHAT_SEND_ENABLED_KEY);
-    } catch {
-      /* 書けない環境では設定が残らないだけ（既定＝OFF で続く） */
-    }
+    // ⚠ OFF は**キーごと消す**（「未保存＝OFF」と「明示的に OFF」を同じ状態に潰す・
+    //   `saveOverlayTheme(null)` と同じ判断）。⚠ 063f で規則を `overlaySettings.ts` へ寄せた。
+    saveChatSendEnabled(next);
+    // ⚠⚠⚠ **親を OFF にしたら子の旗（ガチャの自動書き込み）も消す。**
+    //   残すと **`GACHA_CHAT_ENABLED_KEY` が true のまま端末に残り**、
+    //   次に親を ON にした瞬間に**自動送信がユーザーの操作ゼロで復活する**。
+    //   ⚠ 063c 段 1 の「旗を落とす契機を減らさない」と同じ規律で、**安全側へ倒す。**
+    //   ⚠⚠⚠ **063f 段 1-b: 子のトグル自体は OBS エフェクト画面へ移った**が、
+    //   **この連動は親の側に残す**（`docs/security.md` §1「追補（063f）」）——
+    //   あちらは親を OFF にできないので、ここで落とさないと誰も落とさない。
+    //   ⚠ あちらの画面は `storage` を購読しているので、開いていればその場でトグルが落ちる。
+    if (!next) saveGachaChatEnabled(false);
   };
 
   const testSend = async (): Promise<void> => {
@@ -131,17 +158,30 @@ export function ChatSendCard({
           checked={enabled}
           onChange={toggle}
         />
-        {/* ⚠⚠⚠ **約束できることだけ書く**（061a Q-1）。⚠ いま自動送信は 1 本も無いので、
-            「ガチャの結果が流れる」等と書かないこと。⚠ **063b で自動送信を繋いだら、ここを直すこと。** */}
+        {/* ⚠⚠⚠ **約束できることだけ書く**（061a Q-1）。
+            ⚠⚠⚠ **063f で「自動での書き込みはしません」を消した**——下のトグルを ON にすると
+            ガチャの当選で自動送信が走るので、あの 1 文は**嘘になった**。
+            ⚠ **送信の契機を増やしたら、必ずこの文も直すこと。** */}
         <p className={styles.note}>
           ⚠
           有効にすると、あなたのアカウント名でチャットに書き込めるようになります。書き込みは視聴者に見え、あとから消せません。
-          いまは下のボタンを押したときだけ送信します（自動での書き込みはしません）。
+          下のボタンを押したときと、「ガチャの結果を自動で書き込む」を ON
+          にしたときのガチャ当選時に送信します。
         </p>
         <p className={styles.note}>
           ⚠ 初回は Twitch
           にログインし直す必要があります（書き込みの許可を得るため）。
           YouTube のチャットには対応していません。
+        </p>
+        {/* ⚠⚠⚠ **063f 段 1-b: 自動送信のトグルは OBS エフェクト画面へ移した**
+            （依頼者の指示＝「**ガチャ機能でしか使わない予定なのでまとめたい**」）。
+            ⚠⚠ **この 1 行を消さないこと**——消すと、**このカードだけを見た人には
+            「自動で書き込まれることがある」という事実が読めなくなる**。
+            ⚠ 上の警告文（視聴者に見えて消せない）はここに在り続けるので、
+            **同意の重さを説明している場所と、設定の在り処が、必ず 1 本の線でつながる。** */}
+        <p className={styles.note}>
+          ⚠ ガチャの結果を自動で書き込む設定は、「OBSエフェクト」画面の「ガチャ」にある
+          「高度な設定」です（このトグルが ON のときだけ有効になります）。
         </p>
         {/* ⚠⚠⚠ S-2: **送信先を必ず出す。** 見えていないと、差し替えられても気づけない。 */}
         <p className={styles.note}>
@@ -159,6 +199,14 @@ export function ChatSendCard({
           <p className={result.ok ? styles.note : styles.errorText}>
             {result.text}
           </p>
+        )}
+        {/* ⚠⚠⚠ **063f: 直近の自動送信の結果。** ⚠ **自動送信は画面を見ていないときに走る**ので、
+            ここに残さないと「黙って効かない」になる（061a Q-1）。
+            ⚠ **§9: 本文も宛先も出さない**（sidecar が作った定型の短文だけ）。 */}
+        {gachaChatResult !== null && (
+          <p
+            className={gachaChatResult.ok ? styles.note : styles.errorText}
+          >{`ガチャの自動書き込み: ${gachaChatResult.text}`}</p>
         )}
       </div>
     </section>

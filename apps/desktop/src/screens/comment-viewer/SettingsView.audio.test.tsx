@@ -108,6 +108,8 @@ function baseProps(over: Partial<Props> = {}): Props {
     // 066: 送信は使わないが型を満たす（⚠ 既定 OFF なので押せない）。
     onChatTestSend: async () => ({ ok: false, reason: "offline" }),
     chatSendChannel: "",
+    // 063f: 自動送信の直近結果（表示専用）。⚠ 既定は「まだ 1 度も走っていない」。
+    gachaChatResult: null,
     ...over,
   };
 }

@@ -80,5 +80,10 @@ raidViewerCount?: number,
  * ⚠⚠⚠ **この struct に居るのは、frontend の型がここから生成されるから**である
  * （ts-rs → `src/features/comment-viewer/bindings/CommentViewDto.ts`）。
  * Rust 側のコードは 1 か所もこの値を読まない。⇒ **`viewer_memory` の保存経路へ足さないこと。**
+ *
+ * ⚠ **ただし IPC 境界は越える**——`record_comment` は `CommentViewDto` を丸ごと受けるので、
+ * この値も frontend から Rust へは渡ってくる。⚠⚠ **`NewViewerComment` へ写していない**ので
+ * `viewer_comments` には 1 バイトも入らない（＝「端末に保存しない」は成立している）。
+ * 「渡らない」ではなく「**渡るが読まれず保存されない**」が正確な表現である。
  */
 rewardTitle?: string, };

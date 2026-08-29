@@ -16,6 +16,13 @@ import {
   saveGachaPlacement,
   saveGachaPrizeColor,
   saveGachaStageEnabled,
+  // ⚠⚠ 063f 段 1-b: 「高度な設定」の中のトグル（同意の 2 枚目）。
+  //   ⚠ ハーネスは **`ObsEffectsScreen` と同じ配線**にする（保存は 1 か所・AND で読む）。
+  CHAT_SEND_ENABLED_KEY,
+  GACHA_CHAT_ENABLED_KEY,
+  loadChatSendEnabled,
+  loadGachaChatEnabled,
+  saveGachaChatEnabled,
 } from "../../features/comment-viewer/overlaySettings";
 import { EffectAssignmentCard } from "./EffectAssignmentCard";
 import { GachaLibraryCard } from "./GachaLibraryCard";
@@ -79,6 +86,9 @@ const Harness = () => {
   const [hasGachaCondition, setHasGachaCondition] = useState<boolean>(
     () => referencedGachaIds().length > 0,
   );
+  // ⚠⚠ 063f 段 1-b: **`ObsEffectsScreen` と同じ形**（初期値は AND・書き手は 1 か所）。
+  const [chatEnabled, setChatEnabled] = useState<boolean>(loadGachaChatEnabled);
+  const chatSendAllowed = loadChatSendEnabled();
   return (
     <>
       <EffectAssignmentCard
@@ -91,6 +101,12 @@ const Harness = () => {
         gachas={gachas}
         obsSources={loadObsSourceList()?.sources ?? null}
         onChange={(next) => setGachas(saveGachaLibrary(next))}
+        chatEnabled={chatEnabled}
+        chatSendAllowed={chatSendAllowed}
+        onChatEnabledChange={(next) => {
+          saveGachaChatEnabled(next);
+          setChatEnabled(next);
+        }}
       />
       {/* ⚠⚠⚠ **063c 段 4-d: 演出の設定は `GachaStageCard` へ出た**が、
           **同じ画面に並んでいる**ので配線ごとここで再現する。
@@ -841,5 +857,141 @@ describe("063c 段 5: 演出の見た目とプレビュー", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+/**
+ * ⚠⚠⚠ **063f 段 1-b: 「高度な設定」＝ ガチャの結果をチャットへ書き込むトグル。**
+ *
+ * 依頼者の指示（2026-08-29）＝「**ガチャ設定のカードに『高度な設定』として、
+ * ガチャ結果をチャット欄に投稿する（ツイッチ限定）機能欄を作って欲しい。
+ * 高度な設定は普段は折りたたみされてるかたちで**」。
+ *
+ * ⚠⚠ **ここが固定しているのは「同意の保存」と「畳まれていること」だけ**である。
+ * 「本当に 1 通も出ないか」の担保は `CommentViewerApp.effects.test.tsx` が持つ
+ * （このカードは `sendChat` を持っていないので、ここでは証明できない）。
+ */
+describe("⚠⚠⚠ 063f: 高度な設定（チャットへの書き込み）", () => {
+  // ⚠⚠ **この describe は上の 2 つと兄弟なので、あちらの `beforeEach` は効かない。**
+  //   ⚠ 同意の旗を跨いで持ち越すと「前のテストで親を ON にしたから通った」が起きる
+  //   （実際に踏んだ＝ 1 本が誤って緑になった）。⇒ **毎回まっさらから始める。**
+  beforeEach(() => localStorage.clear());
+  afterEach(() => localStorage.clear());
+
+  // ⚠ 2026-08-30（security-review S-2）: `summary` は ON のとき現在値を後ろに足すので、
+  //   **前方一致で引く**（完全一致にすると ON の状態で引けなくなる）。
+  const advanced = () =>
+    screen.getByText(/^高度な設定/).closest("details") as HTMLDetailsElement;
+  const chatToggle = () =>
+    screen.getByLabelText("ガチャの結果をチャットに書き込む", { exact: false });
+
+  it("⚠⚠⚠ 既定では折りたたまれている（普段の画面を複雑にしない）", () => {
+    render(<Harness />);
+    expect(advanced().open).toBe(false);
+  });
+
+  it("⚠⚠⚠ 親（チャットへの書き込み許可）が OFF なら操作できない", () => {
+    render(<Harness />);
+    expect(chatToggle()).not.toBeChecked();
+    expect(chatToggle()).toBeDisabled();
+    // ⚠ どこで許可するのかを必ず出す（061a Q-1・黙って効かないを作らない）。
+    expect(
+      screen.getByText(/コメントビューアの設定/, { exact: false }),
+    ).toBeInTheDocument();
+  });
+
+  it("⚠⚠ 親が ON なら操作でき、ON で保存・OFF でキーごと消える", () => {
+    localStorage.setItem(CHAT_SEND_ENABLED_KEY, "1");
+    render(<Harness />);
+    expect(chatToggle()).toBeEnabled();
+    fireEvent.click(chatToggle());
+    expect(localStorage.getItem(GACHA_CHAT_ENABLED_KEY)).toBe("1");
+    fireEvent.click(chatToggle());
+    expect(localStorage.getItem(GACHA_CHAT_ENABLED_KEY)).toBeNull();
+  });
+
+  /**
+   * ⚠⚠⚠ **親が OFF のあいだは、子の保存値が残っていても ON に見せない。**
+   * ⚠ 初期値に AND（`loadGachaChatEnabled`）を使っていることの担保で、
+   * ここを子の旗だけで読むと **「ON に見えるのに 1 通も出ない」**＝画面が嘘をつく。
+   */
+  it("⚠⚠⚠ 子の旗だけが残っていても、親が OFF なら OFF に見える", () => {
+    localStorage.setItem(GACHA_CHAT_ENABLED_KEY, "1");
+    render(<Harness />);
+    expect(chatToggle()).not.toBeChecked();
+    expect(chatToggle()).toBeDisabled();
+  });
+
+  /**
+   * ⚠⚠⚠ **2026-08-30・security-review S-2 で足した。**
+   *
+   * ⚠⚠ **既定 OFF なので畳んでよい**という判断は変えていない。塞いだのはその先で、
+   * **一度 ON にしたあと、畳んだ画面から「自動で書き込まれる状態にある」ことが読めなかった**
+   * ——`docs/security.md` §1「追補（063f）」が禁じた「**本人が見ていない同意**」が、
+   * 既定 OFF とは別の経路（＝ ON にしたことを忘れる）で復活する形だった。
+   * ⚠⚠⚠ **書き込みは視聴者に見えて、あとから消せない**ので、
+   * 「有効になっていることに気づけない」は、この機能でいちばん高くつく壊れ方である。
+   *
+   * ⚠ **再修正トリガー＝畳みを外すとき**（そのときはこの表示が不要になる）。
+   */
+  it("⚠⚠⚠ ON のときは畳んだままでも「ON である」ことが読める", () => {
+    localStorage.setItem(CHAT_SEND_ENABLED_KEY, "1");
+    localStorage.setItem(GACHA_CHAT_ENABLED_KEY, "1");
+    render(<Harness />);
+    // ⚠ 畳まれたまま（＝畳みを外して見せる形にはしていない）。
+    expect(advanced().open).toBe(false);
+    // ⚠⚠ それでも `summary` 自体に現在値が出ている。
+    expect(advanced().querySelector("summary")?.textContent).toContain("ON");
+  });
+
+  /** ⚠ OFF のときは出さない（既定の画面に余計な文字を足さない・061a Q-1）。 */
+  it("⚠ OFF のときは `summary` に現在値を出さない", () => {
+    localStorage.setItem(CHAT_SEND_ENABLED_KEY, "1");
+    render(<Harness />);
+    expect(advanced().querySelector("summary")?.textContent).toBe("高度な設定");
+  });
+
+  /**
+   * ⚠⚠⚠ **親が OFF なら「ON」と出さない。** 子の旗だけが残っていても
+   * **1 通も出ない**（AND）ので、`summary` に ON と書くと**画面が嘘をつく**。
+   *
+   * ⚠⚠ **ここだけ `Harness` を通さず、カードへ直接 props を渡している。**
+   * `Harness`（＝ `ObsEffectsScreen` と同じ配線）は `chatEnabled` を
+   * **AND で初期化する**ので、`chatEnabled=true` かつ `chatSendAllowed=false` という
+   * 組み合わせを**上の配線からは作れない**（実測: `&& chatSendAllowed` を外す変異が**生存した**）。
+   * ⇒ ⚠ **このカードの契約そのもの**（2 つの props をどう表示に落とすか）を境界で固定する。
+   */
+  it("⚠⚠⚠ 子の旗だけ立っていて親が OFF なら、`summary` に ON と出さない", () => {
+    render(
+      <GachaLibraryCard
+        gachas={[]}
+        obsSources={null}
+        onChange={() => {}}
+        chatEnabled
+        chatSendAllowed={false}
+        onChatEnabledChange={() => {}}
+      />,
+    );
+    expect(advanced().querySelector("summary")?.textContent).toBe("高度な設定");
+  });
+
+  /**
+   * ⚠⚠⚠ **§9: 画面が「引いた人の名前は書かない」と約束していること。**
+   * `docs/security.md` §9 の「追補の追補（063c 段 3）」の**再評価トリガー ③**
+   * （表示名が端末外へ出る形）を**踏んでいない**ことの、画面側の担保である。
+   * ⚠ 名前を出す形にするなら、先にあの追補と `security-review` を通し、ここも直すこと。
+   */
+  it("⚠⚠⚠ 何が書き込まれるか（表示名も書くこと）が画面に出ている", () => {
+    render(<Harness />);
+    expect(screen.getByText(/視聴者に見え/)).toBeInTheDocument();
+    // ⚠⚠⚠ **063f 段 3: 「引いた人の表示名も書く」と明記されていること。**
+    //   `docs/security.md` §9 の「追補の追補（063f）」が
+    //   **「同意の中身が画面から読めなければ、それは同意になっていない」**と定めている。
+    //   ⚠ **ここを薄めたら、このトグルは同意として成立しない。**
+    expect(screen.getByText(/引いた人の表示名/)).toBeInTheDocument();
+    // ⚠ 演出との順序も約束する（段 1-b の実機指摘そのもの）。
+    expect(
+      screen.getByText(/配信画面に結果が出てからチャットに書き込みます/),
+    ).toBeInTheDocument();
   });
 });

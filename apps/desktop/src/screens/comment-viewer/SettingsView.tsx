@@ -176,6 +176,16 @@ interface SettingsViewProps {
    * ⚠ **宛先を決める値ではない**（[`ChatSendCard`] の `channel` の注記が正）。
    */
   chatSendChannel: string;
+  /**
+   * ⚠⚠⚠ **063f: 直近の「自動送信」の結果**（`null` ＝まだ 1 度も走っていない・表示専用）。
+   *
+   * ⚠⚠ **トグルの state は [`ChatSendCard`] が持つのに、これだけ親から降りてくる**理由＝
+   * **書き手が別の窓の別の経路**だからである（コメントの受信 effect が発火のたびに更新する）。
+   * ⚠⚠⚠ **自動送信はユーザーが画面を見ていないときに走る**ので、
+   * これを出さないと「黙って効かない」になる（061a Q-1）。
+   * ⚠ **§9: 本文も宛先も載らない**（`ok` と定型の短文だけ）。**保存もしない**（親の state のみ）。
+   */
+  gachaChatResult: { ok: boolean; text: string } | null;
 }
 
 export function SettingsView({
@@ -222,6 +232,7 @@ export function SettingsView({
   onPinnedOverlayToggle,
   onChatTestSend,
   chatSendChannel,
+  gachaChatResult,
 }: SettingsViewProps) {
   // 044a: OBS パスワード入力のローカル state（**この値は保存しない・保存は Rust→keychain**）。認証が必要な OBS の
   // ときだけ入力欄を出す。保存ボタンで onSetObsPassword に渡し、入力欄は即クリアして DOM/メモリに残さない（§9）。
@@ -932,7 +943,11 @@ export function SettingsView({
           「上の…」という位置参照の注記が 3 本あり、途中へ挿入すると指す先が変わる）。
           ⚠ このカードも **state を自分で持つ**（トグルの唯一の消費者なので画面を跨ぐ配線を作らない）。
           ここから渡すのは**送信の 1 本だけ**である。 */}
-      <ChatSendCard onTestSend={onChatTestSend} channel={chatSendChannel} />
+      <ChatSendCard
+        onTestSend={onChatTestSend}
+        channel={chatSendChannel}
+        gachaChatResult={gachaChatResult}
+      />
       {/* 063e: チャンネルポイントの受信について**約束できることと、できないこと**を書くカード。
           ⚠⚠ **トグルは無い**（設定できることが 1 つも無いので作らない）。増えるのは受信能力だけで、
           ユーザーが選べるのは「Twitch にログインし直すかどうか」だけである。
