@@ -55,6 +55,15 @@ pub enum CommentEventType {
     /// ⚠ この variant が無いと wire の `"raid"` は**未知 variant としてデシリアライズ全体を失敗**させ、
     /// `record_comment` は fire-and-forget なので**レイドが黙って 1 件も保存されない**（YouTube に相当機能は無い）。
     Raid,
+    /// 063e: Twitch のチャンネルポイント報酬の引き換え。**課金ではない**——レイドと同じく視聴者メモリの
+    /// `subscription_count` / `is_member` / `last_subscription_at` にも、frontend の
+    /// `MONETARY_EVENT_TYPES`（ティア色カード・投げ銭ティッカー・通知音の代表音・読み上げ優先キュー・
+    /// 061 のエフェクト条件）にも入れない。⚠ **チャンネルポイントは「お金」ではない。**
+    /// ⚠ この variant が無いと wire の `"channelpoint"` は**未知 variant としてデシリアライズ全体を失敗**させ、
+    /// `record_comment` は fire-and-forget なので**引き換えが黙って 1 件も保存されない**（YouTube に相当機能は無い）。
+    /// ⚠ レイドと違い**本文を持ちうる**（視聴者が報酬に添えた `user_input`）ので、
+    /// `viewers.total_comments` と配信サマリーの「コメント数」には**入る**（063e の決定・SQL は 1 文字も変えていない）。
+    Channelpoint,
 }
 
 impl CommentEventType {
@@ -69,6 +78,7 @@ impl CommentEventType {
             CommentEventType::Donation => "donation",
             CommentEventType::Jewels => "jewels",
             CommentEventType::Raid => "raid",
+            CommentEventType::Channelpoint => "channelpoint",
         }
     }
 }
@@ -152,4 +162,59 @@ pub struct CommentMonetaryDto {
     pub amount: f64,
     /// 通貨コード（`"BITS"` または ISO 4217）。
     pub currency: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// wire（sidecar の `comments.append`）が送ってくる 1 件ぶんの JSON。
+    /// ⚠ `eventType` 以外は最小構成（`record_comment` が必須にする範囲）。
+    fn wire_json(event_type: &str) -> String {
+        format!(
+            r#"{{"id":"c1","source":"twitch","author":{{"id":"u1","name":"Alice"}},
+                 "text":"hi","publishedAt":"2026-08-25T10:00:00Z","eventType":"{event_type}"}}"#
+        )
+    }
+
+    /// 063e: wire の `"channelpoint"` が `CommentEventType::Channelpoint` へデシリアライズできる。
+    ///
+    /// ⚠⚠ **これは「1 行の写像」ではなく「全滅するかどうか」のテストである。**
+    /// serde の enum は未知 variant で**その DTO 全体のデシリアライズを失敗**させ、
+    /// `record_comment` は frontend から fire-and-forget で呼ばれるので、失敗しても画面には何も出ない。
+    /// ⇒ variant を消す変異では「チャンネルポイントが**黙って 1 件も保存されない**」という
+    /// 気付けない壊れ方をする（`CommentEventType::Channelpoint` の doc が正）。
+    #[test]
+    fn the_wire_value_channelpoint_deserializes_into_the_enum() {
+        let dto: CommentViewDto = serde_json::from_str(&wire_json("channelpoint")).unwrap();
+        assert!(matches!(dto.event_type, CommentEventType::Channelpoint));
+        // ⚠ DB へ書く綴りが wire と一致していること（`viewer_comments.event_type` はこの値で検索される）。
+        assert_eq!(dto.event_type.as_str(), "channelpoint");
+    }
+
+    /// ⚠ 既存の種別が道連れになっていないこと（union に足しただけで写像が崩れていない）。
+    #[test]
+    fn the_existing_wire_values_still_deserialize() {
+        for (wire, expected) in [
+            ("chat", "chat"),
+            ("superchat", "superchat"),
+            ("membership", "membership"),
+            ("subscription", "subscription"),
+            ("gift", "gift"),
+            ("donation", "donation"),
+            ("jewels", "jewels"),
+            ("raid", "raid"),
+        ] {
+            let dto: CommentViewDto = serde_json::from_str(&wire_json(wire)).unwrap();
+            assert_eq!(dto.event_type.as_str(), expected, "wire 値 {wire} の写像");
+        }
+    }
+
+    /// ⚠⚠ **未知の種別は「その 1 件が落ちる」のではなく DTO 全体が失敗する**ことの記録。
+    /// これが `Channelpoint` を足さなければならなかった理由そのものである
+    /// （＝新種別を wire に足したら Rust にも必ず足す、を忘れると静かに全滅する）。
+    #[test]
+    fn an_unknown_wire_value_fails_the_whole_dto() {
+        assert!(serde_json::from_str::<CommentViewDto>(&wire_json("unknown_kind")).is_err());
+    }
 }

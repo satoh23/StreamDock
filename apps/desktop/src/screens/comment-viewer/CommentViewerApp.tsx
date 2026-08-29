@@ -647,6 +647,20 @@ export function CommentViewerApp() {
   const [obsConfig, setObsConfig] = useState<ObsWsConfig | null>(null);
   const [obsAutoAdd, setObsAutoAdd] = useState(() => loadObsAutoAdd());
   const [obsState, setObsState] = useState<string>("idle");
+  /**
+   * 063e 段 1-b: **チャンネルポイント購読の成否**（sidecar の `channelpoints.state`）。
+   *
+   * ⚠⚠⚠ **「黙って効かない」を潰すためだけに存在する state である**（061a Q-1）。この購読は非致命なので、
+   * 失敗しても本線（コメント取得）は動き続け、画面には**何も起きない**。しかも失敗は
+   * **新規配信者の既定状態**である（Twitch 側でチャンネルポイントが有効化されるまで存在しない）。
+   *
+   * ⚠ 3 語（`unknown` / `receiving` / `unavailable`）。⚠⚠ **`unknown` を `unavailable` と混ぜない**
+   *   ——混ぜると未接続の人に「Twitch の設定を確認してください」と誤案内する（064c と同型の失敗）。
+   * ⚠ `obsState` と同じく `string` のまま持つ（理由は上のブロックの注記が正・WS 境界で型が失われる）。
+   * ⚠ **表示するのは `SettingsView` のカードだけ**（ツールバーには出さない）。配信中に赤字を増やさない。
+   */
+  const [channelPointsState, setChannelPointsState] =
+    useState<string>("unknown");
   // 061a: 検出済み OBS 設定を、**マウント時 1 回だけ張る effect**（下のエフェクト連携の `storage` 購読）から
   // 最新値で読むための ref 同期。state を直接掴むと stale closure で検出ポートが既定 4455 に化ける。
   // この窓の他の getter 注入（ttsEnabledRef / readMonetaryIdsRef）と同じイディオム。
@@ -1577,6 +1591,12 @@ export function CommentViewerApp() {
       },
       onObsState: (state) => {
         setObsState(state);
+      },
+      // 063e 段 1-b: チャンネルポイント購読の成否（非秘密・状態語 1 つだけ・§9）。
+      // ⚠ sidecar は viewer が（再）接続したときにも現在値を送り直すので、
+      //   設定画面を開いただけの場合でも「まだ分かりません」で固着しない。
+      onChannelPointsState: (state) => {
+        setChannelPointsState(state);
       },
     });
     streamRef.current = handle;
@@ -2534,6 +2554,7 @@ export function CommentViewerApp() {
           obsAutoAdd={obsAutoAdd}
           onObsAutoAddToggle={handleObsAutoAddToggle}
           obsState={obsState}
+          channelPointsState={channelPointsState}
           onSetObsPassword={handleSetObsPassword}
           onClearObsPassword={handleClearObsPassword}
           pinnedOverlayEnabled={pinnedOverlayEnabled}

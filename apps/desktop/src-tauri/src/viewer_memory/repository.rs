@@ -1035,6 +1035,54 @@ mod tests {
         assert_eq!(row.text, "", "system_message へフォールバックしないので本文は空のまま");
     }
 
+    // ---- 063e: チャンネルポイント（Twitch）----
+
+    // 063e（穴 A）: チャンネルポイント行は**既存のどの課金集計にも入らない**。レイドと同じ扱いで、
+    //   subscription_count / is_member / last_subscription_at / bits_* / superchat_* / gift_count の
+    //   いずれにも混ざってはいけない（RECOMPUTE_VIEWER_AGGREGATES_SQL に 'channelpoint' を足す変異でレッド）。
+    #[test]
+    fn channel_points_are_not_counted_in_any_monetary_aggregation() {
+        let conn = test_conn();
+        record_comment(&conn, &nc("cp1", "twitch:u1", "channelpoint", None, None, "2026-01-01T00:00:00Z")).unwrap();
+        let v = viewer(&conn, "twitch:u1");
+        assert_eq!(v.subscription_count, 0, "チャンネルポイントはサブスクではない");
+        assert!(!v.is_member, "チャンネルポイントでメンバー扱いにしない");
+        assert_eq!(v.last_subscription_at, None);
+        assert_eq!(v.bits_count, 0);
+        assert_eq!(v.bits_amount, 0);
+        assert_eq!(v.superchat_count, 0);
+        assert_eq!(v.superchat_amount, 0.0);
+        assert_eq!(v.superchat_currency, None);
+        assert_eq!(v.gift_count, 0, "gift_count（課金系の件数）にも入らない");
+    }
+
+    // 063e（穴 O・決定）: `total_comments` は `COUNT(*)` のままなので**チャンネルポイント行も数える**。
+    //   ⚠ このテストは「そう決めた」ことの記録である。⚠⚠ レイド（062a 決定 (a)）と結論は同じだが、
+    //   **理由が 1 つ強い**——チャンネルポイントは視聴者が添えたテキスト（`user_input`）を本文に持ちうるので、
+    //   「コメント」として数えるのはむしろ自然である。`event_type <> 'channelpoint'` へ変える変異はここで落ちる。
+    #[test]
+    fn channel_points_are_counted_in_total_comments_by_design() {
+        let conn = test_conn();
+        record_comment(&conn, &nc("c1", "twitch:u1", "chat", None, None, "2026-01-01T00:00:00Z")).unwrap();
+        record_comment(&conn, &nc("cp1", "twitch:u1", "channelpoint", None, None, "2026-01-02T00:00:00Z")).unwrap();
+        let v = viewer(&conn, "twitch:u1");
+        assert_eq!(v.total_comments, 2, "決定: チャンネルポイント行も総コメント数に数える");
+        assert_eq!(v.last_comment_at, "2026-01-02T00:00:00Z");
+    }
+
+    // 063e: チャンネルポイント行は金額列を持たない（mapper が monetaryAmount を付けないことの保存側の裏取り）。
+    #[test]
+    fn channel_point_rows_carry_no_amount() {
+        let conn = test_conn();
+        record_comment(&conn, &nc("cp1", "twitch:u1", "channelpoint", None, None, "2026-01-01T00:00:00Z")).unwrap();
+        let row = comment_row(&conn, "cp1");
+        assert_eq!(row.event_type, "channelpoint", "wire と同じ綴りで保存される");
+        assert_eq!(row.amount, None);
+        assert_eq!(row.currency, None);
+        assert_eq!(row.monetary_amount, None);
+        assert_eq!(row.raid_viewer_count, None, "レイド人数はチャンネルポイントには付かない");
+    }
+
     // 062a: レイド以外の行では raid_viewer_count は NULL のまま（他種別に混入しない）。
     #[test]
     fn non_raid_rows_keep_null_raid_viewer_count() {

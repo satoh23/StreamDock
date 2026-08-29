@@ -37,10 +37,21 @@ export const TWITCH_TOKEN_ENDPOINT = "https://id.twitch.tv/oauth2/token";
 // ⚠⚠⚠ **YouTube 側は 1 文字も変えていない**（`youtube.force-ssl` は同意画面が「管理」相当になり、
 // かつ書き込みは 1 回 50 units・既定 10,000 units/日で**取得と枠を共用**するため。依頼者の決定・2026-08-22）。
 // docs/security.md §1 の追補（066）を参照。
+// 063e: **チャンネルポイント報酬の引き換え**（EventSub `channel.channel_points_custom_reward_redemption.add`）
+// のため `channel:read:redemptions` を追加。
+// ⚠ **新規 egress 先はゼロ**（`api.twitch.tv` / `eventsub.wss.twitch.tv` は既に allow-list）。増えるのは**能力**だけ。
+// ⚠⚠ **既存ユーザーは再ログインするまで引き換えが届かない**（旧トークンにこのスコープが無く購読作成が 403 になる）。
+//   043a の `bits:read` / 066 の `user:write:chat` と同じく **sidecar 側で非致命化**し、本線（コメント取得）は止めない。
+// ⚠⚠⚠ **読み取り専用である。`channel:manage:redemptions`（報酬の作成・消化・返却）は取らない。**
+//   ＝ StreamDock は引き換えを消化済みにすることも返却することもできない（できないことを、できなくしておく）。
+//   066 が Twitch 初の「書き込み」を 1 本入れたばかりなので、2 本目をガチャのついでに増やさない。
+// ⚠ **YouTube 側は 1 文字も変えていない**（チャンネルポイントに相当する機能が存在しないため）。
+// docs/security.md §1 の追補（063e）を参照。
 export const TWITCH_SCOPES: readonly string[] = [
   "user:read:chat",
   "bits:read",
   "user:write:chat",
+  "channel:read:redemptions",
 ];
 
 /** Helix/EventSub の base URL を定数で返す（env 参照なし）。 */

@@ -3,4 +3,4 @@
 /**
  * コメント種別（通常チャット／投げ銭／メンバーシップ／サブスク）。
  */
-export type CommentEventType = "chat" | "superchat" | "membership" | "subscription" | "gift" | "donation" | "jewels" | "raid";
+export type CommentEventType = "chat" | "superchat" | "membership" | "subscription" | "gift" | "donation" | "jewels" | "raid" | "channelpoint";

@@ -5,6 +5,7 @@ import type {
 } from "../../../entities/comment/comment.js";
 import type {
   TwitchBitsUseEventDto,
+  TwitchChannelPointsRedemptionEventDto,
   TwitchCharityDonationDetailsDto,
   TwitchChatMessageEventDto,
   TwitchChatNotificationEventDto,
@@ -14,7 +15,9 @@ import type {
 type TwitchChatEventDto =
   | TwitchChatMessageEventDto
   | TwitchChatNotificationEventDto
-  | TwitchBitsUseEventDto;
+  | TwitchBitsUseEventDto
+  // 063e: チャンネルポイントの引き換え。
+  | TwitchChannelPointsRedemptionEventDto;
 
 // 043a: subscription 系（自身の加入/継続）の notice_type。
 // pay_it_forward は「贈られた分の恩送り」で従来どおり subscription 側に残す（過剰分類しない）。
@@ -240,6 +243,51 @@ function mapTwitchChatEventToComment(
     };
   }
 
+  if (isChannelPointsRedemptionEvent(event)) {
+    // 063e: チャンネルポイントの引き換えを**コメント 1 件**として取り込む。
+    // ⚠ **金額は付けない**（`monetaryAmount` を undefined のままにする）。チャンネルポイントは
+    //   お金ではないので、`viewer_comments` の amount / currency / monetary_amount は常に NULL になり、
+    //   課金系の集計にも配色にも入らない（レイドとまったく同じ扱い＝穴 A）。
+    // ⚠ **報酬名（`reward.title`）は消費しない**（DTO にも宣言していない・§9／段 3 の領分）。
+    return {
+      id: event.id,
+      source: COMMENT_SOURCES.TWITCH,
+      author: {
+        id: event.user_id,
+        name: event.user_name,
+        // 036c: 取得元の画像 URL（ドメイン値）。data URI 化は配信境界の converter が担う。
+        // ⚠ レイド（062a）と違いアバターを解決する。あちらが解決しないのは
+        //   「ペイロードの `profile_image_url` を取らないと決めたのに Helix で引き直すのは筋が通らない」
+        //   という §9 の線引きによるもので、ここは**通常のコメントと同じ投稿者**（引き換えた視聴者）なので
+        //   chat / bits.use と同じ扱いにするのが一貫している。
+        avatar: resolveAvatar?.(event.user_id),
+      },
+      // ⚠⚠ **本文は `user_input` のみ**。テキスト入力を求めない報酬では**空文字**になる
+      //   （報酬名で埋めない＝043a が `system_message` へフォールバックしないと決めたのと同じ規律）。
+      //   空文字のときに配信画面へ「名前だけの空の吹き出し」を出さない担保は `CommentList.tsx` にある。
+      // ⚠⚠⚠ 063e 段 1-b: **`string` でなければ空文字へ倒す。** `null` / キー欠落が来ても
+      //   「本文が空の引き換え」として通す＝行を静かに消さない（`raw.dto.ts` の `user_input` の注記が正）。
+      //   ⚠ ここが `event.user_input` の素通しだと、`text: null` が wire へ出て
+      //   **Rust の `CommentViewDto.text: String` でデシリアライズが DTO ごと失敗する**
+      //   （`record_comment` は fire-and-forget ＝ 画面には何も出ない）。
+      text: typeof event.user_input === "string" ? event.user_input : "",
+      publishedAt: new Date(),
+      eventType: COMMENT_EVENT_TYPES.CHANNELPOINT,
+    };
+  }
+
+  // ⚠⚠⚠ 063e: **ここから下（chat フォールバック）へ「形を知らないイベント」を落とさないこと。**
+  //   この分岐は `event.message.text` / `event.chatter_user_id` を無条件に読むので、
+  //   それらを持たないイベントが来ると **TypeError を throw** する。throw は
+  //   `TwitchCommentRepository.streamComments` の for-await を抜けて `runTwitchPipeline` の catch まで上がり、
+  //   **コメント取得セッションが `failed` で死ぬ**（＝本線が止まる）。
+  //   ⚠ 購読側の `.catch(() => {})`（非致命化）が守るのは**購読作成の失敗だけ**で、ここは守らない。
+  //   ⇒ **未知の形は「行を作らない」（null）へ倒す**。非致命化と同じ向きの劣化であり、
+  //     043a / 062a が「取り込まない notice は null」としてきた既存の作法とも一致する。
+  if (!isChatMessageEvent(event)) {
+    return null;
+  }
+
   return {
     id: event.message_id,
     source: COMMENT_SOURCES.TWITCH,
@@ -273,6 +321,86 @@ function isBitsUseEvent(
     !("notice_type" in event) &&
     "bits" in event &&
     typeof (event as TwitchBitsUseEventDto).bits === "number"
+  );
+}
+
+/**
+ * 063e: チャンネルポイント引き換えのイベントを判別する。
+ *
+ * ## ⚠⚠⚠ 段 1-b: **判定材料から `user_input` を外した**（これが「穴 H'」の対処そのもの）
+ *
+ * 段 1 は `typeof user_input === "string"` を判定材料にしていた。⚠ それは
+ * **「引き換えが 1 件も出ない」に直結する単一障害点**だった:
+ *   `user_input` が `null` ／ キー欠落で 1 度でも来ると
+ *   → この判定が false → 下の fail-safe（`isChatMessageEvent`）も false
+ *   → **`null`（行を作らない）に落ちて静かに消える**。
+ * ⚠ しかも本文の値が種別の判定を左右するという結び付き自体が読めない（本文は本文であるべき）。
+ * ⚠⚠ 依頼者は実機で確認できない（チャンネルポイントは新規チャンネルでは有効化できない）ので、
+ *   **「公式仕様どおりに来るはず」に賭けない**——賭けて外したときの症状が「無言」だからである。
+ *
+ * ## 何で判定しているか（4 種別の**構造的な差**）
+ *
+ * | イベント | notice_type | message_id | bits | id | user_id | chatter_user_id |
+ * |---|---|---|---|---|---|---|
+ * | chat.message      | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ |
+ * | chat.notification | ✓ | ✓ | ✗ | ✗ | ✗ | ✓ |
+ * | bits.use          | ✗ | ✓(補填) | ✓ | ✗ | ✓ | ✗ |
+ * | **引き換え**      | ✗ | ✗ | ✗ | **✓** | **✓** | ✗ |
+ *
+ * ⇒ **トップレベルの `id` ＋ `user_id`** を両方持つのは引き換えだけ。どちらも
+ * **必須で、本文ではなく、視聴者が値を左右できない**（`user_input` と違う 3 点）。
+ * ⚠ `bits` を見なくてよいのは、`isBitsUseEvent` が**この関数より先に**走るからである
+ *   ——**呼び出し順を入れ替えないこと**（入れ替えると、将来 `id` を持った bits.use が
+ *   引き換えとして取り込まれ、bits 額が消える）。
+ *
+ * ⚠ さらに `repairNotificationEvent`（`eventsub-websocket.client.ts`）が受信直後に
+ *   `metadata.subscription_type` を根拠として `id` を補填するので、**Twitch が `id` を落としても**
+ *   ここは当たる。⇒ 判定は「形の推測」だが、その形は上流で担保されている。
+ *
+ * ## ⚠⚠ 購読を増やすときの手順
+ *
+ * `subscribeChatEvents` に 5 つ目の購読を足すと、そのイベントも**この mapper に流れてくる**。
+ * ⇒ **上の表に行を足し、既存の判別と衝突しないことを確かめること。** とくにトップレベルの
+ * `id` と `user_id` を**両方**持つイベントを足すと、**ここに吸い込まれて「チャンネルポイント」として
+ * 保存される**（本文は空になる）。⚠ 壊れ方は「行が消える」ではなく「別種別として静かに残る」である。
+ * ⚠ 衝突するなら、判別を形の推測から `metadata.subscription_type` の受け渡しへ切り替えること
+ * （＝mapper の入力に購読種別を添える。段 1-b では 4 種別で衝突が無いため見送っている）。
+ *
+ * ⚠ **`!("notice_type" in event)` は今は冗長**（`mapTwitchChatEventToComment` が
+ * `isNotificationEvent` を先に評価して return するため、外しても現在の挙動は変わらない）。
+ * それでも残すのは、`isBitsUseEvent` が同じ形の除外を持っており、**判定の順序を入れ替えた瞬間に
+ * `notice_type` 付きイベント（サブスク・レイド等）を横取りする**からである。
+ * ⚠ 冗長さの理由が源コードにしか無いので、`test-twitch-mapper.mjs` の静的検査が残存を固定している。
+ */
+function isChannelPointsRedemptionEvent(
+  event: TwitchChatEventDto,
+): event is TwitchChannelPointsRedemptionEventDto {
+  const candidate = event as Partial<TwitchChannelPointsRedemptionEventDto>;
+  return (
+    !("notice_type" in event) &&
+    typeof candidate.id === "string" &&
+    candidate.id !== "" &&
+    typeof candidate.user_id === "string" &&
+    candidate.user_id !== ""
+  );
+}
+
+/**
+ * 063e: chat フォールバックが読むフィールドを**実際に持っている**ことを確かめる fail-safe。
+ *
+ * ⚠⚠ **これは型のためではなく、実行時に throw しないためのガードである。** 上の 3 つの判別を
+ * すり抜けたイベント（＝将来 purchase された購読・仕様変更で形が変わったイベント）が
+ * `event.message.text` に当たると TypeError になり、**コメント取得セッションごと落ちる**。
+ * ⚠ 見るのは `chatter_user_id`（author）と `message.text`（本文）＝**下で無条件に読む 2 つだけ**。
+ * 増やすと「chat なのに弾かれる」誤検知が増えるので、**読む場所と一致させ続けること**。
+ */
+function isChatMessageEvent(
+  event: TwitchChatEventDto,
+): event is TwitchChatMessageEventDto {
+  const candidate = event as Partial<TwitchChatMessageEventDto>;
+  return (
+    typeof candidate.chatter_user_id === "string" &&
+    typeof candidate.message?.text === "string"
   );
 }
 

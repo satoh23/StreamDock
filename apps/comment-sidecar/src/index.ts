@@ -98,6 +98,21 @@ const PORT_STDOUT_PREFIX = "COMMENT_SIDECAR_PORT=";
 const PPID_WATCH_INTERVAL_MS = 1000;
 const DEVICE_CODE_FRAME = "device_code";
 const LINK_STATE_FRAME = "link.state";
+/**
+ * 063e 段 1-b: **チャンネルポイント購読の成否**を viewer へ通知する outbound フレーム。
+ *
+ * ⚠⚠⚠ **これが「黙って効かない」を潰す本体である**（061a Q-1）。この購読は非致命なので、
+ * 失敗しても本線は動き続け、画面には**何も起きない**。しかも失敗は**新規配信者の既定状態**である
+ * （チャンネルポイントは Twitch 側で有効化されるまで存在しない）。
+ *
+ * ⚠⚠ **payload は `state` の 1 語だけ**（`"unknown" | "receiving" | "unavailable"`）。
+ * ⚠ **理由（HTTP ステータス・レスポンス本文・チャンネル名・トークン）は 1 バイトも載せない**（§9）。
+ *   原因の切り分けは `SettingsView` の**固定の文言**が担う。
+ * ⚠ この loopback WS は未認証（`websocket-comment.output-port.ts` の注記）だが、
+ *   載るのは**自分のアプリの状態語 1 つ**で第三者データではない＝露出の性質は従来と変わらない。
+ */
+const CHANNEL_POINTS_STATE_FRAME = "channelpoints.state";
+
 // 044a: OBS 連携の状態を viewer へ通知する outbound フレーム（device_code/link.state と同じ bare literal 前例）。
 const OBS_STATE_FRAME = "obs.state";
 /**
@@ -472,7 +487,20 @@ async function main(): Promise<void> {
       process.stdout.write(`${OPEN_URL_STDOUT_PREFIX}${url}\n`);
     },
   });
-  registerCommentFetcherDependencies({ authClient });
+  /**
+   * 063e 段 1-b: チャンネルポイント購読の成否の通知先。
+   *
+   * ⚠ **`let` の間接参照にしているのは順序のため**——DI 登録（この直後）は
+   * `output`（WS サーバ）の生成より**前**に済ませる必要があるが、通知の実体は `output` を要る。
+   * ⚠⚠ 中身が差し替わるまでは no-op なので、万一この間に通知が来ても**何も起きないだけ**で落ちない。
+   */
+  let reportChannelPointsSubscription: (ok: boolean) => void = () => {};
+  registerCommentFetcherDependencies({
+    authClient,
+    onChannelPointsSubscription: (ok) => {
+      reportChannelPointsSubscription(ok);
+    },
+  });
   // 032c-d: YouTube 取得の DI（ガード付き gRPC runtime・定数 Data API base・guarded fetch）を登録する。
   registerYouTubeDependencies({ authClient });
 
@@ -527,6 +555,34 @@ async function main(): Promise<void> {
       type: LINK_STATE_FRAME,
       payload: { platform, linked },
     });
+  };
+
+  /**
+   * 063e 段 1-b: **チャンネルポイント購読の成否（1 bit ＋「まだ分からない」）。**
+   *
+   * - `unknown` …… Twitch の取得セッションを開始していない／開始したがまだ購読を試していない
+   * - `receiving` … 購読を作れた（＝引き換えが届く状態）
+   * - `unavailable` 購読を作れなかった（Twitch 側で未有効化／再ログイン前／他人のチャンネル）
+   *
+   * ⚠⚠ **`unavailable` は「異常」ではない。** 他人のチャンネルを見ているときは正常な状態であり、
+   *   新規配信者にとっては既定の状態でもある。⇒ 文言で「エラー」と決め付けないこと（`SettingsView` が正）。
+   * ⚠ 3 値なのは、`unknown`（未接続）と `unavailable`（試して駄目だった）を混ぜないため。
+   *   混ぜると「接続していないだけ」の人に「Twitch の設定を確認してください」と案内してしまう
+   *   ——064c が `obs.sources` の `ok` で潰したのとまったく同じ失敗モードである。
+   */
+  let channelPointsState: "unknown" | "receiving" | "unavailable" = "unknown";
+  const sendChannelPointsState = (
+    next: "unknown" | "receiving" | "unavailable",
+  ): void => {
+    channelPointsState = next;
+    output.broadcastMessage({
+      type: CHANNEL_POINTS_STATE_FRAME,
+      payload: { state: next },
+    });
+  };
+  // DI へ渡した間接参照の実体をここで差し込む（`let` にしている理由は宣言側の注記）。
+  reportChannelPointsSubscription = (ok) => {
+    sendChannelPointsState(ok ? "receiving" : "unavailable");
   };
 
   // 032c-b/032c-d′: Rust が stdin へ書いた復元行のトークンをメモリへ復元する（keychain→メモリ）。provider
@@ -632,6 +688,10 @@ async function main(): Promise<void> {
     //   ⚠⚠ **門を 1 枚に減らさないこと。**
     chatSender.setChannel(channel);
     sendSessionState("twitch", "connecting");
+    // ⚠⚠ 063e 段 1-b: **接続先が変わったら成否を必ず捨てる。** 自分のチャンネル →
+    //   他人のチャンネルへ繋ぎ直したときに「受信中」が残ると、**嘘の緑**を出したまま
+    //   1 件も届かない状態になる（064c と同じ「取れたと断言しない」原則）。
+    sendChannelPointsState("unknown");
     try {
       await runTwitchPipeline(
         {},
@@ -655,6 +715,28 @@ async function main(): Promise<void> {
         sessionAborts.delete("twitch");
         // ⚠⚠ 066: 取得が終わったら**送信先を忘れる**（＝配信に繋いでいないときは送れない）。
         chatSender.setChannel(null);
+        /**
+         * ⚠⚠⚠ 063e 段 1-b: **取得が終わったら「受信中」も畳む。**
+         *
+         * これが無いと、次のような**残留した嘘**が起きる:
+         *   自分のチャンネルで受信中（緑）→ 他人のチャンネルへ繋ぎ直す →
+         *   配信していなくて `findActiveLiveStream` が失敗（FAILED）→ **購読まで到達しない**
+         *   ⇒ 緑が**そのまま残る**（画面は「受信できる状態です」と言い続ける）。
+         * ⚠ 開始時のリセットだけでは足りない理由がこれ——開始時にリセットしても、
+         *   **古いセッションの遅れた報告**が新しいセッションの開始直後に届きうるからである。
+         *
+         * ## ⚠ 残っている限界（承知のうえで受容している）
+         *
+         * 通知は `(ok: boolean)` の 1 bit で、**どのセッションからの報告かを運ばない**。
+         * ⇒ 切り替えの瞬間（旧セッションの購読作成が in-flight のまま abort された場合）に、
+         *   **旧チャンネルの結果が新セッションの表示として一瞬出ることがある**。
+         * ⚠ 実害は「切り替え直後の 1〜2 秒だけ表示がずれる」に限られる——新セッションの購読が
+         *   決着すれば上書きされ、決着しないまま終わればこの `finally` が `unknown` へ戻すため、
+         *   **誤った値が残ることは無い**。
+         * **再修正トリガー**＝実運用で切り替え直後の誤表示が問題になったら、通知にセッション識別子を
+         * 載せる（`ChannelPointsSubscriptionReporter` の引数を増やし、index 側で現行セッションと突き合わせる）。
+         */
+        sendChannelPointsState("unknown");
       }
     }
   };
@@ -697,7 +779,18 @@ async function main(): Promise<void> {
   // 下の setControlMessageHandler / shutdown の分岐はすべて null ガード＝OFF 時は現行経路が無改変。ON 時も実ネットには
   // 出ない（runTwitch/YouTubePipeline・authClient.login* を呼ばず、既存 WS へ合成フレームを流すだけ）。
   const mockSource = isMockEnabled()
-    ? createMockCommentSource({ output, sendSessionState, logInfo })
+    ? createMockCommentSource({
+        output,
+        sendSessionState,
+        logInfo,
+        // ⚠⚠⚠ 063e 段 2-b: **チャンネルポイントだけは本番の変換チェーンへ流す。**
+        //   モックは生の EventSub ペイロード（Twitch 公式の形）を組んで
+        //   `repairNotificationEvent` → mapper まで通し、その先（converter → `wire.ts` → broadcast）を
+        //   **この `outputPort` に任せる**＝ WebSocket と Helix 以外は本番のコードが動く。
+        //   ⚠ 他の合成コメントは従来どおり `CanonicalComment` を直接組む（`wire.ts` を通らない）。
+        //   理由＝**チャンネルポイントだけは作者が実機で 1 度も受信できない**（`dev-mock.ts` の注記が正）。
+        outputComments: outputPort.outputComments,
+      })
     : null;
   if (mockSource) {
     logInfo("[comment-sidecar] MOCK MODE enabled (COMMENT_SIDECAR_MOCK=1; no real network egress)");
@@ -868,14 +961,32 @@ async function main(): Promise<void> {
       sessionAborts.get(frame.service)?.abort();
       sessionAborts.delete(frame.service);
       sendSessionState(frame.service, "idle");
+      // 063e 段 1-b: 取得を止めたら「受信中」も畳む（止めたのに緑が残らない）。
+      // ⚠ **twitch のときだけ**（YouTube にチャンネルポイントは無い＝あちらの停止で消さない）。
+      if (frame.service === "twitch") {
+        sendChannelPointsState("unknown");
+      }
     }
   });
 
   // 032c-b/032c-d/032c-d′: viewer が（再）接続したら現在のログイン状態を platform 別に送る（twitch/youtube とも
   // keychain 復元済みログインを反映する）。
-  output.setConnectionHandler(() => {
+  output.setConnectionHandler((client) => {
     void sendLinkState("twitch");
     void sendLinkState("youtube");
+    // ⚠⚠ 063e 段 1-b: **現在値を送り直す。** このフレームは状態が変わったときにしか流れないので、
+    //   設定画面を開いた（＝窓が再接続した）だけの人には**何も届かず「まだ分かりません」のまま固着**する。
+    //   ⚠ 036b の avatar・062b の session スナップショットと同型の「静かな欠落」であり、
+    //   しかもこのフレームは**届かないこと自体が症状と見分けられない**（もともと待ち状態の表示だから）。
+    // ⚠ 接続してきた 1 本だけへ送る（他の窓の表示を無駄に上書きしない）。
+    // ⚠⚠ レビュー S-6: **`sendToClient` を使う**（同じ `readyState === OPEN` ガード＋`JSON.stringify` を
+    //   手で書き直さない）。⚠ `connectionHandler` は `server.on("connection")` の中で
+    //   **try/catch されずに**呼ばれるので、ここで投げると uncaught になる
+    //   ——ガードを 2 通りに書くと、片方だけ緩んだときに気付けない。
+    sendToClient(client, {
+      type: CHANNEL_POINTS_STATE_FRAME,
+      payload: { state: channelPointsState },
+    });
   });
 
   // 032c-b/032c-d: 認可失効（refresh 失敗など）で token が破棄されたら link.state を更新する

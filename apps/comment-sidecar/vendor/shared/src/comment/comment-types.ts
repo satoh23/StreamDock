@@ -9,6 +9,11 @@ export type CommentSource = "youtube" | "twitch";
 // 062a: raid（Twitch のレイド）を追加。**収益種別ではない**（金額を持たず、視聴者メモリの
 // subscription_count 等にも入らず、MONETARY_EVENT_TYPES にも入れない）が、「誰がレイドして
 // くれたか」を配信後に見返すために取り込む。YouTube に相当機能は無く Twitch 限定。
+// 063e: channelpoint（Twitch のチャンネルポイント引き換え）を追加。raid と同じく**収益種別ではない**
+// （チャンネルポイントは「お金」ではない＝MONETARY_EVENT_TYPES に入れない）。raid と違うのは
+// **視聴者が添えたテキスト（user_input）を本文として持ちうる**点で、そのぶん「コメント」に近い。
+// ⚠ 語は `"channelpoint"` に統一する（`channel_points` / `redemption` と 3 通りに散らさない）。
+// YouTube に相当機能は無く Twitch 限定。
 export type CommentEventType =
   | "normal"
   | "super_chat"
@@ -17,7 +22,8 @@ export type CommentEventType =
   | "gift"
   | "donation"
   | "jewels"
-  | "raid";
+  | "raid"
+  | "channelpoint";
 
 export const COMMENT_SOURCES = {
   YOUTUBE: "youtube",
@@ -33,4 +39,5 @@ export const COMMENT_EVENT_TYPES = {
   DONATION: "donation",
   JEWELS: "jewels",
   RAID: "raid",
+  CHANNELPOINT: "channelpoint",
 } as const satisfies Record<string, CommentEventType>;

@@ -69,6 +69,12 @@ const EVENT_TYPES: Record<CommentEventType, true> = {
   //   （固定コメントの localStorage 保存範囲）の変更にあたり、別途 security-review が要るため。
   //   再修正トリガー: 固定帯にレイド人数を出したくなったら、046a の追補としてスキーマ追加を起票する。
   raid: true,
+  // 063e: チャンネルポイント。⚠ **レイドと違い劣化がゼロ**——段 1 のチャネポが持つのは
+  //   `text`（視聴者が添えた `user_input`）と `author` だけで、どちらも `PinnedComment` に既にある。
+  //   ⇒ **スキーマを増やさない**＝§9 追補 046a（固定コメントの localStorage 保存範囲）は変わらない。
+  //   ⚠ 報酬名を固定帯に出したくなったら、それは 063e 段 3（報酬名の取り込み）＋046a の追補であり、
+  //   **別途 security-review が要る**。ここで先に足さないこと。
+  channelpoint: true,
 };
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>

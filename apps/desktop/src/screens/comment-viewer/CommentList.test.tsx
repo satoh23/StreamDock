@@ -1626,3 +1626,71 @@ describe("CommentList 062a レイド", () => {
     expect(container.querySelectorAll("li").length).toBe(1);
   });
 });
+
+/**
+ * 063e: チャンネルポイント引き換え行の描画仕様。
+ *
+ * ⚠⚠ **レイドとまったく同じ構造の問題を持つ。** チャンネルポイントは `MONETARY_EVENT_TYPES` に
+ * 入れない（課金ではない）ので `renderDefaultItem` の **chat 分岐**へ落ちるが、あの分岐は設計上
+ * `typeLabel` を描かない。⇒ **名指しの分岐が無いと、チャネポ行は普通の chat 行と見分けが付かず、
+ * テキスト入力なしの報酬では「配信元バッジ＋名前だけの空行」になる。**
+ * ⚠ `EVENT_LABEL` に 1 行足すだけでは**本体一覧には何も出ない**（＝063e のタスクファイルの
+ * 当初案では完了条件を満たせなかった）。ここはその 1 点を固定する。
+ *
+ * ⚠ 併せて「配信画面（overlay）には出さない」ことも固定する。⚠⚠ **本文の有無で条件分岐しない**
+ * （無条件で落とす）ことも固定する——同じ種別が出たり出なかったりすると挙動が読めないため。
+ */
+describe("CommentList 063e チャンネルポイント", () => {
+  const cp = (over: Partial<CommentViewDto> = {}): CommentViewDto =>
+    makeComment({
+      id: "cp1",
+      eventType: "channelpoint",
+      text: "がんばれー！",
+      author: { id: "u9", name: "Alice" },
+      ...over,
+    });
+
+  it("本体の一覧に「チャンネルポイント」ラベルと本文が出る", () => {
+    render(<CommentList comments={[cp()]} />);
+    expect(screen.getByText("チャンネルポイント")).toBeTruthy();
+    expect(screen.getByText("Alice")).toBeTruthy();
+    expect(screen.getByText("がんばれー！")).toBeTruthy();
+  });
+
+  it("⚠⚠ テキスト入力なしの報酬でも、本体の一覧ではラベルが出る（空行にならない）", () => {
+    render(<CommentList comments={[cp({ text: "" })]} />);
+    expect(screen.getByText("チャンネルポイント")).toBeTruthy();
+    expect(screen.getByText("Alice")).toBeTruthy();
+  });
+
+  it("⚠ チャンネルポイントは課金カード（ティア色）にならない", () => {
+    const { container } = render(<CommentList comments={[cp()]} />);
+    // 課金カードなら TONE_CLASS のいずれかが当たる。チャネポではどれも当たってはいけない。
+    for (const cls of Object.values(TONE_CLASS)) {
+      expect(container.querySelector(`.${cls}`)).toBeNull();
+    }
+    // 金額バッジも出ない（チャネポは monetaryAmount を持たない）。
+    expect(container.textContent).not.toContain("JPY");
+  });
+
+  it("⚠⚠ 配信画面（variant=overlay）にはチャンネルポイント行を出さない（本文があっても出さない）", () => {
+    const { container } = render(
+      <CommentList
+        comments={[cp(), makeComment({ id: "c1", text: "hello" })]}
+        variant="overlay"
+      />,
+    );
+    // 通常チャットは出る。
+    expect(screen.getByText("hello")).toBeTruthy();
+    // ⚠ 本文を持つチャネポでも行ごと出ない（「空のときだけ落とす」にしていないことの固定）。
+    expect(screen.queryByText("がんばれー！")).toBeNull();
+    expect(container.querySelectorAll("li").length).toBe(1);
+  });
+
+  it("⚠ 配信画面では、テキスト入力なしの報酬も当然出ない（空の吹き出しを映さない）", () => {
+    const { container } = render(
+      <CommentList comments={[cp({ text: "" })]} variant="overlay" />,
+    );
+    expect(container.querySelectorAll("li").length).toBe(0);
+  });
+});

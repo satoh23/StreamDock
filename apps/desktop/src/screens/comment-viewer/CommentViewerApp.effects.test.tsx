@@ -1232,7 +1232,10 @@ describe("064b: コメントで OBS のソースを鳴らす", () => {
     expect(mocks.stream.fireObsSource).not.toHaveBeenCalled();
   });
 
-  it("⚠ 条件に当たらないコメントでは鳴らない（課金ゲート）", async () => {
+  it("⚠ 条件に当たらないコメントでは鳴らない", async () => {
+    // ⚠⚠ 063e 段 2: 旧題は「（課金ゲート）」だったが、**その課金ゲートは削除した**
+    //   （論証は `effectAssignments.ts` の `createConditionMatcher` の JSDoc が正）。
+    //   ⚠ 鳴らない理由は「chat が条件表の集合に無いので、そもそも条件が存在しない」である。
     putObsCondition();
     render(<CommentViewerApp />);
     emitConnected();
@@ -1241,6 +1244,44 @@ describe("064b: コメントで OBS のソースを鳴らす", () => {
     emitComments([superchat({ id: "chat1", eventType: "chat" })]);
 
     expect(mocks.stream.fireObsSource).not.toHaveBeenCalled();
+  });
+
+  it("⚠⚠⚠ 063e 段 2: チャンネルポイントの引き換えで鳴る（端から端まで）", async () => {
+    // ⚠⚠⚠ **これが 063e 段 2 の完了条件そのものである**——sidecar から届いた
+    //   `eventType: "channelpoint"` のコメントが、割り当て表の条件に当たって OBS を鳴らすところまで。
+    // ⚠⚠ **段 1 の実装ではここが 1 回も鳴らなかった**（照合の直前の課金ゲートが落としていた）。
+    //   症状は「条件表に行は出るのに、選んでも何も起きない」＝ 061a Q-1 が最も嫌う形。
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify([
+        {
+          id: "event:channelpoint",
+          when: { type: "event", eventType: "channelpoint" },
+          effect: { kind: "obs-source", sourceName: OBS_ASSIGNED_SOURCE },
+        },
+      ]),
+    );
+    render(<CommentViewerApp />);
+    emitConnected();
+    await act(async () => {});
+
+    emitComments([
+      superchat({
+        id: "cp1",
+        source: "twitch",
+        eventType: "channelpoint",
+        text: "がんばれー！",
+        // ⚠ チャンネルポイントは**金額を持たない**（063e 段 1 の決定）。
+        monetaryAmount: undefined,
+        monetary: undefined,
+      }),
+    ]);
+
+    expect(mocks.stream.fireObsSource).toHaveBeenCalledWith(
+      4455,
+      OBS_ASSIGNED_SOURCE,
+      OBS_SOURCE_FALLBACK_DURATION_MS,
+    );
   });
 
   it("⚠⚠ 同じコメントが 2 度届いても 1 回しか鳴らない（[043e] の combo 再送）", async () => {

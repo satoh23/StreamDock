@@ -605,6 +605,19 @@
   border-color: var(--muted-border);
 }
 
+/* 063e: チャンネルポイントの種別バッジ（「チャンネルポイント」）。
+   ⚠ **`.badgeRaid` と同じ muted（無彩色）にしている。** 理由も同じ——チャンネルポイントは課金ではないので、
+   投げ銭カードのティア配色や初見（--ok）／久しぶり（--info）の判定バッジと**色で競合させない**。
+   ⚠ `.badgeRaid` を使い回さず別クラスにしたのは、クラス名が種別と食い違うと
+   「レイドの意匠を変えたらチャネポも変わる」という読めない結合になるため（値は同じでも意味が別）。
+   ⚠ 課金として強調したくなっても、`MONETARY_EVENT_TYPES` に足すのではなくここの配色を変えること
+   （あちらに足すと読み上げ・ティッカー・通知音・オーバーレイ・061 のエフェクトまで一斉に発火する）。 */
+.badgeChannelpoint {
+  color: var(--muted);
+  background: var(--muted-soft);
+  border-color: var(--muted-border);
+}
+
 .author {
   font-size: 12px;
   font-weight: 700;
@@ -1046,6 +1059,28 @@
   font-size: 12px;
   font-weight: 700;
   color: var(--danger-text);
+}
+
+/* 063e 段 1-b: チャンネルポイント購読の受信状態（設定ビューのカード先頭）。
+   ⚠⚠ **`.errorText`（赤）を使わない。** 「受信できていない」は**異常ではない**——他の人のチャンネルを
+   見ているときは正常な状態であり、Twitch 側でチャンネルポイントが有効化されていない新規配信者にとっては
+   **既定の状態**である。赤にすると正常な人にも「壊れている」を出し続けることになり、
+   044a/064c が本当の失敗に使っている赤の意味を薄める。
+   ⚠ 書式は `.note` と同じ寸法（12px / 1.5）に揃え、**色と太さだけ**で区別する
+   （054 が作った「項目名 / 補助説明」の 3 段規則を壊さないため）。
+   ⚠ トークンは既存の役割色のみ（生 hex を持ち込まない）: 受信中＝--ok ／ 未受信＝--warn-text。 */
+.channelPointsOk {
+  font-size: 12px;
+  line-height: 1.5;
+  font-weight: 700;
+  color: var(--ok);
+}
+
+.channelPointsWarn {
+  font-size: 12px;
+  line-height: 1.5;
+  font-weight: 700;
+  color: var(--warn-text);
 }
 
 /* 044a: OBS 有効化ガイドの手順リスト（赤字見出し .errorText 直下）。項目は 700 を解除して読みやすくする。 */

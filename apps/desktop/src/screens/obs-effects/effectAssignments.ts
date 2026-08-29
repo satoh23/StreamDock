@@ -2,10 +2,7 @@ import {
   EFFECT_ASSIGNMENTS_KEY,
   GACHA_LIBRARY_KEY,
 } from "../../features/comment-viewer/overlaySettings";
-import {
-  isMonetaryEvent,
-  MONETARY_EVENT_TYPES,
-} from "../comment-viewer/viewerFormat";
+import { EFFECT_CONDITION_EVENT_TYPES } from "../comment-viewer/viewerFormat";
 import type {
   EffectMatch,
   EffectMatcher,
@@ -68,7 +65,7 @@ import type {
  *
  * ## §9
  *
- * ⚠ 保存するのは **イベント種別（`MONETARY_EVENT_TYPES` の 6 値）・テンプレート id（uuid v4）・
+ * ⚠ 保存するのは **イベント種別（`EFFECT_CONDITION_EVENT_TYPES` の値）・テンプレート id（uuid v4）・
  * ユーザー自身が打ったキーワード**だけ。第三者の個人データ（本文・表示名・金額）は 1 バイトも入らない。
  * ⚠⚠ **061j でこの層に第三者のコメント本文が流れ込むようになった**（[`resolveEffectMatch`] の引数）。
  * 担保は**型**である＝ [`EffectMatchInput`] は `{ eventType, text }` だけを受け、
@@ -923,8 +920,12 @@ const eventCondition = (
  *   2. **UI（6 行の `<select>`）では表現できない**＝「保存値にあるのに画面に出ない条件」が生まれる
  *      （061a 以来の「黙って何かが起きる／起きない状態を作らない」に真っ向から反する）
  * ⇒ **必ず次を満たす配列を返す**:
- *   - **前半＝イベント条件ちょうど 6 件**。`MONETARY_EVENT_TYPES` の**挿入順**（＝`EFFECT_EVENT_ROWS` と
- *     同じ並び）で、重複は**先勝ち**で潰し、欠けは `{ kind: "none" }` で埋め、**未知の eventType は捨てる**
+ *   - **前半＝イベント条件が [`EFFECT_CONDITION_EVENT_TYPES`] の件数ちょうど**（063e 段 2 で 6 → 7）。
+ *     その**挿入順**（＝`EFFECT_EVENT_ROWS` と同じ並び）で、重複は**先勝ち**で潰し、
+ *     欠けは `{ kind: "none" }` で埋め、**未知の eventType は捨てる**
+ *     ⚠⚠ **この関数が「どの eventType を許すか」の唯一の持ち主である**（063e 段 2）。
+ *     ⚠ 同じ許可集合を照合側（[`createConditionMatcher`]）にも書かないこと——
+ *     **2 枚目が drift したのが 063e 段 2 で見つかったバグそのもの**である（あちらの JSDoc が正）。
  *   - **後半＝キーワード条件**（保存順・[`parseKeywordCondition`] を通ったものだけ・最大
  *     [`KEYWORD_CONDITION_MAX`] 件）
  *
@@ -956,7 +957,12 @@ const parseConditions = (raw: unknown): MatchableCondition[] => {
       if (type === "event") {
         const eventType = (when as { eventType?: unknown }).eventType;
         // ⚠ 未知の eventType は捨てる（UI に行が無い＝表現できない条件を残さない）。
-        if (typeof eventType !== "string" || !MONETARY_EVENT_TYPES.has(eventType)) continue;
+        // ⚠⚠ 063e 段 2: **ここが許可集合の唯一の門である**（照合側にゲートは無い）。
+        if (
+          typeof eventType !== "string" ||
+          !EFFECT_CONDITION_EVENT_TYPES.has(eventType)
+        )
+          continue;
         // ⚠ **先勝ち**（2 件目以降は無視する）。
         if (events.has(eventType)) continue;
         events.set(eventType, parseAssignment((item as { effect?: unknown }).effect));
@@ -974,17 +980,23 @@ const parseConditions = (raw: unknown): MatchableCondition[] => {
   } else if (typeof raw === "object" && raw !== null) {
     // ⚠ 旧形式（`Record<eventType, EffectAssignment>`）。⚠ 既知キーだけを引くので、
     //   `__proto__` 等の未知キーは構造的に読まれない（061d-2 からの規律）。
-    for (const eventType of MONETARY_EVENT_TYPES) {
+    // ⚠⚠ 063e 段 2: ここを `MONETARY_EVENT_TYPES` のままにする変異は**殺せない**（＝等価変異）。
+    //   旧形式を書いたのは 061i 以前のバージョンで、当時 `channelpoint` は存在しない
+    //   ⇒ **旧形式の Record は構造的に `channelpoint` キーを持ちえない**。
+    //   ⚠ それでも広い集合で回すのは、**同じ規則を 2 通りに書かない**ため
+    //   （無いキーは `undefined` で `continue` するだけ＝害はない）。
+    for (const eventType of EFFECT_CONDITION_EVENT_TYPES) {
       const value = (raw as Record<string, unknown>)[eventType];
       if (value === undefined) continue;
       events.set(eventType, parseAssignment(value));
     }
   }
 
-  // ⚠ **並びの持ち主は `MONETARY_EVENT_TYPES` の挿入順**（`EFFECT_EVENT_ROWS` と同じ）。
-  //   ⚠ 7 種別目が増えたら、保存値に無くてもここで自動的に 7 行目が生える。
+  // ⚠ **並びの持ち主は `EFFECT_CONDITION_EVENT_TYPES` の挿入順**（`EFFECT_EVENT_ROWS` と同じ）。
+  //   ⚠ 種別が増えたら、保存値に無くてもここで自動的に行が生える
+  //   （063e 段 2 の `channelpoint` が**まさにこれで移行コード無しに乗った**）。
   const out: MatchableCondition[] = [];
-  for (const eventType of MONETARY_EVENT_TYPES) {
+  for (const eventType of EFFECT_CONDITION_EVENT_TYPES) {
     out.push(
       eventCondition(eventType, events.get(eventType) ?? DEFAULT_EFFECT_ASSIGNMENT),
     );
@@ -1477,8 +1489,6 @@ function createConditionMatcher<T extends object>(
 ): EffectMatcher<T> {
   return (input: EffectMatchInput): EffectMatch<T> | null => {
     const conditions = readConditions();
-    // ⚠ 生の `eventType`（罠 1）。
-    const monetary = isMonetaryEvent(input.eventType);
     // ⚠⚠ **コメント 1 件につき 1 回だけ**（判断 6）。
     // ⚠ `text` は必須 `string` だが**空文字はありうる**（サブスク／ギフト等は本文を持たない）。
     //   `undefined` チェックは要らない。⚠ 空キーワードを構造的に排除している
@@ -1495,8 +1505,37 @@ function createConditionMatcher<T extends object>(
       const effect = select(condition);
       if (effect === null) continue;
       if (condition.when.type === "event") {
-        // ⚠⚠ 課金ゲート（判断 5）。⚠ ここを `decideEffects` の先頭へ戻すとキーワードが永久に当たらない。
-        if (!monetary) continue;
+        /**
+         * ## ⚠⚠⚠ 063e 段 2: ここにあった**課金ゲート**（`if (!isMonetaryEvent(input.eventType)) continue;`）を削除した
+         *
+         * ⚠ **消して安全である論証**（＝これが無いと消せない）:
+         *   [`parseConditions`] は event 条件の `eventType` が
+         *   [`EFFECT_CONDITION_EVENT_TYPES`] の要素でなければ**捨てる**し、
+         *   行を生やすのも同じ集合からである。
+         *   ⇒ 条件配列の event 条件の `eventType` は**必ずその集合の要素**。
+         *   ⇒ 直下の `condition.when.eventType === input.eventType` が成り立つなら、
+         *     `input.eventType` も**必ずその集合の要素**である。
+         *   ⇒ 集合を見るゲートは**常に true**＝1 つも仕事をしていない。
+         *
+         * ⚠⚠ **段 1 まで気付かなかったのは、許可集合と課金集合が同じ 1 つだったからである。**
+         *   063e 段 2 で許可集合に**非課金の `channelpoint`** が入った瞬間、この行は
+         *   「常に true」から「**チャネポだけを落とす**」へ意味が変わり、症状は
+         *   **「条件表に行は出るのに、選んでも何も起きない」**——061a Q-1 が最も嫌う形になる。
+         *
+         * ⚠⚠⚠ **「新しい集合で書き換える」を採らなかった理由**＝ それは**許可集合の 2 枚目**であり、
+         *   **2 枚目が drift したのが今回のバグそのもの**だからである。
+         *   ⚠ このファイルは同じ規律を既に書いている（[`parseKeywordCondition`] が空キーワードを
+         *   構造的に排除しているので「3 枚目の空チェックは置かない」）。それに揃えた。
+         *
+         * ⚠ **副産物**: このファイルから `isMonetaryEvent` の import が消えた
+         *   ＝ **条件表の層は「お金」を 1 つも知らない**。チャンネルポイントは
+         *   「対価だが金ではない」ので、意味論としてもこちらが正しい。
+         *
+         * ⚠⚠ **戻したくなったら**: 戻すのではなく [`parseConditions`] の許可集合を疑うこと
+         *   （ここへ来る条件が集合外なら、壊れているのは門の側である）。
+         *   ⚠ `effectAssignments.test.ts` の「chat / raid では event 条件が 1 件も当たらない」が
+         *   この論証を固定している（**ゲートが無くても当たらない**ことの直接の担保）。
+         */
         if (condition.when.eventType !== input.eventType) continue;
         // ⚠ イベント条件にクールダウンは効かせない（スパチャ 2 連投の 2 件目を落とさない）。
         return { effect, conditionId: condition.id, cooldownMs: 0 };

@@ -138,6 +138,41 @@ const relay = async (c) => toCanonicalComment(await convertCommentToViewDto(c));
   ok("relay(062a・§9): gifter/recipient 等の語が現れない", /gifter|recipient|受贈/.test(asJson), false);
 }
 
+// ---- G. 063e: チャンネルポイントが wire まで正しい形で到達する ----
+// **仕様**: mapper が作った引き換えは `eventType: "channelpoint"` のまま wire へ届く。
+//
+// ⚠⚠ **レイドと同じく、ここでしか守れない経路である。** `EVENT_TYPE_MAP` の写像を落とすと
+//   `?? "chat"` のフォールバックに落ち、**チャンネルポイントが「普通のコメント」として保存される**
+//   （＝画面にもバッジが出ず、063e 段 2 のエフェクト条件も永久に当たらない静かな誤動作）。
+//   ⚠ dev-mock は `wire.ts` を通らないので、実機のモック確認ではこの経路を 1 バイトも検証できない。
+{
+  const c = await relay(
+    comment({
+      source: "twitch",
+      eventType: "channelpoint",
+      text: "がんばれー！",
+    }),
+  );
+  ok(
+    "relay(063e): eventType 写像（channelpoint → channelpoint・?? \"chat\" に落ちない）",
+    c.eventType,
+    "channelpoint",
+  );
+  ok("relay(063e): 本文（user_input）が落ちない", c.text, "がんばれー！");
+  ok("⚠⚠ relay(063e): チャンネルポイントに金額は付かない", c.monetaryAmount, undefined);
+  ok("⚠ relay(063e): 数値 monetary も付かない", c.monetary, undefined);
+  ok("relay(063e): レイド人数は付かない", c.raidViewerCount, undefined);
+}
+
+// **仕様（入力なしの報酬）**: 本文が空でも wire は行を落とさない（配信画面に出さないのは frontend の責務）。
+{
+  const c = await relay(
+    comment({ source: "twitch", eventType: "channelpoint", text: "" }),
+  );
+  ok("relay(063e): 入力なしでも eventType は保たれる", c.eventType, "channelpoint");
+  ok("relay(063e): 本文は空文字のまま（報酬名で埋めない）", c.text, "");
+}
+
 // ---- B. 境界: 未設定は最後まで undefined（0 やキー生成へ劣化しない）----
 // **仕様**: 単発ギフト等で mapper が undefined へ落とした値は、中継でも undefined のまま
 //   （Rust 側で None になる＝「×0」表示や誤った集計を作らない）。

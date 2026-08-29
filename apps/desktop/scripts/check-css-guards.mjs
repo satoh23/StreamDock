@@ -2114,6 +2114,27 @@ for (const rel of [VIEWER_CSS, OVERLAY_CSS]) {
       "rgba",
       "文字の後ろの下地（063c 段 5-a）",
     ],
+    // ⚠⚠⚠ **063c 段 6-e: 「レア！」は景品名の器 `.gachaCard` の**子**として置いてある。**
+    //   ⚠ `position: absolute` が外れると**通常フローの flex アイテムに戻り**、
+    //     器が縦に伸びて **景品名の下に「レア！」が積まれる**（＝器が殻に乗る）。
+    //   ⚠⚠ **jsdom はレイアウトを解決しない**ので、`GachaEffectStage.test.tsx` の
+    //     「器の中に在る」テストは**この変異を全部緑のまま通す**（子であることは変わらないから）。
+    //     ⇒ **止められるのはこの検査だけ。**
+    [
+      ".gachaTelopRare",
+      "position",
+      "absolute",
+      "「レア！」を器の流れから出す（063c 段 6-e）",
+    ],
+    // ⚠ 下端を器の上 padding に合わせる指定（高さを変えても壊れないようにするための形）。
+    //   ⚠⚠ `top` の負値へ書き換えると**バッジの高さを変えるたびに計算し直す**ことになり、
+    //     直し忘れた側が 84px の景品名の頭に掛かる（段 5-b の「景品名がメイン」が壊れる）。
+    [
+      ".gachaTelopRare",
+      "bottom",
+      "calc\\(100% - 16px\\)",
+      "器の上端に留める（063c 段 6-e）",
+    ],
   ];
   for (const [selector, prop, valuePattern, role] of expectations) {
     const body = ruleBody(effectCss, selector);

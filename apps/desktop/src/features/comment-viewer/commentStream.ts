@@ -75,6 +75,26 @@ export interface CommentStreamHandlers {
    * @param ok `true` ＝ OBS へ繋がって一覧を取れた（**0 件でも `true`**）。
    */
   onObsSources?: (sources: { name: string; kind: string }[], ok: boolean) => void;
+  /**
+   * 063e 段 1-b: **チャンネルポイント購読の成否**（sidecar の `channelpoints.state`）。
+   *
+   * ⚠⚠⚠ **これが無いと「黙って効かない」が残る**（061a Q-1）。チャンネルポイントの購読は
+   * **非致命**（403 でもコメント取得は続く）なので、失敗しても画面には**何も起きない**。
+   * しかも失敗は例外ではなく**新規配信者の既定状態**である——チャンネルポイントは Twitch 側で
+   * 有効化されるまで存在せず、有効化はマイルストーン達成後のオンボーディングを通る。
+   *
+   * ⚠ 受け取る値は 3 語だけ:
+   *   - `"unknown"` ……… Twitch の取得を開始していない（**「駄目だった」ではない**）
+   *   - `"receiving"` …… 購読できた＝引き換えが届く
+   *   - `"unavailable"` … 購読できなかった（未有効化／再ログイン前／他人のチャンネル）
+   * ⚠⚠ **`unknown` と `unavailable` を混ぜないこと。** 混ぜると「まだ接続していないだけ」の人に
+   *   「Twitch の設定を確認してください」と案内する——064c が `obs.sources` の `ok` で潰した失敗と同型。
+   * ⚠ **理由（エラー内容）は載っていない**（§9・sidecar が載せない）。切り分けは固定の文言が担う。
+   *
+   * ⚠ `obs.state` と同じく **WS 境界で型が失われる**ので `string` で受ける
+   *   （消費側の `SettingsView` がリテラル比較で網羅する）。
+   */
+  onChannelPointsState?: (state: string) => void;
 }
 
 /**
@@ -510,6 +530,14 @@ export function connectCommentStream(
         //   「OBS のシーンにソースを追加してください」＝**064c が潰した当の誤案内**が復活する。
         //   `false` 側の誤りは「OBS を確認してください」で済み、ユーザーの行動が無害である。
         handlers.onObsSources?.(sources, typeof p?.ok === "boolean" ? p.ok : false);
+      } else if (m.type === "channelpoints.state") {
+        // 063e 段 1-b: チャンネルポイント購読の成否。⚠ 非秘密（状態語 1 つだけ・§9）。
+        // ⚠⚠ **未知の語は捨てる**（`obs.state` の `typeof p?.state === "string"` と同じ作法だが、
+        //   こちらは受け手が 3 語を網羅する前提なので、**型が違うものを渡さない**ことだけ守れば足りる）。
+        const p = m.payload as { state?: unknown } | undefined;
+        if (typeof p?.state === "string") {
+          handlers.onChannelPointsState?.(p.state);
+        }
       } else if (m.type === "obs.state") {
         // 044a: OBS 連携の状態通知。非秘密（state/reason のみ・パスワードは載らない）。
         // L4(修正不要): state は WS 境界を跨ぐため string で受ける（sidecar の ObsState union は共有しない）。

@@ -9,7 +9,11 @@ import { container } from "tsyringe";
 import { TwitchAccessTokenProvider } from "../../vendor/comment-fetcher/src/adapters/twitch/access-token/access-token-provider.js";
 import { TWITCH_DI_TOKENS } from "../../vendor/comment-fetcher/src/adapters/twitch/access-token/di-tokens.js";
 import { TwitchHelixClient } from "../../vendor/comment-fetcher/src/adapters/twitch/client/helix.client.js";
-import { TwitchEventSubWebSocketClient } from "../../vendor/comment-fetcher/src/adapters/twitch/client/eventsub-websocket.client.js";
+import {
+  TwitchEventSubWebSocketClient,
+  NOOP_CHANNEL_POINTS_SUBSCRIPTION_REPORTER,
+  type ChannelPointsSubscriptionReporter,
+} from "../../vendor/comment-fetcher/src/adapters/twitch/client/eventsub-websocket.client.js";
 import { TwitchLiveStreamClient } from "../../vendor/comment-fetcher/src/adapters/twitch/client/live-stream.client.js";
 import { TwitchLiveStreamRepository } from "../../vendor/comment-fetcher/src/adapters/twitch/repository/live-stream.repository.js";
 import { TwitchCommentRepository } from "../../vendor/comment-fetcher/src/adapters/twitch/repository/comment.repository.js";
@@ -20,6 +24,14 @@ import { guardedWebSocketRuntime } from "../host-guard.js";
 
 export type RegisterCommentFetcherDependenciesOptions = {
   authClient?: AuthClient;
+  /**
+   * 063e 段 1-b: チャンネルポイント購読の成否（1 bit）の通知先。
+   *
+   * ⚠ 未指定なら no-op ＝**通知が出ないだけ**で、取得の挙動は 1 バイトも変わらない（fail-open）。
+   * ⚠⚠ 逆向き（未指定でセッションを止める）にしないこと——この通知は「知らせる」ためだけの経路であり、
+   *   本線の可否を握らせると 063e が一貫して守ってきた非致命性が崩れる。
+   */
+  onChannelPointsSubscription?: ChannelPointsSubscriptionReporter;
 };
 
 export const registerCommentFetcherDependencies = (
@@ -43,6 +55,17 @@ export const registerCommentFetcherDependencies = (
   container.register(TWITCH_DI_TOKENS.eventSubClient, {
     useClass: TwitchEventSubWebSocketClient,
   });
+  // 063e 段 1-b: チャンネルポイント購読の成否の通知先。⚠ **必ず登録すること**——
+  //   tsyringe は未登録トークンの `@inject` を解決できず throw するので、
+  //   ここを消すと **Twitch の DI グラフ解決ごと落ちる**（起動時の `createTwitchPipeline()` で発覚する）。
+  container.register<ChannelPointsSubscriptionReporter>(
+    TWITCH_DI_TOKENS.channelPointsSubscriptionReporter,
+    {
+      useValue:
+        options.onChannelPointsSubscription ??
+        NOOP_CHANNEL_POINTS_SUBSCRIPTION_REPORTER,
+    },
+  );
   // ② fail-closed host guard: EventSub の ws 生成をガード付き runtime に固定。
   container.register(TWITCH_DI_TOKENS.eventSubWebSocketRuntime, {
     useValue: guardedWebSocketRuntime,

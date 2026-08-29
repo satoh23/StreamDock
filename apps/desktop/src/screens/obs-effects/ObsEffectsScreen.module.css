@@ -129,8 +129,10 @@
   font-size: 11px;
 }
 
-/* 061d-2: イベント種別ごとの割り当て表。⚠ 行は `MONETARY_EVENT_TYPES` から機械的に作られる
-   （「条件を追加」ボタンで増やす形にしない＝061d の (2) の判断）。 */
+/* 061d-2: イベント種別ごとの割り当て表。⚠ 行は `EFFECT_CONDITION_EVENT_TYPES` から機械的に作られる
+   （「条件を追加」ボタンで増やす形にしない＝061d の (2) の判断）。
+   ⚠ 063e 段 2 で出所が `MONETARY_EVENT_TYPES` から替わり、行が 6 → 7 になった
+   （チャンネルポイントは**条件表には出すが、お金ではない**）。 */
 .assignmentList {
   display: flex;
   flex-direction: column;

@@ -64,6 +64,14 @@ pub fn record_comment(
     //   を全モジュールで統一／本文は SQL バインド・非ログ・React エスケープで実害小・MVP は単一行前提。
     // 【副作用】改行入りの正当コメント（複数行 YouTube スパチャ等）は記録から落ちる（表示は済み・集計のみ欠落）。
     // 【再修正トリガ】複数行の集計欠落が問題化したら text だけ「拒否」→「制御文字の除去(strip)」へ切替（Q2）。
+    //
+    // 【063e・穴 R の評価（レビュー S-3・2026-08-29）】チャンネルポイントの `user_input`（視聴者が
+    //   報酬に添えたテキスト）もここを通るが、**チャンネルポイント固有の悪化は無い**と判断した。
+    //   ①Twitch の報酬テキスト入力は単一行のテキストフィールド（200 文字上限）で、改行を入れる正規の
+    //     導線が無い。②仮に落ちても、**ガチャの発火は frontend の effectTrigger 経路**なので回るし、
+    //     コメント一覧にも出る——失われるのは視聴者メモリ／配信サマリーの集計行だけである。
+    //   ⚠ したがって上の Q2（strip への切替）と同じ扱いで、**063e としては別タスク**とする。
+    //   【再修正トリガ】改行入りの `user_input` が実際に届くと分かったら、Q2 を優先度付きで起票すること。
     let text = comment.text.trim().to_string();
     reject_control_chars(&text, "コメント本文に制御文字は使用できません")?;
 
@@ -524,6 +532,51 @@ mod tests {
         let saved = format!("{:?}", get(&conn, "twitch:raider").unwrap());
         assert!(!saved.contains("jtvnw"), "アバター取得元 URL は保存されない（§9）");
         assert!(!saved.contains("http"), "URL そのものが保存行に現れない");
+    }
+
+    // ---- 063e: チャンネルポイントを service 経由で通したときの仕様 ----
+
+    // 063e: `CommentEventType::Channelpoint` は `as_str()` で "channelpoint"（serde の lowercase と一致＝
+    //   wire の値と同じ）になり、**視聴者が添えたテキストが本文として保存される**。
+    //   ⚠ ここが落ちるのは「Rust の語彙が wire とずれた」ときだけ。
+    #[test]
+    fn channel_point_redemption_passes_through_service_with_its_text() {
+        let conn = test_conn();
+        let mut d = dto();
+        d.id = "cp1".to_string();
+        d.author = CommentAuthor {
+            // ⚠ チャンネルポイントの author は**引き換えた視聴者**（レイドと違い chatter 相当）。
+            id: "u1".to_string(),
+            name: "Alice".to_string(),
+            avatar: None,
+        };
+        d.text = "がんばれー！".to_string();
+        d.event_type = CommentEventType::Channelpoint;
+        record_comment(&conn, d, "sess-1".to_string()).unwrap();
+
+        let detail = get(&conn, "twitch:u1").unwrap();
+        assert_eq!(detail.comments.len(), 1);
+        assert_eq!(detail.comments[0].event_type, "channelpoint", "wire と同じ綴りで保存される");
+        assert_eq!(detail.comments[0].text, "がんばれー！", "user_input が本文として残る");
+        assert_eq!(detail.comments[0].amount, None, "チャンネルポイントは金額を持たない");
+        assert_eq!(detail.viewer.subscription_count, 0, "サブスク集計に混ざらない");
+        assert!(!detail.viewer.is_member);
+    }
+
+    // 063e: テキスト入力を求めない報酬は本文が空のまま保存される（空文字でも行は作る）。
+    //   ⚠ 「配信画面に出さない」のは frontend（`CommentList.tsx`）の責務で、**記録は落とさない**。
+    #[test]
+    fn a_channel_point_redemption_without_user_input_is_still_recorded() {
+        let conn = test_conn();
+        let mut d = dto();
+        d.id = "cp2".to_string();
+        d.text = String::new();
+        d.event_type = CommentEventType::Channelpoint;
+        record_comment(&conn, d, "sess-1".to_string()).unwrap();
+
+        let detail = get(&conn, "twitch:u1").unwrap();
+        assert_eq!(detail.comments.len(), 1, "本文が空でも記録は残る");
+        assert_eq!(detail.comments[0].text, "");
     }
 
     // ---- 043e: combo 更新を service 経由で通したときの仕様（§8 検証・非保存・削除手段の非退行）----

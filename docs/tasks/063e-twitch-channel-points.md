@@ -1,13 +1,29 @@
 # 063e Twitch チャンネルポイントの取り込み（ガチャのトリガー・受信面拡張）
 
-> 状態: **未着手（2026-08-23 起票）**。分割・線引きは親 [063](063-gacha-effect.md) を正とする。
+> 状態: ⚠⚠ **段 1 完了（2026-08-25・`security-review` 実施済み）＋段 1-b 完了（2026-08-26・ベータ化）
+> ＋段 2 完了（2026-08-26・エフェクト条件の行）＋段 2-b 完了（2026-08-26・モックを本番の変換チェーンへ）
+> ／段 3 未着手。**
+> ⚠⚠⚠ **段 2 まで入ったので、チャンネルポイントの引き換えで実際にガチャが回る。**
+> 分割・線引きは親 [063](063-gacha-effect.md) を正とする。
+> **判断の全文・変異の実測・一次確認の可否は [`docs/progress.md`](../progress.md) の 063e 段 1 節と段 1-b 節が正。**
+>
+> ⚠⚠⚠ **2026-08-26 の最大の前提変更: 依頼者の環境ではチャンネルポイントを有効化できない。**
+> チャンネル作成直後で、クリエイターダッシュボードに項目自体が無い。Twitch のチャンネルポイントは
+> **アフィリエイト条件を満たしたあとのオンボーディングを通って初めて使える**
+> （改定後＝4 時間配信・4 日・同時視聴 3 人・25 フォロワー相当）。
+> ⇒ **実機手順 ①②（実際の引き換え）は当面通せない。**
+> ⇒ 依頼者の判断で **「徹底的に穴を潰したうえでベータとして出し、不具合はユーザー報告に頼る」**方針へ切り替え、
+> その前提を満たすための **段 1-b** を実施した（穴 H' の解消・購読成否の可視化・ベータ表記・段 1 のレイアウト崩れ修正）。
 >
 > ⚠⚠⚠ **実装順に強い制約がある**: **段 1 は [066](066-chat-send.md) をリリースする前に入れること。**
 > 066 が `user:write:chat` を足した時点で**既存ユーザーの再ログインは既に確定している**ので、
 > ここに相乗りすれば**追加の再ログインはゼロ**。⚠ 後に回すと**再ログインを 2 回起こす**。
 >
-> ⚠⚠ **実装順は [063a](063a-gacha-definition-editor.md) ✅ → [063d](063d-gacha-library.md) →
-> **本タスク 段 1** → [063b](063b-gacha-draw-and-triggers.md) → [063c](063c-gacha-presentation.md)（保留）。**
+> ⚠⚠⚠ **2026-08-25 訂正: 旧「実装順は 063a ✅ → 063d → 本タスク 段 1 → 063b → 063c（保留）」は古い。**
+> **063d ／ 063b（段 1-a・1-b）／ 063c（段 1・2-a・2-b）はすべて完了済み**である（親 063 が正）。
+> ⇒ ⚠⚠ **本タスクは 063 系で最後まで残った受信面の拡張**であり、**先行タスクの待ちは 1 つも無い**。
+> ⚠⚠⚠ **そのぶん穴 F の窓（066 のリリースへの相乗り）を逃すリスクが上がっている**——
+> ✅ **2026-08-25 時点でリリースはまだ**（`package.json` は `0.1.0`・git タグ無し）＝ **窓は開いている**。
 > **文字は識別子であって順番ではない**（063d の同じ注記と同じ規律）。
 >
 > **必読前提**: 親 [063](063-gacha-effect.md)、
@@ -15,9 +31,15 @@
 > ⚠⚠ **`CommentEventType` に variant を足した先例 [062a](062a-twitch-raid-ingestion.md)（⚠ 特に「実装で判明した前提の訂正」1・9）**、
 > **調査 [063s](063s-tanuesa-gacha-spike.md) (4)（⚠ 本タスクは 063s の「選択肢 (a)」そのものである）**、
 > **出力の型 [063t](063t-gacha-output-types-spike.md)**、
+> ⚠⚠ **発火の正 [063b](063b-gacha-draw-and-triggers.md)（`effectFire.ts` の `decideFireSourceNames`）**、
+> ⚠⚠⚠ **演出の正 [063c](063c-gacha-presentation.md)（`EffectFireResult` / `GachaFireDetail`・
+> ⚠ **段 3 で「引いた視聴者の表示名」が §9 の線として演出へ載った**＝ 段 2 の判断に直結する）**、
+> [063f](063f-gacha-chat-output.md)（未着手・⚠ 段 2 の条件表を共有する）、
 > 条件の配列 [061j](061j-keyword-conditions.md)（`EFFECT_ASSIGNMENTS_KEY` の正）、
-> 割り当ての行 [061d](061d-effect-template-ui.md)（`EFFECT_EVENT_ROWS` の正）、
-> スコープ拡大の姿勢 [066](066-chat-send.md)、
+> ⚠ 割り当ての行 [061d](061d-effect-template-ui.md)（⚠⚠ **2026-08-25 訂正: `EFFECT_EVENT_ROWS` の実体は
+> [`effectEventRows.ts`](../../apps/desktop/src/screens/obs-effects/effectEventRows.ts) にあり、
+> 条件が配列になった経緯の正は [061j](061j-keyword-conditions.md) ＋ [064b](064b-obs-source-conditions.md) である**）、
+> スコープ拡大の姿勢 [066](066-chat-send.md)（✅ **段 1・段 2 とも完了済み**）、
 > [`docs/security.md`](../security.md)（**§1**／§8／§9／§10）。
 > CLAUDE.md どおり **「実装して」まで変更せず、まず変更計画と対象ファイルを提示する**。
 > ⚠⚠ **段 1 は `security-review` 必須**（OAuth スコープの拡大＝ 043a / 066 と同じ扱い）。
@@ -53,15 +75,15 @@ API 上の制限でも、審査でも、Device Code Flow の制約でもない�
 
 ### 公開情報（2026-08-23 に確認）
 
-| 事実 | 出典の強さ |
-|---|---|
-| 購読は `channel.channel_points_custom_reward_redemption.add` | ✅ Twitch 公式 EventSub ドキュメント |
-| Authorization は「Must have `channel:read:redemptions` scope.」 | ✅ **公式原文** |
-| condition は `broadcaster_user_id`（＋任意 `reward_id`） | ✅ 公式 |
-| ⚠ **ブロードキャスター本人のトークンでしか購読できない**（モデレータ／エディタ不可） | ⚠ 開発者フォーラム・**公式原文では未確認** |
-| ⚠⚠ **報酬名（`reward.title`）がイベントペイロードに載るか** | ⚠⚠ **未確認**（下記 穴 G） |
-| 載っていなくても Helix `GET /channel_points/custom_rewards` で引ける（**同じスコープ**） | ⚠ 未確認 |
-| チャンネルポイントは Affiliate 不要（2026-05-13〜） | ⚠ 二次ソース複数一致 |
+| 事実                                                                                     | 出典の強さ                                                                                                                                                                                                                        |
+| ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 購読は `channel.channel_points_custom_reward_redemption.add`                             | ✅ Twitch 公式 EventSub ドキュメント                                                                                                                                                                                              |
+| Authorization は「Must have `channel:read:redemptions` scope.」                          | ✅ **公式原文**                                                                                                                                                                                                                   |
+| condition は `broadcaster_user_id`（＋任意 `reward_id`）                                 | ✅ 公式                                                                                                                                                                                                                           |
+| ⚠ **ブロードキャスター本人のトークンでしか購読できない**（モデレータ／エディタ不可）     | ⚠ 開発者フォーラム・**公式原文では未確認**                                                                                                                                                                                        |
+| ⚠⚠ **報酬名（`reward.title`）がイベントペイロードに載るか**                              | ✅ **確認済み（2026-08-26・穴 G 解決）**——`reward` は `{ id, title, cost, prompt }`。出典は 2 つの独立した一次情報（`twitch_api` crate の型定義／公式 Twitch CLI の `redemption_event.go`）⇒ **段 3 は Helix の追加呼び出し不要** |
+| 載っていなくても Helix `GET /channel_points/custom_rewards` で引ける（**同じスコープ**） | ⚠ 未確認                                                                                                                                                                                                                          |
+| チャンネルポイントは Affiliate 不要（2026-05-13〜）                                      | ⚠ 二次ソース複数一致                                                                                                                                                                                                              |
 
 ⚠ **`channel.channel_points_automatic_reward_redemption.add`（自動報酬＝ハイライト等）は別購読であり、本タスクの対象外。**
 
@@ -70,6 +92,17 @@ API 上の制限でも、審査でも、Device Code Flow の制約でもない�
 - **新規 egress 先はゼロ。** `api.twitch.tv` / `eventsub.wss.twitch.tv` はいずれも
   `host-guard.ts` の allow-list にあり、宛先は `twitch-config.ts` に**定数でピン留め**されている。
   ⚠ **増えるのは能力だけ**（066 が §1 に書いた形とまったく同じ）。
+- ✅ **現在の `TWITCH_SCOPES` は `["user:read:chat", "bits:read", "user:write:chat"]`**（2026-08-25 実測）。
+- ⚠⚠⚠ **2026-08-25 追記: 触るファイルの大半は `apps/comment-sidecar/vendor/` 配下である。**
+  - `vendor/comment-fetcher/src/adapters/twitch/client/eventsub-websocket.client.ts`（購読）
+  - `vendor/comment-fetcher/src/adapters/twitch/dto/raw.dto.ts`（語彙 1 段目）
+  - `vendor/comment-fetcher/src/adapters/twitch/**/comment.mapper.ts`（2 段目）
+  - `vendor/shared/src/comment/comment-types.ts`（3 段目）／`comment-to-view.converter.ts`（4 段目）
+  - ⚠ **`src/` 配下は `wire.ts`（5 段目）・`twitch-config.ts`・`dev-mock.ts` の 3 本だけ。**
+    ⚠⚠ **`vendor/` は in-repo で追跡されている**（100 ファイル・上流から distill したもの・submodule ではない）。
+    **043a / 062a も同じ場所を触っている**ので前例はあるが、⚠ **他タスクが完了条件に
+    「vendor 差分ゼロ」と書いている**（`docs/security.md` で 2 箇所）ので、
+    ⇒ ⚠⚠ **本タスクは「vendor に差分が出る」ことを最初から明示すること**（ゼロ拡大の担保コマンドを誤らない）。
 - 購読の作成は `eventsub-websocket.client.ts` の `subscribeChatEvents`。
   ⚠⚠ **`channel.bits.use` が既に「任意＝非致命 catch」の形で並んでおり、本タスクはその 3 件目**である
   （403 でも本線の 2 購読とコメント配信を止めない）。
@@ -80,8 +113,8 @@ API 上の制限でも、審査でも、Device Code Flow の制約でもない�
   3. `vendor/shared/src/comment/comment-types.ts` … `"raid"` がある union
   4. `comment-to-view.converter.ts` … `eventType` を素通しするだけ（明示列挙層）
   5. `src/wire.ts` … `CanonicalCommentEventType` ＋ `EVENT_TYPE_MAP`
-  ⚠ **5 の `EVENT_TYPE_MAP` は `Record<OsareviewCommentViewDto["eventType"], …>` なので、
-  3 の union に足せばキー不足でコンパイルが落ちる**＝構造的に落とせない（062a が確認した網）。
+     ⚠ **5 の `EVENT_TYPE_MAP` は `Record<OsareviewCommentViewDto["eventType"], …>` なので、
+     3 の union に足せばキー不足でコンパイルが落ちる**＝構造的に落とせない（062a が確認した網）。
 - Rust は `comment_viewer/model.rs` の `CommentEventType` に variant を 1 つと `as_str` に 1 行。
   ⚠⚠ **DB のマイグレーションは不要**——`viewer_comments.event_type` は `TEXT NOT NULL` で
   **CHECK 制約が無い**（`viewer_memory/repository.rs`）。
@@ -97,11 +130,11 @@ API 上の制限でも、審査でも、Device Code Flow の制約でもない�
 
 ## ⚠⚠ 段の割り方（CLAUDE.md「1 回の作業で複数機能をまとめて実装しない」）
 
-| 段 | 内容 | レビュー |
-|---|---|---|
+| 段       | 内容                                                                                 | レビュー                      |
+| -------- | ------------------------------------------------------------------------------------ | ----------------------------- |
 | **段 1** | **取り込みだけ**（スコープ＋購読＋5 段の語彙＋Rust variant＋コメント一覧に出るまで） | ⚠⚠ **`security-review` 必須** |
-| 段 2 | **エフェクト条件の行として使えるようにする**（063b の割り当てから選べる） | 軽レビュー |
-| 段 3 | ⚠ **報酬名ごとの出し分け**（穴 G の一次確認が済んでから） | 軽レビュー |
+| 段 2     | **エフェクト条件の行として使えるようにする**（063b の割り当てから選べる）            | 軽レビュー                    |
+| 段 3     | ⚠ **報酬名ごとの出し分け**（✅ **穴 G は 2026-08-26 に解決済み＝着手可能**）         | 軽レビュー                    |
 
 ⚠⚠ **段 1 を単独で通す理由**＝ スコープ拡大の判断を、ガチャの設計と切り離して固めるため（066 段 1 と同じ作法）。
 ⚠ **段 1 の時点ではガチャは回らない**（コメント一覧に「チャンネルポイント」の行が出るだけ）。
@@ -124,7 +157,7 @@ API 上の制限でも、審査でも、Device Code Flow の制約でもない�
 
 - `raw.dto.ts` … `TwitchEventSubSubscriptionType` に 1 件、envelope の `event` union に 1 件、
   新 DTO `TwitchChannelPointsRedemptionEventDto`。
-  ⚠ **`user_input` は「在るが、本文として使う」**（下記 (4)）。⚠ **`reward` は段 1 では消費しない**（穴 G）。
+  ⚠ **`user_input` は「在るが、本文として使う」**（下記 (4)）。⚠ **`reward` は段 1・段 2 では消費しない**（§9）。
 - `comment.mapper.ts`（twitch）… 引き換え → コメント 1 件。
   ⚠ **`id` は引き換えイベント自身の `id`**（重複排除キー）。⚠ `channel.bits.use` のように
   `metadata.message_id` を補填する必要があるかは**実装時に `eventsub-websocket.client.ts` を読んで確認する**。
@@ -164,17 +197,99 @@ API 上の制限でも、審査でも、Device Code Flow の制約でもない�
   ⚠ **`user_input` 有りと無しの 2 パターン**を出す（(4) の分岐を目視できるようにする）。
 - `scripts/test-twitch-mapper.mjs` に mapper のケースを追加。
   ⚠ `package.json` の `scripts.test` は**既に両スクリプトを繋いでいる**ので差分は出ない。
+- ⚠⚠ **2026-08-25 追記: 関係するスクリプトは 3 本ある**——
+  `test-twitch-mapper.mjs`（mapper）／**`test-dev-mock.mjs`（dev-mock を触るので要確認）**／
+  **`test-comment-relay.mjs`（語彙 5 段の担保・穴 C）**。⚠ **3 本とも通ることを確認すること。**
 
 ## このタスクでやらないこと
 
 - **ガチャの抽選・割り当て**（[063b](063b-gacha-draw-and-triggers.md)）。段 1 は**取り込みだけ**。
-- ⚠ **報酬名ごとの出し分け**（段 3・穴 G の一次確認が先）。
+- ⚠ **報酬名ごとの出し分け**（段 3。✅ 穴 G は解決済みなので**前提は整っている**）。
 - ⚠ **`channel.channel_points_automatic_reward_redemption.add`（自動報酬）**。別購読・別タスク。
 - **報酬の消化／返却**（`channel:manage:redemptions`）。⚠ **書き込み権限は取らない**——
   066 が Twitch 初の書き込みを 1 本入れたばかりで、**2 本目をガチャのついでに増やさない**。
 - **YouTube 側の対応**。⚠⚠ **相当機能が存在しない**（066 と同じ非対称が 1 つ増える）。**画面にそう書く。**
 - **チャネポの残高・履歴の取得**。
 - たぬえさ3 の**逆解析・設定ファイル形式の再現**（親 063 の線引き・不変）。
+
+## ⚠⚠ 実装で判明した前提の訂正（段 1・2026-08-25）
+
+⚠ **本節は「実装してみたら本文が違っていた」ことの記録である**（062a の同名節と同じ作法）。
+**上の本文より本節が新しい。**
+
+1. ⚠⚠⚠ **(6) の「`EVENT_LABEL` に 1 行足す」だけでは、完了条件「コメント一覧に行が出る」を満たせない。**
+   `CommentList.tsx` の `renderDefaultItem` の **chat 分岐は `typeLabel` を構造的に描かない**
+   （047b が課金分岐と JSX を分けたときに**意図的に落とした**もので、理由もコード内に明記されている）。
+   ⇒ チャネポ行は**普通の chat 行と見分けが付かず**、入力なしの報酬では**名前だけの空行**になる。
+   ⇒ **穴 N は「見た目の好み」ではなく必須作業だった。** 062a の申し送りどおり
+   **名指しの分岐を 1 つ増やす**形で解決した（`typeLabel` の汎用描画にはしない）。
+2. ⚠⚠⚠ **段 1 は割れない。** 「スコープ＋購読／語彙 5 段」に割ると、購読だけ入った状態で引き換えイベントが
+   mapper の chat フォールバックへ落ち、`event.message.text` で **TypeError を throw** して
+   **コメント取得セッションごと死ぬ**。⇒ **(2) と (3) は同じ段でなければならない。**
+   ⚠ Rust と frontend も分けられない（穴 H の `Record<CommentEventType, …>` が「まとめて通せ」と強制する）。
+3. ⚠⚠ **非致命購読は「購読作成の失敗」しか守らない。** 受信後のイベントは守らないので、
+   mapper に **fail-safe（`isChatMessageEvent`）を 1 枚足した**——形を知らないイベントは
+   throw ではなく**「行を作らない」へ倒す**。⚠ **この 2 枚はセットで維持すること**（§1 の 063e 追補に明記）。
+4. ⚠⚠ **穴 D の「判定材料が現状 frontend に無い」は不正確だった。** 材料は **sidecar には揃っている**——
+   `TwitchCommentRepository.streamComments` が `helixClient.getSelfUserId()` の結果と
+   `input.liveChatId`（＝解決済み broadcaster ID）を**同一スコープに両方持っている**。
+   ⇒ 「無い」のではなく「**frontend へ届ける経路が無い**」（新 WS フレームが要る＝別段）。
+5. ⚠⚠ **穴 O は視聴者メモリしか見ていなかった。** ⇒ **穴 Q を追加**（下記）。
+6. ⚠ **`comment-to-view.converter.ts` は変更不要だった**（`eventType` は値を列挙せず素通しするだけ）。
+   語彙 5 段のうち、**コード変更が発生しないのはこの 1 段だけ**である。
+7. ⚠ **`bindings/CommentEventType.ts`（ts-rs 生成物）に差分が出る**ことが本文に書かれていなかった。
+   Rust に variant を足すと **`cargo test` で再生成される**（手で編集しない）。
+8. ✅ **穴 G は 2026-08-26 に解決した**（当初「一次確認できなかった」と記録していたもの）。
+   `reward` は **`{ id, title, cost, prompt }`**、`user_input` は **string（未入力なら空文字）**、
+   ほかに `status`（`unknown`/`unfulfilled`/`fulfilled`/`canceled`）と `redeemed_at`（RFC3339）を持つ。
+   出典＝ `twitch_api` crate の `ChannelPointsCustomRewardRedemptionAddV1Payload` ／
+   **公式 Twitch CLI** `internal/events/types/channel_points_redemption/redemption_event.go`。
+   ⚠⚠ **併せて訂正**: 段 1-b が `user_input` を `?: string | null` にした根拠「`null` の実例報告」は
+   **自動報酬（別の購読種別）の実例**であり、本購読については不正確だった。
+   ⚠ 防御は残す（実機で確認できず、外したときの症状が**無言**で、広く受けるコストがゼロのため）。
+   （当初の記録）⚠ Authorization（**公式原文で「broadcaster's access token」**＝穴 D の格上げ）・
+   condition・自動報酬が別購読であることは**公式で確認できた**が、**`reward.title` の載否は
+   EventSub Reference のペイロード表に到達できず未確認のまま**である（progress.md の 063e 段 1 節が正）。
+
+### ⚠⚠ 2026-08-25（実装時）に追加した穴（Q〜S）
+
+- **Q. ⚠⚠ 配信サマリー（062c）の「コメント数」にチャネポが自動的に入る。**
+  `stream_summary/repository.rs` の `TOTAL_COMMENTS_SQL` は `event_type <> 'raid'` という**拒否リスト**なので、
+  新しい種別は既定で「数える」側へ倒れる（穴 O は `viewer_memory` しか見ていなかった）。
+  ⇒ **追認した**（書き忘れではないことを `channel_points_are_counted_as_comments_unlike_raid` が記録する）。
+  ⚠ 金額の内訳は `amount IS NOT NULL` で引くので、**mapper が金額を付けない限り構造的に入らない**。
+- **R. ⚠ `user_input` に改行が入ると、その 1 件だけ端末に保存されない**
+  （`viewer_memory::service` の `reject_control_chars`・`record_comment` は fire-and-forget）。
+  ⚠ 複数行スパチャで既知の挙動＝新しい欠陥ではないが、**チャネポは遭遇率が上がる**。
+  ⇒ 段 1 では現状維持（直すなら 038 側の課題）。**別タスク起票の候補。**
+- **S. ⚠⚠ アプリに「再ログイン」を起こす導線が無い**（ログアウト／連携解除のボタンも command も無い）。
+  ⚠ **066 が既に抱えている穴**だが、同じ再ログインに相乗りする以上、同じ穴を共有する。
+  ⇒ 段 1 では**画面に手順を書いて塞いだ**（Twitch の 設定 → 接続 で連携解除 → 再接続）。
+  ⚠⚠ **アプリ内の導線そのものは別タスク**（新規 command が要る）。
+
+### ⚠⚠⚠ 2026-08-26（段 1-b）に判明した穴（H'・T・U）
+
+- **H'. ⚠⚠⚠ `user_input` の型推測が「引き換えが 1 件も出ない」単一障害点だった。**
+  段 1 の mapper は **`typeof user_input === "string"` を種別の判別材料そのもの**に使っていた。
+  `null` ／ キー欠落が 1 度でも来ると、引き換えとして認識されず chat フォールバックで `null` に落ち、
+  **1 件も出ない・エラーも出ない**。⚠ 公式仕様は `string` だが**一次のペイロード表に到達できておらず**（穴 G）、
+  `null` の実例報告だけがある。⚠⚠ **段 1 の security-review 指摘 3 は方向を取り違えていた**——
+  心配していたのは「他イベントの横取り」だが、**危ないのは逆向き（取りこぼし）**だった。
+  ⇒ **三段で解消**（①受信直後に `metadata.subscription_type` を根拠として `""` へ正規化
+  ②判別材料を `id` ＋ `user_id` へ移す ③本文は読むときに `""` へ倒す）。
+  ⚠ 併せて `id` の欠落も `metadata.message_id` から補填する（欠けると `record_comment` が DTO ごと落ちる＝無言の全滅）。
+- **T. ⚠⚠⚠ 「Twitch 側でチャンネルポイントが有効になっていない」は例外ではなく、新規配信者の既定状態である。**
+  ＝ StreamDock の想定ユーザーの多くがそこに居る。ところが段 1 の説明カードは
+  **「自分のチャンネルに接続しているときだけ届きます」としか書いていなかった**ので、
+  **自分のチャンネルに接続しているのに届かない人**が、画面から理由を知る手段を 1 つも持たなかった
+  （＝061a Q-1「黙って効かない、を作らない」を満たせていなかった）。
+  ⇒ 段 1-b で**購読の成否（`channelpoints.state`）を画面に出し**、届かない 3 条件を①②③として明記した。
+- **U. ⚠⚠ 説明カードに `.cardBody` が無く、レイアウトが崩れていた**（段 1 の実装バグ）。
+  `<span className={styles.note}>` を `.card` 直下に置いており、`.card` は padding を持たず `.note` は inline なので、
+  **4 つの説明文がカードの端に貼り付いた 1 かたまりの文**として描画されていた
+  （他の全カードは `.cardBody` を挟んでいる＝**この 1 枚だけ崩れていた**）。
+  ⚠ **型検査もテストも通る＝目視でしか分からない種類の欠陥**。⇒ 段 1-b で修正し、
+  「`<section>` 直下に `<span>` を置かない」構造テストで固定した。
 
 ## ⚠ 先に潰した穴（A〜L）
 
@@ -188,15 +303,15 @@ API 上の制限でも、審査でも、Device Code Flow の制約でもない�
   3. `parseConditions` の並び生成ループ … 条件の配列に**そもそも作られない**
   4. `createConditionMatcher` の**課金ゲート** `if (!monetary) continue;` …
      仮に条件が届いても**発火の直前で落ちる**
-  ⇒ ⚠⚠ **原因は 1 つ**——`MONETARY_EVENT_TYPES` が「**お金か**」と「**条件表に出すか**」の
-  **2 つの質問に兼用**されている。**チャネポは前者が No で後者が Yes** なので、ここで初めて割れる。
-  ⇒ **段 2 の修正は「定数を 2 本に割る」だけ**:
-  `MONETARY_EVENT_TYPES`（お金・6 値のまま）と
-  **`EFFECT_CONDITION_EVENT_TYPES`（条件表に出す種別＝上記 ∪ `{channelpoint}`）**。
-  ⚠ 差し替えは**上の 4 関門＋旧形式の読み込みループ＝ 5 箇所**、
-  ＋ `EffectAssignmentCard.test.tsx` の**行数を Set のサイズで固定している 1 行**。
-  ⚠ `effectAssignments.ts` の §9 コメント「イベント種別（`MONETARY_EVENT_TYPES` の 6 値）」も更新する。
-  ⚠⚠ **コード量は小さいが、設計の線を 1 本引く作業**なので段を分けている。
+     ⇒ ⚠⚠ **原因は 1 つ**——`MONETARY_EVENT_TYPES` が「**お金か**」と「**条件表に出すか**」の
+     **2 つの質問に兼用**されている。**チャネポは前者が No で後者が Yes** なので、ここで初めて割れる。
+     ⇒ **段 2 の修正は「定数を 2 本に割る」だけ**:
+     `MONETARY_EVENT_TYPES`（お金・6 値のまま）と
+     **`EFFECT_CONDITION_EVENT_TYPES`（条件表に出す種別＝上記 ∪ `{channelpoint}`）**。
+     ⚠ 差し替えは**上の 4 関門＋旧形式の読み込みループ＝ 5 箇所**、
+     ＋ `EffectAssignmentCard.test.tsx` の**行数を Set のサイズで固定している 1 行**。
+     ⚠ `effectAssignments.ts` の §9 コメント「イベント種別（`MONETARY_EVENT_TYPES` の 6 値）」も更新する。
+     ⚠⚠ **コード量は小さいが、設計の線を 1 本引く作業**なので段を分けている。
 - **C. 語彙 5 段のどれかを落とすと `?? "chat"` で普通のコメントとして保存される。**
   ⚠ 担保は `EVENT_TYPE_MAP` の `Record` 型強制（3 に足せば 5 が落ちる）＋ `test-comment-relay.mjs`。
 - **D. ⚠⚠ 他人のチャンネルに接続すると 403 で黙って届かない。**
@@ -222,6 +337,35 @@ API 上の制限でも、審査でも、Device Code Flow の制約でもない�
 - **L. 自動報酬は別購読。** `channel.channel_points_automatic_reward_redemption.add` を
   今回の購読で受けられると誤解しないこと。
 
+### ⚠⚠ 2026-08-25 に実コードで追加した穴（M〜P）
+
+- **M. ⚠ 通知音（059b）は `isMonetaryEvent` で分岐している。**
+  ⇒ 穴 A（課金に入れない）を守ると、**チャネポでは「コメント音」が鳴る**（投げ銭音ではない）。
+  ⚠ **自動的にそうなるだけで、決定として書かれていなかった。**
+  ⇒ **これでよいと明記すること**（⚠ **変えるなら `MONETARY_EVENT_TYPES` ではなく
+  `CommentViewerApp` の代表音の式を触る**——あの式は「判定を 2 実装に分裂させない」ために
+  本体一覧・ティッカー・読み上げ優先キュー・固定帯と**同一**にしてある。⚠ 崩さないこと）。
+- **N. ⚠⚠ コメント一覧のカードの見た目が決まっていない。**
+  `CommentList.tsx` は**レイド専用の分岐**を持つが、チャネポは**素の chat 分岐（LINE 風の吹き出し）へ落ちる**。
+  ⇒ **(6) は `EVENT_LABEL` の 1 行しか書いていない**が、実際には
+  「**チャネポのカードをどう見せるか**」の判断が要る。
+  ⚠ **既定は「chat と同じ吹き出し＋ラベルだけ」で構わない**が、**決めて書くこと**
+  （⚠ 062a が「取得層のタスクが配信画面に出す情報を黙って増やさない」と決めた規律に従う）。
+- **O. ⚠⚠ 視聴者メモリの集計に入るのか決まっていない。**
+  `viewer_memory/repository.rs` の `RECOMPUTE_VIEWER_AGGREGATES_SQL` は
+  `event_type IN ('superchat','membership','subscription','gift','donation','jewels')` で数えるので、
+  **チャネポはどの集計にも入らず `total_comments` にだけ入る**。
+  ⚠ 062a は「**この SQL は 1 文字も変えていない**」と明記して決着させた。
+  ⇒ ⚠⚠ **チャネポも同じ決着でよいかを明記すること。**
+  ⚠ **レイドと違う点＝チャネポは `user_input` があると本文を持つ**ので「コメント」に近く、
+  `total_comments` に入ること自体は自然である（⚠ **逆に外す判断をするなら SQL を触ることになる**）。
+- **P. ⚠⚠⚠ 段 2 の帰結: ガチャ演出に「引いた視聴者の表示名」が出る。**
+  [063c](063c-gacha-presentation.md) 段 3 で `GachaFireDetail.viewerName` が入り、
+  **`docs/security.md` §9 に追補が付いている**（「発火の戻り値に載る第三者データは表示名 1 本だけ」）。
+  ⇒ ⚠⚠ **チャネポを条件にすると、その経路にチャネポ由来の表示名が流れる。**
+  ⚠ **これは目的そのもの**（「誰が引いたか」を出すのがチャネポの用途）だが、
+  **§9 追補の対象に channelpoint が入ることを段 2 で確認すること**（⚠ **新しい種類のデータは増えない**）。
+
 ## セキュリティ制約（docs/security.md 準拠）
 
 - ⚠⚠ **`security-review` 必須**（段 1）。理由＝ **OAuth スコープの拡大**であり、
@@ -236,16 +380,43 @@ API 上の制限でも、審査でも、Device Code Flow の制約でもない�
 - **§10**: **新規依存ゼロ**（npm / crate とも）。
 - ⚠ **新規 Tauri command ゼロ・新規 capability ゼロ**（既存のコメント配信経路に相乗りするだけ）。
 
-## 完了条件（段 1）
+## 完了条件（段 1） —— ⚠ **実機確認以外は満たした（2026-08-25）**
 
-- `pnpm typecheck` / `pnpm lint` / `cargo check` / sidecar の `pnpm test` が通る。
+- ✅ `pnpm typecheck` / `pnpm lint` / `cargo check` / sidecar の `pnpm test` が通る
+  （**frontend 86 files / 2090 tests・cargo 443 passed・sidecar 緑**
+  ／ ⚠ **段 1-b 後は 88 files / 2110 tests・cargo 443 passed・sidecar 緑**）。
 - 自分のチャンネルでチャネポ報酬を引き換えると、**コメント一覧に「チャンネルポイント」の行が出る**。
 - ⚠ **`user_input` の無い報酬でも、配信画面に空の吹き出しが出ない。**
 - ⚠ **他人のチャンネル名で接続しても、コメント取得が止まらない**（チャネポだけ届かない）。
 - ⚠ **課金の見た目（赤枠・ティッカー・課金カード）が 1 つも発火しない**（穴 A）。
+- ⚠ **穴 M〜O の判断が本文に書かれている**（通知音／カードの見た目／視聴者メモリの集計）。
+- ⚠⚠ **`vendor/` 以外に予定外の差分が出ていない**（⚠ capability / `tauri.conf.json` は差分ゼロ）。
 - **新規依存ゼロ**（`package.json` の `dependencies` / `devDependencies` / `pnpm-lock.yaml` / `Cargo.lock` に差分が無い）。
 - `docs/security.md` §1 に追補が書かれ、`security-review` が実施済み。
 - [`docs/progress.md`](../progress.md) と [`docs/task-board.md`](../task-board.md) に記録。
+
+## 完了条件（段 1-b） —— ✅ **満たした（2026-08-26）**
+
+⚠⚠ **段 1-b は「実機で確認できないまま出す」ための段である。** ⇒ 完了条件も「実機で確かめる」ではなく
+**「実機で確かめられないことを、コードとテストと画面の文言で肩代わりする」**という形になる。
+
+- ✅ **`user_input` の型に依存した経路が 1 つも残っていない**（穴 H'）。
+  `null` ／ キー欠落 ／ 非文字列 ／ `id` 欠落のすべてで**引き換えとして取り込まれる**ことを
+  `scripts/test-eventsub-repair.mjs` と `scripts/test-twitch-mapper.mjs` が固定している。
+  ⚠ **判別材料に `user_input` が戻っていないこと**も静的検査で固定（振る舞いのテストでは検出できないため）。
+- ✅ **購読の成否が画面に出る**（穴 T）。`unknown` / `receiving` / `unavailable` の 3 語。
+  ⚠⚠ **`unknown` と `unavailable` を混ぜていない**（未接続の人に「Twitch の設定を確認」と誤案内しない）。
+- ✅ **通知が本線を落とさない**（`try/catch` ＋ `.catch` の二重）。静的検査で固定。
+- ✅ **§9**: フレームに載るのは状態語 1 つだけ（理由・チャンネル名・トークンはゼロ）。静的検査で固定。
+- ✅ **説明カードに、届かない 3 条件が①②③として書いてある**（とくに①＝ Twitch 側の有効化・
+  **新しいチャンネルでは使えない**こと）。
+- ✅ **ベータであることと、作者が実機確認できていないことが正直に書いてある**＋**報告してほしい内容**が具体的。
+- ✅ **レイアウト崩れ（穴 U）を直し、構造テストで固定した**。
+- ✅ **実バンドルで DI が解決し、接続直後に `channelpoints.state` が届く**ことを確認
+  （`scripts/smoke.mjs` ＋ 実バイナリへの WS 接続）。
+- ✅ **新規依存ゼロ・新規 Tauri command ゼロ・新規 capability ゼロ・新規 egress 先ゼロ・新規スコープゼロ。**
+- ✅ `docs/security.md` §1 の 063e 追補に**新フレームと `user_input` の扱い**を追記。
+- ✅ [`docs/progress.md`](../progress.md) と [`docs/task-board.md`](../task-board.md) に記録。
 
 ## 確認コマンド
 
@@ -254,9 +425,23 @@ pnpm typecheck
 pnpm lint
 cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml
 pnpm --filter @stream-dock/comment-sidecar test
+# ⚠ 2026-08-25 のベースライン: frontend 85 files / 2072 tests・cargo 433 passed・sidecar 緑
+# ⚠ 段 1 後: 86 files / 2090 tests・cargo 443 passed ／ 段 1-b 後: 88 files / 2110 tests・cargo 443 passed
+# ⚠⚠ 段 1-b は `@inject` を 1 つ増やしたので、**実バンドルの DI 解決**まで確認すること
+#     （tsyringe の未登録トークンは静的検査では捕まらず、起動時に初めて落ちる）
+pnpm --filter @stream-dock/comment-sidecar exec node scripts/build-sea.mjs --bundle-only
+pnpm --filter @stream-dock/comment-sidecar exec node scripts/smoke.mjs
+pnpm --filter ./apps/desktop test
+cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
 
 # 依存が増えていないこと
 git diff --stat -- package.json pnpm-lock.yaml apps/comment-sidecar/package.json apps/desktop/src-tauri/Cargo.lock
+# ⚠⚠ ゼロ拡大の担保（⚠ **vendor は差分が出る**・capability と tauri.conf.json は差分ゼロが期待）
+git status --short -- apps/desktop/src-tauri/capabilities/ apps/desktop/src-tauri/tauri.conf.json .github/
+# ⚠⚠⚠ 穴 A: 課金集合に入れていないこと（ヒットゼロが期待）
+grep -n "channelpoint" apps/desktop/src/screens/comment-viewer/viewerFormat.ts
+# ⚠ 語彙 5 段が全部通っていること（1 段でも落ちると `?? "chat"` へ倒れる＝穴 C）
+grep -rn "channelpoint" apps/comment-sidecar/src apps/comment-sidecar/vendor apps/desktop/src-tauri/src
 
 # 実機
 # ① 自分のチャンネルで報酬（テキスト入力あり）を引き換え → 一覧に「チャンネルポイント」行＋本文
@@ -267,5 +452,116 @@ git diff --stat -- package.json pnpm-lock.yaml apps/comment-sidecar/package.json
 
 ## 実装後に必要なレビュー
 
-- ⚠⚠ **段 1 は `security-review` 必須**（スコープ拡大）。
+- ✅ **段 1 の `security-review` は実施済み（2026-08-25・総合判定＝問題なし・修正必須ゼロ）。**
+  指摘 5 件はいずれも「対処不要と判断」で、内容と根拠は [`docs/progress.md`](../progress.md) の 063e 段 1 節が正。
 - 段 2・段 3 は**軽レビュー**（`code-review-light`）。
+
+## 完了条件（段 2） —— ✅ **満たした（2026-08-26）**
+
+- ✅ 割り当て表に**「チャンネルポイント」の行**が出る（⚠ レイドの行は出ない）。
+- ✅ **チャネポの引き換えでガチャが引かれる／OBS のソースが鳴る**（端から端までのテストで固定）。
+  ⚠ **本文が空の引き換え（テキスト入力なしの報酬）でも引かれる**（報酬しだいの挙動を作らない）。
+- ✅ ⚠⚠⚠ **課金ゲート（`if (!isMonetaryEvent(...)) continue;`）を削除した。**
+  段 1 まで「常に true」だったこの行は、許可集合に非課金の `channelpoint` が入った瞬間
+  **チャネポだけを落とす**＝「条件表に行は出るのに、選んでも何も起きない」になる。
+  ⚠ 削除の安全性は**論証をコードに残し、「`chat` / `raid` / `bits` では 1 件も当たらない」で固定**。
+- ✅ ⚠⚠ **`MONETARY_EVENT_TYPES` は 6 値のまま 1 バイトも変えていない**
+  （赤枠・ティア色カード・投げ銭ティッカー・投げ銭音・優先読み上げは全部据え置き）。テストで固定。
+- ✅ **レイドを入れない判断がコードに書いてある**（依頼者の定義＋再修正トリガー）。
+- ✅ **移行コードゼロ**（`parseConditions` が集合から行を生やす＝061j の設計に乗った）。
+  ⚠ 生えた行は `{ kind: "none" }`＝**設定しない限り配信画面は 1 ピクセルも変わらない**。
+- ✅ **新規依存ゼロ・新規 command ゼロ・新規 capability ゼロ・新規 egress 先ゼロ・新規スコープゼロ・保存形の変更ゼロ**
+  （⚠ Rust と sidecar は差分ゼロ）。
+- ✅ [`docs/progress.md`](../progress.md) と [`docs/task-board.md`](../task-board.md) に記録。
+
+### ⚠⚠⚠ 段 2 で見つかった別件（`EFFECT_EVENT_ROWS` は死んでいた）
+
+変異テストで「行の出所を `MONETARY_EVENT_TYPES` へ戻す」変異が**全テスト緑のまま通った**。
+画面の行を実際に作っているのは **`parseConditions`** で、`EFFECT_EVENT_ROWS` は
+**プロダクションの消費者が 1 つも無い**（061j で条件が配列になったときに主導権が移り、取り残された）。
+⇒ 「ここが行の出所」と読める記述を**全部訂正**し、**画面が実際に描いた行との一致テスト**を足した。
+⚠ **定数の削除は段 2 のスコープ外**として手を付けていない（再修正トリガーは JSDoc に記録）。
+
+## 完了条件（段 2-b・モックを本番の変換チェーンへ） —— ✅ **満たした（2026-08-26）**
+
+⚠⚠⚠ **これは「作者が実機で 1 度も受信できないものを、どうやって確かめるか」への答えである。**
+
+- ✅ **チャンネルポイントだけ、生の EventSub ペイロードを本番の変換チェーンへ流す。**
+  `repairNotificationEvent` → mapper → **`index.ts` の `outputPort`**（converter → `wire.ts` → broadcast）。
+  ⚠⚠ 後半は**同じ処理を書き写すのではなく本番のコードを呼ぶ**（コピーだけ直る事故を作らない）。
+  ⇒ **WebSocket と Helix 以外は全部本番のコードが動く。**
+- ✅ **ペイロードは公式どおり**（`id` / `user_*` / `user_input` / `status` / `reward{id,title,cost,prompt}` / `redeemed_at`）。
+  ⚠ `status` / `redeemed_at` / `reward` を**必ず載せておく**——**載っているのに取り込まない**ことを目視するためで、
+  抜くと §9 の検証が空振りする。**fixture 自体がそれらを持っていることをテストで固定した。**
+- ✅ **3 パターン**（入力あり / 入力なし / ⚠ 仕様外＝`user_input: null` ＋ `id` 欠落）。
+- ✅ ⚠ **実ネットに出ない**（アバター URL が無く `resolveAvatarDataUri` が fetch に到達しない）。
+- ✅ ⚠⚠ **発行ごとに引き換え `id` が一意**（同じ id だと `mergeComments` が畳んで**一覧に 1 行しか出ない**）。
+- ✅ **実バイナリで確認済み**（`COMMENT_SIDECAR_MOCK=1` ＋ loopback WS で 2 周ぶん受信・§9 も実証）。
+- ✅ `repairNotificationEvent` を**純粋モジュール**（`eventsub-repair.ts`）へ切り出した
+  （dev-mock の「top-level 副作用ゼロ」を守るため）。
+- ✅ **モード OFF（既定）では 1 バイトも発行しない。**
+
+## ⚠ 実機確認の手順（2026-08-26 更新）
+
+### ⚠⚠⚠ ①② は当面通せない（前提の変更）
+
+依頼者の環境では**チャンネルポイントが有効化できない**（チャンネル作成直後で、クリエイターダッシュボードに
+項目自体が無い）。Twitch のチャンネルポイントは**アフィリエイト条件を満たしたあとのオンボーディング**を
+通って初めて使える。⇒ **「実際に引き換える」手順は、条件を満たすまで実施できない。**
+
+⚠ **これは実装の不備ではないが、確認できないことを「確認した」と書かないために明記しておく。**
+段 1-b は、この状態のまま**ベータとして出す**ための段である。
+
+### ✅ 今でも通せる確認（**チャンネルポイントが無くても全部できる**）
+
+⚠⚠ **依頼者のチャンネル自体が「チャンネルポイントが無いチャンネル」のテストケースになる。**
+⇒ 自分のチャンネルに接続するだけで、**購読が失敗しても本線（コメント取得）が止まらない**ことを確認できる。
+
+0. **再ログイン**（⚠ **アプリに連携解除の導線が無い**ので、Twitch 側から行う）:
+   [twitch.tv/settings/connections](https://www.twitch.tv/settings/connections) で StreamDock の連携を解除
+   → コメビュ窓で Twitch に接続し直す（デバイスコードで再認可）
+   → ⚠⚠⚠ **同意画面に「チャンネルポイントの引き換えを見る」が増えていることを目視する**
+   （**スコープ拡大＝`security-review` を必須にした当の変更**なので、ここは必ず見ること。
+   ⚠ チャンネルポイントが無効でも**この確認はできる**）
+1. **自分のチャンネルに接続** → ⚠ **コメントが通常どおり流れ続けること**（購読が 403 でも本線が止まらない）
+2. **設定 → 「チャンネルポイント（ベータ）」カード** → ⚠⚠ 受信状態が
+   **「引き換えを受信できていません」**と出ること（＝チャンネルポイント未有効化の正しい表示）
+   ⚠ 見出しが「チャンネルポイント（ベータ）」／説明文が**カードの端に貼り付いていない**（穴 U）
+   ／①②③の 3 条件が読めること
+3. **取得を停止** → カードが「受信できる状態かどうかがここに出ます」へ戻ること（緑や警告が残らない）
+4. ⚠ **他人のチャンネル名で接続** → コメントは流れ続け、カードは「受信できていません」
+5. ⚠ **課金の見た目が 1 つも出ない**（赤枠・ティア色カード・ティッカー・課金カード）
+6. ⚠⚠⚠ **段 2: 割り当て表（エフェクト画面）に「チャンネルポイント」の行が出ていること**
+   （⚠ **「レイド」の行は出ない**）。ここでガチャを割り当てておくと、下の 7. で実際に回る。
+7. `COMMENT_SIDECAR_MOCK=1` で目視する（⚠ **これが 3 状態を見る唯一の導線**）:
+   - ⚠⚠⚠ **Twitch を単独で接続すること**（レビュー Q-M2）。`dev-mock` の `seq` は
+     **両 provider の共有カウンタ**なので、YouTube を同時接続すると Twitch の発行が当たる
+     `seq % 20` がずれ、⚠⚠ **チャンネルポイントが 1 件も出ない周が生じる**
+     （「出ない」のか「壊れている」のかを見分けられない）。理由の全文は
+     `dev-mock.ts` の `CHANNEL_POINTS_SEQ` の注記が正。
+   - ⚠⚠⚠ **チャンネルポイントは「Twitch 公式の形の生ペイロード」から本番の変換チェーンを通って出る**
+     （段 2-b）。⇒ ここで正しく出れば、**`wire.ts` と vendor の mapper の写像まで確かめたことになる**。
+   - コメント: seq=6（入力あり「がんばれー！」）／seq=8（入力なし＝本文が空）／
+     ⚠ **seq=4（仕様外: `user_input: null` ＋ `id` 欠落）でも 1 行出ること**
+     ——ここが出なければ段 1-b の防御が壊れている
+     ／⚠ **配信画面（OBS オーバーレイ）には 1 件も出ない**
+   - ⚠⚠ **報酬名（「読み上げ」）がどこにも出ないこと**（fixture には載せてある＝§9 の目視）
+   - ⚠ 鳴る音が**コメント音**であること（投げ銭音ではない＝決定 5-M）
+   - ⚠ 読み上げが本文のみ（入力なしの報酬は無音）
+   - ⚠⚠ 設定カード: 取得開始 →「受信できる状態です」／停止 →「まだ分かりません」／
+     もう一度開始 →「受信できていません」と**巡回する**（3 状態の見た目を確認できる）
+   - ⚠⚠⚠ **段 2: seq=6 / seq=8 で、割り当てたガチャが実際に回る／OBS のソースが鳴る**
+     （⚠ **これが段 2 の完了条件を実機で通せる唯一の経路**——チャネポかどうかを区別しない共通経路なので、
+     モックで通れば「Twitch から届くか」以外は全部確かめたことになる）
+   - ⚠ ガチャが当たると**引いた視聴者の表示名が配信画面に出る**（063c 段 3 の §9 の線・新しい判断ではない）
+8. ⚠⚠ `lsof -i` で**外部 ESTABLISHED の宛先が増えていない**こと（新規 egress 先ゼロの実証）
+
+### ⚠ ベータ運用で**ユーザー報告に頼る部分**（＝ここだけは肩代わりできなかった）
+
+- **実ネットワーク上の 403 の挙動**（購読作成が実際にどう失敗するか）と、
+  そのとき `unavailable` が正しく出るか。
+- **チャンネルポイントが有効なチャンネルで、実際に引き換えが届くか**（旧①②）。
+- **`user_input` に本当に `null` が来るのか**（来ても壊れないことは固定済み）。
+
+⚠ 画面の文言が**報告してほしい内容を指定している**（受信状態＋3 条件のどれを満たしているか）。
+⚠⚠ 「動きません」だけの報告では①②③を切り分けられないので、**この指定を消さないこと**。

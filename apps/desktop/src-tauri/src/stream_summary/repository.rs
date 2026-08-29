@@ -527,6 +527,45 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // チャンネルポイント（063e・穴 Q）
+    // -----------------------------------------------------------------------
+
+    // ⚠⚠ 063e の決定: **総コメント数にチャンネルポイントは入る**（`TOTAL_COMMENTS_SQL` を 1 文字も変えていない）。
+    //
+    // ⚠ ここはレイドと**結論が反対**になる。`<コメント> = event_type <> 'raid'` は**拒否リスト**なので、
+    //   新しい種別は既定で「数える」側へ倒れる——それを**追認した**のがこのテストである（書き忘れではない）。
+    //   理由: チャンネルポイントは視聴者が添えたテキスト（`user_input`）を本文に持ちうるので、
+    //   レイド（配信者の流入イベント・本文なし）と違い「流れたコメント」と呼べる。
+    //   ⚠ `event_type NOT IN ('raid', 'channelpoint')` へ変える変異はここで落ちる。
+    #[test]
+    fn channel_points_are_counted_as_comments_unlike_raid() {
+        let conn = test_conn();
+        insert(&conn, Row { id: "c1", event_type: "chat", ..Default::default() });
+        insert(&conn, Row { id: "cp1", event_type: "channelpoint", at: "2026-08-16T10:01:00Z", ..Default::default() });
+        insert(&conn, Row { id: "c2", viewer: "twitch:raider", name: "RaiderChannel", event_type: "raid", raid_viewer_count: Some(42), at: "2026-08-16T10:02:00Z", ..Default::default() });
+
+        assert_eq!(
+            total_comments(&conn, "s1").unwrap(),
+            2,
+            "chat とチャンネルポイントは数え、レイドだけ数えない"
+        );
+    }
+
+    // 063e（穴 A の SQL 側の裏取り）: チャンネルポイントは金額にもサブスク件数にも Jewels にも入らない。
+    // ⚠ 金額の母集合は `amount IS NOT NULL AND currency IS NOT NULL` なので、
+    //   **mapper が金額を付けない限り構造的に入らない**（種別名を書き足す必要が無い）。
+    #[test]
+    fn channel_points_are_excluded_from_money_and_subscription_count() {
+        let conn = test_conn();
+        insert(&conn, Row { id: "cp1", event_type: "channelpoint", ..Default::default() });
+
+        assert!(monetary_by_kind(&conn, "s1").unwrap().is_empty());
+        assert_eq!(subscription_count(&conn, "s1").unwrap(), 0);
+        assert_eq!(jewels_count(&conn, "s1").unwrap(), 0);
+        assert!(raids(&conn, "s1").unwrap().is_empty(), "レイド一覧にも出ない");
+    }
+
     // レイドは金額にもサブスク件数にも入らない。
     #[test]
     fn raid_is_excluded_from_money_and_subscription_count() {

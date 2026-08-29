@@ -159,6 +159,49 @@ describe("063b: ガチャの発火（decideFireResults）", () => {
     expect(feedNames([comment()], countingRandom(0.6))).toEqual([SRC_LOSE]);
   });
 
+  it("⚠⚠⚠ 063e 段 2: **チャンネルポイントの引き換えでガチャが引かれる**", () => {
+    // ⚠⚠⚠ **これが 063e の目的そのもの**（依頼者の定義: ガチャとは「視聴者が課金したり
+    //   チャンネルポイントと交換することで引き、結果に応じて後から配信者が何かを渡す」もの）。
+    // ⚠⚠ **段 1 の実装ではここが `[]` だった。** 照合の直前に課金ゲート
+    //   （`if (!isMonetaryEvent(input.eventType)) continue;`）があり、チャンネルポイントは
+    //   お金ではないので必ず落ちた。⇒ 段 2 でゲートを削除した（論証は `effectAssignments.ts` の JSDoc）。
+    saveGachaLibrary([GACHA_100]);
+    setConditionEffect("event:channelpoint", { kind: "gacha", gachaId: "g:2" });
+    const c = comment({
+      source: "twitch",
+      eventType: "channelpoint",
+      text: "がんばれー！",
+      // ⚠ チャンネルポイントは**金額を持たない**（mapper が付けない＝063e 段 1 の決定）。
+      monetaryAmount: undefined,
+      monetary: undefined,
+    });
+    expect(feedNames([c], countingRandom(0))).toEqual([SRC_HIT]);
+  });
+
+  it("⚠ 063e 段 2: 本文が空の引き換え（テキスト入力なしの報酬）でも引かれる", () => {
+    // ⚠ ここが落ちると「テキスト入力を求める報酬でしかガチャが回らない」という
+    //   **報酬しだいの挙動**になる（配信者から見て説明できない）。
+    saveGachaLibrary([GACHA_100]);
+    setConditionEffect("event:channelpoint", { kind: "gacha", gachaId: "g:2" });
+    const c = comment({ source: "twitch", eventType: "channelpoint", text: "" });
+    expect(feedNames([c], countingRandom(0))).toEqual([SRC_HIT]);
+  });
+
+  it("⚠⚠ 063e 段 2: レイドではガチャが引かれない（視聴者が対価を払っていない）", () => {
+    // ⚠⚠⚠ **判断の記録**（依頼者・2026-08-26）: ガチャは視聴者が対価を払って引くもの。
+    //   レイドは配信者の行為なので引き金にしない。⚠ 条件表に行が無い（`EFFECT_CONDITION_EVENT_TYPES`）
+    //   ＝ `parseConditions` が `event:raid` を捨てるので、割り当てようとしても保存されない。
+    saveGachaLibrary([GACHA_100]);
+    setConditionEffect("event:raid", { kind: "gacha", gachaId: "g:2" });
+    const c = comment({
+      source: "twitch",
+      eventType: "raid",
+      text: "",
+      raidViewerCount: 42,
+    });
+    expect(feedNames([c], countingRandom(0))).toEqual([]);
+  });
+
   it("⚠⚠ 既存の「OBS ソース直指定」の条件が壊れていない（回帰）", () => {
     setConditionEffect("event:superchat", OBS);
     const random = countingRandom(0);

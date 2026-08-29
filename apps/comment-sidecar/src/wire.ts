@@ -19,7 +19,11 @@ export type CanonicalCommentEventType =
   // 062a: Twitch のレイド。⚠ sidecar 語彙（`normal`/`super_chat`）と Rust 語彙（`Chat`/`Superchat`）は
   // 綴りがずれているが、**raid だけは両者とも "raid"** で一致する（Rust の `CommentEventType` は
   // `#[serde(rename_all = "lowercase")]` なので `Raid` → `"raid"`）。
-  | "raid";
+  | "raid"
+  // 063e: Twitch のチャンネルポイント引き換え。⚠ raid と同じく sidecar 語彙と Rust 語彙で綴りが一致する
+  // （Rust の `Channelpoint` → `"channelpoint"`）。⚠ 語は `"channelpoint"` に統一する
+  // （`channel_points` / `redemption` と 3 通りに散らさない）。
+  | "channelpoint";
 
 export interface CanonicalCommentAuthor {
   id: string;
@@ -88,6 +92,9 @@ const EVENT_TYPE_MAP: Record<
   // `Record<OsareviewCommentViewDto["eventType"], …>` なので、`comment-types.ts` の union に
   // "raid" がある限り**キー不足でコンパイルが落ちる**＝構造的に落とせない。
   raid: "raid",
+  // 063e: チャンネルポイントの引き換え。⚠ raid とまったく同じ理由でこの行は構造的に落とせない
+  //   （落ちれば `?? "chat"` に倒れて**普通のコメントとして保存される**）。
+  channelpoint: "channelpoint",
 };
 
 /**

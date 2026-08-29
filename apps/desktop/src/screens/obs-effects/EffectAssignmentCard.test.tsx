@@ -18,7 +18,7 @@ import {
   NONE_VALUE,
   OBS_SOURCE_PREFIX,
 } from "./effectSelectValue";
-import { MONETARY_EVENT_TYPES } from "../comment-viewer/viewerFormat";
+import { EFFECT_CONDITION_EVENT_TYPES } from "../comment-viewer/viewerFormat";
 import { EFFECT_EVENT_LABEL, EFFECT_EVENT_ROWS } from "./effectEventRows";
 
 /**
@@ -29,7 +29,8 @@ import { EFFECT_EVENT_LABEL, EFFECT_EVENT_ROWS } from "./effectEventRows";
  * **検査する対象そのものが存在しない**ケースを落としてある。
  *
  * いま固定している不変条件:
- * - **イベント条件の行は `MONETARY_EVENT_TYPES` から機械的に作られる**
+ * - **イベント条件の行は `EFFECT_CONDITION_EVENT_TYPES` から機械的に作られる**
+ *   （⚠ 063e 段 2 で出所が `MONETARY_EVENT_TYPES` から替わった＝チャンネルポイントは**条件表には出すが、お金ではない**）
  *   （「条件を追加」ボタンを作らない・7 種別目が増えたら行も増える）。
  * - ⚠⚠ **既定は全種別「エフェクトを出さない」**（061h で反転＝割り当てるまで何も出ない）。
  * - ⚠⚠ **空のキーワードは保存されない**（`"".includes(…)` が全コメントに一致する＝最大の失敗モード）。
@@ -108,12 +109,40 @@ describe("EffectAssignmentCard", () => {
 
   // --- 行の集合 ---------------------------------------------------------------------------------
 
-  it("⚠⚠ イベント条件の行は課金種別ぶん最初から全部ある（061d の (2) はここでは維持）", () => {
+  it("⚠⚠ イベント条件の行は条件表の種別ぶん最初から全部ある（061d の (2) はここでは維持）", () => {
     render(<Harness />);
     for (const row of EFFECT_EVENT_ROWS) {
       expect(screen.getByText(row.label)).toBeInTheDocument();
     }
-    expect(effectSelects()).toHaveLength(MONETARY_EVENT_TYPES.size);
+    expect(effectSelects()).toHaveLength(EFFECT_CONDITION_EVENT_TYPES.size);
+  });
+
+  it("⚠⚠⚠ 063e 段 2: `EFFECT_EVENT_ROWS` と**画面が実際に描いた行**が一致する（鏡がずれない）", () => {
+    // ⚠⚠⚠ **`EFFECT_EVENT_ROWS` にはプロダクションの消費者が 1 つも無い**（063e 段 2 の変異テストで判明）。
+    //   行を実際に作っているのは `effectAssignments.ts` の `parseConditions` で、
+    //   061j で条件が配列になったときに主導権が移り、この定数は取り残された。
+    //   ⇒ **あちらだけを直しても画面は 1 ピクセルも変わらない**（＝黙って無効になる変更が書ける）。
+    // ⚠ ここで「画面が描いた行」と突き合わせておけば、**片方だけ直した瞬間にレッドになる**
+    //   ＝ 定数を残すなら、この 1 本が残す理由そのものである。
+    render(<Harness />);
+    const rendered = effectSelects().map((el) =>
+      (el.getAttribute("aria-label") ?? "").replace(/のエフェクト$/, ""),
+    );
+    expect(rendered).toEqual(EFFECT_EVENT_ROWS.map((r) => r.label));
+  });
+
+  it("⚠⚠⚠ 063e 段 2: 「チャンネルポイント」の行が出る（＝ガチャの引き金として選べる）", () => {
+    render(<Harness />);
+    // ⚠ ラベルの出所は `EVENT_LABEL`（コメント一覧・ティッカー・読み上げと同じ表）。
+    //   ここで新しい呼び名を発明していないことも併せて固定する。
+    expect(screen.getByText("チャンネルポイント")).toBeInTheDocument();
+  });
+
+  it("⚠⚠ 063e 段 2: 「レイド」の行は出ない（ガチャは視聴者が対価を払って引くもの）", () => {
+    // ⚠ 判断の記録は `viewerFormat.ts` の `EFFECT_CONDITION_EVENT_TYPES` の JSDoc が正。
+    //   ⚠ レイドを足す変異はここと `viewerFormat.test.ts` の両方で死ぬ。
+    render(<Harness />);
+    expect(screen.queryByText("レイド")).not.toBeInTheDocument();
   });
 
   it("⚠⚠ スーパーチャットの行は「ビッツ」も含むと書く（wire 上 superchat で届くため）", () => {

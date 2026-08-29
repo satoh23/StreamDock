@@ -272,6 +272,15 @@ const SPEECH_KIND: Record<CommentViewDto["eventType"], "summary" | "body-only"> 
     //   null が返り `c.text`（実データでは空文字）へ落ち、`ttsQueue.enqueue` の空判定で読まれない。
     //   ＝「何もしない」ことが実装そのもの。理由と再修正トリガーは `speechText.ts` の JSDoc を正とする。
     raid: "body-only",
+    // 063e: チャンネルポイントは **`chat` と同じ body-only**（決定・2026-08-25）。
+    //   ⚠⚠ **新しい能力は増えない**——`chat` は既に本文が全文読まれているので、`user_input` を
+    //   同じ扱いにするだけである。⚠ 優先読み上げは `isMonetaryEvent` を見ており、チャネポは
+    //   `MONETARY_EVENT_TYPES` に入れていないので**優先キューには載らない**（穴 A に自動追従）。
+    //   ⚠⚠ `summary` を選ばなかった理由がもう 1 つある: 要約文には**投稿者名が入る**ため、
+    //   docs/security.md §1 の 049 追補「合成テキストに投稿者名が乗るのは**課金イベントに限る**」の
+    //   対象が広がってしまう。body-only なら §1 は 1 文字も変わらない。
+    //   ⚠ 入力なしの報酬は `c.text` が空 → `ttsQueue.enqueue` の空判定で無音になる。
+    channelpoint: "body-only",
   };
 
 describe("composeSpeechText: 種別の網羅（新種別の追従漏れで無音に戻らないこと）", () => {

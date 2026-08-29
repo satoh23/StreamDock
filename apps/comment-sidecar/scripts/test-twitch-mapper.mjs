@@ -27,6 +27,9 @@
 // dist の JS は `@comment-dock/*` の path alias を保持したまま emit されるため、
 // dist-alias-loader.mjs を resolve フックとして登録する（登録後に動的 import する必要がある）。
 import { register } from "node:module";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 
 register("./dist-alias-loader.mjs", import.meta.url);
 
@@ -306,6 +309,387 @@ for (const [label, event] of [
   ]);
   ok("バッチ: 取り込まれるのはレイド 1 件だけ", comments.length, 1);
   ok("バッチ: 残ったのは raid の行", comments[0]?.id, "m3");
+}
+
+// ---------------------------------------------------------------------------
+// 063e: チャンネルポイントの引き換え（channel.channel_points_custom_reward_redemption.add）
+// ---------------------------------------------------------------------------
+//
+// 何を担保するか:
+//   F. **引き換えをコメント 1 件として取り込む**。author は引き換えた視聴者、本文は `user_input`。
+//   G. **テキスト入力なしの報酬でも行は作る**（本文が空になるだけ・配信画面に出さないのは frontend の責務）。
+//   H. **金銭ではない**（`monetaryAmount` が付かない＝課金系の集計・表示・音に載らない）。
+//   I. **§9**: 報酬名（`reward.title`）が出力に 1 バイトも現れない（DTO に宣言していないので構造的に届かない）。
+//   J. ⚠⚠⚠ **未知の形のイベントで throw しない**（本線＝コメント取得セッションを落とさない）。
+//
+// 出典: https://dev.twitch.tv/docs/eventsub/eventsub-subscription-types/
+//   - Authorization: "Requires `channel:read:redemptions` scope from a broadcaster's access token."
+//   - Condition: broadcaster_user_id（必須）／reward_id（任意・**本実装では使わない**）
+//   ⚠ イベントペイロードのフィールド表は公式ページの後半にあり、2026-08-25 時点で一次確認できていない。
+//     本 fixture は「`id` / `user_*` / `user_input` を持ち、`reward` も載っている」形を置いている
+//     （`reward` を入れておくのは、**取り込まないことを検証する対象**だから。抜くとテストが何も守らなくなる）。
+
+/** チャンネルポイント引き換えの event ペイロード。 */
+const redemption = (over = {}) => ({
+  id: "cp1",
+  broadcaster_user_id: "b1",
+  broadcaster_user_login: "broadcaster",
+  broadcaster_user_name: "Broadcaster",
+  user_id: "u9",
+  user_login: "alice",
+  user_name: "Alice",
+  user_input: "がんばれー！",
+  status: "unfulfilled",
+  // ⚠ **取り込まないことを検証するために置いている**（DTO に宣言していないので届かないはず）。
+  reward: { id: "r1", title: "読み上げ", cost: 500, prompt: "好きな言葉をどうぞ" },
+  redeemed_at: "2026-08-25T10:00:00Z",
+  ...over,
+});
+
+{
+  const c = mapOne(redemption());
+  ok("channelpoint: eventType は channelpoint", c?.eventType, "channelpoint");
+  ok("channelpoint: id は引き換えイベント自身の id（dedup キー）", c?.id, "cp1");
+  ok("channelpoint: author は引き換えた視聴者", c?.author?.id, "u9");
+  ok("channelpoint: 表示名も視聴者のもの", c?.author?.name, "Alice");
+  ok("channelpoint: 本文は user_input", c?.text, "がんばれー！");
+  ok("⚠⚠ channelpoint: 金額を持たない（課金扱いしない）", c?.monetaryAmount, undefined);
+  ok("channelpoint: レイド人数は付かない", c?.raidViewerCount, undefined);
+  // ⚠⚠ §9: 報酬名は段 1 では消費しない（DTO に宣言していない＝構造的に到達しない）。
+  ok(
+    "⚠⚠ §9: 報酬名が出力に現れない",
+    JSON.stringify(c).includes("読み上げ"),
+    false,
+  );
+  ok(
+    "⚠ §9: 報酬の prompt も現れない",
+    JSON.stringify(c).includes("好きな言葉"),
+    false,
+  );
+}
+
+// ⚠ テキスト入力を求めない報酬（`user_input` が空文字）。**行は作る**（本文が空になるだけ）。
+{
+  const c = mapOne(redemption({ id: "cp2", user_input: "" }));
+  ok("channelpoint(入力なし): それでも行は作る", c?.eventType, "channelpoint");
+  ok("channelpoint(入力なし): 本文は空文字", c?.text, "");
+  // ⚠ 報酬名で埋めない（043a が system_message へフォールバックしないと決めたのと同じ規律）。
+  ok("⚠⚠ channelpoint(入力なし): 報酬名で本文を埋めない", c?.text?.length, 0);
+}
+
+// ⚠⚠⚠ **本線を止めないこと**（063e の最重要の不変条件）。
+//   購読側の `.catch(() => {})` が守るのは購読作成の失敗だけで、受信したイベントは守らない。
+//   mapper が知らない形のイベントで throw すると `runTwitchPipeline` の catch まで上がり、
+//   **コメント取得セッションが failed で死ぬ**。⇒ 未知の形は「行を作らない」へ倒す。
+{
+  let threw = false;
+  let comments = null;
+  try {
+    comments = mapTwitchChatEventsToComments([
+      // 将来 purchase された購読・仕様変更で形が変わったイベントを模す
+      // （`notice_type` も `bits` も `user_input` も `message` も持たない）。
+      { id: "x1", broadcaster_user_id: "b1", something_new: { nested: true } },
+    ]);
+  } catch {
+    threw = true;
+  }
+  ok("⚠⚠⚠ 未知の形のイベントで throw しない（本線が止まらない）", threw, false);
+  ok("⚠ 未知の形は行を作らない（静かに捨てる）", comments?.length, 0);
+}
+
+// ⚠ 既存種別の判別を奪っていないこと（`user_input` を見る判定が chat / bits を横取りしない）。
+{
+  const chat = mapOne({
+    broadcaster_user_id: "b1",
+    broadcaster_user_login: "broadcaster",
+    broadcaster_user_name: "Broadcaster",
+    chatter_user_id: "u1",
+    chatter_user_login: "alice",
+    chatter_user_name: "Alice",
+    message_id: "m9",
+    message: { text: "hi", fragments: [] },
+    color: "#fff",
+    badges: [],
+    // ⚠ チャットにも `channel_points_custom_reward_id` は載りうる（ハイライト等）。
+    //   これは**引き換えイベントではない**ので、chat のままでなければならない。
+    channel_points_custom_reward_id: "r1",
+    message_type: "channel_points_highlighted",
+  });
+  ok("⚠ 回帰: 報酬 id 付きのチャットは chat のまま", chat?.eventType, "normal");
+  const bits = mapOne({
+    broadcaster_user_id: "b1",
+    broadcaster_user_login: "broadcaster",
+    broadcaster_user_name: "Broadcaster",
+    user_id: "u2",
+    user_login: "bob",
+    user_name: "Bob",
+    bits: 100,
+    type: "power_up",
+    message_id: "m10",
+  });
+  ok("⚠ 回帰: bits.use は superchat のまま", bits?.eventType, "super_chat");
+}
+
+// ---------------------------------------------------------------------------
+// 063e 段 1-b: **判別を `user_input` にぶら下げない**（穴 H' の対処）
+// ---------------------------------------------------------------------------
+//
+// ⚠⚠⚠ 段 1 の判定は `typeof user_input === "string"` だった。`null` やキー欠落が 1 度でも来ると
+//   引き換えとして認識されず、chat フォールバックで捨てられ、**1 件も出ない・エラーも出ない**。
+//   ⚠ 依頼者はチャンネルポイントを実機で確認できない（新規チャンネルでは Twitch 側で未有効化）ので、
+//     「公式仕様どおりに来るはず」に賭けられない。⇒ 判別材料を `id` ＋ `user_id` へ移した。
+//   ⚠ 受信直後の `repairNotificationEvent`（`test-eventsub-repair.mjs`）が第 1 の防波堤で、
+//     ここは**その手前でも壊れないこと**＝mapper 単体としての堅さを固定する。
+for (const [label, over] of [
+  ["null", { user_input: null }],
+  ["数値", { user_input: 42 }],
+  ["オブジェクト", { user_input: { text: "x" } }],
+]) {
+  const c = mapOne(redemption({ id: "cp-h", ...over }));
+  ok(`⚠⚠⚠ user_input が ${label} でも引き換えとして取り込む`, c?.eventType, "channelpoint");
+  ok(`⚠⚠ user_input が ${label} でも本文は空文字（型を漏らさない）`, c?.text, "");
+}
+{
+  // ⚠ キーごと無いケース（`in` 演算子を使った判定なら false になっていた形）。
+  const event = redemption({ id: "cp-h2" });
+  delete event.user_input;
+  const c = mapOne(event);
+  ok("⚠⚠⚠ user_input のキーが無くても引き換えとして取り込む", c?.eventType, "channelpoint");
+  ok("⚠⚠ そのとき本文は空文字", c?.text, "");
+  ok("⚠ id は引き換えイベント自身のもの", c?.id, "cp-h2");
+}
+
+// ⚠ 逆向きの誤検知: **判別に使う 2 つが欠けたら引き換えにしない**（他種別を横取りしない）。
+//   ⚠⚠ このとき「行を作らない」に倒れるのが正しい——`id` の補填は
+//     `repairNotificationEvent` の仕事で、mapper が勝手にでっち上げてはいけない
+//     （出典の無い ID で端末に保存すると dedup が壊れる）。
+{
+  const noId = redemption();
+  delete noId.id;
+  let threw = false;
+  let comments = null;
+  try {
+    comments = mapTwitchChatEventsToComments([noId]);
+  } catch {
+    threw = true;
+  }
+  ok("⚠ id が無い引き換えで throw しない", threw, false);
+  ok("⚠ id が無ければ行を作らない（ID をでっち上げない）", comments?.length, 0);
+}
+
+// ⚠⚠ **判別順を守っていること**（`isBitsUseEvent` が先）。`id` を持った bits.use が来ても
+//   引き換えに横取りされない＝**bits 額が消えない**。
+{
+  const bitsWithId = mapOne({
+    broadcaster_user_id: "b1",
+    broadcaster_user_login: "broadcaster",
+    broadcaster_user_name: "Broadcaster",
+    user_id: "u2",
+    user_login: "bob",
+    user_name: "Bob",
+    bits: 100,
+    type: "power_up",
+    message_id: "m12",
+    // ⚠ 将来 bits.use が `id` を持つようになった場合を模す。
+    id: "bits-id-1",
+  });
+  ok("⚠⚠ id 付きの bits.use は引き換えに横取りされない", bitsWithId?.eventType, "super_chat");
+  ok("⚠⚠ bits 額も消えない", bitsWithId?.monetaryAmount, { currency: "BITS", amount: 100 });
+}
+
+// ⚠ chat 側も横取りしない（`chatter_user_id` はあるが `user_id` は無い）。
+{
+  const chat = mapOne({
+    broadcaster_user_id: "b1",
+    broadcaster_user_login: "broadcaster",
+    broadcaster_user_name: "Broadcaster",
+    chatter_user_id: "u1",
+    chatter_user_login: "alice",
+    chatter_user_name: "Alice",
+    message_id: "m13",
+    message: { text: "hi", fragments: [] },
+    color: "#fff",
+    badges: [],
+    message_type: "text",
+  });
+  ok("⚠ 通常チャットは chat のまま（判別が横取りしない）", chat?.eventType, "normal");
+}
+
+// ⚠ notice_type を持つイベントは引き換えにしない（`id` を持っていても）。
+{
+  const c = mapOne(
+    notification({ notice_type: "announcement", id: "cp-x", user_id: "u9", raid: undefined }),
+  );
+  ok("⚠ notice_type 付きは引き換えにならない（非収益 notice は従来どおり落とす）", c, null);
+}
+
+// バッチ: チャネポと既存種別が混ざっても、順序と件数が保たれる。
+{
+  const comments = mapTwitchChatEventsToComments([
+    redemption({ id: "cp3" }),
+    notification({ notice_type: "unraid", raid: undefined }),
+    notification({ message_id: "m11", raid: raidDetails() }),
+  ]);
+  ok("バッチ(063e): 取り込まれるのは 2 件（チャネポ＋レイド）", comments.length, 2);
+  ok("バッチ(063e): 1 件目はチャネポ", comments[0]?.id, "cp3");
+  ok("バッチ(063e): 2 件目はレイド", comments[1]?.id, "m11");
+}
+
+// ---------------------------------------------------------------------------
+// K. 063e: 静的検査（購読の非致命性と OAuth スコープ）
+// ---------------------------------------------------------------------------
+//
+// ⚠⚠⚠ **ここは「動かして確かめられない不変条件」を源コードで固定する**（066 の
+// `test-chat-send.mjs` が採った形と同じ）。購読作成の失敗は実ネットに出ないと再現できず、
+// スコープは実際にログインしないと確かめられないが、**どちらも壊れると被害が大きい**:
+//   - `.catch` を外すと **403（旧トークン／他人のチャンネル）でコメント取得ごと止まる**
+//   - `channel:manage:redemptions` が混ざると **報酬の消化・返却ができる権限を黙って取る**
+{
+  const here = dirname(fileURLToPath(import.meta.url));
+  const stripComments = (src) =>
+    src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+
+  const clientSrc = stripComments(
+    readFileSync(
+      join(
+        here,
+        "..",
+        "vendor",
+        "comment-fetcher",
+        "src",
+        "adapters",
+        "twitch",
+        "client",
+        "eventsub-websocket.client.ts",
+      ),
+      "utf8",
+    ),
+  );
+
+  // 購読タイプが 1 件だけ増えていること（自動報酬の購読を紛れ込ませていないこと）。
+  ok(
+    "⚠ 購読しているのは**カスタム報酬**の引き換えだけ",
+    clientSrc.includes(
+      '"channel.channel_points_custom_reward_redemption.add"',
+    ),
+    true,
+  );
+  ok(
+    "⚠⚠ 自動報酬（automatic_reward）は購読していない（別購読・別タスク）",
+    clientSrc.includes("automatic_reward"),
+    false,
+  );
+  // ⚠ condition に reward_id を入れていない（段 3 まで報酬を絞らない）。
+  ok("⚠ condition に reward_id を入れていない", clientSrc.includes("reward_id"), false);
+
+  // ⚠⚠⚠ **非致命であること。** 購読の呼び出しごとに `.catch` が付いているかを数える
+  //   （必須 2 購読 = 0 個 ／ 任意 2 購読（bits.use・channel points）= 2 個）。
+  const catchCount = (clientSrc.match(/\.catch\(/g) ?? []).length;
+  ok(
+    "⚠⚠⚠ 任意購読は 2 件とも非致命（`.catch` が 2 つある＝403 で本線が止まらない）",
+    catchCount,
+    2,
+  );
+
+  const configSrc = stripComments(
+    readFileSync(join(here, "..", "src", "twitch-config.ts"), "utf8"),
+  );
+  ok(
+    "⚠ スコープに channel:read:redemptions が入っている",
+    configSrc.includes('"channel:read:redemptions"'),
+    true,
+  );
+  // ⚠⚠⚠ **書き込み権限を巻き込んでいないこと。**
+  ok(
+    "⚠⚠⚠ `channel:manage:redemptions`（消化・返却）は取らない",
+    configSrc.includes("channel:manage:redemptions"),
+    false,
+  );
+  // ⚠ スコープが**ちょうど 4 つ**であること（増えたら気付ける＝同意画面が変わる変更を見逃さない）。
+  // ⚠ 配列リテラルの中身だけを取る（`readonly string[]` の `]` に引っかからないよう `= [` から読む）。
+  const scopes = (
+    (/TWITCH_SCOPES[^=]*=\s*\[([^\]]*)\]/.exec(configSrc)?.[1] ?? "").match(
+      /"[^"]+"/g,
+    ) ?? []
+  ).map((v) => v.slice(1, -1));
+  ok("⚠⚠ Twitch のスコープはちょうど 4 つ", scopes, [
+    "user:read:chat",
+    "bits:read",
+    "user:write:chat",
+    "channel:read:redemptions",
+  ]);
+
+  // ⚠⚠⚠ 063e 段 1-b: **mapper の判別が `user_input` に戻っていないこと。**
+  //   単体テストは「今の実装が正しい」ことしか言えず、`repairNotificationEvent` が
+  //   `user_input` を必ず string にしてしまうため、**判別を `user_input` へ戻しても
+  //   実運用に近い経路のテストは全部 PASS してしまう**（本番だけ静かに壊れる）。
+  //   ⇒ 判別関数の本体を源コードで固定する。
+  const mapperSrc = stripComments(
+    readFileSync(
+      join(
+        here,
+        "..",
+        "vendor",
+        "comment-fetcher",
+        "src",
+        "adapters",
+        "twitch",
+        "mapper",
+        "comment.mapper.ts",
+      ),
+      "utf8",
+    ),
+  );
+  const guardBody =
+    /function isChannelPointsRedemptionEvent\([\s\S]*?^\}/m.exec(mapperSrc)?.[0] ?? "";
+  ok("⚠ 判別関数を読み出せている（検査が空振りしていない）", guardBody.length > 0, true);
+  ok(
+    "⚠⚠⚠ 判別材料に user_input を使っていない（穴 H\' の再発防止）",
+    guardBody.includes("user_input"),
+    false,
+  );
+  ok("⚠ 判別材料は id ＋ user_id", guardBody.includes("id") && guardBody.includes("user_id"), true);
+  // ⚠⚠ **`notice_type` の除外は「今は」冗長である**——`mapTwitchChatEventToComment` が
+  //   `isNotificationEvent` を**先に**評価して return するので、外しても現在の挙動は 1 つも変わらない
+  //   （変異テストで確認済み＝**振る舞いのテストでは固定できない**）。
+  //   ⚠ それでも残すのは、`isBitsUseEvent` が同じ形の除外を持っており、**判定の順序を入れ替えた瞬間に
+  //   `notice_type` 付きイベント（サブスク・レイド等）を横取りする**からである。
+  //   ⇒ 冗長さを保つ理由が源コードにしか無いので、源コードで固定する。
+  ok(
+    "⚠⚠ notice_type の除外を残している（判定順を変えたときの保険）",
+    guardBody.includes('"notice_type" in event'),
+    true,
+  );
+  // ⚠⚠ 判別順（bits が先）を固定する。入れ替えると id 付き bits.use が引き換えに化ける。
+  ok(
+    "⚠⚠ isBitsUseEvent の判定が isChannelPointsRedemptionEvent より先に来る",
+    mapperSrc.indexOf("if (isBitsUseEvent(event))") <
+      mapperSrc.indexOf("if (isChannelPointsRedemptionEvent(event))"),
+    true,
+  );
+
+  // ⚠ 報酬名を DTO に宣言していないこと（§9・段 1 は報酬を区別しない）。
+  const dtoSrc = stripComments(
+    readFileSync(
+      join(
+        here,
+        "..",
+        "vendor",
+        "comment-fetcher",
+        "src",
+        "adapters",
+        "twitch",
+        "dto",
+        "raw.dto.ts",
+      ),
+      "utf8",
+    ),
+  );
+  ok(
+    "⚠⚠ §9: 引き換え DTO に reward を宣言していない（構造的に取り込まない）",
+    /TwitchChannelPointsRedemptionEventDto = \{[^}]*reward/.test(dtoSrc),
+    false,
+  );
 }
 
 if (failures > 0) {

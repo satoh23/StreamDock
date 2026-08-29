@@ -57,7 +57,43 @@ const tick = (n) => {
   }
 };
 
-const { createMockCommentSource } = await import("../dist/src/dev-mock.js");
+const { createMockCommentSource, CHANNEL_POINTS_ENVELOPES } = await import(
+  "../dist/src/dev-mock.js"
+);
+// 063e 段 2-b: チャンネルポイントは**生の EventSub ペイロード**として発行され、
+//   `repairNotificationEvent` → mapper まではモックが、その先は**本番の出力ポート**が担う。
+//   ⇒ ここでは `index.ts` の `outputPort.outputComments` と**同じ 2 段**を組み立てて渡す
+//   （＝ converter → `wire.ts` の写像もこのテストの検証対象に入る）。
+const { convertCommentToViewDto } = await import(
+  "../dist/vendor/comment-delivery/src/adapters/presenters/converters/comment-to-view.converter.js"
+);
+const { toCanonicalComment } = await import("../dist/src/wire.js");
+
+/**
+ * ⚠ 保留中のマイクロタスクを流す（`convertCommentToViewDto` は async）。
+ * ⚠⚠ `setTimeout` は偽物に差し替え済みなので**タイマーに頼らない**。
+ */
+const flushMicrotasks = async () => {
+  for (let i = 0; i < 20; i += 1) await Promise.resolve();
+};
+
+/**
+ * 063e 段 2-b: 本番の `outputPort.outputComments` と同じ変換を行いつつ、**発行順を保つ**収集器。
+ *
+ * ⚠⚠ `outputComments` は**同期的に呼ばれる**が中身は非同期なので、素直に push すると
+ * **チャンネルポイントだけ配列の末尾へ回り、`at(seq)` が壊れる**。
+ * ⇒ 呼ばれた瞬間に**枠を予約**し、変換が終わったらその枠へ書き込む（＝実際の発行順のまま並ぶ）。
+ */
+const makeOrderedOutputPort = (emitted) => (comments) => {
+  const slot = emitted.length;
+  emitted.length = slot + comments.length;
+  return (async () => {
+    const views = await Promise.all(comments.map(convertCommentToViewDto));
+    views.forEach((view, i) => {
+      emitted[slot + i] = toCanonicalComment(view);
+    });
+  })();
+};
 
 let failures = 0;
 const ok = (label, actual, expected) => {
@@ -75,7 +111,7 @@ const ok = (label, actual, expected) => {
  * YouTube 単独でモックを起動し、合成コメントを seq=1..count まで集める。
  * （seq は provider 共通カウンタなので、単独接続にすると seq = 出力順になり周期を検証できる。）
  */
-const runYouTube = (count) => {
+const runYouTube = async (count) => {
   const emitted = [];
   const source = createMockCommentSource({
     output: {
@@ -85,10 +121,13 @@ const runYouTube = (count) => {
     },
     sendSessionState: () => {},
     logInfo: () => {},
+    // ⚠ YouTube にチャンネルポイントは無いので**1 度も呼ばれない**（呼ばれたら下のケースが落ちる）。
+    outputComments: makeOrderedOutputPort(emitted),
   });
   source.handleControl({ type: "start-session", service: "youtube" });
   flushTimeouts(); // connected + 1 件目（seq=1）
   tick(count - 1); // seq=2..count
+  await flushMicrotasks();
   return { source, emitted };
 };
 
@@ -96,7 +135,7 @@ const runYouTube = (count) => {
  * 062a: Twitch 単独でモックを起動し、合成コメントを seq=1..count まで集める。
  * （`runYouTube` と同型。seq は provider 共通カウンタなので単独接続で seq = 出力順になる。）
  */
-const runTwitch = (count) => {
+const runTwitch = async (count) => {
   const emitted = [];
   const source = createMockCommentSource({
     output: {
@@ -106,16 +145,19 @@ const runTwitch = (count) => {
     },
     sendSessionState: () => {},
     logInfo: () => {},
+    // 063e 段 2-b: チャンネルポイントはこちらを通る（converter → `wire.ts` も検証対象に入る）。
+    outputComments: makeOrderedOutputPort(emitted),
   });
   source.handleControl({ type: "start-session", service: "twitch" });
   flushTimeouts(); // connected + 1 件目（seq=1）
   tick(count - 1); // seq=2..count
+  await flushMicrotasks();
   return { source, emitted };
 };
 
 // ---- A. combo 更新は「同一 id の再送」（seq%20===9 と 12 が対になる）----
 {
-  const { source, emitted } = runYouTube(60);
+  const { source, emitted } = await runYouTube(60);
   ok("dev-mock: seq 1..60 で 60 件出る", emitted.length, 60);
 
   const jewels = emitted.filter((c) => c.eventType === "jewels");
@@ -173,7 +215,7 @@ const runTwitch = (count) => {
 // ---- C. 境界: combo の 1 回目が無ければ「更新」だけを出さない ----
 // **仕様**: lastMockJewels が無い状態（jewels 未発行）で seq%20===12 に当たったら通常チャットへ落ちる。
 {
-  const { source, emitted } = runYouTube(12);
+  const { source, emitted } = await runYouTube(12);
   // seq=9 で本体が出ているので、この経路では 12 が combo になる（前提の確認）。
   ok("dev-mock(前提): seq=9 で本体が出ている", emitted[8].eventType, "jewels");
   ok("dev-mock(前提): seq=12 は combo になる", emitted[11].eventType, "jewels");
@@ -215,7 +257,7 @@ const runTwitch = (count) => {
 //   固定できるのは「合成が正しい形で出ること」だけで、**vendor mapper と wire.ts の詰め替えは
 //   1 バイトも通らない**（そちらは test-twitch-mapper.mjs / test-comment-relay.mjs が担保）。
 {
-  const { source, emitted } = runTwitch(40);
+  const { source, emitted } = await runTwitch(40);
   const at = (seq) => emitted[seq - 1];
 
   const raids = emitted.filter((c) => c.eventType === "raid");
@@ -236,6 +278,194 @@ const runTwitch = (count) => {
   ok("dev-mock(062a): seq=11 は superchat(bits) のまま", at(11).eventType, "superchat");
   ok("dev-mock(062a): seq=3 は donation のまま", at(3).eventType, "donation");
 
+  source.stopAll();
+}
+
+// ---- G. 063e: チャンネルポイント（Twitch・seq%20 が 6 / 8 / 4）----
+//
+// ## ⚠⚠⚠ 063e 段 2-b: ここだけ**本番の変換チェーンを通っている**
+//
+// 他の合成コメントは `CanonicalComment` を**直接**組んでおり、`wire.ts` も vendor の mapper も
+// 1 バイトも通らない（＝確認できるのは「wire から先」だけ）。
+// ⚠ チャンネルポイントは**作者が実機で 1 度も受信できない**ので、段 2-b で
+//   **Twitch 公式の形の生 EventSub ペイロード**を流す経路へ移した:
+//     生 envelope → `repairNotificationEvent` → `mapTwitchChatEventsToComments`
+//                 → **本番の outputPort**（`convertCommentToViewDto` → `toCanonicalComment`）
+//   ⇒ **WebSocket と Helix 以外は全部本番のコード**である。このテストもその 2 段を通して検証する。
+//
+// ⚠ ペイロードの出典（2 つの独立した一次情報で一致・2026-08-26）:
+//   `twitch_api` crate の `ChannelPointsCustomRewardRedemptionAddV1Payload` ／
+//   公式 Twitch CLI の `internal/events/types/channel_points_redemption/redemption_event.go`
+{
+  const { source, emitted } = await runTwitch(40);
+  const at = (seq) => emitted[seq - 1];
+
+  const cps = emitted.filter((c) => c.eventType === "channelpoint");
+  ok("dev-mock(063e): channelpoint は 6 件（seq=4, 6, 8, 24, 26, 28）", cps.length, 6);
+
+  // --- 入力あり（公式どおり・本文が読み上げられる／一覧に本文が出ることの目視用）---
+  ok("dev-mock(063e): seq=6 は channelpoint", at(6).eventType, "channelpoint");
+  ok("dev-mock(063e): 入力ありは本文を持つ", at(6).text, "がんばれー！");
+  // ⚠⚠ **id は引き換えイベント自身のもの**（dedup キー・envelope の message_id ではない）。
+  // ⚠ **id はイベント本体由来**（envelope の message_id ではない）＝接頭辞がそれを示す。
+  //   ⚠ 接尾辞は発行ごとの一意化（同じ id を出すと `mergeComments` が畳んで一覧に 1 行しか出ない）。
+  ok("⚠ dev-mock(063e): id は引き換えイベント自身の id 由来", at(6).id, "mock-redemption-1-6");
+  // ⚠ author は**引き換えた視聴者**（broadcaster ではない）。
+  ok("dev-mock(063e): author は引き換えた視聴者", at(6).author.id, "mock-twitch-redeemer");
+  ok("dev-mock(063e): 表示名も視聴者のもの", at(6).author.name, "night_owl");
+  ok("⚠⚠ dev-mock(063e): 金額は付かない（課金扱いしない）", at(6).monetaryAmount, undefined);
+  ok("⚠ dev-mock(063e): 数値 monetary も付かない", at(6).monetary, undefined);
+  ok("dev-mock(063e): レイド人数は付かない", at(6).raidViewerCount, undefined);
+  ok("⚠ dev-mock(063e): source は twitch", at(6).source, "twitch");
+  // ⚠ アバターは解決しない＝**実ネットに出ない**（`resolveAvatarDataUri` は url 無しで即 return）。
+  ok("⚠⚠ dev-mock(063e): アバターは付かない（fetch に到達していない）", at(6).author.avatar, undefined);
+
+  // ⚠⚠⚠ **§9: 報酬名も prompt も出力に 1 文字も現れない。**
+  //   fixture には**載せてある**（`reward: { title: "読み上げ", prompt: "好きな言葉をどうぞ" }`）ので、
+  //   これが緑であることが「DTO に宣言していない＝構造的に到達しない」ことの実証になる。
+  const cpJson = JSON.stringify(cps);
+  ok("⚠⚠⚠ dev-mock(063e) §9: 報酬名が出力に現れない", cpJson.includes("読み上げ"), false);
+  ok("⚠⚠ dev-mock(063e) §9: 報酬の prompt も現れない", cpJson.includes("好きな言葉"), false);
+  ok("⚠ dev-mock(063e) §9: status も現れない", cpJson.includes("unfulfilled"), false);
+  ok("⚠ dev-mock(063e) §9: redeemed_at も現れない", cpJson.includes("2026-08-26T10:00"), false);
+
+  // --- 入力なし（**配信画面に空の吹き出しを出さない**ことを実機で目視するための分岐）---
+  ok("dev-mock(063e): seq=8 も channelpoint", at(8).eventType, "channelpoint");
+  ok("⚠⚠ dev-mock(063e): 入力なしは本文が空", at(8).text, "");
+  ok("dev-mock(063e): seq=8 の id も引き換えイベント自身のもの", at(8).id, "mock-redemption-2-8");
+
+  // --- ⚠⚠⚠ 仕様外（`user_input: null` ＋ `id` 欠落）---
+  //   ⚠ 公式仕様はどちらも「必ず来る」と書いているので、これは**仕様外の想定**である。
+  //     それでも流すのは、**実機で確認できない以上「仕様を信じて外したときに何が起きるか」を
+  //     目視できる必要がある**ため。⇒ 期待＝**普通に 1 行出る**（本文は空・id は補填）。
+  //   ⚠⚠ ここが落ちたら、段 1-b の防御（`repairNotificationEvent` ＋ mapper の判別）が壊れている。
+  ok("⚠⚠⚠ dev-mock(063e): 仕様外（user_input=null・id 欠落）でも行が出る", at(4).eventType, "channelpoint");
+  ok("⚠⚠ dev-mock(063e): 仕様外でも本文は空文字（null を漏らさない）", at(4).text, "");
+  ok(
+    "⚠⚠ dev-mock(063e): 仕様外の id は envelope の message_id で補填される",
+    at(4).id,
+    "mock-envelope-4",
+  );
+  ok("⚠ dev-mock(063e): 仕様外でも author は引き換えた視聴者", at(4).author.id, "mock-twitch-redeemer3");
+
+  // --- ⚠⚠⚠ 2 周目でも同じ 3 パターンが**別の id で**出ること ---
+  //   ⚠ 同じ id を出すと `mergeComments` が畳むので、**一覧に 1 行しか現れない**
+  //     ＝目視の導線が 1 周目で終わる（モックを置いた意味が消える）。
+  //   ⚠⚠ さらに `structuredClone` を外すと `repairNotificationEvent` が fixture を in-place で書き換え、
+  //     **2 周目には「仕様外」が修復済みの形になって模せなくなる**（id も 1 周目の補填値で固定される）。
+  for (const [first, second] of [
+    [4, 24],
+    [6, 26],
+    [8, 28],
+  ]) {
+    ok(`⚠⚠ dev-mock(063e): seq=${first} と ${second} は別の id`, at(first).id !== at(second).id, true);
+    ok(`dev-mock(063e): seq=${second} も channelpoint`, at(second).eventType, "channelpoint");
+  }
+  // ⚠ 2 周目の仕様外も**やはり envelope 由来の id**（＝ fixture が汚れていない証拠）。
+  ok("⚠⚠⚠ dev-mock(063e): 2 周目の仕様外も補填 id のまま", at(24).id, "mock-envelope-24");
+  ok("⚠⚠ dev-mock(063e): 2 周目の仕様外も本文は空", at(24).text, "");
+
+  // --- ⚠⚠⚠ fixture が「守る対象」を実際に持っていること ---
+  //   ⚠⚠ **これが無いと §9 の検証が空振りする**——fixture から `reward` を落とすと
+  //     「報酬名が出力に現れない」は**当たり前に緑**になり、何も守らなくなる
+  //     （`test-twitch-mapper.mjs` が `system_message` / `profile_image_url` について書いている理由と同じ）。
+  const fixtureJson = JSON.stringify(CHANNEL_POINTS_ENVELOPES);
+  ok("⚠⚠⚠ fixture 自体は報酬名を持っている（§9 検証が空振りしていない）", fixtureJson.includes("読み上げ"), true);
+  ok("⚠⚠ fixture 自体は prompt を持っている", fixtureJson.includes("好きな言葉"), true);
+  ok("⚠ fixture 自体は status を持っている", fixtureJson.includes("unfulfilled"), true);
+  ok("⚠ fixture 自体は redeemed_at を持っている", fixtureJson.includes("2026-08-26T10:00"), true);
+  // ⚠ 3 パターン（入力あり／入力なし／仕様外）が揃っていること。
+  ok(
+    "⚠ fixture は 3 パターン（入力あり・入力なし・仕様外）",
+    CHANNEL_POINTS_ENVELOPES.map((f) => f.label),
+    ["text-input", "no-text-input", "out-of-spec"],
+  );
+  // ⚠⚠ 仕様外パターンが**本当に仕様外**であること（直すと防御の目視ができなくなる）。
+  const outOfSpec = CHANNEL_POINTS_ENVELOPES[2].event;
+  ok("⚠⚠ 仕様外パターンの user_input は null", outOfSpec.user_input, null);
+  ok("⚠⚠ 仕様外パターンは id を持たない", "id" in outOfSpec, false);
+
+  // ⚠ 既存の設計原則: 周期は %5 ≠ 0（superchat 枠を奪わない）。
+  for (const n of [4, 6, 8]) {
+    ok(`dev-mock(063e): ${n} の周期は %5 ≠ 0`, n % 5 === 0, false);
+  }
+  // ⚠ 既存の周期を 1 つも踏んでいないこと（踏むと既存の目視確認が消える）。
+  ok("dev-mock(063e): seq=3 は donation のまま", at(3).eventType, "donation");
+  ok("dev-mock(063e): seq=11 は superchat(bits) のまま", at(11).eventType, "superchat");
+  ok("dev-mock(063e): seq=13 は gift のまま", at(13).eventType, "gift");
+  ok("dev-mock(063e): seq=16 は raid のまま", at(16).eventType, "raid");
+  ok("dev-mock(063e): seq=17 は subscription のまま", at(17).eventType, "subscription");
+  ok("dev-mock(063e): seq=5 は superchat のまま（%5 枠）", at(5).eventType, "superchat");
+
+  source.stopAll();
+}
+
+// ⚠ YouTube 側にチャンネルポイントを出さないこと（Twitch 限定＝相当機能が存在しない）。
+{
+  const { source, emitted } = await runYouTube(40);
+  ok(
+    "⚠ dev-mock(063e): YouTube には channelpoint を 1 件も出さない",
+    emitted.filter((c) => c.eventType === "channelpoint").length,
+    0,
+  );
+  source.stopAll();
+}
+
+// ---------------------------------------------------------------------------
+// 063e 段 1-b: チャンネルポイント購読の成否（モックの目視導線）
+// ---------------------------------------------------------------------------
+//
+// ⚠⚠⚠ **これは「作者が実機で確認できない画面」を目視するための唯一の導線である。**
+//   チャンネルポイントは Twitch 側で有効化されるまで存在せず、有効化はアフィリエイト条件を
+//   満たしたあとのオンボーディングを通るため、作者の環境では常に「受信できていません」にしかならない。
+//   ⇒ 3 状態すべてを見せられるのはモードON の合成発行だけなので、その巡回をここで固定する。
+{
+  const frames = [];
+  const source = createMockCommentSource({
+    output: {
+      broadcastMessage(message) {
+        if (message?.type === "channelpoints.state") frames.push(message.payload.state);
+      },
+    },
+    sendSessionState: () => {},
+    logInfo: () => {},
+  });
+
+  source.handleControl({ type: "start-session", service: "twitch" });
+  flushTimeouts();
+  ok("dev-mock(063e 段 1-b): 1 回目の取得開始は receiving", frames, ["receiving"]);
+
+  source.handleControl({ type: "stop-session", service: "twitch" });
+  ok("dev-mock(063e 段 1-b): 停止で unknown へ戻る", frames, ["receiving", "unknown"]);
+
+  source.handleControl({ type: "start-session", service: "twitch" });
+  flushTimeouts();
+  // ⚠ 交互にするのは、**3 状態すべてを目視できる導線が他に無い**ため（本物の挙動の模倣ではない）。
+  ok("⚠ dev-mock(063e 段 1-b): 2 回目は unavailable（3 状態を巡回して見せる）", frames, [
+    "receiving",
+    "unknown",
+    "unavailable",
+  ]);
+
+  source.stopAll();
+}
+
+// ⚠ YouTube では 1 通も出さない（チャンネルポイントは Twitch 限定＝実物に無い状態を見せない）。
+{
+  const frames = [];
+  const source = createMockCommentSource({
+    output: {
+      broadcastMessage(message) {
+        if (message?.type === "channelpoints.state") frames.push(message.payload.state);
+      },
+    },
+    sendSessionState: () => {},
+    logInfo: () => {},
+  });
+  source.handleControl({ type: "start-session", service: "youtube" });
+  flushTimeouts();
+  source.handleControl({ type: "stop-session", service: "youtube" });
+  ok("⚠ dev-mock(063e 段 1-b): YouTube では 1 通も出さない", frames, []);
   source.stopAll();
 }
 

@@ -10,6 +10,14 @@ import telopGachaUrl from "../../assets/gacha/telop-gacha.png";
 import telopPakaUrl from "../../assets/gacha/telop-paka.png";
 import telopRareUrl from "../../assets/gacha/telop-rare.png";
 import type { GachaStageView } from "./gachaStagePlayback";
+/**
+ * ⚠⚠⚠ **063c 段 6-e: クラス名を突き合わせるために CSS Modules を引く**
+ * （`CommentList.test.tsx` と同じ手口）。vitest 上では `_<key>_<hash>` が返るので、
+ * ⚠ ハッシュに依存せず「**どのクラスを当てているか**」だけを見られる。
+ * ⚠⚠ **存在しないキーでも文字列を返す**ので、これは「CSS 側に規則が在ること」の担保にはならない
+ * ——そちらは `scripts/check-css-guards.mjs` の (10-r) が持つ。
+ */
+import styles from "./EffectOverlayApp.module.css";
 
 /**
  * ⚠⚠ **063c 段 2-b: 演出の「描く側」だけの仕様テスト。**
@@ -182,6 +190,62 @@ describe("063c 段 2-b: GachaEffectStage", () => {
   it("⚠⚠ レアでなければテロップは出ない（普通の景品にレアと出さない）", () => {
     render(stage({ phase: "result" }, { rare: false }));
     expect(srcs()).not.toContain(telopRareUrl);
+  });
+
+  // --- 063c 段 6-e: 「レア！」が景品名の器に隠されないこと ---------------------------
+
+  /**
+   * ⚠⚠⚠ **063c 段 6-e: 「レア！」は景品名の器の「中」に在る。**
+   *
+   * ⚠⚠ 依頼者の実機指摘＝「**文字を大きくしたことによって「レア！」のアイコンが
+   * 文字に被って見えなくなった**」。犯人は消去法で一意に決まった——「レア！」より**後に描かれる**のは
+   * `.gachaShell` と `.gachaCard` の 2 つだけで（`z-index` を使わない＝重なり順は DOM 順 1 本）、
+   * 殻は y 345px より下なので届かない ⇒ **器しかありえない。**
+   *
+   * ⚠⚠⚠ **jsdom はレイアウトを解決しない**ので、**重なりそのものは永遠に検出できない。**
+   * ⇒ ここで固定できるのは「**沈みようが無い場所に置いてあるか**」＝ **器の子孫であること**だけである。
+   * ⚠ これが外れると、**テストは全部緑のまま配信画面でだけ沈む**（段 6-d が踏んだ状態そのもの）。
+   */
+  it("⚠⚠⚠ 段 6-e: 「レア！」は景品名の器の中に在る（器に隠されない）", () => {
+    render(stage({ phase: "result" }, { prizeLabel: "特賞", rare: true }));
+    const card = screen.getByText("特賞").parentElement;
+    expect(card).not.toBeNull();
+    const inCard = Array.from(card?.querySelectorAll("img") ?? []).map(
+      (img) => img.getAttribute("src") ?? "",
+    );
+    expect(inCard).toContain(telopRareUrl);
+  });
+
+  /**
+   * ⚠⚠ **描画順の一点固定**——結果の段で「レア！」は**いちばん後**に来る。
+   * ⚠ 殻（`.gachaShell`）より前へ戻ると、**殻の絵が「レア！」の左半分を隠す**
+   * （殻は x 203〜516px を占める）。
+   */
+  it("⚠⚠ 段 6-e: 「レア！」は殻より後（結果の段の最後）に描かれる", () => {
+    render(stage({ phase: "result" }, { rare: true }));
+    const order = srcs();
+    expect(order.indexOf(capsule4Url)).toBeLessThan(
+      order.indexOf(telopRareUrl),
+    );
+    expect(order[order.length - 1]).toBe(telopRareUrl);
+  });
+
+  /**
+   * ⚠⚠⚠ **段のラベル用の `.gachaTelop` を当て直す変異を殺す。**
+   *
+   * ⚠ あちらは `top: calc(12% + var(--gacha-art-shift))` を持っており、器の中で使うと
+   * **器の高さに対する 12%** に化けて **84px の景品名の頭に掛かる**（段 5-b の「景品名がメイン」が壊れる）。
+   * ⚠⚠ CSS Modules は**存在しないキーでも文字列を返す**ので、これは
+   * 「CSS 側に `.gachaTelopRare` が在ること」の担保にはならない（(10-r) が持つ）。
+   * ⇒ ここが見るのは「**どちらのクラスを当てているか**」の 1 点だけである。
+   */
+  it("⚠⚠ 段 6-e: 「レア！」は段のラベルと別のクラスで描く", () => {
+    render(stage({ phase: "result" }, { rare: true }));
+    const rare = Array.from(document.querySelectorAll("img")).find(
+      (img) => img.getAttribute("src") === telopRareUrl,
+    );
+    expect(rare?.className).toBe(styles.gachaTelopRare);
+    expect(rare?.className).not.toBe(styles.gachaTelop);
   });
 
   /**

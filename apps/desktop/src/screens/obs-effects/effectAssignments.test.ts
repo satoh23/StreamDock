@@ -3,7 +3,7 @@ import {
   EFFECT_ASSIGNMENTS_KEY,
   GACHA_LIBRARY_KEY,
 } from "../../features/comment-viewer/overlaySettings";
-import { MONETARY_EVENT_TYPES } from "../comment-viewer/viewerFormat";
+import { EFFECT_CONDITION_EVENT_TYPES } from "../comment-viewer/viewerFormat";
 import {
   addKeywordCondition,
   createEffectFireMatcher,
@@ -73,7 +73,10 @@ const UUID2 = "紙吹雪";
 const TPL = { kind: "obs-source", sourceName: UUID } as const;
 const OBS = TPL;
 
-const EVENT_TYPES = [...MONETARY_EVENT_TYPES];
+// ⚠⚠ 063e 段 2: 出所が `MONETARY_EVENT_TYPES` から替わった（6 → 7・`channelpoint` が末尾に生えた）。
+// ⚠ **件数をベタ書きしない**——ここを 7 と書くと、次に種別が増えたとき「テストが落ちて気付く」ではなく
+//   「テストを直して終わり」になる。集合そのものを正とする。
+const EVENT_TYPES = [...EFFECT_CONDITION_EVENT_TYPES];
 
 /**
  * 064d: **レーンが 1 本になったので matcher も 1 本**（旧: 出力先ごとの factory）。
@@ -110,7 +113,7 @@ const ev = (eventType: string, effect: unknown = TPL): unknown => ({
   effect,
 });
 
-/** ⚠ イベント条件が 6 件ちょうどで、`MONETARY_EVENT_TYPES` と同じ並びであること。 */
+/** ⚠ イベント条件が `EFFECT_CONDITION_EVENT_TYPES` の件数ちょうどで、同じ並びであること。 */
 const expectEventRowShape = (conditions: EffectConditions) => {
   const rows = eventRows(conditions);
   expect(rows.map((c) => (c.when.type === "event" ? c.when.eventType : ""))).toEqual(
@@ -196,12 +199,12 @@ describe("effectAssignments（061j: 条件の配列）", () => {
 
   // --- 新規 13: 判断 2（イベント条件を読み込み時に作り直す） --------------------------------------
 
-  it("⚠⚠ イベント条件は必ず 6 件ちょうど・`MONETARY_EVENT_TYPES` と同じ並びになる", () => {
-    // 1 件だけ保存されていても 6 件へ復元される（欠けは「出さない」で埋める）。
+  it("⚠⚠ イベント条件は必ず `EFFECT_CONDITION_EVENT_TYPES` の件数ちょうど・同じ並びになる", () => {
+    // 1 件だけ保存されていても全件へ復元される（欠けは「出さない」で埋める）。
     localStorage.setItem(EFFECT_ASSIGNMENTS_KEY, JSON.stringify([ev("gift")]));
     const conditions = loadEffectConditions();
     expectEventRowShape(conditions);
-    expect(eventRows(conditions)).toHaveLength(6);
+    expect(eventRows(conditions)).toHaveLength(EVENT_TYPES.length);
     for (const c of eventRows(conditions)) {
       expect(c.effect).toEqual(c.id === "event:gift" ? TPL : NONE);
     }
@@ -217,7 +220,7 @@ describe("effectAssignments（061j: 条件の配列）", () => {
       ]),
     );
     const conditions = loadEffectConditions();
-    expect(eventRows(conditions)).toHaveLength(6);
+    expect(eventRows(conditions)).toHaveLength(EVENT_TYPES.length);
     expect(
       conditions.find((c) => c.id === "event:superchat")?.effect,
     ).toEqual({ kind: "obs-source", sourceName: UUID });
@@ -226,7 +229,7 @@ describe("effectAssignments（061j: 条件の配列）", () => {
   it("⚠⚠ 未知の eventType の条件は捨てられる（UI に行が無い＝表現できない条件を残さない）", () => {
     localStorage.setItem(
       EFFECT_ASSIGNMENTS_KEY,
-      // ⚠ "bits" は `MONETARY_EVENT_TYPES` に**無い**（ビッツは superchat に含まれる）。
+      // ⚠ "bits" は `EFFECT_CONDITION_EVENT_TYPES` に**無い**（ビッツは superchat に含まれる）。
       JSON.stringify([ev("bits"), ev("__proto__"), ev("chat")]),
     );
     const conditions = loadEffectConditions();
@@ -236,7 +239,7 @@ describe("effectAssignments（061j: 条件の配列）", () => {
 
   // --- 新規 12: 判断 8（旧形式からの移行） -------------------------------------------------------
 
-  it("⚠⚠ 旧形式（Record）の保存値がイベント条件 6 件へ変換される", () => {
+  it("⚠⚠ 旧形式（Record）の保存値がイベント条件の全行へ変換される", () => {
     // 061i までの保存形。⚠ 変換しないと **061i で設定した条件が全部消える**
     //   （ルートの形が Object → Array に変わったため、061h の前方互換の仕組みが効かない）。
     localStorage.setItem(
@@ -527,13 +530,72 @@ describe("effectAssignments（061j: 条件の配列）", () => {
   it("⚠⚠ 新規 2: ビッツ（`superchat` ＋ BITS）でイベント条件が効く（`displayEventType` を通さない）", () => {
     setConditionEffect("event:superchat", TPL);
     // ⚠ wire 上ビッツは `eventType === "superchat"` で届く。`displayEventType` を通すと "bits" になり、
-    //   `MONETARY_EVENT_TYPES` に無いので**エフェクトが出なくなる**（061b の穴②と同型）。
+    //   `EFFECT_CONDITION_EVENT_TYPES` に無いので**エフェクトが出なくなる**（061b の穴②と同型）。
     //   ⚠ 本関数は `monetary` を受け取らないので、そもそも `displayEventType` を呼べない。
     expect(resolveEffectMatch({ eventType: "superchat", text: "Power-up 🎉" })).toEqual({
       effect: TPL,
       conditionId: "event:superchat",
       cooldownMs: 0,
     });
+  });
+
+  // --- 063e 段 2: チャンネルポイント（⚠⚠⚠ 課金ゲートを削除した本体） -----------------------------
+
+  it("⚠⚠⚠ 063e 段 2: チャンネルポイントでイベント条件が効く（課金ゲートの削除）", () => {
+    // ⚠⚠ **段 1 の実装ではここが `null` になっていた。** 照合の直前に
+    //   `if (!isMonetaryEvent(input.eventType)) continue;` があり、チャンネルポイントは
+    //   `MONETARY_EVENT_TYPES` に**入れない**（お金ではない）ので必ず落ちたためである。
+    //   ⇒ 症状は「**条件表に行は出るのに、選んでも何も起きない**」＝ 061a Q-1 が最も嫌う形。
+    setConditionEffect("event:channelpoint", TPL);
+    expect(
+      resolveEffectMatch({ eventType: "channelpoint", text: "がんばれー！" }),
+    ).toEqual({
+      effect: TPL,
+      conditionId: "event:channelpoint",
+      cooldownMs: 0,
+    });
+  });
+
+  it("⚠ 063e 段 2: 本文が空の引き換え（テキスト入力なしの報酬）でも効く", () => {
+    // ⚠ イベント条件は本文を見ないので当たる。⚠ ここが落ちると
+    //   「テキスト入力を求めない報酬ではガチャが回らない」という**報酬しだいの挙動**になる。
+    setConditionEffect("event:channelpoint", TPL);
+    expect(resolveEffectMatch({ eventType: "channelpoint", text: "" })).toEqual({
+      effect: TPL,
+      conditionId: "event:channelpoint",
+      cooldownMs: 0,
+    });
+  });
+
+  it("⚠⚠⚠ 063e 段 2: 条件表に無い種別（chat / raid）はイベント条件に 1 件も当たらない", () => {
+    // ⚠⚠ **これが「課金ゲートを消して安全である」ことの直接の担保である。**
+    //   ゲートを消した論証＝「`parseConditions` が許可集合の外を捨てるので、
+    //   `condition.when.eventType === input.eventType` が成り立つなら入力も必ず集合の要素」。
+    //   ⇒ **全行にエフェクトを入れてもなお、集合外の種別では 1 件も当たらない**ことを確かめる。
+    // ⚠ キーワード条件は 1 件も作らない（作ると chat で当たってしまい、何も確かめられない）。
+    for (const eventType of EFFECT_CONDITION_EVENT_TYPES) {
+      setConditionEffect(`event:${eventType}`, TPL);
+    }
+    for (const eventType of ["chat", "raid", "bits", "__proto__", ""]) {
+      expect(
+        resolveEffectMatch({ eventType, text: "なんでもいい本文" }),
+      ).toBeNull();
+    }
+  });
+
+  it("⚠⚠ 063e 段 2: チャンネルポイントの行が保存・復元される（移行コード無しで乗る）", () => {
+    // ⚠ 既存ユーザーの保存値には `channelpoint` の行が**無い**。それでも
+    //   `parseConditions` が集合から行を生やすので、**移行コードを 1 行も書かずに乗る**（061j の設計）。
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify([ev("superchat", TPL)]),
+    );
+    const conditions = loadEffectConditions();
+    expectEventRowShape(conditions);
+    const row = conditions.find((c) => c.id === "event:channelpoint");
+    expect(row).toBeTruthy();
+    // ⚠ 生えた行は「エフェクトを出さない」＝**既存ユーザーの配信画面は 1 ピクセルも変わらない**。
+    expect(row?.effect).toEqual(NONE);
   });
 
   it("⚠⚠ 新規 3: `exact` は部分一致では当たらない／`contains` は当たる", () => {

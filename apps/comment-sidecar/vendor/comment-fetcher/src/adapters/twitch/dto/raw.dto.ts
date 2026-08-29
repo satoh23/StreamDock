@@ -109,7 +109,9 @@ export type TwitchEventSubNotificationEnvelopeDto = {
     event:
       | TwitchChatMessageEventDto
       | TwitchChatNotificationEventDto
-      | TwitchBitsUseEventDto;
+      | TwitchBitsUseEventDto
+      // 063e: チャンネルポイントの引き換え。
+      | TwitchChannelPointsRedemptionEventDto;
   };
 };
 
@@ -118,7 +120,11 @@ export type TwitchEventSubSubscriptionType =
   | "channel.chat.message"
   | "channel.chat.notification"
   // 043a(拡張): Bits Power-ups（cheer は channel.chat.message 側で取得済のため mapper で二重計上回避）。
-  | "channel.bits.use";
+  | "channel.bits.use"
+  // 063e: チャンネルポイント報酬の引き換え（**カスタム報酬のみ**）。
+  // ⚠⚠ **自動報酬（`channel.channel_points_automatic_reward_redemption.add`）は別の購読種別であり、
+  //   これでは受け取れない**（公式 EventSub Subscription Types で独立して定義されている）。ここに足さないこと。
+  | "channel.channel_points_custom_reward_redemption.add";
 
 /** channel.chat.message の event ペイロード。 */
 export type TwitchChatMessageEventDto = {
@@ -224,6 +230,78 @@ export type TwitchBitsUseEventDto = {
   };
   // websocket client が envelope の metadata.message_id を補填する（イベント本体には無い）。
   message_id: string;
+};
+
+/**
+ * channel.channel_points_custom_reward_redemption.add の event ペイロード（063e・チャンネルポイントの引き換え）。
+ *
+ * ⚠⚠ **`reward` は「無い」のではなく「在るが取らない」**（§9）。段 1 は**報酬を区別しない**
+ * （「チャンネルポイント」1 行で全報酬をまとめて受ける）ので、報酬名を宣言する必要が無い。
+ * 043a が `sub_gift` の受贈者（`recipient_user_*`）について、062a が `raid.profile_image_url` について
+ * 採ったのと**同じ線**である＝宣言しなければ wire にも DB にもログにも構造的に到達しない。
+ * ⚠ 報酬名ごとの出し分けは **063e 段 3** の領分。
+ * ✅ **2026-08-26: 穴 G は解決した**——`reward` は **`{ id, title, cost, prompt }`** を持つことを
+ *   2 つの独立した一次情報で確認済み（`twitch_api` crate の型定義／**公式 Twitch CLI** の
+ *   `internal/events/types/channel_points_redemption/redemption_event.go` が emit するフィールド）。
+ *   ⇒ **段 3 は Helix の追加呼び出しを必要としない**（報酬名はイベントに載っている）。
+ * ⚠ ペイロードは他に `status`（`unknown`/`unfulfilled`/`fulfilled`/`canceled`・既定 `unfulfilled`）と
+ *   `redeemed_at`（RFC3339）を持つ。**どちらも宣言しない**（下記の理由）。
+ * ⚠ `status`（unfulfilled/fulfilled/canceled）も宣言しない。購読するのは **`.add`（引き換えの発生）だけ**で、
+ *   消化・返却（`channel:manage:redemptions`）は**取らない**と決めているため、状態を見る意味が無い。
+ * ⚠ `redeemed_at` も取らない（`publishedAt` は他種別と同じく mapper が受信時刻で埋める＝経路を揃える）。
+ *
+ * ⚠ **`id` はイベント本体が持つ**ので、`channel.bits.use` のような
+ *   `metadata.message_id` の補填（websocket client 側）は**要らない**。
+ * ⚠⚠ **`user_input` は視聴者が打った文字列**で、テキスト入力を求めない報酬では**空文字**になる。
+ *   その場合の扱い（配信画面に出さない）は mapper と `CommentList.tsx` のコメントが正。
+ */
+export type TwitchChannelPointsRedemptionEventDto = {
+  /**
+   * 引き換え 1 件の一意 ID（重複排除のキー）。
+   *
+   * ⚠⚠ **欠けたときの壊れ方が静かなので、client 側で保険の補填をしている**（段 1-b）。
+   * Rust の `CommentViewDto.id` は必須なので、ここが `undefined` のまま wire に出ると
+   * `record_comment` のデシリアライズが DTO ごと失敗する。⚠ `record_comment` は
+   * frontend から fire-and-forget で呼ばれる＝**失敗しても画面には何も出ない**。
+   * ⇒ `repairNotificationEvent`（`eventsub-websocket.client.ts`）が
+   * `metadata.message_id` から補填する（`channel.bits.use` の `message_id` 補填と同じ形）。
+   */
+  id: string;
+  broadcaster_user_id: string;
+  broadcaster_user_login: string;
+  broadcaster_user_name: string;
+  /** 引き換えた視聴者のユーザー ID。 */
+  user_id: string;
+  user_login: string;
+  /** 引き換えた視聴者の表示名。 */
+  user_name: string;
+  /**
+   * 視聴者が報酬に添えたテキスト（テキスト入力を求めない報酬では空文字）。
+   *
+   * ## ⚠⚠ 2026-08-26 訂正: 公式仕様は `string`（未入力なら**空文字**）である
+   *
+   * ⚠ 段 1-b はここを `?: string | null` にした根拠として「`null` の実例報告がある」と書いていたが、
+   * ⚠⚠⚠ **その実例は自動報酬（`channel.channel_points_automatic_reward_redemption.add`）のもので、
+   * 本購読（カスタム報酬）とは別のイベントだった**（＝根拠として不正確だった）。
+   * 一次確認できた仕様は 2 つの独立した出所で一致しており、いずれも
+   * **`user_input: string` / "Empty string if not provided"** である。
+   *
+   * ## ⚠ それでも `?: string | null` のままにしている理由
+   *
+   * **実機で確認できないから**である（チャンネルポイントは新規チャンネルでは有効化されておらず、
+   * 依頼者の環境では引き換えを 1 度も起こせない）。⚠ 仕様を信じて外したときの症状は**無言**で、
+   * 段 1 の mapper は `typeof user_input === "string"` を**種別の判別材料そのもの**に使っていたため、
+   * 仮に `null` やキー欠落が 1 度でも来ると、そのイベントは
+   * **チャンネルポイントとして認識されず → chat フォールバックで `null` に落ち → 静かに消える**。
+   * ⚠ 広く受けておく側の costs はゼロ（読むときに空文字へ倒すだけ）なので、非対称な賭けとして受ける側を選ぶ。
+   * ⇒ 三段で殺す:
+   *   ①`repairNotificationEvent` が受信直後に `string` へ正規化する（`metadata.subscription_type` が根拠）
+   *   ②mapper の判別材料から**外す**（`id` ＋ `user_id` で判別する）
+   *   ③mapper が本文として読むときに `""` へ倒す
+   * ⚠ ①だけでは足りない——mapper は client を経由しない呼び出し（テスト・将来の別経路）でも正しく動くべきで、
+   *   **判別が 1 本の推測にぶら下がっている状態そのもの**が穴だった。
+   */
+  user_input?: string | null;
 };
 
 /**

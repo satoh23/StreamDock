@@ -71,6 +71,8 @@ function baseProps(over: Partial<Props> = {}): Props {
     obsAutoAdd: false,
     onObsAutoAddToggle: vi.fn(),
     obsState: "idle",
+    // 063e 段 1-b: 既定は「まだ分かりません」（Twitch の取得を開始していない状態）。
+    channelPointsState: "unknown",
     onSetObsPassword: vi.fn(),
     onClearObsPassword: vi.fn(),
     // 046b: 固定コメント専用オーバーレイの表示トグル（既定 OFF）。

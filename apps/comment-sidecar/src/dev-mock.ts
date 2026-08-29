@@ -19,6 +19,15 @@
 import { COMMENT_DELIVERY_MESSAGE_TYPES } from "@comment-dock/shared";
 import type { Provider } from "./auth/index.js";
 import type { CanonicalComment } from "./wire.js";
+// 063e 段 2-b: チャンネルポイントだけは**生の EventSub ペイロードを本番の変換チェーンへ流す**
+//   （理由は下の `CHANNEL_POINTS_ENVELOPES` の注記）。
+// ⚠⚠ どちらも**純関数のみ**のモジュールである（`ws` も tsyringe も引かない）＝
+//   このファイルの「top-level 副作用ゼロ」は保たれている。⚠ `eventsub-repair.ts` が
+//   client 本体から切り出されているのは、まさにこの 1 行のためである。
+import { repairNotificationEvent } from "../vendor/comment-fetcher/src/adapters/twitch/client/eventsub-repair.js";
+import { mapTwitchChatEventsToComments } from "../vendor/comment-fetcher/src/adapters/twitch/mapper/comment.mapper.js";
+import type { TwitchEventSubNotificationEnvelopeDto } from "../vendor/comment-fetcher/src/adapters/twitch/dto/raw.dto.js";
+import type { Comment } from "./comment-fetcher/index.js";
 
 /** env ゲート。COMMENT_SIDECAR_MOCK=1 のときだけ true（それ以外は現行の実取得経路）。 */
 export function isMockEnabled(): boolean {
@@ -32,6 +41,136 @@ export function isMockEnabled(): boolean {
  * 共有定数化は本タスク範囲外で見送り。再修正トリガー: このワイヤ文字列を変える場合は上記 3 箇所を揃える（共有定数化を別タスクで検討）。
  */
 const LINK_STATE_FRAME = "link.state";
+/**
+ * 063e 段 1-b（モック・一時・env ゲート）: チャンネルポイント購読の成否フレーム（`src/index.ts` と同じ名前）。
+ *
+ * ⚠⚠⚠ **なぜモックにも要るのか。** この機能は**作者が実機で確認できない**——チャンネルポイントは
+ * Twitch 側で有効化されるまで存在せず、有効化はアフィリエイト条件を満たしたあとの
+ * オンボーディングを通るためである。⇒ 設定カードの 3 状態（まだ分かりません／受信中／受信できていません）が
+ * **実際にどう見えるか**を確かめる手段が、モード ON の合成発行しか無い。
+ * ⚠ 段 1 で `.cardBody` の抜け（説明文がカードの端に貼り付く）を**テストでは捕まえられなかった**ように、
+ *   見た目の破綻は目視でしか分からない。
+ * ⚠ OFF（既定）では 1 バイトも発行しない（このファイル全体が env ゲートの内側にある）。
+ */
+const CHANNEL_POINTS_STATE_FRAME = "channelpoints.state";
+/**
+ * 063e 段 2-b（モック・一時・env ゲート）: **チャンネルポイント引き換えの生 EventSub ペイロード。**
+ *
+ * ## ⚠⚠⚠ なぜチャンネルポイントだけ「生」なのか
+ *
+ * このファイルの他の合成コメントは `CanonicalComment` を**直接**組んでおり、
+ * **`wire.ts` も vendor の mapper も 1 バイトも通らない**（＝確認できるのは「wire から先」だけ）。
+ * ⚠ 段 1 はこれをチャンネルポイントでも踏襲したが、**チャンネルポイントは作者が実機で 1 度も受信できない**
+ * （Twitch 側で有効化されておらず、有効化はアフィリエイト条件達成後のオンボーディングを通る）。
+ * ⇒ **変換が正しいかを目視で確かめられる経路が、ここしか無い。**
+ *
+ * ⇒ ここでは **Twitch が実際に送ってくる形の envelope** を組み、
+ *    `repairNotificationEvent` → `mapTwitchChatEventsToComments` → **本番の `outputPort`**
+ *    （converter → `wire.ts` → broadcast）へ流す。
+ *    ⚠ **WebSocket と Helix 以外は全部本番のコードである。**
+ *
+ * ## ⚠ ペイロードの出典（2026-08-26・2 つの独立した一次情報で一致）
+ *
+ * - `twitch_api` crate の `ChannelPointsCustomRewardRedemptionAddV1Payload`（公式ドキュメントの型写し）
+ * - **公式 Twitch CLI** `internal/events/types/channel_points_redemption/redemption_event.go` が emit する形
+ *
+ * | フィールド | 型 | 備考 |
+ * |---|---|---|
+ * | `id` | string | 引き換えの一意 ID |
+ * | `broadcaster_user_id` / `_login` / `_name` | string | |
+ * | `user_id` / `user_login` / `user_name` | string | 引き換えた視聴者 |
+ * | `user_input` | string | ⚠ **"Empty string if not provided"** |
+ * | `status` | string | `unknown` / `unfulfilled` / `fulfilled` / `canceled` |
+ * | `reward` | object | ⚠⚠ **`{ id, title, cost, prompt }`**（＝穴 G は解決済み） |
+ * | `redeemed_at` | string | RFC3339 |
+ *
+ * ⚠⚠ **`status` / `redeemed_at` / `reward` を fixture に必ず載せておくこと。**
+ * これらは**載っているのに取り込まないと決めたもの**（§9）なので、抜くと
+ * 「取り込んでいないこと」を目視で確かめられなくなる——`test-twitch-mapper.mjs` の fixture が
+ * `system_message` / `profile_image_url` を必ず入れているのと**同じ理由**である。
+ * ⚠ 目視の期待値＝**一覧に報酬名（「読み上げ」）が 1 文字も出ない。**
+ */
+export const CHANNEL_POINTS_ENVELOPES: readonly {
+  /** 何を模しているか（診断ログに出す・§9 で第三者データは含めない）。 */
+  readonly label: string;
+  readonly event: Record<string, unknown>;
+}[] = [
+  {
+    label: "text-input",
+    event: {
+      id: "mock-redemption-1",
+      broadcaster_user_id: "mock-broadcaster",
+      broadcaster_user_login: "mock_broadcaster",
+      broadcaster_user_name: "MockBroadcaster",
+      user_id: "mock-twitch-redeemer",
+      user_login: "night_owl",
+      user_name: "night_owl",
+      // ⚠ 視聴者が報酬に添えたテキスト（＝本文になる唯一の値）。
+      user_input: "がんばれー！",
+      status: "unfulfilled",
+      // ⚠⚠ **取り込まないことを目視するために載せている**（DTO に宣言していないので届かないはず）。
+      reward: {
+        id: "mock-reward-1",
+        title: "読み上げ",
+        cost: 500,
+        prompt: "好きな言葉をどうぞ",
+      },
+      redeemed_at: "2026-08-26T10:00:00.000000000Z",
+    },
+  },
+  {
+    label: "no-text-input",
+    event: {
+      id: "mock-redemption-2",
+      broadcaster_user_id: "mock-broadcaster",
+      broadcaster_user_login: "mock_broadcaster",
+      broadcaster_user_name: "MockBroadcaster",
+      user_id: "mock-twitch-redeemer2",
+      user_login: "pogChampion",
+      user_name: "pogChampion",
+      // ⚠⚠ **公式どおり「未入力なら空文字」**。⇒ 一覧には出るが**配信画面には出ない**（062a と同じ規律）。
+      user_input: "",
+      status: "unfulfilled",
+      reward: {
+        id: "mock-reward-2",
+        title: "音を鳴らす",
+        cost: 100,
+        prompt: "",
+      },
+      redeemed_at: "2026-08-26T10:00:05.000000000Z",
+    },
+  },
+  {
+    /**
+     * ⚠⚠⚠ **仕様どおりでない形**（`user_input` が `null`／`id` が欠落）。
+     *
+     * ⚠ 公式仕様はどちらも「必ず来る」と書いているので、**これは仕様外の想定**である。
+     * それでも巡回に入れているのは、**作者が実機で確認できない以上「仕様を信じて外したときに
+     * 何が起きるか」を目視できる必要がある**ため。
+     * ⇒ 期待される見え方＝**普通に 1 行出る**（本文は空・id は envelope の message_id で補填）。
+     * ⚠⚠ ここで**行が消えたら、段 1-b の防御（`repairNotificationEvent` ＋ mapper の判別）が壊れている。**
+     */
+    label: "out-of-spec",
+    event: {
+      broadcaster_user_id: "mock-broadcaster",
+      broadcaster_user_login: "mock_broadcaster",
+      broadcaster_user_name: "MockBroadcaster",
+      user_id: "mock-twitch-redeemer3",
+      user_login: "saltyRunner",
+      user_name: "saltyRunner",
+      user_input: null,
+      status: "unfulfilled",
+      reward: {
+        id: "mock-reward-3",
+        title: "スパチャ読み",
+        cost: 1000,
+        prompt: "",
+      },
+      redeemed_at: "2026-08-26T10:00:10.000000000Z",
+    },
+  },
+];
+
 /** 合成コメントの emit 間隔（ミリ秒）。 */
 const EMIT_INTERVAL_MS = 1800;
 /** connecting → connected の擬似遅延（ミリ秒）。 */
@@ -51,6 +190,18 @@ interface MockDeps {
   sendSessionState: (platform: Provider, state: string, reason?: string) => void;
   /** 診断ログ（stderr）。 */
   logInfo: (message: string, extra?: unknown) => void;
+  /**
+   * 063e 段 2-b: **本番の出力ポート**（`index.ts` の `outputPort.outputComments`）。
+   *
+   * ⚠⚠⚠ **チャンネルポイントだけはここを通す。** 他の合成コメントは `CanonicalComment` を直接組んで
+   * `output.broadcastMessage` へ流す（＝`wire.ts` も vendor の mapper も通らない）が、
+   * チャンネルポイントは**作者が実機で 1 度も受信できない**ので、
+   * **変換チェーンを目視で確かめられる経路がここしか無い**。
+   * ⚠ **同じ変換をここに書き写さないこと**——書き写すと「コピーだけ直る」事故が起きる。
+   *   converter → `wire.ts` → broadcast は**本番のコードをそのまま呼ぶ**のが要点である。
+   * ⚠ 未指定なら生ペイロード経路は無効（＝チャンネルポイントが 1 件も出ないだけ・fail-closed）。
+   */
+  outputComments?: (comments: Comment[]) => Promise<void>;
 }
 
 export interface MockCommentSource {
@@ -159,7 +310,7 @@ function makeComment(source: Provider, seq: number): CanonicalComment {
   };
 
   // 043a: 種別分離の目視用に投げ銭系イベントを周期で混ぜる（provider 実態に沿う・3/7/9/11/12/13/14/17 は %5≠0 で superchat と衝突しない）。
-  //   membership・jewels … YouTube のみ／subscription・donation・power-up … Twitch のみ／
+  //   membership・jewels … YouTube のみ／subscription・donation・power-up・channelpoint … Twitch のみ／
   //   gift … **両方**（Twitch=サブギフト seq%20===13／YouTube=メンバーシップギフト seq%20===14・呼び名が配信元で異なる）。
   //   superchat/bits（額つき）… seq % 5 === 0。付随数値（monthCount/giftCount/tier）・金額は受贈者名/団体名を含まない（§9）。
   //   ※jewels/gift(YouTube) の取得（ingestion）は 043d で実装済み。ここは表示/実機確認用の合成発行。
@@ -290,7 +441,7 @@ function makeComment(source: Provider, seq: number): CanonicalComment {
  * （035a の provider 別並行と同じ体験を合成で再現）。
  */
 export function createMockCommentSource(deps: MockDeps): MockCommentSource {
-  const { output, sendSessionState, logInfo } = deps;
+  const { output, sendSessionState, logInfo, outputComments } = deps;
   // provider ごとの connect 遅延タイマー / emit インターバルを保持する。
   const timers = new Map<
     Provider,
@@ -313,13 +464,119 @@ export function createMockCommentSource(deps: MockDeps): MockCommentSource {
     if (provider === "youtube") lastMockJewels = null;
   };
 
+  /**
+   * 063e 段 2-b: **チャンネルポイントを流す周期**（Twitch のみ）。
+   *
+   * ⚠ 既存の設計原則「`% 5 !== 0` で superchat 枠と衝突しない」に従い、未使用だった 4 / 6 / 8 を割り当てる。
+   * ⚠ 並びは [`CHANNEL_POINTS_ENVELOPES`] の順（入力あり → 入力なし → 仕様外）。
+   *
+   * ## ⚠⚠⚠ 既知の制約: `seq` は **両 provider の共有カウンタ**である（レビュー Q-M2）
+   *
+   * ⇒ **YouTube を同時接続すると、Twitch の発行が当たる `seq % 20` がずれ、
+   * チャンネルポイントが 1 件も出ない周が生じる。** ⚠ しかも「出ない」のか「壊れている」のかを
+   * 見分けられない——段 2-b の存在意義が「実機で受信できないものを目に見せる」ことなので、これは痛い。
+   * ⚠ **目視するときは Twitch を単独で接続すること**（`docs/tasks/063e-twitch-channel-points.md` の
+   * 実機確認 7. にも明記した）。単体テストの `runTwitch` / `runYouTube` が単独接続なのも同じ理由である。
+   * **再修正トリガー＝同時接続でも安定して出したくなったとき。** そのときは `seq` を provider 別に割り、
+   * ⚠⚠ **既存の全周期（jewels の combo 対・raid・gift 等）の期待値がまとめてずれる**ので**別タスク**にすること。
+   */
+  const CHANNEL_POINTS_SEQ = [6, 8, 4] as const;
+
+  /**
+   * 063e 段 2-b: 生の EventSub envelope を**本番の変換チェーン**へ流す。
+   *
+   * ⚠⚠ ここでやるのは `handleMessage`（`eventsub-websocket.client.ts`）と**同じ 2 手**だけ:
+   *   ①`repairNotificationEvent`（`metadata.subscription_type` を根拠にした修復）
+   *   ②`mapTwitchChatEventsToComments`（種別の判別と詰め替え）
+   *   ⚠ その先（converter → `wire.ts` → broadcast）は **`outputComments` が本番のコードで行う**。
+   * ⚠ `resolveAvatar` は渡さない＝アバター URL が無いので `resolveAvatarDataUri` は
+   *   `if (!authorId || !url) return undefined` で**即 return し、fetch に到達しない**（＝実ネットに出ない）。
+   */
+  /**
+   * 063e 段 2-b: 引き換え `id` を**発行ごとに一意にする**（fixture の id を接尾辞で伸ばす）。
+   *
+   * ⚠⚠⚠ **同じ id を 2 周目にも出すと、一覧にチャンネルポイントが 1 行しか現れない。**
+   * `mergeComments` は id で畳むので、2 周目は「新しい行」ではなく**同一行の更新**として扱われる
+   * ——目視の導線が 1 周目で終わってしまい、モックを置いた意味が消える。
+   * ⚠ 実物の Twitch は引き換えごとに別の `id` を返すので、**一意にするほうが実物に近い**。
+   * ⚠ 接頭辞に fixture の id を残すのは、**「id はイベント本体由来であって envelope 由来ではない」**
+   *   ことをテストと目視の両方で読み取れるようにするため（仕様外パターンだけが `mock-envelope-*` になる）。
+   */
+  const uniquifyRedemptionId = (
+    event: Record<string, unknown>,
+    at: number,
+  ): Record<string, unknown> => {
+    if (typeof event.id === "string" && event.id !== "") {
+      event.id = `${event.id}-${at}`;
+    }
+    return event;
+  };
+
+  const emitChannelPointRedemption = (index: number): void => {
+    if (!outputComments) return;
+    const fixture = CHANNEL_POINTS_ENVELOPES[index % CHANNEL_POINTS_ENVELOPES.length];
+    // ⚠ **毎回作り直す**（`repairNotificationEvent` は in-place で書き換えるので、
+    //   使い回すと 2 周目には修復済みの形＝「仕様外」を模せなくなる）。
+    const envelope = {
+      metadata: {
+        message_type: "notification",
+        // ⚠⚠ `id` 欠落の fixture は**ここから補填される**（本番と同じ経路）。
+        message_id: `mock-envelope-${seq}`,
+        subscription_type: "channel.channel_points_custom_reward_redemption.add",
+        subscription_version: "1",
+      },
+      payload: {
+        subscription: {
+          id: "mock-subscription",
+          type: "channel.channel_points_custom_reward_redemption.add",
+          version: "1",
+          status: "enabled",
+          condition: { broadcaster_user_id: "mock-broadcaster" },
+          transport: { method: "websocket", session_id: "mock-session" },
+        },
+        // ⚠⚠ 構造化クローンで**深いコピー**を作る。`repairNotificationEvent` は in-place で書き換えるので、
+        //   fixture を直接渡すと**2 周目には修復済みの形**になり「仕様外」を模せなくなる
+        //   （さらに `id` が 1 周目の補填値で固定され、**周回ごとに同じ id を出す**ことになる）。
+        event: uniquifyRedemptionId(structuredClone(fixture.event), seq),
+      },
+    } as unknown as TwitchEventSubNotificationEnvelopeDto;
+
+    repairNotificationEvent(envelope);
+    const comments = mapTwitchChatEventsToComments([envelope.payload.event]);
+    logInfo(
+      `[comment-sidecar][mock] channel points redemption (${fixture.label}) -> ${comments.length} comment(s)`,
+    );
+    // ⚠⚠ **握りつぶす**（モックの発行でタイマー経路を落とさない）。§9 配慮で理由は載せない。
+    void outputComments(comments).catch(() => {});
+  };
+
   const emitComment = (source: Provider): void => {
     seq += 1;
+    // 063e 段 2-b: Twitch の該当周期だけ**生ペイロード経路**へ回す（理由は `CHANNEL_POINTS_ENVELOPES`）。
+    if (source === "twitch") {
+      const index = CHANNEL_POINTS_SEQ.indexOf(
+        (seq % 20) as (typeof CHANNEL_POINTS_SEQ)[number],
+      );
+      if (index >= 0) {
+        emitChannelPointRedemption(index);
+        return;
+      }
+    }
     output.broadcastMessage({
       type: COMMENT_DELIVERY_MESSAGE_TYPES.COMMENTS_APPEND,
       payload: { comment: makeComment(source, seq) },
     });
   };
+
+  /**
+   * 063e 段 1-b（モック・一時）: 取得開始のたびに「受信中」と「受信できていません」を**交互**に出す。
+   *
+   * ⚠ 交互にするのは、**3 状態すべてを目視できる導線が他に無い**ため
+   * （実物は Twitch 側の有効化状況しだいで、作者の環境では常に「受信できていません」にしかならない）。
+   *   取得開始 → 受信中 ／ 停止 → まだ分かりません ／ もう一度開始 → 受信できていません …の順に回る。
+   * ⚠ **本物の挙動を模したものではない**（本物は購読作成の成否 1 回きり）。目視用の巡回である。
+   */
+  let mockChannelPointsOk = true;
 
   const startSession = (provider: Provider): void => {
     // 再開始は自 provider のみ差し替える（他 provider は温存＝並行を維持）。
@@ -328,6 +585,15 @@ export function createMockCommentSource(deps: MockDeps): MockCommentSource {
     const entry: { connect?: NodeJS.Timeout; emit?: NodeJS.Timeout } = {};
     entry.connect = setTimeout(() => {
       sendSessionState(provider, "connected");
+      // 063e 段 1-b（モック・一時）: チャンネルポイントは Twitch 限定なので **twitch のときだけ**出す
+      //   （YouTube 側で出すと、実物には無い状態を見せることになる）。
+      if (provider === "twitch") {
+        output.broadcastMessage({
+          type: CHANNEL_POINTS_STATE_FRAME,
+          payload: { state: mockChannelPointsOk ? "receiving" : "unavailable" },
+        });
+        mockChannelPointsOk = !mockChannelPointsOk;
+      }
       // 接続直後に 1 件出して即視認できるようにし、以後は一定間隔で流す。
       emitComment(provider);
       entry.emit = setInterval(() => emitComment(provider), EMIT_INTERVAL_MS);
@@ -356,6 +622,13 @@ export function createMockCommentSource(deps: MockDeps): MockCommentSource {
         // 該当 provider のみ停止（他 provider は継続）。停止側インジケータは idle へ戻す。
         clearProvider(frame.service);
         sendSessionState(frame.service, "idle");
+        // 063e 段 1-b（モック・一時）: 止めたら「まだ分かりません」へ戻す（実物の stop-session と同じ向き）。
+        if (frame.service === "twitch") {
+          output.broadcastMessage({
+            type: CHANNEL_POINTS_STATE_FRAME,
+            payload: { state: "unknown" },
+          });
+        }
         logInfo(`[comment-sidecar][mock] ${frame.service} session stop (synthetic)`);
       }
     },

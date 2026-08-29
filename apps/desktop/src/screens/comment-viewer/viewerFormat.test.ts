@@ -16,6 +16,7 @@ import {
   authorInitial,
   // 062a: 「レイドを課金扱いしない」を集合そのもので固定するために引く。
   MONETARY_EVENT_TYPES,
+  EFFECT_CONDITION_EVENT_TYPES,
   // 065b: CSV 引き継ぎの表示整形。
   fmtImportedAmount,
   firstVisitAt,
@@ -414,6 +415,91 @@ describe("062a レイドの表示上の位置づけ", () => {
         author: { name: "RaiderChannel" },
       }),
     ).toBeNull();
+  });
+});
+
+/**
+ * 063e: チャンネルポイントの表示上の位置づけ（062a のレイドと**同型**のテスト）。
+ *
+ * ⚠⚠⚠ ここが緑であることが「課金の見た目が 1 つも発火しない」の担保である。
+ * `MONETARY_EVENT_TYPES` にチャネポを足す変異は、ティア色カード・投げ銭ティッカー・
+ * オーバーレイの課金カード・通知音の代表音・読み上げ優先キュー・061 のエフェクト条件を
+ * **いっせいに発火させる**が、それを 1 か所で殺せるのはこのテストである。
+ */
+describe("063e チャンネルポイントの表示上の位置づけ", () => {
+  it("ラベルは「チャンネルポイント」", () => {
+    expect(eventLabel("channelpoint")).toBe("チャンネルポイント");
+  });
+
+  it("⚠⚠ 課金種別ではない（MONETARY_EVENT_TYPES に入れない）", () => {
+    expect(isMonetaryEvent("channelpoint")).toBe(false);
+    expect(MONETARY_EVENT_TYPES.has("channelpoint")).toBe(false);
+  });
+
+  it("⚠⚠ 課金集合は 6 値のまま（段 2 で足したのは別の定数であって、この集合ではない）", () => {
+    expect(MONETARY_EVENT_TYPES.size).toBe(6);
+  });
+
+  // --- 063e 段 2: 条件表の集合（`EFFECT_CONDITION_EVENT_TYPES`） --------------------------------
+
+  it("⚠⚠⚠ 段 2: 条件表の集合には入る（＝割り当て表に行が出る＝ガチャが回せる）", () => {
+    expect(EFFECT_CONDITION_EVENT_TYPES.has("channelpoint")).toBe(true);
+  });
+
+  it("⚠⚠⚠ 段 2: 2 つの集合は別物である（課金 ⊊ 条件表）", () => {
+    // ⚠⚠ **この差の 1 件がチャンネルポイントである**。集合を 1 つに戻す変異
+    //   （`EFFECT_CONDITION_EVENT_TYPES = MONETARY_EVENT_TYPES` にする等）はここで死ぬ。
+    //   ⚠ どちらへ倒しても嘘になる——足せば「チャネポで赤枠と投げ銭音」、
+    //     足さなければ「条件表に行が出ない＝ガチャが回せない」。
+    for (const t of MONETARY_EVENT_TYPES) {
+      expect(EFFECT_CONDITION_EVENT_TYPES.has(t)).toBe(true);
+    }
+    expect(EFFECT_CONDITION_EVENT_TYPES.size).toBe(MONETARY_EVENT_TYPES.size + 1);
+    const extra = [...EFFECT_CONDITION_EVENT_TYPES].filter(
+      (t) => !MONETARY_EVENT_TYPES.has(t),
+    );
+    expect(extra).toEqual(["channelpoint"]);
+  });
+
+  it("⚠⚠ 段 2: レイドは条件表に入れない（ガチャは「視聴者が対価を払って引く」もの）", () => {
+    // ⚠⚠⚠ **判断の記録**（依頼者・2026-08-26）: ガチャは視聴者が対価（お金／チャンネルポイント）を
+    //   払って引き、結果に応じて後から配信者が何かを渡すもの。**レイドは配信者の行為で、
+    //   視聴者が対価を払っていない**＝ガチャの引き金にならない。
+    //   ⚠ 「課金ではない」という理由でチャネポと横並びに見えるが**理由が違う**——
+    //     チャネポは「対価だが金ではない」、レイドは「そもそも対価ではない」。
+    // ⚠ **再修正トリガー**＝「レイドで OBS のソースを鳴らしたい」と言われたとき
+    //   （それはガチャの話ではないので、そのときは足すのが正しい判断になる）。
+    expect(EFFECT_CONDITION_EVENT_TYPES.has("raid")).toBe(false);
+    expect(EFFECT_CONDITION_EVENT_TYPES.has("chat")).toBe(false);
+  });
+
+  it("⚠ 段 2: 並びは課金 6 値の順のまま＋末尾にチャンネルポイント（既存ユーザーの行が並び替わらない）", () => {
+    // ⚠⚠ この集合の**挿入順が画面の行の並び**であり、保存値の正規化順でもある
+    //   （`EFFECT_EVENT_ROWS` / `parseConditions`）。⇒ 既存 6 値の順序を動かすと、
+    //   **既存ユーザーの割り当て表の行が黙って並び替わる**。
+    expect([...EFFECT_CONDITION_EVENT_TYPES]).toEqual([
+      ...MONETARY_EVENT_TYPES,
+      "channelpoint",
+    ]);
+  });
+
+  it("⚠ 金額を持たない課金種別の日本語文（composeEventMessage）は作らない＝読み上げは本文のみ", () => {
+    // null が返ることで speechText が `c.text`（＝視聴者が打った user_input）をそのまま読む
+    // ＝`chat` と同じ body-only（決定・2026-08-25）。要約文を作ると投稿者名が合成テキストに乗り、
+    // docs/security.md §1 の 049 追補（名前が乗るのは課金イベントに限る）の対象が広がってしまう。
+    expect(
+      composeEventMessage({
+        eventType: "channelpoint",
+        source: "twitch",
+        author: { name: "Alice" },
+      }),
+    ).toBeNull();
+  });
+
+  it("⚠ 配色キー（monetaryTone）の専用トーンを持たない＝課金カードの配色に混ざらない", () => {
+    // 呼び出し側は isMonetaryEvent で絞ってから使うので通常は到達しないが、
+    // 到達しても t0 へ無害に劣化するだけ（専用色を発明していないことの記録）。
+    expect(monetaryTone({ eventType: "channelpoint" })).toBe("t0");
   });
 });
 
