@@ -132,7 +132,9 @@
 /* 061d-2: イベント種別ごとの割り当て表。⚠ 行は `EFFECT_CONDITION_EVENT_TYPES` から機械的に作られる
    （「条件を追加」ボタンで増やす形にしない＝061d の (2) の判断）。
    ⚠ 063e 段 2 で出所が `MONETARY_EVENT_TYPES` から替わり、行が 6 → 7 になった
-   （チャンネルポイントは**条件表には出すが、お金ではない**）。 */
+   （チャンネルポイントは**条件表には出すが、お金ではない**）。
+   ⚠⚠⚠ **段 3-c で 7 → 6 へ戻した**——チャンネルポイントは種別の行ではなく
+   **カスタム報酬ごとの行**（`.rewardRow`）で扱うことになったため。 */
 .assignmentList {
   display: flex;
   flex-direction: column;
@@ -162,6 +164,50 @@
   flex-basis: 100%;
 }
 
+/* ⚠⚠⚠ **063e 段 3-b: 段 3 の `.rewardFilter` / `.rewardFilterLabel` / `.rewardField` を削除した。**
+   あれは条件表の「チャンネルポイント」行の**下に回り込む絞り込みのサブフォーム**（欄＋チップ＋説明文の
+   3 段）で、依頼者から「**フォームの長さが長すぎる**」と指摘された当のものである。
+   ⚠ 報酬ごとの紐づけは**キーワード条件と同じ「1 行」の形**（`.rewardRow`）へ移した
+   ——同じ画面に**2 通りの行の作り方を持たせない**（`.keywordRow` と 1 つの規則を共有している）。 */
+
+/* 「最近届いた報酬名」のチップの並び。⚠ 押すと**その報酬の行が 1 本生える**（打つ代わりの近道）。
+   ⚠⚠ 段 3 は行ごとに出していたが、段 3-b では**ブロックに 1 つ**である
+   ——行が増えるほどチップが複製され、まさに「フォームが長すぎる」の原因になるため。 */
+.rewardChips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+/* ⚠ 押すと**その報酬の行が生える**チップ。⚠⚠ **生 hex を書かない**（既存のロールトークンだけで組む）。
+   ⚠ `button` の既定意匠（`theme.css` の `button { border: 0; border-radius: 10px; font-weight: 800 }`）を
+   受けたうえで、**`.assignmentLabel`（13px）より小さく `.note`（11px）より大きい 12px**へ落として
+   主張を弱める——これは操作の主役ではなく**打つ代わりの近道**だからである。
+   ⚠ 063e 段 3-b 訂正: 段 3 のコメントは「`.note`（12px）と同じ大きさ」と書いていたが、
+   **`.note` は 11px** で同じではない（12px はこのファイルが削除した `.rewardFilterLabel` の値だった）。 */
+.rewardChip {
+  padding: 3px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.rewardChip:hover:not(:disabled) {
+  border-color: var(--border);
+}
+
+/* ⚠⚠ 063e 段 3-b: **その報酬の行が既にある**ときは押せない（押しても 2 本目は永久に発火しない）。
+   ⚠ 消すのではなく**押せない形で残す**——消すと「さっき見えていた候補が無い」に見え、
+   まだ届いていないのか既に足したのかが**画面から読めなくなる**。 */
+.rewardChip:disabled {
+  opacity: 0.45;
+}
+
 /* --- 061j: キーワード条件（自由テキスト） ------------------------------------------------------ */
 
 /* ⚠ ブロックの見出し。⚠ **新しい px / weight を発明しない**——`formLayout` の `.panelHead h3`（17px）と
@@ -176,16 +222,23 @@
   font-weight: 800;
 }
 
-/* ⚠ 行の並びは `.assignmentList` に倣う（同じ画面で 2 通りの間隔を作らない）。 */
-.keywordList {
+/* ⚠ 行の並びは `.assignmentList` に倣う（同じ画面で 2 通りの間隔を作らない）。
+   ⚠⚠⚠ 063e 段 3-b: **報酬ごとの行（`.rewardList` / `.rewardRow` / `.rewardText`）と
+   1 つの規則を共有している。** 値を写すのではなくセレクタを並べているのは、
+   **写すと片方だけ動かされる日が必ず来る**ため（このファイルが繰り返し書いている規律）。
+   ⚠ 別名にしてあるのは、TSX 側で「キーワードの行」と「報酬の行」を取り違えないためである。 */
+.keywordList,
+.rewardList {
   display: flex;
   flex-direction: column;
   gap: 10px;
   margin-top: 10px;
 }
 
-/* 1 行＝「キーワード入力」「当て方」「エフェクト」「削除」。⚠ 警告文は行の下に回り込ませる。 */
-.keywordRow {
+/* 1 行＝「キーワード入力」「当て方」「エフェクト」「削除」。⚠ 警告文は行の下に回り込ませる。
+   ⚠ 063e 段 3-b の報酬ごとの行は「報酬名」「エフェクト」「削除」の 3 つ（当て方が無い）。 */
+.keywordRow,
+.rewardRow {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -196,12 +249,14 @@
    あちらは子孫セレクタなので、入力欄だけを `.field` で包んでここでは**幅の振る舞いだけ**を足す。
    ⚠ `min-width` が無いと、`.field input` の `width: 100%` と `flex: 1` が組み合わさって
    狭い幅で入力欄が潰れる（`.templateName` と同じ理由の逆向き）。 */
-.keywordText {
+.keywordText,
+.rewardText {
   flex: 1;
   min-width: 160px;
 }
 
-.keywordRow > .errorText {
+.keywordRow > .errorText,
+.rewardRow > .errorText {
   flex-basis: 100%;
 }
 

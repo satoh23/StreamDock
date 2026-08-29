@@ -355,17 +355,43 @@ const redemption = (over = {}) => ({
   ok("channelpoint: 本文は user_input", c?.text, "がんばれー！");
   ok("⚠⚠ channelpoint: 金額を持たない（課金扱いしない）", c?.monetaryAmount, undefined);
   ok("channelpoint: レイド人数は付かない", c?.raidViewerCount, undefined);
-  // ⚠⚠ §9: 報酬名は段 1 では消費しない（DTO に宣言していない＝構造的に到達しない）。
+  // ⚠⚠⚠ **063e 段 3 でここが反転した。** 段 1〜2-b は「報酬名が出力に現れない」を固定していたが、
+  //   段 3 で **`reward.title` だけを取り込むと決めた**（依頼者＝「どのチャンネルポイント交換に
+  //   紐づけるかをユーザーが設定できるようにして欲しい」）。⇒ **反転は意図的である。**
+  //   ⚠ 反転したのは `title` **だけ**で、他は今も取らない（下 3 件がそれを固定する）。
+  ok("⚠⚠⚠ 段 3: 報酬名（title）は取り込む", c?.rewardTitle, "読み上げ");
   ok(
-    "⚠⚠ §9: 報酬名が出力に現れない",
-    JSON.stringify(c).includes("読み上げ"),
-    false,
-  );
-  ok(
-    "⚠ §9: 報酬の prompt も現れない",
+    "⚠⚠ §9: 報酬の prompt は今も現れない",
     JSON.stringify(c).includes("好きな言葉"),
     false,
   );
+  ok(
+    "⚠⚠ §9: 報酬の id・cost は今も現れない",
+    JSON.stringify(c).includes("r1") || JSON.stringify(c).includes("500"),
+    false,
+  );
+  ok(
+    "⚠ §9: status・redeemed_at も今も現れない",
+    JSON.stringify(c).includes("unfulfilled") ||
+      JSON.stringify(c).includes("2026-08-25T10:00"),
+    false,
+  );
+}
+
+// ⚠⚠⚠ 063e 段 3: **報酬名が取れない引き換えでも行は消えない**（`undefined` になるだけ）。
+//   ⚠ ここが `null` や空文字を通す実装だと、`effectAssignments.ts` 側で
+//   「報酬を指定していない条件」と**同じ値で出会って当たってしまう**（当たってはいけない）。
+for (const [label, over] of [
+  ["reward ごと欠落", { reward: undefined }],
+  ["reward が null", { reward: null }],
+  ["title が欠落", { reward: { id: "r1", cost: 1 } }],
+  ["title が null", { reward: { title: null } }],
+  ["title が非文字列", { reward: { title: 123 } }],
+  ["title が空文字", { reward: { title: "" } }],
+]) {
+  const c = mapOne(redemption(over));
+  ok(`⚠⚠ 段 3: ${label} でも行は作られる`, c?.eventType, "channelpoint");
+  ok(`⚠⚠⚠ 段 3: ${label} なら報酬名は undefined`, c?.rewardTitle, undefined);
 }
 
 // ⚠ テキスト入力を求めない報酬（`user_input` が空文字）。**行は作る**（本文が空になるだけ）。
@@ -685,11 +711,27 @@ for (const [label, over] of [
       "utf8",
     ),
   );
+  // ⚠⚠⚠ **063e 段 3 でここも反転した**（`reward` を宣言するようになった）。
+  //   ⚠ 反転させたぶん、**宣言したのが `title` だけであること**を静的に固定する
+  //   ——ここが緩むと `id` / `cost` / `prompt` が黙って wire へ乗りうる（§9）。
+  const rewardDecl = /reward\?: \{([^}]*)\}/.exec(dtoSrc);
+  ok("⚠⚠ 段 3: 引き換え DTO に reward を宣言している", rewardDecl !== null, true);
   ok(
-    "⚠⚠ §9: 引き換え DTO に reward を宣言していない（構造的に取り込まない）",
-    /TwitchChannelPointsRedemptionEventDto = \{[^}]*reward/.test(dtoSrc),
-    false,
+    "⚠⚠⚠ §9: reward の中で宣言しているのは title だけ",
+    (rewardDecl?.[1] ?? "").trim(),
+    "title?: string | null",
   );
+  for (const field of ["cost", "prompt", "redeemed_at"]) {
+    ok(
+      `⚠ §9: 引き換え DTO に ${field} を宣言していない`,
+      new RegExp(
+        `TwitchChannelPointsRedemptionEventDto = \\{[\\s\\S]*?\\n\\}`,
+      )
+        .exec(dtoSrc)?.[0]
+        ?.includes(`${field}:`) ?? false,
+      false,
+    );
+  }
 }
 
 if (failures > 0) {

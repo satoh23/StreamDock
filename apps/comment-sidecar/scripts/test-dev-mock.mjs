@@ -320,12 +320,12 @@ const runTwitch = async (count) => {
   // ⚠ アバターは解決しない＝**実ネットに出ない**（`resolveAvatarDataUri` は url 無しで即 return）。
   ok("⚠⚠ dev-mock(063e): アバターは付かない（fetch に到達していない）", at(6).author.avatar, undefined);
 
-  // ⚠⚠⚠ **§9: 報酬名も prompt も出力に 1 文字も現れない。**
-  //   fixture には**載せてある**（`reward: { title: "読み上げ", prompt: "好きな言葉をどうぞ" }`）ので、
-  //   これが緑であることが「DTO に宣言していない＝構造的に到達しない」ことの実証になる。
+  // ⚠⚠⚠ **063e 段 3 でここが反転した**——`reward.title` **だけ**を取り込むと決めたため。
+  //   ⚠ 反転させたぶん、**他が今も出ないこと**を同じ強さで固定する（線を 1 つだけ動かした証拠）。
   const cpJson = JSON.stringify(cps);
-  ok("⚠⚠⚠ dev-mock(063e) §9: 報酬名が出力に現れない", cpJson.includes("読み上げ"), false);
-  ok("⚠⚠ dev-mock(063e) §9: 報酬の prompt も現れない", cpJson.includes("好きな言葉"), false);
+  ok("⚠⚠⚠ dev-mock(063e 段 3): 報酬名は出る", at(6).rewardTitle, "読み上げ");
+  ok("⚠⚠ dev-mock(063e) §9: 報酬の prompt は今も現れない", cpJson.includes("好きな言葉"), false);
+  ok("⚠ dev-mock(063e) §9: 報酬の id も現れない", cpJson.includes("mock-reward-"), false);
   ok("⚠ dev-mock(063e) §9: status も現れない", cpJson.includes("unfulfilled"), false);
   ok("⚠ dev-mock(063e) §9: redeemed_at も現れない", cpJson.includes("2026-08-26T10:00"), false);
 
@@ -333,6 +333,10 @@ const runTwitch = async (count) => {
   ok("dev-mock(063e): seq=8 も channelpoint", at(8).eventType, "channelpoint");
   ok("⚠⚠ dev-mock(063e): 入力なしは本文が空", at(8).text, "");
   ok("dev-mock(063e): seq=8 の id も引き換えイベント自身のもの", at(8).id, "mock-redemption-2-8");
+  // ⚠⚠⚠ **063e 段 3: ここが「出し分け」の目視の主役。**
+  //   割り当て表の「対象の報酬」に `ガチャを引く` と入れると、**この 1 件だけ**が鳴る。
+  ok("⚠⚠⚠ dev-mock(063e 段 3): seq=8 の報酬名は「ガチャを引く」", at(8).rewardTitle, "ガチャを引く");
+  ok("⚠⚠ dev-mock(063e 段 3): seq=6 は別の報酬名（＝出し分けが目視できる）", at(6).rewardTitle, "読み上げ");
 
   // --- ⚠⚠⚠ 仕様外（`user_input: null` ＋ `id` 欠落）---
   //   ⚠ 公式仕様はどちらも「必ず来る」と書いているので、これは**仕様外の想定**である。
@@ -347,6 +351,20 @@ const runTwitch = async (count) => {
     "mock-envelope-4",
   );
   ok("⚠ dev-mock(063e): 仕様外でも author は引き換えた視聴者", at(4).author.id, "mock-twitch-redeemer3");
+  // ⚠⚠⚠ **063e 段 3: 報酬名が取れない引き換え**（`reward` ごと欠落）。
+  //   ⚠ 期待＝**対象の報酬を指定していると鳴らない／空欄なら鳴る**。
+  //   ⚠⚠ ここが空文字や `null` になると、`effectAssignments.ts` 側で
+  //   「報酬を指定していない条件」と同じ値で出会って**当たってしまう**。
+  ok("⚠⚠⚠ dev-mock(063e 段 3): 仕様外は報酬名を持たない（undefined）", at(4).rewardTitle, undefined);
+  // ⚠⚠ **JSON にしてから見る**——中継は `rewardTitle: dto.rewardTitle` の明示列挙なので
+  //   JS オブジェクト上はキーが `undefined` 値で存在する。⚠ 実際に frontend / Rust へ渡るのは
+  //   直列化後なので、**「キーごと落ちている」ことはそちらで確かめるのが正しい**
+  //   （`wire.ts` の「undefined は JSON 直列化時に落ちる＝Rust 側 None」がこれである）。
+  ok(
+    "⚠⚠⚠ dev-mock(063e 段 3): 直列化するとキーごと落ちる（Rust 側 None）",
+    "rewardTitle" in JSON.parse(JSON.stringify(at(4))),
+    false,
+  );
 
   // --- ⚠⚠⚠ 2 周目でも同じ 3 パターンが**別の id で**出ること ---
   //   ⚠ 同じ id を出すと `mergeComments` が畳むので、**一覧に 1 行しか現れない**
@@ -370,15 +388,23 @@ const runTwitch = async (count) => {
   //     「報酬名が出力に現れない」は**当たり前に緑**になり、何も守らなくなる
   //     （`test-twitch-mapper.mjs` が `system_message` / `profile_image_url` について書いている理由と同じ）。
   const fixtureJson = JSON.stringify(CHANNEL_POINTS_ENVELOPES);
-  ok("⚠⚠⚠ fixture 自体は報酬名を持っている（§9 検証が空振りしていない）", fixtureJson.includes("読み上げ"), true);
+  ok("⚠⚠⚠ fixture 自体は報酬名を持っている（出し分けの目視が空振りしていない）", fixtureJson.includes("読み上げ"), true);
+  ok("⚠⚠⚠ fixture にガチャ用の報酬名がある（出し分けの主役）", fixtureJson.includes("ガチャを引く"), true);
   ok("⚠⚠ fixture 自体は prompt を持っている", fixtureJson.includes("好きな言葉"), true);
+  // ⚠⚠⚠ **報酬名が 3 パターンとも違うこと**（同じだと「出し分けできている」ように見えて
+  //   実は全部鳴っているだけ、という状態を見分けられない）。
+  {
+    const titles = CHANNEL_POINTS_ENVELOPES.map((f) => f.event.reward?.title);
+    ok("⚠⚠⚠ fixture の報酬名は 3 つとも異なる（1 つは無し）", new Set(titles).size, 3);
+    ok("⚠⚠ fixture の 1 つは報酬名を持たない", titles.includes(undefined), true);
+  }
   ok("⚠ fixture 自体は status を持っている", fixtureJson.includes("unfulfilled"), true);
   ok("⚠ fixture 自体は redeemed_at を持っている", fixtureJson.includes("2026-08-26T10:00"), true);
   // ⚠ 3 パターン（入力あり／入力なし／仕様外）が揃っていること。
   ok(
-    "⚠ fixture は 3 パターン（入力あり・入力なし・仕様外）",
+    "⚠ fixture は 3 パターン（入力あり・入力なし・仕様外＝報酬名なし）",
     CHANNEL_POINTS_ENVELOPES.map((f) => f.label),
-    ["text-input", "no-text-input", "out-of-spec"],
+    ["text-input", "no-text-input", "out-of-spec-no-reward"],
   );
   // ⚠⚠ 仕様外パターンが**本当に仕様外**であること（直すと防御の目視ができなくなる）。
   const outOfSpec = CHANNEL_POINTS_ENVELOPES[2].event;

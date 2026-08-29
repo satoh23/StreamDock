@@ -1251,12 +1251,16 @@ describe("064b: コメントで OBS のソースを鳴らす", () => {
     //   `eventType: "channelpoint"` のコメントが、割り当て表の条件に当たって OBS を鳴らすところまで。
     // ⚠⚠ **段 1 の実装ではここが 1 回も鳴らなかった**（照合の直前の課金ゲートが落としていた）。
     //   症状は「条件表に行は出るのに、選んでも何も起きない」＝ 061a Q-1 が最も嫌う形。
+    // ⚠⚠⚠ **段 3-c で入口が変わった**——種別の行は廃止され、
+    //   **カスタム報酬に紐づけたときだけ**鳴る（依頼者＝「そもそもチャンネルポイント交換
+    //   しただけで表示したいエフェクトなんか無い」）。⚠ `rewardTitle` が wire から
+    //   ここまで届いていることも、この 1 本が同時に固定している。
     localStorage.setItem(
       EFFECT_ASSIGNMENTS_KEY,
       JSON.stringify([
         {
-          id: "event:channelpoint",
-          when: { type: "event", eventType: "channelpoint" },
+          id: "cp:1",
+          when: { type: "channelpoint", rewardTitle: "ガチャを引く" },
           effect: { kind: "obs-source", sourceName: OBS_ASSIGNED_SOURCE },
         },
       ]),
@@ -1270,6 +1274,7 @@ describe("064b: コメントで OBS のソースを鳴らす", () => {
         id: "cp1",
         source: "twitch",
         eventType: "channelpoint",
+        rewardTitle: "ガチャを引く",
         text: "がんばれー！",
         // ⚠ チャンネルポイントは**金額を持たない**（063e 段 1 の決定）。
         monetaryAmount: undefined,
@@ -1282,6 +1287,98 @@ describe("064b: コメントで OBS のソースを鳴らす", () => {
       OBS_ASSIGNED_SOURCE,
       OBS_SOURCE_FALLBACK_DURATION_MS,
     );
+  });
+
+  /**
+   * ⚠⚠⚠ **063e: テキスト入力を求めない報酬（`user_input` が空文字）でも鳴る（端から端まで）。**
+   *
+   * ## ⚠⚠ これが「実運用でいちばん多い形」である
+   *
+   * Twitch のカスタム報酬には「**視聴者にテキスト入力を求める**」トグルがあり、
+   * **OFF なら `user_input` は空文字**（公式: "Empty string if not provided"）。
+   * ⚠ **ガチャ用の報酬は普通そちら**なので、⚠⚠⚠ **本文なしで鳴らなければ機能が成立しない。**
+   *
+   * ## ⚠⚠⚠ なぜ窓レベルでも撃つのか（`effectFire.test.ts` があるのに）
+   *
+   * 発火層（`effectFire.test.ts`）は「本文が空でも引かれる」を固定しているが、
+   * ⚠ **窓の配線（`CommentViewerApp` → `decideEffects` → `fireObsSource`）は
+   * 本文ありのケースでしか通っていなかった**（063e 段 3-c の実装後に気づいた抜け）。
+   * ⇒ 本文を落とす／空で早期 return する変更が入っても、**窓レベルでは誰も気づけない**状態だった。
+   * ⚠ **この 1 本を消さないこと。**
+   *
+   * ⚠ 併せて「**報酬名だけで当たっている**」ことも示している——
+   * 本文が空なので、キーワード条件でも本文照合でもなく `cp:1` が当たったと断定できる。
+   */
+  it("⚠⚠⚠ 063e: テキスト入力なしの報酬（本文が空）でも鳴る", async () => {
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify([
+        {
+          id: "cp:1",
+          when: { type: "channelpoint", rewardTitle: "ガチャを引く" },
+          effect: { kind: "obs-source", sourceName: OBS_ASSIGNED_SOURCE },
+        },
+      ]),
+    );
+    render(<CommentViewerApp />);
+    emitConnected();
+    await act(async () => {});
+
+    emitComments([
+      superchat({
+        id: "cp0",
+        source: "twitch",
+        eventType: "channelpoint",
+        rewardTitle: "ガチャを引く",
+        // ⚠⚠ **入力を求めない報酬**（`user_input` が空文字で届く）。
+        text: "",
+        monetaryAmount: undefined,
+        monetary: undefined,
+      }),
+    ]);
+
+    expect(mocks.stream.fireObsSource).toHaveBeenCalledWith(
+      4455,
+      OBS_ASSIGNED_SOURCE,
+      OBS_SOURCE_FALLBACK_DURATION_MS,
+    );
+  });
+
+  /**
+   * ⚠⚠⚠ **063e 段 3-c: 紐づけていないカスタム報酬では鳴らない（端から端まで）。**
+   *
+   * ⚠ 総称の受け皿を廃止したことの、実際の窓での担保である。
+   * これが落ちると「チャネポを引き換えただけで頼んでいない演出が出る」＝
+   * 依頼者が明示的に要らないと言った挙動が復活したことになる。
+   */
+  it("⚠⚠⚠ 063e 段 3-c: 紐づけていない報酬では鳴らない", async () => {
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify([
+        {
+          id: "cp:1",
+          when: { type: "channelpoint", rewardTitle: "ガチャを引く" },
+          effect: { kind: "obs-source", sourceName: OBS_ASSIGNED_SOURCE },
+        },
+      ]),
+    );
+    render(<CommentViewerApp />);
+    emitConnected();
+    await act(async () => {});
+
+    emitComments([
+      superchat({
+        id: "cp2",
+        source: "twitch",
+        eventType: "channelpoint",
+        rewardTitle: "曲リクエスト",
+        text: "",
+        monetaryAmount: undefined,
+        monetary: undefined,
+      }),
+    ]);
+
+    expect(mocks.stream.fireObsSource).not.toHaveBeenCalled();
   });
 
   it("⚠⚠ 同じコメントが 2 度届いても 1 回しか鳴らない（[043e] の combo 再送）", async () => {

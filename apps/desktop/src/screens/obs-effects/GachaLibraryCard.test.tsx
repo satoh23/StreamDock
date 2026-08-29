@@ -376,6 +376,38 @@ describe("GachaLibraryCard（063d）", () => {
     ).toBeInTheDocument();
   });
 
+  /**
+   * ⚠⚠⚠ **063e 段 3-b: 報酬ごとの紐づけも列挙されること。**
+   *
+   * ⚠ これが抜けると「**使用中と知らずにガチャを消す**」——削除確認は
+   * 「どの条件が使っているか」を出す**唯一の場所**だからである。
+   * ⚠⚠ 出るのは**イベント名ではなく報酬名**（同じチャンネルポイントに複数の紐づけがありうるので、
+   * 「チャンネルポイント」だけでは**どの行か分からない**）。
+   */
+  it("⚠⚠⚠ 報酬ごとの紐づけも列挙される（報酬名で出る）", () => {
+    putObsSources();
+    render(<Harness />);
+    createGacha();
+    fireEvent.click(
+      screen.getByRole("button", { name: "カスタム報酬を追加" }),
+    );
+    const reward = screen.getByLabelText("カスタム報酬の名前 1");
+    fireEvent.change(reward, { target: { value: "ガチャを引く" } });
+    fireEvent.blur(reward);
+    fireEvent.change(screen.getByLabelText("カスタム報酬 1 のエフェクト"), {
+      target: { value: "gacha:g:1" },
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "新しいガチャ 1 を削除" }),
+    );
+    expect(
+      within(screen.getByRole("dialog")).getByText(
+        "カスタム報酬「ガチャを引く」",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("⚠ 使われていなければ、そのまま消せる旨だけを出す", () => {
     render(<Harness />);
     createGacha();

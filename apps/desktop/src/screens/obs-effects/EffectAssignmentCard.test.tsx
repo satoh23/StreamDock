@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, within } from "@testing-library/react";
 import {
+  CHANNEL_POINT_REWARDS_KEY,
   EFFECT_ASSIGNMENTS_KEY,
   // 064b: 割り当て先に OBS 側のソースを出す（一覧はコメビュ窓が書いたものを読む）。
   OBS_SOURCE_LIST_KEY,
@@ -9,6 +10,8 @@ import { EffectAssignmentCard } from "./EffectAssignmentCard";
 import type { GachaDefinition } from "./effectAssignments";
 import {
   KEYWORD_CONDITION_MAX,
+  CHANNEL_POINT_CONDITION_MAX,
+  REWARD_TITLE_MAX_LENGTH,
   type EffectAssignment,
 } from "./effectAssignments";
 import {
@@ -20,6 +23,7 @@ import {
 } from "./effectSelectValue";
 import { EFFECT_CONDITION_EVENT_TYPES } from "../comment-viewer/viewerFormat";
 import { EFFECT_EVENT_LABEL, EFFECT_EVENT_ROWS } from "./effectEventRows";
+import { loadRecentChannelPointRewards } from "../../features/comment-viewer/channelPointRewards";
 
 /**
  * 061d-2 / 061j / **064d**: 「エフェクトを表示する条件」カードの仕様テスト。
@@ -131,11 +135,26 @@ describe("EffectAssignmentCard", () => {
     expect(rendered).toEqual(EFFECT_EVENT_ROWS.map((r) => r.label));
   });
 
-  it("⚠⚠⚠ 063e 段 2: 「チャンネルポイント」の行が出る（＝ガチャの引き金として選べる）", () => {
+  /**
+   * ⚠⚠⚠ **063e 段 3-c: 「チャンネルポイント」の行（プルダウン）を消した。**
+   *
+   * 依頼者＝「**そもそもチャンネルポイント交換しただけで表示したいエフェクトなんか無い**んだから、
+   * チャンネルポイントにあるプルダウンを消して、**必ずカスタム報酬ごとに**設定する形に」。
+   *
+   * ⚠⚠ **見出しの文字と取り違えないこと。** 段 3-c で下のブロックの見出しが
+   * 「チャンネルポイント」になったので、⚠⚠⚠ **`getByText("チャンネルポイント")` は
+   * いまも通ってしまう**（＝行が復活しても気づけない偽の緑）。
+   * ⇒ **`<select>` の有無で見る**（`aria-label` は行にしか付かない）。
+   */
+  it("⚠⚠⚠ 063e 段 3-c: 「チャンネルポイント」のプルダウンは出ない（カスタム報酬ごとに設定する）", () => {
     render(<Harness />);
-    // ⚠ ラベルの出所は `EVENT_LABEL`（コメント一覧・ティッカー・読み上げと同じ表）。
-    //   ここで新しい呼び名を発明していないことも併せて固定する。
-    expect(screen.getByText("チャンネルポイント")).toBeInTheDocument();
+    expect(
+      screen.queryByLabelText("チャンネルポイントのエフェクト"),
+    ).not.toBeInTheDocument();
+    // ⚠ 代わりに、カスタム報酬ごとのブロックの見出しとして出ている（唯一の入口）。
+    expect(
+      screen.getByRole("heading", { name: "チャンネルポイント" }),
+    ).toBeInTheDocument();
   });
 
   it("⚠⚠ 063e 段 2: 「レイド」の行は出ない（ガチャは視聴者が対価を払って引くもの）", () => {
@@ -458,5 +477,309 @@ describe("064b: 割り当て先の OBS ソース（画面）", () => {
       }),
     ).not.toHaveLength(0);
   });
+  // --- 063e 段 3-b: チャンネルポイントの報酬ごと（1 紐づき＝1 行）-------------------------------
 
+  /**
+   * ⚠⚠⚠ **063e 段 3-b**（依頼者＝「**このチャネポ交換ならこれ、このチャネポ交換ならこのガチャ**
+   * みたいにそれぞれ設定できるようにして欲しい／**それぞれの紐づきは 1 行で**／
+   * **今はフォームの長さが長すぎる**」）。
+   *
+   * ⚠⚠ **段 3 のサブフォーム（条件表の行の下に開く「対象の報酬」欄）は削除した。**
+   * ⇒ 下の「段 3 の欄がもう無い」検査が、**戻す変更を確実にレッドにする網**である。
+   */
+  const rewardRowInput = (n = 1): HTMLInputElement =>
+    screen.getByLabelText(`カスタム報酬の名前 ${n}`) as HTMLInputElement;
+  const addRewardRow = () =>
+    fireEvent.click(screen.getByRole("button", { name: "カスタム報酬を追加" }));
+
+  /**
+   * ⚠⚠⚠ **依頼者の指摘（「フォームの長さが長すぎる」）に対する構造的な担保。**
+   * 段 3 は条件表の行の下に**欄＋チップ＋説明文の 3 段**を常に開いていた。
+   * ⚠ 1 件も紐づけていないときは**行が 0 本**であることをここで固定する。
+   */
+  it("⚠⚠⚠ 段 3 の「対象の報酬」欄はもう無い（既定では入力欄が 1 つも開かない）", () => {
+    render(<Harness />);
+    expect(screen.queryByLabelText("対象の報酬")).not.toBeInTheDocument();
+    expect(
+      screen.queryByLabelText("カスタム報酬の名前 1"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("＋ を押すと 1 行だけ生える（未確定なので、まだ保存されない）", () => {
+    render(<Harness />);
+    addRewardRow();
+    expect(rewardRowInput()).toBeInTheDocument();
+    expect(localStorage.getItem(EFFECT_ASSIGNMENTS_KEY)).toBeNull();
+    // ⚠ 未確定行は 1 本だけ（＋ が押せなくなる）。
+    expect(
+      screen.getByRole("button", { name: "カスタム報酬を追加" }),
+    ).toBeDisabled();
+  });
+
+  it("報酬名を入れて blur すると保存される", () => {
+    render(<Harness />);
+    addRewardRow();
+    fireEvent.change(rewardRowInput(), { target: { value: "ガチャを引く" } });
+    // ⚠ `onChange` では保存しない（打鍵ごとに `storage` を他窓へ撒かないため）。
+    expect(localStorage.getItem(EFFECT_ASSIGNMENTS_KEY)).toBeNull();
+    fireEvent.blur(rewardRowInput());
+    expect(localStorage.getItem(EFFECT_ASSIGNMENTS_KEY)).toContain("cp:1");
+    expect(localStorage.getItem(EFFECT_ASSIGNMENTS_KEY)).toContain(
+      "ガチャを引く",
+    );
+  });
+
+  it("Enter でも確定する", () => {
+    render(<Harness />);
+    addRewardRow();
+    fireEvent.change(rewardRowInput(), { target: { value: "ガチャを引く" } });
+    fireEvent.keyDown(rewardRowInput(), { key: "Enter" });
+    expect(localStorage.getItem(EFFECT_ASSIGNMENTS_KEY)).toContain("cp:1");
+  });
+
+  /**
+   * ⚠⚠⚠ **これが要望の本体である**——報酬ごとに**別のものを選べる**こと。
+   * ⚠ 行ごとにエフェクトの `<select>` が独立していることを、**名前で引いて**確かめる。
+   */
+  it("⚠⚠⚠ 2 行作ると、それぞれに別のエフェクトを選べる", () => {
+    // ⚠ 選べる先が要るので OBS の一覧を先に置く（`putObsSources` はこの画面の既存ヘルパ）。
+    putObsSources([OBS_SOURCE_A]);
+    render(<Harness />);
+    addRewardRow();
+    fireEvent.change(rewardRowInput(1), { target: { value: "ガチャを引く" } });
+    fireEvent.blur(rewardRowInput(1));
+    addRewardRow();
+    fireEvent.change(rewardRowInput(2), { target: { value: "曲リクエスト" } });
+    fireEvent.blur(rewardRowInput(2));
+
+    expect(
+      screen.getByLabelText("カスタム報酬 1 のエフェクト"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByLabelText("カスタム報酬 2 のエフェクト"),
+    ).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("カスタム報酬 1 のエフェクト"), {
+      target: { value: `${OBS_SOURCE_PREFIX}${OBS_SOURCE_A}` },
+    });
+    const stored = JSON.parse(
+      localStorage.getItem(EFFECT_ASSIGNMENTS_KEY) ?? "[]",
+    ) as { id: string; effect: { kind: string } }[];
+    const row1 = stored.find((c) => c.id === "cp:1");
+    const row2 = stored.find((c) => c.id === "cp:2");
+    expect(row1?.effect.kind).toBe("obs-source");
+    // ⚠⚠ **もう片方が巻き込まれないこと**（1 実装を共有していても値は行ごと）。
+    expect(row2?.effect.kind).toBe("none");
+  });
+
+  it("削除すると、その行だけ消える", () => {
+    render(<Harness />);
+    addRewardRow();
+    fireEvent.change(rewardRowInput(1), { target: { value: "ガチャを引く" } });
+    fireEvent.blur(rewardRowInput(1));
+    addRewardRow();
+    fireEvent.change(rewardRowInput(2), { target: { value: "曲リクエスト" } });
+    fireEvent.blur(rewardRowInput(2));
+
+    fireEvent.click(screen.getAllByRole("button", { name: "削除" })[0]);
+    expect(rewardRowInput(1).value).toBe("曲リクエスト");
+    expect(
+      screen.queryByLabelText("カスタム報酬の名前 2"),
+    ).not.toBeInTheDocument();
+  });
+
+  /**
+   * ⚠⚠⚠ **打ち間違いで紐づけが消えないこと**（段 3 とはここが逆になった）。
+   * 段 3 の欄は「絞り込み」だったので空にするのが有効な操作だったが、
+   * 段 3-b の欄は**行の主キー**なので、空を通すと**保存層が行ごと落とす**。
+   */
+  it("⚠⚠⚠ 既存の行を空にしても消えない（直前の確定値へ戻る）", () => {
+    render(<Harness />);
+    addRewardRow();
+    fireEvent.change(rewardRowInput(), { target: { value: "ガチャを引く" } });
+    fireEvent.blur(rewardRowInput());
+    fireEvent.change(rewardRowInput(), { target: { value: "" } });
+    fireEvent.blur(rewardRowInput());
+    expect(rewardRowInput().value).toBe("ガチャを引く");
+    expect(localStorage.getItem(EFFECT_ASSIGNMENTS_KEY)).toContain(
+      "ガチャを引く",
+    );
+  });
+
+  it("⚠ 未確定行は空のままでは保存されない（行は残るので打ち直せる）", () => {
+    render(<Harness />);
+    addRewardRow();
+    fireEvent.blur(rewardRowInput());
+    expect(rewardRowInput()).toBeInTheDocument();
+    expect(localStorage.getItem(EFFECT_ASSIGNMENTS_KEY)).toBeNull();
+  });
+
+  it("⚠ 制御文字は確定時に落ちる", () => {
+    render(<Harness />);
+    addRewardRow();
+    fireEvent.change(rewardRowInput(), { target: { value: "ガ\u0000チャ" } });
+    fireEvent.blur(rewardRowInput());
+    expect(rewardRowInput().value).toBe("ガチャ");
+  });
+
+  /**
+   * ⚠⚠⚠ **同じ報酬名の行が 2 本あると、2 本目は永久に発火しない**（走査は最初の 1 件だけ）。
+   * ⚠ 保存層で落とさず**画面で言う**——落とすと**打った文字列ごと黙って消える**。
+   */
+  it("⚠⚠⚠ 報酬名が重複した行には警告が出る（黙って動かない行を作らない）", () => {
+    render(<Harness />);
+    addRewardRow();
+    fireEvent.change(rewardRowInput(1), { target: { value: "ガチャを引く" } });
+    fireEvent.blur(rewardRowInput(1));
+    expect(
+      screen.queryByText(/上の行と同じカスタム報酬/),
+    ).not.toBeInTheDocument();
+
+    addRewardRow();
+    // ⚠ 前後の空白・全角半角の違いでも「同じ行」として当たる（照合と同じ正規化）。
+    fireEvent.change(rewardRowInput(2), { target: { value: " ガチャを引く " } });
+    fireEvent.blur(rewardRowInput(2));
+    expect(screen.getByText(/上の行と同じカスタム報酬/)).toBeInTheDocument();
+  });
+
+  /**
+   * ⚠⚠⚠ **「極力画面操作は少なく」の本体**——実際に届いた報酬名を**押すだけ**で
+   * **その報酬の行が 1 本生える**（打ち間違いが構造的に起きない）。
+   * ⚠ 段 3 は「開いている欄に入れる」だったが、行が複数ある段 3-b では
+   * **どの行に入れるかが決まらない**ので、押した報酬の行を作る形にした。
+   */
+  it("⚠⚠⚠ 最近届いた報酬名のチップを押すと、その報酬の行が生えて保存される", () => {
+    localStorage.setItem(
+      CHANNEL_POINT_REWARDS_KEY,
+      JSON.stringify(["ガチャを引く", "読み上げ"]),
+    );
+    render(<Harness />);
+    fireEvent.click(
+      screen.getByRole("button", { name: "「ガチャを引く」の行を追加" }),
+    );
+    expect(rewardRowInput().value).toBe("ガチャを引く");
+    expect(localStorage.getItem(EFFECT_ASSIGNMENTS_KEY)).toContain("cp:1");
+  });
+
+  /**
+   * ⚠⚠ **チップは行が増えても複製されない**（＝ブロックに 1 つ）。
+   * 段 3 は行ごとに出していたので、行が増えるほど画面が伸びた（「フォームが長すぎる」の一因）。
+   */
+  it("⚠⚠ チップは行が増えてもブロックに 1 組だけ", () => {
+    localStorage.setItem(
+      CHANNEL_POINT_REWARDS_KEY,
+      JSON.stringify(["ガチャを引く", "読み上げ"]),
+    );
+    render(<Harness />);
+    fireEvent.click(
+      screen.getByRole("button", { name: "「ガチャを引く」の行を追加" }),
+    );
+    expect(
+      screen.getAllByRole("button", { name: /の行を追加$/ }),
+    ).toHaveLength(2);
+  });
+
+  /**
+   * ⚠⚠ **既に行がある報酬のチップは押せない**——押せると
+   * **永久に発火しない 2 本目**を 1 クリックで作れてしまう。
+   * ⚠ 消さずに押せない形で残すのは、「まだ届いていない」のか「もう足した」のかを
+   * **画面から読めるようにする**ためである。
+   */
+  it("⚠⚠ 既に行がある報酬のチップは押せない（重複行を 1 クリックで作らせない）", () => {
+    localStorage.setItem(
+      CHANNEL_POINT_REWARDS_KEY,
+      JSON.stringify(["ガチャを引く", "読み上げ"]),
+    );
+    render(<Harness />);
+    fireEvent.click(
+      screen.getByRole("button", { name: "「ガチャを引く」の行を追加" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "「ガチャを引く」の行を追加" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "「読み上げ」の行を追加" }),
+    ).not.toBeDisabled();
+  });
+
+  it("⚠⚠ 届いた報酬が 1 件も無ければチップは出ない（「候補なし」とも書かない）", () => {
+    render(<Harness />);
+    expect(
+      screen.queryByRole("button", { name: /の行を追加$/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("⚠ 壊れた保存値のチップは出ない（その要素だけ落ちる）", () => {
+    localStorage.setItem(
+      CHANNEL_POINT_REWARDS_KEY,
+      JSON.stringify(["よい報酬", 123, ""]),
+    );
+    render(<Harness />);
+    expect(screen.getAllByRole("button", { name: /の行を追加$/ })).toHaveLength(
+      1,
+    );
+  });
+
+  /**
+   * ⚠⚠⚠ **紐づけていないカスタム報酬では何も出ないことを、画面に書いてある**
+   * （061a Q-1・黙って効かないを作らない）。
+   * ⚠ 段 3-b は「上の『チャンネルポイント』の行が受け持つ」と書いていた。
+   * **段 3-c でその行ごと廃止した**ので、古いままにすると**嘘**になる。
+   */
+  it("⚠⚠⚠ 紐づけていないカスタム報酬では何も出ない旨が画面に出ている", () => {
+    render(<Harness />);
+    expect(
+      screen.getByText(/ここに書いていないカスタム報酬では何も出ません/),
+    ).toBeInTheDocument();
+    /**
+     * ⚠⚠⚠ **自動報酬に反応しないことを画面に書いてある**（061a Q-1）。
+     *
+     * 取っている購読は `channel.channel_points_custom_reward_redemption.add` の 1 本だけで、
+     * Twitch が最初から用意している報酬（「ハイライトされたメッセージ」など）は
+     * **別の購読で届く＝取っていない**。⚠ 書いていないと、その名前を打った人が
+     * **黙って永久に鳴らない**（画面にもログにも理由が出ない）。
+     * ⚠ この文を消す変更は、この 1 行だけがレッドにする。
+     */
+    expect(
+      screen.getByText(/ハイライトされたメッセージ/),
+    ).toBeInTheDocument();
+  });
+
+  it(`⚠ ${CHANNEL_POINT_CONDITION_MAX} 件まで足せる（超えたら ＋ が押せない）`, () => {
+    const rows = Array.from(
+      { length: CHANNEL_POINT_CONDITION_MAX },
+      (_, i) => ({
+        id: `cp:${i + 1}`,
+        when: { type: "channelpoint", rewardTitle: `報酬${i + 1}` },
+        effect: { kind: "none" },
+      }),
+    );
+    localStorage.setItem(EFFECT_ASSIGNMENTS_KEY, JSON.stringify(rows));
+    render(<Harness />);
+    expect(
+      screen.getByRole("button", { name: "カスタム報酬を追加" }),
+    ).toBeDisabled();
+  });
+
+  /**
+   * ⚠⚠⚠ **上限が 2 か所にある**（`effectAssignments.ts` と `channelPointRewards.ts`）。
+   * ⚠ 片方だけ短いと「押せるのに保存で落ちる」、片方だけ長いと「押したのに当たらない」
+   * ——どちらも**黙って**起きる。⇒ 一致をここで固定する。
+   */
+  it("⚠⚠⚠ 入力欄の上限と、覚える側の上限が一致している", () => {
+    render(<Harness />);
+    addRewardRow();
+    expect(rewardRowInput().maxLength).toBe(REWARD_TITLE_MAX_LENGTH);
+    // ⚠ 覚える側（`channelPointRewards.ts`）は 45 文字ちょうどを受け入れ、46 で落とす。
+    localStorage.setItem(
+      CHANNEL_POINT_REWARDS_KEY,
+      JSON.stringify(["あ".repeat(REWARD_TITLE_MAX_LENGTH)]),
+    );
+    expect(loadRecentChannelPointRewards()).toHaveLength(1);
+    localStorage.setItem(
+      CHANNEL_POINT_REWARDS_KEY,
+      JSON.stringify(["あ".repeat(REWARD_TITLE_MAX_LENGTH + 1)]),
+    );
+    expect(loadRecentChannelPointRewards()).toHaveLength(0);
+  });
 });

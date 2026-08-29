@@ -16,6 +16,9 @@ import {
  * あちらは「これはお金か？」に答える集合で、チャンネルポイントは**条件表には出したいが、お金ではない**
  * （＝赤枠も投げ銭音も出してはいけない）。分けた理由の全文は
  * `viewerFormat.ts` の `EFFECT_CONDITION_EVENT_TYPES` の JSDoc が正。
+ * ⚠⚠⚠ **段 3-c で `channelpoint` はその集合から外れた**（＝ここの行にも出ない）。
+ * チャンネルポイントは **カスタム報酬ごとの条件**（`{type:"channelpoint"; rewardTitle}`）で扱う。
+ * ⚠ **2 つの集合はいま偶然おなじ中身だが、統合しないこと**（`viewerFormat.ts` の JSDoc が正）。
  */
 
 /**
@@ -77,13 +80,34 @@ export const EFFECT_EVENT_ROWS: readonly { eventType: string; label: string }[] 
  *
  * ⚠ 置き場所がここなのは、[`EFFECT_EVENT_LABEL`] の**唯一の持ち主**だからである
  * （`GachaLibraryCard` 側で `EFFECT_EVENT_LABEL[...] ?? ...` を書き直さない）。
+ *
+ * ## ⚠⚠⚠ 063e 段 3-b: **報酬ごとの条件（`channelpoint`）を足した**
+ *
+ * ⚠ **`tsc` がここを名指しで落として気づかせた**——引数の構造型に新しい variant が
+ * 無かったため（`GachaLibraryCard` の呼び出しがコンパイルエラーになった）。
+ * ⚠⚠ 落ちなかった場合の壊れ方は「**ガチャを消すときの『使っている条件』の一覧から、
+ * 報酬ごとの紐づけだけが黙って抜ける**」＝ユーザーは**使用中と知らずに消す**。
+ * ⇒ **この構造型を `EffectConditionWhen` へ緩めないこと**（緩めると次の variant で落ちなくなる）。
+ *
+ * ⚠ 出す文字列は**イベント名ではなく報酬名**である。同じチャンネルポイントに
+ * 複数の紐づけがありうるので、「チャンネルポイント」だけだと**どの行か分からない**
+ * （キーワード条件を「キーワード」と書かずに文字列ごと出しているのと同じ理由）。
+ * ⚠⚠ 呼び方は「**カスタム報酬**」で揃えてある（画面の見出しと同じ語）——
+ * この機能が反応するのは**カスタム報酬だけ**で、Twitch の自動報酬は別購読だからである
+ * （理由の全文は `EffectAssignmentCard` の説明文の直上の注記が正）。
  */
 export function conditionLabel(condition: {
-  when: { type: "event"; eventType: string } | { type: "keyword"; text: string };
+  when:
+    | { type: "event"; eventType: string }
+    | { type: "keyword"; text: string }
+    | { type: "channelpoint"; rewardTitle: string };
 }): string {
   if (condition.when.type === "event") {
     const { eventType } = condition.when;
     return EFFECT_EVENT_LABEL[eventType] ?? eventType;
+  }
+  if (condition.when.type === "channelpoint") {
+    return `カスタム報酬「${condition.when.rewardTitle}」`;
   }
   return `キーワード「${condition.when.text}」`;
 }

@@ -71,6 +71,20 @@ export interface CanonicalComment {
    * `Record<Union, …>` による型強制がそれぞれ担保する。
    */
   raidViewerCount?: number;
+  /**
+   * ⚠⚠⚠ 063e 段 3: 引き換えた報酬の名前（Rust `CommentViewDto.rewardTitle` と同形）。
+   *
+   * ⚠ 用途は **1 つだけ**＝「ガチャ用の報酬だけに反応させる」ための照合
+   * （`effectAssignments.ts` の `when.rewardTitle`）。⚠⚠ **端末には保存しない**
+   * （`raidViewerCount` と違い、配信後に見返す用途が無い）。
+   * ⚠ 配信者が Twitch で付けた名前＝**ユーザー自身の設定値**であり、第三者データではない（§9）。
+   *
+   * ⚠⚠ 上の `raidViewerCount` と同じく**任意フィールドなので型では守られない**。
+   * すぐ下の `toCanonicalComment` の 1 行を落とすと、**型検査もテストも通るのに出し分けだけが効かなくなる**
+   * （報酬を指定した条件が永久に当たらない＝画面にもログにも何も出ない）。
+   * `scripts/test-comment-relay.mjs` が converter → wire の 2 段を通して固定している。
+   */
+  rewardTitle?: string;
 }
 
 const EVENT_TYPE_MAP: Record<
@@ -168,6 +182,8 @@ export function toCanonicalComment(
     //   `raid_viewer_count` が NULL のレイド行だけが残る**（画面は「レイド」と出るのに人数が無い＝
     //   036b の avatar と同型の静かな欠落）。`test-comment-relay.mjs` が固定している。
     raidViewerCount: dto.raidViewerCount,
+    // ⚠⚠⚠ 063e 段 3: 報酬名もそのまま通す（undefined は JSON 直列化時に落ちる＝Rust 側 None）。
+    rewardTitle: dto.rewardTitle,
   };
   if (dto.monetaryAmount) {
     const { currency, amount } = dto.monetaryAmount;

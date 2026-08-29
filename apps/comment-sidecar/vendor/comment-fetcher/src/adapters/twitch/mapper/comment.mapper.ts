@@ -248,7 +248,9 @@ function mapTwitchChatEventToComment(
     // ⚠ **金額は付けない**（`monetaryAmount` を undefined のままにする）。チャンネルポイントは
     //   お金ではないので、`viewer_comments` の amount / currency / monetary_amount は常に NULL になり、
     //   課金系の集計にも配色にも入らない（レイドとまったく同じ扱い＝穴 A）。
-    // ⚠ **報酬名（`reward.title`）は消費しない**（DTO にも宣言していない・§9／段 3 の領分）。
+    // ⚠⚠⚠ **063e 段 3: 報酬名（`reward.title`）を消費するようになった**（段 1 の線を意図的にまたいだ）。
+    //   理由は `raw.dto.ts` の `reward` の注記が正＝**「ガチャ用の報酬だけに反応させる」材料が他に無い**。
+    //   ⚠ 取るのは `title` **だけ**（`id` / `cost` / `prompt` / `status` / `redeemed_at` は今も取らない）。
     return {
       id: event.id,
       source: COMMENT_SOURCES.TWITCH,
@@ -273,6 +275,14 @@ function mapTwitchChatEventToComment(
       text: typeof event.user_input === "string" ? event.user_input : "",
       publishedAt: new Date(),
       eventType: COMMENT_EVENT_TYPES.CHANNELPOINT,
+      // ⚠⚠ **非文字列・空文字・欠落はすべて `undefined` へ倒す**（`user_input` と同じ規律）。
+      //   ⚠ 空文字を通さないのは、`when.rewardTitle` 側も空を「未指定（＝すべての報酬）」として扱うため
+      //   ——通すと「名前が空の報酬」と「報酬を指定していない条件」が**同じ値で出会って当たってしまう**。
+      //   ⇒ 報酬名が取れない引き換えは「**報酬を指定した条件には当たらない**」に倒れる（安全側）。
+      rewardTitle:
+        typeof event.reward?.title === "string" && event.reward.title !== ""
+          ? event.reward.title
+          : undefined,
     };
   }
 

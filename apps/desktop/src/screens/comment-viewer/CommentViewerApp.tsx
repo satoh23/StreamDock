@@ -101,6 +101,7 @@ import {
   createSeenEffectIds,
   takeFreshComments,
 } from "../obs-effects/effectTrigger";
+import { rememberChannelPointRewards } from "../../features/comment-viewer/channelPointRewards";
 import { decideFireResults } from "../obs-effects/effectFire";
 import { emitGachaStageResult } from "../obs-effects/gachaStageEvent";
 import {
@@ -1453,6 +1454,18 @@ export function CommentViewerApp() {
         // `added` ではなく `incoming` を渡してよいのは、`trackFirstOfStream` が「既記録の viewerId を
         // 上書きしない」＝再送も combo 更新も自然に no-op になるため（詳細は firstOfStream.ts）。
         setFirstOfStream((prev) => trackFirstOfStream(prev, incoming));
+
+        // ⚠⚠⚠ 063e 段 3: **届いたチャンネルポイント報酬の名前を覚える**
+        //   （main 窓の割り当て画面が「押すと入るチップ」として出す・依頼者＝
+        //   「**極力画面操作は少なく、簡潔に設定できる方が良い**」）。
+        // ⚠ 置き場所がティッカー（047）・051 と同じ「updater の外」なのは同じ規律による。
+        // ⚠⚠ **`added` ではなく `incoming` でよい**——[`rememberChannelPointRewards`] は
+        //   中身が変わらなければ**書き込まない**ので、再送も combo 更新も自然に no-op になる
+        //   （`trackFirstOfStream` に `incoming` を渡してよい理由とまったく同じ形）。
+        // ⚠⚠⚠ **§9: 渡すのは `rewardTitle` だけである**（配信者自身が Twitch で付けた名前）。
+        //   ⚠ **`author.name` も `text` もこの経路へ渡さないこと**——渡した瞬間に
+        //   「第三者のコメント本文が localStorage に残る」ことになる。
+        rememberChannelPointRewards(incoming.map((c) => c.rewardTitle));
 
         // ⚠⚠ 062b: **コメントが届いた＝配信は生きている。** 接続状態（session.state）だけを信じると、
         //   sidecar が WS 接続のたびに送る「嘘の idle」（commentStream.ts の `snapshotPending` 参照）で

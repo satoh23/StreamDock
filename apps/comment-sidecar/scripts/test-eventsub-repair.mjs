@@ -294,11 +294,32 @@ for (const [label, given] of [
   ok("統合: id は envelope の message_id", comments[0]?.id, "env-msg-1");
   ok("統合: 本文は空文字（null を漏らさない）", comments[0]?.text, "");
   ok("統合: author は引き換えた視聴者", comments[0]?.author?.id, "u9");
+  // ⚠⚠⚠ **063e 段 3 でここが反転した**（`reward.title` だけを取り込むと決めた）。
+  //   ⚠ **修復の経路を通っても報酬名が落ちない**ことを、ここで確かめる意味は残っている
+  //   ——`repairNotificationEvent` は event を in-place で書き換えるので、
+  //   将来そこで `reward` を削るような変更が入れば**出し分けが黙って効かなくなる**。
+  ok("⚠⚠⚠ 段 3: 修復を通しても報酬名は残る", comments[0]?.rewardTitle, "読み上げ");
   ok(
-    "⚠⚠ 統合 §9: 報酬名は出力に現れない",
-    JSON.stringify(comments[0]).includes("読み上げ"),
+    "⚠⚠ 統合 §9: 報酬の prompt は今も現れない",
+    JSON.stringify(comments[0]).includes("好きな言葉"),
     false,
   );
+}
+
+// ---------------------------------------------------------------------------
+// H-2. ⚠⚠⚠ 063e 段 3: **修復は `reward` に触らない**
+// ---------------------------------------------------------------------------
+//
+// ⚠ 修復が触ってよいのは `id` と `user_input` の 2 つだけである（§9・新しいフィールドを生やさない）。
+//   ⚠⚠ ここが緩むと、**報酬名を書き換える／消す経路**が受信直後に生まれる
+//   （＝出し分けが「たまに効かない」という、いちばん追いにくい壊れ方になる）。
+{
+  const event = redemptionEvent({ user_input: null });
+  delete event.id;
+  const before = JSON.stringify(event.reward);
+  const env = envelope(REDEMPTION_TYPE, event);
+  repairNotificationEvent(env);
+  ok("⚠⚠⚠ 段 3: 修復は reward を 1 バイトも変えない", JSON.stringify(env.payload.event.reward), before);
 }
 
 // ---------------------------------------------------------------------------

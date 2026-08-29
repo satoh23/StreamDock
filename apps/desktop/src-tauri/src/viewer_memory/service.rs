@@ -312,6 +312,9 @@ mod tests {
             tier: None,
             combo_count: None,
             raid_viewer_count: None,
+            // 063e 段 3: 報酬名（⚠ **Rust は 1 か所も読まない**——frontend の型を生成するために
+            //   struct に居るだけである。`comment_viewer/model.rs` の注記が正）。
+            reward_title: None,
         }
     }
 

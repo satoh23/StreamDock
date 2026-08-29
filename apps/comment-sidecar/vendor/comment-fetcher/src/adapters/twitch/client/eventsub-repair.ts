@@ -76,7 +76,9 @@ export function repairNotificationEvent(
     }
     // ⚠⚠⚠ `user_input` を **string へ正規化する**。`null` / キー欠落で来ても
     //   「本文が空の引き換え」として通す＝**行が静かに消えることを許さない**。
-    //   ⚠ 空文字にするのであって、報酬名などで埋めるのではない（§9・段 1 は報酬を区別しない）。
+    //   ⚠ 空文字にするのであって、報酬名などで埋めるのではない（§9）。
+    //   ⚠⚠ 段 3 で `reward.title` を**消費する**ようになった後もここは不変である——
+    //   この関数は「欠けている値を埋める」だけで、`reward` は 1 バイトも触らない（上の JSDoc が正）。
     if (typeof event.user_input !== "string") {
       event.user_input = "";
     }

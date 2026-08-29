@@ -147,6 +147,26 @@ pub struct CommentViewDto {
     /// **sidecar が DTO に宣言せず取り込まない**ため、ここにも DB にも来ない。
     #[ts(optional)]
     pub raid_viewer_count: Option<u32>,
+    /// 063e 段 3: 引き換えた報酬の名前（channelpoint 時のみ・それ以外は None）。
+    ///
+    /// ⚠⚠ **端末保存しない**（`month_count` / `gift_count` / `tier` と同じ側）。
+    /// `raid_viewer_count` だけが保存される側で、あちらは「配信終わりに誰がレイドしてくれたか」を
+    /// 見返す用途があるためである。⚠ こちらの用途は **frontend での照合 1 つだけ**
+    /// （「ガチャ用の報酬だけに反応させる」）なので、DB に残す理由が無い。
+    ///
+    /// ⚠ 配信者が Twitch で付けた名前＝**ユーザー自身の設定値**であり、第三者データではない（§9）。
+    /// 視聴者が打った文字列は `text`（`user_input`）のほうである。**混同しないこと。**
+    ///
+    /// ⚠⚠⚠ **この struct に居るのは、frontend の型がここから生成されるから**である
+    /// （ts-rs → `src/features/comment-viewer/bindings/CommentViewDto.ts`）。
+    /// Rust 側のコードは 1 か所もこの値を読まない。⇒ **`viewer_memory` の保存経路へ足さないこと。**
+    ///
+    /// ⚠ **ただし IPC 境界は越える**——`record_comment` は `CommentViewDto` を丸ごと受けるので、
+    /// この値も frontend から Rust へは渡ってくる。⚠⚠ **`NewViewerComment` へ写していない**ので
+    /// `viewer_comments` には 1 バイトも入らない（＝「端末に保存しない」は成立している）。
+    /// 「渡らない」ではなく「**渡るが読まれず保存されない**」が正確な表現である。
+    #[ts(optional)]
+    pub reward_title: Option<String>,
 }
 
 /// 038a: 投げ銭の数値内訳（回数/合計額の正確な集計用）。

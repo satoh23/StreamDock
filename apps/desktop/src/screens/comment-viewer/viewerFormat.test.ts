@@ -440,25 +440,59 @@ describe("063e チャンネルポイントの表示上の位置づけ", () => {
     expect(MONETARY_EVENT_TYPES.size).toBe(6);
   });
 
-  // --- 063e 段 2: 条件表の集合（`EFFECT_CONDITION_EVENT_TYPES`） --------------------------------
+  // --- 063e 段 3-c: 条件表の集合（`EFFECT_CONDITION_EVENT_TYPES`） ------------------------------
 
-  it("⚠⚠⚠ 段 2: 条件表の集合には入る（＝割り当て表に行が出る＝ガチャが回せる）", () => {
-    expect(EFFECT_CONDITION_EVENT_TYPES.has("channelpoint")).toBe(true);
+  /**
+   * ⚠⚠⚠ **段 3-c で `channelpoint` を条件表の集合から外した。**
+   *
+   * 依頼者＝「**そもそもチャンネルポイント交換しただけで表示したいエフェクトなんか無い**んだから、
+   * チャンネルポイントにあるプルダウンを消して、**必ずカスタム報酬ごとに**設定する形に」。
+   * ⇒ チャンネルポイントは **`effectAssignments.ts` の `{type:"channelpoint"; rewardTitle}`**
+   * （id は `cp:n`）でだけ扱う。⚠ **種別としての行は存在しない。**
+   *
+   * ⚠⚠ **段 2 のテスト 2 本をここで反転している**（消すだけにすると、行を戻す変更に誰も気づけない）。
+   */
+  it("⚠⚠⚠ 段 3-c: 条件表の集合には入らない（＝割り当て表に「チャンネルポイント」の行は出ない）", () => {
+    expect(EFFECT_CONDITION_EVENT_TYPES.has("channelpoint")).toBe(false);
   });
 
-  it("⚠⚠⚠ 段 2: 2 つの集合は別物である（課金 ⊊ 条件表）", () => {
-    // ⚠⚠ **この差の 1 件がチャンネルポイントである**。集合を 1 つに戻す変異
-    //   （`EFFECT_CONDITION_EVENT_TYPES = MONETARY_EVENT_TYPES` にする等）はここで死ぬ。
-    //   ⚠ どちらへ倒しても嘘になる——足せば「チャネポで赤枠と投げ銭音」、
-    //     足さなければ「条件表に行が出ない＝ガチャが回せない」。
-    for (const t of MONETARY_EVENT_TYPES) {
-      expect(EFFECT_CONDITION_EVENT_TYPES.has(t)).toBe(true);
-    }
-    expect(EFFECT_CONDITION_EVENT_TYPES.size).toBe(MONETARY_EVENT_TYPES.size + 1);
-    const extra = [...EFFECT_CONDITION_EVENT_TYPES].filter(
-      (t) => !MONETARY_EVENT_TYPES.has(t),
-    );
-    expect(extra).toEqual(["channelpoint"]);
+  /**
+   * ## ⚠⚠⚠ 段 3-c: **ここで固定できていたものが 1 つ失われた**（正直に残す）
+   *
+   * 段 2 のこのテストは「**2 つの集合は別物**（課金 ⊊ 条件表）」を固定し、
+   * `EFFECT_CONDITION_EVENT_TYPES = MONETARY_EVENT_TYPES` にする変異を殺していた。
+   * ⚠ 段 3-c で差の 1 件（`channelpoint`）が消えた結果、⚠⚠⚠ **2 つの集合はいま
+   * 偶然おなじ 6 値**であり、**統合する変異は全テストが緑のまま通る。**
+   *
+   * ⇒ ⚠⚠ **統合してはいけない理由は `viewerFormat.ts` の JSDoc にしか残っていない**
+   * （答えている問いが違う＝①「これはお金か」／②「条件表に行を出すか」。
+   * 統合すると、次に②だけを動かした日に①まで巻き添えで動く）。
+   * ⚠ ここでは**中身が一致していること自体**を明示的に固定して、
+   * 「同じであることは事故ではなく現在の仕様である」と読めるようにしておく。
+   * **再修正トリガー＝どちらかの集合に片方だけの要素が入った日**（そのときは差を固定し直すこと）。
+   */
+  it("⚠⚠⚠ 段 3-c: いま 2 つの集合は同じ 6 値（⚠ それでも統合しないこと）", () => {
+    expect([...EFFECT_CONDITION_EVENT_TYPES]).toEqual([...MONETARY_EVENT_TYPES]);
+  });
+
+  /**
+   * ## ⚠⚠⚠ 失われた網を 1 枚だけ戻す（**参照同一性**で見る）
+   *
+   * 上の「中身が同じ」だけでは、⚠⚠ **`EFFECT_CONDITION_EVENT_TYPES = MONETARY_EVENT_TYPES`
+   * （別名化）という変異が緑のまま通る**——中身は当然一致するからである。
+   * ⚠⚠⚠ **別名化がいちばん危ない形**である。②（条件表に行を出すか）を動かした瞬間に
+   * ①（これはお金か）まで動き、`viewerFormat.ts` の JSDoc が警告している
+   * 「**レイドで赤枠と投げ銭音が出る**」が、条件表を触ったつもりの人に起きる。
+   * ⇒ **別の Set であること**を直接見れば、中身が同じままでもこの変異は死ぬ。
+   *
+   * ⚠ **これで全部が守れるわけではない**——`new Set([...MONETARY_EVENT_TYPES])` は
+   * 今日の実装そのものなので通る（＝①に種別を足すと②にも行が生える「巻き添え」は今も残る）。
+   * それは 段 2 から変わらない既知の性質で、①へ足す＝課金種別を足すことなので受容している。
+   * **再修正トリガー＝②だけに要素を足したくなった日**（そのときは `...MONETARY_EVENT_TYPES` の
+   * スプレッドをやめ、②を独立に列挙し直すこと）。
+   */
+  it("⚠⚠⚠ 段 3-c: 2 つの集合は別のインスタンスである（別名化する変異を殺す）", () => {
+    expect(EFFECT_CONDITION_EVENT_TYPES).not.toBe(MONETARY_EVENT_TYPES);
   });
 
   it("⚠⚠ 段 2: レイドは条件表に入れない（ガチャは「視聴者が対価を払って引く」もの）", () => {
@@ -473,14 +507,13 @@ describe("063e チャンネルポイントの表示上の位置づけ", () => {
     expect(EFFECT_CONDITION_EVENT_TYPES.has("chat")).toBe(false);
   });
 
-  it("⚠ 段 2: 並びは課金 6 値の順のまま＋末尾にチャンネルポイント（既存ユーザーの行が並び替わらない）", () => {
+  it("⚠ 段 2: 並びは課金 6 値の順のまま（既存ユーザーの行が並び替わらない）", () => {
     // ⚠⚠ この集合の**挿入順が画面の行の並び**であり、保存値の正規化順でもある
     //   （`EFFECT_EVENT_ROWS` / `parseConditions`）。⇒ 既存 6 値の順序を動かすと、
     //   **既存ユーザーの割り当て表の行が黙って並び替わる**。
-    expect([...EFFECT_CONDITION_EVENT_TYPES]).toEqual([
-      ...MONETARY_EVENT_TYPES,
-      "channelpoint",
-    ]);
+    // ⚠ 段 2 は末尾に "channelpoint" が付いていた。⚠⚠ **段 3-c で外した**（上の節が正）。
+    expect([...EFFECT_CONDITION_EVENT_TYPES]).toEqual([...MONETARY_EVENT_TYPES]);
+    expect(EFFECT_CONDITION_EVENT_TYPES.size).toBe(6);
   });
 
   it("⚠ 金額を持たない課金種別の日本語文（composeEventMessage）は作らない＝読み上げは本文のみ", () => {

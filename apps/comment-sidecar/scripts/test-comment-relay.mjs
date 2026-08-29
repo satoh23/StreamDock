@@ -95,6 +95,34 @@ const relay = async (c) => toCanonicalComment(await convertCommentToViewDto(c));
   ok("relay: 付随数値の取りこぼしゼロ（落ちたフィールド名の一覧が空）", dropped, []);
 }
 
+// ---- E-2. ⚠⚠⚠ 063e 段 3: 報酬名（**文字列の付随フィールドは初めて**）が wire まで到達する ----
+// **仕様**: mapper が付けた `rewardTitle` は converter → wire の 2 段を落ちずに届く。
+//
+// ⚠⚠⚠ **落としたときの壊れ方が、上の数値たちより静かである。**
+//   `raidViewerCount` が落ちると「レイドと出ているのに人数が無い」と画面で見えるが、
+//   `rewardTitle` が落ちると **frontend の照合が永久に当たらない**だけで、
+//   画面にもログにも何も出ない（＝「報酬を指定したのにガチャが回らない」の一点張りになる）。
+//   ⇒ **上の数値の網（`RELAYED_NUMERIC_FIELDS`）とは別に、ここで名指しで固定する。**
+{
+  const c = await relay(
+    comment({
+      source: "twitch",
+      eventType: "channelpoint",
+      text: "がんばれー！",
+      rewardTitle: "ガチャを引く",
+    }),
+  );
+  ok("relay(063e 段 3): eventType 写像（channelpoint → channelpoint）", c.eventType, "channelpoint");
+  ok("⚠⚠⚠ relay(063e 段 3): rewardTitle が wire まで到達する", c.rewardTitle, "ガチャを引く");
+  ok("relay(063e 段 3): チャンネルポイントに金額は付かない", c.monetaryAmount, undefined);
+}
+
+// **仕様（境界）**: チャンネルポイント以外では報酬名が付かない（空文字やキー生成へ劣化しない＝Rust 側 None）。
+{
+  const c = await relay(comment({ eventType: "chat", text: "hi" }));
+  ok("relay(063e 段 3): 通常チャットに報酬名は付かない", c.rewardTitle, undefined);
+}
+
 // ---- F. 062a: レイドが wire まで正しい形で到達する ----
 // **仕様**: mapper が作ったレイドは `eventType: "raid"` のまま wire へ届き、人数も落ちない。
 //

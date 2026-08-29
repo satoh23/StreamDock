@@ -39,4 +39,18 @@ export type Comment = {
    * `scripts/test-comment-relay.mjs` の `RELAYED_NUMERIC_FIELDS` が固定している。
    */
   raidViewerCount?: number;
+  /**
+   * ⚠⚠⚠ 063e 段 3: **引き換えた報酬の名前**（channelpoint 以外は undefined）。
+   *
+   * ⚠ 配信者が Twitch で付けた名前であり、**ユーザー自身の設定値**である（第三者データではない）。
+   * 用途は 1 つだけ＝**「ガチャ用の報酬だけに反応させる」ための照合**
+   * （`effectAssignments.ts` の `when.rewardTitle`）。
+   * ⚠⚠ **端末には保存しない**（`monthCount` / `giftCount` / `tier` と同じ扱い。
+   * `raidViewerCount` だけが保存される側で、あちらは「配信終わりに見返す」用途があるため）。
+   *
+   * ⚠⚠ 中継 3 層（converter → CommentViewDto → wire.ts）はフィールドを明示列挙して詰め替えるので、
+   * 1 箇所でも書き漏らすと**型検査もテストも通るのに値だけが静かに消える**。
+   * 取りこぼしゼロは `scripts/test-comment-relay.mjs` が固定している。
+   */
+  rewardTitle?: string;
 };

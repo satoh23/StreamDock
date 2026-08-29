@@ -534,10 +534,12 @@ describe("061b: decideEffects（発火層）", () => {
     );
     // ⚠ `displayEventType` を通すと "bits" になるが、`MONETARY_EVENT_TYPES` に "bits" は無い
     //   ＝ 条件表（スーパーチャットの行）と引き当てられなくなる（061b の穴②と同型の罠）。
-    expect(seen).toEqual([{ eventType: "superchat", text: "Power-up 🎉" }]);
+    expect(seen).toEqual([
+      { eventType: "superchat", text: "Power-up 🎉", rewardTitle: undefined },
+    ]);
   });
 
-  it("⚠⚠ matcher に渡すのは `{eventType, text}` の 2 つだけ（§9・DTO を持ち回らない）", () => {
+  it("⚠⚠ matcher に渡すのは `{eventType, text, rewardTitle}` の 3 つだけ（§9・DTO を持ち回らない）", () => {
     let received: Record<string, unknown> | null = null;
     decideEffects(
       [comment({ text: "本文です" })],
@@ -551,7 +553,39 @@ describe("061b: decideEffects（発火層）", () => {
     );
     // ⚠ `CommentViewDto` をそのまま渡す変異は、このキー集合がレッドにする
     //   （author / monetary / publishedAt 等が混ざる）。
-    expect(Object.keys(received ?? {}).sort()).toEqual(["eventType", "text"]);
+    // ⚠⚠⚠ **063e 段 3 で 2 → 3 になった。** 増えたのは `rewardTitle`（＝**配信者自身が
+    //   Twitch で付けた報酬名**）で、⚠ **第三者データは `text` のままである**
+    //   ——この網の目的は「本文以外の第三者データを持ち回らせない」ことなので、目的は不変。
+    //   ⚠⚠ **ここを増やすときは、増やす値が「ユーザー自身の設定値」か必ず確かめること。**
+    expect(Object.keys(received ?? {}).sort()).toEqual([
+      "eventType",
+      "rewardTitle",
+      "text",
+    ]);
+  });
+
+  it("⚠⚠⚠ 063e 段 3: チャンネルポイントの報酬名がそのまま matcher へ渡る", () => {
+    const seen: unknown[] = [];
+    decideEffects(
+      [
+        comment({
+          eventType: "channelpoint",
+          text: "",
+          rewardTitle: "ガチャを引く",
+        }),
+      ],
+      [],
+      createEffectTriggerState(),
+      T0,
+      (input) => {
+        seen.push(input);
+        return null;
+      },
+    );
+    // ⚠ この 1 行が落ちると **出し分けが永久に効かない**（画面にもログにも何も出ない）。
+    expect(seen).toEqual([
+      { eventType: "channelpoint", text: "", rewardTitle: "ガチャを引く" },
+    ]);
   });
 
   // --- 穴 γ: 「出さない」の判定位置 -------------------------------------------------------------

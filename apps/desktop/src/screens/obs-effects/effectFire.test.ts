@@ -12,6 +12,7 @@ import {
   saveGachaLibrary,
   setConditionEffect,
   type GachaDefinition,
+  addChannelPointCondition,
 } from "./effectAssignments";
 import {
   createEffectTriggerState,
@@ -165,11 +166,15 @@ describe("063b: ガチャの発火（decideFireResults）", () => {
     // ⚠⚠ **段 1 の実装ではここが `[]` だった。** 照合の直前に課金ゲート
     //   （`if (!isMonetaryEvent(input.eventType)) continue;`）があり、チャンネルポイントは
     //   お金ではないので必ず落ちた。⇒ 段 2 でゲートを削除した（論証は `effectAssignments.ts` の JSDoc）。
+    // ⚠⚠⚠ **段 3-c で入口が変わった**——種別の行は廃止され、
+    //   **カスタム報酬に紐づけたときだけ**引かれる（依頼者＝「そもそもチャンネルポイント交換
+    //   しただけで表示したいエフェクトなんか無い」）。
     saveGachaLibrary([GACHA_100]);
-    setConditionEffect("event:channelpoint", { kind: "gacha", gachaId: "g:2" });
+    addChannelPointCondition("ガチャを引く", { kind: "gacha", gachaId: "g:2" });
     const c = comment({
       source: "twitch",
       eventType: "channelpoint",
+      rewardTitle: "ガチャを引く",
       text: "がんばれー！",
       // ⚠ チャンネルポイントは**金額を持たない**（mapper が付けない＝063e 段 1 の決定）。
       monetaryAmount: undefined,
@@ -182,9 +187,39 @@ describe("063b: ガチャの発火（decideFireResults）", () => {
     // ⚠ ここが落ちると「テキスト入力を求める報酬でしかガチャが回らない」という
     //   **報酬しだいの挙動**になる（配信者から見て説明できない）。
     saveGachaLibrary([GACHA_100]);
-    setConditionEffect("event:channelpoint", { kind: "gacha", gachaId: "g:2" });
-    const c = comment({ source: "twitch", eventType: "channelpoint", text: "" });
+    addChannelPointCondition("ガチャを引く", { kind: "gacha", gachaId: "g:2" });
+    const c = comment({
+      source: "twitch",
+      eventType: "channelpoint",
+      rewardTitle: "ガチャを引く",
+      text: "",
+    });
     expect(feedNames([c], countingRandom(0))).toEqual([SRC_HIT]);
+  });
+
+  /**
+   * ⚠⚠⚠ **063e 段 3-c: 紐づけていないカスタム報酬では 1 件も引かれない。**
+   *
+   * 依頼者＝「**そもそもチャンネルポイント交換しただけで表示したいエフェクトなんか無い**」。
+   * ⇒ 総称の受け皿（条件表の「チャンネルポイント」行）を廃止した。
+   * ⚠ これが**端から端までの担保**である（`effectAssignments.test.ts` は matcher 単体まで）。
+   */
+  it("⚠⚠⚠ 063e 段 3-c: 紐づけていない報酬・報酬名なしでは引かれない", () => {
+    saveGachaLibrary([GACHA_100]);
+    addChannelPointCondition("ガチャを引く", { kind: "gacha", gachaId: "g:2" });
+    const other = comment({
+      source: "twitch",
+      eventType: "channelpoint",
+      rewardTitle: "曲リクエスト",
+      text: "",
+    });
+    expect(feedNames([other], countingRandom(0))).toEqual([]);
+    const noReward = comment({
+      source: "twitch",
+      eventType: "channelpoint",
+      text: "",
+    });
+    expect(feedNames([noReward], countingRandom(0))).toEqual([]);
   });
 
   it("⚠⚠ 063e 段 2: レイドではガチャが引かれない（視聴者が対価を払っていない）", () => {

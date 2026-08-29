@@ -88,7 +88,24 @@ const CHANNEL_POINTS_STATE_FRAME = "channelpoints.state";
  * これらは**載っているのに取り込まないと決めたもの**（§9）なので、抜くと
  * 「取り込んでいないこと」を目視で確かめられなくなる——`test-twitch-mapper.mjs` の fixture が
  * `system_message` / `profile_image_url` を必ず入れているのと**同じ理由**である。
- * ⚠ 目視の期待値＝**一覧に報酬名（「読み上げ」）が 1 文字も出ない。**
+ *
+ * ## ⚠⚠⚠ 063e 段 3: **`reward.title` だけは取り込むようになった**（線を 1 つ動かした）
+ *
+ * 依頼者＝「**どのチャンネルポイント交換に紐づけるかをユーザーが設定できるようにして欲しい**」。
+ * ⇒ 段 2-b までの目視の期待値「報酬名が 1 文字も出ない」は**もう正しくない**。
+ * ⚠ いまの期待値は次のとおり:
+ *   - **`title` は出る**（コメント一覧には出さないが、割り当て画面の「最近届いた」チップに出る）
+ *   - ⚠⚠ **`id` / `cost` / `prompt` / `status` / `redeemed_at` は今も 1 文字も出ない**
+ *
+ * ## ⚠⚠⚠ 3 パターンで「出し分け」が端から端まで目視できる
+ *
+ * | seq | 報酬名 | 割り当て表の「対象の報酬」に `ガチャを引く` と入れたとき |
+ * |---|---|---|
+ * | 4 | ⚠ **無し**（`reward` ごと欠落） | **鳴らない** |
+ * | 6 | 読み上げ | **鳴らない** |
+ * | 8 | **ガチャを引く** | ⚠⚠ **これだけ鳴る** |
+ *
+ * ⚠ 空欄（＝すべての報酬）に戻すと **3 件とも鳴る**（段 2 までの挙動）。
  */
 export const CHANNEL_POINTS_ENVELOPES: readonly {
   /** 何を模しているか（診断ログに出す・§9 で第三者データは含めない）。 */
@@ -131,9 +148,13 @@ export const CHANNEL_POINTS_ENVELOPES: readonly {
       // ⚠⚠ **公式どおり「未入力なら空文字」**。⇒ 一覧には出るが**配信画面には出ない**（062a と同じ規律）。
       user_input: "",
       status: "unfulfilled",
+      // ⚠⚠⚠ **063e 段 3: ここが「出し分け」の目視の主役である。**
+      //   ガチャ用の報酬は**テキスト入力を求めないのが自然**なので、
+      //   `user_input: ""` のこのパターンに割り当ててある。
+      //   ⇒ 割り当て表の「対象の報酬」に **`ガチャを引く` と入れると、この 1 件だけが鳴る**。
       reward: {
         id: "mock-reward-2",
-        title: "音を鳴らす",
+        title: "ガチャを引く",
         cost: 100,
         prompt: "",
       },
@@ -150,7 +171,7 @@ export const CHANNEL_POINTS_ENVELOPES: readonly {
      * ⇒ 期待される見え方＝**普通に 1 行出る**（本文は空・id は envelope の message_id で補填）。
      * ⚠⚠ ここで**行が消えたら、段 1-b の防御（`repairNotificationEvent` ＋ mapper の判別）が壊れている。**
      */
-    label: "out-of-spec",
+    label: "out-of-spec-no-reward",
     event: {
       broadcaster_user_id: "mock-broadcaster",
       broadcaster_user_login: "mock_broadcaster",
@@ -160,12 +181,11 @@ export const CHANNEL_POINTS_ENVELOPES: readonly {
       user_name: "saltyRunner",
       user_input: null,
       status: "unfulfilled",
-      reward: {
-        id: "mock-reward-3",
-        title: "スパチャ読み",
-        cost: 1000,
-        prompt: "",
-      },
+      // ⚠⚠⚠ **063e 段 3: `reward` ごと落としてある**（＝**報酬名が取れない引き換え**）。
+      //   ⚠ 公式仕様では `reward` は必ず載るので、これも「仕様外」の一種である。
+      //   ⇒ 期待される見え方＝ **対象の報酬を指定していると鳴らない／空欄なら鳴る。**
+      //   ⚠⚠ ここが鳴ってしまったら、`effectAssignments.ts` の
+      //   「報酬名を持たないイベントに、指定ありの条件が当たってはいけない」が壊れている。
       redeemed_at: "2026-08-26T10:00:10.000000000Z",
     },
   },

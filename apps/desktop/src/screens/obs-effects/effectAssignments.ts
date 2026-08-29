@@ -2,6 +2,7 @@ import {
   EFFECT_ASSIGNMENTS_KEY,
   GACHA_LIBRARY_KEY,
 } from "../../features/comment-viewer/overlaySettings";
+import type { CommentEventType } from "../../features/comment-viewer/bindings/CommentEventType";
 import { EFFECT_CONDITION_EVENT_TYPES } from "../comment-viewer/viewerFormat";
 import type {
   EffectMatch,
@@ -66,15 +67,23 @@ import type {
  * ## §9
  *
  * ⚠ 保存するのは **イベント種別（`EFFECT_CONDITION_EVENT_TYPES` の値）・テンプレート id（uuid v4）・
- * ユーザー自身が打ったキーワード**だけ。第三者の個人データ（本文・表示名・金額）は 1 バイトも入らない。
+ * ユーザー自身が打ったキーワード**と、⚠⚠ **063e 段 3-b で増えた「ユーザーが打ったカスタム報酬名」**
+ * （`when.rewardTitle`・`cp:` の行）だけ。第三者の個人データ（本文・表示名・金額）は 1 バイトも入らない。
+ * ⚠ **報酬名が第三者データでない根拠**＝ `reward.title` を書けるのは**配信者本人**と
+ * **配信者自身が `channel:manage:redemptions` を許可したアプリ**だけで、視聴者・モデレーターは書けない
+ * （購読はブロードキャスター本人のトークンでしか通らないので、届くのも必ず自チャンネルの報酬名である）。
+ * ⇒ OBS のソース名・キーワードと同じ「**ユーザー自身の設定値**」の側である。
  * ⚠⚠ **061j でこの層に第三者のコメント本文が流れ込むようになった**（[`resolveEffectMatch`] の引数）。
- * 担保は**型**である＝ [`EffectMatchInput`] は `{ eventType, text }` だけを受け、
- * [`EffectMatch`] は**本文を載せない**（＝ `EffectRequest` は 8 キーのまま無改変）。
+ * 担保は**型**である＝ [`EffectMatchInput`] は `{ eventType, text, rewardTitle }` だけを受け
+ * （⚠ 063e 段 3 で `rewardTitle` が増えた。上記のとおり第三者のデータではない）、
+ * [`EffectMatch`] は **`{ effect, conditionId, cooldownMs }` の 3 キーだけ**で本文も報酬名も載せない
+ * （⚠ 064d 以前はここに「`EffectRequest` は 8 キーのまま無改変」と書いていたが、
+ * **その型は 064d で全廃済み**なので、いまの担保は [`EffectMatch`] の 3 キーである）。
  * ⚠ **本文を localStorage にも DOM にもログにも出さない**
  * （`eslint.config.js` の `no-console` が `src/screens/obs-effects/**` に効いている）。
  * ⚠ **キーワードはユーザー自身の UI 設定値**なので localStorage に保存してよい
  * （`docs/security.md`「レビュー必須条件」の保存ポリシー項が明示的に除外している）。
- * ⚠ **ただしエフェクト窓の DOM にも `EffectRequest` にも出さない**——出す理由が無く、出すと
+ * ⚠ **ただしエフェクト窓の DOM にも [`EffectMatch`] にも出さない**——出す理由が無く、出すと
  * 「条件に書いた単語が配信画面に出る」という予期しない露出になる。
  */
 
@@ -338,7 +347,37 @@ export const STAGE_OVERLAY_WINDOW_LABEL = "stage-overlay";
  */
 export type EffectConditionWhen =
   | { type: "event"; eventType: string }
-  | { type: "keyword"; text: string; match: EffectKeywordMatch };
+  | { type: "keyword"; text: string; match: EffectKeywordMatch }
+  /**
+   * ⚠⚠⚠ 063e 段 3-b: **チャンネルポイントの報酬 1 件ごとの条件**（＝「この報酬ならこのガチャ」）。
+   *
+   * ## ⚠⚠ 段 3 の「イベント条件 ＋ 報酬名フィルタ」を作り直したものである
+   *
+   * 段 3 は `when: {type:"event"; eventType:"channelpoint"; rewardTitle?}` という形で、
+   * **1 行に絞り込みを 1 つ**持たせていた。依頼者の要望が
+   * 「**このチャネポ交換ならこれ、このチャネポ交換ならこのガチャ**」＝**報酬ごとに別の出力**へ
+   * 変わったので、⚠ **段 3 の JSDoc が書き残していた再修正トリガーがそのまま引かれた。**
+   *
+   * ⚠⚠⚠ **予告どおり「先に id の採番を作り直す」ことから始めている。**
+   * イベント条件の id は `"event:" + eventType` で**採番不要・安定**だが、
+   * ⚠ **id はクールダウンのキー（`lastConditionAt`）でもある**ので、
+   * `channelpoint` の行が 2 本になった瞬間に **2 本目が 1 本目のクールダウンを引き継ぐ**。
+   * ⇒ 報酬ごとの行は **`"cp:" + n`**（[`KEYWORD_CONDITION_MAX`] 側と同じ採番規則）で持つ。
+   * ⚠ **フィルタを増やして凌がないこと**（段 3 の注記がそう書いていた）。
+   *
+   * ## ⚠⚠ `rewardTitle` は**必須・非空**である（段 3 の `?:` から変わった）
+   *
+   * 段 3 は「未指定＝すべての報酬」を同じフィールドで表していたが、
+   * ⚠⚠⚠ **段 3-c で「すべての報酬」という概念そのものを廃止した**——
+   * 依頼者＝「**そもそもチャンネルポイント交換しただけで表示したいエフェクトなんか無い**」。
+   * ⇒ 条件表から「チャンネルポイント」の行を消し、**紐づけた報酬でしか何も起きない**。
+   * ⚠ ここに `undefined` を入れる意味が無く、⚠⚠ **空を許すと全引き換えに一致する**
+   * （[`parseKeywordCondition`] の空キーワードとまったく同じ最大の失敗モード）。
+   *
+   * ⚠ 照合は**完全一致**（`normalizeForMatch` 後）。**部分一致にしないこと**——
+   * 「ガチャ」が「レアガチャ」にも当たり、分けたはずのものが混ざる。
+   */
+  | { type: "channelpoint"; rewardTitle: string };
 
 /**
  * 061j: 条件 1 件。
@@ -382,6 +421,18 @@ interface MatchableCondition {
    * （空だと全コメントに一致する＝本タスク最大の失敗モード）。
    */
   readonly normalized: string | null;
+  /**
+   * ⚠⚠⚠ 063e 段 3-b: **報酬ごとの条件のときだけ非 null**（正規化済みの報酬名）。
+   *
+   * ⚠ 上の [`normalized`] と**兼用しない**——片方はキーワード条件の本文照合、こちらは
+   * 報酬名の照合で、**当たる相手が違う**（`input.text` と `input.rewardTitle`）。
+   * 1 つの箱に 2 つの意味を入れると、後から片方だけ直したときに**もう片方が黙って壊れる**。
+   * ⚠⚠ **非空であることは [`parseChannelPointCondition`] が保証する**（空は行ごと落とす）。
+   * ⚠⚠⚠ **段 3 との違い**＝あちらはイベント条件に載る「絞り込み」で `null` が
+   * 「すべての報酬」を意味していた。段 3-b では `null` は単に
+   * **「報酬ごとの条件ではない」**（イベント条件／キーワード条件）を意味する。
+   */
+  readonly rewardNormalized: string | null;
 }
 
 /**
@@ -737,6 +788,32 @@ export const KEYWORD_MAX_LENGTH = 32;
 export const KEYWORD_CONDITION_MAX = 20;
 
 /**
+ * ⚠⚠⚠ 063e 段 3-b: **報酬ごとの条件の件数上限。**
+ *
+ * 根拠＝ [`KEYWORD_CONDITION_MAX`] と同じ 2 つ（「**1 画面で読める**」＋
+ * 「**全コメント × 条件数**の走査コストの上限」）。⚠ **Twitch のカスタム報酬の数の上限ではない**
+ * ——ここで絞るのは「**エフェクトを紐づける報酬**」の数だけである。
+ * ⚠⚠⚠ **段 3-c で「紐づけなかった報酬」の受け皿が無くなった。** 段 3-b までは条件表の
+ * 「チャンネルポイント」行（総称）が受けていたが、あの行は廃止したので、
+ * **上限に収まらなかった報酬では文字どおり何も起きない**（しかも黙って起きない）。
+ * ⇒ ⚠ **上限は後から上げるほうが安全**（下げると既存の設定が落ちる）。
+ * **再修正トリガー＝「紐づけが足りない」と言われたとき。**
+ */
+export const CHANNEL_POINT_CONDITION_MAX = 20;
+
+/**
+ * ⚠⚠⚠ 063e 段 3: **対象の報酬名の上限**（文字数）。
+ *
+ * ⚠ 根拠＝ **Twitch のカスタム報酬タイトルの上限が 45 文字**であること
+ * （公式 Helix `CreateCustomRewards` の `title`: "The maximum length is 45 characters."）。
+ * ⇒ **Twitch が作れない長さは受け取らない**＝ここを超える値は
+ * **正規の引き換えでは絶対に届かない**ので、落として安全である。
+ * ⚠ キーワードの 32（[`KEYWORD_MAX_LENGTH`]）と揃えなかったのは、
+ * **揃えると実在する報酬名が入力できなくなる**ため（33〜45 文字の報酬は作れてしまう）。
+ */
+export const REWARD_TITLE_MAX_LENGTH = 45;
+
+/**
  * 061j（判断 7）: **同じ条件が続けて発火しない**ための最小間隔。
  *
  * 根拠: エフェクトの表示時間は `manifest.durationMs`（500〜15000ms）。同じキーワードに毎回反応すると
@@ -753,6 +830,27 @@ export const KEYWORD_COOLDOWN_MS = 10_000;
 
 const EVENT_ID_PREFIX = "event:";
 const KEYWORD_ID_PREFIX = "kw:";
+/** ⚠ 063e 段 3-b: 報酬ごとの条件の id の接頭辞（採番規則は `kw:` と同じ）。 */
+const CHANNEL_POINT_ID_PREFIX = "cp:";
+
+/**
+ * ⚠⚠ 063e 段 3-b: 報酬ごとの条件が当たる**唯一のイベント種別**。
+ *
+ * ⚠⚠⚠ **ここが drift すると、報酬ごとの行が 1 本も当たらなくなる**——
+ * しかも症状は「**設定できるのに何も起きない**」で、画面にもログにも理由が出ない
+ * （061a Q-1 が最も嫌う壊れ方）。
+ *
+ * ## ⚠⚠ 段 3-c: 網を**テストから型へ**移した
+ *
+ * 段 3-b までは `effectAssignments.test.ts` が
+ * `EFFECT_CONDITION_EVENT_TYPES.has("channelpoint")` で綴りを固定していたが、
+ * ⚠ 段 3-c で **`channelpoint` をあの集合から外した**（総称の行を廃止した）ので、
+ * その網はそのままでは使えなくなった。
+ * ⇒ **ts-rs が Rust から生成する [`CommentEventType`] で受ける。**
+ * ⚠⚠ **これはテストより強い**——綴りを間違えた瞬間に `tsc` が落ちる（実行するまでもない）。
+ * ⚠ 型注釈を外さないこと（外すと `string` に広がって網が消える）。
+ */
+const CHANNEL_POINT_EVENT_TYPE: CommentEventType = "channelpoint";
 
 /**
  * 制御文字か（`U+0000〜U+001F` と `U+007F`）。⚠ 表示と保存値の両方が壊れるのを防ぐ（判断 9）。
@@ -830,6 +928,22 @@ export function sanitizeKeywordInput(raw: string): string {
  * **上限が違う**ので別関数にしてある（[`GACHA_PRIZE_NAME_MAX_LENGTH`]）。
  * ⚠ **UI 側で `slice` を書かないこと**——上限の持ち主をこの層に閉じるためにここに置いている。
  */
+/**
+ * ⚠⚠⚠ 063e 段 3 / 段 3-b: **報酬名の入力欄の確定時に通す整形**。
+ *
+ * ⚠ [`sanitizeKeywordInput`] と**同じ規律**（制御文字を落とし、上限で詰める）。
+ * 上限だけが違う（報酬名は Twitch 側の上限に合わせて [`REWARD_TITLE_MAX_LENGTH`]）。
+ * ⚠⚠ **`trim()` しないこと**——入力途中の末尾スペースを奪うと打ちにくくなる。
+ * 前後の空白は照合側（`normalizeForMatch`）が落とすので、**保存値に残っても当たり方は変わらない**。
+ */
+export function sanitizeRewardTitleInput(raw: string): string {
+  const stripped = stripControlChars(raw);
+  const chars = [...stripped];
+  return chars.length > REWARD_TITLE_MAX_LENGTH
+    ? chars.slice(0, REWARD_TITLE_MAX_LENGTH).join("")
+    : stripped;
+}
+
 export function sanitizeGachaPrizeName(raw: string): string {
   const stripped = stripControlChars(raw);
   const points = [...stripped];
@@ -852,6 +966,55 @@ export function sanitizeGachaPrizeName(raw: string): string {
 export function isUsableKeyword(text: string): boolean {
   return normalizeForMatch(text) !== "";
 }
+
+/**
+ * 063e 段 3-b: その報酬名は**条件として成立するか**（＝照合用に正規化して空にならないか）。
+ *
+ * ⚠⚠ **[`isUsableKeyword`] と実装が同じであることに意味がある**——どちらも
+ * 「**照合に使う値そのものが非空であること**」を問うており、そこが空だと
+ * **全コメント／全引き換えに一致する**（同じ最大の失敗モード）。
+ * ⚠ **述語を 1 本にまとめないのは、当たる相手が違うからである**
+ * （`input.text` と `input.rewardTitle`）——将来どちらかの正規化だけを変えたときに、
+ * まとめてあると**もう片方が黙って追従してしまう**。
+ * ⚠ 保存層の検査（[`parseChannelPointCondition`]）は外さない
+ * （UI を通らない経路＝手で localStorage を編集する、が残るため）。
+ */
+export function isUsableRewardTitle(text: string): boolean {
+  return normalizeForMatch(text) !== "";
+}
+
+/**
+ * 063e 段 3-b: **2 つの報酬名は「同じ行」として当たるか**（＝照合と同じ規則で比べる）。
+ *
+ * ⚠⚠ **UI が「重複した行」を見つけるためだけの述語である。** 走査は
+ * **最初に当たった 1 件**しか返さないので、同じ報酬名の行が 2 本あると
+ * ⚠⚠⚠ **2 本目は永久に発火しない**——しかも画面には普通の行として並ぶ
+ * （061a Q-1 が最も嫌う「黙って動かない」状態）。⇒ **画面に警告を出して観測できる形にする。**
+ *
+ * ⚠ **保存層で落とさない理由**＝落とすと**行が黙って消える**（打った文字列ごと失われる）。
+ * 「消える」より「並んでいるが効かないと書いてある」ほうが直せる。
+ *
+ * ⚠⚠ **UI 側で `trim()` や `toLowerCase()` を自前で書かないこと**——
+ * 比べ方が照合とずれると、**警告が出ないのに発火しない行**（またはその逆）が生まれる。
+ * ⇒ 正規化の持ち主（[`normalizeForMatch`]）に必ず聞く。
+ */
+export function isSameRewardTitle(a: string, b: string): boolean {
+  return normalizeForMatch(a) === normalizeForMatch(b);
+}
+
+/**
+ * 063e 段 3-b: 報酬ごとの条件の id かどうか（`cp:<非負整数>`）。
+ * ⚠ **[`keywordIdNumber`] とまったく同じ形**である（採番の規則を 2 通りに書かない）。
+ */
+const channelPointIdNumber = (id: unknown): number | null => {
+  if (typeof id !== "string" || !id.startsWith(CHANNEL_POINT_ID_PREFIX)) {
+    return null;
+  }
+  const rest = id.slice(CHANNEL_POINT_ID_PREFIX.length);
+  if (!/^\d+$/.test(rest)) return null;
+  const n = Number(rest);
+  return Number.isSafeInteger(n) ? n : null;
+};
 
 /** キーワード条件の id かどうか（`kw:<非負整数>`）。 */
 const keywordIdNumber = (id: unknown): number | null => {
@@ -895,6 +1058,53 @@ const parseKeywordCondition = (raw: unknown): MatchableCondition | null => {
       effect,
     },
     normalized,
+    // ⚠ キーワード条件は報酬で絞らない（報酬名を持つのはイベント条件の channelpoint 行だけ）。
+    rewardNormalized: null,
+  };
+};
+
+/**
+ * ⚠⚠⚠ 063e 段 3-b: **報酬ごとの条件 1 件**を検証して照合用の形にする。**受け入れられなければ `null`**。
+ *
+ * ⚠⚠ **落とす（丸めない）のが要点**——[`parseKeywordCondition`] とまったく同じ規律である。
+ * 上限超えを切り詰めて受け入れると「**保存した文字列と当たる文字列が違う**」状態を作る
+ * （UI 側は確定時に [`sanitizeRewardTitleInput`] で詰めるので、通常はここまで来ない）。
+ *
+ * ⚠⚠⚠ **`rewardNormalized === "" ` を落とす 1 行が、この条件の最大の失敗モードを塞ぐ。**
+ * 空を通すと正規化後の比較が `"" === ""` で成立し、⚠ **すべての引き換えに一致する**
+ * ——報酬ごとに分けたつもりが**全部が 1 本目の行で鳴る**（キーワードの空文字と同型）。
+ *
+ * ⚠ **段 3 の [`parseRewardTitle`] を置き換えたものである。** あちらは空を
+ * 「すべての報酬」へ倒していたが、⚠⚠⚠ **段 3-c 以降「すべての報酬」を受ける行は存在しない**
+ * （条件表の「チャンネルポイント」行を廃止したため）。
+ * ⇒ 空を通しても救われる設定は 1 つも無く、**全引き換えが 1 本目の行で鳴るだけ**である。
+ * だからここでは**落とす**のが正しい（＝空の行は保存されず、UI の未確定行として残る＝打ち直せる）。
+ */
+const parseChannelPointCondition = (
+  raw: unknown,
+): MatchableCondition | null => {
+  if (typeof raw !== "object" || raw === null) return null;
+  const item = raw as { id?: unknown; when?: unknown; effect?: unknown };
+  // ⚠ id は**クールダウンのキー**でもあるので形を要求する（採番の「最大 n + 1」もこの形に依存する）。
+  //   ⚠ 形が違えば落とす＝ 061h の「未知の形は安全側（出さない）へ倒す」と同じ向き。
+  if (channelPointIdNumber(item.id) === null) return null;
+  const when = item.when;
+  if (typeof when !== "object" || when === null) return null;
+  const rewardTitle = (when as { rewardTitle?: unknown }).rewardTitle;
+  if (typeof rewardTitle !== "string") return null;
+  if (hasControlChar(rewardTitle)) return null;
+  if ([...rewardTitle].length > REWARD_TITLE_MAX_LENGTH) return null;
+  const rewardNormalized = normalizeForMatch(rewardTitle);
+  if (rewardNormalized === "") return null;
+  return {
+    condition: {
+      id: item.id as string,
+      when: { type: "channelpoint", rewardTitle },
+      effect: parseAssignment(item.effect),
+    },
+    // ⚠ 本文の照合には使わない（`normalized` を持つのはキーワード条件だけ）。
+    normalized: null,
+    rewardNormalized,
   };
 };
 
@@ -909,6 +1119,8 @@ const eventCondition = (
     effect,
   },
   normalized: null,
+  // ⚠ 063e 段 3-b: イベント条件は報酬で絞らない（絞るのは `cp:` の行だけ）。
+  rewardNormalized: null,
 });
 
 /**
@@ -920,7 +1132,8 @@ const eventCondition = (
  *   2. **UI（6 行の `<select>`）では表現できない**＝「保存値にあるのに画面に出ない条件」が生まれる
  *      （061a 以来の「黙って何かが起きる／起きない状態を作らない」に真っ向から反する）
  * ⇒ **必ず次を満たす配列を返す**:
- *   - **前半＝イベント条件が [`EFFECT_CONDITION_EVENT_TYPES`] の件数ちょうど**（063e 段 2 で 6 → 7）。
+ *   - **前半＝イベント条件が [`EFFECT_CONDITION_EVENT_TYPES`] の件数ちょうど**
+ *     （⚠ 063e 段 2 で 6 → 7 になり、⚠⚠ **段 3-c で 6 へ戻った**——`channelpoint` を外したため）。
  *     その**挿入順**（＝`EFFECT_EVENT_ROWS` と同じ並び）で、重複は**先勝ち**で潰し、
  *     欠けは `{ kind: "none" }` で埋め、**未知の eventType は捨てる**
  *     ⚠⚠ **この関数が「どの eventType を許すか」の唯一の持ち主である**（063e 段 2）。
@@ -928,6 +1141,28 @@ const eventCondition = (
  *     **2 枚目が drift したのが 063e 段 2 で見つかったバグそのもの**である（あちらの JSDoc が正）。
  *   - **後半＝キーワード条件**（保存順・[`parseKeywordCondition`] を通ったものだけ・最大
  *     [`KEYWORD_CONDITION_MAX`] 件）
+ *
+ * ## ⚠⚠⚠ 063e 段 3-b: **報酬ごとの条件を先頭へ置く**（走査順）
+ *
+ * 戻り値の並びは **`[報酬ごと(cp:) → イベント(event:) → キーワード(kw:)]`** である。
+ * ⚠⚠ **この並びは表示順であると同時に「照合の優先順位」である**——
+ * [`createConditionMatcher`] は**最初に当たった 1 件**しか返さないため。
+ *
+ * ⚠⚠⚠ **段 3-c で「なぜ先頭か」の理由が変わった。書き換えを忘れないこと。**
+ *   - **段 3-b の理由**（⚠ **もう成立しない**）… 条件表の「チャンネルポイント」行（総称）が
+ *     どの報酬にも当たるので、イベント条件が先だと報酬ごとの行が永久に発火しなかった。
+ *     ⇒ ⚠ **段 3-c でその総称の行を廃止した**ので、この理由は消えている。
+ *   - **いまの理由＝キーワード条件より前に置くため。** チャンネルポイントの引き換えは
+ *     `user_input`（視聴者が打ったテキスト）を本文として持つので、⚠⚠ **たまたま
+ *     キーワード条件に一致しうる**。そのとき鳴るべきは**報酬の紐づけのほう**である
+ *     （報酬名で名指しした設定が、汎用のキーワードに負けてはいけない）。
+ *
+ * ⚠ **イベント条件とキーワード条件の相対順（event → keyword）は 1 ミリも変えていない**
+ * ——判断 11（「出さない」条件はキーワードを塞がない）はそのまま生きている。
+ * ⚠⚠ いま `cp:` と `event:` の前後は**どちらでも結果が変わらない**
+ * （イベント条件に `channelpoint` が無くなったので当たる相手が重ならない）が、
+ * ⚠⚠⚠ **先頭のままにしておくこと**——「具体的な条件を総称より先に置く」という規律が、
+ * 将来また総称の行を足したときに**そのまま効く**形だからである。
  *
  * ⚠ **先勝ちにする理由**: 保存関数が正規化済みを書くので重複は通常発生しない。発生するのは
  * **手で localStorage を編集した場合か、将来のバージョンが書いた場合**だけで、そのとき「後勝ち」だと
@@ -946,6 +1181,10 @@ const parseConditions = (raw: unknown): MatchableCondition[] => {
   // ⚠ 先勝ち＋未知捨て＋欠け補完を 1 つの Map で表す。
   // ⚠ 064d: 値は `EffectAssignment` 1 つに戻った（061k の出力先の軸ごと消えたため）。
   const events = new Map<string, EffectAssignment>();
+  // ⚠ 063e 段 3-b: 報酬ごとの条件（保存順そのまま・[`parseChannelPointCondition`] を通ったものだけ）。
+  //   ⚠⚠ **旧形式（Record）の分岐からは 1 件も入らない**——あの形式は 061i 以前のもので、
+  //   チャンネルポイント自体が存在しなかった（＝構造的に持ちえない）。
+  const channelPoints: MatchableCondition[] = [];
   const keywords: MatchableCondition[] = [];
 
   if (Array.isArray(raw)) {
@@ -965,7 +1204,26 @@ const parseConditions = (raw: unknown): MatchableCondition[] => {
           continue;
         // ⚠ **先勝ち**（2 件目以降は無視する）。
         if (events.has(eventType)) continue;
+        // ⚠⚠ 063e 段 3-b: **`when.rewardTitle` はもう読まない。** 段 3 がここに載せていた
+        //   絞り込みは `cp:` の行へ移した（[`EffectConditionWhen`] の注記が正）。
+        //   ⚠ 段 3 で保存された値は**未知のキーとして読み捨てられる**＝
+        //   落ちるのでも壊れるのでもなく、**「すべての報酬」に戻る**（安全側でも危険側でもない・
+        //   段 3 は未リリースなので移行コードは書かない）。
         events.set(eventType, parseAssignment((item as { effect?: unknown }).effect));
+        continue;
+      }
+      if (type === "channelpoint") {
+        // ⚠ 上限を超えた分は落とす（走査コストの上限＝[`CHANNEL_POINT_CONDITION_MAX`]）。
+        if (channelPoints.length >= CHANNEL_POINT_CONDITION_MAX) continue;
+        const parsed = parseChannelPointCondition(item);
+        if (parsed === null) continue;
+        // ⚠ id の重複は先勝ちで落とす（クールダウンのキーが衝突しないことの担保）。
+        //   ⚠⚠ **報酬名の重複は落とさない**——落とすと**行が黙って消える**。
+        //   同じ報酬名が 2 行あるときに 2 行目が発火しないことは、
+        //   `EffectAssignmentCard` が**画面に警告として出す**（＝観測できる形にする）。
+        if (channelPoints.some((c) => c.condition.id === parsed.condition.id))
+          continue;
+        channelPoints.push(parsed);
         continue;
       }
       if (type !== "keyword") continue;
@@ -995,10 +1253,15 @@ const parseConditions = (raw: unknown): MatchableCondition[] => {
   // ⚠ **並びの持ち主は `EFFECT_CONDITION_EVENT_TYPES` の挿入順**（`EFFECT_EVENT_ROWS` と同じ）。
   //   ⚠ 種別が増えたら、保存値に無くてもここで自動的に行が生える
   //   （063e 段 2 の `channelpoint` が**まさにこれで移行コード無しに乗った**）。
-  const out: MatchableCondition[] = [];
+  // ⚠⚠⚠ 063e 段 3-b: **報酬ごとの条件が先頭**（上の JSDoc「走査順の変更」が正）。
+  //   ⚠ ここの順序を入れ替えないこと——入れ替えた瞬間、報酬ごとの行が 1 本も発火しなくなる。
+  const out: MatchableCondition[] = [...channelPoints];
   for (const eventType of EFFECT_CONDITION_EVENT_TYPES) {
     out.push(
-      eventCondition(eventType, events.get(eventType) ?? DEFAULT_EFFECT_ASSIGNMENT),
+      eventCondition(
+        eventType,
+        events.get(eventType) ?? DEFAULT_EFFECT_ASSIGNMENT,
+      ),
     );
   }
   out.push(...keywords);
@@ -1020,8 +1283,10 @@ const readConditions = (): MatchableCondition[] => {
 /**
  * 保存済みの条件を読む。**未保存・不正 JSON・例外・ルートが非オブジェクトはすべて全種別「出さない」**。
  *
- * ⚠ **戻り値は必ず「イベント条件 6 件 ＋ キーワード条件」**（[`parseConditions`] の不変条件）。
- * 呼び出し側が「行があるか」を毎回気にしなくてよくなる。
+ * ⚠ **戻り値は必ず「[報酬ごと（`cp:`）→ イベント条件 6 件 → キーワード条件]」**
+ * （[`parseConditions`] の不変条件。⚠ 063e 段 3-b で先頭に `cp:` が付いた）。
+ * 呼び出し側が「イベント条件の行があるか」を毎回気にしなくてよくなる
+ * （⚠ `cp:` と `kw:` は 0 件でありうる——生やす側の集合が無いのはこの 2 つだけである）。
  * ⚠ **読むだけでは書き戻さない**（旧形式のまま置いておき、次に保存したとき新形式になる・判断 8）。
  */
 export function loadEffectConditions(): EffectConditions {
@@ -1060,7 +1325,23 @@ export function saveEffectConditions(conditions: EffectConditions): void {
         c.when.type === "event" &&
         c.effect.kind !== DEFAULT_EFFECT_ASSIGNMENT.kind,
     );
-    if (!hasKeyword && !hasNonDefaultEvent) {
+    /**
+     * ## ⚠⚠⚠ 063e 段 3-b: **報酬ごとの行が 1 本でもあれば「空ではない」**
+     *
+     * ⚠⚠ **これが無いと実バグになる**（段 3 の実装中に実際に踏んだ・段 3-b でも同型）:
+     * ユーザーが**エフェクトを選ぶ前に**報酬名を打って行を作ると、
+     * その時点では `effect` が `{kind:"none"}` なので**上の 2 つがどちらも false** になり、
+     * ⚠⚠⚠ **キーごと消えて行が黙って消える**（061a Q-1 が最も嫌う壊れ方）。
+     * ⚠ 順番は「報酬名 → エフェクト」でも「エフェクト → 報酬名」でも自然なので、
+     * **前者を選んだ人だけが壊れる**のはなおさら気づけない。
+     *
+     * ⚠ これは [`hasKeyword`] とまったく同じ理由である（**ユーザーが打った文字列**を持つ行は、
+     * `effect` が既定でも消さない）。⇒ **述語を 2 つに分けず 1 つで書く。**
+     */
+    const hasChannelPoint = normalized.some(
+      (c) => c.when.type === "channelpoint",
+    );
+    if (!hasKeyword && !hasNonDefaultEvent && !hasChannelPoint) {
       localStorage.removeItem(EFFECT_ASSIGNMENTS_KEY);
       return;
     }
@@ -1099,6 +1380,75 @@ export function setConditionEffect(
 ): EffectConditions {
   const next = loadEffectConditions().map((c) =>
     c.id === id ? { ...c, effect } : c,
+  );
+  saveEffectConditions(next);
+  return loadEffectConditions();
+}
+
+/**
+ * 063e 段 3-b（判断 3 と同じ規律）: 次に使う**報酬ごとの条件**の id。
+ * ⚠ **保存済みの最大 n + 1**（削除しても詰めない）。
+ *
+ * ⚠⚠ **[`nextKeywordId`] とまったく同じ理由で詰めない**——`id` は
+ * **クールダウンのキー**でもあるので、消した id を再利用すると
+ * **新しく作った行が、消した行のクールダウンを引き継ぐ**。
+ * ⚠ 報酬ごとの条件は `cooldownMs: 0` なので**今日は実害が無い**が、
+ * ⚠⚠⚠ **採番の規則を条件の種類ごとに変えないこと**——「こちらは詰めてよい」を作ると、
+ * 将来クールダウンを効かせたくなった日に**気づかないまま壊れる**。
+ */
+const nextChannelPointId = (conditions: EffectConditions): string => {
+  let max = 0;
+  for (const c of conditions) {
+    const n = channelPointIdNumber(c.id);
+    if (n !== null && n > max) max = n;
+  }
+  return `${CHANNEL_POINT_ID_PREFIX}${max + 1}`;
+};
+
+/**
+ * ⚠⚠⚠ 063e 段 3-b: **報酬ごとの条件を 1 件足す**（＝「この報酬ならこれ」の紐づけ）。
+ * ⚠ **id の採番はここだけ**（[`addKeywordCondition`] と同じ規律）。
+ *
+ * ⚠⚠ **空の報酬名では呼ばれない**——UI 側が [`isUsableRewardTitle`] で確定を止めるので
+ * 到達しないが、仮に呼ばれても [`saveEffectConditions`] が
+ * [`parseChannelPointCondition`] を通して落とす（＝検査は素通りできない）。
+ * ⚠ **上限（[`CHANNEL_POINT_CONDITION_MAX`]）を超えた分も保存層で落ちる。**
+ */
+export function addChannelPointCondition(
+  rewardTitle: string,
+  effect: EffectAssignment,
+): EffectConditions {
+  const current = loadEffectConditions();
+  const next: EffectCondition[] = [
+    ...current,
+    {
+      id: nextChannelPointId(current),
+      when: { type: "channelpoint", rewardTitle },
+      effect,
+    },
+  ];
+  saveEffectConditions(next);
+  return loadEffectConditions();
+}
+
+/**
+ * 063e 段 3-b: 報酬ごとの条件の**報酬名**を変える。
+ * ⚠ イベント条件・キーワード条件には効かない（`when.type` で弾く）。
+ *
+ * ⚠⚠ 検証は [`saveEffectConditions`] → [`parseChannelPointCondition`] が行うので、
+ * ここでは書くだけである（**規則の持ち主を 2 つにしない**）。
+ * ⚠⚠⚠ **空を渡すとその行ごと保存値から落ちる**——UI 側は
+ * [`isUsableRewardTitle`] で止めて**直前の確定値へ戻す**こと
+ * （`commitKeyword` と同じ規律。止めないと**打ち間違いで行が消える**）。
+ */
+export function updateChannelPointCondition(
+  id: string,
+  rewardTitle: string,
+): EffectConditions {
+  const next = loadEffectConditions().map((c) =>
+    c.id === id && c.when.type === "channelpoint"
+      ? { ...c, when: { type: "channelpoint" as const, rewardTitle } }
+      : c,
   );
   saveEffectConditions(next);
   return loadEffectConditions();
@@ -1495,8 +1845,16 @@ function createConditionMatcher<T extends object>(
     //   （[`parseKeywordCondition`]）ので、`"".includes(k)` も `"" === k` も **false**＝安全側である。
     //   ⚠ **この論証があるので、ここに 3 枚目の空チェックは置かない**（同じ規則を 3 通りに書かない）。
     const text = normalizeForMatch(input.text);
+    // ⚠⚠⚠ 063e 段 3 / 段 3-b: 報酬名も**同じ正規化**を通す（`normalizeForMatch` は保存側と共有）。
+    //   ⚠ `undefined`（報酬名を持たない／取れなかったイベント）は `null` にする。
+    //   ⚠⚠ 報酬ごとの条件の `rewardNormalized` は**必ず非空の文字列**なので、
+    //   `null` とは決して一致しない＝**報酬名の無い引き換えに紐づけが当たることはない。**
+    const rewardTitle =
+      input.rewardTitle === undefined
+        ? null
+        : normalizeForMatch(input.rewardTitle);
 
-    for (const { condition, normalized } of conditions) {
+    for (const { condition, normalized, rewardNormalized } of conditions) {
       // ⚠⚠ **061k（判断 5）/ 064b: 発火に使わない kind の条件は、当たり判定の前に落とす。**
       //   ⚠ ここを `decideEffects` の後ろ（＝戻り値を捨てる形）へ動かすと、
       //   **「出さない」条件がバースト枠とクールダウンを消費する**（上記 JSDoc）。
@@ -1537,7 +1895,48 @@ function createConditionMatcher<T extends object>(
          *   この論証を固定している（**ゲートが無くても当たらない**ことの直接の担保）。
          */
         if (condition.when.eventType !== input.eventType) continue;
+        /**
+         * ## ⚠⚠⚠ 063e 段 3-b: **ここにあった報酬名の照合を `channelpoint` 条件へ移した**
+         *
+         * 段 3 は `if (rewardNormalized !== null && rewardNormalized !== rewardTitle) continue;`
+         * をこの位置に持っていた（＝イベント条件 1 行に絞り込みが 1 つ載る形）。
+         * ⚠ 段 3-b で**報酬ごとに行を分けた**ので、この行は 1 つも仕事をしなくなった
+         * （イベント条件の `rewardNormalized` は [`eventCondition`] が必ず `null` にする）。
+         * ⇒ **消した。** ⚠⚠ 残すと「**許可集合の 2 枚目**」と同じ種類の死んだ分岐になり、
+         * 次に触る人が「イベント条件にも報酬名が載りうる」と誤読する。
+         *
+         * ## ⚠⚠⚠ 段 3-c: **チャンネルポイントはもうこの分岐へ来ない**
+         *
+         * 依頼者＝「**そもそもチャンネルポイント交換しただけで表示したいエフェクトなんか無い**」
+         * ⇒ [`EFFECT_CONDITION_EVENT_TYPES`] から `channelpoint` を外した
+         * （＝条件表から「チャンネルポイント」の行が消えた・総称の受け皿は**無い**）。
+         * ⚠ 購読の `condition` は `broadcaster_user_id` だけで**報酬で絞っていない**ので
+         * **全カスタム報酬の引き換えが届く**が、⚠⚠ **紐づけた報酬（`cp:`）以外は何も鳴らない。**
+         */
         // ⚠ イベント条件にクールダウンは効かせない（スパチャ 2 連投の 2 件目を落とさない）。
+        return { effect, conditionId: condition.id, cooldownMs: 0 };
+      }
+      /**
+       * ## ⚠⚠⚠ 063e 段 3-b: **報酬ごとの条件**（＝「この報酬ならこれ」）
+       *
+       * ⚠ **イベント種別の検査を省かないこと**——`cp:` の行は
+       * **チャンネルポイントの引き換えにしか当たってはいけない**。
+       * ⚠⚠ 省くと、報酬名を持たない他のイベント（スパチャ等）で `rewardTitle` が `null` になり
+       * **当たらないので一見動く**が、⚠⚠⚠ **将来 `rewardTitle` を持つ別のイベントが増えた日に
+       * 黙って発火する**（＝そのとき誰も気づけない形の暴発になる）。
+       *
+       * ⚠ **クールダウンは 0**（イベント条件と同じ）。理由はキーワード条件と逆で、
+       * ⚠⚠ **視聴者はチャンネルポイントという対価を払っている**——連呼対策の 10 秒
+       * （[`KEYWORD_COOLDOWN_MS`]）を効かせると、**払ったのに何も起きない**が起きる。
+       * 連投時の保護は [`BURST_MAX`]（`effectTrigger.ts`）が既に担っている。
+       */
+      if (condition.when.type === "channelpoint") {
+        if (input.eventType !== CHANNEL_POINT_EVENT_TYPE) continue;
+        // ⚠ `channelpoint` なら `rewardNormalized` は必ず非 null（`parseConditions` の不変条件）。
+        //   型の都合で 1 行置く（キーワード条件の `normalized` と同じ形）。
+        if (rewardNormalized === null) continue;
+        // ⚠⚠ **完全一致**（部分一致にしないこと——「ガチャ」が「レアガチャ」にも当たる）。
+        if (rewardNormalized !== rewardTitle) continue;
         return { effect, conditionId: condition.id, cooldownMs: 0 };
       }
       // ⚠ keyword なら `normalized` は必ず非 null（`parseConditions` の不変条件）。型の都合で 1 行置く。

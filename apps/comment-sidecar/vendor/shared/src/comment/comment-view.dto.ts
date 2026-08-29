@@ -32,4 +32,9 @@ export type CommentViewDto = {
   // 「誰がレイドしてくれたか」を配信後に見返すのが 062 の要望のため。整数のみで個人情報を含まない（§9）。
   /** レイド人数（Twitch raid の viewer_count・raid 以外は undefined）。 */
   raidViewerCount?: number;
+  // ⚠⚠⚠ 063e 段 3: 引き換えた報酬の名前（channelpoint 以外は undefined）。
+  //   ⚠ 配信者が Twitch で付けた名前＝**ユーザー自身の設定値**であり、第三者データではない（§9）。
+  //   ⚠⚠ **端末保存しない**（monthCount / giftCount / tier と同じ側）。用途は照合 1 つだけ。
+  /** 報酬名（Twitch `reward.title`・channelpoint 以外は undefined）。 */
+  rewardTitle?: string;
 };

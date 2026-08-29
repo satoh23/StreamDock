@@ -23,6 +23,7 @@ import {
   KEYWORD_COOLDOWN_MS,
   KEYWORD_MAX_LENGTH,
   loadEffectConditions,
+  DEFAULT_EFFECT_ASSIGNMENT,
   removeCondition,
   sanitizeKeywordInput,
   saveEffectConditions,
@@ -31,6 +32,13 @@ import {
   GACHA_UNNAMED_PRIZE_LABEL,
   type GachaPrize,
   updateKeywordCondition,
+  addChannelPointCondition,
+  updateChannelPointCondition,
+  isSameRewardTitle,
+  isUsableRewardTitle,
+  sanitizeRewardTitleInput,
+  CHANNEL_POINT_CONDITION_MAX,
+  REWARD_TITLE_MAX_LENGTH,
   type EffectCondition,
   type EffectConditions,
 } from "./effectAssignments";
@@ -74,6 +82,8 @@ const TPL = { kind: "obs-source", sourceName: UUID } as const;
 const OBS = TPL;
 
 // ⚠⚠ 063e 段 2: 出所が `MONETARY_EVENT_TYPES` から替わった（6 → 7・`channelpoint` が末尾に生えた）。
+//   ⚠⚠⚠ **段 3-c で 7 → 6 へ戻った**（`channelpoint` を集合から外し、カスタム報酬ごとの
+//   `cp:` の行で扱うことにしたため）。出所が `EFFECT_CONDITION_EVENT_TYPES` である点は不変。
 // ⚠ **件数をベタ書きしない**——ここを 7 と書くと、次に種別が増えたとき「テストが落ちて気付く」ではなく
 //   「テストを直して終わり」になる。集合そのものを正とする。
 const EVENT_TYPES = [...EFFECT_CONDITION_EVENT_TYPES];
@@ -539,35 +549,57 @@ describe("effectAssignments（061j: 条件の配列）", () => {
     });
   });
 
-  // --- 063e 段 2: チャンネルポイント（⚠⚠⚠ 課金ゲートを削除した本体） -----------------------------
+  // --- 063e 段 3-c: チャンネルポイントに「種別の行」は無い ---------------------------------------
 
-  it("⚠⚠⚠ 063e 段 2: チャンネルポイントでイベント条件が効く（課金ゲートの削除）", () => {
-    // ⚠⚠ **段 1 の実装ではここが `null` になっていた。** 照合の直前に
-    //   `if (!isMonetaryEvent(input.eventType)) continue;` があり、チャンネルポイントは
-    //   `MONETARY_EVENT_TYPES` に**入れない**（お金ではない）ので必ず落ちたためである。
-    //   ⇒ 症状は「**条件表に行は出るのに、選んでも何も起きない**」＝ 061a Q-1 が最も嫌う形。
+  /**
+   * ⚠⚠⚠ **063e 段 3-c で、条件表から「チャンネルポイント」の行を消した。**
+   *
+   * 依頼者＝「**そもそもチャンネルポイント交換しただけで表示したいエフェクトなんか無い**んだから、
+   * チャンネルポイントにあるプルダウンを消して、**必ずカスタム報酬ごとに**設定する形に」。
+   * ⇒ `EFFECT_CONDITION_EVENT_TYPES` から `channelpoint` を外した。
+   *
+   * ⚠⚠ **段 2 のテスト 3 本をここで反転している。** あちらは
+   * 「行が出る／効く／移行コード無しで乗る」を固定していたが、**挙動ごと消えた**ので
+   * **同じ場所で逆を固定する**（消すだけにすると、行を戻す変更が誰にも気づかれない）。
+   * ⚠ 段 2 の成果のうち「**課金ゲートの削除**」は生きている——下の
+   * 「条件表に無い種別は 1 件も当たらない」がその担保で、⚠⚠ **`channelpoint` も
+   * いまはその側にいる**。
+   */
+  it("⚠⚠⚠ 063e 段 3-c: チャンネルポイントの行は保存も復元もされない", () => {
+    // ⚠ 保存値に直接書いても捨てられる（`parseConditions` の許可集合の外）。
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify([ev("channelpoint", TPL), ev("superchat", TPL)]),
+    );
+    const conditions = loadEffectConditions();
+    expectEventRowShape(conditions);
+    expect(conditions.find((c) => c.id === "event:channelpoint")).toBeUndefined();
+    // ⚠⚠ 書き戻しても復活しない（行を生やす側の集合にも居ない）。
+    saveEffectConditions(conditions);
+    expect(raw()).not.toContain("channelpoint");
+  });
+
+  it("⚠⚠⚠ 063e 段 3-c: 紐づけが 1 件も無ければ、引き換えでは何も鳴らない", () => {
+    // ⚠⚠ **これが「総称の受け皿を廃止した」ことの直接の担保である。**
+    //   ⚠ 全イベント行にエフェクトを入れてもなお、チャンネルポイントでは 1 件も当たらない。
+    for (const eventType of EFFECT_CONDITION_EVENT_TYPES) {
+      setConditionEffect(`event:${eventType}`, TPL);
+    }
+    // ⚠ `event:channelpoint` を名指しで設定しても効かない（行が存在しない）。
     setConditionEffect("event:channelpoint", TPL);
     expect(
       resolveEffectMatch({ eventType: "channelpoint", text: "がんばれー！" }),
-    ).toEqual({
-      effect: TPL,
-      conditionId: "event:channelpoint",
-      cooldownMs: 0,
-    });
+    ).toBeNull();
+    expect(
+      resolveEffectMatch({
+        eventType: "channelpoint",
+        text: "",
+        rewardTitle: "ガチャを引く",
+      }),
+    ).toBeNull();
   });
 
-  it("⚠ 063e 段 2: 本文が空の引き換え（テキスト入力なしの報酬）でも効く", () => {
-    // ⚠ イベント条件は本文を見ないので当たる。⚠ ここが落ちると
-    //   「テキスト入力を求めない報酬ではガチャが回らない」という**報酬しだいの挙動**になる。
-    setConditionEffect("event:channelpoint", TPL);
-    expect(resolveEffectMatch({ eventType: "channelpoint", text: "" })).toEqual({
-      effect: TPL,
-      conditionId: "event:channelpoint",
-      cooldownMs: 0,
-    });
-  });
-
-  it("⚠⚠⚠ 063e 段 2: 条件表に無い種別（chat / raid）はイベント条件に 1 件も当たらない", () => {
+  it("⚠⚠⚠ 063e 段 2: 条件表に無い種別（chat / raid / channelpoint）はイベント条件に 1 件も当たらない", () => {
     // ⚠⚠ **これが「課金ゲートを消して安全である」ことの直接の担保である。**
     //   ゲートを消した論証＝「`parseConditions` が許可集合の外を捨てるので、
     //   `condition.when.eventType === input.eventType` が成り立つなら入力も必ず集合の要素」。
@@ -576,26 +608,19 @@ describe("effectAssignments（061j: 条件の配列）", () => {
     for (const eventType of EFFECT_CONDITION_EVENT_TYPES) {
       setConditionEffect(`event:${eventType}`, TPL);
     }
-    for (const eventType of ["chat", "raid", "bits", "__proto__", ""]) {
+    // ⚠⚠⚠ 段 3-c: `channelpoint` を**この一覧へ移した**（種別の行が無くなったため）。
+    for (const eventType of [
+      "chat",
+      "raid",
+      "channelpoint",
+      "bits",
+      "__proto__",
+      "",
+    ]) {
       expect(
         resolveEffectMatch({ eventType, text: "なんでもいい本文" }),
       ).toBeNull();
     }
-  });
-
-  it("⚠⚠ 063e 段 2: チャンネルポイントの行が保存・復元される（移行コード無しで乗る）", () => {
-    // ⚠ 既存ユーザーの保存値には `channelpoint` の行が**無い**。それでも
-    //   `parseConditions` が集合から行を生やすので、**移行コードを 1 行も書かずに乗る**（061j の設計）。
-    localStorage.setItem(
-      EFFECT_ASSIGNMENTS_KEY,
-      JSON.stringify([ev("superchat", TPL)]),
-    );
-    const conditions = loadEffectConditions();
-    expectEventRowShape(conditions);
-    const row = conditions.find((c) => c.id === "event:channelpoint");
-    expect(row).toBeTruthy();
-    // ⚠ 生えた行は「エフェクトを出さない」＝**既存ユーザーの配信画面は 1 ピクセルも変わらない**。
-    expect(row?.effect).toEqual(NONE);
   });
 
   it("⚠⚠ 新規 3: `exact` は部分一致では当たらない／`contains` は当たる", () => {
@@ -1478,5 +1503,441 @@ describe("063c 段 2-a: 景品の出力先（GachaPrizeOutput）", () => {
     expect(
       gachaPrizeLabel({ name: "", weight: 1, output: { kind: "builtin" } }).length,
     ).toBeGreaterThan(0);
+  });
+});
+// --- 063e 段 3-b: 報酬ごとの紐づけ（チャンネルポイント）----------------------------------------
+
+/**
+ * ⚠⚠⚠ **063e 段 3-b: 「このチャネポ交換ならこれ、このチャネポ交換ならこのガチャ」**（依頼者の要望）。
+ *
+ * ⚠ 段 3 は**イベント条件 1 行に絞り込みを 1 つ**載せる形だったが、
+ * 報酬ごとに**別の出力**を選びたくなったので、⚠⚠ **段 3 の JSDoc が予告していたとおり
+ * 「先に id の採番を作り直す」**ところからやり直したものである（`cp:<n>`）。
+ *
+ * ⚠⚠⚠ **このブロックが固定している不変条件のうち、最も壊れやすい 3 つ**:
+ *   1. **走査順** … `cp:` の行は**イベント条件（総称）より先**に当たること
+ *      （後ろに置くと**報酬ごとの行が 1 本も発火しない**）
+ *   2. **空の報酬名を通さない** … 通ると正規化後の比較が `"" === ""` で
+ *      **すべての引き換えに一致する**（キーワードの空文字と同じ最大の失敗モード）
+ *   3. **イベント種別の検査** … `cp:` の行が**チャンネルポイント以外で発火しない**こと
+ */
+describe("063e 段 3-b: 報酬ごとの紐づけ", () => {
+  // ⚠ **この describe はファイル末尾の別ブロック**なので、上の describe の beforeEach を継承しない。
+  //   ⚠⚠ 無いと前のテストの保存値が漏れて「キーごと消える」系の検査が偽陰性になる（段 3 で実際に踏んだ）。
+  beforeEach(() => localStorage.clear());
+  afterEach(() => localStorage.clear());
+
+  /** 報酬ごとの条件 1 件（保存形と同じ形）。 */
+  const cp = (
+    n: number,
+    rewardTitle: string,
+    effect: unknown = TPL,
+  ): unknown => ({
+    id: `cp:${n}`,
+    when: { type: "channelpoint", rewardTitle },
+    effect,
+  });
+  const save = (items: unknown[]) =>
+    localStorage.setItem(EFFECT_ASSIGNMENTS_KEY, JSON.stringify(items));
+  const fire = (rewardTitle?: string) =>
+    resolveEffectMatch({ eventType: "channelpoint", text: "", rewardTitle });
+
+  /**
+   * ⚠⚠⚠ **`CHANNEL_POINT_EVENT_TYPE`（非 export）の drift を外側から固定する。**
+   * あの定数がコメントの種別とずれると、報酬ごとの行が**1 本も当たらなくなる**——
+   * しかも症状は「設定できるのに何も起きない」で、画面にもログにも理由が出ない。
+   *
+   * ⚠⚠ **段 3-c で主たる網は型へ移した**（`const CHANNEL_POINT_EVENT_TYPE: CommentEventType`
+   * ＝ ts-rs が Rust から生成する語彙。綴り違いは `tsc` が落とす）。
+   * ⚠ 段 3-b までは `EFFECT_CONDITION_EVENT_TYPES.has("channelpoint")` で固定していたが、
+   * **段 3-c であの集合から外した**ので使えなくなった。
+   * ⇒ ここは「**その種別で実際に当たる**」ことだけを見る（型の網の 2 枚目）。
+   */
+  it("⚠⚠⚠ 報酬ごとの行は `channelpoint` の引き換えで当たる", () => {
+    // ⚠ 種別はコメント側の語彙（`CommentEventType`）であって、条件表の集合ではない。
+    expect(EFFECT_CONDITION_EVENT_TYPES.has("channelpoint")).toBe(false);
+    save([cp(1, "ガチャを引く")]);
+    expect(fire("ガチャを引く")?.effect).toEqual(TPL);
+  });
+
+  // --- 要望の本体 -------------------------------------------------------------------------------
+
+  it("⚠⚠⚠ 報酬ごとに別のものを出せる（＝要望の本体）", () => {
+    save([
+      cp(1, "ガチャを引く"),
+      cp(2, "曲リクエスト", { kind: "obs-source", sourceName: UUID2 }),
+    ]);
+    expect(fire("ガチャを引く")?.effect).toEqual(TPL);
+    expect(fire("曲リクエスト")?.effect).toEqual({
+      kind: "obs-source",
+      sourceName: UUID2,
+    });
+    // ⚠⚠ どちらにも紐づいていない報酬は**受け皿そのものが無い**ので鳴らない
+    //   （⚠ 段 3-b は「総称行が『出さない』だから」だったが、⚠⚠⚠ **段 3-c でその行ごと廃止した**
+    //   ——理由が変わっているので書き戻さないこと。直下の 段 3-c のケースが本体の担保）。
+    expect(fire("挨拶して")).toBeNull();
+  });
+
+  /**
+   * ## ⚠⚠⚠ 走査順（このブロックで最も重要な 1 本）
+   *
+   * ⚠⚠ **段 3-c で「なぜ先頭か」の理由が変わった。**
+   *   - 段 3-b … 条件表の「チャンネルポイント」行（総称）がどの報酬にも当たるため。
+   *     ⚠ **段 3-c でその行を廃止したので、この理由はもう成立しない。**
+   *   - いま … ⚠⚠⚠ **キーワード条件より前に置くため。** チャンネルポイントの引き換えは
+   *     `user_input`（視聴者が打ったテキスト）を本文として持つので、
+   *     **たまたまキーワード条件に一致しうる**。そのとき鳴るべきは**報酬の紐づけ**である。
+   */
+  it("⚠⚠⚠ 本文がキーワード条件に一致しても、報酬の紐づけが勝つ", () => {
+    const other = { kind: "obs-source", sourceName: UUID2 } as const;
+    // ⚠ 保存値ではキーワード条件のほうが**先に**書かれている。それでも紐づけが勝つこと。
+    save([kw(1, "草", { effect: other }), cp(1, "ガチャを引く")]);
+    const hit = resolveEffectMatch({
+      eventType: "channelpoint",
+      text: "草",
+      rewardTitle: "ガチャを引く",
+    });
+    expect(hit?.effect).toEqual(TPL);
+    expect(hit?.conditionId).toBe("cp:1");
+    // ⚠⚠ **紐づけていない報酬なら、キーワード条件が受ける**（＝キーワードを塞いでいない）。
+    const other2 = resolveEffectMatch({
+      eventType: "channelpoint",
+      text: "草",
+      rewardTitle: "曲リクエスト",
+    });
+    expect(other2?.conditionId).toBe("kw:1");
+  });
+
+  it("⚠⚠⚠ 段 3-c: 紐づけていないカスタム報酬では何も出ない（総称の受け皿は無い）", () => {
+    save([cp(1, "ガチャを引く")]);
+    expect(fire("曲リクエスト")).toBeNull();
+    // ⚠ 報酬名が取れなかった引き換えも同じ（受け皿が無い）。
+    expect(fire(undefined)).toBeNull();
+  });
+
+  it("⚠⚠⚠ 報酬名が取れない引き換えは、報酬ごとの行に当たらない（暴発しない）", () => {
+    save([cp(1, "ガチャを引く")]);
+    expect(fire(undefined)).toBeNull();
+    expect(fire("")).toBeNull();
+  });
+
+  /**
+   * ⚠⚠⚠ **イベント種別の検査を省く変異はこの 1 本だけが落とす。**
+   * 省いても「報酬名を持つ他イベントが今は無い」ので普通のテストでは当たらない
+   * ⇒ **報酬名つきの他イベントを撃つ**必要がある。
+   */
+  it("⚠⚠⚠ 報酬ごとの行は、チャンネルポイント以外のイベントでは発火しない", () => {
+    save([cp(1, "ガチャを引く")]);
+    expect(
+      resolveEffectMatch({
+        eventType: "superchat",
+        text: "",
+        rewardTitle: "ガチャを引く",
+      }),
+    ).toBeNull();
+    expect(
+      resolveEffectMatch({
+        eventType: "chat",
+        text: "",
+        rewardTitle: "ガチャを引く",
+      }),
+    ).toBeNull();
+  });
+
+  it("⚠⚠ 完全一致である（部分一致にしない＝「ガチャ」が「レアガチャ」に当たらない）", () => {
+    save([cp(1, "ガチャ")]);
+    expect(fire("ガチャ")?.effect).toEqual(TPL);
+    expect(fire("レアガチャ")).toBeNull();
+    expect(fire("ガチャを引く")).toBeNull();
+  });
+
+  it("⚠ 大文字小文字・全角半角・前後の空白は区別しない（キーワードと同じ正規化）", () => {
+    save([cp(1, " Gacha ")]);
+    expect(fire("gacha")?.effect).toEqual(TPL);
+    expect(fire("ＧＡＣＨＡ")?.effect).toEqual(TPL);
+  });
+
+  /**
+   * ⚠⚠ **チャネポは視聴者が対価を払っている**ので、連呼対策のクールダウン
+   * （`KEYWORD_COOLDOWN_MS`）を効かせない＝「払ったのに何も起きない」を作らない。
+   */
+  it("⚠⚠ クールダウンは 0（キーワードの 10 秒を引き継がない）", () => {
+    save([cp(1, "ガチャを引く")]);
+    expect(fire("ガチャを引く")?.cooldownMs).toBe(0);
+  });
+
+  // --- 保存値の検証（落とす／落とさない）---------------------------------------------------------
+
+  /**
+   * ⚠⚠⚠ **このブロック最大の失敗モード。** 空を通すと正規化後の比較が `"" === ""` で成立し、
+   * **すべての引き換えが 1 本目の行で鳴る**（報酬ごとに分けた意味が消える）。
+   */
+  it("⚠⚠⚠ 空・空白のみの報酬名は行ごと落ちる（全引き換えに一致しない）", () => {
+    for (const bad of ["", "   ", "\u3000", "\u00a0"]) {
+      localStorage.clear();
+      save([cp(1, bad)]);
+      expect(
+        loadEffectConditions().some((c) => c.when.type === "channelpoint"),
+      ).toBe(false);
+      expect(fire("ガチャを引く")).toBeNull();
+      expect(fire("なんでもいい")).toBeNull();
+    }
+  });
+
+  it("⚠ 型違い・制御文字・上限超えの報酬名は行ごと落ちる", () => {
+    const tooLong = "あ".repeat(REWARD_TITLE_MAX_LENGTH + 1);
+    const bads: unknown[] = [
+      123,
+      null,
+      undefined,
+      { a: 1 },
+      "ガ\u0000チャ",
+      tooLong,
+    ];
+    for (const bad of bads) {
+      localStorage.clear();
+      save([
+        {
+          id: "cp:1",
+          when: { type: "channelpoint", rewardTitle: bad },
+          effect: TPL,
+        },
+      ]);
+      expect(
+        loadEffectConditions().some((c) => c.when.type === "channelpoint"),
+      ).toBe(false);
+      // ⚠⚠ **その値そのもので撃つ**（「別の報酬なら鳴らない」だけでは、
+      //   長さ／制御文字の検査を外す変異を殺せない。段 3 の変異テストで実測した）。
+      if (typeof bad === "string") expect(fire(bad)).toBeNull();
+    }
+  });
+
+  it(`⚠ 上限ちょうど（${REWARD_TITLE_MAX_LENGTH} 文字）は通る`, () => {
+    const title = "あ".repeat(REWARD_TITLE_MAX_LENGTH);
+    save([cp(1, title)]);
+    expect(fire(title)?.effect).toEqual(TPL);
+  });
+
+  /**
+   * ⚠⚠⚠ **壊れた 1 行が他の行を巻き込まないこと。**
+   * 段 3 の変異テストで「壊れた指定を握り潰す」変異が緑のまま通ったのは、
+   * **「鳴らない」しか見ていなかった**ためである。⇒ **隣の行が生きていること**を見る。
+   */
+  it("⚠⚠⚠ 壊れた 1 行は、他の行を巻き込まない", () => {
+    save([
+      {
+        id: "cp:1",
+        when: { type: "channelpoint", rewardTitle: 123 },
+        effect: TPL,
+      },
+      cp(2, "ガチャを引く"),
+      kw(1, "草"),
+    ]);
+    expect(fire("ガチャを引く")?.conditionId).toBe("cp:2");
+    expect(
+      resolveEffectMatch({ eventType: "chat", text: "草だ" })?.conditionId,
+    ).toBe("kw:1");
+  });
+
+  it("⚠ id が `cp:<非負整数>` でない行は落ちる（クールダウンのキーの形を守る）", () => {
+    const badIds: unknown[] = [
+      "cp:",
+      "cp:x",
+      "cp: 1",
+      "cp:1e3",
+      "cp:0x10",
+      "channelpoint:1",
+      1,
+    ];
+    for (const id of badIds) {
+      localStorage.clear();
+      save([
+        {
+          id,
+          when: { type: "channelpoint", rewardTitle: "ガチャを引く" },
+          effect: TPL,
+        },
+      ]);
+      expect(fire("ガチャを引く")).toBeNull();
+    }
+  });
+
+  it("⚠ id の重複は先勝ちで落とす", () => {
+    save([
+      cp(1, "ガチャを引く"),
+      cp(1, "曲リクエスト", { kind: "obs-source", sourceName: UUID2 }),
+    ]);
+    expect(fire("ガチャを引く")?.effect).toEqual(TPL);
+    expect(fire("曲リクエスト")).toBeNull();
+  });
+
+  it(`⚠ ${CHANNEL_POINT_CONDITION_MAX} 件を超えた分は落ちる`, () => {
+    const many = Array.from(
+      { length: CHANNEL_POINT_CONDITION_MAX + 3 },
+      (_, i) => cp(i + 1, `報酬${i + 1}`),
+    );
+    save(many);
+    const rows = loadEffectConditions().filter(
+      (c) => c.when.type === "channelpoint",
+    );
+    expect(rows).toHaveLength(CHANNEL_POINT_CONDITION_MAX);
+    expect(fire(`報酬${CHANNEL_POINT_CONDITION_MAX}`)?.effect).toEqual(TPL);
+    expect(fire(`報酬${CHANNEL_POINT_CONDITION_MAX + 1}`)).toBeNull();
+  });
+
+  it("⚠⚠ イベント条件の行数と並びは 1 ミリも変わらない（報酬ごとの行を足しても）", () => {
+    save([cp(1, "ガチャを引く"), cp(2, "曲リクエスト")]);
+    expectEventRowShape(loadEffectConditions());
+  });
+
+  it("⚠⚠⚠ 保存値の先頭は報酬ごとの行である（＝走査順がディスク上でも一貫している）", () => {
+    save([ev("superchat"), kw(1, "草"), cp(1, "ガチャを引く")]);
+    saveEffectConditions(loadEffectConditions());
+    const stored = JSON.parse(raw() ?? "[]") as { id: string }[];
+    expect(stored[0]?.id).toBe("cp:1");
+  });
+
+  // --- 書き換え API -----------------------------------------------------------------------------
+
+  it("addChannelPointCondition: id が cp:1, cp:2 と増える", () => {
+    addChannelPointCondition("ガチャを引く", TPL);
+    addChannelPointCondition("曲リクエスト", TPL);
+    expect(
+      loadEffectConditions()
+        .filter((c) => c.when.type === "channelpoint")
+        .map((c) => c.id),
+    ).toEqual(["cp:1", "cp:2"]);
+  });
+
+  /**
+   * ⚠⚠ **削除しても詰めない**（`nextKeywordId` とまったく同じ規律）。
+   * ⚠ 今日は `cooldownMs: 0` なので実害が無いが、**採番の規則を種類ごとに変えない**ことが
+   * 「将来クールダウンを効かせた日に黙って壊れない」ことの担保である。
+   */
+  it("⚠⚠ addChannelPointCondition: 削除しても id を詰めない（使い回さない）", () => {
+    addChannelPointCondition("A", TPL);
+    addChannelPointCondition("B", TPL);
+    removeCondition("cp:1");
+    addChannelPointCondition("C", TPL);
+    expect(
+      loadEffectConditions()
+        .filter((c) => c.when.type === "channelpoint")
+        .map((c) => c.id),
+    ).toEqual(["cp:2", "cp:3"]);
+  });
+
+  it("updateChannelPointCondition: 報酬名を変えられる", () => {
+    addChannelPointCondition("ガチャを引く", TPL);
+    updateChannelPointCondition("cp:1", "レアガチャ");
+    expect(fire("レアガチャ")?.effect).toEqual(TPL);
+    expect(fire("ガチャを引く")).toBeNull();
+  });
+
+  it("⚠⚠ updateChannelPointCondition: イベント条件・キーワード条件には効かない", () => {
+    save([ev("superchat"), kw(1, "草")]);
+    updateChannelPointCondition("event:superchat", "ガチャを引く");
+    updateChannelPointCondition("kw:1", "ガチャを引く");
+    expect(raw()).not.toContain("rewardTitle");
+    expect(
+      resolveEffectMatch({ eventType: "chat", text: "草" })?.conditionId,
+    ).toBe("kw:1");
+  });
+
+  it("removeCondition: 報酬ごとの行は消える（イベント条件と違って作り直されない）", () => {
+    addChannelPointCondition("ガチャを引く", TPL);
+    removeCondition("cp:1");
+    expect(fire("ガチャを引く")).toBeNull();
+  });
+
+  it("setConditionEffect: 報酬ごとの行のエフェクトを変えられる", () => {
+    addChannelPointCondition("ガチャを引く", DEFAULT_EFFECT_ASSIGNMENT);
+    setConditionEffect("cp:1", { kind: "gacha", gachaId: "g:1" });
+    expect(fire("ガチャを引く")?.effect).toEqual({
+      kind: "gacha",
+      gachaId: "g:1",
+    });
+  });
+
+  // --- 保存キーの生き死に -------------------------------------------------------------------------
+
+  /**
+   * ⚠⚠⚠ **段 3 の実装中に踏んだ実バグと同型の回帰テスト。**
+   * エフェクトを選ぶ**前に**報酬名の行を作ると `effect` は既定（`none`）なので、
+   * 「全部既定なら消す」に巻き込まれて**行が黙って消える**。
+   */
+  it("⚠⚠⚠ エフェクトが既定でも、報酬ごとの行があればキーは消えない", () => {
+    addChannelPointCondition("ガチャを引く", DEFAULT_EFFECT_ASSIGNMENT);
+    expect(raw()).not.toBeNull();
+    // ⚠ 窓を開き直したのと同じこと（読み直して残っている）。
+    expect(
+      loadEffectConditions().filter((c) => c.when.type === "channelpoint"),
+    ).toHaveLength(1);
+    // ⚠ この後でエフェクトを選んでも行は 1 本のまま（増殖しない）。
+    setConditionEffect("cp:1", TPL);
+    expect(fire("ガチャを引く")?.effect).toEqual(TPL);
+  });
+
+  it("⚠ 報酬ごとの行を全部消し、他も既定ならキーごと消える", () => {
+    addChannelPointCondition("ガチャを引く", DEFAULT_EFFECT_ASSIGNMENT);
+    removeCondition("cp:1");
+    expect(raw()).toBeNull();
+  });
+
+  // --- 段 3 の保存値の扱い -------------------------------------------------------------------------
+
+  /**
+   * ⚠⚠ **段 3（未リリース）が `when.rewardTitle` として書いた絞り込みは読み捨てる。**
+   * ⚠ 移行コードは書かない——段 3 は 1 度もリリースされておらず、
+   * **書けば「まだ誰も持っていない形」のための負債が恒久的に残る**。
+   * ⚠⚠⚠ **壊れるのでも落ちるのでもなく、「すべての報酬」へ戻る**（＝作者が 1 回入れ直す）。
+   */
+  it("⚠⚠ 段 3 の保存値（イベント条件の rewardTitle）は行ごと捨てられる", () => {
+    save([
+      {
+        id: "event:channelpoint",
+        when: {
+          type: "event",
+          eventType: "channelpoint",
+          rewardTitle: "ガチャを引く",
+        },
+        effect: TPL,
+      },
+    ]);
+    // ⚠⚠⚠ 段 3-b は「絞り込みだけ読み捨てて行は残る」だったが、
+    //   **段 3-c で `channelpoint` が許可集合から外れた**ので**行ごと落ちる**。
+    //   ⇒ 段 3 で設定していた人は、カスタム報酬の行として**入れ直す**（依頼者に確認済み）。
+    expect(fire("ガチャを引く")).toBeNull();
+    expect(fire("曲リクエスト")).toBeNull();
+    saveEffectConditions(loadEffectConditions());
+    expect(raw() ?? "").not.toContain("rewardTitle");
+    expect(raw() ?? "").not.toContain("channelpoint");
+  });
+
+  // --- 述語 ---------------------------------------------------------------------------------------
+
+  it("isUsableRewardTitle: 正規化して空になる文字列を弾く", () => {
+    expect(isUsableRewardTitle("ガチャ")).toBe(true);
+    expect(isUsableRewardTitle("")).toBe(false);
+    expect(isUsableRewardTitle("   ")).toBe(false);
+    expect(isUsableRewardTitle("\u3000")).toBe(false);
+  });
+
+  /**
+   * ⚠⚠ **UI の「重複した行」の警告が、照合とまったく同じ規則で判定されること。**
+   * ずれると「警告が出ないのに発火しない行」（またはその逆）が生まれる。
+   */
+  it("isSameRewardTitle: 照合と同じ正規化で比べる", () => {
+    expect(isSameRewardTitle("ガチャ", " ガチャ ")).toBe(true);
+    expect(isSameRewardTitle("Gacha", "ＧＡＣＨＡ")).toBe(true);
+    expect(isSameRewardTitle("ガチャ", "レアガチャ")).toBe(false);
+  });
+
+  it("sanitizeRewardTitleInput: 制御文字を落とし、上限で詰める", () => {
+    expect(sanitizeRewardTitleInput("ガ\u0000チャ")).toBe("ガチャ");
+    expect(sanitizeRewardTitleInput("あ".repeat(60))).toHaveLength(
+      REWARD_TITLE_MAX_LENGTH,
+    );
+    // ⚠ `trim()` しない（入力途中の末尾スペースを奪わない）。
+    expect(sanitizeRewardTitleInput("ガチャ ")).toBe("ガチャ ");
   });
 });

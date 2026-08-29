@@ -31,5 +31,9 @@ export const convertCommentToViewDto = async (
     //   値だけが静かに消える（`wire.ts` の `toCanonicalComment` と対になる中継 2 段の 1 段目）。
     //   `scripts/test-comment-relay.mjs` が converter → wire の 2 段を実運用と同じ順で通して固定している。
     raidViewerCount: comment.raidViewerCount,
+    // ⚠⚠⚠ 063e 段 3: 報酬名。**この 1 行を落とすと「出し分けが効かない」**
+    //   ——報酬名が undefined になるので、報酬を指定した条件が**永久に当たらなくなる**
+    //   （画面は正常・エラーも出ない）。上の `raidViewerCount` と同型の静かな欠落である。
+    rewardTitle: comment.rewardTitle,
   };
 };

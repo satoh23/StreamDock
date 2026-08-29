@@ -163,16 +163,33 @@ export type EffectObsSource = { kind: "obs-source"; sourceName: string };
 export interface EffectMatchInput {
   eventType: string;
   text: string;
+  /**
+   * ⚠⚠⚠ 063e 段 3: 引き換えた報酬の名前（**channelpoint のときだけ入る**・それ以外は `undefined`）。
+   *
+   * ⚠ **3 つ目を足すのは 061j 以来はじめて**なので、足した理由を残す:
+   * 購読の `condition` は `broadcaster_user_id` だけで**報酬で絞っていない**ため、
+   * **配信者が作ったカスタム報酬すべての引き換えが届く**。⇒ 「ガチャ用の報酬だけに反応させる」
+   * （依頼者の要望）を実現する材料が、**イベント種別にも本文にも無い**。
+   *
+   * ⚠⚠ **`CommentViewDto` を丸ごと渡す形にはしていない**（上の §9 の規律は不変）。
+   * 増えたのは**ユーザー自身の設定値 1 つ**であり、第三者データは `text` のままである。
+   * ⚠ 空文字は来ない（mapper が空文字を `undefined` へ倒している）——
+   * 「名前が空の報酬」と「報酬を指定していない条件」が同じ値で出会わないようにするため。
+   */
+  rewardTitle?: string;
 }
 
 /**
  * 061j: 当たった条件 1 件。
  *
- * ⚠⚠ **本文を載せない。** これが「第三者の本文が発火層より先へ 1 バイトも進まない」ことの担保で、
- * `EffectRequest` が **8 キーのまま無改変**であることと対になっている（§9）。
+ * ⚠⚠ **本文も報酬名も載せない。** これが「第三者の本文が発火層より先へ 1 バイトも進まない」ことの
+ * 担保であり、⚠ **この型が `{ effect, conditionId, cooldownMs }` の 3 キーであること**がそのまま §9 の壁である
+ * （⚠ 064d 以前はここに「`EffectRequest` が 8 キーのまま無改変」と書いていたが、
+ * **その型は 064d で全廃済み**なので、いまの担保はこの 3 キーのほうである）。
  * ⚠ `conditionId` は**ユーザー自身が作った条件の識別子**なので §9 の対象外だが、
- * **`EffectRequest` には載せない**——クールダウンの判定は [`decideEffects`] の中で完結するので
- * 載せる理由が無く、載せると「出すのに要る最小限」という 061b の規律が緩む。
+ * **発火のペイロード（[`EffectObsSource`] 等）には載せない**——クールダウンの判定は
+ * [`decideEffects`] の中で完結するので載せる理由が無く、
+ * 載せると「出すのに要る最小限」という 061b の規律が緩む。
  * ⚠ `cooldownMs` を戻り値に載せることで、[`decideEffects`] の分岐は 1 つで済む
  * （＝**発火層は「イベント条件かキーワード条件か」を知らない**・061b の「発火層は割り当てを知らない」の維持）。
  *
@@ -460,7 +477,12 @@ export function decideEffects<T extends object = EffectObsSource>(
     //   1 件でも積むと、**キーワードに当たらない通常チャットが投げ銭を捨てる**（常時発生する）。
     // ⚠ 手前に置く理由は 061d-2 のまま＝ `viewerIdOf` の計算を無駄にしないことと、
     //   「出さないと決まったものは以降の状態に一切触らない」が**読んで分かる**こと。
-    const match = matchEffect({ eventType: c.eventType, text: c.text });
+    // ⚠ 063e 段 3: 報酬名を足した（`undefined` は「報酬名を持たないイベント」＝ channelpoint 以外）。
+    const match = matchEffect({
+      eventType: c.eventType,
+      text: c.text,
+      rewardTitle: c.rewardTitle,
+    });
     if (match === null) continue;
 
     // 061j（判断 7）: **同じ条件が続けて発火しない**ようにする。

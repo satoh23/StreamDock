@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Button } from "../../components/primitives";
 import { Select } from "../../components/Select";
 import {
+  CHANNEL_POINT_REWARDS_KEY,
   loadObsSourceList,
   OBS_SOURCE_LIST_KEY,
   type ObsSourceEntry,
@@ -17,12 +18,20 @@ import {
   sanitizeKeywordInput,
   setConditionEffect as setConditionEffectRaw,
   updateKeywordCondition as updateKeywordConditionRaw,
+  addChannelPointCondition as addChannelPointConditionRaw,
+  updateChannelPointCondition as updateChannelPointConditionRaw,
+  isSameRewardTitle,
+  isUsableRewardTitle,
+  sanitizeRewardTitleInput,
+  CHANNEL_POINT_CONDITION_MAX,
+  REWARD_TITLE_MAX_LENGTH,
   type EffectAssignment,
   type EffectConditions,
   type GachaDefinition,
   type EffectKeywordMatch,
 } from "./effectAssignments";
 import { EFFECT_EVENT_LABEL } from "./effectEventRows";
+import { loadRecentChannelPointRewards } from "../../features/comment-viewer/channelPointRewards";
 import {
   effectSelectAssignment,
   effectSelectValue,
@@ -46,6 +55,9 @@ import styles from "./ObsEffectsScreen.module.css";
  * 「条件を追加」ボタンで行を増やす形にしない。
  * ⚠ **063e 段 2 で出所が `MONETARY_EVENT_TYPES` から替わり、行が 6 → 7 になった**
  * （チャンネルポイントは**条件表には出すが、お金ではない**＝赤枠も投げ銭音も出さない）。
+ * ⚠⚠⚠ **段 3-c で 7 → 6 へ戻した**——チャンネルポイントは**種別の 1 行ではなく
+ * カスタム報酬ごとの行**で扱うことになったため（下の「チャンネルポイント」ブロックが正）。
+ * ⚠ **集合を `MONETARY_EVENT_TYPES` へ統合しないこと**（いま中身が同じでも答えている問いが違う）。
  * 分けた理由の全文は `viewerFormat.ts` の `EFFECT_CONDITION_EVENT_TYPES` の JSDoc が正。
  *
  * ⚠ **金額の閾値による出し分けはまだ作らない**（種別だけで動かして実機の手応えを見る）。
@@ -207,6 +219,18 @@ interface DraftKeywordRow {
   effect: EffectAssignment;
 }
 
+/**
+ * ⚠⚠⚠ 063e 段 3-b: **未確定の「報酬ごと」の行**（まだ localStorage に無い行）。
+ *
+ * ⚠ 存在理由は [`DraftKeywordRow`] とまったく同じである——追加ボタンで生えた直後の行は
+ * 報酬名が空で、保存層（`parseChannelPointCondition`）が**その場で落として行が生えない**。
+ * ⇒ **非空になって初めて永続化する。** ⚠ **同時に 1 本だけ。**
+ */
+interface DraftChannelPointRow {
+  rewardTitle: string;
+  effect: EffectAssignment;
+}
+
 export function EffectAssignmentCard({
   gachas,
   onConditionsChange,
@@ -285,6 +309,14 @@ export function EffectAssignmentCard({
   ) => commitConditions(updateKeywordConditionRaw(id, when));
   const removeCondition = (id: string) =>
     commitConditions(removeConditionRaw(id));
+  /** ⚠ 063e 段 3-b: 報酬ごとの紐づけを 1 本足す。 */
+  const addChannelPointCondition = (
+    rewardTitle: string,
+    effect: EffectAssignment,
+  ) => commitConditions(addChannelPointConditionRaw(rewardTitle, effect));
+  /** ⚠ 063e 段 3-b: 報酬ごとの紐づけの**報酬名**を変える。 */
+  const updateChannelPointCondition = (id: string, rewardTitle: string) =>
+    commitConditions(updateChannelPointConditionRaw(id, rewardTitle));
 
   /**
    * ⚠⚠ **061j（穴 α）: 入力中の生文字列はここに持ち、`onChange` では保存しない。**
@@ -301,6 +333,23 @@ export function EffectAssignmentCard({
    */
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [draftRow, setDraftRow] = useState<DraftKeywordRow | null>(null);
+  /**
+   * ⚠⚠ 063e 段 3 / 段 3-b: **報酬名の下書き**（キーワードの [`drafts`] とまったく同じ規律）。
+   * ⚠ `onChange` では保存しない——保存すると **`storage` イベントが打鍵ごとに他窓へ飛ぶ**。
+   */
+  const [rewardDrafts, setRewardDrafts] = useState<Record<string, string>>({});
+  /** ⚠ 063e 段 3-b: 未確定の「報酬ごと」の行（[`DraftChannelPointRow`] の注記が正）。 */
+  const [cpDraft, setCpDraft] = useState<DraftChannelPointRow | null>(null);
+  /**
+   * ⚠⚠⚠ 063e 段 3: **最近届いた報酬名**（押すと欄に入るチップの出どころ）。
+   *
+   * ⚠ 書き手は**コメビュ窓**なので、`storage` の購読で追従する
+   * （[`OBS_SOURCE_LIST_KEY`] とまったく同じ非対称・同じ購読の形）。
+   * ⚠⚠ 空でも**壊れていない**——「まだ 1 件も届いていない」だけで、欄には打てる。
+   */
+  const [recentRewards, setRecentRewards] = useState<string[]>(() =>
+    loadRecentChannelPointRewards(),
+  );
 
   /**
    * 064b: 割り当て先に出す **OBS 側のソース**（`null` ＝ **まだ 1 度も取っていない**）。
@@ -321,6 +370,10 @@ export function EffectAssignmentCard({
       if (e.key === OBS_SOURCE_LIST_KEY || e.key === null) {
         setObsSources(loadObsSourceList()?.sources ?? null);
       }
+      // ⚠ 063e 段 3: コメビュ窓が報酬名を覚えたら、チップに反映する（同じ購読に相乗り）。
+      if (e.key === CHANNEL_POINT_REWARDS_KEY || e.key === null) {
+        setRecentRewards(loadRecentChannelPointRewards());
+      }
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
@@ -330,6 +383,19 @@ export function EffectAssignmentCard({
   const keywordConditions = conditions.filter((c) => c.when.type === "keyword");
   const canAddKeyword =
     draftRow === null && keywordConditions.length < KEYWORD_CONDITION_MAX;
+  // ⚠ 063e 段 3-b: 報酬ごとの紐づけ。⚠⚠ **保存値の並びは `cp:` が先頭**（`parseConditions` の
+  //   走査順＝優先順位）だが、画面では絞り込んで描くので**この filter が並びの持ち主ではない**。
+  const channelPointConditions = conditions.filter(
+    (c) => c.when.type === "channelpoint",
+  );
+  const canAddChannelPoint =
+    cpDraft === null &&
+    channelPointConditions.length < CHANNEL_POINT_CONDITION_MAX;
+  /** ⚠ その報酬名の行が既にあるか（チップを押せなくする判定・重複行を作らせない）。 */
+  const hasRewardRow = (name: string): boolean =>
+    channelPointConditions.some(
+      (c) => c.when.type === "channelpoint" && isSameRewardTitle(c.when.rewardTitle, name),
+    );
 
   /**
    * 既存のキーワード行を確定する。
@@ -339,6 +405,64 @@ export function EffectAssignmentCard({
    * ⚠ 空判定は [`isUsableKeyword`]（＝正規化の持ち主に聞く）。ここで `text.trim() === ""` と
    *   書いても**いまは同じ結果**だが、空判定の規則を 2 か所に書かないために述語へ寄せている。
    */
+  /**
+   * ⚠⚠⚠ 063e 段 3-b: **既存の**「報酬ごと」の行の報酬名を確定する。
+   *
+   * ⚠ **空になったら直前の確定値へ戻す**（[`commitKeyword`] とまったく同じ規律）。
+   * ⚠⚠ **段 3 とはここが逆になった。** 段 3 の欄は「絞り込み」だったので
+   * **空にすること自体が有効な操作**（＝すべての報酬）だったが、段 3-b の欄は
+   * **行の主キーそのもの**なので、⚠⚠⚠ **空を通すと保存層が行ごと落とす**
+   * ＝ 打ち間違いでユーザーの紐づけが黙って消える。⇒ **戻す。**
+   * ⚠⚠⚠ **段 3-c 以降「すべての報酬に出す」という設定そのものが存在しない**
+   * （条件表の「チャンネルポイント」行＝総称の受け皿を廃止したため）。
+   * ⇒ 欄を空にする操作に意味は無く、**直前値へ戻すのが唯一の正しい挙動である。**
+   */
+  const commitReward = (id: string) => {
+    const raw = rewardDrafts[id];
+    setRewardDrafts((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    if (raw === undefined) return;
+    const text = sanitizeRewardTitleInput(raw);
+    if (!isUsableRewardTitle(text)) return;
+    updateChannelPointCondition(id, text);
+  };
+
+  /** 未確定行を確定する。⚠ **空のままなら永続化しない**（行はそのまま残るので打ち直せる）。 */
+  const commitCpDraft = () => {
+    if (cpDraft === null) return;
+    const rewardTitle = sanitizeRewardTitleInput(cpDraft.rewardTitle);
+    if (!isUsableRewardTitle(rewardTitle)) {
+      // ⚠ 詰めた結果は入力欄へ書き戻す（「打ったら短くなった」が見える・048 の規律）。
+      setCpDraft({ ...cpDraft, rewardTitle });
+      return;
+    }
+    addChannelPointCondition(rewardTitle, cpDraft.effect);
+    setCpDraft(null);
+  };
+
+  /**
+   * ⚠⚠⚠ **チップを押すと、その報酬の行が 1 本生える**（依頼者＝「極力画面操作は少なく」）。
+   *
+   * ⚠ 段 3 は「いま開いている欄に文字を入れる」だったが、段 3-b は行が複数あるので
+   * **どの行に入れるのかが決まらない**。⇒ **押した報酬の行を作る**——
+   * 迷う余地が無く、操作は**1 回**のままである。
+   * ⚠⚠ 未確定行が開いているなら**そこへ入れて確定する**（未確定行が 2 本にならない）。
+   * ⚠ このとき**打ちかけの文字列はチップの報酬名で上書きされる**（引き継ぐのは `effect` だけ）。
+   *   実ブラウザではチップの `click` より先に欄の `blur` が走って下書きが確定するので、
+   *   この分岐へ来るのは `fireEvent.click` 直撃のテスト経路が主である。
+   */
+  const applyRewardChip = (rewardTitle: string) => {
+    if (cpDraft !== null) {
+      addChannelPointCondition(rewardTitle, cpDraft.effect);
+      setCpDraft(null);
+      return;
+    }
+    addChannelPointCondition(rewardTitle, DEFAULT_EFFECT_ASSIGNMENT);
+  };
+
   const commitKeyword = (id: string, match: EffectKeywordMatch) => {
     const raw = drafts[id];
     setDrafts((prev) => {
@@ -418,6 +542,194 @@ export function EffectAssignmentCard({
               </div>
             );
           })}
+        </div>
+
+        {/* --- 063e 段 3-b: チャンネルポイントの報酬ごと ------------------------------------- */}
+
+        {/* ⚠⚠⚠ **段 3 のサブフォーム（条件表の行の下に開く「対象の報酬」欄）を、この 1 ブロックへ
+            作り直した。** 依頼者＝「**このチャネポ交換ならこれ、このチャネポ交換ならこのガチャ**
+            みたいにそれぞれ設定できるように」「**それぞれの紐づきは 1 行で**」「**フォームの長さが
+            長すぎる**」。⇒ **形はキーワード条件と同じ**（1 行＝入力欄＋エフェクト＋削除／＋で増やす）
+            ——同じ画面に 2 通りの「行を増やす形」を作らないため。
+
+            ## ⚠⚠⚠ 段 3-c: **ここがチャンネルポイントの唯一の設定場所になった**
+
+            依頼者＝「**そもそもチャンネルポイント交換しただけで表示したいエフェクトなんか無い**
+            んだから、チャンネルポイントにあるプルダウンを消して、**必ずカスタム報酬ごとに**
+            エフェクト設定する形に」。⇒ 上の条件表から「チャンネルポイント」の行を消した
+            （`EFFECT_CONDITION_EVENT_TYPES` から外した）。
+            ⚠⚠ **だから見出しは「カスタム報酬ごと」ではなく「チャンネルポイント」である**——
+            条件表に手掛かりの行が無くなった以上、**ここだけがチャネポの入口**なので、
+            種別の名前で見つけられなければならない。
+            ⚠⚠⚠ **折りたたまないこと**（「高度な設定」に畳む案は依頼者と検討して取り下げた）——
+            唯一の設定場所を畳むと「チャネポの設定がどこにも無い」ように見える。 */}
+        <h4 className={styles.subHeading}>チャンネルポイント</h4>
+        {/* ⚠⚠ **「黙って効かない」を作らないための 3 文**（061a Q-1）。ここが説明するのは:
+            ①⚠⚠⚠ **紐づけていないカスタム報酬では何も出ない**（段 3-c で総称の受け皿を廃止した）
+            ②⚠⚠⚠ **自動報酬には反応しない**（下の「語」の注記が正）
+            ③Twitch 側で名前を変えると効かなくなる（＝黙って鳴らなくなる唯一の外的要因）
+            ⚠ 061p の「説明が長すぎる」に従い、**この 3 つ以外は書かない**。
+            ⚠⚠ ①は段 3-b では逆のこと（「上の行が受け持つ」）を書いていた。**挙動ごと変わったので
+            書き換えている**——古いままにすると「出るはずのものが出ない」と読める嘘になる。
+
+            ## ⚠⚠⚠ 語: 「報酬」ではなく「**カスタム報酬**」と書く
+
+            ⚠ どちらも Twitch 公式の日本語表記だが、**この機能が反応するのはカスタム報酬だけ**である
+            ——購読しているのは `channel.channel_points_custom_reward_redemption.add` の 1 本で、
+            **Twitch が最初から用意している自動報酬**（「ハイライトされたメッセージ」など）は
+            `...automatic_reward_redemption.add` という**別の購読**で届く（⚠ **取っていない**）。
+            ⚠⚠ 「報酬」とだけ書くと、自動報酬の名前を打った人が**黙って永久に鳴らない**
+            （061a Q-1 が最も嫌う壊れ方）。⇒ **語を狭めることが、そのまま網になっている。**
+            ⚠ **再修正トリガー＝自動報酬の購読も取るようになったとき**（そのときは語を広げること）。 */}
+        <p className={styles.note}>
+          チャンネルポイントは、<strong>カスタム報酬ごと</strong>に出すものを決めます（
+          {CHANNEL_POINT_CONDITION_MAX}個まで）。
+          ここに書いていないカスタム報酬では何も出ません。 Twitch
+          が最初から用意している報酬（「ハイライトされたメッセージ」など）には反応しません。
+          Twitch 側で名前を変えると効かなくなります。
+        </p>
+
+        <div className={styles.rewardList}>
+          {channelPointConditions.map((condition, index) => {
+            if (condition.when.type !== "channelpoint") return null;
+            const { rewardTitle } = condition.when;
+            const n = index + 1;
+            // ⚠ 入力中は下書き、確定後は保存値（キーワード欄と同じ `??` の分け方）。
+            const shown = rewardDrafts[condition.id] ?? rewardTitle;
+            // ⚠⚠⚠ **同じ報酬名の行が上にあると、この行は永久に発火しない**
+            //   （走査は最初に当たった 1 件だけ）。⚠ 保存層で落とさず**画面で言う**のは、
+            //   落とすと**打った文字列ごと黙って消える**からである（`isSameRewardTitle` の注記が正）。
+            const duplicated = channelPointConditions.some(
+              (other, j) =>
+                j < index &&
+                other.when.type === "channelpoint" &&
+                isSameRewardTitle(other.when.rewardTitle, rewardTitle),
+            );
+            return (
+              <div key={condition.id} className={styles.rewardRow}>
+                <span className={`${layout.field} ${styles.rewardText}`}>
+                  <input
+                    type="text"
+                    value={shown}
+                    aria-label={`カスタム報酬の名前 ${n}`}
+                    /* ⚠ ブラウザの補助であって保証ではない（キーワード欄と同じ位置づけ）。
+                       実際の上限は確定時の `sanitizeRewardTitleInput` と保存層が担う。 */
+                    maxLength={REWARD_TITLE_MAX_LENGTH}
+                    placeholder="例: ガチャを引く"
+                    onChange={(e) =>
+                      setRewardDrafts((prev) => ({
+                        ...prev,
+                        [condition.id]: e.target.value,
+                      }))
+                    }
+                    onBlur={() => commitReward(condition.id)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") commitReward(condition.id);
+                    }}
+                  />
+                </span>
+                <ConditionEffectSelect
+                  effect={condition.effect}
+                  obsSources={obsSources}
+                  gachas={gachas}
+                  ariaLabel={`カスタム報酬 ${n} のエフェクト`}
+                  onChange={(effect) => setConditionEffect(condition.id, effect)}
+                />
+                <Button
+                  type="button"
+                  onClick={() => removeCondition(condition.id)}
+                >
+                  削除
+                </Button>
+                {duplicated && (
+                  <p className={styles.errorText}>
+                    上の行と同じカスタム報酬です。上の行だけが動きます。
+                  </p>
+                )}
+              </div>
+            );
+          })}
+
+          {cpDraft !== null && (
+            // ⚠⚠ **未確定行**（まだ保存されていない）。⚠ 条件の件数にも派生値にも数えない。
+            <div className={styles.rewardRow}>
+              <span className={`${layout.field} ${styles.rewardText}`}>
+                <input
+                  type="text"
+                  value={cpDraft.rewardTitle}
+                  aria-label={`カスタム報酬の名前 ${channelPointConditions.length + 1}`}
+                  maxLength={REWARD_TITLE_MAX_LENGTH}
+                  placeholder="例: ガチャを引く"
+                  autoFocus
+                  onChange={(e) =>
+                    setCpDraft({ ...cpDraft, rewardTitle: e.target.value })
+                  }
+                  onBlur={commitCpDraft}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") commitCpDraft();
+                  }}
+                />
+              </span>
+              <ConditionEffectSelect
+                effect={cpDraft.effect}
+                obsSources={obsSources}
+                gachas={gachas}
+                ariaLabel={`カスタム報酬 ${channelPointConditions.length + 1} のエフェクト`}
+                onChange={(effect) => setCpDraft({ ...cpDraft, effect })}
+              />
+              <Button type="button" onClick={() => setCpDraft(null)}>
+                削除
+              </Button>
+            </div>
+          )}
+        </div>
+
+        {/* ⚠⚠⚠ 依頼者＝「**極力画面操作は少なく、簡潔に設定できる方が良い**」。
+            ⇒ 実際に届いた報酬名を**押すだけ**でその報酬の行が生える（打ち間違いが起きない）。
+            ⚠ 空のときは**何も出さない**——「候補なし」と書くと、
+            まだ引き換えが 1 件も来ていないだけなのに**壊れているように見える**。
+            ⚠⚠ 段 3 は行ごとに出していたが、**ブロックに 1 つ**にした（行が増えても複製されない）。 */}
+        {recentRewards.length > 0 && (
+          <div className={styles.rewardChips}>
+            <span className={styles.note}>最近届いたカスタム報酬</span>
+            {recentRewards.map((name) => (
+              <button
+                key={name}
+                type="button"
+                className={styles.rewardChip}
+                aria-label={`「${name}」の行を追加`}
+                /* ⚠ 既に行があるなら押せない（押しても 2 本目は永久に発火しない）。
+                   ⚠ 上限に達しているときも同じ（保存層が落とすので押しても何も起きない）。 */
+                disabled={
+                  hasRewardRow(name) ||
+                  channelPointConditions.length >= CHANNEL_POINT_CONDITION_MAX
+                }
+                onClick={() => applyRewardChip(name)}
+              >
+                {name}
+              </button>
+            ))}
+          </div>
+        )}
+
+        <div className={styles.rowActions}>
+          {/* ⚠ ＋ の作法はキーワード側と同じ（アクセシブル名を付ける／グリフは `aria-hidden`）。
+              ⚠⚠ **名前を変えないこと**——`getByRole("button", …)` で引いている検査がある。 */}
+          <Button
+            type="button"
+            aria-label="カスタム報酬を追加"
+            onClick={() =>
+              setCpDraft({
+                rewardTitle: "",
+                effect: DEFAULT_EFFECT_ASSIGNMENT,
+              })
+            }
+            disabled={!canAddChannelPoint}
+          >
+            <span className={styles.iconGlyph} aria-hidden="true">
+              ＋
+            </span>
+          </Button>
         </div>
 
         {/* --- 061j: キーワード条件（自由テキスト） ------------------------------------------ */}
