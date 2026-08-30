@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 import { invoke } from "@tauri-apps/api/core";
-import { recordGachaDraws } from "./gachaHistoryApi";
+import { listGachaDraws, recordGachaDraws } from "./gachaHistoryApi";
 import type { GachaDrawOutcome } from "../../screens/obs-effects/effectFire";
 
 const mockInvoke = vi.mocked(invoke);
@@ -133,5 +133,36 @@ describe("063h: recordGachaDraws", () => {
       "viewerId",
       "viewerName",
     ]);
+  });
+});
+
+/**
+ * 063i: 一覧の invoke ラッパ（read-only）。
+ *
+ * ⚠⚠ **固定するのは「引数がセッション id 1 つだけであること」**（docs/security.md §3・
+ * §9 追補〔063h〕が 063i に対して名指しで求めている線）。絞り込みの引数を足すと
+ * 「任意条件の汎用クエリ」になり、**ACL を通らないコマンドに能力が生まれる**。
+ */
+describe("063i: listGachaDraws", () => {
+  beforeEach(() => {
+    mockInvoke.mockReset();
+    mockInvoke.mockResolvedValue([]);
+  });
+
+  it("list_gacha_draws をセッション id だけで呼ぶ", async () => {
+    await listGachaDraws("s1");
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+    expect(mockInvoke.mock.calls[0][0]).toBe("list_gacha_draws");
+    // ⚠ キーが 1 つだけであること（上限・絞り込みの引数を足していない）。
+    expect(mockInvoke.mock.calls[0][1]).toEqual({ sessionId: "s1" });
+  });
+
+  it("Rust が返した並びをそのまま返す（画面側で並べ替えない）", async () => {
+    const rows = [
+      { id: "b", viewerId: "twitch:1", viewerName: "A", gachaName: "朝", rare: false, drawnAt: "2026-08-30T12:05:00Z" },
+      { id: "a", viewerId: "twitch:2", viewerName: "B", gachaName: "朝", rare: true, drawnAt: "2026-08-30T12:00:00Z" },
+    ];
+    mockInvoke.mockResolvedValue(rows);
+    expect(await listGachaDraws("s1")).toEqual(rows);
   });
 });

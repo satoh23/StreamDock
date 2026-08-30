@@ -9,7 +9,7 @@ use rusqlite::Connection;
 use crate::error::AppResult;
 use crate::util::{now_rfc3339, reject_control_chars, require_non_empty, require_rfc3339};
 
-use super::model::NewGachaDraw;
+use super::model::{GachaDrawRecord, NewGachaDraw};
 use super::repository;
 
 /// 表示名・ガチャ名・景品名の文字数上限（⚠ **`chars().count()`＝Unicode スカラー単位。バイト数ではない**）。
@@ -121,6 +121,32 @@ pub fn record(conn: &Connection, draw: NewGachaDraw) -> AppResult<()> {
     };
     repository::insert(conn, &validated, &now_rfc3339())?;
     Ok(())
+}
+
+/// セッション id の検証（§8・`stream_summary::service::validate_id` と同じ規律）。
+///
+/// ⚠ **入力を message に反射しない**（read-only なのでログには載らないが、流儀を揃える）。
+fn validate_session_id(session_id: &str) -> AppResult<String> {
+    let session_id = session_id.trim().to_string();
+    require_non_empty(&session_id, "セッションIDは必須です")?;
+    reject_control_chars(&session_id, "セッションIDに制御文字は使用できません")?;
+    Ok(session_id)
+}
+
+/// 1 回の配信ぶんの抽選記録を新しい順で返す（063i・**read-only**）。
+///
+/// ⚠⚠ **引数はセッション id 1 つだけ**（docs/security.md §3・§9 追補〔063h〕）。
+/// 「任意の条件で絞る」汎用クエリにしないこと——アプリ定義コマンドは **ACL を通らず全窓から呼べる**ので、
+/// 能力を構造側に持たせない（`stream_summary::commands` の単一目的の線引きと同じ）。
+///
+/// ⚠ **上限・ページングはここに入れない**（切るのは画面側＝063i 穴 A）。
+/// 入れたくなったら DTO ではなく**引数を足す**形になるので、そのとき §3 を読み直すこと。
+///
+/// ⚠ 存在しないセッション id は**空の一覧**で返る（`NotFound` にしない）。
+/// 記録は遡れないので、063h より前の配信は必ず空になる＝**それは失敗ではない**。
+pub fn list(conn: &Connection, session_id: &str) -> AppResult<Vec<GachaDrawRecord>> {
+    let session_id = validate_session_id(session_id)?;
+    Ok(repository::list_by_session(conn, &session_id)?)
 }
 
 #[cfg(test)]
@@ -298,5 +324,52 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM gacha_draws", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // 063i: 一覧（read-only）
+    // -----------------------------------------------------------------------
+
+    /// 記録したものが一覧に出て、**新しい順**で並ぶこと。
+    #[test]
+    fn list_returns_recorded_draws_newest_first() {
+        let conn = test_conn();
+        let mut older = valid();
+        older.id = "c1:g:1:0".to_string();
+        older.drawn_at = "2026-08-30T12:00:00Z".to_string();
+        record(&conn, older).unwrap();
+
+        let mut newer = valid();
+        newer.id = "c2:g:1:0".to_string();
+        newer.drawn_at = "2026-08-30T12:30:00Z".to_string();
+        newer.prize_label = None;
+        record(&conn, newer).unwrap();
+
+        let rows = list(&conn, "s1").unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, "c2:g:1:0");
+        assert_eq!(rows[0].prize_label, None);
+        assert_eq!(rows[1].prize_label.as_deref(), Some("色紙"));
+    }
+
+    /// ⚠ セッション id も §8 の検証を通ること（空・制御文字）。
+    #[test]
+    fn list_rejects_an_empty_or_control_char_session_id() {
+        let conn = test_conn();
+        for bad in ["", "   ", "s\u{0}1", "s\n1"] {
+            assert_eq!(
+                list(&conn, bad).unwrap_err().code,
+                ErrorCode::ValidationError,
+                "不正なセッションIDを通した: {bad:?}"
+            );
+        }
+    }
+
+    /// ⚠ 記録の無い配信は**空**で返る（`NotFound` にしない＝記録は遡れないので空が正常）。
+    #[test]
+    fn list_is_empty_for_a_session_recorded_before_063h() {
+        let conn = test_conn();
+        record(&conn, valid()).unwrap();
+        assert!(list(&conn, "old-session").unwrap().is_empty());
     }
 }

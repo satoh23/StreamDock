@@ -1434,6 +1434,19 @@
   grid-template-columns: minmax(0, 1.6fr) minmax(0, 0.7fr) minmax(0, 1.4fr);
 }
 
+/* 063i: ガチャ一覧の列（時刻 / 引いた人 / ガチャ / 結果）。
+   ⚠ 結果は「景品名 ＋ レアのバッジ」が入るので広めに取る（バッジは `.vNameCell .badge` で縮まない）。
+   ⚠⚠ **サイト（配信元）の列は無い**——`GachaDrawRecord` が `source` を持たないため
+   （保存していないものは出さない＝docs/security.md §9 追補〔063h〕）。列を足す前に DTO を決め直すこと。
+   ⚠ **足す位置はここ（`.raidHead` の直後）から動かさないこと**——単一クラス同士は同特異度なので、
+   `.viewerHead` / `.viewerRow` の基底 7 列より**後方にある**ことだけが上書きの根拠である。 */
+.gachaHead,
+.gachaRow {
+  grid-template-columns:
+    minmax(0, 1.1fr) minmax(0, 1.2fr) minmax(0, 1fr)
+    minmax(0, 1.6fr);
+}
+
 /* 「配信中」バッジ（`.badge` を基底に色だけ差し替え＝038c の判定バッジと同じ作り）。
    ⚠ **ok（緑）＝「進行中」の意味で使う。** 課金のティア配色とは無関係で、`.badgeRaid` が無彩色を
    選んだのと同じ配慮（色の意味を増やさない）。役割トークンのみ（生 hex/rgba なし）。 */
@@ -1441,6 +1454,21 @@
   color: var(--ok);
   background: var(--ok-soft);
   border-color: var(--ok-border);
+}
+
+/* 063i: ガチャ一覧の「レア」バッジ（`.badge` を基底に色だけ差し替え）。
+   ⚠⚠ **あえて muted（無彩色）にしている**——`.badgeRaid` / `.badgeChannelpoint` と同じ判断で、
+   レアは**お金でも視聴者の判定でもない**ので、既存の色の意味（accent/danger＝サイト、
+   ok＝進行中・初見、info＝久しぶり、warn＝金額）を**増やさない**。
+   ⚠ `.badgeLive` の注記が「色の意味を増やさない」と書いているのと同じ線である。
+   ⚠ レアかどうかは**バッジが在ること**で伝わる（色で伝えていない）。
+   ⚠ `.badgeRaid` を使い回さず別クラスにしたのは `.badgeChannelpoint` と同じ理由——
+   クラス名が意味と食い違うと「レイドの意匠を変えたらレアも変わる」という読めない結合になる。
+   役割トークンのみ（生 hex / rgba なし）。 */
+.badgeRare {
+  color: var(--muted);
+  background: var(--muted-soft);
+  border-color: var(--muted-border);
 }
 
 /* 詳細の集計（ラベル｜値の 2 列）。 */

@@ -971,8 +971,11 @@ pub fn run() {
             // 062c: 配信サマリー（1 回の配信ぶんの集計）。read-only・単一目的で、
             //   **新しい保存もテーブルも増えない**（docs/security.md §9）。capability も増えない。
             stream_summary::commands::get_stream_summary,
-            // 063h: ⚠ **1 本だけ**（削除は delete_viewer / clear_viewers に相乗り・§3）。
+            // 063h: ⚠ 記録は **1 本だけ**（削除は delete_viewer / clear_viewers に相乗り・§3）。
             gacha_history::commands::record_gacha_draw,
+            // 063i: 配信サマリー用の読み出し。⚠ **引数はセッション id 1 つだけ**（§3）で、
+            //   read-only・**新しい保存もテーブルも列も増えない**。capability も増えない。
+            gacha_history::commands::list_gacha_draws,
             app_update::commands::check_app_update,
             app_update::commands::install_app_update,
             app_update::commands::restart_app,

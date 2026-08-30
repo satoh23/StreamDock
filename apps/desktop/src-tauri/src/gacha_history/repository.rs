@@ -15,7 +15,7 @@
 
 use rusqlite::Connection;
 
-use super::model::NewGachaDraw;
+use super::model::{GachaDrawRecord, NewGachaDraw};
 
 /// `gacha_draws` テーブルを作成する（存在すれば何もしない）。
 ///
@@ -93,6 +93,56 @@ pub fn insert(conn: &Connection, draw: &NewGachaDraw, created_at: &str) -> rusql
             created_at,
         ],
     )
+}
+
+/// 1 回の配信ぶんの一覧を返す SQL（063i・read-only）。
+///
+/// ## ⚠⚠⚠ この形を変えないこと（`WHERE session_id = ?1 ORDER BY drawn_at DESC, id DESC`）
+///
+/// 索引 `idx_gacha_draws_session` は **`(session_id, drawn_at, id)` の 3 列**で、
+/// **この並びを賄うためだけに 3 列にしてある**（単一列なら `USE TEMP B-TREE FOR ORDER BY`、
+/// 2 列でも `RIGHT PART OF ORDER BY` が出る＝063h で実測）。
+/// ⚠ 並び順や述語を足すと**一時 B-Tree が黙って復活する**（クエリは正しい結果を返し続けるので
+/// 画面でも気付けない）。⇒ [`tests::the_list_query_is_covered_by_the_session_index`] が
+/// **この定数そのもの**に `EXPLAIN QUERY PLAN` を掛けて固定している。
+///
+/// ## ⚠ 出す列（[`GachaDrawRecord`] と 1 対 1）
+///
+/// `session_id`（呼び出し側が持っている）・`gacha_id`（画面はガチャ**名**で読む）・
+/// `created_at`（記録した時刻＝抽選した時刻ではない）は**出さない**。
+/// ⚠⚠ **`viewers` を JOIN しない**——一覧は行が持つ `viewer_name`（抽選時点の名前）だけで完結する
+/// （JOIN すると「今の名前」に化け、`viewers` に行が無い視聴者の抽選が一覧から消える＝063i 穴 C / 穴 D）。
+///
+/// ⚠ 上限・ページングは持たない（切るのは画面側＝063i 穴 A）。引数はセッション id 1 つだけ（§3）。
+const LIST_BY_SESSION_SQL: &str = concat!(
+    "SELECT ",
+    "id, viewer_id, viewer_name, gacha_name, prize_label, rare, drawn_at",
+    " FROM gacha_draws WHERE session_id = ?1 ORDER BY drawn_at DESC, id DESC"
+);
+
+/// 1 回の配信ぶんの抽選記録を新しい順で返す（read-only）。
+///
+/// ⚠ **行の中身を信用して落ちないこと**（§9 追補〔063h〕レビュー S-3）。`record_gacha_draw` は
+/// アプリ定義コマンド＝ACL を通らず全窓から呼べるので、`viewers` にも `stream_sessions` にも
+/// 対応行を持たない行が入りうる。ここは JOIN も突き合わせもしないので、そのまま返るのが正しい。
+pub fn list_by_session(
+    conn: &Connection,
+    session_id: &str,
+) -> rusqlite::Result<Vec<GachaDrawRecord>> {
+    let mut stmt = conn.prepare(LIST_BY_SESSION_SQL)?;
+    let rows = stmt.query_map(rusqlite::params![session_id], |row| {
+        Ok(GachaDrawRecord {
+            id: row.get("id")?,
+            viewer_id: row.get("viewer_id")?,
+            viewer_name: row.get("viewer_name")?,
+            gacha_name: row.get("gacha_name")?,
+            // ⚠ NULL は `None` のまま返す（空文字へ潰さない＝「何も出なかった抽選」の唯一の表現）。
+            prize_label: row.get("prize_label")?,
+            rare: row.get("rare")?,
+            drawn_at: row.get("drawn_at")?,
+        })
+    })?;
+    rows.collect()
 }
 
 /// ⚠⚠ 1 人ぶんの記録を消す（**`delete_viewer` から呼ばれる**・FK CASCADE の代わり）。
@@ -237,6 +287,160 @@ mod tests {
         assert!(
             !plan.contains("TEMP B-TREE"),
             "並び替えのために一時 B-Tree が作られている（索引が (session_id, drawn_at) でない）: {plan}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 063i: 一覧（read-only）
+    // -----------------------------------------------------------------------
+
+    /// 一覧テスト用の 1 行（`draw` はセッション・時刻が固定なので、こちらで作り分ける）。
+    fn listed(id: &str, session_id: &str, drawn_at: &str) -> NewGachaDraw {
+        NewGachaDraw {
+            id: id.to_string(),
+            session_id: session_id.to_string(),
+            viewer_id: "twitch:1".to_string(),
+            viewer_name: "アリス".to_string(),
+            gacha_id: "g:1".to_string(),
+            gacha_name: "朝ガチャ".to_string(),
+            prize_label: Some("色紙".to_string()),
+            rare: false,
+            drawn_at: drawn_at.to_string(),
+        }
+    }
+
+    /// ⚠ 新しい順（`drawn_at` の降順）で返ること。
+    #[test]
+    fn list_by_session_returns_the_newest_draw_first() {
+        let conn = test_conn();
+        insert(&conn, &listed("a", "s1", "2026-08-30T12:00:00Z"), "t").unwrap();
+        insert(&conn, &listed("b", "s1", "2026-08-30T12:05:00Z"), "t").unwrap();
+        insert(&conn, &listed("c", "s1", "2026-08-30T11:00:00Z"), "t").unwrap();
+
+        let ids: Vec<String> = list_by_session(&conn, "s1")
+            .unwrap()
+            .into_iter()
+            .map(|d| d.id)
+            .collect();
+        assert_eq!(ids, vec!["b", "a", "c"]);
+    }
+
+    /// ⚠⚠ **同じバッチ（＝`drawn_at` が同値）の同点崩しは記録 id の降順**である。
+    ///
+    /// ⚠⚠⚠ **これは「抽選順」ではない**（frontend は 1 バッチにつき時刻を 1 回だけ作って全件へ配る＝
+    /// docs/security.md §9 追補〔063h〕§8 のレビュー Q-2）。ここが固定しているのは
+    /// **並びが決定的であること**だけで、実際に引いた順とは無関係である。
+    /// ⚠ 索引 `(session_id, drawn_at, id)` の 3 列目はこの同点崩しのために在る。
+    ///
+    /// ## ⚠⚠ 現状このテストで殺せない変異（正直に残す・2026-08-30 実測）
+    ///
+    /// **`ORDER BY` から `id DESC` だけを落とす**変異は**生存する**。索引が
+    /// `(session_id, drawn_at, id)` なので、`drawn_at` だけで並べても**索引の走査順が
+    /// たまたま id の降順になる**（[`the_list_query_is_covered_by_the_session_index`] も
+    /// 索引の接頭辞で賄えるため落ちない）。⚠ **観測できないだけで保証は消えている**ので、
+    /// `id DESC` は消さないこと。⚠ 殺せるのは**向きを変える**変異（`id ASC`）だけで、
+    /// そちらはこのテストと索引テストの両方がレッドになる（実測）。
+    ///
+    /// ⚠⚠ **2026-08-31 追記（063i レビュー）: この受容は「合わせ技」で成り立っている。**
+    /// `id DESC` を落とす変異が無害なのは**索引が 3 列だから**であって、
+    /// その索引が変われば [`the_list_query_is_covered_by_the_session_index`] か
+    /// このテストのどちらかが必ずレッドになる。⇒ ⚠ **`id DESC` は「索引が将来変わったとき」の
+    /// 保険**として残す価値がある（単体では殺せないが、無意味ではない）。
+    #[test]
+    fn draws_from_the_same_batch_are_ordered_by_record_id_not_by_draw_order() {
+        let conn = test_conn();
+        insert(&conn, &listed("c1:g:1:0", "s1", "2026-08-30T12:00:00Z"), "t").unwrap();
+        insert(&conn, &listed("c2:g:1:0", "s1", "2026-08-30T12:00:00Z"), "t").unwrap();
+
+        let ids: Vec<String> = list_by_session(&conn, "s1")
+            .unwrap()
+            .into_iter()
+            .map(|d| d.id)
+            .collect();
+        assert_eq!(ids, vec!["c2:g:1:0", "c1:g:1:0"]);
+    }
+
+    /// ⚠ 別の配信の行が混ざらないこと（引数はセッション id 1 つだけ＝§3）。
+    #[test]
+    fn list_by_session_does_not_mix_in_another_session() {
+        let conn = test_conn();
+        insert(&conn, &listed("a", "s1", "2026-08-30T12:00:00Z"), "t").unwrap();
+        insert(&conn, &listed("b", "s2", "2026-08-30T12:01:00Z"), "t").unwrap();
+
+        let rows = list_by_session(&conn, "s1").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "a");
+    }
+
+    /// ⚠ 記録より前の配信（＝行が 1 つも無いセッション）は**空**で返る（エラーにしない）。
+    #[test]
+    fn list_by_session_is_empty_for_a_session_without_draws() {
+        let conn = test_conn();
+        insert(&conn, &listed("a", "s1", "2026-08-30T12:00:00Z"), "t").unwrap();
+        assert!(list_by_session(&conn, "old-session").unwrap().is_empty());
+    }
+
+    /// ⚠⚠⚠ **`prize_label` の NULL が `None` として返ること**（＝何も当たらなかった抽選）。
+    ///
+    /// ⚠ 空文字へ潰す実装に変えると、063i の画面が「何も出ない」と「名前が空の当たり」を
+    /// 区別できなくなる。
+    #[test]
+    fn a_draw_that_won_nothing_comes_back_as_none() {
+        let conn = test_conn();
+        let mut miss = listed("a", "s1", "2026-08-30T12:00:00Z");
+        miss.prize_label = None;
+        insert(&conn, &miss, "t").unwrap();
+
+        let rows = list_by_session(&conn, "s1").unwrap();
+        assert_eq!(rows[0].prize_label, None);
+    }
+
+    /// 行が持つ値がそのまま返ること（⚠ `viewers` を JOIN しない＝**抽選時点の名前**が出る）。
+    #[test]
+    fn the_row_carries_the_name_captured_at_draw_time() {
+        let conn = test_conn();
+        let mut d = listed("a", "s1", "2026-08-30T12:00:00Z");
+        d.viewer_name = "当時の名前".to_string();
+        d.gacha_name = "夜ガチャ".to_string();
+        d.rare = true;
+        insert(&conn, &d, "t").unwrap();
+
+        let rows = list_by_session(&conn, "s1").unwrap();
+        assert_eq!(rows[0].viewer_id, "twitch:1");
+        assert_eq!(rows[0].viewer_name, "当時の名前");
+        assert_eq!(rows[0].gacha_name, "夜ガチャ");
+        assert!(rows[0].rare);
+        assert_eq!(rows[0].drawn_at, "2026-08-30T12:00:00Z");
+    }
+
+    /// ⚠⚠⚠ **一覧が実際に使う SQL（[`LIST_BY_SESSION_SQL`] そのもの）が索引で賄えること。**
+    ///
+    /// ⚠⚠ 上の [`the_session_index_covers_the_ordering_the_summary_uses`] は
+    /// **テストの中に書き写したクエリ**を見ているので、**実装の定数を書き換えても落ちない**
+    /// （063i の起票時に「あちらのテストは落ちないので気付けない」と警告されていた穴）。
+    /// ⇒ こちらは定数を直接 EXPLAIN する。
+    /// ⚠ `EXPLAIN QUERY PLAN` の前置は**テスト専用の連結**である（`[..].concat()`）。
+    /// 本番の SQL は完全な文字列リテラルのままで、§8 の「組み立てない」は壊れていない。
+    /// ⚠⚠ **`EXPLAIN QUERY PLAN` は複数行を返す**ので、`query_row` で先頭だけ読まないこと
+    /// （063h で `USE TEMP B-TREE` の行を見落とし、索引を単一列へ戻す変異が生存した）。
+    #[test]
+    fn the_list_query_is_covered_by_the_session_index() {
+        let conn = test_conn();
+        let explain = ["EXPLAIN QUERY PLAN ", LIST_BY_SESSION_SQL].concat();
+        let mut stmt = conn.prepare(&explain).unwrap();
+        let plan: String = stmt
+            .query_map(rusqlite::params!["s1"], |r| r.get::<_, String>(3))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(
+            plan.contains("idx_gacha_draws_session"),
+            "セッション索引が使われていない: {plan}"
+        );
+        assert!(
+            !plan.contains("TEMP B-TREE"),
+            "並び替えのために一時 B-Tree が作られている（索引が賄えていない）: {plan}"
         );
     }
 }

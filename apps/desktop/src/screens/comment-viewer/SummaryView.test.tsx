@@ -35,6 +35,10 @@ vi.mock("../../features/viewer-memory/viewerMemoryApi", () => ({
   updateViewerNote: vi.fn(),
   deleteViewer: vi.fn(),
 }));
+// 063i: ガチャ一覧も invoke ラッパごとモックする（⚠ 記録側 `recordGachaDraws` はこの画面から呼ばれない）。
+vi.mock("../../features/gacha-history/gachaHistoryApi", () => ({
+  listGachaDraws: vi.fn(),
+}));
 
 import {
   listStreamSessions,
@@ -43,13 +47,23 @@ import {
 } from "../../features/stream-session/streamSessionApi";
 import { getStreamSummary } from "../../features/stream-summary/streamSummaryApi";
 import { getViewer } from "../../features/viewer-memory/viewerMemoryApi";
-import { SummaryView, SUMMARY_SESSION_LIMIT } from "./SummaryView";
+import { listGachaDraws } from "../../features/gacha-history/gachaHistoryApi";
+import type { GachaDrawRecord } from "../../features/gacha-history/gachaHistoryApi";
+// ⚠⚠⚠ 063i: 文言はテストに書き写さず**定義から import する**（書き写すと 2 か所目になり、
+//   「定義は 1 か所」がテストの側から崩れる＝063h が `GachaPrizeTable.test.tsx` で採った作法）。
+import { GACHA_MISS_LABEL } from "../obs-effects/gachaDraw";
+import {
+  SummaryView,
+  SUMMARY_SESSION_LIMIT,
+  SUMMARY_GACHA_DRAW_LIMIT,
+} from "./SummaryView";
 
 const mockList = vi.mocked(listStreamSessions);
 const mockActive = vi.mocked(getActiveStreamSession);
 const mockUpdateTitle = vi.mocked(updateStreamSessionTitle);
 const mockSummary = vi.mocked(getStreamSummary);
 const mockGetViewer = vi.mocked(getViewer);
+const mockDraws = vi.mocked(listGachaDraws);
 
 const makeSession = (over: Partial<StreamSessionRecord> = {}): StreamSessionRecord => ({
   id: "s1",
@@ -99,6 +113,43 @@ const makeSummary = (over: Partial<StreamSummary> = {}): StreamSummary => ({
   ...over,
 });
 
+/**
+ * 063i: ガチャ抽選 1 件（⚠ Rust は `drawnAt` の降順で返すので、**配列の順がそのまま画面の順**）。
+ *
+ * ⚠⚠ 既定の 1 件目は **`viewerId` が貢献者一覧の Alice と同じで、名前だけ違う**——
+ * 「一覧は**抽選時点の名前**、貢献者一覧は**今の名前**」という **2 つの規則が同じ画面に並ぶ**のが
+ * 仕様だから（穴 D）。⚠ 説明文を書かない代わりに、この差をテストが固定している。
+ */
+const makeDraw = (over: Partial<GachaDrawRecord> = {}): GachaDrawRecord => ({
+  id: "c1:g:1:0",
+  viewerId: "twitch:u1",
+  viewerName: "むかしのアリス",
+  gachaName: "朝ガチャ",
+  prizeLabel: "色紙",
+  rare: false,
+  drawnAt: "2026-08-16T12:30:00Z",
+  ...over,
+});
+
+const makeDraws = (): GachaDrawRecord[] => [
+  makeDraw({ id: "c2:g:1:0", rare: true }),
+  // ⚠ 何も当たらなかった抽選（`prizeLabel` 無し）も**1 行として並ぶ**。
+  // ⚠⚠ ここは `undefined` だが、**実際に IPC 越しに来るのは serde が出す `null`** である
+  //   （ts-rs が `#[ts(optional)]` で `prizeLabel?: string` を出すため、型の上では `undefined`）。
+  //   ⇒ 実装は `?? GACHA_MISS_LABEL` で**両方を受ける**ので、どちらでも同じ行になる。
+  //   ⚠ `null` を書くと型が通らないので、この非対称は型ではなく `??` が吸収している。
+  //   【再修正トリガー】`??` を `!== undefined` 等の**片側だけを見る形**へ変えるとき
+  //   ——そのときは `null` を流すケース（キャストが要る）を 1 本足すこと。
+  makeDraw({
+    id: "c1:g:1:0",
+    viewerId: "youtube:u9",
+    viewerName: "ゲスト",
+    gachaName: "夜ガチャ",
+    prizeLabel: undefined,
+    drawnAt: "2026-08-16T11:00:00Z",
+  }),
+];
+
 const makeViewerDetail = (): ViewerDetail => ({
   viewer: {
     id: "twitch:u1",
@@ -139,6 +190,7 @@ beforeEach(() => {
   mockSummary.mockResolvedValue(makeSummary());
   mockUpdateTitle.mockResolvedValue(makeSession({ title: "配信タイトル" }));
   mockGetViewer.mockResolvedValue(makeViewerDetail());
+  mockDraws.mockResolvedValue(makeDraws());
 });
 
 describe("SummaryView 数字", () => {
@@ -475,5 +527,252 @@ describe("SummaryView 戻る導線", () => {
 
     fireEvent.click(await screen.findByLabelText("コメントへ戻る"));
     expect(onBack).toHaveBeenCalled();
+  });
+});
+
+/**
+ * 063i: ガチャを引いた人の一覧。
+ *
+ * ⚠⚠ **並び順は「Rust が返した順」で固定する**（＝「抽選順」では書かない）。
+ * 同じバッチの抽選は `drawnAt` が同値になり、その中の同点崩しは**記録 id の辞書順**＝
+ * 抽選順とは無関係だからである（docs/security.md §9 追補〔063h〕§8・レビュー Q-2）。
+ */
+describe("SummaryView ガチャを引いた人（063i）", () => {
+  it("引いた人・ガチャ・結果・時刻を並べる（レイド一覧の下）", async () => {
+    render(<SummaryView onBack={vi.fn()} />);
+
+    expect(await screen.findByText("ガチャを引いた人")).toBeVisible();
+    expect(mockDraws).toHaveBeenCalledWith("s1");
+    expect(screen.getByText("色紙")).toBeVisible();
+    expect(screen.getByText("朝ガチャ")).toBeVisible();
+    expect(screen.getByText("夜ガチャ")).toBeVisible();
+  });
+
+  /**
+   * ⚠⚠⚠ **外れを意味する語をこのファイルに書かないこと。**
+   *
+   * 063h / 063i の確認コマンドは `grep -rn` で**その語が `src` に無いこと**を見るので、
+   * テストの否定アサーションに書くと**永久にヒットし続けて確認が壊れる**
+   * （`gachaDraw.ts` の [`GACHA_MISS_LABEL`] が同じ理由の注記を持っている）。
+   * ⇒ 代わりに「**結果セルが `GACHA_MISS_LABEL` と完全一致すること**」で担保する
+   * ——`getByText(文字列)` は既定で完全一致なので、
+   * 063h が実測した「前方一致だと『何も出ない**よ**』が素通りする」穴も同時に塞げる。
+   */
+  it("何も出なかった抽選も 1 行として並ぶ（結果は定義された文言そのもの）", async () => {
+    render(<SummaryView onBack={vi.fn()} />);
+    await screen.findByText("ガチャを引いた人");
+
+    // ⚠ 文言は定義（`GACHA_MISS_LABEL`）から引く＝テストに書き写さない
+    //   （書き写すと 2 か所目になり、設定画面のテスト抽選と割れても気付けない）。
+    expect(screen.getByText(GACHA_MISS_LABEL)).toBeVisible();
+    // 当たりの行はそのまま景品名が出る（＝全部が「何も出ない」になる変異を殺す）。
+    expect(screen.getByText("色紙")).toBeVisible();
+  });
+
+  it("レアだけにバッジを出す（列は増やさない）", async () => {
+    render(<SummaryView onBack={vi.fn()} />);
+    await screen.findByText("ガチャを引いた人");
+
+    // 既定は「レアの当たり 1 件 ＋ レアでない 1 件」。
+    expect(screen.getAllByText("レア")).toHaveLength(1);
+    // 列にしていない＝ヘッダは 4 列のまま（「レア」の見出しは無い）。
+    const head = screen.getByText("結果").parentElement!;
+    expect([...head.children].map((c) => c.textContent)).toEqual([
+      "時刻",
+      "引いた人",
+      "ガチャ",
+      "結果",
+    ]);
+  });
+
+  it("レアが 1 件も無ければバッジは出ない", async () => {
+    mockDraws.mockResolvedValue([makeDraw({ rare: false })]);
+    render(<SummaryView onBack={vi.fn()} />);
+    await screen.findByText("ガチャを引いた人");
+
+    expect(screen.queryByText("レア")).not.toBeInTheDocument();
+  });
+
+  it("1 度も引かれていない配信では 1 行の短文だけを出す（説明文を書かない）", async () => {
+    mockDraws.mockResolvedValue([]);
+    render(<SummaryView onBack={vi.fn()} />);
+
+    expect(await screen.findByText("ガチャはありません")).toBeVisible();
+    // ⚠ 「記録を始める前の配信だから空です」等の説明を足さない（注記全廃の決定）。
+    // ⚠⚠ **ガチャ節の中だけを見る**（画面全体を `queryByText(/記録/)` で見ると、
+    //   サマリーの別の節に「記録」を含む文言が入っただけで**無関係な理由で誤爆する**
+    //   ——062b の「記録できなかったコメント N 件」がまさにその形）。
+    const gachaSection = screen
+      .getByText("ガチャを引いた人")
+      .closest("section")!;
+    expect(within(gachaSection).queryByText(/記録/)).not.toBeInTheDocument();
+  });
+
+  it("Rust が返した順序（時刻の降順）をそのまま描く", async () => {
+    render(<SummaryView onBack={vi.fn()} />);
+    await screen.findByText("ガチャを引いた人");
+
+    const names = screen
+      .getAllByText(/^(むかしのアリス|ゲスト)$/)
+      .map((el) => el.textContent);
+    expect(names).toEqual(["むかしのアリス", "ゲスト"]);
+  });
+
+  /**
+   * ⚠⚠ 穴 D: 一覧は**抽選した時点の名前**を出す（`viewers.name` を引き直さない）。
+   *
+   * ⚠⚠⚠ **同じ画面に 2 つの規則が並ぶ**のが仕様である——貢献者一覧は「今の名前」（Alice）、
+   * ガチャ一覧は「当時の名前」（むかしのアリス）。⚠ 説明文は書かないので、
+   * **意図を固定できるのはこのテストだけ**である。
+   */
+  it("改名した視聴者は、貢献者一覧が今の名前・ガチャ一覧が抽選時点の名前を出す", async () => {
+    render(<SummaryView onBack={vi.fn()} />);
+    await screen.findByText("ガチャを引いた人");
+
+    // 同じ視聴者（twitch:u1）が、2 つの節で別の名前で出ている。
+    expect(screen.getByText("Alice")).toBeVisible();
+    expect(screen.getByText("むかしのアリス")).toBeVisible();
+  });
+
+  /*
+   * ⚠ **`viewerId` が DOM 属性へ出る変異は、ここでも固定していない**（063h の申し送り 5）。
+   * 実装では `viewerId` は `onClick` / `onKeyDown` のクロージャの中だけで使われ、DOM 属性にも
+   * `key`（ガチャ行は `d.id`）にも出ていない。⚠ **固定していないのは意図的**——
+   * 上の貢献者一覧の行がまったく同じ性質で同じく未固定なので、**片方だけ固定すると
+   * 「こちらだけ守られている」という誤読**を生む（この画面の第三者 id は 2 か所にある）。
+   * 【再修正トリガー】行に `data-*` / `id` / `title` 等の属性を足すとき、または貢献者一覧側に
+   * 同じ担保を足すとき——そのときは **2 か所同時に**（例: 行の `outerHTML` に視聴者 id が
+   * 含まれないこと）固定すること。
+   */
+  it("行から視聴者詳細へ飛べる（貢献者一覧と同じ導線）", async () => {
+    render(<SummaryView onBack={vi.fn()} />);
+    fireEvent.click(await screen.findByText("むかしのアリス"));
+
+    await waitFor(() => expect(mockGetViewer).toHaveBeenCalledWith("twitch:u1"));
+  });
+
+  it("キーボード（Enter）でも視聴者詳細へ飛べる", async () => {
+    render(<SummaryView onBack={vi.fn()} />);
+    await screen.findByText("ガチャを引いた人");
+
+    const row = screen.getByText("ゲスト").closest("[role=\"button\"]");
+    fireEvent.keyDown(row!, { key: "Enter" });
+
+    await waitFor(() =>
+      expect(mockGetViewer).toHaveBeenCalledWith("youtube:u9"),
+    );
+  });
+
+  /**
+   * ⚠⚠⚠ 申し送り 1（063h の security-review S-1）の担保。
+   *
+   * `gacha_draws` は `viewers` に FK を張らないので、**視聴者行が無い人のガチャ履歴が実在する**
+   * （改行入りのスパチャはコメント記録が落ちて `viewers` 行を作らないが、ガチャの記録は成功する）。
+   * ⚠ **実装を足す必要は無い**——`ViewerDetailPanel` が `getViewer` の失敗を既に catch している。
+   * ⇒ ここでやるのは「**壊れないことをテストで固定する**」ことだけである。
+   */
+  it("視聴者詳細が引けなくても画面が壊れず、一覧へ戻れる", async () => {
+    mockGetViewer.mockRejectedValue(new Error("not found"));
+    render(<SummaryView onBack={vi.fn()} />);
+    fireEvent.click(await screen.findByText("ゲスト"));
+
+    // 固定の安全文言が出る（一覧が丸ごと開けなくなる形にはしない＝038a の amount 事故と同じ壊れ方を作らない）。
+    expect(
+      await screen.findByText(/この視聴者の記録が見つかりませんでした/),
+    ).toBeVisible();
+
+    fireEvent.click(screen.getByLabelText("一覧へ戻る"));
+    expect(await screen.findByText("ガチャを引いた人")).toBeVisible();
+  });
+
+  it("多いときは直近 N 件に切り、切ったことを画面に出す（穴 A）", async () => {
+    const many = Array.from({ length: SUMMARY_GACHA_DRAW_LIMIT + 3 }, (_, i) =>
+      makeDraw({ id: `c${i}:g:1:0`, viewerName: `視聴者${i}` }),
+    );
+    mockDraws.mockResolvedValue(many);
+    render(<SummaryView onBack={vi.fn()} />);
+    await screen.findByText("ガチャを引いた人");
+
+    expect(screen.getByText("視聴者0")).toBeVisible();
+    expect(
+      screen.queryByText(`視聴者${SUMMARY_GACHA_DRAW_LIMIT}`),
+    ).not.toBeInTheDocument();
+    // ⚠ 文章ではなく**件数の事実だけ**を添える（セッション一覧と同じ言い回し）。
+    expect(
+      screen.getByText(
+        `直近 ${SUMMARY_GACHA_DRAW_LIMIT} 件 / 全 ${many.length} 件`,
+      ),
+    ).toBeVisible();
+  });
+
+  it("上限以下なら切り捨ての表示を出さない", async () => {
+    render(<SummaryView onBack={vi.fn()} />);
+    await screen.findByText("ガチャを引いた人");
+
+    expect(screen.queryByText(/直近 50 件/)).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * ⚠⚠⚠ 063i: **2 本の invoke の失敗を切り分ける**（完了条件 4）。
+ *
+ * ⚠ `SummaryView` の `error` は **配信一覧／サマリー／タイトル保存**の 3 用途で共用され、
+ * サマリー失敗時は `setSummary(null)` も撃つ。⇒ ガチャの失敗をそこへ相乗りさせると
+ * **「ガチャが取れないと配信サマリーごと出ない」**という退行になる。
+ */
+describe("SummaryView 2 本の取得の切り分け（063i）", () => {
+  it("ガチャの取得に失敗しても、課金・レイドの節は従来どおり出る", async () => {
+    mockDraws.mockRejectedValue(new Error("db path /Users/secret/app.db"));
+    render(<SummaryView onBack={vi.fn()} />);
+
+    // 既存の 2 節は無事。
+    expect(await screen.findByText("Alice")).toBeVisible();
+    expect(screen.getByText("課金・サブスクをしてくれた人")).toBeVisible();
+    expect(screen.getByText("RaiderChannel")).toBeVisible();
+    // ガチャ節だけが固定の安全文言になる（§9: エラー本文は出さない）。
+    expect(
+      screen.getByText("ガチャの結果を取得できませんでした。"),
+    ).toBeVisible();
+    expect(screen.queryByText(/secret/)).not.toBeInTheDocument();
+    // ⚠⚠ 失敗を「1 回も引かれていない」と偽らない。
+    expect(screen.queryByText("ガチャはありません")).not.toBeInTheDocument();
+  });
+
+  /**
+   * ⚠ 逆向きは**既存構造を壊さない側**を採る（決めてテストで固定する）。
+   * `summary === null` で画面全体が 1 行に落ちるのが 062c からの構造なので、
+   * **サマリーが取れなければガチャ節も出さない**。
+   * ⚠⚠ ガチャだけを残す形にすると、「配信の中身が分からないまま抽選結果だけが並ぶ」画面になる。
+   */
+  it("サマリーの取得に失敗したときは、ガチャ節も出さない（既存構造を保つ）", async () => {
+    mockSummary.mockRejectedValue(new Error("boom"));
+    render(<SummaryView onBack={vi.fn()} />);
+
+    expect(
+      await screen.findByText("配信サマリーを取得できませんでした。"),
+    ).toBeVisible();
+    expect(screen.queryByText("ガチャを引いた人")).not.toBeInTheDocument();
+  });
+
+  it("更新ボタンで 2 本とも取り直す", async () => {
+    render(<SummaryView onBack={vi.fn()} />);
+    await waitFor(() => expect(mockDraws).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole("button", { name: "更新" }));
+
+    await waitFor(() => expect(mockDraws).toHaveBeenCalledTimes(2));
+    expect(mockSummary).toHaveBeenCalledTimes(2);
+  });
+
+  it("配信を選び直すとガチャも取り直す", async () => {
+    mockList.mockResolvedValue([makeSession({ id: "s1" }), makeSession({ id: "s2" })]);
+    render(<SummaryView onBack={vi.fn()} />);
+    await waitFor(() => expect(mockDraws).toHaveBeenCalledWith("s1"));
+
+    fireEvent.change(screen.getByLabelText("配信を選択"), {
+      target: { value: "s2" },
+    });
+
+    await waitFor(() => expect(mockDraws).toHaveBeenCalledWith("s2"));
   });
 });

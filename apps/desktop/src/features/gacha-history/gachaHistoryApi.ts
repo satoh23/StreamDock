@@ -1,9 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { NewGachaDraw } from "../comment-viewer/bindings/NewGachaDraw";
+import type { GachaDrawRecord } from "../comment-viewer/bindings/GachaDrawRecord";
 import type { GachaDrawOutcome } from "../../screens/obs-effects/effectFire";
 
 /**
  * 063h: ガチャ抽選結果の記録（Rust 側 SQLite・端末内限定）の Tauri command 薄いラッパ。
+ * ⚠ 063i で**読み出し**（[`listGachaDraws`]）が 1 本増えたが、**保存は 1 ミリも動いていない**
+ * （テーブルも列もコマンドの権限も増えていない＝読んで表示するだけ）。
  *
  * コンポーネントは invoke を直接呼ばず、この API 経由で記録する
  * （`viewerMemoryApi.ts` / `streamSessionApi.ts` と同型）。
@@ -19,7 +22,7 @@ import type { GachaDrawOutcome } from "../../screens/obs-effects/effectFire";
  * `emitGachaStageResult`（ステージ窓）にも `sendGachaChat`（配信のチャット）にも繋がっていない。
  * ⚠ **ここから演出・チャットへ値を渡す関数を足さないこと**（追補の「線をレーンごとに引き直す」節が正）。
  */
-export type { NewGachaDraw };
+export type { NewGachaDraw, GachaDrawRecord };
 
 /**
  * 抽選 1 回を記録する（⚠ **fire-and-forget**＝失敗しても演出・チャット・表示を止めない）。
@@ -84,4 +87,27 @@ function toNewGachaDraw(
     rare: draw.rare,
     drawnAt: draw.drawnAt,
   };
+}
+
+/**
+ * 063i: 1 回の配信ぶんのガチャ抽選記録を**新しい順**（`drawnAt` 降順）で取得する。read-only。
+ *
+ * ⚠⚠ **引数はセッション id 1 つだけ**（docs/security.md §3・§9 追補〔063h〕）。
+ * 「任意の条件で絞る」引数を足さないこと——アプリ定義コマンドは **ACL を通らず全窓から呼べる**ので、
+ * 能力を構造側に持たせない。
+ *
+ * ⚠ **記録の無い配信は空配列**で返る（`get_stream_summary` と違って `NotFound` にならない）。
+ * 記録は遡れないので、063h より前の配信は必ず空になる＝**それは失敗ではない**。
+ * ⚠⚠ 画面はこれを**説明文で書かない**（2026-08-16 の決定・`SummaryView.tsx` 冒頭を参照）——
+ * 空の 1 行だけがユーザーに見える。
+ *
+ * ⚠⚠⚠ **上限・ページングは持たない**（切るのは画面側＝`SUMMARY_GACHA_DRAW_LIMIT`）。
+ * ⚠ 行数が実際に問題になったら、画面の定数を上げるのではなく **Rust 側にページングを入れる**こと
+ * （そのとき §3 の「引数はセッション id 1 つ」を読み直す）。
+ *
+ * ⚠ 返る行は**発火レーンが作ったものとは限らない**（§9 追補〔063h〕レビュー S-3）。
+ * `viewers` にも `stream_sessions` にも対応行を持たない行が来ても、**画面が落ちないこと**。
+ */
+export function listGachaDraws(sessionId: string): Promise<GachaDrawRecord[]> {
+  return invoke<GachaDrawRecord[]>("list_gacha_draws", { sessionId });
 }

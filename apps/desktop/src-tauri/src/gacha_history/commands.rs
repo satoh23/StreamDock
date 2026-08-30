@@ -1,13 +1,14 @@
-//! 063h: ガチャ抽選記録の Tauri コマンド。
+//! 063h / 063i: ガチャ抽選記録の Tauri コマンド。
 //!
-//! ⚠⚠⚠ **本モジュールのコマンドは 1 本だけである**（docs/security.md §3・§9 追補〔063h〕）。
-//! **削除・更新・一括操作・一覧取得のコマンドを足さないこと**:
+//! ⚠⚠⚠ **本モジュールのコマンドは「記録 1 本 ＋ 読み出し 1 本」だけである**
+//! （docs/security.md §3・§9 追補〔063h〕）。**削除・更新・一括操作のコマンドを足さないこと**:
 //!
 //! - 削除は既存の `delete_viewer` / `clear_viewers` に相乗りする（`viewer_memory::service`）。
 //!   ⚠ 専用の削除コマンドを作ると、**アプリ定義コマンドは ACL を通らず全窓から呼べる**ので、
 //!   「任意の行を消せる」能力が構造側に生まれる（062b の §3 の議論と同じ）。
-//! - 一覧を返すコマンドは [063i](../../../../docs/tasks/063i-gacha-summary-view.md) の仕事で、
-//!   ⚠ そちらも**引数はセッション id 1 つだけ**にすること（任意条件の汎用クエリにしない）。
+//! - 読み出しは [`list_gacha_draws`] の 1 本で、⚠⚠ **引数はセッション id 1 つだけ**である
+//!   （§9 追補〔063h〕§3 が 063i に対して名指しで求めている線）。
+//!   ⚠ 「任意条件で絞る」「他のキーで引く」汎用クエリにしないこと。
 //!
 //! ⚠ アプリ定義コマンドなので capability（ACL）は増えない
 //! （docs/security.md「コメントビューア（配信サービス連携）方針」⑪）。
@@ -19,7 +20,7 @@ use crate::app_logs::model::LogCategory;
 use crate::error::AppResult;
 use crate::tools::commands::DbState;
 
-use super::model::NewGachaDraw;
+use super::model::{GachaDrawRecord, NewGachaDraw};
 use super::service;
 
 /// ガチャの抽選 1 回を記録する。
@@ -39,4 +40,24 @@ pub fn record_gacha_draw(db: State<'_, DbState>, draw: NewGachaDraw) -> AppResul
     let result = service::record(&conn, draw);
     app_logs::service::log_command_err(&conn, LogCategory::Storage, "record_gacha_draw", &result);
     result
+}
+
+/// 1 回の配信ぶんのガチャ抽選記録を新しい順で返す（063i・read-only）。
+///
+/// ⚠⚠⚠ **`log_command_err` を付けない。** `stream_summary::commands` が
+/// 「`list_viewers` / `get_active_stream_session` と同じ扱い。**取得系は失敗してもデータが壊れない**ので
+/// ログを増やさない」という既存の線引きを明記しており、それに揃える（docs/security.md §9）。
+/// ⚠ **同じモジュールの [`record_gacha_draw`]（書き込み）が付けているのと扱いが違う**のは意図であって、
+/// 書き忘れではない。
+///
+/// ⚠ **保存は 1 ミリも増えない**（063i は 063h が解禁した範囲を読んで表示するだけ）。
+/// 新しい項目を画面に出したくなったら、まず §9 追補〔063h〕を読み直すこと
+/// ——**保存していないものは出せない**（`GachaDrawRecord` に `source` が無いのはそのため）。
+#[tauri::command]
+pub fn list_gacha_draws(
+    db: State<'_, DbState>,
+    session_id: String,
+) -> AppResult<Vec<GachaDrawRecord>> {
+    let conn = db.lock().expect("db mutex poisoned");
+    service::list(&conn, &session_id)
 }

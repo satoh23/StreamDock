@@ -801,6 +801,55 @@ export function ObsEffectsScreen() {
               gachas={gachas}
               onConditionsChange={refreshGachaConditionState}
             />
+
+            {/* ⚠⚠⚠ **2026-08-31: ガチャの 2 枚を「共通の下部」からこのタブの中へ移した**
+                （依頼者の指摘＝「**配信イベントタブにガチャのカードがあることがおかしい。
+                そもそも配信イベントにガチャは必要ない**」）。
+
+                ## ⚠⚠ 063d が「タブの外に置く」とした根拠は、もう成立していない
+
+                旧記述は「ガチャは『コメントで出すエフェクト』でも『配信イベント』でもなく、
+                **両方のタブから参照される共有物**である」を根拠に、⚠ **タブへ動かさないこと**と
+                書いていた。⚠⚠⚠ **実コードで確認したところ、配信イベントとの関係は 1 つも無い**:
+
+                  1. [`StreamEventTab`] のガチャ参照は **0 件**。
+                  2. `STREAM_EVENT_REGISTRY` は **空配列**（タブの中身は「準備中です」だけ）。
+                  3. ⚠ ステージ窓の旗は **063c 段 1 で分離済み**（`GACHA_STAGE_ENABLED_KEY` と
+                     `STAGE_OVERLAY_ENABLED_KEY` は別物・overlaySettings が「共用してはいけない」と
+                     明記）⇒ **配信イベントの開始／終了はガチャ演出に影響しない。**
+                  4. `gachas` を読むのは [`EffectAssignmentCard`]（このタブの中）**だけ**。
+
+                ⇒ ⚠ **「共有物」ではなく「コメントで出すエフェクト」専属である。**
+                タブの中に置くことが、その構造をそのまま表している。
+
+                ⚠⚠ **3 枚目のタブにはしない**（063a 穴 G / 063d 穴 V の結論はこの点だけ生きている）
+                ——「3 種類目のエフェクト」に見えて嘘になる。
+
+                ⚠⚠⚠ **再修正トリガー＝配信イベントがガチャを参照するようになったとき**
+                （＝上の 1〜4 のどれかが崩れたとき）。そのとき初めて置き場所を決め直すこと。 */}
+            {/* ⚠⚠⚠ **063f 段 1-b: チャットへの書き込みは「高度な設定」としてこのカードの中にある。**
+                依頼者の指示（2026-08-29）＝「**ガチャ機能でしか使わない予定なのでまとめたい**」。
+                ⚠ **折りたたみの既定は閉じる**（061a Q-1 ＝ 普段の画面を複雑にしない）。 */}
+            <GachaLibraryCard
+              gachas={gachas}
+              obsSources={obsSources.list?.sources ?? null}
+              onChange={commitGachas}
+              chatEnabled={gachaChatEnabled}
+              onChatEnabledChange={handleGachaChatToggle}
+            />
+
+            {/* ⚠⚠⚠ **063c 段 4-d: 「何が当たるか」と「どう見えるか」を別のカードに切った。**
+                依頼者の指摘＝「**項目が増えることで画面が複雑になってしまっている**」。
+                ⚠ 上（`GachaLibraryCard`）が景品と確率、ここが演出。⚠⚠ **混ぜ戻さないこと。** */}
+            <GachaStageCard
+              stageEnabled={gachaStageEnabled}
+              canEnableStage={hasGachaCondition}
+              onStageEnabledChange={handleGachaStageToggle}
+              placement={gachaPlacement}
+              onPlacementChange={handleGachaPlacementChange}
+              prizeColor={gachaPrizeColor}
+              onPrizeColorChange={handleGachaPrizeColorChange}
+            />
           </div>
         ) : (
           <div className={styles.stack} role="tabpanel">
@@ -818,42 +867,11 @@ export function ObsEffectsScreen() {
           </div>
         )}
 
-        {/* ⚠⚠⚠ **063d: ガチャの一覧は「共通の下部」（両タブの外）に置く。**
-
-            ## ⚠⚠ なぜ 3 枚目のタブにしないのか（063d 穴 V）
-
-            063a は 穴 G で「3 枚目のタブにすると**共通の下部＝出力窓の設定がガチャにも掛かって見える**」
-            としてタブ追加を却下していた。⚠ **その共通の下部は 064e / 064f で既に空になっており、
-            却下の理由そのものは失効している**（下のコメント 2 本がその記録である）。
-
-            ⚠⚠ **それでも結論は変えない。理由が別に立つからである**——ガチャは
-            「コメントで出すエフェクト」でも「配信イベント」でもなく、**両方のタブから参照される共有物**である。
-            3 枚目のタブにすると「**3 種類目のエフェクト**」に見え、それは嘘になる。
-            ⇒ **タブの外に置くことが、この構造をそのまま表している。**
-            ⚠ **タブへ動かさないこと。** */}
-        {/* ⚠⚠⚠ **063f 段 1-b: チャットへの書き込みは「高度な設定」としてこのカードの中にある。**
-            依頼者の指示（2026-08-29）＝「**ガチャ機能でしか使わない予定なのでまとめたい**」。
-            ⚠ **折りたたみの既定は閉じる**（061a Q-1 ＝ 普段の画面を複雑にしない）。 */}
-        <GachaLibraryCard
-          gachas={gachas}
-          obsSources={obsSources.list?.sources ?? null}
-          onChange={commitGachas}
-          chatEnabled={gachaChatEnabled}
-          onChatEnabledChange={handleGachaChatToggle}
-        />
-
-        {/* ⚠⚠⚠ **063c 段 4-d: 「何が当たるか」と「どう見えるか」を別のカードに切った。**
-            依頼者の指摘＝「**項目が増えることで画面が複雑になってしまっている**」。
-            ⚠ 上（`GachaLibraryCard`）が景品と確率、ここが演出。⚠⚠ **混ぜ戻さないこと。** */}
-        <GachaStageCard
-          stageEnabled={gachaStageEnabled}
-          canEnableStage={hasGachaCondition}
-          onStageEnabledChange={handleGachaStageToggle}
-          placement={gachaPlacement}
-          onPlacementChange={handleGachaPlacementChange}
-          prizeColor={gachaPrizeColor}
-          onPrizeColorChange={handleGachaPrizeColorChange}
-        />
+        {/* ⚠⚠⚠ **2026-08-31: ここに在ったガチャの 2 枚（`GachaLibraryCard` / `GachaStageCard`）は
+            「コメントで出すエフェクト」タブの中へ移した。**
+            理由と再修正トリガーは、移した先（上の `tab === "comment"` の分岐）のコメントが正。
+            ⚠ **ここへ戻さないこと**——戻すと**配信イベントタブにガチャのカードが出る**
+            （＝依頼者が「おかしい」と指摘した状態そのもの）。 */}
 
         {/* ⚠⚠⚠ **064e: 「OBS へ自動で反映」カードを丸ごと削除した**（依頼者の指示＝
             「そもそも OBS に作成した物を自動で再生する機能に変わったのでいらないのでは？」）。

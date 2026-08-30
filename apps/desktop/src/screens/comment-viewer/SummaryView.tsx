@@ -10,6 +10,15 @@ import {
   type StreamSummary,
   type CurrencyTotal,
 } from "../../features/stream-summary/streamSummaryApi";
+import {
+  listGachaDraws,
+  type GachaDrawRecord,
+} from "../../features/gacha-history/gachaHistoryApi";
+// 063i: 「何も出ない」の文言は `gachaDraw.ts` が唯一の持ち主（⚠ ここに書き写さない＝設定画面の
+//   テスト抽選と同じ言葉であること）。⚠ `screens/comment-viewer/` → `screens/obs-effects/` の
+//   import は `CommentViewerApp.tsx` に先例がある（あちらの JSDoc「import はここが初めて」が正で、
+//   循環は無い＝あの窓と同じ横参照）。
+import { GACHA_MISS_LABEL } from "../obs-effects/gachaDraw";
 import { Select } from "../../components/Select";
 import { ViewerDetailPanel } from "./ViewerDetailPanel";
 import {
@@ -26,6 +35,13 @@ import btnStyles from "../../components/compactButtons.module.css";
 /**
  * 062c: 配信サマリー（1 回の配信の総コメント数・通貨ごとの総課金額・課金回数・サブスク件数・
  * **貢献者一覧**〔マスト〕・**レイド一覧**〔マスト〕）を配信者だけが見るコメビュ窓で表示するビュー。
+ *
+ * ⚠⚠ **063i: 「ガチャを引いた人」節を最後に足した**（`list_gacha_draws`＝063h が記録した抽選）。
+ * ⚠ **invoke は 2 本**（`get_stream_summary` と `list_gacha_draws`）を**同じ effect で並べて投げ**、
+ * **失敗の受け皿を別々に持つ**（`error` と `drawsError`）。⇒ ガチャが取れなくても課金・レイドは出る。
+ * ⚠⚠⚠ **保存は 1 ミリも動いていない**（読んで表示するだけ）。新しい項目を出したくなったら
+ * **`docs/security.md` §9 追補〔063h〕を読み直すこと**——**保存していないものは出せない**
+ * （配信元〔サイト〕の列が無いのはそのため）。
  *
  * ## ⚠ なぜコメビュ窓の 4 つ目のビューなのか（main 窓の新 Screen にしなかった理由）
  *
@@ -82,6 +98,21 @@ const providerClass = (p: string): string => PROVIDER_CLASS[p] ?? "";
  * ⚠ ただし**文章では書かない**——「直近 20 件 / 全 35 件」という**事実だけ**を添える（下記の方針）。
  */
 export const SUMMARY_SESSION_LIMIT = 20;
+
+/**
+ * 063i 穴 A: ガチャ一覧を画面側で切る件数。
+ *
+ * ⚠⚠ **Rust には上限もページングも入れない**（`list_gacha_draws` の引数はセッション id 1 つだけ＝
+ * docs/security.md §3）。切るのはここだけである。
+ * ⚠ セッション一覧（[`SUMMARY_SESSION_LIMIT`]＝20）より多いのは、**1 配信の抽選は桁が上がりうる**ため
+ * （キーワード条件を広く張れば毎コメント抽選が起きる）。
+ * ⚠⚠ **切ったことは画面に出す**（黙って切ると「引いたのに残っていない」と読まれる）。
+ * ⚠ ただし**文章では書かない**——「直近 50 件 / 全 120 件」という**事実だけ**を添える
+ *   （`SUMMARY_SESSION_LIMIT` と同じ作法・2026-08-16 の決定）。
+ * ⚠⚠⚠ **再修正トリガー＝この件数で足りないと言われたとき。** そのときは**この定数を上げるのではなく、
+ *   Rust 側にページングを入れる**こと（画面に全件を抱えたまま数だけ増やすと、次は描画が重くなる）。
+ */
+export const SUMMARY_GACHA_DRAW_LIMIT = 50;
 
 /*
  * ⚠⚠ **2026-08-16（実機確認・依頼者の決定）: 画面から説明文（注記）を全廃した。**
@@ -148,6 +179,19 @@ export function SummaryView({ onBack }: SummaryViewProps) {
   // 貢献者の行から視聴者詳細へ（038b の導線を再利用。トップレベル view は増やさない＝ViewersView と同型）。
   const [selectedViewerId, setSelectedViewerId] = useState<string | null>(null);
 
+  /*
+   * 063i: ガチャ一覧（⚠⚠⚠ **専用の state を持つ**）。
+   *
+   * ⚠⚠ 上の `error` に相乗りさせないこと。あれは **①配信一覧 ②サマリー ③タイトル保存**の
+   * 3 用途で共用されており、②で失敗すると **`setSummary(null)` も撃つ**ので
+   * カード・数字・貢献者・レイドが丸ごと消える。⇒ ガチャの失敗をあそこへ流すと、
+   * 「**どちらか一方が失敗しても、もう一方は出す**」（063i の完了条件 4）を満たせなくなる。
+   * ⚠ `loading`（更新ボタンの無効化）もサマリー側のままにしてある——ガチャだけ遅れても
+   *   「更新」が押せなくなる理由は無い。
+   */
+  const [draws, setDraws] = useState<GachaDrawRecord[]>([]);
+  const [drawsError, setDrawsError] = useState<string | null>(null);
+
   // 配信の一覧を取る（マウント時のみ）。
   // ⚠ **新しいコマンドは作らない**——`list_stream_sessions`（全件・開始時刻の降順）と
   //   `get_active_stream_session`（進行中）の 2 本で足りる。既定の選択は「進行中があればそれ、無ければ直近」。
@@ -210,6 +254,40 @@ export function SummaryView({ onBack }: SummaryViewProps) {
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
+    // 063i: ガチャ一覧は**同じ effect の中で並べて投げる**（「更新」ボタンで両方が並んで走るのが
+    //   期待挙動）。⚠⚠ **失敗の受け皿を分けてあるのが要点**——上のサマリー側は失敗時に
+    //   `setSummary(null)` を撃つので、同じ state を共有すると「ガチャが取れないと配信サマリーごと
+    //   出ない」という退行になる（063i の完了条件 4 が禁じているもの）。
+    // ⚠ `Promise.allSettled` で束ねていないのは、**束ねると両方が揃うまで画面が出ない**ため。
+    //   「どちらか一方が失敗しても、もう一方は出す」は、2 本を別々に解決させるほうが素直に満たせる。
+    //   ⚠⚠ タスクファイル本文は「先例（`ViewersView` の一括削除・`effectOverlayRestore`）に
+    //   揃えて `Promise.allSettled`」と指示していたが、**意図的に外している**——あちらは
+    //   「N 件のバッチで失敗件数を出す」形で、ここ（独立した 2 本が独立した 2 領域を養う）とは
+    //   問題の形が違う。⇒ 063i タスクファイル冒頭の「本文との差」表の 5 番目が正。
+    //
+    // ⚠⚠⚠ **ここで `setDraws([])` はしない（意図的）。**
+    //   そのぶん「サマリーが先に解決し、ガチャが遅れる」瞬間だけ **新しい配信のサマリー ＋
+    //   前の配信のガチャ行**が並びうる。⚠ **受容する**理由: 消すと「更新」を押すたびに
+    //   **「ガチャはありません」が一瞬出る**——それは下の `drawsError` 分岐が
+    //   「失敗時に空の表を出さない」で避けているのと**まったく同じ誤読**（「取れなかった」が
+    //   「1 回も引かれていない」に化ける）を、成功パスで作り直すことになる。
+    //   ⚠ 実害は read-only の一瞬の表示ずれだけである（`cancelled` ガードを固定していない
+    //   上のレビュー Q-4 の受容と同性質）。
+    //   【再修正トリガー】**節ごとに内容を隠すローディング表示を入れるとき**——そのとき混ざり自体が
+    //   消えるので、`setDraws([])` ではなくそちらで解くこと。
+    setDrawsError(null);
+    listGachaDraws(selectedId)
+      .then((d) => {
+        if (cancelled) return;
+        setDraws(d);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        // ⚠ 前の配信の行を残さない（選び直したのに古い一覧が出たままにならないように）。
+        setDraws([]);
+        // §9: エラー本文は出さず固定の安全文言のみ。
+        setDrawsError("ガチャの結果を取得できませんでした。");
+      });
     return () => {
       cancelled = true;
     };
@@ -250,6 +328,9 @@ export function SummaryView({ onBack }: SummaryViewProps) {
   }
 
   const session = summary?.session ?? null;
+  // 063i 穴 A: 画面側で直近 N 件に切る（⚠ Rust は全件返す＝あちらに上限を入れない）。
+  //   ⚠ `list_gacha_draws` は `drawnAt` の降順なので、**先頭から N 件が「直近 N 件」**である。
+  const shownDraws = draws.slice(0, SUMMARY_GACHA_DRAW_LIMIT);
 
   return (
     <div className={styles.settingsView}>
@@ -517,6 +598,90 @@ export function SummaryView({ onBack }: SummaryViewProps) {
                 ))
               )}
             </div>
+          </section>
+
+          {/* ---- ガチャを引いた人（063i）---- */}
+          {/* ⚠ 見出しは既存 2 つ（「課金・サブスクをしてくれた人」「レイドしてくれた人（Twitch のみ）」）と
+              同じ**人主語**に揃える。依頼者の要望も「**誰が**ガチャを引いて誰が何を引いたのか」である。
+              ⚠⚠ **何も当たらなかった抽選も 1 行として並ぶ**（063h が等しく記録している）ので、
+              「当選一覧」ではない。⚠ 外れを意味する語は画面に出さず、結果は `GACHA_MISS_LABEL` で出す。
+              ⚠⚠⚠ **行に「メールで送る」等の導線を置かないこと**（063g＝景品の自動配布は「やらない」で完了）。 */}
+          <section className={styles.summarySection}>
+            <h2 className={styles.summaryHeading}>ガチャを引いた人</h2>
+            {drawsError !== null ? (
+              /* ⚠⚠ 失敗したときは**表を出さない**——空の表（「ガチャはありません」）を出すと、
+                 「取れなかった」が「1 回も引かれていない」に化ける。
+                 ⚠ §9: エラー本文は出さず固定の安全文言のみ（30 文字未満＝説明文ガード）。 */
+              <p className={styles.errorText}>{drawsError}</p>
+            ) : (
+              /* ⚠⚠ 件数の注記も**この分岐の中**に置く（`drawsError` の外に出さない）。
+                 外に置くと「エラー文言の下に件数だけが出ない」ことが、`catch` の
+                 `setDraws([])` という**離れた副作用への暗黙の依存**になる。⇒ 構造で表現する。 */
+              <>
+                <div className={styles.viewerTable}>
+                  <div className={`${styles.viewerHead} ${styles.gachaHead}`}>
+                    <span>時刻</span>
+                    <span>引いた人</span>
+                    <span>ガチャ</span>
+                    <span>結果</span>
+                  </div>
+                  {shownDraws.length === 0 ? (
+                    /* ⚠ 「記録を始める前の配信だから空です」等の説明文を書かない（注記全廃の決定）。
+                       古い配信が必ず空になることは、文章ではなくこの 1 行だけで見える。 */
+                    <p className={styles.empty}>ガチャはありません</p>
+                  ) : (
+                    shownDraws.map((d) => (
+                      /* ⚠ 行から視聴者詳細へ（貢献者一覧と**同じ 4 点セット**＝新しい導線を作らない）。
+                         ⚠⚠ `viewers` に対応行が無い視聴者が居る（FK を張っていない＝§9 追補〔063h〕
+                         レビュー S-1）が、`ViewerDetailPanel` が `getViewer` の失敗を catch して
+                         固定安全文言を出すので**開くが「見つかりません」と出る**＝それでよい。 */
+                      <div
+                        key={d.id}
+                        className={`${styles.viewerRow} ${styles.gachaRow}`}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => setSelectedViewerId(d.viewerId)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            setSelectedViewerId(d.viewerId);
+                          }
+                        }}
+                      >
+                        <span className={styles.vMuted}>{fmtDateTime(d.drawnAt)}</span>
+                        {/* ⚠⚠ **抽選した時点の名前**（穴 D）。上の貢献者一覧は `viewers.name`＝**今の名前**を
+                            出しており、**同じ画面に 2 つの規則が並ぶ**のが仕様である
+                            （「その配信で誰が引いたか」は当時の名前が正しい）。⚠ 説明文は書かないので、
+                            意図は `SummaryView.test.tsx` の 063i ブロックが固定している。 */}
+                        <span className={styles.vName}>{d.viewerName}</span>
+                        <span className={styles.vMuted}>{d.gachaName}</span>
+                        {/* ⚠ レアは**列にせず結果の隣のバッジ**（列を増やすと横に伸びて読めなくなる。
+                            この窓は配信中に開く）。器は 065b の `.vNameCell`（名前＋バッジ）を再利用する。 */}
+                        <span className={styles.vNameCell}>
+                          <span className={styles.vName}>
+                            {/* ⚠⚠⚠ 文言をここに書かない（`GACHA_MISS_LABEL` が唯一の持ち主＝
+                                設定画面のテスト抽選と同じ言葉であること）。⚠ `prizeLabel` は
+                                serde が `null` を出す・型は optional なので `??` の両対応で受ける。 */}
+                            {d.prizeLabel ?? GACHA_MISS_LABEL}
+                          </span>
+                          {d.rare && (
+                            <span className={`${styles.badge} ${styles.badgeRare}`}>
+                              レア
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                    ))
+                  )}
+                </div>
+                {/* ⚠ 切り捨てが起きたときだけ、**事実だけ**を添える（セッション一覧と同じ形・同じ言い回し）。 */}
+                {draws.length > SUMMARY_GACHA_DRAW_LIMIT && (
+                  <p className={styles.note}>
+                    直近 {shownDraws.length} 件 / 全 {fmtNumber(draws.length)} 件
+                  </p>
+                )}
+              </>
+            )}
           </section>
         </>
       )}
