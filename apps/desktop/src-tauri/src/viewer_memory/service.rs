@@ -169,17 +169,55 @@ pub fn update_note(conn: &Connection, id: &str, note: String) -> AppResult<Viewe
 }
 
 /// 視聴者を削除する（当該コメントも FK CASCADE で削除）。
+///
+/// ## ⚠⚠⚠ 063h: `gacha_draws` は **CASCADE では消えない**ので明示的に消す
+///
+/// `gacha_draws.viewer_id` に FK を張っていない（理由は `gacha_history::mod` が正＝
+/// ①記録の順序が保証できない ②`viewers` 行を先に作ると 038c の初見バッジが壊れる）。
+/// ⇒ **ここが「視聴者を消したらガチャ履歴も消える」ことの唯一の実装点である**（§9 追補〔063h〕）。
+///
+/// ⚠⚠ **同一トランザクションで、ガチャ履歴を先に消す。** 順序に意味がある——
+/// 途中で落ちたときに残ってよいのは「**視聴者だけ**」であって「**履歴だけ**」ではない
+/// （後者はプライバシー手段の穴になる。前者はもう一度削除すれば済む）。
+///
+/// ⚠ 依存の向き（`viewer_memory` → `gacha_history`）が不自然に見えるが、**commands 層へ上げない**
+/// ——あちらは `State<'_, DbState>` を要るので「取り残しゼロ」をユニットテストで固定できなくなる。
+///
+/// ## ⚠⚠⚠ 063h レビュー S-1: **`viewers` に行が無い視聴者のガチャ履歴はここでは消せない**
+///
+/// 下の `affected == 0` は `NotFound` を返して**ロールバックする**（＝ガチャ履歴だけが消えるのを
+/// 防ぐための正しい設計だが、裏返すと**`viewers` に行がある人しか消せない**）。
+/// ⚠ 一方 `gacha_draws` は FK が無いので `viewers` 行の有無と無関係に入る。⇒ ずれる経路が実在する:
+/// **`record_comment` はコメント本文の制御文字を拒否する**ので、**改行入りのスパチャ**は
+/// `viewers` 行を作らずに落ちる（⚠ ガチャはスパチャ条件で撃たれるのが主経路）。
+/// ⇒ その人は視聴者一覧に出ないので**個別削除の導線が無く**、履歴だけが端末に残る。
+/// ⚠⚠ **消せるのは [`clear`]（全消去）だけである。** 全文と申し送りは
+/// `docs/security.md` §9 追補〔063h〕の「削除手段」節が正。
+/// ⚠ **ここを「`viewers` 行が無くてもガチャ履歴だけ消す」形へ変えないこと**——`NotFound` の意味が
+/// 変わり、既存の削除の挙動が退行する。⚠ **再修正トリガー＝端末内データの一括削除を作るとき**
+/// （そこで到達漏れを閉じる）。
 pub fn delete(conn: &Connection, id: &str) -> AppResult<()> {
-    let affected = repository::delete(conn, id)?;
+    let tx = conn.unchecked_transaction()?;
+    // ⚠ ガチャ履歴が 0 件でも正常（引いていない視聴者）。件数は見ない。
+    crate::gacha_history::repository::delete_by_viewer(&tx, id)?;
+    let affected = repository::delete(&tx, id)?;
     if affected == 0 {
+        // ⚠ ロールバックされるので、存在しない id を渡してもガチャ履歴だけ消えることはない
+        //   （`tx` を drop すると rusqlite が自動で rollback する）。
         return Err(AppError::not_found(format!("視聴者が見つかりません: {id}")));
     }
+    tx.commit()?;
     Ok(())
 }
 
 /// 全視聴者を削除する（プライバシー手段の全消去）。
+///
+/// ⚠⚠ 063h: `gacha_draws` も**明示的に全消去する**（上の [`delete`] と同じ理由・同じ順序）。
 pub fn clear(conn: &Connection) -> AppResult<()> {
-    repository::clear(conn)?;
+    let tx = conn.unchecked_transaction()?;
+    crate::gacha_history::repository::delete_all(&tx)?;
+    repository::clear(&tx)?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -285,11 +323,96 @@ mod tests {
     use rusqlite::Connection;
 
     /// テスト用 in-memory 接続（本番同様に foreign_keys=ON）。
+    ///
+    /// ⚠⚠ 063h: **`gacha_history` の init も撃つ**——`delete` / `clear` が `gacha_draws` を
+    /// 明示 DELETE するようになったので、無いと `no such table` で落ちる
+    /// （本番は `lib.rs` の `setup()` で両方 init しているのと同じ状態を作る）。
     fn test_conn() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute("PRAGMA foreign_keys = ON", []).unwrap();
         repository::init(&conn).unwrap();
+        crate::gacha_history::repository::init(&conn).unwrap();
         conn
+    }
+
+    /// 063h: ガチャの抽選記録を 1 件入れる（削除の取り残しを見るためだけのヘルパ）。
+    fn record_draw(conn: &Connection, id: &str, viewer_id: &str) {
+        crate::gacha_history::service::record(
+            conn,
+            crate::gacha_history::model::NewGachaDraw {
+                id: id.to_string(),
+                session_id: "s1".to_string(),
+                viewer_id: viewer_id.to_string(),
+                viewer_name: "アリス".to_string(),
+                gacha_id: "g:1".to_string(),
+                gacha_name: "朝ガチャ".to_string(),
+                prize_label: Some("色紙".to_string()),
+                rare: false,
+                drawn_at: "2026-08-30T12:00:00Z".to_string(),
+            },
+        )
+        .unwrap();
+    }
+
+    fn gacha_rows(conn: &Connection) -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM gacha_draws", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// ⚠⚠⚠ **063h 完了条件 3: `delete_viewer` でガチャ履歴の取り残しが 0 行**。
+    ///
+    /// ⚠ `gacha_draws.viewer_id` に **FK を張っていない**ので、CASCADE では消えない
+    /// （理由は `gacha_history::mod` が正）。⇒ **明示 DELETE を消す変異でここがレッドになる**のが唯一の担保。
+    #[test]
+    fn deleting_a_viewer_also_removes_their_gacha_draws() {
+        let conn = test_conn();
+        record_comment(&conn, dto(), "s1".to_string()).unwrap();
+        record_draw(&conn, "c1:g:1:0", "twitch:u1");
+        record_draw(&conn, "c2:g:1:0", "twitch:other");
+        assert_eq!(gacha_rows(&conn), 2);
+
+        delete(&conn, "twitch:u1").unwrap();
+
+        // ⚠ 消えるのは本人のぶんだけ（他人を巻き添えにしない）。
+        assert_eq!(gacha_rows(&conn), 1);
+        let left: String = conn
+            .query_row("SELECT viewer_id FROM gacha_draws", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, "twitch:other");
+    }
+
+    /// ⚠⚠⚠ **063h 完了条件 3: `clear_viewers` でガチャ履歴が全件 0 行**。
+    #[test]
+    fn clearing_viewers_also_removes_every_gacha_draw() {
+        let conn = test_conn();
+        record_comment(&conn, dto(), "s1".to_string()).unwrap();
+        record_draw(&conn, "c1:g:1:0", "twitch:u1");
+        record_draw(&conn, "c2:g:1:0", "twitch:other");
+
+        clear(&conn).unwrap();
+
+        assert_eq!(gacha_rows(&conn), 0);
+    }
+
+    /// ⚠⚠ **存在しない視聴者を消しても、ガチャ履歴だけが消えないこと**（トランザクションの担保）。
+    ///
+    /// ⚠ `delete` はガチャ履歴を**先に**消してから `viewers` を消し、0 件なら `NotFound` を返す。
+    /// トランザクションを外す変異（`tx` を `conn` にする）を入れると、
+    /// **視聴者は残るのに履歴だけ消える**のでここがレッドになる。
+    #[test]
+    fn deleting_a_missing_viewer_rolls_back_the_gacha_draw_deletion() {
+        let conn = test_conn();
+        record_draw(&conn, "c1:g:1:0", "twitch:ghost");
+
+        assert_eq!(
+            delete(&conn, "twitch:ghost").unwrap_err().code,
+            ErrorCode::NotFound
+        );
+        assert_eq!(
+            gacha_rows(&conn),
+            1,
+            "視聴者が居ないのにガチャ履歴だけが消えている（トランザクションが効いていない）"
+        );
     }
 
     /// 最小の受信 DTO（twitch / 通常チャット / 金額なし）。

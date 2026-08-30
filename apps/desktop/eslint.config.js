@@ -48,9 +48,18 @@ export default tseslint.config(
     // ⚠ **再修正トリガー＝`components/` に「第三者データを受け取る部品」を出すとき**
     //   （＝エフェクト本体や視聴者情報を描く部品を共通化したとき）。そのときは
     //   このスコープを広げるか、その部品だけを名指しで足すこと。
+    //
+    // ⚠⚠⚠ **063h レビュー S-2: `src/features/gacha-history/**` を対象へ足した**（＝上の再修正
+    // トリガーがそのまま発火した 1 例目）。あの 2 モジュールは **「切っていない視聴者の表示名」と
+    // 「視聴者 id」を持つ唯一の frontend 層**（`stageViewerName` の 20 文字の壁を通さない記録レーン＝
+    // `docs/security.md` §9 追補〔063h〕）でありながら、当初は `gachaHistoryApi.ts` の JSDoc
+    // 「`console.*` も書かない」というコメントだけが規約を支えていた。
+    // ⚠ 061b レビュー②S-2 と 061d-1 レビュー S-3 が**まったく同じ形**（コメントで守っていたつもりの
+    //   console が変異で生存した）だったので、3 度目を作らない。
     files: [
       "src/screens/obs-effects/**/*.{ts,tsx}",
       "src/features/obs-effects/**/*.{ts,tsx}",
+      "src/features/gacha-history/**/*.{ts,tsx}",
     ],
     rules: { "no-console": "error" },
   },

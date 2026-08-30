@@ -111,7 +111,13 @@ import {
   takeFreshComments,
 } from "../obs-effects/effectTrigger";
 import { rememberChannelPointRewards } from "../../features/comment-viewer/channelPointRewards";
-import { decideFireResults } from "../obs-effects/effectFire";
+import {
+  decideFireResults,
+  type GachaDrawOutcome,
+} from "../obs-effects/effectFire";
+// 063h: ガチャ抽選の記録（⚠ **記録レーンだけが通る経路**。演出・チャットへは繋がっていない）。
+import { recordGachaDraws } from "../../features/gacha-history/gachaHistoryApi";
+import { enqueuePendingGachaDraws } from "../../features/gacha-history/pendingGachaDraws";
 import { emitGachaStageResult } from "../obs-effects/gachaStageEvent";
 import {
   buildGachaChatMessage,
@@ -503,6 +509,12 @@ export function CommentViewerApp() {
   const pendingRecordsRef = useRef<readonly PendingRecordBatch[]>([]);
   // 062b: 上限超過で捨てた記録待ちコメントの件数（表示用・§9 のため本文は持たない）。
   const [droppedRecordCount, setDroppedRecordCount] = useState(0);
+  // 063h 穴 C: セッション未確定の間に起きたガチャ抽選（確定後に流す）。
+  // ⚠ **`pendingRecordsRef` と別に持つ**（あちらはバッチ単位＋`withResult` を持つ 062b の担保つき）。
+  const pendingGachaDrawsRef = useRef<readonly GachaDrawOutcome[]>([]);
+  // 063h: 上限超過で捨てたガチャ記録の件数（⚠ **コメントの落ち件数と合算しない**——
+  //   原因も対処も違うので、まとめると「何が起きたか」が読めなくなる）。
+  const [droppedGachaDrawCount, setDroppedGachaDrawCount] = useState(0);
   // 062b: provider 別の接続状態の**ミラー**。`sessionState` / `youtubeSessionState`（表示用 state）は
   // マウント時 1 回だけ張る WS effect のクロージャからは stale になるため、判定用に ref を持つ
   //（この窓の他の getter 注入と同じイディオム）。**書き手は `onSessionState` ハンドラ 1 か所だけ**。
@@ -1294,14 +1306,35 @@ export function CommentViewerApp() {
     [handleRecordResult],
   );
 
+  /**
+   * 063h 穴 C: セッション確定前に貯めたガチャ抽選を、確定した id で記録し直す。
+   *
+   * ⚠ **063h レビュー Q-4: ref を先に空にしてから投げる**ので、ここでの invoke 失敗は
+   *   バッファへ戻らず、**「記録できなかったガチャ N 件」にも出ない**（あの数字は上限超過だけ）。
+   * ⚠⚠ **意図的である**——戻すと「確定したのに永遠に流れないもの」が残り、
+   *   次の flush で二重に投げることになる（`flushPendingRecords` と同じ作法）。
+   *   ⚠ 二重投げ自体は記録 id が決定的なので Rust の `INSERT OR IGNORE` が吸収するが、
+   *   **失敗したものを貯め続ける経路**は上限を先に食い潰す。
+   * ⚠ 再修正トリガー＝実機で flush 直後の取りこぼしが観測されたとき
+   *   （`gachaHistoryApi.ts` の S-4 の注記と同じ扱いにすること）。
+   */
+  const flushPendingGachaDraws = useCallback((sessionId: string) => {
+    const draws = pendingGachaDrawsRef.current;
+    if (draws.length === 0) return;
+    pendingGachaDrawsRef.current = [];
+    recordGachaDraws(draws, sessionId);
+  }, []);
+
   /** Rust から受け取ったセッションを採用する（引き継ぎ・新規開始の共通処理）。 */
   const adoptStreamSession = useCallback(
     (record: { id: string; platforms: readonly string[] }) => {
       sessionIdRef.current = record.id;
       sessionPlatformsRef.current = record.platforms;
       flushPendingRecords(record.id);
+      // ⚠ ガチャも同じ契機で流す（コメントの記録と同じ「確定した瞬間」に揃える）。
+      flushPendingGachaDraws(record.id);
     },
-    [flushPendingRecords],
+    [flushPendingRecords, flushPendingGachaDraws],
   );
 
   /**
@@ -1391,6 +1424,29 @@ export function CommentViewerApp() {
     },
     [handleRecordResult],
   );
+
+  /**
+   * 063h: ガチャ抽選を記録する。**セッション未確定なら貯める**（穴 C）。
+   *
+   * ⚠ `recordOrBufferComments` と同じ構えだが、**別の関数・別のバッファ**である
+   *   （`pendingGachaDraws.ts` の注記が正）。
+   * ⚠⚠ **`await` しない**——記録の失敗で演出・チャット・表示を止めない（best-effort）。
+   */
+  const recordOrBufferGachaDraws = useCallback((draws: GachaDrawOutcome[]) => {
+    if (draws.length === 0) return;
+    const sessionId = sessionIdRef.current;
+    if (sessionId !== null) {
+      recordGachaDraws(draws, sessionId);
+      return;
+    }
+    const { next, dropped } = enqueuePendingGachaDraws(
+      pendingGachaDrawsRef.current,
+      draws,
+    );
+    pendingGachaDrawsRef.current = next;
+    // ⚠ 捨てたことを黙らせない（062b と同じ規律）。
+    if (dropped > 0) setDroppedGachaDrawCount((prev) => prev + dropped);
+  }, []);
 
   /**
    * ⚠⚠ 062b: マウント時に**進行中セッションを引き継ぐ**（本タスクの主目的）。
@@ -1581,7 +1637,11 @@ export function CommentViewerApp() {
           // ⚠ `loadGachaLibrary` を**関数のまま渡す**のは、ガチャの発火が 1 件も無いバッチで
           //   localStorage を読まないため（＋鳴らす直前に読み直すため）。
           // ⚠⚠ 乱数は**演出用**であって暗号用途ではない（`decideFireResults` の JSDoc が正）。
-          const results = decideFireResults(
+          // ⚠⚠⚠ **063h: 戻り値は 2 本のレーンになった**（`fires` は 063h の前とまったく同じ中身）。
+          //   ⚠ `draws` は**抽選が起きた回数ぶん**並ぶ（何も出なかったものを含む）。
+          // ⚠⚠ `drawnAt` を**ここで 1 回だけ作って渡す**のは、あちらを決定的な純関数に保つため
+          //   （`Date.now()` を引数で受けているのと同じ理由）。⚠ 同じバッチの抽選は同じ時刻になる。
+          const { fires: results, draws } = decideFireResults(
             freshForObs,
             [],
             obsEffectStateRef.current,
@@ -1589,6 +1649,7 @@ export function CommentViewerApp() {
             effectFireMatcher,
             loadGachaLibrary,
             Math.random,
+            new Date().toISOString(),
           );
           for (const result of results) {
             // ⚠⚠⚠ **063c 段 2-a: OBS を先に鳴らし、演出は後で投げる。**
@@ -1643,6 +1704,16 @@ export function CommentViewerApp() {
               });
             }
           }
+          // ⚠⚠⚠ **063h: 記録は最後**（本線の 3 段目）。
+          //   ⚠ 順序に意味がある——OBS ／ 演出 ／ チャットを**どれも済ませてから**投げるので、
+          //   将来ここに `await` を足した人がいても本線が先に終わっている
+          //   （`emitGachaStageResult` と `sendGachaChat` を後ろへ置いた理由と同じ規律の 3 段目）。
+          // ⚠⚠ **ループの外で 1 回**呼ぶ（`draws` は `results` と件数も並びも別物なので、
+          //   上のループの中で引こうとすると対応を取り違える）。
+          // ⚠⚠⚠ **`draws` を `emitGachaStageResult` / `sendGachaChat` へ渡さないこと**——
+          //   この配列だけが**切っていない表示名と視聴者 id**を持っており、
+          //   渡した瞬間に `docs/security.md` §9 追補〔063h〕の「レーンごとの線」が消える。
+          recordOrBufferGachaDraws(draws);
         }
       },
       onDeviceCode: (prompt) => setDeviceCode(prompt),
@@ -1724,12 +1795,15 @@ export function CommentViewerApp() {
     // ⚠ 062b で足した 3 つ（`recordOrBufferComments` / `ensureStreamSession` /
     //   `scheduleStreamSessionEnd`）も useCallback チェーンが安定（元は `handleRecordResult` と ref だけ）
     //   ＝ここに載せても WS は張り直らない。
+    // ⚠ 063h の `recordOrBufferGachaDraws` は **`useCallback(…, [])`**（読むのは ref だけ）＝
+    //   一生変わらないので、同じくここに載せても WS は張り直らない。
   }, [
     enqueueForSpeech,
     handleRecordResult,
     playBatchNotification,
     effectFireMatcher,
     recordOrBufferComments,
+    recordOrBufferGachaDraws,
     ensureStreamSession,
     scheduleStreamSessionEnd,
   ]);
@@ -3082,6 +3156,23 @@ export function CommentViewerApp() {
                   title="配信セッションを開始できなかったため、一部のコメントを視聴者メモリに記録できませんでした。コメントビューアを開き直すと復帰します。"
                 >
                   記録できなかったコメント {droppedRecordCount} 件
+                </span>
+              )}
+              {/* ⚠⚠⚠ **063h: ガチャの記録落ち**（セッション未確定のバッファが溢れた）。
+                  ⚠⚠ **上のコメント記録落ちと合算しない**——原因は同じ（セッション未確定）でも、
+                  失われたものが違う（視聴者メモリの集計 ／ 配信サマリーのガチャ一覧）ので、
+                  1 つに畳むと「何が見られなくなったか」が読めなくなる。
+                  ⚠ §9: **件数だけ**を出す（景品名・ガチャ名・表示名・視聴者 id・例外の中身は出さない）。
+                  ⚠ 時間経過では消さない（気付かせるのが目的）。置き場所とクラスは 062b の記録落ちと同じ。
+                  ⚠⚠ **配信サマリーには遡って出せない**（記録は遡れない）ので、
+                  ここで気付けないと**その抽選は永久に失われる**。 */}
+              {droppedGachaDrawCount > 0 && (
+                <span
+                  className={styles.toolbarError}
+                  role="status"
+                  title="配信セッションを開始できなかったため、一部のガチャの結果を記録できませんでした。配信サマリーには出ません。コメントビューアを開き直すと復帰します。"
+                >
+                  記録できなかったガチャ {droppedGachaDrawCount} 件
                 </span>
               )}
               {/* ⚠⚠⚠ **063f: ガチャの結果をチャットへ自動で書き込めなかったこと**の継続表示。

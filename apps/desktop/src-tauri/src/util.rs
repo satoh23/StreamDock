@@ -37,6 +37,25 @@ pub fn reject_control_chars(value: &str, message: impl Into<String>) -> AppResul
     Ok(())
 }
 
+/// 063h: RFC3339 としてパースできなければ Validation エラーを返す（**値は捨てて真偽だけを見る**）。
+///
+/// ⚠⚠ **frontend が作った時刻文字列を受けるときに使う**（docs/security.md §8＝生値を信用しない）。
+/// `gacha_draws.drawn_at` が唯一の消費者で、**抽選した瞬間の時刻**を frontend が作る理由は
+/// §9 追補（063h）が正（Rust の保存時刻で代用すると、セッション未確定でバッファに貯まった抽選が
+/// 「流した時刻」で記録され、配信サマリーの並びが実際の抽選順と食い違う）。
+///
+/// ⚠ **正規化して返さない**（`String` ではなく `()` を返す）——呼び出し側が受け取った文字列を
+/// そのまま保存することで、「保存された値」と「検証した値」が食い違う余地を作らない。
+/// ⚠⚠ **`published_at`（`record_comment`）をこれに通さないこと**——あちらは配信サービスが作った値で、
+/// **形式が provider ごとに揺れる**（`Z` とオフセットが混ざる）。既存は `require_non_empty` だけで
+/// 通しており、ここで締めると**既存のコメント記録が落ちる**。
+pub fn require_rfc3339(value: &str, message: impl Into<String>) -> AppResult<()> {
+    if chrono::DateTime::parse_from_rfc3339(value).is_err() {
+        return Err(AppError::validation(message));
+    }
+    Ok(())
+}
+
 /// 023: URL を http/https スキーム限定で検証し、trim 済みの安全な URL 文字列を返す。
 ///
 /// 保存時（`tools::service`）と起動時（`process::service::open_url`）の両方で使う多層防御。
@@ -245,6 +264,43 @@ pub fn ensure_column(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 063h: `drawn_at` の検証（frontend の生値を信用しない＝§8）。
+    ///
+    /// ⚠ **`toISOString()` が出す `…Z` が通ること**を必ず含める（frontend の唯一の生成手段）。
+    #[test]
+    fn rfc3339_accepts_the_shapes_the_frontend_actually_produces() {
+        for ok in [
+            "2026-08-30T12:34:56.789Z", // ⚠ JS の `new Date().toISOString()` の実出力
+            "2026-08-30T12:34:56Z",
+            "2026-08-30T21:34:56+09:00",
+            "2026-08-30T12:34:56.789012+00:00",
+        ] {
+            assert!(
+                require_rfc3339(ok, "不正").is_ok(),
+                "正当な RFC3339 を弾いた: {ok:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rfc3339_rejects_values_that_are_not_timestamps() {
+        // ⚠ 空・和暦風・タイムゾーンなし・SQL 断片（§8 の意図）はすべて落ちること。
+        for bad in [
+            "",
+            "2026-08-30",
+            "2026-08-30 12:34:56", // ⚠ タイムゾーンも `T` も無い（SQLite の DATETIME 形式）
+            "2026/08/30 12:34:56",
+            "'); DROP TABLE gacha_draws; --",
+            "not-a-date",
+        ] {
+            assert_eq!(
+                require_rfc3339(bad, "不正").unwrap_err().code,
+                crate::error::ErrorCode::ValidationError,
+                "不正な時刻を通した: {bad:?}"
+            );
+        }
+    }
 
     #[test]
     fn network_paths_are_detected_including_mixed_separators() {

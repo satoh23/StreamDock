@@ -48,6 +48,13 @@ import {
  */
 
 const T0 = 1_000_000;
+/**
+ * 063h: 記録に載る抽選時刻（⚠ **引数で受けるので本ファイルは時計を使わない**）。
+ *
+ * ⚠ 実装が `new Date().toISOString()` を作る形に変わっていないことは、
+ * `decideFireResults` が**この値をそのまま返す**ことで確かめられる（下の 063h 節）。
+ */
+const DRAWN_AT = "2026-08-30T12:00:00.000Z";
 const SRC_HIT = "大当たり演出";
 const SRC_LOSE = "はずれ演出";
 const SRC_DIRECT = "直指定ソース";
@@ -125,8 +132,21 @@ const feed = (
   matcher: EffectMatcher<EffectFire> = createEffectFireMatcher(),
   at = T0,
 ): EffectFireResult[] =>
-  comments.flatMap((c) =>
-    decideFireResults([c], [], state, at, matcher, loadGachaLibrary, random),
+  // ⚠⚠ 063h: 戻り値が 2 本のレーンになったので `fires` を取り出す。
+  //   ⚠ **既存テストの意味は 1 つも変えていない**——`fires` は 063h の前とまったく同じ中身である。
+  //   記録レーン（`draws`）を見るテストは下の「063h」節が別に持つ。
+  comments.flatMap(
+    (c) =>
+      decideFireResults(
+        [c],
+        [],
+        state,
+        at,
+        matcher,
+        loadGachaLibrary,
+        random,
+        DRAWN_AT,
+      ).fires,
   );
 
 /**
@@ -374,8 +394,11 @@ describe("063b: ガチャの発火（decideFireResults）", () => {
       createEffectFireMatcher(),
       loadGachaLibrary,
       random,
+      DRAWN_AT,
     );
-    expect(out).toEqual([]);
+    expect(out.fires).toEqual([]);
+    // ⚠⚠ 063h: **記録レーンにも現れないこと**（`updated` を読まない規律はレーンをまたぐ）。
+    expect(out.draws).toEqual([]);
     expect(random.calls).toBe(0);
   });
 
@@ -575,9 +598,12 @@ describe("063b: ガチャの発火（decideFireResults）", () => {
         return [];
       },
       countingRandom(0),
+      DRAWN_AT,
     );
-    expect(names(out)).toEqual([SRC_DIRECT]);
+    expect(names(out.fires)).toEqual([SRC_DIRECT]);
     expect(loads).toBe(0);
+    // ⚠⚠ 063h: **ガチャではない発火は記録レーンに現れない**（抽選が起きていない）。
+    expect(out.draws).toEqual([]);
   });
 
   // --- §9 -----------------------------------------------------------------------------
@@ -649,17 +675,20 @@ describe("063b: ガチャの発火（decideFireResults）", () => {
             matcher,
             loadGachaLibrary,
             random,
-          )
-        : many.flatMap((c) =>
-            decideFireResults(
-              [c],
-              [],
-              state,
-              T0,
-              matcher,
-              loadGachaLibrary,
-              random,
-            ),
+            DRAWN_AT,
+          ).fires
+        : many.flatMap(
+            (c) =>
+              decideFireResults(
+                [c],
+                [],
+                state,
+                T0,
+                matcher,
+                loadGachaLibrary,
+                random,
+                DRAWN_AT,
+              ).fires,
           );
       // ⚠ バースト上限で捨てられた件数まで含めて同じであることを見る。
       return [...names(results), `random=${random.calls}`];
@@ -694,8 +723,12 @@ describe("063b: ガチャの発火（decideFireResults）", () => {
       createEffectFireMatcher(),
       loadGachaLibrary,
       countingRandom(0),
+      DRAWN_AT,
     );
-    expect(out.map((r) => r.gacha?.viewerName)).toEqual(["あかり", "ばんり"]);
+    expect(out.fires.map((r) => r.gacha?.viewerName)).toEqual([
+      "あかり",
+      "ばんり",
+    ]);
   });
 
   it("⚠ 表示名が空なら null（空文字を配信画面へ出さない）", () => {
@@ -914,5 +947,246 @@ describe("063c 段 2-a: 発火の結果（EffectFireResult）", () => {
       feed([comment({ id: "c2" })], countingRandom(0.6), state, matcher)[0]
         .output,
     ).toEqual({ kind: "obs-source", sourceName: SRC_HIT });
+  });
+});
+
+/**
+ * ⚠⚠⚠ **063h: 記録レーン（`draws`）。**
+ *
+ * ⚠ ここが固定するのは「**何が記録されるか**」であって「何が鳴るか」ではない。
+ * 鳴るほうは上の節がそのまま担保しており、**063h でそちらの期待値は 1 つも変えていない**。
+ */
+describe("063h: 抽選の記録レーン（draws）", () => {
+  /** `draws` だけを取り出す（⚠ `fires` は既存の `feed` が見る）。 */
+  const drawsOf = (
+    comments: CommentViewDto[],
+    random: () => number,
+    state: EffectTriggerState = createEffectTriggerState(),
+  ) =>
+    decideFireResults(
+      comments,
+      [],
+      state,
+      T0,
+      createEffectFireMatcher(),
+      loadGachaLibrary,
+      random,
+      DRAWN_AT,
+    );
+
+  /**
+   * ⚠⚠⚠ **本タスクの中心**: 何も当たらなかった抽選が**記録には 1 件残り、発火には現れない**。
+   *
+   * ⚠ `GACHA_30` は合計 30% なので、`countingRandom(0.9)` は必ず外れる。
+   */
+  it("⚠⚠⚠ 何も当たらない抽選は fires が空・draws が 1 件", () => {
+    saveGachaLibrary([GACHA_30]);
+    setConditionEffect("event:superchat", { kind: "gacha", gachaId: "g:1" });
+    const out = drawsOf([comment()], countingRandom(0.9));
+
+    expect(out.fires).toEqual([]);
+    expect(out.draws).toHaveLength(1);
+    // ⚠⚠ `null` ＝ 何も出なかった（⚠ 空文字でも「何も出ない」という文字列でもない）。
+    expect(out.draws[0].prizeLabel).toBeNull();
+    expect(out.draws[0].rare).toBe(false);
+  });
+
+  it("当たった抽選は fires と draws の両方が 1 件", () => {
+    saveGachaLibrary([GACHA_100]);
+    setConditionEffect("event:superchat", { kind: "gacha", gachaId: "g:2" });
+    const out = drawsOf([comment()], countingRandom(0));
+
+    expect(out.fires).toHaveLength(1);
+    expect(out.draws).toHaveLength(1);
+    expect(out.draws[0].prizeLabel).toBe("景品アルファ");
+  });
+
+  /**
+   * ⚠⚠⚠ **H-1: 名前が空の当たりは `null` にならない**（`GACHA_UNNAMED_PRIZE_LABEL` ＝「当たり」）。
+   *
+   * ⚠ `prize.name` を直読みする実装だと `null` になり、
+   * **配信サマリーに「何も出ない」と出る＝当たったのに外れたことになる**。
+   * ⚠⚠ これは「出ない」を見るテストでは殺せない（**当たってはいる**）ので、
+   * **記録された文字列そのもの**を見る。
+   */
+  it("⚠⚠⚠ 名前が空の当たりは「当たり」として記録される（null にしない）", () => {
+    saveGachaLibrary([
+      {
+        id: "g:3",
+        name: "無名ガチャ",
+        prizes: [{ name: "", weight: 1000, output: { kind: "builtin" } }],
+      },
+    ]);
+    setConditionEffect("event:superchat", { kind: "gacha", gachaId: "g:3" });
+    const out = drawsOf([comment()], countingRandom(0));
+
+    expect(out.draws[0].prizeLabel).toBe(GACHA_UNNAMED_PRIZE_LABEL);
+    expect(out.draws[0].prizeLabel).not.toBeNull();
+  });
+
+  it("⚠ ガチャではない発火（条件に OBS ソース直指定）は draws が空", () => {
+    setConditionEffect("event:superchat", OBS);
+    const out = drawsOf([comment()], countingRandom(0));
+
+    expect(out.fires).toHaveLength(1);
+    expect(out.draws).toEqual([]);
+  });
+
+  it("⚠ 一覧に無いガチャは抽選そのものが起きていないので draws にも現れない", () => {
+    saveGachaLibrary([GACHA_100]);
+    setConditionEffect("event:superchat", { kind: "gacha", gachaId: "g:404" });
+    const out = drawsOf([comment()], countingRandom(0));
+
+    expect(out.fires).toEqual([]);
+    expect(out.draws).toEqual([]);
+  });
+
+  /**
+   * ⚠⚠⚠ **穴 D: 記録の表示名は切らない。**
+   *
+   * ⚠ 演出とチャットは [`GACHA_VIEWER_NAME_MAX`] で切る（＝上の §9 節がそちらを固定している）。
+   * ⚠⚠ ここが落ちたら「**サマリーの名前だけ末尾が `…`**」になり、配信者が誰か分からなくなる。
+   */
+  it("⚠⚠⚠ 記録の表示名は切らない（演出は切る）", () => {
+    const longName = "あ".repeat(GACHA_VIEWER_NAME_MAX + 10);
+    saveGachaLibrary([GACHA_100]);
+    setConditionEffect("event:superchat", { kind: "gacha", gachaId: "g:2" });
+    const out = drawsOf(
+      [comment({ author: { id: "u1", name: longName } })],
+      countingRandom(0),
+    );
+
+    expect(out.draws[0].viewerName).toBe(longName);
+    expect(out.draws[0].viewerName).not.toContain("…");
+    // ⚠ 同じ抽選なのに**演出側は切られている**こと（＝レーンで規則が分かれている）。
+    expect(out.fires[0].gacha?.viewerName).toHaveLength(
+      GACHA_VIEWER_NAME_MAX + 1,
+    );
+    expect(out.fires[0].gacha?.viewerName).toContain("…");
+  });
+
+  /** ⚠ 視聴者 id は `provider:providerUserId`（＝ 063i が視聴者詳細へ渡す値）。 */
+  it("⚠ 記録レーンだけが視聴者 id を持つ", () => {
+    saveGachaLibrary([GACHA_100]);
+    setConditionEffect("event:superchat", { kind: "gacha", gachaId: "g:2" });
+    const out = drawsOf([comment()], countingRandom(0));
+
+    expect(out.draws[0].viewerId).toBe("youtube:u1");
+    // ⚠⚠ **発火レーンには載せる場所が型として無い**（§9 追補〔063h〕のレーンの線）。
+    expect(Object.keys(out.fires[0].gacha ?? {})).toEqual([
+      "prizeLabel",
+      "viewerName",
+      "rare",
+    ]);
+  });
+
+  it("⚠ 抽選時点のガチャ名と、引数で受けた抽選時刻が載る", () => {
+    saveGachaLibrary([GACHA_100]);
+    setConditionEffect("event:superchat", { kind: "gacha", gachaId: "g:2" });
+    const out = drawsOf([comment()], countingRandom(0));
+
+    expect(out.draws[0].gachaName).toBe("100% ガチャ");
+    expect(out.draws[0].gachaId).toBe("g:2");
+    // ⚠⚠ 実装が自前で時計を読む形へ変わったらここが落ちる（決定的であることの担保）。
+    expect(out.draws[0].drawnAt).toBe(DRAWN_AT);
+  });
+
+  /**
+   * ⚠⚠⚠ **穴 A の `nth` は、いまは必ず 0 である**（実測して分かった・2026-08-30）。
+   *
+   * ## ⚠⚠ 「同じコメントで 2 つの条件が当たる」は現状の実装では起こらない
+   *
+   * 063h の穴 A は記録 id を `${commentId}:${gachaId}:${nth}` とし、
+   * 「**同じコメントで 2 つの条件が当たったケースは潰さない**」ためだと説明している。
+   * ⚠ しかし `decideEffects` の本体は **`const match = matchEffect(...)`（単数）**で、
+   * `match === null` なら `continue`、そうでなければ `push` して次のコメントへ進む。
+   * ⇒ **1 コメントから返る発火は最大 1 件**なので、`nth` が 1 以上になる経路が無い。
+   *
+   * ## ⚠ それでも `nth` を残している理由
+   *
+   * `${commentId}:${gachaId}` だけにすると、**将来 matcher が複数の一致を返す形に変わり、
+   * かつ 2 つの条件が同じガチャを指していた**ときに id が衝突し、
+   * ⚠⚠⚠ **`INSERT OR IGNORE` が 2 件目を黙って捨てる**（＝画面で 2 回当たったのに履歴が 1 件）。
+   * ⇒ **いま値が動かないことと、将来ずれたときに壊れないことは別の話**なので残す。
+   *
+   * ⚠⚠ **このテストは「常に 0」を固定するものであって、「数え方が正しい」ものではない。**
+   * 数え方（ガチャの発火だけを数える）は**現状テストで殺せない**——
+   * 上の理由で 2 件発火させる入力が作れないためである。
+   * ⚠ **再修正トリガー＝`decideEffects` が 1 コメントから複数件返す形になったとき。**
+   * そのとき「OBS 直指定の発火を数に入れない」を固定するテストを必ず足すこと。
+   */
+  it("⚠⚠ 1 コメントの発火は最大 1 件なので nth は 0（現状の担保）", () => {
+    saveGachaLibrary([GACHA_100]);
+    setConditionEffect("event:superchat", { kind: "gacha", gachaId: "g:2" });
+    addKeywordCondition(
+      { text: "ガチャ", match: "contains" },
+      { kind: "gacha", gachaId: "g:2" },
+    );
+    // ⚠ 種別条件とキーワード条件の**両方に当たる**コメントを渡しても、発火は 1 件である。
+    const out = drawsOf([comment({ text: "ガチャ" })], countingRandom(0));
+
+    expect(out.fires).toHaveLength(1);
+    expect(out.draws).toHaveLength(1);
+    expect(out.draws[0].nth).toBe(0);
+  });
+
+  /** ⚠ 複数人が同時に引いたら、それぞれの記録が正しい人に紐づくこと。 */
+  it("⚠⚠ 複数人が同時に引いたら、記録がそれぞれの人に紐づく", () => {
+    saveGachaLibrary([GACHA_100]);
+    setConditionEffect("event:superchat", { kind: "gacha", gachaId: "g:2" });
+    const out = drawsOf(
+      [
+        comment({ id: "a", author: { id: "u1", name: "あかり" } }),
+        comment({ id: "b", author: { id: "u2", name: "ばんり" } }),
+      ],
+      countingRandom(0),
+    );
+
+    expect(out.draws.map((d) => [d.commentId, d.viewerId, d.viewerName])).toEqual(
+      [
+        ["a", "youtube:u1", "あかり"],
+        ["b", "youtube:u2", "ばんり"],
+      ],
+    );
+    // ⚠ それぞれのコメントの 1 回目なので、どちらも 0。
+    expect(out.draws.map((d) => d.nth)).toEqual([0, 0]);
+  });
+
+  /**
+   * ⚠⚠ **記録レーンにコメント本文・金額が載っていないこと**（§9 追補〔063h〕の「保存しないもの」）。
+   *
+   * ⚠ 型で塞いでいるが、**JSON にしたときに漏れていないか**を実物で見る
+   * （既存の §9 節が `fires` について同じ形の検査を持っている）。
+   */
+  it("⚠⚠⚠ 記録レーンに本文・金額・アバターが 1 バイトも載らない（§9）", () => {
+    saveGachaLibrary([GACHA_100]);
+    setConditionEffect("event:superchat", { kind: "gacha", gachaId: "g:2" });
+    const out = drawsOf(
+      [
+        comment({
+          text: "秘密の本文",
+          monetaryAmount: "¥99,999",
+          author: { id: "u1", name: "視聴者A", avatar: "https://example/a.png" },
+        }),
+      ],
+      countingRandom(0),
+    );
+
+    const json = JSON.stringify(out.draws);
+    for (const secret of ["秘密の本文", "99,999", "example/a.png"]) {
+      expect(json).not.toContain(secret);
+    }
+    // ⚠ フィールドが増えていないことも固定する（足すときは §9 追補を読み直すこと）。
+    expect(Object.keys(out.draws[0]).sort()).toEqual([
+      "commentId",
+      "drawnAt",
+      "gachaId",
+      "gachaName",
+      "nth",
+      "prizeLabel",
+      "rare",
+      "viewerId",
+      "viewerName",
+    ]);
   });
 });

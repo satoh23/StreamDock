@@ -4,6 +4,7 @@ mod audio;
 mod comment_sidecar;
 mod comment_viewer;
 mod error;
+mod gacha_history;
 mod obs_config;
 mod overlay_theme;
 mod preset_items;
@@ -805,6 +806,12 @@ pub fn run() {
             // ⚠ **viewer_memory::repository::init より後に置くこと**——閉じ忘れ回収
             //   （下の close_stale）が `viewer_comments` を突き合わせるため。
             stream_session::repository::init(&conn)?;
+            // 063h: ガチャの抽選記録（gacha_draws）。⚠ **何も当たらなかった抽選も 1 行残す**
+            // （docs/security.md §9 追補〔063h〕）。
+            // ⚠⚠ **viewer_memory::repository::init との順序に依存は無い**（FK を 1 つも張らないため）。
+            //   ⚠ ただし `viewer_memory::service::delete` / `clear` が `gacha_draws` を明示 DELETE するので、
+            //   **どちらの init も済んでいること**が前提になる（両方ここに並んでいるので満たされる）。
+            gacha_history::repository::init(&conn)?;
             // ⚠⚠ 062c: `stream_summary` の init は**無い**（ここに 1 行足す必要がない）。
             //   配信サマリーは `viewer_comments` をその場で集計するだけで、**テーブルを 1 つも作らない**。
             //   集計結果をキャッシュテーブルへ保存すると docs/security.md §9（端末保存）の判断が
@@ -964,6 +971,8 @@ pub fn run() {
             // 062c: 配信サマリー（1 回の配信ぶんの集計）。read-only・単一目的で、
             //   **新しい保存もテーブルも増えない**（docs/security.md §9）。capability も増えない。
             stream_summary::commands::get_stream_summary,
+            // 063h: ⚠ **1 本だけ**（削除は delete_viewer / clear_viewers に相乗り・§3）。
+            gacha_history::commands::record_gacha_draw,
             app_update::commands::check_app_update,
             app_update::commands::install_app_update,
             app_update::commands::restart_app,

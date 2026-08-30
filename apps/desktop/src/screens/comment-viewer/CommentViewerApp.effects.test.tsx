@@ -36,6 +36,12 @@ import { buildGachaChatMessage } from "../obs-effects/gachaChatMessage";
 import { gachaChatDelayMs } from "../obs-effects/gachaStagePlayback";
 // ⚠⚠ 063f 段 3: 表示名を切る長さの持ち主は `effectFire.ts` の 1 か所（テストもそこから引く）。
 import { GACHA_VIEWER_NAME_MAX } from "../obs-effects/effectFire";
+// ⚠ 063h 穴 C: セッション確定を**保留させる**ために掴む（モックの実体は下の vi.mock ファクトリ内）。
+import { startStreamSession } from "../../features/stream-session/streamSessionApi";
+// ⚠ 063h: バッファの上限（⚠ **テスト側に数字を直書きしない**＝実装が正）。
+import { PENDING_GACHA_DRAW_LIMIT } from "../../features/gacha-history/pendingGachaDraws";
+// ⚠ バースト上限（⚠ **テスト側に「3」を直書きしない**＝実装が正）。
+import { EFFECT_MAX_CONCURRENT } from "../obs-effects/effectTrigger";
 
 /**
  * 061a: **エフェクト窓の OBS 自動反映をコメビュ窓が代行する**配線の仕様テスト。
@@ -82,6 +88,11 @@ import { GACHA_VIEWER_NAME_MAX } from "../obs-effects/effectFire";
  */
 
 const mocks = vi.hoisted(() => ({
+  // 063h: ガチャ抽選の記録（⚠ **記録レーンだけが通る経路**）。
+  //   ⚠ モックしないと jsdom で実 invoke が reject し、実装の `.catch` が握るので
+  //   **記録したこと自体を観測できない**＝「記録していない」変異が殺せない
+  //   （`emitGachaStageResult` をモックしている理由とまったく同じ）。
+  recordGachaDraws: vi.fn(),
   isCommentOverlayOpen: vi.fn(),
   openCommentOverlayWindow: vi.fn(),
   closeCommentOverlayWindow: vi.fn(),
@@ -201,6 +212,10 @@ vi.mock("../../features/viewer-memory/viewerMemoryApi", () => ({
   updateViewerNote: vi.fn(async () => {}),
   deleteViewer: vi.fn(async () => {}),
   clearViewers: vi.fn(async () => {}),
+}));
+// 063h: ガチャ抽選の記録。⚠ **実モジュールの export 面を全て埋める**（他のモックと同じ方針）。
+vi.mock("../../features/gacha-history/gachaHistoryApi", () => ({
+  recordGachaDraws: mocks.recordGachaDraws,
 }));
 // ⚠ 062b: 配信セッション（invoke）。**マウント時に必ず走る**（閉じ忘れ回収 → 進行中セッションの引き継ぎ）
 // うえ、コメント到着でも `start_stream_session` が飛ぶ。塞がないと実 invoke が jsdom で reject し、
@@ -2418,5 +2433,317 @@ describe("063f 段 1-b: 演出が見えるまでチャットへ投稿しない",
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+/**
+ * ⚠⚠⚠ **063h: 抽選の記録（2 レーンの配線）。**
+ *
+ * このブロックが固定する不変条件は 4 つ:
+ *
+ * 1. ⚠⚠⚠ **何も当たらなかった抽選で、演出もチャット投稿も起きない**（**本タスク最大の回帰**
+ *    ——視聴者に見えて、あとから消せない）。それでも**記録は 1 件残る**。
+ * 2. **当たった抽選では、演出・チャット・OBS が従来どおり動く**（回帰なし）。
+ * 3. ⚠ **記録は本線（OBS・演出・チャット）より後**に投げる。
+ * 4. ⚠⚠ **セッション id が未確定のあいだは捨てずに貯め、確定後に流す**（穴 C）。
+ */
+describe("063h: ガチャ抽選の記録", () => {
+  /**
+   * ガチャ＋スパチャ条件を仕込む。
+   *
+   * ⚠ `weight` が 1000 未満なら**何も当たらない抽選**が起こせる
+   * （`Math.random` を固定して当たり／外れを決める）。
+   */
+  const putGacha = (name = "大当たり", weight = 1000) => {
+    localStorage.setItem(
+      GACHA_LIBRARY_KEY,
+      JSON.stringify([
+        {
+          id: "g:1",
+          name: "ガチャ",
+          prizes: [{ name, weight, output: { kind: "builtin" } }],
+        },
+      ]),
+    );
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify([
+        {
+          id: "event:superchat",
+          when: { type: "event", eventType: "superchat" },
+          effect: { kind: "gacha", gachaId: "g:1" },
+        },
+      ]),
+    );
+  };
+
+  /**
+   * ⚠⚠⚠ **配信セッションを先に確定させてから発火させる。**
+   *
+   * ⚠ `emitConnected()` は **loopback WS（viewer ↔ sidecar）の接続**であって配信セッションではない
+   * ——セッションの確定の契機は「どれかの provider が `connected` になった」か
+   * 「**コメントが届いた**」の 2 つで、このハーネスが持っているのは後者だけである。
+   * ⇒ **1 件目のコメントを「暖機」として先に流す**（ガチャ条件に当たらない種別を使う）。
+   *
+   * ⚠⚠⚠ **これを飛ばすと、すべての抽選がバッファ（穴 C の経路）を通ってしまう。**
+   * 記録は `adoptStreamSession` の中で流れるので、**コードの位置に関わらず演出より後になり**、
+   * 「記録を本線より前へ動かす」変異が**殺せなくなる**（実測して分かった・2026-08-30）。
+   */
+  const fire = async (comment = superchat()) => {
+    render(<CommentViewerApp />);
+    emitConnected();
+    await act(async () => {});
+    emitComments([
+      superchat({
+        id: "warm-up",
+        eventType: "chat",
+        monetaryAmount: undefined,
+        monetary: undefined,
+      }),
+    ]);
+    // ⚠ セッション確定（`start_stream_session` の解決）を待つ。
+    await act(async () => {});
+    mocks.emitGachaStageResult.mockClear();
+    mocks.recordGachaDraws.mockClear();
+    mocks.stream.fireObsSource.mockClear();
+
+    emitComments([comment]);
+    await act(async () => {});
+  };
+
+  /** 直近に記録へ渡った抽選の配列。 */
+  const recorded = () => {
+    const calls = mocks.recordGachaDraws.mock.calls;
+    return calls[calls.length - 1]?.[0] as
+      | { prizeLabel: string | null; viewerId: string; viewerName: string }[]
+      | undefined;
+  };
+
+  /**
+   * ⚠⚠⚠ **本タスク最大の回帰を直接押さえる。**
+   *
+   * ⚠ `weight: 300` ＝ 30% のガチャに `Math.random() = 0.9` を与えると必ず外れる。
+   * ⚠⚠ ここが落ちたら「**何も当たっていないのに演出が出てチャットに投稿される**」
+   * ——視聴者に見えて、あとから消せない（`docs/security.md` §1 の 066 節）。
+   */
+  it("⚠⚠⚠ 何も当たらない抽選では演出もチャットも起きないが、記録は 1 件残る", async () => {
+    const random = vi.spyOn(Math, "random").mockReturnValue(0.9);
+    try {
+      putGacha("大当たり", 300);
+      await fire();
+
+      expect(mocks.emitGachaStageResult).not.toHaveBeenCalled();
+      expect(mocks.stream.fireObsSource).not.toHaveBeenCalled();
+      expect(mocks.recordGachaDraws).toHaveBeenCalledTimes(1);
+      expect(recorded()).toHaveLength(1);
+      // ⚠⚠ `null` ＝ 何も出なかった（⚠ 空文字でも「何も出ない」という文字列でもない）。
+      expect(recorded()?.[0].prizeLabel).toBeNull();
+    } finally {
+      random.mockRestore();
+    }
+  });
+
+  it("当たった抽選では演出が従来どおり動き、記録も 1 件残る", async () => {
+    putGacha("大当たり");
+    await fire();
+
+    expect(mocks.emitGachaStageResult).toHaveBeenCalledTimes(1);
+    expect(mocks.recordGachaDraws).toHaveBeenCalledTimes(1);
+    expect(recorded()?.[0].prizeLabel).toBe("大当たり");
+  });
+
+  /**
+   * ⚠⚠⚠ **セッション確定後は「その場で」記録する**（バッファを経由しない）。
+   *
+   * ⚠ `await` を 1 つも挟まずに観測することが、この担保の中身である
+   * ——バッファ経由だと `adoptStreamSession` の解決を待つので、ここでは 0 回になる。
+   * ⚠⚠ **この 1 本が無いと、他のケースが全部バッファ経由でも緑になる**（実測した罠）。
+   */
+  it("⚠⚠⚠ セッション確定後は同期的に記録する（バッファを通らない）", async () => {
+    putGacha("大当たり");
+    render(<CommentViewerApp />);
+    emitConnected();
+    await act(async () => {});
+    emitComments([
+      superchat({
+        id: "warm-up",
+        eventType: "chat",
+        monetaryAmount: undefined,
+        monetary: undefined,
+      }),
+    ]);
+    await act(async () => {});
+    mocks.recordGachaDraws.mockClear();
+
+    emitComments([superchat()]);
+    // ⚠⚠ **ここで `await` しない**（＝ act の同期実行だけで記録まで済んでいること）。
+    expect(mocks.recordGachaDraws).toHaveBeenCalledTimes(1);
+    expect(mocks.recordGachaDraws.mock.calls[0][1]).toBe("session-1");
+  });
+
+  /**
+   * ⚠⚠ **記録は本線の後**（`emitGachaStageResult` → `recordGachaDraws` の順）。
+   *
+   * ⚠ 順序が逆になると、将来ここに `await` を足した人が**本線を止められる**
+   * （063c / 063f が同じ規律で並べているものの 3 段目）。
+   *
+   * ⚠⚠ **063h レビュー Q-6: これが固定するのは「セッション確定済みのバッチの中の順序」だけである。**
+   * セッション未確定のとき（穴 C）の記録は `adoptStreamSession` の中で流れるので、
+   * **本線より後になるのは規律ではなく構造上そうなるだけ**＝この 1 本では守れていない。
+   * ⚠ 実装として正しい（未確定なら記録しようがない）ので**担保を足す必要は無い**が、
+   * ⚠⚠⚠ **上の `fire()` が暖機コメントでセッションを確定させていることが、
+   * この 1 本が意味を持つための前提である**（これを外すと変異が生存する＝実測した罠）。
+   */
+  it("⚠⚠ 記録は演出・チャットより後に投げる", async () => {
+    const order: string[] = [];
+    mocks.emitGachaStageResult.mockImplementation(() => order.push("stage"));
+    mocks.recordGachaDraws.mockImplementation(() => order.push("record"));
+    putGacha("大当たり");
+    await fire();
+
+    expect(order).toEqual(["stage", "record"]);
+  });
+
+  /**
+   * ⚠⚠⚠ **§9: 記録レーンだけが視聴者 id と「切っていない表示名」を持つ。**
+   *
+   * ⚠ 演出へ渡るペイロードには視聴者 id が**型として載る場所が無い**ので、
+   * ここが逆転したら `docs/security.md` §9 追補〔063h〕の「レーンごとの線」が消える。
+   */
+  it("⚠⚠⚠ 記録レーンだけが視聴者 id を持ち、演出には出ない", async () => {
+    const longName = "あ".repeat(GACHA_VIEWER_NAME_MAX + 5);
+    putGacha("大当たり");
+    await fire(superchat({ author: { id: "u1", name: longName } }));
+
+    expect(recorded()?.[0].viewerId).toBe("youtube:u1");
+    // ⚠ 記録は**切っていない**／演出は**切られている**。
+    expect(recorded()?.[0].viewerName).toBe(longName);
+    expect(mocks.emitGachaStageResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        viewerName: `${"あ".repeat(GACHA_VIEWER_NAME_MAX)}…`,
+      }),
+    );
+    const stagePayload = mocks.emitGachaStageResult.mock.calls[0][0];
+    expect(JSON.stringify(stagePayload)).not.toContain("youtube:u1");
+  });
+
+  it("⚠ ガチャではない発火（条件に OBS ソース直指定）では記録しない", async () => {
+    localStorage.setItem(
+      EFFECT_ASSIGNMENTS_KEY,
+      JSON.stringify([
+        {
+          id: "event:superchat",
+          when: { type: "event", eventType: "superchat" },
+          effect: { kind: "obs-source", sourceName: OBS_ASSIGNED_SOURCE },
+        },
+      ]),
+    );
+    await fire();
+
+    expect(mocks.stream.fireObsSource).toHaveBeenCalledTimes(1);
+    // ⚠ 空配列でも呼ばない（`recordOrBufferGachaDraws` が先に落とす）。
+    expect(mocks.recordGachaDraws).not.toHaveBeenCalled();
+  });
+
+  /**
+   * ⚠⚠ **上限を超えたら捨てるが、黙って捨てない**（062b の「記録できなかったコメント N 件」と同型）。
+   *
+   * ⚠⚠⚠ **配信サマリーには遡って出せない**（記録は遡れない）ので、
+   * ここで気付けないと**その抽選は永久に失われる**。
+   *
+   * ⚠ バースト上限（`EFFECT_MAX_CONCURRENT` ＝ 5 秒に 3 件）があるので、
+   * **時計を進めながら 3 件ずつ**流さないと上限まで届かない。
+   * ⚠⚠ `Date.now` だけを差し替える（`vi.useFakeTimers` は `await act` を止めてしまう）。
+   */
+  it("⚠⚠ 上限を超えたぶんは捨てるが、件数を画面に出す（黙って捨てない）", async () => {
+    // ⚠ セッションを**永久に未確定**にする（＝すべての抽選がバッファへ積まれる）。
+    vi.mocked(startStreamSession).mockImplementation(
+      () => new Promise(() => {}),
+    );
+    putGacha("大当たり");
+    let clock = 1_000_000;
+    const now = vi.spyOn(Date, "now").mockImplementation(() => clock);
+    try {
+      render(<CommentViewerApp />);
+      emitConnected();
+      await act(async () => {});
+
+      const perBatch = EFFECT_MAX_CONCURRENT;
+      const total = PENDING_GACHA_DRAW_LIMIT + 2;
+      const batches = Math.ceil(total / perBatch);
+      for (let b = 0; b < batches; b += 1) {
+        // ⚠ バースト窓を跨がせる（跨がないと 3 件で頭打ちになる）。
+        clock += 6_000;
+        emitComments(
+          Array.from({ length: perBatch }, (_, i) =>
+            superchat({ id: `c-${b}-${i}`, author: { id: `u${b}${i}`, name: "視聴者" } }),
+          ),
+        );
+        await act(async () => {});
+      }
+
+      // ⚠ 実際に上限を超えたぶんだけが出ること（件数を数え間違えていないか）。
+      expect(
+        await screen.findByText(
+          `記録できなかったガチャ ${batches * perBatch - PENDING_GACHA_DRAW_LIMIT} 件`,
+        ),
+      ).toBeInTheDocument();
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it("⚠ 取りこぼしが無ければ警告を出さない", async () => {
+    putGacha("大当たり");
+    await fire();
+    expect(screen.queryByText(/記録できなかったガチャ/)).toBeNull();
+  });
+
+  /**
+   * ⚠⚠⚠ **穴 C: セッション id が未確定のあいだの抽選を捨てない。**
+   *
+   * ⚠ `startStreamSession` を保留したまま抽選を起こし、**そのあと解決させる**。
+   * ⚠⚠ ここが落ちると「**演出は出たのに配信サマリーに無い**」が静かに起きる
+   * （062b が最も避けた失敗と同じ形で、しかも**記録は遡れない**）。
+   */
+  it("⚠⚠⚠ セッション未確定の抽選を捨てず、確定後に流す（穴 C）", async () => {
+    let resolveSession: (() => void) | null = null;
+    const pending = new Promise<void>((resolve) => {
+      resolveSession = resolve;
+    });
+    // ⚠ `startStreamSession` は `mocks`（hoisted）ではなく **vi.mock のファクトリ内**の vi.fn なので、
+    //   モジュール経由で掴む（`vi.mocked` は型を合わせるだけで実体は同じ）。
+    vi.mocked(startStreamSession).mockImplementationOnce(async () => {
+      await pending;
+      return {
+        id: "session-late",
+        startedAt: "2026-08-30T10:00:00+00:00",
+        platforms: ["twitch"],
+        title: "",
+        createdAt: "2026-08-30T10:00:00+00:00",
+        updatedAt: "2026-08-30T10:00:00+00:00",
+      };
+    });
+
+    putGacha("大当たり");
+    render(<CommentViewerApp />);
+    emitConnected();
+    await act(async () => {});
+    emitComments([superchat()]);
+    await act(async () => {});
+
+    // ⚠ セッションが未確定なので、まだ記録には行っていない（貯まっている）。
+    expect(mocks.emitGachaStageResult).toHaveBeenCalledTimes(1);
+    expect(mocks.recordGachaDraws).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveSession?.();
+      await pending;
+    });
+
+    // ⚠⚠ 確定した id で流れること（**捨てられていない**）。
+    expect(mocks.recordGachaDraws).toHaveBeenCalledTimes(1);
+    expect(mocks.recordGachaDraws.mock.calls[0][1]).toBe("session-late");
+    expect(recorded()).toHaveLength(1);
   });
 });

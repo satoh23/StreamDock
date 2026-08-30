@@ -1,0 +1,64 @@
+//! 063h: ガチャ抽選記録の DTO。
+//!
+//! ⚠⚠ **binding の出力先が `comment-viewer/bindings/` なのは意図的**（`StreamSessionRecord` /
+//! `StreamSummary` と同じ理由）。`package.json` の `check:bindings` は**ハードコードされた
+//! 6 ディレクトリしか見ない**ので、そこに無いディレクトリへ出すと `git diff --exit-code` の
+//! 対象外になり、**生成漏れがあってもチェックが緑になる**。
+//! ⚠ 専用ディレクトリへ移すなら、**`check:bindings` の列挙に足すこととセット**でなければならない。
+
+use serde::Deserialize;
+use ts_rs::TS;
+
+/// 抽選 1 回ぶんの記録（`record_gacha_draw` の入力）。
+///
+/// ⚠⚠⚠ **ここに載っていない値は保存できない**（docs/security.md §9 追補〔063h〕）。
+/// **コメント本文・投げ銭金額・アバター・引き金になったコメント id** は
+/// **型としても列としても載せる場所を作らない**。
+/// ⚠ 「送信済みフラグ」等の予備の列も足さないこと——[063g] が「景品の自動配布はやらない」で
+/// 完了したので使い道が無く、**使わない列は §9 の説明を難しくする**。
+///
+/// ⚠ **`Serialize` を付けていない**（入力専用＝この型が Rust から frontend へ出る経路を作らない）。
+/// 読み出し側の DTO（`GachaDrawRecord`）は **063i が別に足す**。
+#[derive(Debug, Clone, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/features/comment-viewer/bindings/")]
+pub struct NewGachaDraw {
+    /// 記録 id。⚠⚠ **決定的な文字列**（frontend が `${commentId}:${gachaId}:${nth}` で組む＝穴 A）。
+    ///
+    /// ⚠⚠⚠ **この形を Rust 側でパースしないこと。** 形は frontend の実装都合であり、
+    /// パースし始めると**形を変えられなくなる**（063h 穴 H で `trigger_comment_id` 列を
+    /// 却下したときの理由と同じ）。ここでは「空でない・制御文字を含まない文字列」としてのみ扱う。
+    pub id: String,
+    /// 配信セッション id（062b の `stream_sessions.id`）。⚠ FK は張らない（`mod.rs` の注記が正）。
+    pub session_id: String,
+    /// `provider:providerUserId`（frontend の `viewerIdOf` が作る）。⚠ FK は張らない。
+    pub viewer_id: String,
+    /// ⚠⚠ **抽選した時点の表示名**（`viewers.name` ＝今の名前とは別物）。
+    ///
+    /// ⚠⚠⚠ **切っていない生値である**（演出とチャットの 20 文字＋`…` は通さない＝穴 D）。
+    /// 20 文字で切るのは**配信面へ出すための整形**であって検証ではなく、DB に持ち込むと
+    /// 「**サマリーの名前だけ末尾が `…`**」になる。線の引き直しは §9 追補〔063h〕が正。
+    /// ⚠ **空を許す**（provider によっては表示名が取れない＝`record_comment` の `name` と同じ扱い）。
+    pub viewer_name: String,
+    /// ガチャ id（frontend の `GachaDefinition.id`＝`"g:n"`）。
+    pub gacha_id: String,
+    /// ⚠ **抽選した時点のガチャ名**（ユーザー自身の入力）。ガチャは後から改名・削除されるので、
+    /// `gacha_id` だけだと**消したガチャの履歴が読めなくなる**（063h 穴 G）。
+    pub gacha_name: String,
+    /// 当選景品の表示名（ユーザー自身の入力）。
+    ///
+    /// ⚠⚠⚠ **`None` ＝ 何も当たらなかった**（＝ 1 回の抽選として記録する）。
+    /// ⚠⚠ **「何も出ない」という文字列を入れないこと**（`mod.rs` の注記が正）。
+    /// ⚠ frontend は `gachaPrizeLabel` が決めた値をそのまま渡す——景品名が空の当たりは
+    /// `GACHA_UNNAMED_PRIZE_LABEL`（＝「当たり」）になり、**`None` にはならない**。
+    #[ts(optional)]
+    pub prize_label: Option<String>,
+    /// その景品の確率が `GACHA_RARE_MAX_PERCENT` 未満だったか（frontend の `isGachaRarePrize` が唯一の持ち主）。
+    pub rare: bool,
+    /// 抽選した時刻（RFC3339）。
+    ///
+    /// ⚠⚠ **frontend が抽選の瞬間に作る**（`now_rfc3339()` で代用しない）。セッション未確定で
+    /// バッファに貯まった抽選が「流した時刻」で記録されると、**配信サマリーの並びが
+    /// 実際の抽選順と食い違う**。⇒ 検証は `util::require_rfc3339`（§8）。
+    pub drawn_at: String,
+}

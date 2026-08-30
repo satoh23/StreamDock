@@ -212,8 +212,13 @@ export function gachaPrizeLabel(prize: GachaPrize): string {
 /**
  * 063c 段 2-a: 名前も OBS のソース名も無い景品（＝組み込み演出で名前を空にした行）の表示名。
  *
- * ⚠ 「はずれ」ではない——**当たってはいる**ので、はずれの表記（`GachaPrizeTable` の `MISS_LABEL`）
- * と**別の文字列にしてある**。混ぜると配信画面で「当たったのに『何も出ない』と出る」。
+ * ⚠ 「はずれ」ではない——**当たってはいる**ので、何も出なかったときの表記
+ * （`gachaDraw.ts` の `GACHA_MISS_LABEL`）と**別の文字列にしてある**。
+ * 混ぜると配信画面で「当たったのに『何も出ない』と出る」。
+ * ⚠⚠ **063h 訂正: 在り処が変わった**——旧文は `GachaPrizeTable` の `MISS_LABEL` を指していたが、
+ * **063i が配信サマリーでも同じ言葉を使う**ので `gachaDraw.ts` へ移した（定義は 1 か所）。
+ * ⚠⚠⚠ **`gacha_draws.prize_label` にこの「当たり」が入ることがある**（名前が空の当たり）。
+ * ⚠ **`NULL` と混同しないこと**——`NULL` は「何も当たらなかった」であって「名前が無い」ではない。
  */
 export const GACHA_UNNAMED_PRIZE_LABEL = "当たり";
 

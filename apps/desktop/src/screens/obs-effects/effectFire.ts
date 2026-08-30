@@ -12,6 +12,9 @@ import {
   type EffectTriggerState,
 } from "./effectTrigger";
 import { drawGachaPrizeIndex, isGachaRarePrize } from "./gachaDraw";
+// 063h: 記録レーンの視聴者 id。⚠ **既にある共有ヘルパを使う**（`${source}:${author.id}` を書き直さない
+//   ——書き直すと視聴者詳細へ飛べない id が静かに生まれる）。
+import { viewerIdOf } from "../comment-viewer/viewerFormat";
 
 /**
  * 063b: **「決めた発火」を「実際に出すもの」へ翻訳する 1 か所**（純関数）。
@@ -121,6 +124,14 @@ export type EffectFire = EffectObsSource | EffectGacha;
  * ⚠⚠⚠ **その返済を無かったことにしないため、足したのは 2 フィールドだけ**である——
  * `name` / `amountText` / `message` / `eventLabel` / `tone` / `id` を**1 つも戻していない**。
  * ⚠ **ここに「誰が引いたか」を足さないこと**（§9・抽選履歴と当選者を持たないという 063c の制約）。
+ *
+ * ⚠⚠⚠ **2026-08-30（063h）訂正: 上の 1 行は「発火レーンについては」不変だが、
+ * 「抽選履歴と当選者を持たない」という前提のほうは反転した。**
+ * [`GachaDrawOutcome`] という**記録専用の 2 本目のレーン**ができ、そちらは視聴者 id を持つ
+ * （`docs/security.md` §9 追補〔063h〕が正）。
+ * ⚠⚠ **この型（発火レーン）には引き続き足さない**——**演出とチャットに要らない値を
+ * 配信面へ運ぶ器を作らない**、というのがこの JSDoc の本来の意図だからである。
+ * ⇒ **記録に要る値は [`decideFireResults`] の戻り値の `draws` 側にだけ載せること。**
  */
 export interface EffectFireResult {
   /**
@@ -185,6 +196,114 @@ export interface GachaFireDetail {
 export const GACHA_VIEWER_NAME_MAX = 20;
 
 /**
+ * ⚠⚠⚠ **063h: 抽選 1 回の記録**（＝ **2 本目のレーン**・`docs/security.md` §9 追補〔063h〕が正）。
+ *
+ * ## ⚠⚠ なぜ [`EffectFireResult`] と別の型なのか（**却下した案が 3 つある**）
+ *
+ * 1. ⚠⚠⚠ **却下: `EffectFireResult` に「何も出ない」の variant を足す。**
+ *    下流（`emitGachaStageResult` と `sendGachaChat`）が**明示的に無視することでしか安全にならない**。
+ *    ⚠ 1 か所忘れると、**何も当たっていないのに演出が出てチャットに投稿される**
+ *    ——**視聴者に見えて、あとから消せない**（§1 の 066 節）。
+ *    ⇒ **「発火ではないもの」を発火の配列に混ぜない。**
+ * 2. ⚠⚠ **却下: 記録のために `CommentViewerApp` でもう一度抽選する。**
+ *    **確率が二重に引かれる**（当たった景品と記録が食い違う）。
+ * 3. ⚠ **却下: `decideEffects`（`effectAssignments.ts`）の戻り値を広げる。**
+ *    あそこは **061b 段 1-b が「戻り値にコメント由来の値を 1 つも載せない」を実装している
+ *    唯一の場所**で、広げると §9 の線が発火層まで後退する。
+ *
+ * ## ⚠⚠⚠ この型の値は配信面へ 1 バイトも出ない
+ *
+ * `emitGachaStageResult`（演出）にも `sendGachaChat`（チャット）にも渡らない。
+ * ⚠ **それが「切っていない表示名を載せてよい」ことの根拠である**（§9 追補〔063h〕の
+ * 「線をレーンごとに引き直す」節が正）。⚠⚠ **ここから配信面へ値を渡す経路を作らないこと。**
+ */
+export interface GachaDrawOutcome {
+  /** 引き金になったコメント id（⚠ **記録 id の材料であって、保存する列ではない**＝穴 A）。 */
+  commentId: string;
+  /**
+   * ⚠ **そのコメントの中で何回目のガチャ抽選か**（0 始まり・穴 A）。
+   *
+   * ⚠⚠ **数えるのはガチャの発火だけである**——条件に OBS ソースを直指定した発火を含めると、
+   * 「同じコメントで OBS 直指定とガチャが両方当たったときだけ番号がずれ」、
+   * **条件を 1 本消すと記録 id が変わる**（＝二重記録の抑止が壊れる）。
+   * ⚠ バッチ内の通し番号にもしないこと（同じコメントが別のバッチで来ると値が変わる）。
+   *
+   * ## ⚠⚠ 063h レビュー Q-1: これは **`gachaId` 横断の通し番号**である（**`gachaId` ごとではない**）
+   *
+   * ⚠ **上の「条件を 1 本消すと記録 id が変わる」を防げているのは OBS 直指定の発火に対してだけ**で、
+   * **ガチャ条件どうしでは防げていない**——将来 1 コメントから A / B / A の順に発火するようになると
+   * 3 件目は `A:2` になり、**B の条件を消すと `A:1` へ変わる**。
+   * ⚠⚠ **現状は `nth` がつねに 0 なので実害はゼロである**（`decideEffects` は 1 コメントにつき
+   * 最大 1 件しか返さない＝`effectFire.test.ts` の「nth は 0」が固定している）。
+   * ⇒ **いまは通し番号のままでよい**（`Map<gachaId, number>` を持つのは、動かない値のための構造を
+   * 1 つ増やすだけになる）。
+   * ⚠ **再修正トリガー＝`decideEffects` が 1 コメントから複数件返す形になったとき。**
+   *   そのときは **`gachaId` ごとのカウンタへ変える**こと（この段落が目的の記述である）。
+   */
+  nth: number;
+  /** `provider:providerUserId`（⚠⚠ **記録レーンだけが持つ**・`viewerIdOf` が作る）。 */
+  viewerId: string;
+  /**
+   * ⚠⚠⚠ **切っていない表示名**（[`stageViewerName`] の 20 文字 ＋ `…` は通さない・穴 D）。
+   *
+   * ⚠ 20 文字で切るのは**配信面へ出すための整形**であって検証ではない。DB に持ち込むと
+   * 「**サマリーの名前だけ末尾が `…`**」になり、配信者が誰か分からなくなる。
+   * ⚠ 空文字を許す（provider によっては取れない）。上限（§8）は Rust 側が別に持つ。
+   */
+  viewerName: string;
+  gachaId: string;
+  /** 抽選した時点のガチャ名（⚠ ユーザー自身の入力）。 */
+  gachaName: string;
+  /**
+   * ⚠⚠ **`null` ＝ 何も出なかった**（＝ 1 回の抽選として記録する）。
+   *
+   * ⚠⚠⚠ **当たりのときは [`gachaPrizeLabel`] が決めた値をそのまま入れる**——
+   * `prize.name` を直接読まないこと。**名前が空の当たり**は `GACHA_UNNAMED_PRIZE_LABEL`
+   * （＝「当たり」）になるが、直読みすると `null` になり、
+   * **配信サマリーに「何も出ない」と出る＝当たったのに外れたことになる。**
+   */
+  prizeLabel: string | null;
+  rare: boolean;
+  /**
+   * ⚠⚠ **抽選した瞬間の時刻**（RFC3339）。
+   *
+   * ⚠⚠⚠ **Rust の保存時刻で代用しない**——セッション id が未確定のあいだ記録はバッファに貯まるので、
+   * 保存時刻だと「**流した時刻**」になり、**配信サマリーの並びが実際の抽選順と食い違う**
+   * （`docs/security.md` §9 追補〔063h〕の §8 の項が正）。
+   * ⚠ 検証（RFC3339 としてパースできること）は Rust 側の `util::require_rfc3339`。
+   *
+   * ## ⚠⚠ 063h レビュー Q-2: **同じバッチの抽選はこの値が全件同値になる**
+   *
+   * 呼び出し側は `new Date().toISOString()` を**バッチにつき 1 回**作って全件へ配る
+   * （＝本関数を決定的に保つため・[`decideFireResults`] の `@param drawnAt` が正）。
+   * ⇒ ⚠ **「並びが実際の抽選順と食い違わない」が守れているのはバッチ単位までである。**
+   * バッチ内（＝複数人が同時に引いたとき）の同点崩しは Rust の索引の `id DESC`＝
+   * **記録 id の辞書順**になり、**抽選順とは無関係**（逆順にもなりうる）。
+   * ⚠⚠ **これは受容している**——同一バッチは実時間で同時であり、順序に意味が無い。
+   * ⚠ **再修正トリガー＝配信サマリー（063i）で「同時刻の数件の並びが毎回変わる／逆に見える」が
+   *   問題として挙がったとき。** そのときは `drawnAt` をずらすのではなく、
+   *   **記録側に挿入順の列を足す**こと（時刻を偽ると「抽選した時刻」の意味が壊れる）。
+   */
+  drawnAt: string;
+}
+
+/**
+ * [`decideFireResults`] の戻り値（⚠⚠ **2 本のレーン**）。
+ *
+ * ⚠⚠⚠ **`fires` は 063h の前とまったく同じ中身である**（当たりだけ・[`GachaFireDetail`] も無改変）。
+ * ⇒ **063c（演出）と 063f（チャット投稿）のコードは 1 バイトも変わっていない。**
+ */
+export interface FireDecision {
+  /** 演出・チャット・OBS へ流すもの（⚠ **当たりだけ**・はずれはここに現れない）。 */
+  fires: EffectFireResult[];
+  /**
+   * ⚠ **記録するもの**（**抽選が起きた回数ぶん**並ぶ＝何も出なかった抽選も 1 件）。
+   * ⚠⚠ **条件に OBS ソースを直指定した発火はここに現れない**（ガチャではないので抽選が無い）。
+   */
+  draws: GachaDrawOutcome[];
+}
+
+/**
  * ガチャ 1 件を引いて、[`EffectFireResult`] を返す（⚠ **はずれ・見つからない・景品 0 件はすべて `null`**）。
  *
  * ⚠⚠ **抽選は [`drawGachaPrizeIndex`] をそのまま使う**（063a）。置き換えると
@@ -208,23 +327,53 @@ function drawGachaResult(
   gachas: readonly GachaDefinition[],
   random: () => number,
   viewerName: string | null,
-): EffectFireResult | null {
+  // ⚠⚠⚠ 063h: **記録レーンを作るための入力**（発火レーンには 1 つも載せない）。
+  record: { comment: CommentViewDto; nth: number; drawnAt: string },
+): { fire: EffectFireResult | null; draw: GachaDrawOutcome | null } {
   const gacha = gachas.find((g) => g.id === fire.gachaId);
-  if (gacha === undefined) return null;
+  // ⚠⚠ 一覧に無いガチャは**抽選そのものが起きていない**ので、記録もしない
+  //   （「引いたが何も出なかった」ではなく「引けなかった」＝別物）。
+  if (gacha === undefined) return { fire: null, draw: null };
   const index = drawGachaPrizeIndex(gacha.prizes, random);
-  // ⚠⚠ `-1` ＝ **はずれ**（合計が 100% 未満なら正常に起きる）／景品 0 件も同じ `-1`。
-  if (index < 0) return null;
-  const prize = gacha.prizes[index];
+  // ⚠⚠ `-1` ＝ **何も当たらなかった**（合計が 100% 未満なら正常に起きる）／景品 0 件も同じ `-1`。
+  const prize = index < 0 ? null : gacha.prizes[index];
   // ⚠⚠ 063c 段 2-a: **表示名の規則をここに書かないこと**（[`gachaPrizeLabel`] が唯一の持ち主）。
   //   ⚠ 書くと「設定画面の表の名前」と「配信画面に出る名前」が別実装になる。
   // ⚠⚠ 063c 段 3: **レアかどうかも同じ規律**（閾値は [`isGachaRarePrize`] だけが知っている）。
+  // ⚠⚠⚠ 063h: **記録レーンも同じ 2 つの関数を通す**——`prize.name` を直読みすると、
+  //   **名前が空の当たり**が `null` になって配信サマリーに「何も出ない」と出る（＝当たったのに外れる）。
+  // ⚠ 1 つのオブジェクトに畳んであるのは、**当たりの 3 つが同時に意味を持つ**からである
+  //   （`GachaFireDetail` の 3 つを 1 つの `null` にまとめた 063c 段 3 と同じ理由）。
+  const won =
+    prize === null
+      ? null
+      : {
+          label: gachaPrizeLabel(prize),
+          rare: isGachaRarePrize(prize.weight),
+          output: prize.output,
+        };
+  const draw: GachaDrawOutcome = {
+    commentId: record.comment.id,
+    nth: record.nth,
+    viewerId: viewerIdOf(record.comment),
+    // ⚠⚠ **切っていない生値**（`stageViewerName` を通さない＝穴 D・§9 追補〔063h〕）。
+    viewerName: record.comment.author.name,
+    gachaId: gacha.id,
+    gachaName: gacha.name,
+    prizeLabel: won?.label ?? null,
+    rare: won?.rare ?? false,
+    drawnAt: record.drawnAt,
+  };
+  // ⚠⚠⚠ **何も当たらなかった抽選は `fire` が `null`** ＝ 演出もチャットも OBS も動かない。
+  //   ⚠ **記録だけが残る**（本タスクの中心）。
+  if (won === null) return { fire: null, draw };
   return {
-    output: prize.output,
-    gacha: {
-      prizeLabel: gachaPrizeLabel(prize),
-      viewerName,
-      rare: isGachaRarePrize(prize.weight),
+    fire: {
+      output: won.output,
+      // ⚠ 発火レーンは**上で決めた値を使い回す**（2 通り目の計算をしない）。
+      gacha: { prizeLabel: won.label, viewerName, rare: won.rare },
     },
+    draw,
   };
 }
 
@@ -264,7 +413,16 @@ function stageViewerName(c: CommentViewDto): string | null {
  *   ⚠ 「不正防止に `crypto.getRandomValues` では」への答え＝ **当選結果は端末内で完結し、
  *   視聴者側は結果を検証も予測もできない**（配信画面に出るだけ）ので、予測困難性に守る対象が無い。
  *   ⚠ **引数で受けるのはテストで確率を固定するため**（直接 `Math.random` を呼ぶと規則を固定できない）。
- * @returns 発火の結果（⚠ **はずれた発火はここに現れない**＝ 戻り値の長さは発火の件数と一致しない）
+ * @param drawnAt ⚠⚠⚠ **063h: 記録に載せる抽選時刻**（RFC3339）。**引数で受ける**ので本関数は決定的である
+ *   （`now` を数値で受けているのと同じ理由）。⚠ 呼び出し側は `new Date().toISOString()` を渡す。
+ *   ⚠⚠ **Rust の保存時刻で代用しない**——セッション未確定のあいだ記録はバッファに貯まるので、
+ *   保存時刻だと「流した時刻」になり、**配信サマリーの並びが実際の抽選順と食い違う**。
+ *   ⚠ 同じバッチの抽選は**同じ値**になる（＝並びの同点崩しは記録 id 側が持つ・Rust の索引の注記が正）。
+ *   ⚠⚠ **063h レビュー Q-2: その同点崩し（記録 id の辞書順）は「抽選順」ではない。**
+ *   ⇒ 上の「並びが食い違わない」が守れているのは**バッチ単位まで**である
+ *   （受容の理由と再修正トリガーは [`GachaDrawOutcome.drawnAt`] の注記が正）。
+ * @returns ⚠⚠⚠ **063h: 2 本のレーン**（[`FireDecision`]）。`fires` は**中身も順序も 063h の前と同じ**で、
+ *   `draws` が**抽選が起きた回数ぶん**（何も出なかったものを含む）並ぶ。
  */
 export function decideFireResults(
   added: CommentViewDto[],
@@ -274,11 +432,14 @@ export function decideFireResults(
   matchEffect: EffectMatcher<EffectFire>,
   loadGachas: () => readonly GachaDefinition[],
   random: () => number,
-): EffectFireResult[] {
+  drawnAt: string,
+): FireDecision {
   // ⚠ 一覧はバッチ内で 1 回だけ読む（同じバッチの中でガチャが書き換わることはない）。
   //   ⚠⚠ ガチャの発火が 1 件も無いバッチでは **`loadGachas` を 1 度も呼ばない**（`null` のまま）。
   let gachas: readonly GachaDefinition[] | null = null;
   const results: EffectFireResult[] = [];
+  // ⚠⚠⚠ 063h: **記録レーン**（`results` とは別の配列＝混ぜない・[`GachaDrawOutcome`] の注記が正）。
+  const draws: GachaDrawOutcome[] = [];
   // ⚠⚠⚠ **063c 段 3: [`decideEffects`] を「コメント 1 件ずつ」呼ぶ。**
   //
   //   ⚠ **バッチごと渡した場合と結果は完全に同じである**——あちらの本体は `added` を回すループで、
@@ -320,6 +481,11 @@ export function decideFireResults(
     if (fires.length === 0) continue;
     // ⚠ 表示名を取り出すのは**発火が確定した後**（＝出さないコメントの名前は 1 文字も触らない）。
     const viewerName = stageViewerName(comment);
+    // ⚠⚠⚠ 063h 穴 A: **このコメントの中で何回目のガチャ抽選か。**
+    //   ⚠ **ガチャの発火だけを数える**（`fires` の index を使わない）——OBS ソース直指定の発火を
+    //   含めると、同じコメントで両方当たったときだけ番号がずれ、**条件を 1 本消すと記録 id が変わる**。
+    //   ⚠ `for` の外（バッチ全体）で数えないこと（同じコメントが別のバッチで来ると値が変わる）。
+    let nth = 0;
     for (const fire of fires) {
       switch (fire.kind) {
         case "obs-source":
@@ -332,8 +498,22 @@ export function decideFireResults(
           // ⚠⚠ **抽選はここ**＝ 畳み込み・バースト上限・クールダウンを**すべて通った後**である。
           //   ⚠ ここより前（`select` の中／`decideEffects` の中／ループの外）へ動かさないこと。
           if (gachas === null) gachas = loadGachas();
-          const result = drawGachaResult(fire, gachas, random, viewerName);
-          // ⚠ はずれ・一覧に無い・景品 0 件は**何も鳴らさない**（枠は既に消費済み＝上記「発火＝1 回引いた」）。
+          const { fire: result, draw } = drawGachaResult(
+            fire,
+            gachas,
+            random,
+            viewerName,
+            { comment, nth, drawnAt },
+          );
+          // ⚠⚠⚠ 063h: **抽選が起きたぶんだけ番号を進める**（当たったかどうかは見ない）。
+          //   ⚠ 一覧に無いガチャは抽選そのものが起きていないので `draw` が `null` ＝ 進めない。
+          if (draw !== null) {
+            draws.push(draw);
+            nth += 1;
+          }
+          // ⚠ 何も出ない・一覧に無い・景品 0 件は**何も鳴らさない**（枠は既に消費済み＝上記「発火＝1 回引いた」）。
+          //   ⚠⚠⚠ **063h でもここは変えていない**——`results` に入るのは当たりだけである
+          //   （何も出なかった抽選が演出やチャットへ流れると、視聴者に見えて消せない）。
           if (result !== null) results.push(result);
           break;
         }
@@ -355,5 +535,5 @@ export function decideFireResults(
       }
     }
   }
-  return results;
+  return { fires: results, draws };
 }

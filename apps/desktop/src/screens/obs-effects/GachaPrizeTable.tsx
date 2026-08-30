@@ -18,6 +18,7 @@ import {
 } from "./effectSelectValue";
 import {
   drawGachaPrizeIndex,
+  GACHA_MISS_LABEL,
   GACHA_PERCENT_SCALE,
   gachaPercentToWeight,
   gachaTotalPercentText,
@@ -78,8 +79,11 @@ import styles from "./ObsEffectsScreen.module.css";
  */
 const DEFAULT_PRIZE_WEIGHT = 100;
 
-/** 063a-3: どの景品にも当たらなかったときの表示名。⚠ **「何も起きない」を画面に出すため**の名前。 */
-const MISS_LABEL = "何も出ない";
+/*
+ * ⚠⚠⚠ **063h: `MISS_LABEL` はこのファイルから [`GACHA_MISS_LABEL`] へ移した**（`gachaDraw.ts`）。
+ * 移した理由＝ **063i が配信サマリーで同じ言葉を出す**ため。
+ * ⚠ **ここへ書き戻さないこと**——設定画面のテスト抽選とサマリーで文言が割れる。
+ */
 
 /**
  * レビュー Q-063a-1: ％を受け付けなかった理由（⚠ **直し方まで書く**・061a Q-1）。
@@ -333,7 +337,7 @@ export function GachaPrizeTable({
     const index = drawGachaPrizeIndex(prizes, Math.random);
     // ⚠⚠⚠ 063a-3: `-1` は「**何も当たらなかった**」（合計が 100% 未満なら必ず起きる）。
     //   ⚠ **黙って何もしないのが最悪**なので、「はずれ」として数える。
-    const label = index < 0 ? MISS_LABEL : gachaPrizeLabel(prizes[index]);
+    const label = index < 0 ? GACHA_MISS_LABEL : gachaPrizeLabel(prizes[index]);
     setLastDraw(label);
     setTally((prev) => ({ ...prev, [label]: (prev[label] ?? 0) + 1 }));
   };
@@ -355,6 +359,18 @@ export function GachaPrizeTable({
           ⚠ **依頼者の判断であのカードごと廃止した**（「**常時 ON がただしい**」）。
           ⇒ 同意は**この画面の「ガチャ」カード内「高度な設定」1 か所だけ**になった。
           ⚠ **既定は OFF なので「書き込まれます」と断言しないこと。** */}
+      {/* ⚠⚠⚠ **063h レビュー Q-5: この説明文だけは `GACHA_MISS_LABEL` に寄せていない**（未整理）。
+          ⚠ 063h で定数へ寄せたのは**合計行とテスト抽選の 2 か所**で、ここは**生の文字列のまま**である。
+          ⇒ 文言を変えると**この段落だけ取り残される**（「定義は 1 か所」はここまで及んでいない）。
+          ⚠⚠ さらに、依頼者の判断は「**そもそもその概念がない**」（原文は §9 追補〔063h〕が正）なのに、
+          ここには**外れを意味する語がひらがなで 3 回**出ている。
+          ⚠⚠⚠ **確認コマンドはカタカナ表記しか見ないので 0 件になる**（＝**盲点**）。
+          ⚠ **この doc にその語そのものを書かないこと**——書くと確認コマンドが**この行に当たり続ける**
+          （[`GACHA_MISS_LABEL`] が同じ理由の注記を持っている）。
+          ⚠ **いま直さない理由**＝ここは**ユーザーに見える説明文**であり、言い換えは
+          依頼者の判断が要る（文言の一元化という 063h の作業とは別物）。
+          ⚠ **再修正トリガー＝[063i] が配信サマリーに「何も出ない」を出すとき。**
+            そのとき説明文の言い回しごと依頼者に確認し、定数へ寄せられる形なら寄せること。 */}
       <p className={styles.note}>
         景品ごとに「出る確率」を入れてください。
         合計が 100%
@@ -545,7 +561,9 @@ export function GachaPrizeTable({
             </span>
             <span className={styles.gachaSource}>
               {overAllocated ? null : missWeight > 0 ? (
-                `何も出ない: ${gachaWeightToPercent(missWeight).toFixed(1)}%`
+                // ⚠⚠ 063h: **ここは生の文字列だった**（`MISS_LABEL` を使っていなかった）＝
+                //   同じファイルの中で文言が 2 通りに書かれていた。⇒ 定数へ寄せた。
+                `${GACHA_MISS_LABEL}: ${gachaWeightToPercent(missWeight).toFixed(1)}%`
               ) : (
                 "ちょうど 100%"
               )}

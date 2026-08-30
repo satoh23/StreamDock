@@ -15,6 +15,8 @@ import {
 } from "./effectAssignments";
 import { loadObsSourceList } from "../../features/comment-viewer/overlaySettings";
 import { EFFECT_EVENT_LABEL } from "./effectEventRows";
+// ⚠⚠ 063h: 「何も出ない」の文言は**実装から引く**（テストに書き写すと 2 か所目になる）。
+import { GACHA_MISS_LABEL } from "./gachaDraw";
 
 /**
  * ⚠⚠ **`ObsEffectsScreen` そのものは描かない。**
@@ -661,7 +663,36 @@ describe("GachaPrizeTable（063a）", () => {
     setPercent(1, "10");
     vi.spyOn(Math, "random").mockReturnValue(0.9);
     fireEvent.click(testDrawButton());
-    expect(screen.getByText(/結果: 何も出ない/)).toBeInTheDocument();
+    // ⚠⚠⚠ **063h: 文言は [`GACHA_MISS_LABEL`] から引く**（テストに書き写さない）。
+    //   ⚠ 旧実装は `/結果: 何も出ない/` という**前方一致**で、
+    //   「何も出ない**よ**」へ変える変異が**素通りしていた**（実測・2026-08-30）。
+    //   ⇒ **末尾を固定**して、文言が 1 文字でも変わったら落ちるようにした。
+    expect(screen.getByText(/^結果:/)).toHaveTextContent(
+      new RegExp(
+        `^結果: ${GACHA_MISS_LABEL} ／ テスト抽選 1 回: ${GACHA_MISS_LABEL} 1$`,
+      ),
+    );
+  });
+
+  /**
+   * ⚠⚠⚠ **063h: 設定画面とサマリーで「何も出ない」が割れないことの担保。**
+   *
+   * ⚠ 文言の持ち主は `gachaDraw.ts` の [`GACHA_MISS_LABEL`] **1 か所**である
+   * （063h でこのファイルのローカル定数から移した）。
+   * ⚠⚠ 合計行とテスト抽選の結果が**同じ文字列**を出すことを固定する
+   * ——同一ファイル内で片方だけベタ書きに戻る、という壊れ方が実際に起きていた。
+   */
+  it("⚠⚠ 合計行とテスト抽選の結果が同じ文言を使う（定義は 1 か所）", () => {
+    putObsSources();
+    render(<Harness />);
+    openGachaWithPrizes(1);
+    setPercent(1, "10");
+    expect(missText()).toBe(`${GACHA_MISS_LABEL}: 90.0%`);
+    vi.spyOn(Math, "random").mockReturnValue(0.9);
+    fireEvent.click(testDrawButton());
+    expect(screen.getByText(/^結果:/)).toHaveTextContent(
+      new RegExp(`結果: ${GACHA_MISS_LABEL}(\\s|$|／)`),
+    );
   });
 
   it("⚠ 景品 0 件ではテスト抽選を押せない", () => {

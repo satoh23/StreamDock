@@ -2,16 +2,51 @@
 
 > 状態: **未着手**（2026-08-30 起票）。層＝ **Rust（一覧を返す 1 本）＋ frontend**。レビュー＝ **軽レビュー**。
 >
-> ⚠⚠ **着手条件＝[063h](063h-gacha-draw-recording.md) の完了**（記録が無ければ出すものが無い）。
+> ✅ ⚠⚠ **着手条件＝[063h](063h-gacha-draw-recording.md) の完了 → 満たされた（2026-08-30）。**
+> ⚠⚠⚠ **063h の実装で本ファイルの前提が 3 件変わった**——⚠ **本タスクに着手する前に
+> [063h](063h-gacha-draw-recording.md) の冒頭「実装で判明した『本文の誤り』3 件」を必ず読むこと**
+> （とくに **索引は `(session_id, drawn_at, id)` の 3 列で作ってある**ので、
+> 一覧は `ORDER BY drawn_at DESC, id DESC` で引けば並び替えが索引で賄える）。
 > ⚠ 本タスクは**保存ポリシーを 1 ミリも動かさない**（063h が解禁した範囲を**読んで表示するだけ**）。
 > ⇒ `security-review` は不要で**軽レビュー**とする。⚠ ただし
 > **新しい項目を画面に出したくなったら 063h の §9 追補を読み直すこと**（保存していないものは出せない）。
 >
 > | 実施順 | タスク | 状態 |
 > |---|---|---|
-> | 1 | [063g](063g-gacha-prize-mail-spike.md) メール送信の技術調査 | ⚠ 未着手 |
-> | 2 | [063h](063h-gacha-draw-recording.md) ガチャ抽選結果の記録 | ⚠ 未着手 |
+> | 1 | [063g](063g-gacha-prize-mail-spike.md) ガチャ景品の**自動配布**技術調査 | ✅ **完了＝やらない**（2026-08-30） |
+> | 2 | [063h](063h-gacha-draw-recording.md) ガチャ抽選結果の記録 | ✅ **完了**（2026-08-30・✅ **`security-review` 実施済み**＝判定「軽微な懸念あり」・指摘は全件反映済み） |
 > | **3** | **063i（本タスク）** 配信サマリーにガチャの結果を出す | ⚠ **未着手** |
+>
+> ⚠⚠ **2026-08-30 訂正: 上の表を更新した**（旧表は 063g を「未着手／メール送信の技術調査」としていた）。
+> **063g は「やらない」で完了**したので、⚠⚠⚠ **本タスクの「やらないこと」にある
+> 「メールの導線（063g の結論次第で 063j 以降）」は「起票しない」で確定**である。
+> ⇒ ⚠ **当選一覧の行に「メールで送る」ボタンを置く余地を残さないこと**
+> （063g の (1-c) が「配信者の手入力」案を**依頼者の判断で明示的に却下**している）。
+>
+> ⚠ **2026-08-30 訂正: 本ファイルの実コード参照から行番号を外した**——
+> リポジトリの規約は「**行番号は書かない（特定はシンボル名で行うこと）**」であり、
+> 063a〜063f のすべてがヘッダに明記している。⚠ **行番号はコードが動くたびに腐る**
+> （063g でも同じ違反を直した）。
+>
+> ## ⚠⚠⚠ 063h の security-review（2026-08-30）から本タスクへの申し送り 3 件
+>
+> ⚠ **どれも「着手前に読むもの」である**（全文は `docs/security.md` §9 追補〔063h〕が正）。
+>
+> 1. ⚠⚠⚠ **一覧の行から視聴者詳細へ飛べない人が居る**（レビュー S-1）。
+>    `gacha_draws.viewer_id` に対応する `viewers` 行が**無いことがある**——
+>    `record_comment` は**コメント本文の制御文字を拒否する**ので、**改行入りのスパチャ**は
+>    視聴者行を作らずに落ちるが、**ガチャの記録は成功する**（ガチャはスパチャ条件が主経路）。
+>    ⇒ ⚠⚠ **貢献者一覧と同じ導線を再利用する際、`getViewer` が `NotFound` を返す前提で書くこと**
+>    （⚠ 一覧が丸ごと開けなくなる形にしないこと＝038a の `amount` 事故と同じ壊れ方を作らない）。
+> 2. ⚠⚠ **同じバッチの抽選は `drawn_at` が同値である**（レビュー Q-2）。
+>    frontend が 1 バッチにつき時刻を 1 回だけ作るため、**複数人が同時に引くと同時刻になる**。
+>    その中の並びは `id DESC`＝**記録 id の辞書順**で、**抽選順ではない**（逆順にもなりうる）。
+>    ⇒ ⚠ **「並び順」のテストを「抽選順」で書かないこと**（同時刻の中は不定として扱う）。
+> 3. ⚠⚠ **`gacha_draws` の行は「発火レーンが作ったもの」とは限らない**（レビュー S-3）。
+>    `record_gacha_draw` はアプリ定義コマンド＝**ACL を通らず全窓から呼べる**ので、
+>    存在しない `session_id` / `viewer_id` を持つ行は作れる（受容済み・被害は端末内に限られる）。
+>    ⇒ ⚠ 読み出し側は**行の中身を信用して落ちない**ように書くこと。
+>    ⚠ **本タスクの一覧コマンドも引数はセッション id 1 つだけ**にすること（任意条件の汎用クエリにしない）。
 
 ## 目的
 
@@ -22,30 +57,52 @@
 
 ⚠⚠ **「誰が引いたか」も出す**（[063h](063h-gacha-draw-recording.md) が
 **何も当たらなかった抽選も 1 行として記録する**ため）。
-⚠ 画面に「ハズレ」という語は出さない——**「何も出ない」**（既存の `MISS_LABEL`）で統一する。
+⚠ 画面に「ハズレ」という語は出さない——**「何も出ない」**で統一する。
+
+> ⚠⚠⚠ **2026-08-30 訂正: 「既存の `MISS_LABEL`」は、そのままでは使えない。**
+> 実体は **`GachaPrizeTable.tsx` の中の `const MISS_LABEL = "何も出ない";`** で、
+> ⚠⚠ **`export` されていない（モジュール private）**。
+> ⇒ **共有するのは誰かを決めること**（⚠ **曖昧なままだと文言が 2 か所に分裂する**——
+> それは本タスクの完了条件 2 とレビュー観点③がまさに禁じているものである）:
+> - **063h が共有形へ移す**（記録層が `prize_label = NULL` の意味を決める側なので素直）／
+> - **本タスクが移す**（⚠ その場合 `GachaPrizeTable` の import が変わるので、**あちらのテストも通ること**）
+> ⚠ **どちらでも「定義は 1 か所」を守ること。** ⚠ 置き場の候補＝ `gachaDraw.ts`
+> （`GACHA_PROBABILITY_UNAVAILABLE_TEXT` と同じ「表示に使う文字の持ち主」という性格）。
+>
+> ✅ ⚠⚠⚠ **2026-08-30 解決: 063h が移した。** いまの正は **`gachaDraw.ts` の
+> `export const GACHA_MISS_LABEL = "何も出ない";`** ——本タスクは **import するだけ**でよい。
+> ⚠⚠ **合わせて 2 か所目も潰してある**——`GachaPrizeTable` の合計行が
+> `` `何も出ない: …%` `` という**生の文字列**で、**同じファイルの中で文言が既に割れていた**
+> （⚠ 起票時点の本ファイルはこれに気付いていなかった）。
+> ⚠⚠⚠ **本ファイルの確認コマンド `grep -rn "何も出ない" apps/desktop/src | grep -v "\.test\."` の
+> 期待値は「1 件」ではない**——doc コメントを含めると複数出る。
+> ⇒ **見るべきは「`"何も出ない"` という文字列リテラルが `gachaDraw.ts` の 1 か所だけであること」**である
+> （`grep -rn '"何も出ない"' apps/desktop/src | grep -v "\.test\."`）。
 
 ## 現在の前提（⚠ 実コードで確認済み・2026-08-30）
 
-- サマリーは **`get_stream_summary(session_id)` 1 本**
-  （[stream_summary/commands.rs:31](../../apps/desktop/src-tauri/src/stream_summary/commands.rs#L31)）で
+- サマリーは **`get_stream_summary(session_id)` 1 本**（`stream_summary/commands.rs`）で
   `StreamSummary`（この配信／数字／貢献者一覧／レイド一覧）を返す。
 - ⚠⚠ **数字の担保**: `monetary_by_kind` / `monetary_by_currency` / `monetary_total_count` は
   **1 つの行集合から導出している**（別々のクエリにしていない）＝
   「通貨ごとの count の合計 ≠ 総課金回数」が構造的に起こり得ない
-  （[stream_summary/model.rs](../../apps/desktop/src-tauri/src/stream_summary/model.rs) の `StreamSummary` の doc が正）。
-- 画面は [SummaryView.tsx](../../apps/desktop/src/screens/comment-viewer/SummaryView.tsx) で、
-  節は **「この配信」→「数字」→「貢献者一覧」→「レイド一覧」**の順
-  （[:318](../../apps/desktop/src/screens/comment-viewer/SummaryView.tsx#L318) /
-  [:380](../../apps/desktop/src/screens/comment-viewer/SummaryView.tsx#L380) /
-  [:436](../../apps/desktop/src/screens/comment-viewer/SummaryView.tsx#L436) /
-  [:489](../../apps/desktop/src/screens/comment-viewer/SummaryView.tsx#L489)）。
+  （`stream_summary/model.rs` の `StreamSummary` の doc が正）。
+- 画面は `SummaryView.tsx` で、節は **「この配信」→「数字」→「貢献者一覧」→「レイド一覧」**の順
+  （`styles.summarySection` ＋ `styles.summaryHeading` の見出しで特定できる）。
 - **貢献者の行から視聴者詳細（`ViewerDetailPanel`）へ飛べる**（038b の導線を再利用している）。
 - 空のときは **1 行の短文**（例: 「レイドはありません」）。
 - ⚠⚠⚠ **注記（説明文）は 2026-08-16 に全廃されている**（親 062 (3) の反転）。
   **歪みは文章ではなく構造で示す**——`SummaryView.test.tsx` に
   「画面に長い説明文（注記）を出さない」というガードがある。
-- ⚠ **SQL は完全な文字列リテラルのみ**（`stream_summary` は `grep format!` が実コードで **0 件**であることを
+- ⚠ **SQL は完全な文字列リテラルのみ**（`stream_summary` は **`format!` の呼び出しが 0 件**であることを
   担保にしている）。**新モジュールでもこの性質を壊さないこと**（§8）。
+  > ⚠⚠⚠ **2026-08-30 訂正: `grep -rn "format!" stream_summary/` は 0 件にならない。実測 6 件出る。**
+  > **6 件はすべて「`format!` を 1 つも使っていない」と書いた doc コメント**である
+  > （`repository.rs` / `mod.rs` / `service.rs` の `//!`）。
+  > ⚠ **そのまま検証コマンドに使うと「壊れている」と誤読する。**
+  > ⇒ **確認は `grep -rn "format!(" ` にするか、コメント行を除くこと**（下記「確認コマンド」に反映済み）。
+  > ⚠ **`viewer_memory` / `stream_session` は `SELECT {COLUMNS}` の連結に `format!` を使っている**
+  > （定数の補間なので安全）。**「リポジトリ全体で 0 件」ではなく「`stream_summary` で 0 件」である。**
 
 ## このタスクでやること
 
@@ -65,6 +122,8 @@
 ⚠ **画面は invoke を 2 本並行に投げる**（`get_stream_summary` と `list_gacha_draws`）。
 ⚠⚠ **どちらか一方が失敗しても、もう一方は出すこと**——「ガチャが取れないと配信サマリーごと出ない」は
 本タスクが作ってよい退行ではない。
+⚠ **先例は `Promise.allSettled`** ——`ViewersView` の一括削除（⚠ **失敗があれば件数だけを画面に出す。
+本文・エラー詳細は出さない＝§9**）と `effectOverlayRestore` の 2 本がある。**同じ作法に揃えること。**
 
 DTO（`GachaDrawRecord`・camelCase・ts-rs の出力先は
 **`src/features/comment-viewer/bindings/`**・⚠ 既存 6 ディレクトリの外へ出さない）:
@@ -125,7 +184,7 @@ DTO（`GachaDrawRecord`・camelCase・ts-rs の出力先は
 
 | 穴 | 中身 | 決め方 |
 |---|---|---|
-| **A** | **行数が多い配信** | 画面側で直近 N 件＋「切った」表示（上の (2)）。⚠ **再修正トリガー＝ N 件で足りないと言われたとき**（そのときは Rust 側にページングを入れる。⚠ DTO を先に触らない） |
+| **A** | **行数が多い配信** | 画面側で直近 N 件＋「切った」表示（上の (2)）。⚠⚠ **表示の作法は既に確定している**——`SummaryView.tsx` 冒頭が「⚠ ただし**文章では書かない**——『**直近 20 件 / 全 35 件**』という**事実だけ**を添える」と決めており、⚠ **同じ形に揃えること**（新しい言い回しを発明しない）。⚠ **再修正トリガー＝ N 件で足りないと言われたとき**（そのときは Rust 側にページングを入れる。⚠ DTO を先に触らない） |
 | **B** | **時刻の扱い** | `drawn_at` は**端末が生成した RFC3339 で常に同じ形**（062c が `published_at` で困った「`Z` とオフセットが混ざる」問題は起きない）。⚠ **表示は既存の `fmtDateTime` を使う**（独自実装を作らない） |
 | **C** | **`viewers` に行が無い視聴者** | 063h が FK を張らないので起こりうる。⚠ **一覧の表示は行が持つ `viewerName` だけで完結する**（JOIN しない）。詳細へ飛べなかったときは**開かないだけ**にし、画面を壊さない |
 | **D** | **改名した視聴者** | 一覧は**抽選時点の名前**を出す（貢献者一覧は `viewers.name` ＝今の名前なので、⚠ **同じ画面に 2 つの規則が並ぶ**）。⚠⚠ **これは仕様である**——「その配信で誰が引いたか」は当時の名前が正しい。⚠ 説明文は書かない（注記全廃）ので、**テストで意図を固定する** |
@@ -147,10 +206,23 @@ DTO（`GachaDrawRecord`・camelCase・ts-rs の出力先は
 git diff --stat
 pnpm --filter ./apps/desktop typecheck
 pnpm --filter ./apps/desktop lint
+# ⚠⚠ 2026-08-30 訂正: 063h 完了後のベースラインは **frontend 90 files / 2259 tests・cargo 464 passed**
+# （起票時点の「88 files / 2223 tests・443 passed」は 063h 前の数字）
 pnpm --filter ./apps/desktop test          # vitest ＋ check:css ＋ check:version
+# ⚠⚠ 新規 binding は先に `git add -N` しないと差分として見えない
 pnpm --filter ./apps/desktop check:bindings
 cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml
 cargo test  --manifest-path apps/desktop/src-tauri/Cargo.toml
+
+# ⚠⚠⚠ §8: SQL を組み立てていないこと（⚠ **`format!(` で見る**——`format!` だけだと doc コメント 6 件が出る）
+grep -rn "format!(" apps/desktop/src-tauri/src/stream_summary/ apps/desktop/src-tauri/src/gacha_history/
+# ⚠⚠ 文言が 1 か所から来ていること（"何も出ない" の定義が 1 つだけであること）
+grep -rn "何も出ない" apps/desktop/src | grep -v "\.test\."
+# ⚠ 保存ポリシーを動かしていないこと（Rust の変更が読み取り専用 1 本だけ）
+git diff --stat -- apps/desktop/src-tauri/src/
+# ⚠ ゼロ拡大の担保（差分ゼロが期待）
+git status --short -- apps/desktop/src-tauri/capabilities/ apps/desktop/src-tauri/tauri.conf.json apps/comment-sidecar/ .github/
+git status --short -- apps/desktop/package.json pnpm-lock.yaml apps/desktop/src-tauri/Cargo.lock
 
 # 実機（pnpm tauri dev ＋ dev-mock）
 # ① ガチャを数回引かせる → サマリーに全部並ぶ（何も出なかったものも含む）
