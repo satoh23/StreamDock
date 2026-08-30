@@ -1654,15 +1654,21 @@ describe("063c 段 2-a: 当選結果の配り先", () => {
 /**
  * ⚠⚠⚠ **063f: ガチャの当選結果を配信のチャットへ自動で書き込む。**
  *
- * ## ⚠⚠⚠ この 1 ファイルが持つべき担保（`ChatSendCard.test.tsx` では書けないもの）
+ * ## ⚠⚠⚠ この 1 ファイルが持つべき担保（廃止された `ChatSendCard.test.tsx` では書けなかったもの）
  *
  * `docs/security.md` §1 の「追補（063f）」で **066 の門の 3 枚目（自動送信の経路が 1 本も無い）
  * を外した**ので、残る 2 枚が本当に効いているかを**送信の現場**で固定する:
  *
- * ① ⚠⚠⚠ **同意の 2 枚が AND である**——どちらか一方だけ ON では **1 通も出ない**。
+ * ① ⚠⚠⚠ **同意（既定 OFF）が ON のときだけ出る**——OFF なら **1 通も出ない**。
+ *    ⚠⚠ **2026-08-30 訂正: 旧記述「同意の 2 枚が AND である」は嘘になった**
+ *    （親トグル `CHAT_SEND_ENABLED_KEY` の廃止で**同意は 1 枚**になった）。
+ *    ⇒ ⚠⚠⚠ **もう 1 枚の受け皿が無いぶん、この ① の検査は以前より重い。**
  * ② ⚠⚠ **送るのはガチャ由来の発火だけ**（条件への OBS ソース直指定では出ない）。
  * ③ ⚠⚠⚠ **本線（OBS の演出）を止めない**——送信が失敗しても・返ってこなくても鳴る。
- * ④ ⚠⚠⚠ **§9: 本文に第三者由来の文字列が 1 バイトも入らない**（表示名も本文も視聴者 id も）。
+ * ④ ⚠⚠⚠ **§9: 本文に載るのは「景品名」と「引いた人の表示名」だけ**——
+ *    **コメント本文・視聴者 id・金額・アバターは 1 バイトも入らない**。
+ *    ⚠⚠ **2026-08-30 訂正: 旧記述「第三者由来の文字列が 1 バイトも入らない（表示名も…）」は、
+ *    段 3（2026-08-29・表示名を出す）の時点で嘘になっていた**（§9 の「追補の追補」が正）。
  * ⑤ ⚠ **`expectedChannel` は画面に出しているのと同じ値**（S-2b の突き合わせが生きている）。
  * ⑥ ⚠ **送信の本文も結果も localStorage に残さない**（§9・送ったものの記録を作らない）。
  */
@@ -1691,9 +1697,13 @@ describe("063f: ガチャの当選をチャットへ自動送信する", () => {
     );
   };
 
-  /** ⚠⚠ 同意の 2 枚。**片方だけ立てる形も試せるように分けてある。** */
-  const allowChat = () =>
-    localStorage.setItem("stream-dock.comment-viewer.chat-send-enabled", "1");
+  /**
+   * ⚠⚠⚠ **同意の旗（2026-08-30 に 2 枚 → 1 枚になった）。**
+   *
+   * 旧構成は **AND**（親＝コメビュ設定の `chat-send-enabled` ＋ 子＝`gacha-chat-enabled`）だったが、
+   * 依頼者の判断「**設定画面からチャットに書き込むカードを消して。これは常時 ON がただしい**」で
+   * **親を廃止した**。⚠⚠ **既定 OFF と「明示操作でしか立たない」は 1 ミリも変わっていない。**
+   */
   const allowAuto = () =>
     localStorage.setItem("stream-dock.comment-viewer.gacha-chat-enabled", "1");
   /** ⚠ 期待値（＝画面の「送信先」）が空だと `sendChat` は送る前に落ちるので、必ず入れる。 */
@@ -1725,7 +1735,16 @@ describe("063f: ガチャの当選をチャットへ自動送信する", () => {
     await flushSend();
   };
 
-  it("⚠⚠⚠ 同意が 2 枚とも OFF なら 1 通も送らない（既定 OFF の担保）", async () => {
+  /**
+   * ⚠⚠⚠ **同意が無ければ 1 通も出ない**——**この機能でいちばん重い 1 本**である。
+   *
+   * ⚠⚠ **2026-08-30 に重みが増した**: 旧構成は AND の 2 枚だったので、
+   * 片方を消しても**もう 1 枚が残った**。⚠⚠⚠ **いまは 1 枚しかない**ので、
+   * **ここが緑であることが「無操作で書き込まない」の担保のすべて**である。
+   * ⇒ ⚠ **このテストを消さないこと。**（旧「AND の片側／もう片側」の 2 本は、
+   * 親トグルの廃止で**検査する対象そのものが消えた**ので削除した。）
+   */
+  it("⚠⚠⚠ 同意 OFF なら 1 通も送らない（既定 OFF の担保）", async () => {
     putChannel();
     putGacha();
     await fire();
@@ -1734,25 +1753,8 @@ describe("063f: ガチャの当選をチャットへ自動送信する", () => {
     expect(mocks.emitGachaStageResult).toHaveBeenCalledTimes(1);
   });
 
-  it("⚠⚠⚠ 書き込み許可だけ ON では 1 通も送らない（AND の片側）", async () => {
+  it("⚠⚠ 同意 ON なら当選 1 件につき 1 通だけ送る", async () => {
     putChannel();
-    allowChat();
-    putGacha();
-    await fire();
-    expect(mocks.stream.sendChat).not.toHaveBeenCalled();
-  });
-
-  it("⚠⚠⚠ 自動送信だけ ON では 1 通も送らない（AND のもう片側）", async () => {
-    putChannel();
-    allowAuto();
-    putGacha();
-    await fire();
-    expect(mocks.stream.sendChat).not.toHaveBeenCalled();
-  });
-
-  it("⚠⚠ 2 枚とも ON なら当選 1 件につき 1 通だけ送る", async () => {
-    putChannel();
-    allowChat();
     allowAuto();
     putGacha("特賞");
     await fire();
@@ -1771,32 +1773,74 @@ describe("063f: ガチャの当選をチャットへ自動送信する", () => {
   });
 
   /**
-   * ⚠⚠⚠ **2026-08-30・security-review Q-3 で追加した。**
+   * ⚠⚠⚠ **S-2b の「画面に出している値と同じ」を、画面から取った値で固定する。**
+   *
+   * ## ⚠⚠ なぜ 1 本増やしたか（2026-08-30・レビュー Q-5）
+   *
+   * 066 S-2b の教訓は「**『見せる』対処は、見せる値が実際の状態に由来していて初めて成立する**」。
+   * ⚠ 旧 `ChatSendCard.test.tsx` はこれを prop で受けていたので固定できず、
+   * **`CommentViewerApp.session.test.tsx` の 1 本**（テスト送信は画面に出している送信先を渡す）が
+   * 担っていたが、⚠⚠ **2026-08-30 に押し手ごと廃止して削除した。**
+   *
+   * ⚠⚠⚠ **上の 1 本だけでは足りない**——あちらは `localStorage` に仕込んだ値と突き合わせるので、
+   * **将来ツールバーが別の値を描くようになっても緑のまま**である。
+   * ⇒ **ここでは「実際に描かれている入力値」を根拠にする**（表示の担い手が
+   * `ChatSendCard` の「送信先: …」からツールバーのチャンネル入力へ移ったあとの、同じ性質）。
+   *
+   * ⚠ **`expectedChannel` は「宛先」ではなく「宛先の期待値」である**（066 S-2 / S-2b）——
+   * ⚠⚠ **sidecar に現在の宛先を聞いて渡す形にしないこと**（突き合わせが恒真になって消える）。
+   */
+  it("⚠⚠⚠ S-2b: 期待値は、画面のチャンネル入力が描いている値そのもの", async () => {
+    putChannel();
+    allowAuto();
+    putGacha("特賞");
+    await fire();
+
+    // 接続ピルを開くと、同じ `channel` state を描いている入力欄が出る。
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Twitch/ }));
+    });
+    const shown = screen.getByLabelText("ユーザー名") as HTMLInputElement;
+    // ⚠ 仕込んだ生値がそのまま描かれている（＝表示は frontend の `channel` state そのもの）。
+    expect(shown.value).toBe("  MyChannel  ");
+
+    // ⚠⚠⚠ **期待値は、いま画面に出ているその値を trim しただけのもの**である。
+    expect(mocks.stream.sendChat).toHaveBeenCalledWith(
+      expect.any(String),
+      shown.value.trim(),
+    );
+  });
+
+  /**
+   * ⚠⚠⚠ **2026-08-30・security-review Q-3 で追加し、063f 段 2-a で書き直した。**
    *
    * ⚠⚠ **同一バッチの複数当選は、これまで 1 本もテストが無かった**——にもかかわらず
    * `sendGachaChat` の JSDoc が最も長く論じているのがこのケースだった。
-   * ⚠⚠⚠ **その論述（「`sendChat` は同時 1 本なので 2 件目以降はチケット取得すら走らない」）は
-   * 誤りで、レビューで実測により否定された**（S-1）。⇒ **本テストは「実際の振る舞い」を固定する。**
+   * ⚠⚠⚠ **その論述（「`sendChat` は同時 1 本なので 2 件目以降はチケット取得すら走らない」）は、
+   * 書かれた時点では誤りだった**（S-1・TOCTOU）。
+   * ⇒ ✅ **段 2-a で `commentStream.ts` を直し、記述のほうが真になった**
+   * （＝ 上の再修正トリガーは**引かれた**）。
    *
-   * ## ⚠ ここが固定していること
+   * ## ⚠ ここが固定していること（**この層で観測できるものだけ**）
    *
    * 1. ⚠⚠⚠ **本線は 2 件とも通る**（演出は当選のぶんだけ出る）——これが最重要である。
-   * 2. **`sendChat` は 2 回呼ばれる**（frontend は 1 本も落としていない）。
-   *    ⚠⚠ **落とすのは sidecar のスロットルだけ**なので、Twitch へ届くのは 1 通になる
-   *    （＝ `docs/security.md` §1 の 063f 追補「スロットルは sidecar 側にしかない」と整合）。
+   * 2. **`sendChat` は 2 回呼ばれる**（⚠ **この層は 1 本も落とさない**）。
    * 3. ⚠⚠ **frontend が件数を数えたり、まとめたり、溜めたりしていない**
-   *    （まとめると重複拒否の迂回になる＝追補の再修正トリガー ④）。
+   *    （まとめると重複拒否の迂回になる＝ §1 追補の再修正トリガー ④）。
    *
-   * ## ⚠⚠⚠ 再修正トリガー
+   * ## ⚠⚠⚠ 「sidecar へ出るフレームが 1 本」は**ここでは観測できない**
    *
-   * **`commentStream.ts` の `sendChat` で `pendingChatSend` の予約を `await` の前へ移したとき**
-   * ——そのとき 2 件目は `{ok:false,"送信中です"}` で即返るようになるので、
-   * ⚠ **`sendChat` の呼び出し回数は 2 のままだが、sidecar へ出るフレームが 1 本に減る。**
-   * ⇒ **この JSDoc ごと書き直すこと**（回数だけ直して意味を古いまま残さない）。
+   * このファイルは **`sendChat` 自体をモックしている**ので、
+   * 「呼ばれた回数」までしか見えない。⚠⚠ **落ちるのはその内側**（`commentStream.ts` の
+   * `pendingChatSend` が 2 本目を `{ok:false,"前の書き込みが…"}` で即返す）である。
+   * ⇒ **フレーム数と「チケット取得すら走らない」ことの固定は
+   * [`commentStream.chatSend.test.ts`] が持つ**（⚠ ここへ書き写さないこと＝ モックでは嘘になる）。
+   *
+   * ⚠ **2 の期待値を 1 に変えたくなったら、それは層を取り違えている。**
+   * `sendGachaChat` が落とし始めたら §1 追補が禁じた「frontend に数を数える仕組み」になる。
    */
   it("⚠⚠⚠ 同一バッチで 2 件当選しても、本線は 2 件とも通り frontend は 1 本も落とさない", async () => {
     putChannel();
-    allowChat();
     allowAuto();
     putGacha("特賞");
     render(<CommentViewerApp />);
@@ -1837,9 +1881,63 @@ describe("063f: ガチャの当選をチャットへ自動送信する", () => {
     );
   });
 
+  /**
+   * ⚠⚠⚠ **063f 段 2-a: 「投稿されたのに『失敗しました』と出る」が閉じたことの固定。**
+   *
+   * S-1 以前は `pendingChatSend` が上書きされるせいで、**成功した 1 通目の結果フレームが
+   * `requestId` 不一致で捨てられ**、画面には**拒否された最後の 1 件**が出ていた。
+   *
+   * ⚠⚠ **段 2-a 以降の返り方**をモックで再現する:
+   * - **1 本目** … チケット取得と往復があるので**後から** `{ok:true}` が返る
+   * - **2 本目** … 予約に弾かれて**その場で** `{ok:false,"前の書き込みが…"}` が返る
+   *
+   * ⇒ ⚠⚠⚠ **後から届く 1 本目の成功が最後に上書きするので、赤字は残らない。**
+   * ⚠ **ここは `gachaChatError` の「最後の 1 件だけ持つ」性質に乗っている**——
+   * 履歴を持たない（§9）ぶん、**順序が結論を決める**ことを明示的に固定しておく。
+   *
+   * ⚠⚠ **2026-08-30: 出し先が設定カードからツールバーへ移った**
+   * （`ChatSendCard` 廃止・⚠ **成功は出さない**＝チャットに現れた 1 通が示すので）。
+   * ⇒ 見るのは「**赤字が出ていないこと**」になった。
+   */
+  it("⚠⚠⚠ 2 件同時当選でも、成功した 1 通目が最後に効く（赤字が残らない）", async () => {
+    putChannel();
+    allowAuto();
+    putGacha("特賞");
+    // ⚠ 1 本目は「後から成功」。⚠⚠ **`flushSend` を跨いで解決させる**ため 1 tick 遅らせる。
+    mocks.stream.sendChat.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          setTimeout(() => resolve({ ok: true }), 0);
+        }),
+    );
+    // ⚠ 2 本目は「その場で拒否」（＝ `commentStream.ts` の予約が返す文面そのもの）。
+    mocks.stream.sendChat.mockResolvedValueOnce({
+      ok: false,
+      reason: "前の書き込みが終わっていないため送れませんでした。",
+    });
+    render(<CommentViewerApp />);
+    emitConnected();
+    await act(async () => {});
+    await act(async () => {
+      emitComments([
+        superchat({ id: "c1", author: { id: "u1", name: "視聴者A" } }),
+        superchat({ id: "c2", author: { id: "u2", name: "視聴者B" } }),
+      ]);
+    });
+    await flushSend();
+    // ⚠ 1 本目（後から返る成功）が届くまで待つ。
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    // ⚠⚠⚠ **ツールバーに赤字が出ていない**（＝ 2 本目の拒否を、1 本目の成功が消した）。
+    expect(
+      screen.queryByText("チャットに書き込めません"),
+    ).not.toBeInTheDocument();
+  });
+
   it("⚠⚠ レア景品なら文面が変わる（`rare` が運ばれている）", async () => {
     putChannel();
-    allowChat();
     allowAuto();
     const random = vi.spyOn(Math, "random").mockReturnValue(0);
     try {
@@ -1860,7 +1958,6 @@ describe("063f: ガチャの当選をチャットへ自動送信する", () => {
 
   it("⚠⚠⚠ 条件への OBS ソース直指定（ガチャではない）では送らない", async () => {
     putChannel();
-    allowChat();
     allowAuto();
     putObsCondition();
     await fire();
@@ -1875,7 +1972,6 @@ describe("063f: ガチャの当選をチャットへ自動送信する", () => {
    */
   it("⚠ はずれでは送らない", async () => {
     putChannel();
-    allowChat();
     allowAuto();
     putGacha("極小", 1);
     const spy = vi.spyOn(Math, "random").mockReturnValue(0.99);
@@ -1889,7 +1985,6 @@ describe("063f: ガチャの当選をチャットへ自動送信する", () => {
 
   it("⚠ 一覧に無い gachaId では送らない", async () => {
     putChannel();
-    allowChat();
     allowAuto();
     localStorage.setItem(GACHA_LIBRARY_KEY, JSON.stringify([]));
     localStorage.setItem(
@@ -1909,7 +2004,6 @@ describe("063f: ガチャの当選をチャットへ自動送信する", () => {
 
   it("⚠ 景品 0 件では送らない", async () => {
     putChannel();
-    allowChat();
     allowAuto();
     localStorage.setItem(
       GACHA_LIBRARY_KEY,
@@ -1935,7 +2029,6 @@ describe("063f: ガチャの当選をチャットへ自動送信する", () => {
    */
   it("⚠⚠⚠ 送信に失敗しても OBS の演出は出る", async () => {
     putChannel();
-    allowChat();
     allowAuto();
     mocks.stream.sendChat.mockResolvedValueOnce({
       ok: false,
@@ -1956,7 +2049,6 @@ describe("063f: ガチャの当選をチャットへ自動送信する", () => {
    */
   it("⚠⚠⚠ 送信が返ってこなくても OBS の演出は出る（await していない）", async () => {
     putChannel();
-    allowChat();
     allowAuto();
     // ⚠ 解決しない Promise を返す（＝ Twitch の往復が詰まっている状態）。
     mocks.stream.sendChat.mockReturnValueOnce(
@@ -1978,7 +2070,6 @@ describe("063f: ガチャの当選をチャットへ自動送信する", () => {
    */
   it("⚠⚠⚠ §9: 送る本文に入るのは表示名だけ（本文・視聴者 id は 1 文字も入らない）", async () => {
     putChannel();
-    allowChat();
     allowAuto();
     putGacha();
     await fire(
@@ -2011,7 +2102,6 @@ describe("063f: ガチャの当選をチャットへ自動送信する", () => {
    */
   it("⚠⚠⚠ §9: 長い表示名は 20 文字で切られた形で送られる（生の名前を使わない）", async () => {
     putChannel();
-    allowChat();
     allowAuto();
     putGacha();
     const longName = "あ".repeat(GACHA_VIEWER_NAME_MAX + 5);
@@ -2025,7 +2115,6 @@ describe("063f: ガチャの当選をチャットへ自動送信する", () => {
   /** ⚠ 表示名が空でも**当選そのものは送る**（名前の部分だけ落ちる）。 */
   it("⚠⚠ 表示名が空でも当選は送る（代替名を作らない）", async () => {
     putChannel();
-    allowChat();
     allowAuto();
     putGacha("特賞");
     await fire(superchat({ author: { id: "u1", name: "" } }));
@@ -2061,13 +2150,9 @@ describe("063f: ガチャの当選をチャットへ自動送信する", () => {
     await flushSend();
     expect(mocks.stream.sendChat).not.toHaveBeenCalled();
 
-    // ⚠⚠⚠ **063f 段 1-b: 親はこの窓、子は「OBSエフェクト」画面（＝別の窓）にある。**
-    //   ⇒ 親は画面から操作し、**子は別窓が書いた状態を localStorage で再現する**
-    //   （この窓に子のトグルはもう無い）。
-    fireEvent.click(screen.getByLabelText("設定"));
-    fireEvent.click(
-      screen.getByLabelText("チャットへの書き込みを許可する", { exact: false }),
-    );
+    // ⚠⚠⚠ **2026-08-30: 同意のトグルは「OBSエフェクト」画面（＝別の窓）にしか無い。**
+    //   ⇒ **別窓が書いた状態を localStorage で再現する**（この窓にトグルは 1 つも無い）。
+    //   ⚠ 旧実装ではここで親トグル（コメビュ設定）をクリックしていたが、**親は廃止された**。
     allowAuto();
 
     // ⚠⚠ **窓を開き直していない**のに、次の当選から効くこと。
@@ -2081,7 +2166,6 @@ describe("063f: ガチャの当選をチャットへ自動送信する", () => {
   /** ⚠⚠ ⑥ §9: 本文も結果も端末に残さない（送ったものの記録を作らない）。 */
   it("⚠⚠ §9: 送った本文も結果も localStorage に残らない", async () => {
     putChannel();
-    allowChat();
     allowAuto();
     putGacha("特賞");
     await fire();
@@ -2094,12 +2178,19 @@ describe("063f: ガチャの当選をチャットへ自動送信する", () => {
   });
 
   /**
-   * ⚠⚠⚠ **直近の結果が設定画面に出る**（061a Q-1「黙って効かない、を作らない」）。
+   * ⚠⚠⚠ **失敗を黙らせない**（061a Q-1 ／ `docs/security.md` §1 の 063f 追補）。
    * ⚠ 自動送信は**画面を見ていないときに走る**ので、あとから読めることが唯一の対処である。
+   *
+   * ## ⚠⚠⚠ 2026-08-30: 出し先が「設定カード」から「ツールバー」へ移った
+   *
+   * 依頼者の判断で `ChatSendCard` ごと廃止したが、⚠⚠ **§1 追補が「失敗は黙らせない」を
+   * 要求しているので、消さずに動かした**。⇒ 045c の OBS エラー・059a の通知音・
+   * 062b の記録落ちと**同じ場所・同じクラス**（性質も同じ＝
+   * **ユーザー操作なしに起きた失敗を配信中の画面へ出す**）。
+   * ⚠⚠ **むしろ設定画面より届く**——配信中に見ているのはこちらだから。
    */
-  it("⚠⚠ 失敗の理由が設定画面に残る", async () => {
+  it("⚠⚠⚠ 失敗するとツールバーに出る（設定を開かなくても読める）", async () => {
     putChannel();
-    allowChat();
     allowAuto();
     mocks.stream.sendChat.mockResolvedValueOnce({
       ok: false,
@@ -2107,16 +2198,60 @@ describe("063f: ガチャの当選をチャットへ自動送信する", () => {
     });
     putGacha();
     await fire();
-    fireEvent.click(screen.getByLabelText("設定"));
-    // ⚠⚠⚠ **完全一致で見る**（部分一致にしない）。
+    // ⚠⚠⚠ **設定を開かずに読める**こと（＝ここが移設の目的そのもの）。
+    const indicator = await screen.findByText("チャットに書き込めません");
+    expect(indicator).toBeInTheDocument();
+    // ⚠⚠ 理由は `title` に出る。⚠⚠⚠ **完全一致で見る**（部分一致にしない）——
     //   ⚠ §9: 出してよいのは **sidecar が作った定型の短文だけ**で、
-    //   **送った本文をここへ足すと必ずレッドになる**——部分一致だと足しても緑のまま通る
-    //   （実際に変異させて確認した。⚠ 緩めないこと）。
+    //   **送った本文をここへ足すと必ずレッドになる**（部分一致だと足しても緑のまま通る）。
+    expect(indicator).toHaveAttribute(
+      "title",
+      "直前と同じ内容は送れません（Twitch 側で弾かれるため）。",
+    );
+  });
+
+  /**
+   * ⚠⚠ **成功では赤字を出さない**（成功したことは**チャットに現れた 1 通**が示す）。
+   * ⚠ ツールバーの他のインジケータと同じ規律＝**出すのは失敗だけ**である。
+   */
+  it("⚠⚠ 成功したときはツールバーに何も出ない", async () => {
+    putChannel();
+    allowAuto();
+    // ⚠ **既定のモックは `{ok:false,"offline"}`** なので、成功はここで明示する。
+    mocks.stream.sendChat.mockResolvedValue({ ok: true });
+    putGacha();
+    await fire();
     expect(
-      await screen.findByText(
-        "ガチャの自動書き込み: 直前と同じ内容は送れません（Twitch 側で弾かれるため）。",
-      ),
+      screen.queryByText("チャットに書き込めません"),
+    ).not.toBeInTheDocument();
+  });
+
+  /**
+   * ⚠⚠⚠ **古い赤字を残さない**（`obsState` 系と同じ振る舞い）。
+   * ⚠ 1 度失敗したまま赤字が消えないと、直ったことに気づけない。
+   */
+  it("⚠⚠⚠ 次の書き込みが成功したら赤字は消える", async () => {
+    putChannel();
+    allowAuto();
+    mocks.stream.sendChat.mockResolvedValueOnce({
+      ok: false,
+      reason: "直前と同じ内容は送れません（Twitch 側で弾かれるため）。",
+    });
+    putGacha();
+    await fire();
+    expect(
+      await screen.findByText("チャットに書き込めません"),
     ).toBeInTheDocument();
+
+    // ⚠ 2 件目は成功させる（⚠ 既定のモックは失敗を返すので明示的に差し替える）。
+    mocks.stream.sendChat.mockResolvedValue({ ok: true });
+    await act(async () => {
+      emitComments([superchat({ id: "c9" })]);
+    });
+    await flushSend();
+    expect(
+      screen.queryByText("チャットに書き込めません"),
+    ).not.toBeInTheDocument();
   });
 });
 
@@ -2156,9 +2291,13 @@ describe("063f 段 1-b: 演出が見えるまでチャットへ投稿しない",
       ]),
     );
   };
-  /** ⚠ 同意の 2 枚 ＋ 宛先の期待値（空だと送る前に落ちる）。 */
+  /**
+   * ⚠ 同意 ＋ 宛先の期待値（空だと送る前に落ちる）。
+   *
+   * ⚠⚠ **2026-08-30: 死んだ仕込み `chat-send-enabled` を外した**（親トグルの廃止で
+   * **誰も読まないキー**になっていた）——**残すと「2 枚要る」と読める**。
+   */
   const allowAll = () => {
-    localStorage.setItem("stream-dock.comment-viewer.chat-send-enabled", "1");
     localStorage.setItem("stream-dock.comment-viewer.gacha-chat-enabled", "1");
     localStorage.setItem("stream-dock.comment-viewer.channel", "MyChannel");
   };

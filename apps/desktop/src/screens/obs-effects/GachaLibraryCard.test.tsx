@@ -16,11 +16,9 @@ import {
   saveGachaPlacement,
   saveGachaPrizeColor,
   saveGachaStageEnabled,
-  // ⚠⚠ 063f 段 1-b: 「高度な設定」の中のトグル（同意の 2 枚目）。
-  //   ⚠ ハーネスは **`ObsEffectsScreen` と同じ配線**にする（保存は 1 か所・AND で読む）。
-  CHAT_SEND_ENABLED_KEY,
+  // ⚠⚠ 063f 段 1-b: 「高度な設定」の中のトグル（⚠ **2026-08-30 以降は同意の唯一の旗**）。
+  //   ⚠ ハーネスは **`ObsEffectsScreen` と同じ配線**にする（保存は 1 か所）。
   GACHA_CHAT_ENABLED_KEY,
-  loadChatSendEnabled,
   loadGachaChatEnabled,
   saveGachaChatEnabled,
 } from "../../features/comment-viewer/overlaySettings";
@@ -88,7 +86,6 @@ const Harness = () => {
   );
   // ⚠⚠ 063f 段 1-b: **`ObsEffectsScreen` と同じ形**（初期値は AND・書き手は 1 か所）。
   const [chatEnabled, setChatEnabled] = useState<boolean>(loadGachaChatEnabled);
-  const chatSendAllowed = loadChatSendEnabled();
   return (
     <>
       <EffectAssignmentCard
@@ -102,7 +99,6 @@ const Harness = () => {
         obsSources={loadObsSourceList()?.sources ?? null}
         onChange={(next) => setGachas(saveGachaLibrary(next))}
         chatEnabled={chatEnabled}
-        chatSendAllowed={chatSendAllowed}
         onChatEnabledChange={(next) => {
           saveGachaChatEnabled(next);
           setChatEnabled(next);
@@ -858,6 +854,61 @@ describe("063c 段 5: 演出の見た目とプレビュー", () => {
       vi.useRealTimers();
     }
   });
+
+  /**
+   * ⚠⚠⚠ **2026-08-30: プレビューの「レア！」は保存する**（依頼者の指摘＝
+   * 「**再起動でOFFに戻るのは論外です。そんなの使いにくすぎます**」）。
+   *
+   * ⚠⚠ **旧実装は `useState(false)` で、画面を開き直すたびに OFF へ戻っていた。**
+   * 旧実装の根拠は「保存すると**本番に効く設定**と誤解される」だったが、
+   * ⚠⚠⚠ **誤解を防ぐのは注記の仕事であって、スイッチが状態を覚えない理由にはならない。**
+   *
+   * ⚠ **ここで固定していないこと**＝「本番で『レア！』が出る条件」。
+   * 持ち主は `isGachaRarePrize` 1 か所で、**このスイッチは配信画面に 1 ミリも影響しない**
+   * （⇒ その線は `gachaDraw` / `effectFire` のテストが持つ）。
+   */
+  const RARE_TOGGLE = "プレビューで「レア！」を出す";
+  /** ⚠ `ToggleSwitch` は `role="switch"` のボタン（`<input>` ではない）。上の STAGE_TOGGLE と同じ作法。 */
+  const rareToggle = () => screen.getByRole("switch", { name: RARE_TOGGLE });
+
+  it("⚠⚠⚠ プレビューの「レア！」は開き直しても ON のまま（再起動で OFF に戻らない）", () => {
+    // ⚠⚠ **この describe には `localStorage.clear()` の `beforeEach` が無い**（兄弟の describe が
+    //   持っているだけ）ので、**保存を跨いで見る 2 本は自分で初期状態を作る**。
+    localStorage.clear();
+    const first = render(<Harness />);
+    expect(rareToggle()).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(rareToggle());
+    expect(rareToggle()).toHaveAttribute("aria-checked", "true");
+
+    // ⚠⚠ **窓を開き直す**（＝アプリの再起動と同じ経路＝ state を捨てて保存値から作り直す）。
+    first.unmount();
+    render(<Harness />);
+    expect(rareToggle()).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("⚠ OFF に戻したら、開き直しても OFF のまま（片道だけ保存していない）", () => {
+    localStorage.clear();
+    const first = render(<Harness />);
+    fireEvent.click(rareToggle());
+    fireEvent.click(rareToggle());
+    expect(rareToggle()).toHaveAttribute("aria-checked", "false");
+    first.unmount();
+    render(<Harness />);
+    expect(rareToggle()).toHaveAttribute("aria-checked", "false");
+  });
+
+  /**
+   * ⚠⚠ **注記の「保存されません」は嘘になったので消した。**
+   * ⚠⚠⚠ 代わりに残すべきは「**配信画面には影響しません**」のほう——
+   * これが消えると、**保存される設定なのに本番が変わらない**という誤解を防ぐものが無くなる。
+   */
+  it("⚠⚠ 注記が「配信画面には影響しません」と言っている（「保存されません」は言わない）", () => {
+    render(<Harness />);
+    expect(
+      screen.getByText(/配信画面には影響しません/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/保存されません/)).not.toBeInTheDocument();
+  });
 });
 
 /**
@@ -890,36 +941,32 @@ describe("⚠⚠⚠ 063f: 高度な設定（チャットへの書き込み）", 
     expect(advanced().open).toBe(false);
   });
 
-  it("⚠⚠⚠ 親（チャットへの書き込み許可）が OFF なら操作できない", () => {
+  /**
+   * ⚠⚠⚠ **2026-08-30: 親トグル（コメビュ設定の「チャットへの書き込みを許可する」）は廃止された。**
+   * 依頼者の判断＝「**設定画面からチャットに書き込むカードを消して。これは常時 ON がただしい**」。
+   * ⇒ 旧「親が OFF なら操作できない」「子の旗だけ残っていても OFF に見える」の 2 本は削除した
+   * （**親という概念自体が無い**ので、書き換えても意味の無い検査になる）。
+   *
+   * ⚠⚠ **代わりに重くなったのがこの 1 本である**——同意が 2 枚から 1 枚に減ったので、
+   * **「既定 OFF」と「明示操作でしか ON にならない」を守っているのはここだけ**になった。
+   */
+  it("⚠⚠⚠ 既定は OFF で、押したときだけ保存される（OFF はキーごと消える）", () => {
     render(<Harness />);
+    // ⚠⚠⚠ **既定 OFF**（＝同意の全部）。⚠ 保存値も無い（無操作で旗が立っていない）。
     expect(chatToggle()).not.toBeChecked();
-    expect(chatToggle()).toBeDisabled();
-    // ⚠ どこで許可するのかを必ず出す（061a Q-1・黙って効かないを作らない）。
-    expect(
-      screen.getByText(/コメントビューアの設定/, { exact: false }),
-    ).toBeInTheDocument();
-  });
+    expect(localStorage.getItem(GACHA_CHAT_ENABLED_KEY)).toBeNull();
 
-  it("⚠⚠ 親が ON なら操作でき、ON で保存・OFF でキーごと消える", () => {
-    localStorage.setItem(CHAT_SEND_ENABLED_KEY, "1");
-    render(<Harness />);
-    expect(chatToggle()).toBeEnabled();
     fireEvent.click(chatToggle());
     expect(localStorage.getItem(GACHA_CHAT_ENABLED_KEY)).toBe("1");
     fireEvent.click(chatToggle());
     expect(localStorage.getItem(GACHA_CHAT_ENABLED_KEY)).toBeNull();
   });
 
-  /**
-   * ⚠⚠⚠ **親が OFF のあいだは、子の保存値が残っていても ON に見せない。**
-   * ⚠ 初期値に AND（`loadGachaChatEnabled`）を使っていることの担保で、
-   * ここを子の旗だけで読むと **「ON に見えるのに 1 通も出ない」**＝画面が嘘をつく。
-   */
-  it("⚠⚠⚠ 子の旗だけが残っていても、親が OFF なら OFF に見える", () => {
+  /** ⚠ 保存値が残っていれば開き直しても ON のまま（同意を毎回取り直さない）。 */
+  it("⚠ 保存されていれば開き直しても ON のまま", () => {
     localStorage.setItem(GACHA_CHAT_ENABLED_KEY, "1");
     render(<Harness />);
-    expect(chatToggle()).not.toBeChecked();
-    expect(chatToggle()).toBeDisabled();
+    expect(chatToggle()).toBeChecked();
   });
 
   /**
@@ -935,7 +982,6 @@ describe("⚠⚠⚠ 063f: 高度な設定（チャットへの書き込み）", 
    * ⚠ **再修正トリガー＝畳みを外すとき**（そのときはこの表示が不要になる）。
    */
   it("⚠⚠⚠ ON のときは畳んだままでも「ON である」ことが読める", () => {
-    localStorage.setItem(CHAT_SEND_ENABLED_KEY, "1");
     localStorage.setItem(GACHA_CHAT_ENABLED_KEY, "1");
     render(<Harness />);
     // ⚠ 畳まれたまま（＝畳みを外して見せる形にはしていない）。
@@ -946,33 +992,39 @@ describe("⚠⚠⚠ 063f: 高度な設定（チャットへの書き込み）", 
 
   /** ⚠ OFF のときは出さない（既定の画面に余計な文字を足さない・061a Q-1）。 */
   it("⚠ OFF のときは `summary` に現在値を出さない", () => {
-    localStorage.setItem(CHAT_SEND_ENABLED_KEY, "1");
     render(<Harness />);
     expect(advanced().querySelector("summary")?.textContent).toBe("高度な設定");
   });
 
   /**
-   * ⚠⚠⚠ **親が OFF なら「ON」と出さない。** 子の旗だけが残っていても
-   * **1 通も出ない**（AND）ので、`summary` に ON と書くと**画面が嘘をつく**。
+   * ⚠⚠⚠ **失敗がどこに出るのかを画面に書いてあること**（061a Q-1・黙って効かないを作らない）。
    *
-   * ⚠⚠ **ここだけ `Harness` を通さず、カードへ直接 props を渡している。**
-   * `Harness`（＝ `ObsEffectsScreen` と同じ配線）は `chatEnabled` を
-   * **AND で初期化する**ので、`chatEnabled=true` かつ `chatSendAllowed=false` という
-   * 組み合わせを**上の配線からは作れない**（実測: `&& chatSendAllowed` を外す変異が**生存した**）。
-   * ⇒ ⚠ **このカードの契約そのもの**（2 つの props をどう表示に落とすか）を境界で固定する。
+   * ⚠⚠ **この画面には出せない**（064a の非対称＝ここは WS を持たない）。
+   * ⚠⚠⚠ **localStorage で運ぶのは §9 に反する**（送信結果を端末に残さない）。
+   * ⇒ 出し先は**コメビュ窓のツールバー**で、⚠ **その在り処を書いておくのがこのカードの責務**である。
+   * ⚠ 2026-08-30 以前は「コメントビューアの設定に出ます」だった（`ChatSendCard` があった頃）。
+   * ⚠⚠⚠ **レビュー S-3: 「読み方」まで書いてあることも固定する**——
+   * 画面に出るのは短いラベルで、**理由は `title` にしか出ない**（マウスを乗せる必要がある）。
+   * ⇒ ここを「その理由が出ます」へ戻すと、**画面が実装より広い約束をする**。
    */
-  it("⚠⚠⚠ 子の旗だけ立っていて親が OFF なら、`summary` に ON と出さない", () => {
-    render(
-      <GachaLibraryCard
-        gachas={[]}
-        obsSources={null}
-        onChange={() => {}}
-        chatEnabled
-        chatSendAllowed={false}
-        onChatEnabledChange={() => {}}
-      />,
-    );
-    expect(advanced().querySelector("summary")?.textContent).toBe("高度な設定");
+  it("⚠⚠⚠ 書き込めなかったときにどこを見ればよいかが書いてある", () => {
+    render(<Harness />);
+    expect(
+      screen.getByText(
+        /コメントビューアの画面上部に出ます（マウスを乗せると理由が読めます）/,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  /**
+   * ⚠⚠ **親カードが持っていた「初回は再ログインが要る」をこのカードが引き取った**
+   * （2026-08-30・`ChatSendCard` 廃止）。
+   * ⚠⚠⚠ **落とさないこと**——旧トークンには `user:write:chat` が無いので、
+   * 書かないと「**ON にしたのに毎回失敗する**」の原因が画面のどこからも読めない。
+   */
+  it("⚠⚠ 初回は Twitch にログインし直す必要があることが書いてある", () => {
+    render(<Harness />);
+    expect(screen.getByText(/ログインし直す/)).toBeInTheDocument();
   });
 
   /**

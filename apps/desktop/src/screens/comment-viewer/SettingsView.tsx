@@ -21,7 +21,6 @@ import { ToggleSwitch } from "../../components/ToggleSwitch";
 import { Select } from "../../components/Select";
 import { OverlayThemeCard } from "./OverlayThemeCard";
 import { useHostOs } from "../../features/platform/useHostOs";
-import { ChatSendCard } from "./ChatSendCard";
 import styles from "./CommentViewerApp.module.css";
 // 061g: ボタンの意匠は `components/compactButtons.module.css` へ移した（`ConfirmDialog` が
 // `components/` へ出たため）。⚠ 寸法・配色はこの窓の 6 ファイル計 25 箇所と `ConfirmDialog` の共有。
@@ -148,44 +147,24 @@ interface SettingsViewProps {
   obsAutoAdd: boolean; // 「OBS へ自動追加」トグルの状態
   onObsAutoAddToggle: (next: boolean) => void;
   obsState: string; // sidecar からの状態通知（idle/connecting/added/reused/failed）
-  /**
-   * 063e 段 1-b: **チャンネルポイント購読の成否**（`"unknown"` / `"receiving"` / `"unavailable"`）。
-   *
-   * ⚠⚠⚠ **これが無いと「黙って効かない」が残る**（061a Q-1）。購読は非致命なので、失敗しても
-   * コメント取得は続き、画面には**何も起きない**。⚠ しかも失敗は**新規配信者の既定状態**である
-   * （Twitch 側でチャンネルポイントが有効化されるまで機能自体が存在しない）。
-   * ⚠ `obsState` と同じく WS 境界で型が失われるため `string` で受け、ここがリテラル比較で網羅する。
-   */
-  channelPointsState: string;
   onSetObsPassword: (password: string) => void;
   onClearObsPassword: () => void;
   // 046b: 「固定コメントをOBSに表示」トグル（固定専用オーバーレイ窓 `pinned-overlay` の表示 ON/OFF）。
   // 値は CommentViewerApp が保持し localStorage 永続。ここは表示とユーザー操作の受け渡しのみ。
   pinnedOverlayEnabled: boolean;
   onPinnedOverlayToggle: (next: boolean) => void;
-  /**
-   * 066: **チャットへの書き込み**（⚠ **StreamDock 初の書き込み経路**）のテスト送信。
+  /*
+   * ⚠⚠⚠ **2026-08-30: チャット送信の props 3 本（`onChatTestSend` / `chatSendChannel` /
+   * `gachaChatResult`）を削除した。** 依頼者の判断
+   * 「**設定画面からチャットに書き込むカードを消して。これは常時 ON がただしい**」で
+   * [`ChatSendCard`] ごと無くなったため。
    *
-   * ⚠⚠ **ここは受け渡しだけ**——トグルの state は [`ChatSendCard`] が自分で持つ
-   * （064d が `EffectAssignmentCard` で採った形と同じ＝**唯一の消費者がそのカード**なので、
-   * 画面を跨ぐ配線を作らない）。⚠ **宛先は渡らない**（sidecar が接続中の配信から決める）。
+   * ⚠⚠ **同意のトグルは消えていない**——**OBSエフェクト画面の「ガチャ」カード内
+   * 「高度な設定」**（`GACHA_CHAT_ENABLED_KEY`・**既定 OFF**）が唯一の同意になった。
+   * ⚠⚠⚠ **自動送信の失敗理由は `CommentViewerApp` のツールバーへ移した**
+   * ——§1 の 063f 追補が「**失敗は黙らせない**」を要求しているので、
+   * **消すのではなく、より届く場所へ動かした**（配信中に見ている画面だから）。
    */
-  onChatTestSend: (message: string) => Promise<{ ok: boolean; reason?: string }>;
-  /**
-   * 066 / security-review S-2: **送信先として画面に出す**チャンネル名（表示専用）。
-   * ⚠ **宛先を決める値ではない**（[`ChatSendCard`] の `channel` の注記が正）。
-   */
-  chatSendChannel: string;
-  /**
-   * ⚠⚠⚠ **063f: 直近の「自動送信」の結果**（`null` ＝まだ 1 度も走っていない・表示専用）。
-   *
-   * ⚠⚠ **トグルの state は [`ChatSendCard`] が持つのに、これだけ親から降りてくる**理由＝
-   * **書き手が別の窓の別の経路**だからである（コメントの受信 effect が発火のたびに更新する）。
-   * ⚠⚠⚠ **自動送信はユーザーが画面を見ていないときに走る**ので、
-   * これを出さないと「黙って効かない」になる（061a Q-1）。
-   * ⚠ **§9: 本文も宛先も載らない**（`ok` と定型の短文だけ）。**保存もしない**（親の state のみ）。
-   */
-  gachaChatResult: { ok: boolean; text: string } | null;
 }
 
 export function SettingsView({
@@ -225,14 +204,10 @@ export function SettingsView({
   obsAutoAdd,
   onObsAutoAddToggle,
   obsState,
-  channelPointsState,
   onSetObsPassword,
   onClearObsPassword,
   pinnedOverlayEnabled,
   onPinnedOverlayToggle,
-  onChatTestSend,
-  chatSendChannel,
-  gachaChatResult,
 }: SettingsViewProps) {
   // 044a: OBS パスワード入力のローカル state（**この値は保存しない・保存は Rust→keychain**）。認証が必要な OBS の
   // ときだけ入力欄を出す。保存ボタンで onSetObsPassword に渡し、入力欄は即クリアして DOM/メモリに残さない（§9）。
@@ -939,154 +914,6 @@ export function SettingsView({
         requestThemeImport={onRequestThemeImport}
         requestThemeFont={onRequestThemeFont}
       />
-      {/* 066: チャットへの書き込み。⚠⚠ **末尾に置く**（060d と同じ理由＝上のカードには
-          「上の…」という位置参照の注記が 3 本あり、途中へ挿入すると指す先が変わる）。
-          ⚠ このカードも **state を自分で持つ**（トグルの唯一の消費者なので画面を跨ぐ配線を作らない）。
-          ここから渡すのは**送信の 1 本だけ**である。 */}
-      <ChatSendCard
-        onTestSend={onChatTestSend}
-        channel={chatSendChannel}
-        gachaChatResult={gachaChatResult}
-      />
-      {/* 063e: チャンネルポイントの受信について**約束できることと、できないこと**を書くカード。
-          ⚠⚠ **トグルは無い**（設定できることが 1 つも無いので作らない）。増えるのは受信能力だけで、
-          ユーザーが選べるのは「Twitch にログインし直すかどうか」だけである。
-
-          ## ⚠⚠⚠ 書く理由＝「黙って効かない」を作らないため（061a Q-1）
-
-          この購読は**非致命**（403 でもコメント取得は続く）なので、届かない人には**エラーすら出ない**。
-          しかも届かない条件が **3 つ**あり、そのうち①は**新規配信者の既定状態**である:
-            ① Twitch 側でチャンネルポイントが有効になっていない
-               ⚠⚠ 新規チャンネルには**そもそも存在しない**（アフィリエイト条件を満たすと Twitch から
-                  オンボーディングの案内が届いて初めて使える）。⚠ StreamDock の想定ユーザーの多くがここに居る。
-            ② 他人のチャンネルに接続している（購読はブロードキャスター本人のトークンでしか通らない
-               ＝公式の Authorization 要件。なのに接続先は**手入力のチャンネル名**である）
-            ③ 再ログイン前（旧トークンに `channel:read:redemptions` が無い）
-          ⇒ 書かなければ、ユーザーは「なぜ届かないのか」を知る手段が 1 つも無い。
-
-          ## ⚠⚠ 段 1-b: 固定の説明文に**実際の状態**を足した
-
-          段 1 は固定文だけだった（「材料は sidecar にあるが frontend へ届ける WS フレームが要る」ため）。
-          ⚠ しかし①が既定状態だと分かった以上、**固定文だけでは「自分がどれなのか」を切り分けられない**。
-          ⇒ `channelpoints.state`（成否 1 bit ＋ 未接続）を足した。⚠ **理由は載っていない**（§9）ので、
-             原因の切り分けは下の 3 項目の固定文が担う——**状態表示と説明文は役割が違う**（片方だけでは足りない）。
-          ⚠ 末尾に置くのは 060d / 066 と同じ理由（上のカードに「上の…」という位置参照の注記が 3 本ある）。 */}
-      <section className={styles.card}>
-        {/* ⚠ ベータであることを**見出しに書く**。カード本文の末尾にだけ書くと、
-            スクロールして読まない人に届かない（この機能は作者が実機確認できていない）。 */}
-        <div className={styles.cardHead}>チャンネルポイント（ベータ）</div>
-        {/* ⚠⚠ 段 1-b の修正: **`.cardBody` が抜けていた。** 段 1 は `<span className={styles.note}>` を
-            `.card` の直下に置いており、`.card` は padding を持たない・`.note` は inline なので、
-            **4 つの説明文がカードの端に貼り付いた 1 かたまりの文**として描画されていた
-            （他の全カードは `.cardBody` を挟んでいる＝この 1 枚だけ崩れていた）。 */}
-        <div className={styles.cardBody}>
-          {/* ⚠⚠⚠ **状態を先頭に出す。** 「効いていない」人が最初に見るべき情報だからである。 */}
-          {channelPointsState === "receiving" && (
-            <span className={styles.channelPointsOk}>
-              引き換えを受信できる状態です。
-            </span>
-          )}
-          {channelPointsState === "unavailable" && (
-            /* ⚠⚠ **赤（errorText）にしない。** 他の人のチャンネルを見ているときはこれが正常であり、
-                新規配信者にとっては既定の状態でもある。赤にすると「壊れている」と誤解させ、
-                かつ**正常な人にも赤字を出し続ける**ことになる（赤を軽くしない）。 */
-            <span className={styles.channelPointsWarn}>
-              引き換えを受信できていません。下の 3
-              つの条件のどれかが満たされていません。
-            </span>
-          )}
-          {channelPointsState !== "receiving" &&
-            channelPointsState !== "unavailable" && (
-              /* ⚠ **`unknown` を「受信できていません」と混ぜないこと。** 混ぜると、まだ接続していない
-                  だけの人に「Twitch の設定を確認してください」と誤案内する（064c が `obs.sources` の
-                  `ok` で潰したのとまったく同じ失敗モード）。
-                  ⚠ 既知の 2 語以外（将来 sidecar が語を増やした場合）もここへ倒す＝断言しない側が安全。 */
-              <span className={styles.note}>
-                Twitch
-                のコメント取得を開始すると、受信できる状態かどうかがここに出ます。
-              </span>
-            )}
-
-          <span className={styles.note}>
-            {/* ⚠⚠ 063e 段 3-b: 「報酬」→「**カスタム報酬**」（画面全体で語を 1 つにする）。
-                ⚠ 取っている購読はカスタム報酬の 1 本だけで、Twitch の自動報酬
-                （「ハイライトされたメッセージ」など）は**別購読＝届かない**。
-                ⇒ 語を広く書くと「出るはずのものが出ない」に見える。 */}
-            Twitch
-            のカスタム報酬の引き換えを、コメント一覧に「チャンネルポイント」として表示します。
-            視聴者がカスタム報酬にテキストを入力していれば、その本文も表示します。
-          </span>
-          {/* ⚠⚠⚠ **約束できることだけ書く**（061a Q-1）。段 1 の時点ではここに「ガチャ」を書かなかった
-              ——**当時は本当に回らなかった**（エフェクト条件の表に行が無かった）からである。
-              ⚠⚠ **063e 段 2 でその再修正トリガーが発火した**（レビュー Q-H1）:
-              `EFFECT_CONDITION_EVENT_TYPES` に `channelpoint` が入り、`effectAssignments.ts` の
-              課金ゲートが消えて**実際に回るようになった**。
-              ⇒ 書かないままにすると、今度は**できるようになったことに気付けない**という逆向きの
-              「黙って効かない」になる。
-
-              ## ⚠⚠⚠ 063e 段 3-c: **この文は嘘になっていたので書き換えた**
-
-              段 3-c で条件表から「チャンネルポイント」の行を消し、
-              **カスタム報酬に紐づけたときだけ動く**形にした（依頼者＝「そもそもチャンネルポイント
-              交換しただけで表示したいエフェクトなんか無い」）。⚠ 旧文は
-              ①**存在しない行**へ案内し、②「**引き換えのたびに動きます**」と**動かないことを約束**していた
-              ——061a Q-1 が禁じている「画面が嘘をつく」そのものである。
-              ⚠ **約束を増やすときも減らすときも、実際の挙動を変えた同じ作業でここを直すこと。** */}
-          <span className={styles.note}>
-            エフェクト画面の「チャンネルポイント」で、カスタム報酬ごとにガチャや OBS
-            のソースを割り当てられます。割り当てたカスタム報酬の引き換えだけが動きます。
-          </span>
-
-          <span className={styles.note}>
-            受信するには、次の 3 つがすべて必要です。
-          </span>
-          {/* ⚠⚠⚠ ①が**このカードで最も重要な 1 行**である。依頼者自身がここで詰まった
-              （チャンネルを作った直後で、クリエイターダッシュボードに項目自体が無かった）。
-              ⚠ 具体的な有効化手順は書かない——Twitch 側の導線は達成状況で変わり、
-              **こちらで確認できないことを手順として書くと嘘になる**。
-              代わりに「項目が出ていなければまだ使えない」という**確認できる事実**だけを書く。 */}
-          <span className={styles.note}>
-            ① Twitch
-            側でチャンネルポイントが有効になっていること。⚠ 新しいチャンネルでは使えません（Twitch
-            のクリエイターダッシュボードに「チャンネルポイント」の項目が出ていなければ、まだ有効になっていません）。
-          </span>
-          <span className={styles.note}>
-            ②
-            あなた自身のチャンネルに接続していること（Twitch
-            の仕様で、他の人のチャンネルの引き換えは受け取れません）。他の人のチャンネルに接続しても、
-            コメントの取得は通常どおり続きます。
-          </span>
-          {/* ⚠⚠ 穴 S: アプリに「ログアウト」「連携解除」の導線が無い（トークンは OS キーチェーンに永続する）ので、
-              **やり直し方まで書かないと手順として成立しない**。⚠ これは 066 が既に抱えている問題で、
-              アプリ内の導線を作るのは別タスク。ここでは**実際にできる手順**を書く。
-              ⚠⚠⚠ **再修正トリガー＝ 066 をリリースするとき**（レビュー S-4）。あの時点で
-              **既存ユーザー全員が再ログインを要求される**ので、「Twitch のサイトへ行って解除してくる」が
-              全員の必須手順になる＝アプリ内導線の優先度をそこで上げること。
-              ⚠ 導線ができたらこの文言も「設定から連携を解除してください」へ差し替える（手順を 2 通り残さない）。 */}
-          <span className={styles.note}>
-            ③ Twitch
-            にログインし直していること（引き換えを見る許可を得るため）。ログインし直すには、Twitch
-            のサイトの「設定 →
-            接続」で StreamDock
-            の連携をいったん解除してから、もう一度接続してください。
-          </span>
-          {/* ⚠ 「できないこと」も書く。報酬の消化・返却の権限（`channel:manage:redemptions`）は
-              **意図的に取っていない**ので、期待されて「効かない」を作らないために明示する。 */}
-          <span className={styles.note}>
-            引き換えの取り消しや「完了」への変更は行いません（読み取りのみ）。
-            YouTube に同じ機能はありません。
-          </span>
-          {/* ⚠⚠⚠ **ベータであることと、その理由を正直に書く。** 作者は Twitch
-              側でチャンネルポイントを有効化できないため、**実際の引き換えでの動作確認ができていない**。
-              ⚠ 「動作確認済みです」と読める書き方をしないこと。⚠ 報告してほしい内容を具体的に書くのは、
-              「動きません」だけでは①②③のどれかを切り分けられないため（上の状態表示が手掛かりになる）。 */}
-          <span className={styles.note}>
-            ⚠ この機能はベータです。作者の環境ではチャンネルポイントを有効化できないため、実際の引き換えでの動作確認ができていません。
-            うまく動かないときは、上に出ている受信状態と、上の 3
-            つの条件のどれを満たしているかを添えて報告してください。
-          </span>
-        </div>
-      </section>
     </div>
   );
 }

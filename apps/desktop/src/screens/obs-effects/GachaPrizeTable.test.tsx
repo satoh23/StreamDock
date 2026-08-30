@@ -39,7 +39,6 @@ const Harness = () => {
         /* ⚠ 063f 段 1-b: 「高度な設定」は**このファイルの関心ではない**（景品の表を見ている）。
            ⚠⚠ 既定どおり OFF・親も OFF で固定する＝**この画面から 1 通も出ない状態**。 */
         chatEnabled={false}
-        chatSendAllowed={false}
         onChatEnabledChange={() => {}}
         /* ⚠⚠ 063c 段 4-d: **演出まわりの props は無くなった**（`GachaStageCard` へ出たため）。
            このファイルの関心は**景品の表**なので、あちらは描かない

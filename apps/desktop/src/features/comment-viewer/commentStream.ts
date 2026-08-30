@@ -366,8 +366,13 @@ export function connectCommentStream(
   let pendingThemeImport: PendingThemeRequest | null = null;
   let nextThemeImportRequestId = 1;
   /**
-   * 066: 進行中のチャット送信（**同時 1 本だけ**）。段 1 は手動のテスト送信しか無いので自然に 1 本になる。
+   * 066: 進行中のチャット送信（**同時 1 本だけ**）。
    * ⚠ `requestId` が一致しない結果は捨てる（stale な応答を取り違えない・060c と同じ作法）。
+   *
+   * ⚠⚠⚠ **063f 段 2-a 訂正: 「段 1 は手動のテスト送信しか無いので自然に 1 本になる」は嘘になった。**
+   * 063f が**視聴者の行動**を契機にしたので、**同じ tick で最大 3 本**呼ばれる
+   * （同一バッチの当選が同じ遅延で予約されるため）。⇒ **1 本に絞っているのは
+   * [`sendChat`] の予約（この変数）だけ**であり、その予約が実際に効くようになったのが段 2-a である。
    */
   let pendingChatSend: {
     requestId: number;
@@ -663,11 +668,48 @@ export function connectCommentStream(
    *
    * ⚠⚠⚠ **宛先を送らない**（`CommentStreamHandle.sendChat` の注記が正）。
    * ⚠⚠ **チケットは送信のたびに取り直す**（sidecar 再 spawn で値が変わる・060c と同じ規律）。
-   * ⚠ **同時 1 本**（段 1 は手動のテスト送信だけなので自然に 1 本になる）。
+   * ⚠ **同時 1 本**（[`pendingChatSend`] が唯一の持ち主）。
    *
    * ⚠⚠ **失敗の理由はすべて短文で返す**——「押したのに何も起きない」を作らないため。
    * ⚠ **`null` を返さない**（テーマ取得と違い、呼び出し側が必ず画面に文を出すので、
    * ここで「送れなかった理由」まで決めてしまう）。
+   *
+   * ## ⚠⚠⚠ 063f 段 2-a（`security-review` S-1 の修正）: **予約は `await` の前に置く**
+   *
+   * 旧実装は ①`pendingChatSend !== null` のガード → ②**`await invoke`** → ③代入 の順で、
+   * ⚠⚠ **ガードと代入のあいだに中断点があった**（TOCTOU）。
+   * 063f の自動送信は**同一バッチの当選を同じ遅延で予約する**ので
+   * **最大 3 本のタイマーが同じ tick で発火し、3 本とも①を素通りしていた**
+   * （⚠ 同構造の再現スクリプトで実測＝**フレーム 3 本送出／settle した Promise は 1 件のみ**）。
+   *
+   * ⚠⚠⚠ **最も重い帰結は「画面が嘘をつく」ことだった**——1 通目は実際に投稿されて成功するのに、
+   * その結果フレームは [`pendingChatSend`] が 3 本目に上書きされているせいで
+   * **`requestId` 不一致で捨てられ**、ユーザーに出るのは**3 本目の拒否理由**だった
+   * ⇒ **「投稿されたのに『失敗しました』と出る」**。
+   * ⚠ 1・2 本目の `Promise` は**永久に未解決**になった（タイムアウト分岐も `requestId` 一致を要求するため）。
+   * ⚠⚠ **セキュリティ上の実害はここで止まっていた**——落としていたのは **sidecar のスロットルだけ**で、
+   * **Twitch へ届くのは 1 通**だった（⇒ `docs/security.md` §1 の追補は書き換えていない）。
+   *
+   * ## ⚠⚠ 予約は**必ず**解放する（解放し忘れが最悪の壊れ方）
+   *
+   * 予約を前へ出した代償として、**解放し忘れると 1 度失敗しただけで以後 1 通も送れなくなる。**
+   * ⇒ 解放の経路を 3 本すべて塞いである:
+   *
+   * 1. **チケットが取れなかった**／**待っているあいだに WS が閉じた** … 下記 `release()`
+   * 2. **切断** … `socket.onclose` の既存分岐（進行中の待ちを `settle(null)` で落とす）
+   * 3. ⚠⚠⚠ **[`CHAT_SEND_TIMEOUT_MS`] のタイマーを「予約の直後」に張る** …
+   *    ⚠ **`invoke` が永久に返らなくても予約が有限時間で必ず解ける。**
+   *    旧実装はこのタイマーを**フレーム送出の直前**に張っていたので、
+   *    予約を前へ出しただけだと**チケット取得が固まった瞬間に恒久ロック**になっていた
+   *    （＝ [`sessionControlChain`] の JSDoc が「鎖にしたこちらだけが持つ穴」と呼んでいたものが、
+   *    そのまま `sendChat` へ引っ越してくる形。⚠ **タイマーを送出直前へ戻さないこと**）。
+   *    ⚠ タイマーの意味は「**送出 → 結果**」から「**予約 → 結果**」へ広がっている（予約窓の全体を縛る）。
+   *
+   * ⚠⚠ **解放は必ず `pendingChatSend?.requestId === requestId` を確かめてから行う**——
+   * `onclose` が先に `null` にしていることがあり、確かめずに消すと**他人の予約を巻き添えにする**。
+   *
+   * ⚠⚠⚠ **チケットの扱いは 1 バイトも変えていない**（**送信のたびに取り直す**規律は不変＝
+   * `docs/security.md` §1 追補の門 1 枚目の根拠）。
    */
   const sendChat = async (
     message: string,
@@ -682,10 +724,44 @@ export function connectCommentStream(
       return { ok: false, reason: "コメントの取得に接続していません。" };
     }
     if (pendingChatSend !== null) {
-      return { ok: false, reason: "送信中です。少し待ってください。" };
+      // ⚠⚠⚠ **2026-08-30・レビュー Q-4: 文言を「送信中です。少し待ってください。」から変えた。**
+      //   旧文は**テスト送信ボタン（手動）時代のもの**で、⚠ 063f の自動送信では
+      //   **ユーザーが「待つ」操作は存在しない**（当選のたびに勝手に走る）。
+      //   ⇒ **起きた事実だけを言う**（ツールバーの `title` にそのまま出るため）。
+      //   ⚠ 落ちた分を溜めない・まとめないのは不変（`sendGachaChat` の JSDoc が正）。
+      return {
+        ok: false,
+        reason: "前の書き込みが終わっていないため送れませんでした。",
+      };
     }
+
+    // ⚠⚠⚠ S-1: **上のガードからこの代入までに `await` を 1 つも挟まないこと。**
+    //   挟んだ瞬間に TOCTOU が復活し、同じ tick の 2 本目以降が全部素通りする（上記 JSDoc が正）。
+    const requestId = nextChatSendRequestId++;
+    let settle: (payload: { ok: boolean; reason?: string } | null) => void =
+      () => {};
+    const settled = new Promise<{ ok: boolean; reason?: string } | null>(
+      // ⚠ executor は**同期に**走るので、下の代入の時点で `settle` は既に resolve に入っている。
+      (resolve) => {
+        settle = resolve;
+      },
+    );
+    pendingChatSend = { requestId, settle };
+    // ⚠⚠⚠ 解放経路 3: **予約の直後**に張る（`invoke` が返らなくても有限時間で必ず解ける）。
+    //   ⚠ **送出の直前へ戻さないこと**——戻すとチケット取得が固まった瞬間に恒久ロックになる。
+    const timer = window.setTimeout(() => {
+      if (pendingChatSend?.requestId === requestId) pendingChatSend = null;
+      settle(null);
+    }, CHAT_SEND_TIMEOUT_MS);
+    // ⚠⚠ 解放経路 1: 予約を手放す。**自分の予約のときだけ**消す
+    //   （`onclose` が先に `null` にしていることがあり、確かめずに消すと他人の予約を巻き添えにする）。
+    const release = (): void => {
+      window.clearTimeout(timer);
+      if (pendingChatSend?.requestId === requestId) pendingChatSend = null;
+    };
+
     // ⚠⚠ チケットは**送信のたびに取り直す**（握ったまま使い回すと再起動後に黙って無視される）。
-    //   ⚠ 値はログにも画面にも出さない（§9）。
+    //   ⚠ 値はログにも画面にも出さない（§9）。⚠⚠⚠ **S-1 の修正でもこの規律は変えていない。**
     let ticket: string | null = null;
     try {
       ticket = await invoke<string | null>("get_chat_send_ticket");
@@ -693,38 +769,30 @@ export function connectCommentStream(
       ticket = null;
     }
     if (ticket === null) {
+      release();
       return { ok: false, reason: "コメントの取得に接続していません。" };
     }
     if (!ws || ws.readyState !== WebSocket.OPEN) {
+      release();
       return { ok: false, reason: "コメントの取得に接続していません。" };
     }
+    // ⚠⚠ 待っているあいだに予約が解けていたら（切断・タイムアウト）**フレームを出さない**——
+    //   出しても結果は `requestId` 不一致で捨てられるだけで、sidecar のスロットル枠を無駄に食う。
+    if (pendingChatSend?.requestId !== requestId) {
+      release();
+      return { ok: false, reason: "送信の結果を確認できませんでした。" };
+    }
 
-    const requestId = nextChatSendRequestId++;
-    const payload = await new Promise<{ ok: boolean; reason?: string } | null>(
-      (resolve) => {
-        const timer = window.setTimeout(() => {
-          if (pendingChatSend?.requestId === requestId) {
-            pendingChatSend = null;
-            resolve(null);
-          }
-        }, CHAT_SEND_TIMEOUT_MS);
-        pendingChatSend = {
-          requestId,
-          settle: (result) => {
-            window.clearTimeout(timer);
-            resolve(result);
-          },
-        };
-        send({
-          type: CHAT_SEND_FRAME,
-          ticket,
-          requestId,
-          message,
-          // ⚠⚠⚠ S-2b: **宛先ではなく期待値**（sidecar が実際の宛先と突き合わせる）。
-          expectedChannel: expectedChannel.trim(),
-        });
-      },
-    );
+    send({
+      type: CHAT_SEND_FRAME,
+      ticket,
+      requestId,
+      message,
+      // ⚠⚠⚠ S-2b: **宛先ではなく期待値**（sidecar が実際の宛先と突き合わせる）。
+      expectedChannel: expectedChannel.trim(),
+    });
+    const payload = await settled;
+    window.clearTimeout(timer);
     // ⚠⚠ **応答が無いときは成功へ倒さない**（「送れたか分からない」を「送れた」と出さない）。
     return payload ?? { ok: false, reason: "送信の結果を確認できませんでした。" };
   };
@@ -749,8 +817,12 @@ export function connectCommentStream(
    * （`.then()` の待ち行列に積まれるだけ）。⚠⚠ しかも呼び出し側の `await` も返らないので
    * **`reportSessionControl` が走らず、画面に理由すら出ない**——
    * ⚠⚠⚠ **穴 C が名指しした「押したのに何も起きない、原因不明」そのもの**である。
-   * ⚠ **`sendChat` にこの失敗モードは無い**（あちらは `pendingChatSend` ガードを `invoke` の**後**に
-   * 置くので、固まっても後続は素通りする）。⇒ **鎖にしたこちらだけが持つ穴**だった。
+   * ⚠⚠⚠ **063f 段 2-a 訂正: 「`sendChat` にこの失敗モードは無い（ガードが `invoke` の後だから）」は
+   * もう成立しない。** あちらは S-1 の修正で**予約を `invoke` の前へ移した**ので、
+   * **固まると後続が素通りできなくなった**（＝同じ失敗モードを持つようになった）。
+   * ⚠ ただし**あちらは [`CHAT_SEND_TIMEOUT_MS`] のタイマーを予約の直後に張って有限時間で必ず解く**
+   * のに対し、**鎖はリンクが settle しない限り永久に詰まる**——
+   * ⇒ **「無い」から「縛ってある」へ変わっただけで、こちらの対処が要る理由は 1 ミリも変わらない。**
    * ⇒ **対処＝チケット取得に [`SESSION_CONTROL_TICKET_TIMEOUT_MS`] を掛ける**
    * （下記 [`sendSessionControlNow`]）。⚠ **鎖を外して直さないこと**（順序が壊れる＝ S-3 の再来）。
    */

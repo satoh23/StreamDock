@@ -678,31 +678,19 @@ describe("062c サマリーを開いている間の記録（穴 H）", () => {
    * ⇒ いまは同じ値を `sendChat` の第 2 引数として渡し、sidecar が突き合わせている。
    * ⚠ **この 1 本が落ちたら「差し替えに気づけない」状態に戻ったということ**である。
    */
-  it("⚠⚠⚠ 066 S-2b: テスト送信は「画面に出している送信先」を期待値として渡す", async () => {
-    // ⚠ ユーザーが打ったチャンネル名（前後の空白は落として扱う）。入力欄は接続ピルの
-    //   ポップオーバーの中なので、ここは**保存値から復元させる**（起動時と同じ `loadChannel()` 経路）。
-    localStorage.setItem("stream-dock.comment-viewer.channel", "  MyChannel  ");
-    await renderApp();
-
-    fireEvent.click(screen.getByLabelText("設定"));
-    // ⚠⚠ 既定 OFF なので、まず明示的に有効化しないと押せない（同意）。
-    fireEvent.click(
-      screen.getByLabelText("チャットへの書き込みを許可する", { exact: false }),
-    );
-
-    // ⚠ 画面に出ている送信先。
-    expect(screen.getByText("送信先: MyChannel")).toBeInTheDocument();
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "テスト送信" }));
-    });
-
-    // ⚠⚠⚠ **表示と同じ値が期待値として渡ること**——ここがずれると突き合わせの意味が消える。
-    expect(mocks.stream.sendChat).toHaveBeenCalledWith(
-      expect.any(String),
-      "MyChannel",
-    );
-  });
+  /*
+   * ⚠⚠⚠ **2026-08-30: 「テスト送信は画面に出している送信先を期待値として渡す」を削除した。**
+   *
+   * 依頼者の判断で `ChatSendCard` ごと廃止し、⚠ **テスト送信ボタンが無くなった**ため
+   * （押し手が 1 つも残らない検査は書き換えても意味を持たない）。
+   *
+   * ⚠⚠ **S-2b の性質そのものは 1 ミリも失われていない**——
+   * 「**画面に出している値と同じものを期待値として渡す**」は
+   * **自動送信の側で固定されている**（`CommentViewerApp.effects.test.tsx` の
+   * 「⑤ 画面に出しているのと同じ値」＝ `sendChat(…, "MyChannel")`）。
+   * ⚠ 表示の担い手も、設定カードの「送信先: …」から
+   * **ツールバーのチャンネル入力**（同じ `channel` state を描く）へ移っただけである。
+   */
 });
 
 /**

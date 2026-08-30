@@ -1,6 +1,12 @@
 import { useState } from "react";
 import { Select } from "../../components/Select";
 import { ToggleSwitch } from "../../components/ToggleSwitch";
+// ⚠ プレビューの「レア！」は**保存する**（2026-08-30・依頼者の指摘）。
+//   ⚠⚠ 保存先の規則は `overlaySettings.ts` が持つ（ここで localStorage を直に触らない）。
+import {
+  loadGachaPreviewRare,
+  saveGachaPreviewRare,
+} from "../../features/comment-viewer/overlaySettings";
 import {
   GACHA_PLACEMENTS,
   GACHA_PRIZE_COLORS,
@@ -85,11 +91,25 @@ export function GachaStageCard({
   /**
    * プレビューで「レア！」を出すか。
    *
-   * ⚠⚠ **これは設定ではない**（保存しない・配信画面に影響しない）——
-   * **レアのときの見え方を目で確かめるためだけ**のスイッチである。
-   * ⚠ 実際に出るかどうかを決めるのは `isGachaRarePrize`（景品の確率が 10% 未満か）だけ。
+   * ⚠⚠ **配信画面には 1 ミリも影響しない**——**レアのときの見え方を目で確かめるためだけ**の
+   * スイッチである。⚠ 実際に出るかどうかを決めるのは
+   * `isGachaRarePrize`（景品の確率が `GACHA_RARE_MAX_PERCENT` 未満か）だけ。
+   *
+   * ⚠⚠⚠ **2026-08-30: 保存するようにした**（依頼者の指摘＝「**再起動でOFFに戻るのは論外**」）。
+   * 旧実装は `useState(false)` で、**画面を開き直すたびに OFF へ戻っていた**。
+   * ⚠⚠ 旧実装の根拠は「保存すると**本番に効く設定**と誤解される」だったが、これは誤りである
+   * ——誤解を防ぐのは**注記の仕事**で、**スイッチが状態を覚えないこと**の理由にはならない。
+   * ⇒ 保存は [`saveGachaPreviewRare`]（**書き手はこの 1 か所だけ**）。
+   * ⚠ 誤解の側は下の注記（「配信画面には影響しません」）が引き受けている。
    */
-  const [previewRare, setPreviewRare] = useState(false);
+  const [previewRare, setPreviewRare] = useState<boolean>(() =>
+    loadGachaPreviewRare(),
+  );
+  /** ⚠ **state と保存を必ず同時に動かす**（片方だけだと、開き直したときに OFF へ戻る）。 */
+  const handlePreviewRareChange = (next: boolean): void => {
+    setPreviewRare(next);
+    saveGachaPreviewRare(next);
+  };
 
   return (
     // ⚠⚠ 骨格は `formLayout.module.css` の `panel`（この画面の他のカードと同じ）。
@@ -221,7 +241,10 @@ export function GachaStageCard({
           {/* ⚠ テンプレートは**表を並べるだけ**（`gachaStageTemplates.ts` の注記が正）。
               ⚠⚠ **いまは 1 件**なので 1 つだけ並ぶ。2 件目を足せば自動で 2 つになる。
               ⚠⚠⚠ 段 5-g: **プレビューは 1 つの箱にまとめる**——「レア！」のスイッチが
-              箱の外に在ると、**保存される設定に見える**（実際は保存されない）。 */}
+              箱の外に在ると、**配信画面に効く設定に見える**。
+              ⚠⚠ **2026-08-30 訂正: 旧「（実際は保存されない）」は嘘になった**——
+              スイッチは保存するようになったので、⚠ **箱で囲う理由は「保存されないから」ではなく
+              「プレビューの一部だから」**である（囲いを外さないこと）。 */}
           <div className={styles.gachaPreviewBox}>
             {GACHA_TEMPLATES.map((template) => (
               <div key={template.id} className={styles.gachaPreviewItem}>
@@ -241,7 +264,7 @@ export function GachaStageCard({
             <ToggleSwitch
               label="プレビューで「レア！」を出す"
               checked={previewRare}
-              onChange={setPreviewRare}
+              onChange={handlePreviewRareChange}
             />
             {/* ⚠⚠⚠ 段 5 レビュー Q-5: **閾値を文字で書かない**（旧: 「10%」の直書き）。
                 閾値の持ち主は [`GACHA_RARE_MAX_PERCENT`] 1 か所という規律
@@ -251,7 +274,7 @@ export function GachaStageCard({
             <p className={styles.note}>
               「レア！」は、当たった景品の確率が {GACHA_RARE_MAX_PERCENT}%
               未満のときだけ実際に出ます。
-              このスイッチはプレビューの見え方を変えるだけで、保存されません。
+              このスイッチはプレビューの見え方を変えるだけで、配信画面には影響しません。
             </p>
           </div>
         </div>

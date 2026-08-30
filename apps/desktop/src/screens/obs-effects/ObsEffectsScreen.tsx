@@ -19,12 +19,12 @@ import {
   //   ⚠⚠⚠ 063f 段 1-b: **ガチャの結果をチャットへ自動で書き込むトグル**を、
   //     コメビュ窓の `ChatSendCard` から**この画面へ移した**（依頼者の指示・2026-08-29
   //     ＝「ガチャ機能でしか使わない予定なのでまとめたい」）。
-  //   ⚠⚠ **同意はこれで 2 枚が別の窓に分かれた**（親＝コメビュ設定／子＝ここ）。
-  //     ⇒ **親の状態も読んで画面に出す**（`CHAT_SEND_ENABLED_KEY` / `loadChatSendEnabled`）
-  //     ——出さないと「ON にしたのに書き込まれない」が読めない
+  //   ⚠⚠⚠ **2026-08-30: そのコメビュ窓のカード自体が廃止された**（依頼者の判断＝
+  //     「**設定画面からチャットに書き込むカードを消して。これは常時 ON がただしい**」）。
+  //     ⇒ ⚠⚠ **同意の旗はこの 1 枚だけになった**（親は無い・**書き手もこの画面だけ**）。
+  //     ⚠ 別窓の値に追従する `storage` 購読も同時に外した（追従先が消えたため）。
+  //     ⚠⚠⚠ **既定 OFF と「明示操作でしか ON にならない」を守るのが、ここの全責務である**
   //     （`docs/security.md` §1 の「追補（063f）」が正）。
-  CHAT_SEND_ENABLED_KEY,
-  loadChatSendEnabled,
   loadGachaChatEnabled,
   saveGachaChatEnabled,
   type GachaPlacement,
@@ -257,29 +257,18 @@ export function ObsEffectsScreen() {
 
   /**
    * ⚠⚠⚠ **063f 段 1-b: 「ガチャの結果をチャットに書き込む」トグルの現在値**
-   * （＝ `docs/security.md` §1 の「追補（063f）」が言う**同意の 2 枚目**）。
+   * （＝ `docs/security.md` §1 の「追補（063f）」が言う**同意そのもの**）。
    *
    * ⚠⚠ **書き手はこの画面だけ**（`saveGachaChatEnabled` の呼び出しは [`handleGachaChatToggle`] 1 か所）。
-   * ⚠⚠⚠ **初期値に AND（[`loadGachaChatEnabled`]）を使う**のが要点である——
-   * 子の旗だけを読むと、**親（チャットへの書き込み許可）が OFF なのに ON に見える**トグルができる。
-   * ⚠ 親が OFF のとき子の保存値は `ChatSendCard` 側が消すので、実際には両者は一致するが、
-   * **一致に依存しない**（片方が壊れても「送れないのに ON に見える」を作らない）。
+   * ⚠⚠⚠ **2026-08-30 訂正: 旧記述「初期値に AND を使うのが要点」「親が OFF のとき子の保存値は
+   * `ChatSendCard` 側が消す」は、親トグルの廃止で対象ごと消えた。**
+   * ⇒ ⚠⚠ **[`loadGachaChatEnabled`] は `GACHA_CHAT_ENABLED_KEY` 1 本を読むだけ**になった。
+   * ⚠⚠⚠ **この画面が守るべきものは 2 つだけ**＝ **既定 OFF を反転させないこと**と、
+   * **明示操作以外でこの旗を立てないこと**（追補が「代償として受け皿はもう無い」と書いた前提）。
    */
   const [gachaChatEnabled, setGachaChatEnabled] = useState<boolean>(
     loadGachaChatEnabled,
   );
-
-  /**
-   * ⚠⚠⚠ **063f 段 1-b: 親（コメビュ設定の「チャットへの書き込みを許可する」）が ON か。**
-   *
-   * ⚠⚠ **これは別の窓が書く値である。** だから `storage` を購読して追従する
-   * （⚠ この画面で `storage` を購読するのはここが初めてなので、**キーを 1 本に絞る**）。
-   * ⚠ 購読しないと「コメビュ側で許可したのに、この画面はいつまでも『許可されていません』と言う」
-   * ——061a Q-1 の「黙って効かない」を、こちら側で作ってしまう。
-   * ⚠ 別 webview 間で `storage` が飛ぶことは 063c 段 1 の実機確認で確かめてある。
-   */
-  const [chatSendAllowed, setChatSendAllowed] =
-    useState<boolean>(loadChatSendEnabled);
 
   /**
    * 063c 段 4: **演出の見た目**（配置・景品名の色）。
@@ -563,7 +552,7 @@ export function ObsEffectsScreen() {
    * （下の「旗の掃除」effect が `round === null` で発火するため）。
    */
   /**
-   * ⚠⚠⚠ **063f 段 1-b: 「ガチャの結果をチャットに書き込む」トグル**（同意の 2 枚目）。
+   * ⚠⚠⚠ **063f 段 1-b: 「ガチャの結果をチャットに書き込む」トグル**（⚠ **同意はこの 1 枚だけ**）。
    *
    * ⚠⚠ **`saveGachaChatEnabled` を呼ぶのはここ 1 か所である**（`docs/security.md` §1 の
    * 「追補（063f）」＝門の 2 枚目）。⚠ **カード側で保存しないこと**
@@ -573,49 +562,28 @@ export function ObsEffectsScreen() {
    * 立てているのは**旗だけ**で、実際に送るのはコメビュ窓（`sendGachaChat`）である。
    * ⚠ **ここから送信を起こす経路を作らないこと**（この画面は WS を持たない・064a の非対称）。
    *
-   * ⚠ 親が OFF のときはボタン自体が押せないが、**押せてしまう経路が将来できても
-   * 1 通も出ない**（送る側が [`loadGachaChatEnabled`] の AND を見る）。
+   * ⚠⚠ **`true` にしてよいのは「ユーザーがトグルを ON にした」瞬間だけ**である
+   * （⚠ 派生値から立てないこと＝ [`handleGachaStageToggle`] と同じ規律）。
+   * ⚠⚠⚠ **2026-08-30: 親トグルが無くなったので、この旗が同意の唯一の枚数である。**
+   * ⇒ **既定 OFF と「明示操作でしか true にならない」を守るのが、この 1 か所の全責務。**
    */
   const handleGachaChatToggle = useCallback((next: boolean) => {
     saveGachaChatEnabled(next);
     setGachaChatEnabled(next);
   }, []);
 
-  /**
-   * ⚠⚠⚠ **063f 段 1-b: 親の旗（別の窓が書く）に追従する。**
+  /*
+   * ⚠⚠⚠ **2026-08-30: 親の旗への `storage` 購読を削除した。**
    *
-   * ⚠⚠ **購読するキーは 1 本だけ**（[`CHAT_SEND_ENABLED_KEY`]）。⚠ `key === null`
-   * （`localStorage.clear()`）でも読み直す——**消えたのに ON のままにしない**（安全側）。
-   * ⚠⚠ **子の旗も一緒に読み直す**——親を OFF にした側が `saveGachaChatEnabled(false)` を
-   * 呼ぶので、**この画面のトグルもその場で落ちる**必要がある
-   * （落とさないと「ON に見えるのに 1 通も出ない」＝画面が嘘をつく）。
-   * ⚠ `storage` は**自分が書いた変更では飛ばない**ので、`handleGachaChatToggle` と競合しない。
+   * 依頼者の判断「**設定画面からチャットに書き込むカードを消して。これは常時 ON がただしい**」で
+   * **親トグルそのものが無くなった**ので、⚠ **追従すべき別窓の値が 1 つも無くなった**
+   * （同意の旗は [`GACHA_CHAT_ENABLED_KEY`] 1 枚だけになり、**書き手はこの画面だけ**である）。
+   * ⇒ **この画面が `storage` を購読する理由はゼロ本**になった。
    *
-   * ## ⚠ 別 webview 間の `storage` に依存していることについて
-   *
-   * **意図**: 同意の 2 枚が別の窓に分かれた以上、**親の状態をこの画面へ運ぶ経路が要る**。
-   * `storage` を選んだのは、**新しい配線（IPC / WS / Tauri event）を 1 本も足さずに済む**からである。
-   *
-   * **なぜ修正不要か**（2026-08-30・security-review Q-8 で検証済み）:
-   * ⚠⚠⚠ **この購読は送信可否を決めていない。** 決めているのは送信側の
-   * [`loadGachaChatEnabled`]（**送る直前に localStorage を直読みする AND**）で、
-   * ⇒ ⚠⚠ **`storage` が 1 度も飛ばなくても、余計な書き込みは 1 通も出ない**。
-   * この購読が落ちたときの最悪は「**画面の表示が古いまま**」であり、**安全側である**。
-   * ⚠ 別 webview 間で飛ぶこと自体は 063c 段 1 の実機確認が根拠（本タスクは単体テストのみ）。
-   *
-   * ⚠⚠⚠ **再修正トリガー＝この state を「送ってよいか」の判断に使い始めたとき。**
-   * そうなった瞬間、**`storage` が届かないことが「送れるはずが送れない」ではなく
-   * 「送ってはいけないのに送れる」へ反転する**。⇒ そのときは実機確認を必須にすること。
+   * ⚠⚠ **再導入のトリガー＝ガチャの自動書き込みの旗を、この画面以外からも書くようになったとき。**
+   * そのときは Q-8 の検討（「この購読は送信可否を決めていない＝飛ばなくても安全側」）を
+   * `docs/progress.md` の「063f レビュー対応」節から読み直すこと。
    */
-  useEffect(() => {
-    const onStorage = (e: StorageEvent) => {
-      if (e.key !== null && e.key !== CHAT_SEND_ENABLED_KEY) return;
-      setChatSendAllowed(loadChatSendEnabled());
-      setGachaChatEnabled(loadGachaChatEnabled());
-    };
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, []);
 
   const handleGachaStageToggle = useCallback(
     (next: boolean) => {
@@ -871,7 +839,6 @@ export function ObsEffectsScreen() {
           obsSources={obsSources.list?.sources ?? null}
           onChange={commitGachas}
           chatEnabled={gachaChatEnabled}
-          chatSendAllowed={chatSendAllowed}
           onChatEnabledChange={handleGachaChatToggle}
         />
 

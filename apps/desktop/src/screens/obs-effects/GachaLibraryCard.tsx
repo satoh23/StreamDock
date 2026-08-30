@@ -60,7 +60,6 @@ export function GachaLibraryCard({
   obsSources,
   onChange,
   chatEnabled,
-  chatSendAllowed,
   onChatEnabledChange,
 }: {
   gachas: readonly GachaDefinition[];
@@ -69,18 +68,18 @@ export function GachaLibraryCard({
   /** ⚠ 保存は呼び出し側（`ObsEffectsScreen`）が 1 か所で行う（064f の `obsSources` と同じ役割分担）。 */
   onChange: (gachas: readonly GachaDefinition[]) => void;
   /**
-   * ⚠⚠⚠ **063f 段 1-b: 「ガチャの結果をチャットに書き込む」の現在値**（同意の 2 枚目）。
+   * ⚠⚠⚠ **063f 段 1-b: 「ガチャの結果をチャットに書き込む」の現在値**
+   * （⚠⚠ **2026-08-30 以降は、これが同意の唯一の旗である**——旧記述「同意の 2 枚目」は
+   * 親トグルの廃止で嘘になった。`docs/security.md` §1「追補（063f）」の「同意」節が正）。
    * ⚠⚠ **書き手は `ObsEffectsScreen` 1 か所**（`saveGachaChatEnabled` をここで呼ばないこと）。
    */
   chatEnabled: boolean;
   /**
-   * ⚠⚠⚠ **親（コメビュ設定の「チャットへの書き込みを許可する」）が ON か。**
+   * トグルの操作を親（`ObsEffectsScreen`）へ返すだけ。⚠ **保存はあちらが 1 か所で行う。**
    *
-   * ⚠⚠ **同意は 2 枚の AND で、片方はこの窓に無い**（`docs/security.md` §1「追補（063f）」）。
-   * ⇒ **OFF のときは操作させず、どこで許可するのかを画面に出す**
-   * ——出さないと「ON にしたのに書き込まれない」が読めない（061a Q-1）。
+   * ⚠⚠⚠ **2026-08-30: ここには削除した `chatSendAllowed`（親トグルの状態）の JSDoc が
+   * 残っていた**（＝ prop の説明が 1 つずれていた）。親が無くなったので**説明ごと消した**。
    */
-  chatSendAllowed: boolean;
   onChatEnabledChange: (next: boolean) => void;
 }) {
   /**
@@ -346,17 +345,19 @@ export function GachaLibraryCard({
               ⚠⚠ **一度 ON にしたあとは、閉じた画面から「自動で書き込まれる状態にある」ことが
               読めなかった**——`docs/security.md` §1「追補（063f）」が禁じた
               「**本人が見ていない同意**」が、既定 OFF とは別の経路で復活する形だった。
-              ⚠ **親が OFF なら子は効かない**ので、AND が成立しているときだけ出す。
+              ⚠⚠⚠ **2026-08-30: 旧「親が OFF なら子は効かないので AND が成立しているときだけ出す」は
+              対象ごと消えた**（親トグルの廃止）。⇒ **この旗が ON なら、それがそのまま同意である。**
+              ⚠⚠ **同意が 1 枚になったぶん、この表示はむしろ重くなった**
+              （`docs/security.md` §1 追補が「`summary` に現在値を出し続けること」を必須と明記）。
               ⚠⚠⚠ **この表示を消さないこと。** 消すなら畳みも外すこと（どちらか一方は要る）。 */}
           <summary>
             高度な設定
-            {chatEnabled && chatSendAllowed ? "（チャットへの書き込み: ON）" : ""}
+            {chatEnabled ? "（チャットへの書き込み: ON）" : ""}
           </summary>
           <div className={styles.gachaAdvancedBody}>
             <ToggleSwitch
               label="ガチャの結果をチャットに書き込む（Twitch のみ）"
               checked={chatEnabled}
-              disabled={!chatSendAllowed}
               onChange={onChatEnabledChange}
             />
             {/* ⚠⚠⚠ **何が起きるかを先に言う**（061a Q-1）。
@@ -375,19 +376,26 @@ export function GachaLibraryCard({
               演出を出す設定のときは、配信画面に結果が出てからチャットに書き込みます。
               短い間に何度も当たったぶんは書き込まれません（演出は出ます）。
             </p>
-            {/* ⚠⚠⚠ **同意の 2 枚目はこの窓に無い。** どこで許可するのかを必ず出す。 */}
-            {!chatSendAllowed ? (
-              <p className={styles.note}>
-                コメントビューアの設定にある「チャットに書き込む」で
-                書き込みを許可すると、この設定を ON にできます。
-              </p>
-            ) : (
-              /* ⚠ 結果をここに出せない理由＝ **この画面は WS を持たない**（064a の非対称）。
-                 ⚠⚠ localStorage で運ぶのは §9 に反する（送信結果を端末に残さない）。 */
-              <p className={styles.note}>
-                書き込みの結果は、コメントビューアの設定に出ます。
-              </p>
-            )}
+            {/* ⚠⚠⚠ **2026-08-30: 親カード（コメビュ設定の「チャットに書き込む」）を廃止したので、
+                あちらが持っていた「初回は再ログインが要る」をここへ引き取った。**
+                ⚠⚠ **落とさないこと**——旧トークンには `user:write:chat` が無く、
+                **書かないと「ON にしたのに毎回失敗する」の原因が画面のどこからも読めない**。 */}
+            <p className={styles.note}>
+              ⚠ 初回は Twitch にログインし直す必要があります（書き込みの許可を得るため）。
+              YouTube のチャットには対応していません。
+            </p>
+            {/* ⚠ 失敗をここに出せない理由＝ **この画面は WS を持たない**（064a の非対称）。
+                ⚠⚠ localStorage で運ぶのは §9 に反する（送信結果を端末に残さない）。
+                ⇒ **出す先はコメビュ窓のツールバー**（`CommentViewerApp` の
+                `gachaChatError` インジケータ）。⚠⚠⚠ **「どこに出るか」を必ず書く**
+                ——書かないと「黙って効かない」が残る（061a Q-1）。 */}
+            {/* ⚠⚠ **2026-08-30・レビュー S-3: 「その理由が出ます」は言い過ぎだった。**
+                画面に出るのは短いラベルで、⚠ **理由は `title`（マウスを乗せる）にしか出ない**
+                ——045c / 059a / 062b と同じ規律に揃えた結果である。
+                ⇒ **読み方まで書く**（書かないと「出ると書いてあるのに出ない」になる）。 */}
+            <p className={styles.note}>
+              書き込めなかったときは、コメントビューアの画面上部に出ます（マウスを乗せると理由が読めます）。
+            </p>
           </div>
         </details>
       </div>

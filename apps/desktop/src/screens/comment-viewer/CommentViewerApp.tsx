@@ -54,10 +54,14 @@ import {
   saveObsAutoAdd,
   loadPinnedOverlayEnabled,
   savePinnedOverlayEnabled,
-  // ⚠⚠⚠ 063f: **自動送信の同意（2 枚の AND）を読む唯一の関数。**
+  // ⚠⚠⚠ 063f: **自動送信の同意を読む唯一の関数。**
   //   ⚠ state にミラーせず、**送る直前に読み直す**（`loadGachaLibrary` と同じ規律＝
   //   設定画面でトグルを切った直後の 1 件目から効く）。
-  //   ⚠⚠ **ここで `CHAT_SEND_ENABLED_KEY` を直に読む形を作らないこと**（AND が片方だけになる）。
+  //   ⚠⚠⚠ **2026-08-30 訂正: 旧記述「同意（2 枚の AND）」「`CHAT_SEND_ENABLED_KEY` を
+  //   直に読む形を作らないこと」は嘘になった**——親トグルは廃止され、**同意は
+  //   `GACHA_CHAT_ENABLED_KEY` 1 枚だけ**である（`docs/security.md` §1 追補「同意」節が正）。
+  //   ⚠⚠ **`localStorage` を直に読む形へ展開しないこと**（判定が 2 か所に割れると、
+  //   片方だけ緩めたときに「画面は OFF なのに送られる」が起きる）。
   loadGachaChatEnabled,
   // 061a: エフェクト窓の設定は **main 窓（`ObsEffectsScreen`）が書き手**で、この窓は読み手。
   // ⚠ state にミラーせず、判断のたびに読み直す（詳細はエフェクト連携 effect の JSDoc）。
@@ -531,25 +535,39 @@ export function CommentViewerApp() {
    *
    * ⚠⚠ **`channel` を受信 effect の deps に足さないこと**——足すと**キー入力のたびに
    * WS が張り直り、その間のコメントを落とす**（`soundCommentEnabledRef` と同じ理由）。
-   * ⚠ **`ChatSendCard` が「送信先」として画面に出す値・`handleStartSession` が
+   * ⚠ **ツールバーのチャンネル入力が描いている値・`handleStartSession` が
    * `start-session` に載せる値と同一の変数**であることが、S-2b の突き合わせの前提である
    * （表示と検査の値がずれると、検査の意味が消える）。
+   * ⚠⚠ **2026-08-30 訂正: 旧記述は「`ChatSendCard` が『送信先』として画面に出す値」だった**が、
+   * **あのカードは廃止された**。⇒ **表示の担い手はツールバーの入力**に移っただけで、
+   * **同一の `channel` state を描いているという前提は 1 ミリも変わっていない。**
    */
   const channelRef = useRef(channel);
   /**
-   * ⚠⚠⚠ **063f: 直近の「自動送信」の結果**（`null` ＝まだ 1 度も走っていない）。
+   * ⚠⚠⚠ **063f: 直近の「自動送信」の失敗理由**（`null` ＝失敗していない）。
    *
    * ⚠⚠⚠ **自動送信はユーザーが画面を見ていないときに走る**ので、失敗をその場で見せる相手がいない。
-   * ⇒ **最後の 1 件だけを設定画面に残す**（061a Q-1「黙って効かない、を作らない」）。
-   * ⚠⚠ **§9: 送った本文も宛先も持たない。** 持つのは `ok` と、
+   * ⇒ **最後の 1 件だけをツールバーに残す**（061a Q-1「黙って効かない、を作らない」）。
+   *
+   * ## ⚠⚠⚠ 2026-08-30: 置き場所が「設定カード」から「ツールバー」へ移った
+   *
+   * 依頼者の判断「**設定画面からチャットに書き込むカードを消して**」で、
+   * 従来の出し先（`ChatSendCard`）が無くなった。⚠⚠ **消して終わりにはできない**
+   * ——§1 の 063f 追補が「**失敗は黙らせない**」を明示的に要求している。
+   * ⇒ **ツールバーのインジケータ**（`obsState === "failed"` / 通知音 / 記録落ち と同じ場所・
+   * 同じクラス）へ移した。⚠ **性質が同じ**である＝「**ユーザー操作なしに起きた失敗を
+   * 配信中の画面へ出す**」。⚠⚠ **むしろ設定画面より届く**（配信中に見ている画面だから）。
+   *
+   * ⚠⚠ **成功は持たない**（旧実装は `{ok, text}` だった）——成功したことは
+   * **チャットに現れた 1 通そのもの**が示すので、ツールバーに増やす理由が無い。
+   * ⚠ 成功したら `null` に戻す＝**古い赤字を残さない**（`obsState` 系と同じ振る舞い）。
+   *
+   * ⚠⚠ **§9: 送った本文も宛先も持たない。** 持つのは
    * **sidecar が作った定型の短文**（`reason`）だけである。
    * ⚠⚠⚠ **state にしか置かない**（localStorage にも DB にも書かない＝窓を閉じれば消える）。
    * ⚠ **記録にしないこと**——1 件を上書きし続ける形が「残さない」の実装そのものである。
    */
-  const [gachaChatResult, setGachaChatResult] = useState<{
-    ok: boolean;
-    text: string;
-  } | null>(null);
+  const [gachaChatError, setGachaChatError] = useState<string | null>(null);
   /**
    * ⚠⚠⚠ **063f 段 1-b: 投稿待ちのタイマー**（演出のネタバレを防ぐための遅延）。
    *
@@ -694,20 +712,6 @@ export function CommentViewerApp() {
   const [obsConfig, setObsConfig] = useState<ObsWsConfig | null>(null);
   const [obsAutoAdd, setObsAutoAdd] = useState(() => loadObsAutoAdd());
   const [obsState, setObsState] = useState<string>("idle");
-  /**
-   * 063e 段 1-b: **チャンネルポイント購読の成否**（sidecar の `channelpoints.state`）。
-   *
-   * ⚠⚠⚠ **「黙って効かない」を潰すためだけに存在する state である**（061a Q-1）。この購読は非致命なので、
-   * 失敗しても本線（コメント取得）は動き続け、画面には**何も起きない**。しかも失敗は
-   * **新規配信者の既定状態**である（Twitch 側でチャンネルポイントが有効化されるまで存在しない）。
-   *
-   * ⚠ 3 語（`unknown` / `receiving` / `unavailable`）。⚠⚠ **`unknown` を `unavailable` と混ぜない**
-   *   ——混ぜると未接続の人に「Twitch の設定を確認してください」と誤案内する（064c と同型の失敗）。
-   * ⚠ `obsState` と同じく `string` のまま持つ（理由は上のブロックの注記が正・WS 境界で型が失われる）。
-   * ⚠ **表示するのは `SettingsView` のカードだけ**（ツールバーには出さない）。配信中に赤字を増やさない。
-   */
-  const [channelPointsState, setChannelPointsState] =
-    useState<string>("unknown");
   // 061a: 検出済み OBS 設定を、**マウント時 1 回だけ張る effect**（下のエフェクト連携の `storage` 購読）から
   // 最新値で読むための ref 同期。state を直接掴むと stale closure で検出ポートが既定 4455 に化ける。
   // この窓の他の getter 注入（ttsEnabledRef / readMonetaryIdsRef）と同じイディオム。
@@ -1696,12 +1700,11 @@ export function CommentViewerApp() {
       onObsState: (state) => {
         setObsState(state);
       },
-      // 063e 段 1-b: チャンネルポイント購読の成否（非秘密・状態語 1 つだけ・§9）。
-      // ⚠ sidecar は viewer が（再）接続したときにも現在値を送り直すので、
-      //   設定画面を開いただけの場合でも「まだ分かりません」で固着しない。
-      onChannelPointsState: (state) => {
-        setChannelPointsState(state);
-      },
+      // ⚠⚠⚠ **2026-08-30: `onChannelPointsState` の購読をやめた**（依頼者の指示＝
+      //   「**チャンネルポイントカードも消して。いらない**」）。
+      //   ⚠ **sidecar の `channelpoints.state` フレームも `commentStream.ts` の受け口も残してある**
+      //   （ハンドラは optional なので、渡さなければ捨てられるだけ＝ **sidecar 差分ゼロ**）。
+      //   ⚠⚠ **再購読したくなったら、ここに `onChannelPointsState` を書き戻すだけでよい。**
     });
     streamRef.current = handle;
     return () => {
@@ -2057,35 +2060,18 @@ export function CommentViewerApp() {
    * ハンドルそのものが無い状態はここでしか分からない）。取り込み自体は成功のまま＝ fail-closed。
    * ⚠ URL も CSS 本文もここではログに出さない（§9）。
    */
-  /**
-   * 066: チャットへのテスト送信を [`SettingsView`] → [`ChatSendCard`] へ 1 本だけ渡す。
+  /*
+   * ⚠⚠⚠ **2026-08-30: テスト送信（`sendChatMessage`）を削除した。**
    *
-   * ⚠⚠ **`requestThemeImport` とまったく同じ形**（`streamRef` 越しに 1 本だけ渡す）。
-   * ⚠ **宛先を渡さない**——送り先は sidecar が「いま取得しているセッション」から決める
-   * （`commentStream.ts` の `sendChat` の注記が正）。
-   * ⚠ 未接続は**ここで短文にして返す**（押したのに何も起きない、を作らない）。
+   * 依頼者の判断「**設定画面からチャットに書き込むカードを消して**」で `ChatSendCard` ごと
+   * 無くなり、⚠ **押し手が 1 つも残らなかった**（自動送信は `sendGachaChat` が直接
+   * `stream.sendChat` を呼ぶ）。⇒ **呼ばれない配線を残さない。**
    *
-   * ⚠⚠⚠ **S-2b: `channel.trim()` を「宛先の期待値」として渡す。**
-   * これは `ChatSendCard` が「送信先」として**画面に出しているのと同じ値**であり、
-   * `handleStartSession` が `start-session` に載せるのと**同じ値**でもある。
-   * ⇒ sidecar が実際の宛先と突き合わせ、**差し替えられていたら送らない**。
-   * ⚠ **`chatSendChannel` に渡す値とここに渡す値を必ず一致させること**——
-   * 一致していないと「画面に出ている宛先」と「検査される宛先」がずれ、検査の意味が消える。
-   * ⚠ 依存に `channel` が要る（空にすると**古いチャンネルで突き合わせて必ず落ちる**）。
+   * ⚠⚠ **S-2b の突き合わせは 1 ミリも弱まっていない**——`sendGachaChat` が
+   * `channelRef.current.trim()` を「宛先の期待値」として渡し、sidecar が実際の宛先と
+   * 突き合わせる形は不変である。⚠ **画面に出ている値との一致**も保たれている
+   * （ツールバーのチャンネル入力が、まさにその `channel` state を描いている）。
    */
-  const sendChatMessage = useCallback(
-    (message: string): Promise<{ ok: boolean; reason?: string }> => {
-      const stream = streamRef.current;
-      if (!stream) {
-        return Promise.resolve({
-          ok: false,
-          reason: "コメントの取得に接続していません。",
-        });
-      }
-      return stream.sendChat(message, channel.trim());
-    },
-    [channel],
-  );
 
   const requestThemeImport = useCallback((url: string, maxBytes: number) => {
     const stream = streamRef.current;
@@ -2155,10 +2141,16 @@ export function CommentViewerApp() {
    *
    * 判断の全文は `docs/security.md` §1 の「追補（063f）」が正。ここが守っているのは 5 つ:
    *
-   * 1. ⚠⚠⚠ **同意が 2 枚とも ON のときだけ送る**（[`loadGachaChatEnabled`] が AND の唯一の持ち主）。
+   * 1. ⚠⚠⚠ **同意が ON のときだけ送る**（[`loadGachaChatEnabled`] が判定の唯一の持ち主）。
    *    ⚠ **送る直前に読む**——設定画面でトグルを切った直後の 1 件目から効かせるため
    *    （`loadGachaLibrary` を関数のまま渡しているのと同じ規律）。
-   *    ⚠⚠ **ここで `CHAT_SEND_ENABLED_KEY` を直に見る形へ展開しないこと**（AND が 1 枚に減る）。
+   *    ⚠⚠⚠ **2026-08-30 訂正: ここは「同意が 2 枚とも ON のときだけ（AND）」と書いていたが、
+   *    親トグル（`CHAT_SEND_ENABLED_KEY`）の廃止で嘘になった。** ⇒ **同意は
+   *    `GACHA_CHAT_ENABLED_KEY`（既定 OFF）1 枚だけ**である。
+   *    ⚠⚠ **もう 1 枚が受けてくれる、と読まないこと**——`docs/security.md` §1 追補が
+   *    「**この 1 枚が壊れたときの受け皿はもう無い**」と明記している。
+   *    ⇒ **既定 OFF を反転しない／派生値から立てない**の 2 つは、ここが依存している前提そのもの。
+   *    ⚠ **`localStorage` を直に見る形へ展開しないこと**（判定の持ち主を 2 か所にしない）。
    * 2. ⚠⚠ **呼ぶのはガチャ由来の発火だけ**（呼び出し側が `result.gacha !== null` で絞る）。
    *    ⚠ `gacha === null` は「**ガチャではない**（条件に OBS ソースを直指定）」の意味である。
    * 3. ⚠⚠⚠ **本文に載るのは「景品名」と「引いた人の表示名」だけである**——
@@ -2167,7 +2159,9 @@ export function CommentViewerApp() {
    *    ⚠⚠⚠ **063f 段 3 で表示名だけが線の向こう側へ移った**（§9 の追補が根拠）。
    *    ⚠ **ここで `gacha` をそのまま渡す形へ広げないこと**（次に足す人の関門が消える）。
    * 4. ⚠⚠⚠ **`expectedChannel` に渡すのは `channelRef.current`**＝
-   *    `ChatSendCard` が「送信先」として画面に出しているのと同じ値である（S-2b）。
+   *    **ツールバーのチャンネル入力が画面に描いているのと同じ `channel` state** である（S-2b）。
+   *    ⚠ **2026-08-30 訂正: 旧記述の `ChatSendCard` は廃止済み**（表示の担い手が移っただけで、
+   *    「画面に出している値と同じ変数を期待値に渡す」という前提は 1 ミリも変わっていない）。
    *    ⚠⚠ **これは「宛先」ではなく「宛先の期待値」**で、宛先は sidecar が
    *    `setChannel` の現在値から決める。⚠ **宛先として使う配線を書かないこと**（066 S-2）。
    *    ⚠⚠⚠ **sidecar に現在の宛先を聞いてそれを渡す形にしないこと**——
@@ -2177,31 +2171,44 @@ export function CommentViewerApp() {
    *
    * ## §9
    *
-   * ⚠⚠ **送った本文も結果も保存しない**（結果は [`gachaChatResult`] の state 1 件のみ・窓を閉じれば消える）。
+   * ⚠⚠ **送った本文も結果も保存しない**（失敗理由は [`gachaChatError`] の state 1 件のみ・窓を閉じれば消える）。
    * ⚠ 画面に出すのは **sidecar が作った定型の短文**だけで、本文も宛先も載せない。
    * ⚠⚠ **ログに出さない**（件数すら出さない）。
    *
-   * ## ⚠⚠⚠ バーストで落ちる分について（**2026-08-30・security-review S-1 で訂正した**）
+   * ## ⚠⚠⚠ バーストで落ちる分について（**2026-08-30 の S-1 を、段 2-a で実際に直した**）
    *
    * ガチャは **5 秒に最大 3 件**まで発火しうる。同一バッチの当選は**同じ遅延**で予約されるので、
-   * **3 本のタイマーが同じ tick で発火する**。
+   * **3 本のタイマーが同じ tick で発火する**。⇒ **[`sendChat`] は 3 回とも呼ばれる**
+   * （⚠ **この層は 1 本も落とさない**——落とす判断をここへ持ち込まないこと。下記「⚠ ここに数を…」）。
    *
-   * ⚠⚠⚠ **旧記述「`sendChat` は同時 1 本なので 2 件目以降はチケット取得すら走らずに `{ok:false}`
-   * で返る」は誤りだった。** `commentStream.ts` の `sendChat` は
-   * **`pendingChatSend !== null` のガードと、その代入のあいだに `await invoke` を挟む**ため、
-   * 同じ tick の 3 本は**全部ガードを通過する**（TOCTOU）。⇒ **sidecar へは最大 3 フレーム出る。**
+   * **いま起きること**（063f 段 2-a 以降）:
    *
-   * ⚠⚠ **それでも Twitch へ届くのは 1 通だけである**——落としているのは
-   * **sidecar 側のスロットル**（最短 3 秒／30 秒に 5 通／**直前と同じ本文を拒否**）**だけ**であり、
-   * ⚠ **frontend 側は 1 本も落としていない**。**この理解のほうが正しい**
-   * （`docs/security.md` §1 の 063f 追補「スロットルは sidecar 側にしかない」とも整合する）。
+   * 1. **1 本目だけがチケットを取り、sidecar へフレームを出す。**
+   * 2. ⚠⚠ **2・3 本目は `commentStream.ts` の予約（`pendingChatSend`）で即座に
+   *    `{ok:false, reason:"前の書き込みが終わっていないため送れませんでした。"}` が返る**——
+   *    ⚠ **チケット取得（`invoke`）すら走らない。**
+   * 3. ⚠⚠⚠ **1 本目が成功すれば [`gachaChatError`] は `null` に戻る**（＝赤字が出ない）。
+   *    2・3 本目の拒否は**先に**返って一瞬だけ赤字を出すが、
+   *    **後から届く 1 本目の成功が最後に上書きして消す。**
    *
-   * ⚠⚠ **既知の副作用**: 上書きされた `pendingChatSend` のせいで、
-   * **成功した 1 通目の結果フレームが `requestId` 不一致で捨てられ**、
-   * [`gachaChatResult`] には**拒否された最後の 1 件**が出る
-   * ⇒ **「投稿されたのに『失敗しました』と出る」**。⚠ **視聴者に見える書き込み自体は 1 通で正しい。**
-   * ⚠⚠⚠ **再修正トリガー＝`commentStream.ts` の `sendChat` で予約を `await` の前へ移すとき**
-   * （＝ 066 の資産なので本タスクでは触らない・段 2 と同じ枠。直した時点でこの節ごと書き直すこと）。
+   * ⚠⚠⚠ **段 2-a 以前はここが壊れていた。** `sendChat` は
+   * **`pendingChatSend !== null` のガードと、その代入のあいだに `await invoke` を挟んでいた**ため
+   * 同じ tick の 3 本が**全部ガードを通過**し（TOCTOU）、**sidecar へ最大 3 フレーム出た**うえ、
+   * 上書きされた `pendingChatSend` のせいで**成功した 1 通目の結果が `requestId` 不一致で捨てられ**、
+   * 画面には**拒否された最後の 1 件**が出た ⇒ **「投稿されたのに『失敗しました』と出る」**。
+   * ⚠ 1・2 本目の `Promise` は永久に未解決だった。⇒ **直した本体は `commentStream.ts` の
+   * `sendChat` の JSDoc が正**（⚠ ここに直し方を書き写さないこと）。
+   *
+   * ⚠⚠ **Twitch へ届くのが 1 通だけであることは、段 2-a の前後で変わっていない。**
+   * ⚠⚠⚠ **`docs/security.md` §1 の 063f 追補「スロットルは sidecar 側にしかない」も嘘になっていない**
+   * ——`pendingChatSend` は**流量ではなく「同時 1 本」の在庫**であり、
+   * **未認証 WS から直接叩く経路は frontend を通らない**（＝回避経路は 1 ミリも変わらない）。
+   * ⚠ 流量を落としているのは依然として **sidecar のスロットルだけ**である
+   * （最短 3 秒／30 秒に 5 通／**直前と同じ本文を拒否**）。
+   *
+   * ⚠⚠⚠ **ここに数を数える仕組みを置かないこと**（§1 追補が名指しで禁じている）——
+   * 未認証 WS から直接叩かれる経路で回避されるので、**置いても守りにならず、
+   * 「守っているつもり」だけが増える。**
    *
    * ⚠⚠ **落ちた分は捨てる**（キューに溜めない・まとめない）——まとめると
    * **重複拒否を迂回する形**になり、Twitch のアンチスパムに対して StreamDock が回避側に回る。
@@ -2219,13 +2226,13 @@ export function CommentViewerApp() {
    * `setGachaChatResult`（安定）・**モジュールスコープの関数**だけなので、**stale にならない**。
    *
    * ⚠⚠⚠ **再修正トリガー＝この関数が state を直接読むようになったとき**
-   * （`channel` や `gachaChatResult` を ref 経由でなく読む形にした瞬間、
+   * （`channel` や `gachaChatError` を ref 経由でなく読む形にした瞬間、
    * **マウント時の値で固まる**）。⚠ その形にするなら `useCallback` にして
    * ref 経由の読み出しへ倒すか、宣言を effect より前へ移すこと。
    * ⚠ この危険は **lint に守られていない**（effect の deps に載らないため）。
    */
   const sendGachaChat = (gacha: GachaChatSource): void => {
-    // ⚠⚠ 1: 同意の 2 枚（AND）。⚠ **予約の前に 1 度見る**ので、OFF のときは
+    // ⚠⚠ 1: 同意（**2026-08-30 以降は 1 枚**）。⚠ **予約の前に 1 度見る**ので、OFF のときは
     //   タイマーすら作らない（＝アプリが何かを予約している状態を作らない）。
     //   ⚠⚠⚠ **ただしこれは本番の関門ではない**——本番は下の「発火時にもう一度読む」ほうである。
     if (!loadGachaChatEnabled()) return;
@@ -2251,11 +2258,13 @@ export function CommentViewerApp() {
      * ## ⚠⚠ 正直に書いておく限界 2 つ
      *
      * 1. **連続当選では演出がキューで順番待ちになる**（上限 3 件）のに、**遅延は固定**である。
-     *    ⇒ 2 件目以降は理屈上ズレる。⚠ ただし **sidecar のスロットル（最短 3 秒）**が
-     *    2 件目以降を落とすので、実機で表面化しにくい。
-     *    ⚠⚠⚠ **2026-08-30 訂正: ここに「`sendChat` の同時 1 本ガードが先に落とす」と
-     *    書いていたのは誤り**である（上の「バーストで落ちる分について」が正）。
-     *    ⇒ **落としているのは sidecar 側だけ**で、frontend は 1 本も落としていない。
+     *    ⇒ 2 件目以降は理屈上ズレる。⚠ ただし **`sendChat` の予約（同時 1 本）**が
+     *    2 件目以降をその場で落とすので、**実機で表面化しない**
+     *    （落ちなかったぶんも **sidecar のスロットル（最短 3 秒）**が落とす）。
+     *    ⚠⚠⚠ **経緯**: ここには長らく「`sendChat` の同時 1 本ガードが先に落とす」と書いてあり、
+     *    **2026-08-30 の S-1 で「それは誤りで、落としているのは sidecar 側だけ」と訂正した。**
+     *    ⚠⚠ **段 2-a で予約を `await` の前へ移した結果、元の記述が「実装のほう」から真になった**
+     *    ——⇒ **いまは「両方が落とす」が正しい**（上の「バーストで落ちる分について」が正）。
      *    ⚠⚠⚠ **完全に合わせるにはステージ窓から「終わった」を返してもらう必要があるが、採らない**
      *    ——①窓が閉じていると**永久に投稿されない** ②`gachaStageEvent.ts` が
      *    「伝達は 1 方向」と明記した設計を壊す。
@@ -2280,21 +2289,19 @@ export function CommentViewerApp() {
         //   途中でチャンネルを変えたら**新しい値**で突き合わせる（画面の表示とも一致する）。
         .sendChat(message, channelRef.current.trim())
         .then((r) => {
-          setGachaChatResult({
-            ok: r.ok,
-            // ⚠ 失敗の理由は sidecar が作った短文をそのまま出す（本文も token も載っていない・§9）。
-            text: r.ok
-              ? "ガチャの結果をチャットに書き込みました。"
-              : (r.reason ?? "チャットへの書き込みに失敗しました。"),
-          });
+          // ⚠⚠⚠ **成功は画面に出さない**（2026-08-30）——成功したことは
+          //   **チャットに現れた 1 通そのもの**が示すので、ツールバーに増やす理由が無い。
+          //   ⚠ 出すのは**失敗だけ**（ツールバーの他のインジケータと同じ規律＝
+          //   「ユーザー操作なしに起きた失敗を配信中の画面へ出す」）。
+          // ⚠ 失敗の理由は sidecar が作った短文をそのまま出す（本文も token も載っていない・§9）。
+          setGachaChatError(
+            r.ok ? null : (r.reason ?? "チャットへの書き込みに失敗しました。"),
+          );
         })
         .catch(() => {
           // ⚠ `sendChat` は throw しない設計だが、**未処理の rejection を残さない**
           //   （`emitGachaStageResult` の `.catch()` と同じ理由＝拒否理由に本文が載りうる・§9）。
-          setGachaChatResult({
-            ok: false,
-            text: "チャットへの書き込みに失敗しました。",
-          });
+          setGachaChatError("チャットへの書き込みに失敗しました。");
         });
     }, delayMs);
     gachaChatTimersRef.current.add(timer);
@@ -2808,14 +2815,10 @@ export function CommentViewerApp() {
           obsAutoAdd={obsAutoAdd}
           onObsAutoAddToggle={handleObsAutoAddToggle}
           obsState={obsState}
-          channelPointsState={channelPointsState}
           onSetObsPassword={handleSetObsPassword}
           onClearObsPassword={handleClearObsPassword}
           pinnedOverlayEnabled={pinnedOverlayEnabled}
           onPinnedOverlayToggle={handlePinnedOverlayToggle}
-          onChatTestSend={sendChatMessage}
-          chatSendChannel={channel}
-          gachaChatResult={gachaChatResult}
         />
       ) : (
         <>
@@ -3079,6 +3082,46 @@ export function CommentViewerApp() {
                   title="配信セッションを開始できなかったため、一部のコメントを視聴者メモリに記録できませんでした。コメントビューアを開き直すと復帰します。"
                 >
                   記録できなかったコメント {droppedRecordCount} 件
+                </span>
+              )}
+              {/* ⚠⚠⚠ **063f: ガチャの結果をチャットへ自動で書き込めなかったこと**の継続表示。
+                  ⚠⚠ **2026-08-30 に設定カード（`ChatSendCard`）からここへ移した**——
+                  依頼者の判断であのカードごと廃止したが、⚠ `docs/security.md` §1 の 063f 追補が
+                  「**失敗は黙らせない**」を明示的に要求しているので、**消さずに動かした**。
+                  ⚠⚠⚠ **むしろ設定画面より届く**: 自動送信は**画面を見ていないときに走る**ので、
+                  「あとで設定を開いた人」より「**いま配信画面を見ている人**」に出すほうが正しい。
+                  ⚠ 置き場所とクラスは 045c の OBS エラー・059a の通知音・062b の記録落ちと**同じ**。
+                  性質も同じ＝**ユーザー操作なしに起きた失敗を配信中の画面へ出す**。
+                  ⚠⚠ **成功では出ない**（成功したことは**チャットに現れた 1 通**が示す）。
+                  ⚠ 消えるのは**次の書き込みが成功したとき**だけ——**時間経過では消さない**
+                  （気付かせるのが目的なので、放っておいて消えたら意味がない）。
+                  ⚠⚠ §9: **本文も宛先も出さない**（sidecar が作った定型の短文だけ）。
+                  ⚠ ゲートを足していないのは、**そもそもトグルが OFF なら 1 度も走らない**ため
+                  （`sendGachaChat` が `loadGachaChatEnabled()` で先に落とす）。
+
+                  ## ⚠⚠ レビュー S-3: **可視テキストで理由を出し分けていない**（意図・現状維持）
+
+                  **意図**: 既存 3 つ（045c / 059a / 062b）と**同じ形に揃える**——
+                  可視は短い固定ラベル、詳細は `title`。⚠ 配信中のツールバーに長文を増やすと、
+                  4 つ並んだときに折り返しで**本線の操作要素が押し出される**。
+                  **なぜ今は直さないか**: ⚠⚠ **§9 は守れている**（`title` に載るのは
+                  sidecar が作った定型の短文だけで、本文・宛先・トークン・視聴者 id は 1 バイトも載らない）。
+                  ⚠ 「黙って効かない」も作っていない（**失敗が出ること自体は可視**で、
+                  在り処は `GachaLibraryCard` が案内している）。
+                  ⚠⚠ **限界は正直に書く**: **`title` はマウスを乗せないと読めない**ので、
+                  「**Twitch にログインし直してください**」（恒久的失敗・要対処）と
+                  「直前と同じ内容は送れません」（正常な自己防衛）が**ラベルだけでは区別できない**。
+                  ⚠⚠⚠ **再修正トリガー＝実機で「赤字が出たが何をすればいいか分からなかった」が
+                  起きたとき**（そのときは**恒久的失敗だけ**可視ラベルを分ける
+                  ——例「チャットに書き込めません（要再ログイン）」。
+                  ⚠ **理由の全文を可視化しないこと**＝ 4 つ並ぶツールバーが壊れる）。 */}
+              {gachaChatError !== null && (
+                <span
+                  className={styles.toolbarError}
+                  role="status"
+                  title={gachaChatError}
+                >
+                  チャットに書き込めません
                 </span>
               )}
               <ToggleSwitch

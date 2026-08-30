@@ -22,34 +22,30 @@ export const OVERLAY_SHOW_SOURCE_KEY =
  */
 export const OBS_AUTO_ADD_KEY = "stream-dock.comment-viewer.obs-auto-add";
 /**
- * 066: **チャットへの書き込みを許可する**トグル（⚠⚠ **既定 OFF**・値は `"1"` のみ）。
+ * ⚠⚠⚠ **063f: ガチャの当選結果を配信のチャットへ自動で書き込むトグル**（⚠⚠ **既定 OFF**・値は `"1"` のみ）。
  *
- * ⚠⚠⚠ **これは同意であって、壁ではない。** 壁は sidecar 側のチケット照合
+ * ## ⚠⚠⚠ 2026-08-30: **これが「同意」の唯一の旗になった**（親トグルを廃止した）
+ *
+ * 旧構成は **2 枚の AND**（親＝コメビュ設定の「チャットへの書き込みを許可する」
+ * `stream-dock.comment-viewer.chat-send-enabled` ＋ 子＝本キー）だった。
+ * ⚠ 依頼者の判断（2026-08-30）＝「**設定画面からチャットに書き込むカードを消して。
+ * これは常時 ON がただしい**」により、**親を廃止して本キー 1 枚にした。**
+ *
+ * ⚠⚠ **それでも「無操作で書き込みが始まる」ことは無い**——本キーが**既定 OFF** で、
+ * **明示操作なしに true にならない**という性質は 1 ミリも変わっていないからである
+ * （⇒ `docs/security.md` §1 の 063f 追補「同意」節が正）。
+ * ⚠⚠⚠ **旧親キーが `"1"` のまま残っている端末があるが、誰も読まない**
+ * （消す仕組みは作らない＝**非機密の真偽値 1 つ**に移行スクリプトを足すほうが害が大きい。
+ * ⚠ 一括削除・エクスポートを作るときだけ、このキーが残り得ることを思い出すこと）。
+ *
+ * ⚠⚠ **これは同意であって、壁ではない。** 壁は sidecar 側のチケット照合
  * （`chat-send/chat-send-frame.ts`）で、そちらが未認証の loopback WS からの投稿を塞いでいる。
  * ⚠ **このキーを見て送信を止める判断は frontend 側だけの話**なので、
  * 「これがあるから安全」と読まないこと。
  * ⚠ OFF は**キーごと削除**する（「未保存＝OFF」と「明示的に OFF」を潰す）。
- */
-export const CHAT_SEND_ENABLED_KEY =
-  "stream-dock.comment-viewer.chat-send-enabled";
-/**
- * ⚠⚠⚠ **063f: ガチャの当選結果を配信のチャットへ自動で書き込むトグル**（⚠⚠ **既定 OFF**・値は `"1"` のみ）。
  *
- * ## ⚠⚠ なぜ [`CHAT_SEND_ENABLED_KEY`] を流用しないのか
- *
- * 流用すると「**テスト送信を試したら自動送信も始まった**」になり、
- * ユーザーが同意した範囲を**本人の想定を越えて広げる**。
- * ⚠⚠⚠ **本キーと [`CHAT_SEND_ENABLED_KEY`] は AND である**——
- * **両方が ON のときだけ 1 通も出る**（`docs/security.md` §1 の 063f 追補が正）。
- * ⚠ 063c 段 1 の AND ゲートと同じ規律で、**この連言は送信を増やす方向へ決して働かない**
- * （どちらの旗も明示操作なしには true にならない）。
- *
- * ⚠⚠ **これは同意であって、壁ではない**（[`CHAT_SEND_ENABLED_KEY`] の注記がそのまま当てはまる）。
- * 壁は sidecar 側のチケット照合で、そちらが未認証の loopback WS からの投稿を塞いでいる。
- * ⚠ OFF は**キーごと削除**する（「未保存＝OFF」と「明示的に OFF」を潰す）。
- *
- * ⚠ **値が `"true"` ではなく `"1"` なのは [`CHAT_SEND_ENABLED_KEY`] に揃えたため**
- * （チャット送信の 2 枚は同じ綴りにしてある。`OBS_AUTO_ADD_KEY` 系の `"true"` とは別系統）。
+ * ⚠ **値が `"true"` ではなく `"1"` なのは旧親キーに揃えていたため**
+ * （`OBS_AUTO_ADD_KEY` 系の `"true"` とは別系統。⚠ **いま変えると既存の同意が黙って消える**）。
  */
 export const GACHA_CHAT_ENABLED_KEY =
   "stream-dock.comment-viewer.gacha-chat-enabled";
@@ -153,6 +149,31 @@ export const STAGE_OVERLAY_ENABLED_KEY =
  */
 export const GACHA_STAGE_ENABLED_KEY =
   "stream-dock.comment-viewer.gacha-stage-enabled";
+
+/**
+ * **プレビューで「レア！」を出すか**（既定 OFF・値は `"true"` / `"false"`）。
+ *
+ * ## ⚠⚠⚠ これは**ガードではない**（隣の [`GACHA_STAGE_ENABLED_KEY`] と混同しないこと）
+ *
+ * ⚠⚠ **配信画面に 1 ミリも影響しない。** 本番で「レア！」が出るかを決めているのは
+ * [`isGachaRarePrize`]（景品の確率が `GACHA_RARE_MAX_PERCENT` 未満か）**だけ**であり、
+ * このキーは**設定カードのプレビューの見え方**しか変えない。
+ * ⇒ `isStageOverlayRequired()` は**このキーを読まない**（ガードの入力を増やさない）。
+ *
+ * ## ⚠⚠ なぜ保存するようにしたのか（依頼者の指摘・2026-08-30）
+ *
+ * 「**再起動でOFFに戻るのは論外。そんなの使いにくすぎます**」。
+ * ⚠⚠⚠ **当初は「保存しない」を意図的な設計としていた**——保存すると
+ * 「保存される設定なのに本番の挙動が変わらない」と誤解される、という理由だった。
+ * ⚠ **その理由は誤りである。** 誤解を防ぐのは**ラベルと注記の仕事**であって、
+ * **スイッチが自分の状態を覚えていないこと**の言い訳にはならない
+ * ——**画面のスイッチは、触ったら覚えている**のがユーザーの当然の期待である。
+ * ⇒ **保存する。** 誤解の側は「配信画面には影響しません」と書いて防ぐ。
+ *
+ * ⚠ §9: 真偽値 1 つだけで、第三者データは 1 バイトも載らない。
+ */
+export const GACHA_PREVIEW_RARE_KEY =
+  "stream-dock.comment-viewer.gacha-preview-rare";
 
 /**
  * ⚠⚠⚠ **063c 段 4-a: `GACHA_SPIN_MS_KEY`（抽選中の長さ）を削除した。**
@@ -661,43 +682,16 @@ export function saveObsAutoAdd(enabled: boolean): void {
 }
 
 /**
- * 066: **チャットへの書き込みを許可する**トグルを読み込む。⚠⚠ **未保存・例外はすべて false（OFF）**。
- *
- * ⚠⚠⚠ **063f で読み手が 2 つになったので、規則をここへ寄せた。**
- * 旧実装は `ChatSendCard` が `localStorage.getItem(...) === "1"` を直に書いていたが、
- * 自動送信（`CommentViewerApp`）が**同じ判定を独立に書く**と、
- * 片方だけ緩めたときに「画面は OFF なのに送られる」が起きる。⇒ **判定の持ち主は 1 つ。**
- * ⚠ **読めなかったら OFF へ倒す**（061h の「読めなかったら安全側」・こちらの安全側は「送らない」）。
- */
-export function loadChatSendEnabled(): boolean {
-  try {
-    return localStorage.getItem(CHAT_SEND_ENABLED_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-
-/** 066: 「チャットへの書き込みを許可する」を保存する。⚠ **OFF はキーごと削除**（上の注記が正）。 */
-export function saveChatSendEnabled(enabled: boolean): void {
-  try {
-    if (enabled) localStorage.setItem(CHAT_SEND_ENABLED_KEY, "1");
-    else localStorage.removeItem(CHAT_SEND_ENABLED_KEY);
-  } catch {
-    // 書けない環境では設定が残らないだけ（既定＝OFF で続く）。
-  }
-}
-
-/**
- * ⚠⚠⚠ **063f: 「ガチャの当選結果をチャットへ自動で書き込む」が有効か**（＝**2 枚の AND**）。
+ * ⚠⚠⚠ **063f: 「ガチャの当選結果をチャットへ自動で書き込む」が有効か。**
  *
  * ⚠⚠ **この 1 関数が「1 通でも出てよいか」の唯一の判定である。**
- * [`loadChatSendEnabled`]（同意の 1 枚目）と [`GACHA_CHAT_ENABLED_KEY`]（2 枚目）の**両方**が
- * ON のときだけ true を返す。⚠ **呼び出し側で片方だけ見る形を作らないこと**——
- * 作った瞬間、`docs/security.md` §1 の 063f 追補が「門は 2 枚」と書いた根拠が 1 枚に減る。
- * ⚠ 読めなかったら false（＝送らない）。
+ * ⚠⚠⚠ **2026-08-30: 親トグルを廃止したので、AND ではなくなった**
+ * （旧: `loadChatSendEnabled() && …`）。⚠ **読み手が `localStorage` を直に見る形へ
+ * 展開しないこと**——判定が 2 か所に割れると、片方だけ緩めたときに
+ * 「**画面は OFF なのに送られる**」が起きる（この関数が存在する理由そのもの）。
+ * ⚠ 読めなかったら false（＝送らない。061h の「読めなかったら安全側」）。
  */
 export function loadGachaChatEnabled(): boolean {
-  if (!loadChatSendEnabled()) return false;
   try {
     return localStorage.getItem(GACHA_CHAT_ENABLED_KEY) === "1";
   } catch {
@@ -708,9 +702,9 @@ export function loadGachaChatEnabled(): boolean {
 /**
  * 063f: 自動送信トグルを保存する。⚠ **OFF はキーごと削除**。
  *
- * ⚠⚠ **ここでは AND を見ない**（保存は「2 枚目の旗そのもの」の操作である）。
- * 親トグルが OFF のときにこの旗が true で残っていても、
- * [`loadGachaChatEnabled`] が AND で false を返すので 1 通も出ない。
+ * ⚠⚠⚠ **`true` にしてよいのは「ユーザーがトグルを ON にした」瞬間だけ**である
+ * （⚠ **派生値から立てないこと**＝ `saveGachaStageEnabled` と同じ規律。
+ * 立てた瞬間、`docs/security.md` §1 の 063f 追補が「同意」と呼んでいるものが消える）。
  */
 export function saveGachaChatEnabled(enabled: boolean): void {
   try {
@@ -813,6 +807,39 @@ export function loadGachaStageEnabled(): boolean {
 export function saveGachaStageEnabled(enabled: boolean): void {
   try {
     localStorage.setItem(GACHA_STAGE_ENABLED_KEY, String(enabled));
+  } catch {
+    // プライベートモード等で書けない場合は黙って無視する。
+  }
+}
+
+/**
+ * プレビューで「レア！」を出すか（未保存・例外は false へフォールバック）。
+ *
+ * ⚠⚠ **読んでよいのは [`GachaStageCard`] だけ**である（プレビュー専用の見た目の値）。
+ * ⚠⚠⚠ **「レアか」の判定にこれを使わないこと**——持ち主は [`isGachaRarePrize`] 1 か所で、
+ * ここを混ぜると「抽選が思っているレア度」と「絵が主張するレア度」が別実装になる。
+ * ⚠ false 側フォールバックにしているのは**既定の見た目に揃えるため**であり、
+ * 隣の [`loadGachaStageEnabled`] と違って**安全性の意味は無い**（何も繋がない値である）。
+ */
+export function loadGachaPreviewRare(): boolean {
+  try {
+    return localStorage.getItem(GACHA_PREVIEW_RARE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 上記を保存する（ローカルのみ・非機密・外部送信しない）。
+ *
+ * ⚠ **`false` もそのまま書く**（キーを消さない）——[`saveGachaChatEnabled`] は
+ * 「未保存＝OFF」と「明示的な OFF」を潰すために消しているが、あちらは**同意の旗**で、
+ * ⚠⚠ **こちらは見た目の値なので、消しても残しても意味が同じ**である。
+ * ⇒ **単純なほうを採る**（`saveGachaStageEnabled` と同じ形に揃える）。
+ */
+export function saveGachaPreviewRare(enabled: boolean): void {
+  try {
+    localStorage.setItem(GACHA_PREVIEW_RARE_KEY, String(enabled));
   } catch {
     // プライベートモード等で書けない場合は黙って無視する。
   }
