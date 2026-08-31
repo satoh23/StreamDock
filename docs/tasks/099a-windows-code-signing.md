@@ -4,7 +4,7 @@
 > 親 [099](099-user-test-package.md)（配布パッケージ・フェーズ2＝Windows 署名）を正とする。
 >
 > ⚠⚠ **移行は済んでいる**——ビルド後の置換署名（`Locate Windows installers` / `Sign NSIS installer (.exe)`）を
-> **2 つとも削除**し、`bundle.windows.signCommand` → `apps/desktop/scripts/sign-windows.ps1` → **jsign** →
+> **2 つとも削除**し、`bundle.windows.signCommand` → `apps/desktop/src-tauri/scripts/sign-windows.ps1` → **jsign** →
 > SSL.com eSigner へ寄せた。**ガードはローカルで通ることを確認済み**。
 > ⚠⚠⚠ **残っているのは「依頼者による Secrets 登録 → 空回し → 実機確認」**（下の「残作業」節）。
 > 実装の記録・判断理由は [`docs/progress.md`](../progress.md) の **2026-08-31 (099a …)** 節が正。
@@ -82,7 +82,7 @@ macOS は当面未署名のまま（親 099 の決定どおり）。
 - ⚠ **署名の配線は 2026-07-21 からあったが、ビルド後の置換署名という壊れる形だった**
   （`Locate Windows installers` と `Sign NSIS installer (.exe)`）。
   ✅ **2026-08-31 に 2 つとも削除済み**。⇒ いまの配線は
-  `bundle.windows.signCommand` → `apps/desktop/scripts/sign-windows.ps1` → jsign → eSigner。
+  `bundle.windows.signCommand` → `apps/desktop/src-tauri/scripts/sign-windows.ps1` → jsign → eSigner。
   - `HAS_WINDOWS_SIGNING: ${{ secrets.ES_USERNAME != '' }}` は**残っている**が、
     直接ゲートするのは **①ガード ②jsign の導入** の 2 ステップだけ。
     「署名するかどうか」は `Build installers` が渡す `STREAMDOCK_WINDOWS_SIGNING` でラッパーに伝える。
@@ -318,3 +318,16 @@ git status --short -- apps/desktop/src apps/comment-sidecar/src apps/desktop/src
 | 11 | 「⚠⚠ `certificateThumbprint` を設定すると Tauri 内蔵署名が動くので (a) では置かないこと」 | ⚠ **`signCommand` がある限り内蔵署名は動かない**（`sign()` が常に custom へ分岐）。`timestampUrl` / `digestAlgorithm` / `tsp` も**一切参照されない** ⇒ 結論（置かない）は同じだが理由が違う。タイムスタンプは署名ツール側の引数で付ける |
 | 12 | （記載なし）「Secrets 未設定なら未署名で通す」の実現方法 | ⚠⚠⚠ **公式の `--no-sign` は使えない**——`sign_updaters` が `no_sign` で **minisign 署名ごとスキップ**するため `.exe.sig` が出ず `Verify updater artifacts` が落ちる。⇒ **ラッパー側の分岐**（`STREAMDOCK_WINDOWS_SIGNING`）でしか維持できない |
 | 13 | (4)「サードパーティ Action を使うなら SHA 固定」 | ⚠ **Action を使わずに済んだ**（素の `run:` ＋ リリースタグ固定 URL ＋ **SHA-256 照合**）。`@develop` 問題は「固定する」ではなく「無くす」で解消した |
+
+## ⚠ 追記（2026-09-01・空回し① で判明した誤り）
+
+| # | 誤っていた前提 | 実際 |
+|---|---|---|
+| 14 | 「`signCommand` の相対パスは **`apps/desktop`** 基準」（tauri-action が `projectPath` を CLI の cwd にするため、と考えた） | ⚠⚠⚠ **`src-tauri` 基準**。tauri CLI は build の途中で **`set_current_dir(dirs.tauri)`** を呼び、`tauri.conf.json` のあるディレクトリへ移動してからバンドルする（`tauri-cli/src/build.rs`）。⇒ スクリプトは **`apps/desktop/src-tauri/scripts/`** に置く。`frontendDist` / `icon` / `externalBin` と同じ「tauri.conf.json からの相対」で揃う。**これで空回し①が落ちた**（`failed to run pwsh`） |
+
+⚠ **収穫**: Secrets が 1 本も無くてもラッパーは呼ばれる（`signCommand` があると `can_sign()` が真になるため）。
+⇒ **空回し①（Secrets なし）だけで、配線・パス解決・PowerShell の構文・アンインストーラ署名の経路まで検証できる。**
+
+⚠ **macOS レグの失敗は本タスクと無関係**: `Artifact storage quota has been hit`（Actions の保存容量上限）。
+成果物が大きい（sidecar 110MB・macOS は `.dmg` と `.app.tar.gz` の実質 2 本）ため、
+**空回しを繰り返すと容易に当たる**。古い artifact の削除か `retention-days` の短縮で対処する（未対応）。

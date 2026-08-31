@@ -29006,9 +29006,15 @@ CI を止める状態だったので、**署名を消して `bundle.windows.sign
 9. **fail-closed は成立する** —— `sign_custom` → `output_ok()` は**終了コードが非ゼロなら Err** を返し、
    `try_sign` の `?` でビルドが落ちる。⚠ **裏返すと、終了コードを正しく返さないツールでは fail-closed が破れる**
    （(a) を却下した理由そのもの）。
-10. **tauri CLI の cwd は `apps/desktop`** —— `tauri-action`（固定 SHA）の `buildProject` が `projectPath` を
-    そのまま `execTauriCommand(..., cwd)` に渡している。⇒ `signCommand` の相対パスはここ基準。
-    ⚠ 実在する相対パスは tauri が**絶対パスへ変換**してから渡すので、別 cwd で走るアンインストーラ署名でも壊れない。
+10. ⚠⚠⚠ **`signCommand` の相対パスの基準は `src-tauri`**（＝ `tauri.conf.json` のあるディレクトリ）。
+    `tauri-action` は `projectPath`（`apps/desktop`）を CLI の cwd にするが、**CLI 自身が build の途中で
+    `set_current_dir(dirs.tauri)` を呼び `src-tauri` へ移動してから**バンドルする（`tauri-cli/src/build.rs`）。
+    ⚠ **最初これを `apps/desktop` だと誤認してスクリプトを `apps/desktop/scripts/` に置き、空回し①が落ちた
+    （2026-09-01）**——pwsh がスクリプトを開けず `failed to run pwsh` になる。
+    ⇒ `apps/desktop/src-tauri/scripts/sign-windows.ps1` へ移動して解消。
+    結果的に `frontendDist` / `icon` / `externalBin` と**同じ「tauri.conf.json からの相対」に揃った**。
+    ⚠ 実在する相対パスは tauri が**絶対パスへ変換**してから渡すので、別 cwd で走るアンインストーラ署名でも壊れない
+    （＝置き場所を間違えると絶対パス化もされず、二重に壊れる）。
 11. ⚠⚠ **署名コマンドが失敗すると、その stdout は捨てられる** —— 成功時だけ
     `log::info!("Output of signing command: …")` で出力され、失敗時は `output_ok` が Err を返して
     **`failed to run pwsh` しか残らない**（stdout は `log::debug!` 止まりで既定の verbosity では出ない）。
@@ -29022,7 +29028,7 @@ CI を止める状態だったので、**署名を消して `bundle.windows.sign
 
 - `apps/desktop/src-tauri/tauri.conf.json`: `bundle.windows.signCommand` を新設
   （`pwsh -NoProfile -File scripts/sign-windows.ps1 %1`）。**資格情報はゼロ**。上記 7 のとおり他のキーは置かない。
-- `apps/desktop/scripts/sign-windows.ps1`（新規・**秘密ゼロ**）: ①署名無効なら警告して exit 0（未署名ビルドを許す）
+- `apps/desktop/src-tauri/scripts/sign-windows.ps1`（新規・**秘密ゼロ**）: ①署名無効なら警告して exit 0（未署名ビルドを許す）
   ②有効なのに env が欠けていたら exit 1 ③jsign で署名（`--storepass env:` / `--keypass env:`・`--replace`・
   `--tsaurl http://ts.ssl.com --tsmode RFC3161 --alg SHA-256`）④**`signtool verify /pa` で検証**し
   通らなければ exit 1。⚠ tauri は署名コマンドの stdout をログへ流すので**秘密を一切出力しない**。
@@ -29055,9 +29061,61 @@ grep 資格情報（tauri.conf.json）                          ✅ 0 件
 docs/security.md                                        → 無改変（§10 の方針は動かない。CI 上のツールに閉じた）
 ```
 
+### ⚠ 空回し① の結果（2026-09-01・**Secrets 未登録で実行**）
+
+⚠⚠ **Windows レグが落ちた** —— `npm ["run","tauri","build"]` が exit 1。**原因は上の 10**
+（`signCommand` の相対パスの基準を `apps/desktop` だと誤認していた）。ログの実物:
+
+```
+     Signing binaries\comment-sidecar-x86_64-pc-windows-msvc.exe
+     Signing binaries\comment-sidecar-x86_64-pc-windows-msvc.exe with a custom signing command
+failed to bundle project: `failed to run pwsh`
+```
+
+⇒ スクリプトを `src-tauri/scripts/` へ移して修正。**再実行が必要。**
+
+⚠ このログから**同時に確定したこと**:
+
+- **cwd は `src-tauri`**（`binaries\comment-sidecar-…` という**相対パス**で出ている）。上の 10 の裏付け。
+- **最初の署名対象は sidecar**（`sign_binaries_if_needed` が external binaries から始める）＝上の 3 の裏付け。
+- **signtool はランナーに在る**（後述の `SignTool Error` は tauri の `verify()` が出したもの）。
+- ⚠⚠ **`SignTool Error: No signature found.` / `Number of errors: 1` はログに出るが失敗ではない** ——
+  tauri が sidecar の「もう署名済みか」を `signtool verify` で調べているだけで、未署名なら必ずこう出る。
+  **署名が正常に走っていても毎回出る**ので、次回以降これを見て慌てないこと。
+- ⚠ **cargo のビルドだけで 15 分 52 秒**かかる ＝ **署名の失敗は 16 分待たされてから分かる**。
+
+⇒ **`Smoke-test the Windows signing wrapper (099a)` を新設**（計画外の追加・2026-09-01）。
+`Check version sync` / ガードと同じ**重いビルドの前**の位置で、ラッパーを空打ちして
+①**構文**（PowerShell はファイル全体を先に構文解析するので、どこの構文エラーもここで落ちる）
+②**no-op 経路**（署名無効なら exit 0＝未署名ビルドが通る性質）
+③**fail-closed**（署名有効なのに資格情報が無ければ exit 1）を**数秒で**確かめる。
+⚠ Secrets を使わないので **Windows レグでは常に走る**。
+
+⚠ **収穫**: Secrets が 1 本も無くてもラッパーは呼ばれる（`signCommand` を置くと `can_sign()` が真になるため）
+＝ **空回し①だけで配線・パス解決・PowerShell の構文まで検証できる**ことが実挙動で確認できた。
+
+⚠ **macOS レグの失敗は本タスクと無関係** —— `Failed to CreateArtifact: Artifact storage quota has been hit`
+（GitHub の Actions アーティファクト保存容量の上限）。⚠ 成果物が大きい（sidecar だけで 110MB・
+macOS は `.dmg` と `.app.tar.gz` の実質 2 本）ので、**空回しを繰り返すと容易に上限へ当たる**。
+
+⇒ **対処した（2026-09-01・計画外の追加）**:
+
+- ⚠⚠ **UI から消せない**ことが分かった —— GitHub は run を 1 つずつ開いてゴミ箱を押す形しか用意しておらず、
+  しかも **①アップロードに失敗した run には artifact が無い**（消す対象が存在しない）
+  **②`retention-days` で期限切れになった artifact にはゴミ箱アイコンが出ない**（Expired 表示）。
+  つまり「埋まっているのに手作業では戻せない」状態になる。
+- ⇒ **`.github/workflows/cleanup-artifacts.yml` を新設**（手動実行のみ）。残っている artifact を
+  API でまとめて削除する。⚠ **新しい Action は増やさない**（ランナー同梱の `gh` を使う）・
+  **`permissions: actions: write` のみ**（contents は与えない）。
+  ⚠ 0 件なら「消せるものは既に無い」＝ **GitHub 側の集計待ち（6〜12 時間）か別リポジトリが原因**、と切り分けられる。
+- ⇒ **`retention-days` を 3 → 1** に短縮。この artifact は release ジョブが**同じ run の中で**消費する
+  受け渡しでしかないので、長く置く意味が無い。⚠ **実機確認用に落とすのは run の当日中**という運用になる。
+- ⚠ **配布物（public 側の Releases）はこの枠とは別勘定**なので、artifact を消しても配布に影響しない。
+
 ### ⚠⚠ 残っていること（**CI・実機は未実施**）
 
 1. ⚠⚠⚠ **空回しのログでの順序確認**（署名 → `.sig`）。構造上は確定だが**実測はこれから**。
+   ⚠ 空回し①（Secrets なし）が緑になることも**まだ確認できていない**。
 2. **9 回の署名の実所要時間**と、eSigner 側の**署名回数の上限/課金**（契約内容依存・ダッシュボードで要確認）。
 3. **アンインストーラ署名（`!uninstfinalize`）が実際に通るか**——埋め込み文字列のバックスラッシュ二重化が懸念。
 4. **jsign × IV 証明書**の実績（eSigner は IV/OV/EV 対応だが、この組み合わせは未実測）。

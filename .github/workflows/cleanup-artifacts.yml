@@ -1,0 +1,86 @@
+# このリポジトリに残っている workflow artifact を**まとめて削除する**（手動実行のみ）。
+#
+# ## なぜ要るのか
+#
+# `release.yml` の成果物は大きい——comment-sidecar（Node SEA）だけで **110MB** あり、それが
+# macOS の `.dmg` と `.app.tar.gz`、Windows の NSIS `.exe` にそれぞれ入る。**1 回の空回しで数百 MB** 使う。
+# GitHub Actions のストレージ枠（private リポジトリはアカウント全体の合計）はすぐ埋まり、埋まると
+# `Failed to CreateArtifact: Artifact storage quota has been hit` でビルドが落ちる（2026-09-01 に発生）。
+#
+# ⚠ GitHub の UI からは **run を 1 つずつ開いてゴミ箱を押す**しかなく、しかも
+# **期限切れ（Expired）の artifact にはゴミ箱が出ない**ので、手作業では埋まった枠を戻しにくい。
+# ⇒ API でまとめて消す。**新しい Action は増やさず**、ランナーに最初から入っている `gh` を使う。
+#
+# ## 安全性
+#
+# ⚠ artifact は**ビルドの中間生成物**でしかない。配布物は release ジョブが public リポジトリ
+# `satoh23/StreamDock-releases` の **Releases** に添付しており、そちらは**この削除の対象外**
+# （Releases は Actions のストレージ枠とは別勘定）。⇒ 消しても配布に影響しない。
+#
+# ⚠⚠ **消した artifact は戻らない。** 実機確認のためにインストーラを落とす予定があるなら、
+# **先にダウンロードしてから**実行すること。
+#
+# ## 使い方
+#
+#   Actions タブ → cleanup-artifacts → Run workflow
+#
+# ⚠ 0 件だった場合は「消せるものは既に無い」＝ GitHub 側の集計待ち（6〜12 時間）か、
+#   **別の private リポジトリ**が枠を食っている。アカウントの Settings → Billing and licensing で確認する。
+name: cleanup-artifacts
+
+on:
+  workflow_dispatch: {}
+
+# artifact の削除には actions:write が要る（既定の read では消せない）。
+# 逆に contents は触らないので与えない（最小権限）。
+permissions:
+  actions: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      # checkout しない（リポジトリの中身は要らない・API を叩くだけ）。
+      - name: Delete all artifacts in this repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # 期限切れ（expired）は既に実体が無いので対象から外す（削除しようとすると 404 になる）。
+          gh api --paginate "/repos/$REPO/actions/artifacts?per_page=100" \
+            --jq '.artifacts[] | select(.expired == false) | "\(.id)\t\(.size_in_bytes)\t\(.name)"' \
+            > artifacts.tsv
+
+          count=$(wc -l < artifacts.tsv | tr -d ' ')
+          if [ "$count" -eq 0 ]; then
+            echo "削除できる artifact はありません（既に期限切れ、または最初から無い）。"
+            {
+              echo "### cleanup-artifacts"
+              echo ""
+              echo "削除できる artifact は **0 件** でした。"
+              echo ""
+              echo "ストレージ枠が埋まったままなら、原因は次のどちらかです:"
+              echo "- GitHub 側の使用量の再計算待ち（6〜12 時間）"
+              echo "- **別の private リポジトリ**が枠を使っている（Settings → Billing and licensing で確認）"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          total=0
+          while IFS=$'\t' read -r id size name; do
+            echo "削除: $name ($((size / 1024 / 1024)) MB, id=$id)"
+            gh api -X DELETE "/repos/$REPO/actions/artifacts/$id"
+            total=$((total + size))
+          done < artifacts.tsv
+
+          echo "合計 $count 件 / $((total / 1024 / 1024)) MB を削除しました。"
+          {
+            echo "### cleanup-artifacts"
+            echo ""
+            echo "**$count 件 / $((total / 1024 / 1024)) MB** を削除しました。"
+            echo ""
+            echo "⚠ 使用量の表示に反映されるまで **6〜12 時間**かかることがあります。"
+          } >> "$GITHUB_STEP_SUMMARY"

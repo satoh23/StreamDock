@@ -97,6 +97,50 @@ jobs:
         shell: bash
         run: node .github/scripts/check-updater-signing-compat.mjs
 
+      # 099a: 署名ラッパーを**重いビルドの前に**空打ちして、構文と分岐だけ確かめる。
+      #   ⚠⚠ `signCommand` を置くと **Secrets の有無に関係なく** sign-windows.ps1 が約 9 回呼ばれる。
+      #     つまり「構文エラー」「置き場所の誤り」は **cargo の 15 分ビルドが終わった後**に初めて露見する。
+      #     実際 2026-09-01 の空回しで、スクリプトの置き場所を誤って `failed to run pwsh` を踏んだ
+      #     （`signCommand` の相対パスの基準は projectPath ではなく **`src-tauri`**。tauri CLI が
+      #      build の途中で `set_current_dir(dirs.tauri)` を呼ぶため）。数秒で落ちる検査をここに置く。
+      #   ⚠ `Check version sync` / 上のガードと同じ「重いものの前に落とす」思想。
+      #   ⚠ Secrets を使わないので **Windows レグでは常に走る**（署名の有効・無効に関係なく）。
+      - name: Smoke-test the Windows signing wrapper (099a)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+
+          $script = 'apps/desktop/src-tauri/scripts/sign-windows.ps1'
+          # 署名は**しない**経路だけを通すので、この引数のファイルは読まれも書かれもしない。
+          $dummy = 'apps/desktop/src-tauri/tauri.conf.json'
+          # 子プロセスがジョブサマリへ書かないようにする（②は「わざと失敗させる」ので紛らわしい）。
+          $env:GITHUB_STEP_SUMMARY = ''
+
+          # ① 署名が無効なら「何もせず成功」で返ること（＝ Secrets 未設定でも未署名でビルドが通る性質）
+          $env:STREAMDOCK_WINDOWS_SIGNING = '0'
+          $out = & pwsh -NoProfile -File $script $dummy 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host $out
+            Write-Host "::error::sign-windows.ps1 が no-op 経路で失敗した（exit $LASTEXITCODE）"
+            exit 1
+          }
+
+          # ② 署名が有効なのに資格情報が無いなら**落ちる**こと（fail-closed。未署名で素通りさせない）
+          $env:STREAMDOCK_WINDOWS_SIGNING = '1'
+          foreach ($name in 'JSIGN_JAR', 'ES_USERNAME', 'ES_PASSWORD', 'CREDENTIAL_ID', 'ES_TOTP_SECRET') {
+            Set-Item -Path "Env:$name" -Value ''
+          }
+          $out = & pwsh -NoProfile -File $script $dummy 2>&1 | Out-String
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host $out
+            Write-Host "::error::資格情報が無いのに成功で返った（fail-closed が壊れている）"
+            exit 1
+          }
+
+          Write-Host "sign-windows.ps1: 構文・no-op 経路・fail-closed を確認した"
+
       # 055a: このジョブは updater 秘密鍵を扱うため、**ブランチ参照（`@stable`）をやめてコミット SHA へ固定**する
       #   （`tauri-action` を固定したのと同じ理屈。同一ジョブの Action はワークスペースと PATH を書き換えられるので、
       #   ステップ単位の env でも後続ステップの秘密を奪うラッパを仕込みうる）。
@@ -195,7 +239,7 @@ jobs:
       #   日本在住の個人は Azure Trusted Signing の公開信頼証明書の対象外なので IV + eSigner を採った。
       #
       #   ⚠⚠ 署名は **tauri のバンドル過程の中**で行う（`tauri.conf.json` の `bundle.windows.signCommand`
-      #     → `apps/desktop/scripts/sign-windows.ps1` → jsign → eSigner）。**ビルド後にインストーラを
+      #     → `apps/desktop/src-tauri/scripts/sign-windows.ps1` → jsign → eSigner）。**ビルド後にインストーラを
       #     署名し直す形は採らない**——updater の `.sig`（minisign）はバンドル時点のバイト列に対して
       #     作られるので、後からバイト列を変えると Windows の自己更新だけが静かに壊れる（055a）。
       #     この構成は build ジョブ冒頭の `Guard - post-build signing breaks updater signature (099a)` が検査する。
@@ -318,12 +362,19 @@ jobs:
       #     拡張子ワイルドカードにしておき、実ファイル名は空回しのログで確定させる。
       #   ⚠ `if-no-files-found: error` は「全パターンが 0 件」でしか落ちないので、欠落検出は
       #     上の `Verify updater artifacts` と release ジョブの latest.json 生成側（fail-closed）が担う。
+      # ⚠ 保持は **1 日**（最短）。この artifact は release ジョブが**同じ run の中で**ダウンロードして
+      #   public 側へ添付するための受け渡しでしかなく、長く置く意味が無い。一方で成果物は大きく
+      #   （sidecar だけで 110MB ×〔dmg / app.tar.gz / NSIS exe〕）、**1 回の空回しで数百 MB** 使うため、
+      #   3 日保持だと Actions のストレージ枠がすぐ埋まり
+      #   `Failed to CreateArtifact: Artifact storage quota has been hit` でビルドが落ちる（2026-09-01 に発生）。
+      #   ⚠⚠ **人が実機確認のためにインストーラを落とすのは、run の当日中に行うこと。**
+      #     期限切れ後に必要になったら run を再実行する（あるいは `cleanup-artifacts` の注意書きを参照）。
       - name: Upload installers (artifact)
         uses: actions/upload-artifact@v4
         with:
           name: bundles-${{ matrix.platform }}
           if-no-files-found: error
-          retention-days: 3
+          retention-days: 1
           path: |
             apps/desktop/src-tauri/target/**/release/bundle/dmg/*.dmg
             apps/desktop/src-tauri/target/**/release/bundle/nsis/*.exe

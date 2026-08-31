@@ -42,8 +42,14 @@
 #
 #   pwsh -NoProfile -File scripts/sign-windows.ps1 <署名対象の絶対パス>
 #
-# （`tauri.conf.json` の `signCommand`。cwd は `apps/desktop`＝tauri-action が projectPath を
-#   そのまま CLI の cwd にするため。相対パスは tauri 側が絶対パスへ変換してから渡す）
+# ⚠⚠⚠ **この相対パスの基準は `src-tauri`（＝ tauri.conf.json のあるディレクトリ）**であって、
+#   tauri-action に渡す `projectPath`（`apps/desktop`）ではない。tauri CLI は build の途中で
+#   **`set_current_dir(dirs.tauri)`** を呼び、`src-tauri` へ移動してからバンドルするため
+#   （`tauri-cli/src/build.rs`）。⇒ **本スクリプトは `src-tauri/scripts/` に置くこと。**
+#   `frontendDist` / `icon` / `externalBin` と同じ「tauri.conf.json からの相対」で揃う。
+#   ⚠ 最初 `apps/desktop/scripts/` に置いて CI が落ちた（2026-09-01・pwsh がファイルを開けない）。
+#   なお実在する相対パスは tauri 側が**絶対パスへ変換**してから渡すので、別 cwd で走る
+#   アンインストーラ署名（`!uninstfinalize`）でも壊れない。
 #
 # ## 使う env（すべて release.yml が Windows レグにだけ渡す）
 #

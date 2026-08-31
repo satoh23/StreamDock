@@ -162,13 +162,28 @@ git push --tags
 なお `release.yml` の `tauri-apps/tauri-action` と `dtolnay/rust-toolchain` は、updater の秘密鍵を扱うジョブに
 いるため**コミット SHA へ固定**してある（供給網対策）。更新するときは手でその SHA を上げる。
 
+### ⚠ アーティファクトと Actions のストレージ枠
+
+build ジョブの成果物は **workflow artifact 経由で release ジョブへ受け渡すだけ**（同じ run の中で消費される）。
+⚠ ただし**サイズが大きい**——comment-sidecar だけで 110MB あり、それが macOS の `.dmg` と `.app.tar.gz`、
+Windows の NSIS `.exe` にそれぞれ入るので、**1 回の実行で数百 MB** 使う。
+
+- **保持は 1 日**（`retention-days: 1`）。⚠ **実機確認のためにインストーラを落とすなら run の当日中に。**
+  期限切れ後に必要になったら run を再実行する。
+- 枠が埋まると `Failed to CreateArtifact: Artifact storage quota has been hit` でビルドが落ちる。
+  そのときは **Actions → `cleanup-artifacts` → Run workflow** で残っている artifact をまとめて削除する
+  （UI からは run を 1 つずつ開く必要があり、**期限切れの artifact はゴミ箱アイコンすら出ない**ため）。
+  ⚠ 0 件だった場合は「消せるものが既に無い」＝ **GitHub 側の使用量の再計算待ち（6〜12 時間）**か、
+  **別の private リポジトリ**が枠を使っている（Settings → Billing and licensing で確認）。
+- ⚠ **配布物（public 側の Releases）はこの枠とは別勘定**なので、artifact を消しても配布に影響しない。
+
 ### 署名について
 
 - **Windows**: CI に SSL.com の署名 Secrets（`ES_USERNAME` 他）が**設定されていれば**、
   **tauri のバンドル過程の中で** NSIS `.exe` を **SSL.com の個人検証(IV)証明書 + eSigner クラウド署名**で署名する
   （プロパティ →「デジタル署名」に発行者表示）。**Secrets 未設定なら署名せず、未署名で配布**される
   ＝証明書取得前でも comment-viewer 入り MVP を配布でき、Secrets を入れた瞬間からコード変更なしで署名に切り替わる。
-  - 経路は `tauri.conf.json` の **`bundle.windows.signCommand`** → `apps/desktop/scripts/sign-windows.ps1`
+  - 経路は `tauri.conf.json` の **`bundle.windows.signCommand`** → `apps/desktop/src-tauri/scripts/sign-windows.ps1`
     → **jsign**（Apache-2.0・CI 上にだけ入れる。リリースタグ固定＋SHA-256 照合）→ SSL.com eSigner。
     ⚠ **ビルド後にインストーラを署名し直す形は採らない**——updater の minisign 署名はバンドル時点の
       バイト列に対して作られるので、後からバイト列を変えると**自己更新だけが静かに壊れる**（下記・055a）。
