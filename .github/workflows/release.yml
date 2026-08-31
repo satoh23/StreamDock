@@ -10,7 +10,8 @@
 #      Secrets の RELEASE_REPO_TOKEN（public リポジトリの Contents: Read/Write な PAT）を使う。
 #
 # トリガー: `v` 始まりのタグ push（例 v0.1.0）／手動実行（workflow_dispatch）。
-# この段階は未署名（Windows は SmartScreen 警告あり＝フェーズ2で署名して解消）。
+# Windows は署名 Secrets（ES_USERNAME 他）があれば **バンドル過程の中で**コード署名する（099a・フェーズ2）。
+# Secrets 未設定なら未署名のまま（SmartScreen 警告あり）。macOS は当面未署名。
 name: release
 
 on:
@@ -47,8 +48,11 @@ jobs:
     runs-on: ${{ matrix.platform }}
 
     # Windows 署名は SSL.com の Secrets（ES_USERNAME）が設定されている時だけ実行する。
-    # 未設定なら署名ステップをスキップし未署名でビルド＝CI は緑のまま。証明書取得前でも
-    # comment-viewer 入り MVP を配布でき、Secrets を入れた瞬間からコード変更なしで自動署名に切り替わる。
+    # 未設定なら未署名でビルド＝CI は緑のまま。証明書取得前でも comment-viewer 入り MVP を配布でき、
+    # Secrets を入れた瞬間からコード変更なしで自動署名に切り替わる。
+    # ⚠ この env が直接ゲートするのは **①署名構成のガード ②jsign の導入** の 2 ステップだけ。
+    #   署名そのものは tauri のバンドル過程の中（`signCommand`）で走るので、
+    #   「署名するかどうか」は `Build installers` が渡す STREAMDOCK_WINDOWS_SIGNING で伝える（099a）。
     env:
       HAS_WINDOWS_SIGNING: ${{ secrets.ES_USERNAME != '' }}
 
@@ -186,7 +190,54 @@ jobs:
           codesign --force --sign - comment-sidecar-universal-apple-darwin
           lipo -info comment-sidecar-universal-apple-darwin
 
-      # Release は作らず、インストーラをビルドするだけ（tagName を渡さない）。未署名で生成する。
+      # 099a-(II): Windows のコード署名ツール（jsign）を **CI 上にだけ** 用意する。
+      #   Windows インストーラは SSL.com の個人検証(IV)証明書＋eSigner（クラウド HSM）で署名する。
+      #   日本在住の個人は Azure Trusted Signing の公開信頼証明書の対象外なので IV + eSigner を採った。
+      #
+      #   ⚠⚠ 署名は **tauri のバンドル過程の中**で行う（`tauri.conf.json` の `bundle.windows.signCommand`
+      #     → `apps/desktop/scripts/sign-windows.ps1` → jsign → eSigner）。**ビルド後にインストーラを
+      #     署名し直す形は採らない**——updater の `.sig`（minisign）はバンドル時点のバイト列に対して
+      #     作られるので、後からバイト列を変えると Windows の自己更新だけが静かに壊れる（055a）。
+      #     この構成は build ジョブ冒頭の `Guard - post-build signing breaks updater signature (099a)` が検査する。
+      #
+      #   なぜ jsign か: ①終了コードを正しく返すので tauri 側の fail-closed（`output_ok`）が本当に効く
+      #     ②署名対象を外部へアップロードせず**ハッシュだけ**を送る（sidecar は 110MB あり、
+      #     ビルド時に焼き込んだ Client Secret を含む）③資格情報を `env:` 指定で渡せる。
+      #   供給網対策: **サードパーティ Action を使わない**。リリースタグ固定の URL から取得し、
+      #     **SHA-256 を照合**してから使う。⚠ jar を更新するときはこのハッシュも手で上げること。
+      #   §10: アプリの実行時依存は増やさない（Cargo.toml / package.json に差分ゼロ）。CI 上のみ。
+      - name: Install jsign (Windows code signing)
+        if: matrix.platform == 'windows-latest' && env.HAS_WINDOWS_SIGNING == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = '7.5'
+          $expected = '602a51c3545a6dc4fb99bd2ea7152b26d1345916d0c93ddfbd5936cb735af91c'
+          $jar = Join-Path $env:RUNNER_TEMP "jsign-$version.jar"
+
+          Invoke-WebRequest -UseBasicParsing `
+            -Uri "https://github.com/ebourg/jsign/releases/download/$version/jsign-$version.jar" `
+            -OutFile $jar
+
+          $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $jar).Hash.ToLower()
+          if ($actual -ne $expected) {
+            Write-Host "::error::jsign-$version.jar の SHA-256 が一致しない（expected=$expected actual=$actual）"
+            exit 1
+          }
+          Write-Host "jsign $version の SHA-256 を確認した"
+
+          # jsign は Java 製。windows-latest には JDK がプリインストールされている前提だが、
+          # 無いと **重いビルドの後**に署名で落ちるので、ここで先に確かめる。
+          if (-not (Get-Command java -ErrorAction SilentlyContinue)) {
+            Write-Host "::error::java が PATH に無い（jsign の実行に必要）"
+            exit 1
+          }
+          & java -version 2>&1 | ForEach-Object { Write-Host $_ }
+
+          "JSIGN_JAR=$jar" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # Release は作らず、インストーラをビルドするだけ（tagName を渡さない）。
+      # Windows は署名 Secrets があればこの中で署名される（無ければ未署名。上の jsign ステップ参照）。
       #
       # 055a: updater 成果物（macOS `.app.tar.gz` / Windows インストーラ）の **minisign 署名**をここで作らせる。
       #   秘密鍵は GitHub の暗号化 Secrets のみに置き、**env で渡すだけ**（echo も run での参照もしない）。
@@ -194,7 +245,7 @@ jobs:
       #     bundle 段階で「A public key has been found, but no private key」で失敗する（ローカルビルドも同様）。
       #
       # 供給網対策（055a）: 本ステップに updater 秘密鍵を渡すようになったため、floating tag `@v0` をやめて
-      #   コミット SHA へ固定する（099a が `sslcom/esigner-codesign@develop` について書いている理屈と同じ）。
+      #   コミット SHA へ固定する（099a で署名ツールをタグ固定＋SHA-256 照合で入れているのと同じ理屈）。
       #   固定時点で `v0` が指していた commit と同一なので**挙動は変わらない**。更新は手動で行う。
       - name: Build installers
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # action-v0.6.2
@@ -204,6 +255,17 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # 099a: Windows のコード署名資格情報。**Windows レグかつ Secrets がある時だけ**値が入る
+          #   （三項式で macOS へは空文字を渡す＝資格情報を渡さない。2026-07-21 の判断と同じ）。
+          #   `signCommand` を設定すると tauri は Secrets の有無に関係なく署名コマンドを呼ぶので、
+          #   「署名するかどうか」は STREAMDOCK_WINDOWS_SIGNING で sign-windows.ps1 に伝える
+          #   （公式の `--no-sign` は **updater の minisign 署名まで止めてしまう**ので使えない）。
+          #   ⚠ 値はすべて Secrets 由来で GitHub が自動マスクする。ログにも tauri.conf.json にも書かない。
+          STREAMDOCK_WINDOWS_SIGNING: ${{ (matrix.platform == 'windows-latest' && secrets.ES_USERNAME != '') && '1' || '0' }}
+          ES_USERNAME: ${{ matrix.platform == 'windows-latest' && secrets.ES_USERNAME || '' }}
+          ES_PASSWORD: ${{ matrix.platform == 'windows-latest' && secrets.ES_PASSWORD || '' }}
+          CREDENTIAL_ID: ${{ matrix.platform == 'windows-latest' && secrets.CREDENTIAL_ID || '' }}
+          ES_TOTP_SECRET: ${{ matrix.platform == 'windows-latest' && secrets.ES_TOTP_SECRET || '' }}
 
       # 055a: updater 成果物が本当に生成されたかを明示的に確かめる。
       # ⚠ 後段の `upload-artifact` の `if-no-files-found: error` は **全パターンが 0 件**のときしか失敗しない。
@@ -246,36 +308,6 @@ jobs:
             exit 1
           fi
           echo "updater 成果物 OK"
-
-      # 099a-(II): Windows インストーラを SSL.com eSigner（クラウド署名）で署名する。
-      # 日本の個人は Azure Trusted Signing 対象外のため、個人検証(IV)証明書＋eSigner を採用。
-      # tauri ビルド後に NSIS(.exe) を署名し override でその場置換する（macOS レグは署名しない）。
-      # ⚠ `.msi`(WiX) は配布対象外にしたため署名対象からも外した（旧 `Sign WiX installer (.msi)` を削除）。
-      # 認証情報は Secrets のみ（ES_USERNAME / ES_PASSWORD / CREDENTIAL_ID / ES_TOTP_SECRET）。ログに出さない。
-      # セキュリティ: sslcom/esigner-codesign は署名資格情報を受け取るため、@develop ではなく
-      #   レビュー済みのコミット SHA / リリースタグへ固定することを推奨（供給網対策）。
-      # 055a のガード: **ビルド後の置換署名は updater の minisign 署名を壊す**ため、
-      #   ビルド前の `Guard - post-build signing breaks updater signature (099a)` が
-      #   `ES_USERNAME` を登録した瞬間に（＝下の署名ステップへ到達する前に）ビルドを止める。
-      - name: Locate Windows installers
-        if: matrix.platform == 'windows-latest' && env.HAS_WINDOWS_SIGNING == 'true'
-        id: installers
-        shell: bash
-        run: |
-          ws="${GITHUB_WORKSPACE//\\//}"
-          echo "exe=$(ls "$ws"/apps/desktop/src-tauri/target/release/bundle/nsis/*.exe | head -n1)" >> "$GITHUB_OUTPUT"
-
-      - name: Sign NSIS installer (.exe)
-        if: matrix.platform == 'windows-latest' && env.HAS_WINDOWS_SIGNING == 'true'
-        uses: sslcom/esigner-codesign@develop
-        with:
-          command: sign
-          username: ${{ secrets.ES_USERNAME }}
-          password: ${{ secrets.ES_PASSWORD }}
-          credential_id: ${{ secrets.CREDENTIAL_ID }}
-          totp_secret: ${{ secrets.ES_TOTP_SECRET }}
-          file_path: ${{ steps.installers.outputs.exe }}
-          override: true
 
       # 生成されたインストーラと updater 成果物を workflow artifact として保存する。
       # 各 OS は自分の成果物のみ一致する（他 OS のパターンは 0 件でよい）。

@@ -28954,3 +28954,114 @@ docs/security.md → 無改変（保存・外部通信・権限・OS 操作の�
 
 1. **実機確認は未実施**（①配信イベントタブにガチャのカードが出ないこと ②コメントタブでは従来どおり
    2 枚が出て、作成・編集・演出設定が動くこと）。
+
+---
+
+## 2026-08-31 (099a Windows コード署名 —— **ビルド後の置換署名から `signCommand` への移行**／CI 未実行)
+
+⚠⚠⚠ **本タスクの実体は「署名ステップを足すこと」ではなく、「壊れる形から壊れない形への移行」**である。
+`ES_USERNAME` を登録した瞬間に 055a のガード（`Guard - post-build signing breaks updater signature (099a)`）が
+CI を止める状態だったので、**署名を消して `bundle.windows.signCommand` へ寄せた**。
+
+### 方式の選定（決定 1）—— **jsign を採用**
+
+「eSigner のクラウド署名を `signCommand` から呼べるか」が最大の未知だった。候補は 3 つあり、
+**どれも同じ証明書・同じ eSigner サービスを使う**（違うのは「eSigner に話しかけるクライアント」だけ）。
+
+| 案 | 判定 | 理由 |
+|---|---|---|
+| (a) SSL.com CodeSignTool を直接呼ぶ | ⚠⚠⚠ **却下** | ①**fail-closed が壊れる**——tauri は署名コマンドの終了コードだけを見る（`utils/mod.rs` の `output_ok`）のに、**SSL.com 公式 Action 自身が CodeSignTool の終了コードを信用しておらず** stdout を `"Error"`/`"Exception"` で文字列検査している。「署名に失敗したのに CI 緑」を作りうる ②**ファイル本体をアップロードする**——署名対象には sidecar（**実測 110MB**・ビルド時に焼き込んだ Client Secret を含む）が入るため、秘密入りバイナリを毎ビルド外部へ送ることになる ③9 回分のアップロード＋マルウェアスキャンで時間が読めない |
+| (b) eSigner CKA（CNG KSP）＋ 素の signtool | **採らず（次善として残す）** | SSL.com 公式・windows-latest の完全非対話サンプルがあり実績は最も堅い。ハッシュのみ送信で signtool の終了コードも正常。ただし**インストーラ＋vc_redist ×2＋KSP 登録＋config＋load** と手数が多く、**資格情報を含む `master.key` をランナーのディスクに書く**。`CREDENTIAL_ID` も使わなくなり README の Secrets 一覧とズレる |
+| **(c) jsign 7.5（Apache-2.0・単一 JAR）** | ✅ **採用** | ①**終了コードが正常**＝ tauri 側の fail-closed が本当に効く ②**ハッシュのみ送信**（本体はランナーから出ない）③**`--storepass env:` / `--keypass env:` を公式サポート**＝パスワードと TOTP がコマンド行に一度も出ない（後述の「NSIS がコマンド文字列を埋め込む」問題と噛み合う）④JAR 1 個・タグ固定＋SHA-256 照合で入る（**サードパーティ Action がゼロになる**）⑤決めてあった Secrets 4 本が `--storepass`/`--alias`/`--keypass` に 1:1 で入る |
+
+⚠ (c) の弱点は「SSL.com 公式ではない」こと。**ラッパー方式にしたので乗り換えが安い**——
+`tauri.conf.json` の `signCommand` は据え置きのまま、`sign-windows.ps1` の中身と導入ステップだけ差し替えれば (b) へ倒せる。
+
+### ⚠⚠ 実コード（tauri-cli 2.11.4）で確定させたこと
+
+タスクファイルの前提と食い違うものが複数あったので、**ソースで裏を取ってから**設計した。
+
+1. **`signCommand` は NSIS `.exe` に対して確かに呼ばれる** —— `bundle/windows/nsis/mod.rs` が makensis の出力を
+   rename した直後に `try_sign(&nsis_installer_path, …)`。macOS 側（`app`/`dmg`）には**一切呼ばれない**
+   （`sign_binaries_if_needed` が `TargetPlatform::Windows` 限定）。
+2. ⚠⚠⚠ **順序は「コード署名 → minisign `.sig`」で構造的に保証されている** ——
+   `tauri-cli/src/bundle.rs` が `bundle_project()`（この中で installer を署名）→ `sign_updaters()` の順に呼ぶ。
+   **⇒ 地雷は消える。** ただし**空回しのログでの再確認はまだ**（下の「残っていること」）。
+3. ⚠⚠ **署名は `.exe` 1 本ではなく 1 ビルド約 9 回走る** —— sidecar（`external_binaries`）／本体 `StreamDock.exe`
+   （package type ごとに patch 後）／NSIS プラグイン DLL 5 本／**アンインストーラ**／installer。
+   タスクファイルの「署名対象も `.exe` だけ」は**置換署名時代の前提**で、移行後は成立しない。
+4. ⚠⚠⚠ **アンインストーラ署名は署名コマンド文字列を `installer.nsi` に埋め込む**
+   （`!define UNINSTALLERSIGNCOMMAND "…"` → `!uninstfinalize`）。
+   ⇒ **資格情報を `signCommand` に書くと、コミットされるだけでなく中間生成物にも残る**。env 渡し必須の裏付け。
+5. ⚠⚠⚠ **`--no-sign` は使えない** —— `sign_updaters` の冒頭で `no_sign` を見て **minisign 署名ごとスキップ**する。
+   `.exe.sig` が生成されず `Verify updater artifacts` が落ちる。⇒「Secrets 未設定なら未署名で CI 緑」は
+   **ラッパー側の分岐**でしか維持できない。
+6. **`can_sign()` は `signCommand.is_some() || certificateThumbprint.is_some()`** ——
+   `signCommand` を置いた時点で **Secrets の有無に関係なく**署名コマンドが呼ばれる（ローカルビルドも）。5 と同じ結論。
+7. **`signCommand` があると `timestampUrl` / `digestAlgorithm` / `tsp` / `certificateThumbprint` は一切参照されない**
+   （`sign()` が常に `sign_command_custom` へ分岐）。⇒ **どれも置かない**（決定 3）。二重に持たない。
+8. ⚠⚠⚠ **ガードは文字列記法しか受け付けない** —— `check-updater-signing-compat.mjs` は
+   `typeof bundle.windows?.signCommand === "string"`。Tauri が認めるオブジェクト記法 `{cmd, args}` で書くと
+   **移行後もガードが fail する**。⇒ 文字列記法（空白区切り＝パスに空白を使えない）で書いた。
+9. **fail-closed は成立する** —— `sign_custom` → `output_ok()` は**終了コードが非ゼロなら Err** を返し、
+   `try_sign` の `?` でビルドが落ちる。⚠ **裏返すと、終了コードを正しく返さないツールでは fail-closed が破れる**
+   （(a) を却下した理由そのもの）。
+10. **tauri CLI の cwd は `apps/desktop`** —— `tauri-action`（固定 SHA）の `buildProject` が `projectPath` を
+    そのまま `execTauriCommand(..., cwd)` に渡している。⇒ `signCommand` の相対パスはここ基準。
+    ⚠ 実在する相対パスは tauri が**絶対パスへ変換**してから渡すので、別 cwd で走るアンインストーラ署名でも壊れない。
+11. ⚠⚠ **署名コマンドが失敗すると、その stdout は捨てられる** —— 成功時だけ
+    `log::info!("Output of signing command: …")` で出力され、失敗時は `output_ok` が Err を返して
+    **`failed to run pwsh` しか残らない**（stdout は `log::debug!` 止まりで既定の verbosity では出ない）。
+    ⇒ ラッパーの `Fail` は**ジョブサマリ（`GITHUB_STEP_SUMMARY`）にも理由を書く**。これが無いと
+    「9 回の署名のどれが、なぜ落ちたのか」が CI ログから一切分からなくなる。
+12. ⚠ **PowerShell 7.4 以降はネイティブコマンドの非ゼロ終了が既定で例外になる**
+    （`$PSNativeCommandUseErrorActionPreference`）。バージョン差で「自前のエラーメッセージが出る／出ない」が
+    変わるので、ラッパーでは明示的に**終了コードで自分で判定する**側へ倒した（fail-closed 自体はどちらでも保たれる）。
+
+### 変更点
+
+- `apps/desktop/src-tauri/tauri.conf.json`: `bundle.windows.signCommand` を新設
+  （`pwsh -NoProfile -File scripts/sign-windows.ps1 %1`）。**資格情報はゼロ**。上記 7 のとおり他のキーは置かない。
+- `apps/desktop/scripts/sign-windows.ps1`（新規・**秘密ゼロ**）: ①署名無効なら警告して exit 0（未署名ビルドを許す）
+  ②有効なのに env が欠けていたら exit 1 ③jsign で署名（`--storepass env:` / `--keypass env:`・`--replace`・
+  `--tsaurl http://ts.ssl.com --tsmode RFC3161 --alg SHA-256`）④**`signtool verify /pa` で検証**し
+  通らなければ exit 1。⚠ tauri は署名コマンドの stdout をログへ流すので**秘密を一切出力しない**。
+- `.github/workflows/release.yml`:
+  - **削除**（ガードの条件 2・セットで消す）: `Locate Windows installers` / ビルド後の NSIS 置換署名ステップ。
+    ⚠ ガードは文字列検査なので、**コメントに判定キーワードを両方残さない**ようにも書き直した。
+  - **追加**: `Install jsign (Windows code signing)`（Windows レグ・`HAS_WINDOWS_SIGNING` ゲート）。
+    リリースタグ固定 URL から取得し **SHA-256 `602a51c3…` を照合**、`java` の存在も**重いビルドの前に**確認する。
+    ⚠ **サードパーティ Action は使わない**（`@develop` 問題の解消であって、代わりに同じ問題を持ち込まない）。
+  - **変更**: `Build installers` の env に `STREAMDOCK_WINDOWS_SIGNING` と Secrets 4 本を
+    **三項式で Windows レグにだけ**注入（macOS へは空文字＝資格情報を渡さない。2026-07-21 の判断と同じ）。
+  - ⚠ `Guard …` / `Verify updater artifacts` / `Upload installers` / release ジョブ / macOS レグは**無改変**。
+- `README.md`: 「署名について」を移行後の形へ。⚠「**ビルド後に署名する**」が嘘になるので直した。
+  IV の評判蓄積型の記述と Azure から変えた経緯は**残した**。
+- `docs/task-board.md`: 099a 行が**まだ「Azure Trusted Signing」のまま**だったので直した（README/release.yml/
+  099a は 2026-07-21 に更新済みで、task-board だけ取り残されていた）。055 節の「既に埋まっている地雷」も解消済みへ。
+- `docs/tasks/099b-updater-e2e.md`: E2E-6 へ「署名済みバイト列に対する `.sig` か」の観点を申し送り。
+
+### 検証（実測・2026-08-31）
+
+```
+node .github/scripts/check-updater-signing-compat.mjs   ✅ OK (signCommand=設定あり, 置換署名ステップ=0 個)
+pnpm --filter ./apps/desktop typecheck                  ✅
+cargo check                                             ✅（⚠ Rust は無改変）
+tauri.conf.json の JSON 妥当性                           ✅
+grep 置換署名ステップ                                     ✅ 0 件
+grep 資格情報（tauri.conf.json）                          ✅ 0 件
+アプリの実行時依存（package.json / lock / Cargo.*）        ✅ 差分ゼロ
+アプリ本体（src / src-tauri/src / comment-sidecar/src）    ✅ 差分ゼロ
+docs/security.md                                        → 無改変（§10 の方針は動かない。CI 上のツールに閉じた）
+```
+
+### ⚠⚠ 残っていること（**CI・実機は未実施**）
+
+1. ⚠⚠⚠ **空回しのログでの順序確認**（署名 → `.sig`）。構造上は確定だが**実測はこれから**。
+2. **9 回の署名の実所要時間**と、eSigner 側の**署名回数の上限/課金**（契約内容依存・ダッシュボードで要確認）。
+3. **アンインストーラ署名（`!uninstfinalize`）が実際に通るか**——埋め込み文字列のバックスラッシュ二重化が懸念。
+4. **jsign × IV 証明書**の実績（eSigner は IV/OV/EV 対応だが、この組み合わせは未実測）。
+5. **windows-latest の Java 有無**（プリインストール前提。無ければ `actions/setup-java` を SHA 固定で足す）。
+6. `signtool verify /pa /v` と「プロパティ → デジタル署名」の発行者表示（**Windows 実機**）。
+7. ⚠ **自己更新が壊れていないこと**は 099b の **E2E-6**（本タスクは「署名が付いて CI が緑」まで）。
+8. `security-review` はこの後実施。

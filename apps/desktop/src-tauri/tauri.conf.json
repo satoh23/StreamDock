@@ -37,7 +37,10 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "signCommand": "pwsh -NoProfile -File scripts/sign-windows.ps1 %1"
+    }
   },
   "plugins": {
     "updater": {

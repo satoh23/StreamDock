@@ -101,8 +101,11 @@ macOS と Windows(x64) のインストーラをクラウドで生成する。
   - `YOUTUBE_CLIENT_ID` / `YOUTUBE_CLIENT_SECRET` … Google Cloud の「Desktop app」OAuth クライアント
 - **Windows 署名（SSL.com eSigner・クラウド署名）**:
   - `ES_USERNAME` / `ES_PASSWORD` … SSL.com アカウントのログイン情報
-  - `CREDENTIAL_ID` … eSigner の署名資格情報（証明書）ID（SSL.com ダッシュボード、または `get_credential_ids` で取得）
+  - `CREDENTIAL_ID` … eSigner の署名資格情報（証明書）ID（SSL.com ダッシュボード、または `get_credential_ids` で取得）。
+    署名時は jsign の `--alias` に入る
   - `ES_TOTP_SECRET` … 自動署名用の TOTP シークレット（eSigner の自動化設定で取得）
+  - ⚠ 4 本とも **Windows レグの `Build installers` にだけ** env で渡す（macOS へは渡さない）。
+    `ES_USERNAME` を登録した時点で署名が有効になる（＝ CI の判定キー）
 - **アプリ自己アップデート（updater）の署名鍵（055a）**:
   - `TAURI_SIGNING_PRIVATE_KEY` … `pnpm --filter ./apps/desktop tauri signer generate -w <保存先>` で作った**秘密鍵ファイルの中身**
   - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` … 上記の生成時に設定したパスワード
@@ -161,24 +164,32 @@ git push --tags
 
 ### 署名について
 
-- **Windows**: CI に SSL.com の署名 Secrets（`ES_USERNAME` 他）が**設定されていれば**、tauri ビルド後に
-  NSIS `.exe` を **SSL.com の個人検証(IV)証明書 + eSigner クラウド署名**で署名する
-  （プロパティ →「デジタル署名」に発行者表示）。**Secrets 未設定なら署名ステップは自動スキップし、未署名で配布**される
+- **Windows**: CI に SSL.com の署名 Secrets（`ES_USERNAME` 他）が**設定されていれば**、
+  **tauri のバンドル過程の中で** NSIS `.exe` を **SSL.com の個人検証(IV)証明書 + eSigner クラウド署名**で署名する
+  （プロパティ →「デジタル署名」に発行者表示）。**Secrets 未設定なら署名せず、未署名で配布**される
   ＝証明書取得前でも comment-viewer 入り MVP を配布でき、Secrets を入れた瞬間からコード変更なしで署名に切り替わる。
+  - 経路は `tauri.conf.json` の **`bundle.windows.signCommand`** → `apps/desktop/scripts/sign-windows.ps1`
+    → **jsign**（Apache-2.0・CI 上にだけ入れる。リリースタグ固定＋SHA-256 照合）→ SSL.com eSigner。
+    ⚠ **ビルド後にインストーラを署名し直す形は採らない**——updater の minisign 署名はバンドル時点の
+      バイト列に対して作られるので、後からバイト列を変えると**自己更新だけが静かに壊れる**（下記・055a）。
+  - 「署名するかどうか」は `sign-windows.ps1` が `STREAMDOCK_WINDOWS_SIGNING` で判断する。
+    ⚠ tauri 公式の `--no-sign` は**使わない**（updater の minisign 署名まで止めてしまうため）。
+  - **署名に失敗したらビルドを落とす**（未署名の成果物を public 側へ出さない）。署名後に
+    `signtool verify /pa` で検証もしている。
   - 未署名の間は初回に SmartScreen「不明な発行元」警告（「詳細情報 → 実行」で回避）。
   - 署名後も IV/OV は**評判蓄積型**のため配布直後は警告が残り、ダウンロード実績が貯まると発行者名表示へ切り替わる
     （即時解消は EV のみ・法人登録が要る）。
   - 補足: 当初は Azure Trusted Signing を予定したが、**日本在住の個人開発者は公開信頼証明書の対象外**
     （米国・カナダの個人／米国・カナダ・EU・英国の組織のみ）と判明したため、個人でも取得できる SSL.com IV に変更した。
   - 認証情報はすべて GitHub Secrets のみ（`ES_USERNAME` / `ES_PASSWORD` / `CREDENTIAL_ID` / `ES_TOTP_SECRET`）。
-    リポジトリ・生成物・ログには含めない。
+    リポジトリ・生成物・ログには含めない（`tauri.conf.json` にも書かない。**env でのみ渡す**）。
 - **macOS = 未署名**（親 099 の決定どおり当面）。初回は Gatekeeper 警告が出るため、右クリック →「開く」で回避する。
 - **updater の署名（minisign）はコード署名とは別物**（055a）。前者は「配った更新が改ざんされていないか」を
   アプリ自身が公開鍵で検証するためのもので、OS の「不明な発行元」警告とは無関係。両方必要。
-  - ⚠ Windows のコード署名を有効化する（`ES_USERNAME` を登録する）ときは、**ビルド後の置換署名をやめて
-    `bundle.windows.signCommand` へ寄せる**こと。置換署名はバイト列を変えるので minisign 署名と食い違い、
-    **Windows の自己更新だけが静かに壊れる**。CI にガードを入れてあり、移行前に Secrets を入れるとビルドが落ちる
-    （詳細は [`docs/tasks/099a-windows-code-signing.md`](docs/tasks/099a-windows-code-signing.md)）。
+  - ⚠ この 2 つは**壊れ方が噛み合う**: ビルド後にインストーラを署名し直すとバイト列が変わり minisign 署名と
+    食い違って、**Windows の自己更新だけが静かに壊れる**（CI は緑・インストーラも動くので実機まで気づけない）。
+    そのため署名は `bundle.windows.signCommand` に寄せてある。**CI にガードもあり**、この構成が崩れると
+    重いビルドの前に落ちる（詳細は [`docs/tasks/099a-windows-code-signing.md`](docs/tasks/099a-windows-code-signing.md)）。
 
 ### ローカルで手動ビルドする場合
 
