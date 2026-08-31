@@ -18,14 +18,14 @@ import styles from "./StreamEventTab.module.css";
 /**
  * 061l: 「OBSエフェクト」画面の **「配信イベント」タブ**（061i から枠だけだった場所の中身）。
  *
- * ## 形は `RakurakuToolsScreen` をそのまま借りている（判断 2）
+ * ## 形は `RakurakuToolsScreen` から借りた（判断 2）
  *
  * **一覧（カード）→ 詳細** を `Screen` union を増やさず**この中のローカル state**（判別可能ユニオン）で
- * 切り替える。⚠ **らくらく側は 1 行も変更していない**（形を借りるだけ）。
+ * 切り替える。⚠⚠ **2026-08-31（依頼者指示）で借り元の「らくらくツール設定」画面は削除された**
+ * ——形の出どころを知りたいときは git 履歴の `screens/rakuraku-tools/` を見ること。
  * ⚠⚠ **カード部品を `components/` へ出さない**——061g の規律は「画面を跨ぐと分かっているものは
- * 最初から `components/`」だが、らくらく側の `INTEGRATION_REGISTRY` は**現在空配列**（032c-a で撤去）で
- * `.card` の CSS は 1 度も描画されていない＝**いま跨いでいない**。
- * ⚠ **再修正トリガー＝らくらく側にエントリが復活し、2 画面が同じカードを描くとき。**
+ * 最初から `components/`」だが、いま `.card` を描くのはこの画面だけ＝**跨いでいない**。
+ * ⚠ **再修正トリガー＝別の画面が同じカードを描き始めたとき。**
  *
  * ## ⚠⚠ 「適用」と「開始」は別（判断 6）
  *
@@ -56,7 +56,7 @@ import styles from "./StreamEventTab.module.css";
  * 「一覧 → 詳細 → 適用 → 開始」の仕様は固定したまま保つ、という意図である。
  */
 
-/** 一覧 / 詳細のローカル state（`RakurakuToolsScreen` と同型・`Screen` union は増やさない）。 */
+/** 一覧 / 詳細のローカル state（`Screen` union は増やさない）。 */
 type View = { stage: "list" } | { stage: "detail"; id: string };
 
 export interface StreamEventTabProps {
@@ -129,7 +129,7 @@ export function StreamEventTab({
     );
   }
 
-  // 詳細（未知 id は一覧へフォールバック＝`RakurakuToolsScreen` と同型）。
+  // 詳細（未知 id は一覧へフォールバック）。
   if (view.stage === "detail") {
     const event = findStreamEvent(view.id);
     if (event !== null) {

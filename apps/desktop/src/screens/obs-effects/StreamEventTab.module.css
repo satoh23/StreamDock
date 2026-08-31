@@ -1,7 +1,10 @@
 /* 061l 配信イベントタブの意匠。⚠ 色は必ず var(--role-token) 経由（生 hex / rgba() は書かない）。
    ⚠ `--text-faint` は `:disabled` 専用なので使わない（`check-css-guards.mjs` (6-b) の規約）。
-   ⚠ 形は `RakurakuToolsScreen.module.css` のカード（左タイル・右本文・右下アクション）を借りている
-   （判断 2＝**部品は `components/` へ出さない**ので、意匠もこの画面に閉じる）。 */
+   ⚠ 形は `RakurakuToolsScreen.module.css` のカード（左タイル・右本文・右下アクション）から借りた
+   （判断 2＝**部品は `components/` へ出さない**ので、意匠もこの画面に閉じる）。
+   ⚠⚠ **2026-08-31（依頼者指示・review Q-7 で訂正）で借り元は削除された**——意匠の出どころを
+   知りたいときは git 履歴の `screens/rakuraku-tools/RakurakuToolsScreen.module.css` を見ること
+   （`StreamEventTab.tsx` の module doc も同じ訂正を入れてある）。 */
 
 /* --- 開催の制御（適用済み / 開催中のカード） --- */
 .roundBox {

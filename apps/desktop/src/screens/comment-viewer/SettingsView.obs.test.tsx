@@ -261,12 +261,11 @@ describe("SettingsView OBS 連携", () => {
  *
  * あるべき挙動（docs/tasks/046b-pinned-overlay-window.md / 親 046）:
  * - 「固定コメントをOBSに表示」トグルを描画し、操作で `onPinnedOverlayToggle` を呼ぶ（窓の開閉は親が担う）。
- * - 手動キャプチャ注記の窓名は **Rust の窓タイトルと同一文字列**、かつ 044a が窓を探すときの
- *   `includes("StreamDock コメントオーバーレイ")` に**部分一致しない**こと（別窓として区別できる）。
- * - **046d: 自動反映 ON なら自動追加される旨**と、**OFF のときの手動追加手順**を明示する
- *   （046b 時点の「※対象外です（手動で追加してください）」は 046d で撤回済み。下の該当ケースが
- *   旧文言へ戻る退行を `not.toContain` で防いでいる）。
- * - 既存の OBS カード（044a）は不変＝自動反映トグルと窓名注記が従来どおり出る。
+ * - 既存の OBS カード（044a）は不変＝自動反映トグルが従来どおり出る。
+ *
+ * ⚠⚠ **2026-08-31（依頼者指示）で、窓名注記・自動反映の案内・固定のリセット案内の 3 本を削除した。**
+ * ⇒ 旧「手動キャプチャ注記の窓名は Rust の窓タイトルと同一」「046d: 自動反映 ON/OFF の案内を明示する」の
+ * 2 項目は**画面の契約ではなくなった**（下の該当ケースを撤去した理由は、その位置のコメントが正）。
  */
 describe("SettingsView 046b 固定コメントオーバーレイの設定", () => {
   const PINNED_TOGGLE = "固定コメントをOBSに表示";
@@ -290,28 +289,27 @@ describe("SettingsView 046b 固定コメントオーバーレイの設定", () =
     );
   });
 
-  it("窓名は Rust と同一文字列で、コメント用オーバーレイ名と部分一致しない", () => {
-    const { container } = render(<SettingsView {...baseProps()} />);
-    // Rust: src-tauri/src/lib.rs の open_pinned_overlay_window の .title と同じ文字列。
-    expect(container.textContent).toContain("「StreamDock 固定コメント」");
-    // 044a（sidecar）は itemName.includes("StreamDock コメントオーバーレイ") で窓を探す。
-    // 固定用の窓名がこれを含むと、自動追加がこちらの窓を掴んでしまう。
-    // container 全体には既存 OBS カードの注記（＝コメント用の窓名）も含まれるので、
-    // **この注記ノードだけ**を取り出して実装由来の文字列で検証する（リテラル同士の比較にしない）。
-    const note = screen.getByText(/ウィンドウ「StreamDock 固定コメント」/);
-    expect(note.textContent).not.toContain("StreamDock コメントオーバーレイ");
-  });
+  /* ⚠⚠⚠ **2026-08-31（依頼者指示）: 固定コメントの注記 3 本を画面から削除したので、
+     それに依存していた 2 つの検査（窓名の一致・自動反映の案内）を撤去した。**
+     ⚠ **JSDoc 記法ではなく素のブロックコメントで書くこと**（review Q-3）——`it()` を消した跡に
+     JSDoc を残すと、**直後の別テストのドキュメントとして読まれる**（当初それをやってしまった）。
 
-  it("046d: 044a の自動反映の対象であることを案内する（OFF 時の手動手順も残す）", () => {
-    const note = render(<SettingsView {...baseProps()} />).container;
-    // 当初は「対象外です（手動で追加してください）」と案内していたが、046d で自動反映の対象に入れた。
-    expect(note.textContent).not.toContain("「OBSに自動で反映する」の対象外");
-    expect(note.textContent).toContain(
-      "上の「OBSに自動で反映する」がONなら、OBSに「StreamDock 固定コメント」ソースが自動で追加されます",
-    );
-    // 自動反映 OFF の人向けに、手動キャプチャの手順も残っていること。
-    expect(note.textContent).toContain("手動で追加してください");
-  });
+     ## ⚠⚠⚠ 失われた不変条件は無い（review Q-4 で訂正）
+
+     旧文は「再固定するなら Rust 側（`lib.rs` の 2 つの `.title`）を突き合わせる検査を書くこと」と
+     書いていたが、⚠⚠ **その検査は既に存在する**:
+       - `lib.rs` の `titles_do_not_contain_each_other`
+         ＝ `OVERLAY_TITLES`（**3 窓・6 方向の総当たり**）の `contains` 検査。
+         ⇒ **「固定用の窓名がコメント用を部分文字列として含んではいけない」はここが固定している。**
+       - `lib.rs` の `titles_are_used_by_the_window_builders` ＝ `.title("…")` の実在確認。
+       - 同モジュールが `obs-client.ts` を `include_str!` で読む TS↔Rust 照合。
+     ⇒ ⚠ **撤去したこの層の検査は実質「重複カバレッジ」だった**（しかも 2 者・片方向で、Rust 側より弱い）。
+     **新しいテストを書く必要は無い。**
+
+     ⚠⚠ この層で本当に失ったのは「**画面に出ている窓名が Rust の `.title` と一致していること**」だけで、
+     画面に窓名が出なくなった以上、ここでは固定しようがない。
+     ⚠ 帰結: **自動反映を OFF にしている人は、手動キャプチャで選ぶ窓名がアプリ内から読めない。**
+     ⚠ 文言を書き戻すときは、この 2 検査も一緒に戻すこと。 */
 
   // 054 追補(E2E): 旧名「既存の OBS カード（044a）は不変（自動反映トグルと窓名注記が残る）」。
   // 窓名注記（「StreamDock コメントオーバーレイ」を含む手動キャプチャ手順）は依頼者の指示で削除したため、

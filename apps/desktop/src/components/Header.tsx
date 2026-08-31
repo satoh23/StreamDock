@@ -24,7 +24,6 @@ export function Header({
   activeNav?: Extract<
     Screen,
     | "main"
-    | "rakuraku-tools"
     | "obs-effects"
     | "diagnostics"
     | "settings"

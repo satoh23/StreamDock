@@ -103,7 +103,7 @@ export const STREAM_EVENT_REGISTRY: readonly StreamEvent[] = [];
  * id からイベントを引く。**見つからなければ `null`**（未知 id は「無かったこと」にする）。
  *
  * ⚠ 呼び出し側は必ず `null` を扱うこと——localStorage の保存値は
- * **アプリの更新でレジストリから消えた id** を指しうる（`RakurakuToolsScreen` が
+ * **アプリの更新でレジストリから消えた id** を指しうる（`StreamEventTab` が
  * 一覧へフォールバックするのと同じ理由）。
  */
 export function findStreamEvent(id: string): StreamEvent | null {

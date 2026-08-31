@@ -731,7 +731,7 @@ export function ObsEffectsScreen() {
             ⚠ 名前も「OBS のソースを取得」→「**最新のOBSのソースを取得**」（依頼者の指示）。
             ⚠⚠ **状態の持ち主は [`useObsSourceList`]**——ボタンとカードが別々の state を持つと
             「押したのにカードが『取得中』にならない」という食い違いが構造的に作れてしまう。
-            ⚠ `layout.actions` は既製の右寄せ枠（`RakurakuToolsScreen` などと同じ）＝
+            ⚠ `layout.actions` は既製の右寄せ枠（他画面と共有）＝
             **新しい px を発明しない**（061a の要件）。 */}
         <div className={layout.actions}>
           <Button

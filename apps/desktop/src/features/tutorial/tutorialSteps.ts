@@ -59,7 +59,7 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
     mode: "spotlight-info",
     targetId: "header-sections",
     title: "上部メニュー",
-    body: "左から『ツール管理』（今ここ）、『らくらくツール設定』『OBSエフェクト』が並びます。後ろ2つは準備中で、今後のアップデートで機能が追加されます。",
+    body: "左から『ツール管理』（今ここ）、『OBSエフェクト』が並びます。",
     advanceOn: { kind: "next" },
   },
   {

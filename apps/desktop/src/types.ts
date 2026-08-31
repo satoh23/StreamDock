@@ -7,8 +7,9 @@ export type Screen =
   // 055c: アプリ自己アップデート画面（ヘッダーのベルアイコンから遷移）。
   // テキストセクション導線ではないので HEADER_SECTIONS には載せない。
   | "app-update"
-  // 未実装機能の「準備中」ダミーページ（ヘッダーのセクション導線から遷移）
-  | "rakuraku-tools"
+  // ヘッダーのセクション導線から遷移する画面。
+  // ⚠ 2026-08-31（依頼者指示）: 「らくらくツール設定」（`"rakuraku-tools"`）をここから外した
+  //   ——画面ごと削除したため（`headerSections.ts` の注記が正）。
   | "obs-effects";
 
 export type ToolState =

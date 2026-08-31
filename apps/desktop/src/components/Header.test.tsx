@@ -39,7 +39,6 @@ function renderHeader(
     activeNav?: Extract<
       Screen,
       | "main"
-      | "rakuraku-tools"
       | "obs-effects"
       | "diagnostics"
       | "settings"

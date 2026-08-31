@@ -10,7 +10,6 @@ import { AddToolScreen } from "./screens/add-tool/AddToolScreen";
 import { AddPresetScreen } from "./screens/add-preset/AddPresetScreen";
 import { DiagnosticsScreen } from "./screens/diagnostics/DiagnosticsScreen";
 import { SettingsScreen } from "./screens/settings/SettingsScreen";
-import { RakurakuToolsScreen } from "./screens/rakuraku-tools/RakurakuToolsScreen";
 import { ComingSoonScreen } from "./screens/coming-soon/ComingSoonScreen";
 import { UpdateScreen } from "./screens/app-update/UpdateScreen";
 import { useAppUpdate } from "./features/app-update/useAppUpdate";
@@ -61,8 +60,10 @@ function MainWindowApp() {
   const [activePresetId, setActivePresetId] = useState<string | null>(null);
   const [editingPresetId, setEditingPresetId] = useState<string | null>(null);
   const [editingToolId, setEditingToolId] = useState<string | null>(null);
-  // 新規ツール登録の表示名プリフィルと、保存/キャンセル後の戻り先（既定は main。らくらく画面から
-  // 「ツール管理へ追加」で来たときは rakuraku-tools へ戻す）。
+  // 新規ツール登録の表示名プリフィルと、保存/キャンセル後の戻り先。
+  // ⚠ 2026-08-31（依頼者指示）: 唯一の非既定の呼び出し元だった「らくらくツール設定」画面を削除したので、
+  //   いまはどちらも既定（プリフィル無し・戻り先 main）でしか使われない。⚠ **配線は残してある**
+  //   ——別画面から「ツール管理へ追加」を生やすときに、また同じものが要るため。
   const [addToolPrefillName, setAddToolPrefillName] = useState<string | null>(null);
   const [addToolOrigin, setAddToolOrigin] = useState<Screen>("main");
 
@@ -308,10 +309,11 @@ function MainWindowApp() {
     />
   );
 
-  // ヘッダーの active 表示：メイン(ツール管理)/準備中セクション/診断/設定/アップデートを開いているとき導出する
+  // ヘッダーの active 表示：メイン(ツール管理)/OBSエフェクト/診断/設定/アップデートを開いているとき導出する。
+  // ⚠ 2026-08-31（依頼者指示・review Q-8 で訂正）: 旧文の「準備中セクション」は、
+  //   「らくらくツール設定」の削除で `HEADER_SECTIONS` が全件 `implemented: true` になり**該当ゼロ**になった。
   const activeNav =
     screen === "main" ||
-    screen === "rakuraku-tools" ||
     screen === "obs-effects" ||
     screen === "diagnostics" ||
     screen === "settings" ||
@@ -319,7 +321,11 @@ function MainWindowApp() {
       ? screen
       : undefined;
 
-  // 現在の画面が未実装セクションの「準備中」ダミーページに該当するか（該当時はその定義を表示に使う）
+  // 現在の画面が未実装セクションの「準備中」ダミーページに該当するか（該当時はその定義を表示に使う）。
+  // ⚠⚠ 2026-08-31（依頼者指示・review Q-8 で追記）: `HEADER_SECTIONS` が全件 `implemented: true` に
+  //   なったので、**これは常に `undefined`**＝下の `ComingSoonScreen` はいまどこからも出ない。
+  //   ⚠ **配線を残すのは意図的**（次に未実装セクションを足したらそのまま復活する器・`ComingSoonScreen.tsx` の
+  //   module doc が正）。再修正トリガー＝「準備中」の器ごと不要と決めたとき。
   const comingSoonSection = HEADER_SECTIONS.find(
     (s) => !s.implemented && s.screen === screen,
   );
@@ -396,14 +402,6 @@ function MainWindowApp() {
             onRecheck={() => void appUpdate.recheck()}
             onInstall={() => void appUpdate.install()}
             onRestart={() => void appUpdate.restart()}
-          />
-        )}
-        {screen === "rakuraku-tools" && (
-          <RakurakuToolsScreen
-            hostOs={hostOs}
-            onRequestAddTool={({ name }) =>
-              openAddTool({ prefillName: name, origin: "rakuraku-tools" })
-            }
           />
         )}
         {/* 061a: `headerSections.ts` の `obs` が `implemented: true` になったので、下の

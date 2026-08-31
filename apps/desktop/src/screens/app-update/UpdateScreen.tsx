@@ -59,7 +59,7 @@ export function UpdateScreen({
   progress: AppUpdateProgressState | null;
   /**
    * 055d review Q-9: **`useHostOs()` を自前で呼ばず props で受ける。**
-   * `App` は既に `hostOs` を持っており `Header` / `RakurakuToolsScreen` へ props で配っているので、
+   * `App` は既に `hostOs` を持っており `Header` などへ props で配っているので、
    * ここだけ自前で呼ぶと ①同じ `invoke("host_os")` が画面を開くたびに増える
    * ②このコンポーネントが「表示専用＝invoke も通信も起こさない」という 055c の契約から外れる
    * ③初回レンダリングが必ず `null`（＝macOS 扱い）になり、Windows で 1 フレーム分だけ表示が揺れる。
