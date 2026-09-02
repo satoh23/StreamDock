@@ -83,14 +83,21 @@ function Write-Log([string] $message) {
     Write-Host "[sign-windows] $message"
 }
 
-function Fail([string] $message) {
-    Write-Host "::error::[sign-windows] $message"
+function Fail([string] $message, [string] $detail = '') {
+    # ⚠ `::error::` は 1 行しか扱えないので、注釈用は改行を畳む。
+    Write-Host "::error::[sign-windows] $($message -replace "`r?`n", ' / ')"
 
     # ⚠⚠ tauri は署名コマンドが**失敗したときだけ** stdout を捨てる（`utils/mod.rs` の `output_ok` は
     #   非ゼロ終了で Err を返し、`failed to run pwsh` しか残さない。stdout の中身は既定の verbosity では出ない）。
     #   ＝ **失敗の理由が CI ログに残らない**。そこで GitHub Actions のジョブサマリへも書く（こちらは残る）。
+    #   ⚠⚠⚠ **署名ツールの出力もここに入れる**——これが無いと「jsign が exit 1」までしか分からず、
+    #     認証・OTP・証明書のどれが原因なのか切り分けられない（2026-09-02 に実際に困った）。
     if ($env:GITHUB_STEP_SUMMARY) {
-        "**[sign-windows] $message**" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+        $lines = @("### ⚠ sign-windows.ps1", "", $message)
+        if ($detail) {
+            $lines += @("", '```', $detail, '```')
+        }
+        $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
     }
 
     exit 1
@@ -134,7 +141,8 @@ try {
     $env:JSIGN_STOREPASS = "$($env:ES_USERNAME)|$($env:ES_PASSWORD)"
 
     Write-Log "署名する: $FilePath"
-    & java -jar $env:JSIGN_JAR `
+    # ⚠ 出力は**捨てずに受け取る**。失敗したときに理由をジョブサマリへ載せるため（上の `Fail` を参照）。
+    $output = (& java -jar $env:JSIGN_JAR `
         --storetype ESIGNER `
         --storepass 'env:JSIGN_STOREPASS' `
         --keypass 'env:ES_TOTP_SECRET' `
@@ -144,10 +152,13 @@ try {
         --alg SHA-256 `
         --name 'StreamDock' `
         --replace `
-        $FilePath 2>&1 | ForEach-Object { Write-Host $_ }
+        $FilePath 2>&1 | Out-String).Trim()
+    $jsignExit = $LASTEXITCODE
 
-    if ($LASTEXITCODE -ne 0) {
-        Fail "jsign が失敗した（exit $LASTEXITCODE）: $FilePath"
+    if ($output) { Write-Host $output }
+
+    if ($jsignExit -ne 0) {
+        Fail "jsign が失敗した（exit $jsignExit）: $FilePath" $output
     }
 }
 finally {
@@ -166,9 +177,10 @@ if (-not $signtool) {
     Fail "signtool.exe が見つからない（署名の検証ができない）"
 }
 
-& $signtool.FullName verify /pa /q $FilePath 2>&1 | ForEach-Object { Write-Host $_ }
-if ($LASTEXITCODE -ne 0) {
-    Fail "署名の検証に失敗した（signtool verify /pa が exit $LASTEXITCODE）: $FilePath"
+$verifyOutput = (& $signtool.FullName verify /pa $FilePath 2>&1 | Out-String).Trim()
+$verifyExit = $LASTEXITCODE
+if ($verifyExit -ne 0) {
+    Fail "署名の検証に失敗した（signtool verify /pa が exit $verifyExit）: $FilePath" $verifyOutput
 }
 
 Write-Log "署名と検証に成功: $FilePath"
