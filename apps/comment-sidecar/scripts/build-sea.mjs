@@ -13,6 +13,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -54,6 +55,44 @@ function hostTargetTriple() {
 function step(label, fn) {
   process.stderr.write(`\n=== ${label} ===\n`);
   return fn();
+}
+
+// 099a: Windows の `node.exe` から Authenticode 署名を外す（postject 注入の前に呼ぶ）。
+// signtool は Windows SDK 同梱で、CI の windows-latest には入っている。
+// ⚠ `run()` は Windows で `shell: true` にしているが、signtool のパスは
+//   `C:\Program Files (x86)\...` と**空白と括弧を含む**ためシェル経由だと壊れる。
+//   ここは実体の `.exe` を直接叩けばよいので `execFileSync` を素で使う。
+function removeWindowsSignature(binPath) {
+  const kitsBin = join(
+    process.env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)",
+    "Windows Kits",
+    "10",
+    "bin",
+  );
+  const signtool = existsSync(kitsBin)
+    ? readdirSync(kitsBin)
+        .sort()
+        .reverse()
+        .map((version) => join(kitsBin, version, "x64", "signtool.exe"))
+        .find((candidate) => existsSync(candidate))
+    : undefined;
+
+  if (!signtool) {
+    // ⚠ ここで止めない。署名を使わないビルド（SDK 無しのローカル環境）を塞がないため。
+    //   署名が要る場面では、後段の署名側が同じ問題を**必ず**検出して落ちる（fail-closed はあちらが担う）。
+    process.stderr.write(
+      "[build-sea] ⚠ signtool.exe が見つからないため node.exe の署名を外せませんでした。\n" +
+        "[build-sea]   このバイナリには無効な署名が残り、コード署名を有効にしたビルドでは失敗します。\n",
+    );
+    return;
+  }
+
+  try {
+    execFileSync(signtool, ["remove", "/s", binPath], { stdio: "inherit" });
+  } catch {
+    // 署名が最初から無い node.exe（自前ビルド等）ではエラーになるが、それは問題ない。
+    process.stderr.write("[build-sea] node.exe に外すべき署名はありませんでした。\n");
+  }
 }
 
 // 0) 焼き込み必須の Client ID/Secret ガード（再発防止）。
@@ -192,6 +231,14 @@ step(`postject inject → ${outBin}`, () => {
   if (isMac) {
     // postject が署名を無効化するため、いったん署名を外す。
     run("codesign", ["--remove-signature", outBin]);
+  } else if (process.platform === "win32") {
+    // 099a: **Windows でも同じ理由で署名を外す**（長らく mac だけだった）。
+    //   `node.exe` には Node.js 公式の Authenticode 署名が付いており、外さずに postject で
+    //   データを注入すると **「証明書テーブルがファイル末尾にない」PE** が出来上がる。
+    //   ⇒ ①その署名は**無効**（プロパティで「デジタル署名が無効」になりうる）
+    //     ②後段のコード署名（099a）が `The certificate table isn't at the end of the file` で**拒否される**
+    //   Node 公式の SEA 手順でも Windows は注入前に `signtool remove /s` する案内になっている。
+    removeWindowsSignature(outBin);
   }
   const postjectArgs = [
     "postject",

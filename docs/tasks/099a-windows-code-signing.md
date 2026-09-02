@@ -331,3 +331,22 @@ git status --short -- apps/desktop/src apps/comment-sidecar/src apps/desktop/src
 ⚠ **macOS レグの失敗は本タスクと無関係**: `Artifact storage quota has been hit`（Actions の保存容量上限）。
 成果物が大きい（sidecar 110MB・macOS は `.dmg` と `.app.tar.gz` の実質 2 本）ため、
 **空回しを繰り返すと容易に当たる**。古い artifact の削除か `retention-days` の短縮で対処する（未対応）。
+
+## ⚠⚠ 線引きの例外（2026-09-02・`build-sea.mjs` に触った理由）
+
+「このタスクでやらないこと」に **アプリ本体のコード変更（配布/署名設定のみ）** と書いてあるが、
+**`apps/comment-sidecar/scripts/build-sea.mjs` だけは触った**（依頼者の承認済み）。理由:
+
+- 署名を有効にしたら、**sidecar の署名で必ず落ちる**ことが分かった:
+  `java.io.IOException: The certificate table isn't at the end of the file`
+- 原因は **sidecar のビルドスクリプトに元からあった穴**——`node.exe` には Node.js 公式の
+  Authenticode 署名が付いているのに、**Windows だけ署名を外さずに** postject でデータを注入していた
+  （⚠ **macOS 分岐は `codesign --remove-signature` で外していた**＝ 対称性が崩れていた）。
+- ⇒ 生成物は「**証明書テーブルの後ろにデータがある PE**」＝ **無効な署名を持ったまま**配られていた
+  （Windows のプロパティで「デジタル署名が無効」になりうる）。**署名の有無に関係なく直すべき欠陥**である。
+- ⚠ 迂回策（`TAURI_SKIP_SIDECAR_SIGNATURE_CHECK=true` で sidecar を署名対象から外す）も可能だったが、
+  **無効な署名が残り続ける**ので採らなかった（jsign が正しく検出した壊れ方を握りつぶすだけ）。
+
+**変更内容**: Windows 分岐でも注入前に署名を外す（`signtool remove /s`）＝ **macOS 分岐と同じことをするだけ**。
+⚠ signtool が無い環境（SDK 未導入のローカル）では**警告して続行**する——署名なしビルドを塞がないため。
+fail-closed は署名側（`sign-windows.ps1`）が担っており、署名が要る場面では必ず落ちる。
