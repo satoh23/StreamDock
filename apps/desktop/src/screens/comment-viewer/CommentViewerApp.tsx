@@ -260,6 +260,29 @@ const SESSION_STATE_LABEL: Record<string, string> = {
 const LAUNCH_GRACE_MS = 30000;
 
 /**
+ * 2026-09-05（静音化）: **共有 `obsState` に触れてよい発生元レーンか**。
+ *
+ * ⚠⚠⚠ **許可リスト（allow-list）である**——`"stage"` / `"effects"` を名指しで捨てる
+ * 除外リストではない。理由: `ObsLane`（sidecar 側）は**増える union** で、実際 2026-09-05 の 1 日で
+ * `"stage"` に続き `"effects"` が増えた。除外リストだと**次に増えたレーンが既定で赤字に流れ込む**＝
+ * 同日 2 回の実機フィードバック（「表示を ON にしていないのに接続エラーが出る」）の再発になる。
+ * ⇒ **新しいレーンは既定で無音**にし、赤字に出したくなった時だけここへ足す形にする。
+ *
+ * - `undefined` … `disable` の echo（idle）。全レーン対象なので lane を運ばない（`ObsStateListener` が正）。
+ * - `"comments"` / `"pinned"` … 「コメントをOBSに表示」「固定コメントをOBSに表示」を ON にした時の反映結果。
+ *
+ * ⚠ **判定はここ 1 か所に置く**（レビュー M-1）。`onObsState`（sidecar からの通知）と
+ * `requestObsAutoAdd`（sidecar を経由しないローカルの先行 `connecting` ／ L2 `failed`）の
+ * **2 経路が同じ集合を見ている必要がある**ためで、片方だけ更新すると
+ * 「`connecting` を立てたのに結果が捨てられて固着」（Bug-1 と同じ形）を作れてしまう。
+ * ⚠ 静音化の判断そのものの全文は `requestObsAutoAdd` の JSDoc と `docs/security.md` §1 の
+ * 2026-09-05 追補が正。
+ */
+function isObsLaneVisible(lane: string | undefined): boolean {
+  return lane === undefined || lane === "comments" || lane === "pinned";
+}
+
+/**
  * 033c/033d: VOICEVOX クレジット表記の案内。読み上げトグルが ON のときだけ、本体コメントビューのトグル直下に
  * 表示する。表示のみで外部通信は発生しない（URL は静的テキスト）。
  *
@@ -716,6 +739,10 @@ export function CommentViewerApp() {
   // - obsAutoAdd: 「OBS へ自動追加（連携）」トグルの永続状態（非機密・localStorage）。パスワードは保存しない。
   // - obsState: sidecar からの obs.state 通知（connecting/added/reused/failed/idle）。UI の状態表示に使う。
   //   ※失敗時の技術的 reason（ECONNREFUSED 等）はユーザーに無意味なため UI では表示しない（reason は受けても捨てる）。
+  //   ⚠ 2026-09-05（静音化）: **stage レーンと発火系（effects）はこの state に関与しない**——
+  //   enable 側は `requestObsAutoAdd` の silent 分岐が connecting/failed を立てず、通知側は
+  //   `onObsState` が lane="stage" / "effects" を捨てる。残る書き手は comments / pinned
+  //   （＝表示トグルを ON にした時の反映結果）と、lane を運ばない disable の echo（idle）だけ。
   //   045c レビュー（union にしない / 修正不要）: sidecar には ObsState union（obs-client.ts）があるが、こちらは
   //   string のまま置く。①同コンポーネントの sessionState / youtubeSessionState も useState<string> で慣習が揃う
   //   ②ツールバーの `obsState === "failed"` を typo すると CommentViewerApp.toolbar.test.tsx の failed ケースが落ちる
@@ -1764,11 +1791,24 @@ export function CommentViewerApp() {
       //   ⚠⚠ **064c: `ok`（取れたのか）も一緒に書く。** 旧実装は失敗時も空配列で来るのを
       //   そのまま「0 件」として見せていたが、main 窓は**そこから理由を復元できず**、
       //   OBS 未起動のユーザーへ「OBS のシーンにソースを追加してください」と誤案内していた。
-      //   ⚠ 失敗の**文言**は従来どおりツールバーの `obsState` 側に出る（表示の持ち主は増やしていない）。
+      //   ⚠ 2026-09-05（静音化 2 段目）: 旧注記「失敗の文言はツールバーの `obsState` 側に出る」は
+      //   もう成立しない——一覧取得の失敗（lane="effects"）は赤字に出さない。ユーザーへの案内は
+      //   main 窓のカードが `ok:false` から組み立てる（＝この `saveObsSourceList` が唯一の伝達路）。
       onObsSources: (sources, ok) => {
         saveObsSourceList(sources, ok);
       },
-      onObsState: (state) => {
+      // 2026-09-05（静音化・本人指示）: ステージ演出（lane="stage"）と発火系（lane="effects"＝
+      // エフェクトの自動発火・「1回鳴らす」・ソース一覧取得）由来の通知は、**成功も失敗も共有
+      // obsState に流さない**（＝ツールバーの赤字にも設定カードにも出さない）。
+      // 判断の全文は `requestObsAutoAdd` の JSDoc の静音化の段落が正。
+      // ⇒ この state に届くのは comments / pinned（=「コメントをOBSに表示」「固定コメントをOBSに表示」
+      // を ON にした時の反映結果）と、lane を運ばない disable の echo（idle）だけ。
+      // ⚠ 判定は [`isObsLaneVisible`]（**許可リスト**・モジュール先頭）に置いてある。レビュー M-1 で
+      //   除外リスト（"stage" / "effects" を名指しで捨てる）から反転した——sidecar の `ObsLane` は
+      //   増える union なので、除外リストだと**次に増えたレーンが既定で赤字に出る**（同日 2 回出た
+      //   実機フィードバックの再発）。⇒ 新レーンは既定で無音・出したい時だけ許可リストへ足す。
+      onObsState: (state, _reason, lane) => {
+        if (!isObsLaneVisible(lane)) return;
         setObsState(state);
       },
       // ⚠⚠⚠ **2026-08-30: `onChannelPointsState` の購読をやめた**（依頼者の指示＝
@@ -2088,6 +2128,8 @@ export function CommentViewerApp() {
   // ②061b で effects が毎コメント発火の層になる（＝失敗表示の頻度が跳ね上がる）、のどちらか。
   // そのときは `obs.state` に `overlay` を足し、`obsState` を `Record<ObsOverlayKind, ObsState>` へ広げる
   //（046d の再修正トリガーと同じ作業なので、まとめて 1 回で済む）。
+  // ⚠⚠ 2026-09-05: **トリガー①が実機で発火した。** 答えは Record 化ではなく
+  //   **lane タグ＋OBSエフェクト系（stage / effects）の静音化**になった（下の 2026-09-05 の段落が正）。
   //
   // ⚠⚠ **061e レビュー Q-1（修正不要・受容の明示）: 連携 ON でゲートされるのは「呼ぶ瞬間」だけで、
   // in-flight の結果は追いかけられない。** `disableObs()` は sidecar の `disable()`＝`onState("idle")` を
@@ -2102,8 +2144,35 @@ export function CommentViewerApp() {
   // **再修正トリガー**＝実機で「OFF にしたのに後から赤字が出る」が煩わしいと分かったとき。
   // そのときは**世代カウンタ**（`requestObsAutoAdd` 発行時と OFF 系操作で世代を上げ、`onObsState` は
   // 最新世代の結果だけ反映する）を足す。⚠ ゲートを戻すのは不可（061e(2) の (B) が再発する）。
+  // ⚠⚠⚠ **2026-09-05（stage の静音化・本人指示）: ステージ演出レーンは進行も結果も一切表示しない。**
+  //   実機フィードバック＝「OBS 自動連携（コメント用トグル）を OFF にしているのに、コメビュ起動時に
+  //   OBS 連携失敗の赤字が出て面倒」（063c 段 1 レビュー S-4 の再修正トリガーが発火した形）。
+  //   ⚠ いったん `OBS_AUTO_ADD_KEY` の master switch 化で答えたが、**同日中に本人指示で撤回**——
+  //   「あのトグルはコメントビューアの設定であって、OBS エフェクトとはユーザー的に別。
+  //   エフェクト側は接続できなかったら黙って落ちればよい」。
+  //   ⇒ 答えは**ゲートではなく沈黙**: stage の enable は従来どおり（ガードは `isStageOverlayRequired()`
+  //   のみ・064e の既定 ON のまま）走らせ、**connecting / failed / added を UI に出さない**。
+  //   sidecar は `obs.state` に lane（発生元レーン）を載せて全部通知し、**黙らせる判断はこの窓
+  //   （表示の持ち主）が行う**（下の `onObsState` の lane 無視と、この関数の silent 分岐の 2 か所）。
+  //   ⚠⚠⚠ **静音化 2 段目（同日・実機フィードバック 2 回目）: 発火系（lane="effects"）も黙らせた。**
+  //   「『コメントをOBSに表示』が OFF ＋ OBS 未起動なのに接続エラーが出る。エラーが出るべきは
+  //   表示を ON にした時だけ」——正体は、エフェクトの自動発火（条件に OBS ソース直指定）・
+  //   「1回鳴らす」・ソース一覧取得の失敗が同じ赤字に流れ込んでいたこと。OBSエフェクト系は
+  //   「黙って落ちる」で統一する（一覧取得の失敗は OBSエフェクト画面のカードが `obs.sources` の
+  //   ok:false 経由で案内する＝そちらは別配線で不変）。
+  //   ⇒ **赤字（と設定カードの状態）に流れ込むのは comments / pinned の反映結果だけ**＝
+  //   「コメントをOBSに表示」「固定コメントをOBSに表示」を ON にした時にだけエラーが出る。
+  //   ⚠ 代償（本人合意済み）: stage / effects の失敗はどこにも出ない。実害が薄い根拠＝ステージ窓の
+  //   ソースは一度作れば OBS 側に永続し、失敗が困るのは**まだ一度もソースが作られていない初回**だけで、
+  //   その場合も次の契機（コメビュ窓の開き直し・ガチャ演出トグルの入れ直し・配信イベントの開始）で
+  //   再試行される。発火の失敗は「演出が出ない」そのもので、配信プレビューを見れば分かる。
+  //   `docs/security.md` §1 の 2026-09-05 追補が正。
   const requestObsAutoAdd = (overlay: ObsOverlayKind) => {
-    setObsState("connecting");
+    // ⚠ 静音の判定は `onObsState` と**同じ述語**を共有する（レビュー M-1）。ここは sidecar を経由しない
+    //   ローカルの書き込み（先行 `connecting` ／ 下の L2 `failed`）なので、通知側のフィルタでは代替できず、
+    //   **2 経路が同じ集合を見ていること**自体が不変条件になる（片方だけ変えると `connecting` 固着を作れる）。
+    const silent = !isObsLaneVisible(overlay);
+    if (!silent) setObsState("connecting");
     void detectObsWebsocketConfig().then((cfg) => {
       setObsConfig(cfg);
       const stream = streamRef.current;
@@ -2116,8 +2185,10 @@ export function CommentViewerApp() {
       //（実機確認で 2 回再現。ツールバーは failed のときだけ出すので**赤字も出ない**＝
       // 061e が直そうとした「結果が読み取れない」が、最も起きやすい経路で残っていた）。
       // ⚠ これで「切断中に storage で連携 ON」のような経路も `connecting` 固着ではなく failed へ落ちる。
+      // ⚠ stage は silent＝failed も出さない（上の静音化の段落が正）。送らない判断は変えない
+      //   （届かない送信をしない＝Bug-1 の固着の芽を作らない、はレーンに依らず正しい）。
       if (!stream || !streamConnectedRef.current) {
-        setObsState("failed");
+        if (!silent) setObsState("failed");
         return;
       }
       stream.enableObs(cfg?.port ?? 4455, overlay);
@@ -2545,6 +2616,9 @@ export function CommentViewerApp() {
    * それでも所有者をここに残しているのは、①`obs.state`（added/reused/failed）の受け皿（ツールバーと
    * 設定カード）がこの窓にあり、移すと**結果表示が完全に消える** ②045c の規律（設定を立てるだけ／契機は表示 ON／
    * **猶予タイマーの取り消し**）をエフェクト窓側に再実装することになる、の 2 点で 061b のスコープを超えるため。
+   * ⚠⚠ **2026-09-05 訂正（レビュー S-3）: 根拠①はもう成立しない。** 静音化で **stage / effects の結果は
+   * どのみち表示しない**ことにしたので、「移すと結果表示が消える」は**失うものが無い**（消える表示が無い）。
+   * ⇒ 所有者をここに残す根拠は**②だけ**になった。⚠ この段の他の記述（WS ハンドルの所在・§9 の理由）は不変。
    * **再修正トリガー＝所有者を移す別タスクに着手するとき**（そのときは 061a の宿題 (A)(B)(C) とまとめて）。
    *
    * ⚠ **残るねじれ**: 061b 以降「**エフェクトは出るが、OBS への自動追加はコメビュ窓が要る**」。
@@ -2569,6 +2643,10 @@ export function CommentViewerApp() {
    *     ⚠ **061e(1) で「自動反映 OFF」側でも戻すようにした**（045c の不変条件を両側で成立させる）。
    *     ⚠ ただし `obsState` は 3 種別で 1 本なので、**他種別の連携がすべて OFF のときだけ**倒す
    *     （理由は下の分岐のコメント＝061e 穴 1）。
+   *     ⚠⚠ **2026-09-05 訂正（レビュー S-3）: この規律は stage レーンには適用されなくなった。**
+   *     静音化で stage は共有 `obsState` の書き手から完全に抜けたため、旗降ろし時の
+   *     `setObsState("idle")` は**削除**した（残すと他レーンの赤字だけを巻き添えで消す＝061e 穴 1 と同じ形）。
+   *     ⇒ ここに残る「idle へ戻す」は **comments / pinned の分岐だけ**の話である。
    *   - ⚠ **猶予タイマーは必ず取り消す**（表示 OFF・自動反映 OFF の両方で）
    *
    * ⚠ **`disableObs()` は呼ばない。** あれは kind を取らず sidecar の状態を丸ごと idle にするので、
@@ -2616,6 +2694,18 @@ export function CommentViewerApp() {
       //   ⚠ **再修正トリガー**＝実機で「OBS 連携を OFF にしたのに OBS を触られた」と言われたとき、
       //   または `OBS_AUTO_ADD_KEY` のラベルを「OBS 連携全体」の意味へ戻すとき
       //   （そのときは `docs/security.md` §1 の 044a 例外に、master switch の適用範囲を明文化すること）。
+      // ⚠⚠⚠ **2026-09-05: 上の S-4 の再修正トリガーが実機で発火した**（「OBS 自動連携を OFF に
+      //   しているのに、コメビュ起動時に OBS 連携失敗の赤字が出る」＝経路は WS 接続時 reconcile →
+      //   `enableObs("stage")` → OBS 未起動で failed）。
+      //   ⚠⚠ **答えは S-4 が予告した master switch 化ではない**——いったんそう実装したが、
+      //   **同日中に本人指示で撤回**した:「`OBS_AUTO_ADD_KEY` はコメントビューアの設定であって、
+      //   OBS エフェクトとはユーザー的に別。分けるべき。エフェクト側は接続できなかったら
+      //   黙って落ちればよい」。
+      //   ⇒ **stage レーンの enable 条件はこの非対称のまま維持**（`loadObsAutoAdd()` を見ない・
+      //   064e の既定 ON のまま）で、**症状のほうを `requestObsAutoAdd` の静音化で消した**
+      //   （stage は connecting / failed / added を UI に出さない。あちらの JSDoc が正）。
+      //   ⚠ S-4 の「ラベルを OBS 連携全体の意味へ戻すとき」の分岐にはもう入らない——
+      //   ラベルはコメント用のまま、適用範囲の明文化は `docs/security.md` §1 の 2026-09-05 追補で行った。
       // ⚠⚠⚠ **063c 段 1: 契機が 3 キーになり、判定は [`isStageOverlayRequired`] 1 本になった。**
       //   - `STAGE_OVERLAY_ENABLED_KEY` … 061l の開催状態（開始／終了／掃除 2 つ）
       //   - `GACHA_STAGE_ENABLED_KEY` … ⚠ **063c の明示トグル**（常設・既定 OFF）
@@ -2699,8 +2789,11 @@ export function CommentViewerApp() {
             //   `hide` が飛ぶようになるため）。
             if (changed) {
               requestObsHide("stage");
-              // ⚠ `obsState` は 4 種別で 1 本のまま（061e Q-5 の受容の範囲が 3 → 4 へ広がった）。
-              setObsState("idle");
+              // 2026-09-05（stage の静音化）: ここにあった `setObsState("idle")` を削除した。
+              // stage は共有 `obsState` に一切関与しなくなった（enable 側は `requestObsAutoAdd` の
+              // silent 分岐、通知側は `onObsState` の lane="stage" 無視）ので、ここで倒すと
+              // **他レーンの failed の赤字だけを巻き添えで消す**ことになる（061e 穴 1 と同じ形）。
+              // sidecar の hide echo（idle）も lane="stage" 付きで届き、同じ理由で無視される。
             }
           } else if (!loadObsAutoAdd()) {
             // ⚠⚠ **`clear()` のときの後始末**（064e で削除した `EFFECT_OBS_AUTO_ADD_KEY` 分岐から移設）。
@@ -2786,6 +2879,12 @@ export function CommentViewerApp() {
     //   [`isStageOverlayRequired`] へ差し替えた**（旗が 2 本になったため）。
     //   ⚠ ここが旧のまま残ると「**トグルを ON にして窓を開き直しても OBS へ反映されない**」
     //   ＝ 061e(5) が直した「保証ベースラインが保証になっていない」の再発になる。
+    // ⚠⚠ **2026-09-05: ここが S-4 の再修正トリガーを実機で踏んだ経路そのもの**——
+    //   「OBS 自動連携（コメント用トグル）OFF ＋ OBS 未起動 ＋ ガード true」でコメビュ窓を開くたび、
+    //   この reconcile が `enableObs("stage")` → 4 秒タイムアウト → failed で赤字を出していた。
+    //   ⚠ 答えはゲートではなく**静音化**（本人指示・`requestObsAutoAdd` の JSDoc が正）＝
+    //   reconcile 自体は従来どおり走り、結果を UI に出さないだけ。`loadObsAutoAdd()` はここでは見ない
+    //   （いったん master switch 化で見る形にしたが同日撤回・storage 購読側の 2026-09-05 コメントが正）。
     if (isStageOverlayRequired()) requestStageObsAutoAddIfOpen();
     // ⚠ `requestStageObsAutoAddIfOpen` はレンダーごとに作り直されるが、読むのは ref と localStorage だけ。
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2804,8 +2903,9 @@ export function CommentViewerApp() {
     setObsAutoAdd(next);
     if (!next) {
       // 045c レビュー: 猶予中に連携 OFF されたら反映要求ごと取り消す（disableObs の後に enableObs が飛ぶのを防ぐ）。
-      // ⚠ 061a: このトグルが束ねるのは comments / pinned の 2 種別だけ（effects は専用キー＝
-      // `EFFECT_OBS_AUTO_ADD_KEY` で main 窓が持つ）。**effects の仕掛かりまで巻き添えで消さない。**
+      // ⚠ 061a: このトグルが束ねるのは comments / pinned の 2 種別だけ。**stage の仕掛かりまで巻き添えで
+      // 消さない**（2026-09-05: いったん master switch 化で全種別を束ねたが同日撤回・
+      // storage 購読側の 2026-09-05 コメントが正。stage はこのトグルと無関係のまま）。
       clearObsEnableTimer("comments");
       clearObsEnableTimer("pinned");
       streamRef.current?.disableObs();
@@ -3095,6 +3195,15 @@ export function CommentViewerApp() {
                   `enableObs("effects")` → failed）に**必ず**赤字が出る。⚠ これは 061e の目的（失敗の可視化）
                   そのものなので**赤字を隠す方向では直さない**——発火したときの答えは wire 変更（種別ごとの
                   state ＋ 種別つきの文言）であって、ゲートを戻すことではない。 */}
+              {/* ⚠⚠⚠ 2026-09-05: **Q-4 のトリガー①が実機で発火し、答えは上の予告と半分だけ同じになった。**
+                  wire には種別（`obs.state` の lane）を足した——ただし種別つきの文言で出し分けるのではなく、
+                  **stage レーンと発火系（effects＝自動発火・「1回鳴らす」・一覧取得）は表示ごと捨てる**
+                  （本人指示「エフェクト側は接続できなかったら黙って落ちればよい」「エラーが出るべきは
+                  『コメントをOBSに表示』を ON にした時だけ」。「赤字を隠す方向では直さない」という上の
+                  宣言は、OBSエフェクト系に限り本人判断で反転した）。
+                  ⇒ この赤字にいま流れ込むのは comments / pinned＝**表示トグルを ON にした時の反映結果だけ**。
+                  「コメビュを開くたびに赤字」「発火のたびに赤字」の症状は静音化で消えた
+                  （判断の全文は `requestObsAutoAdd` の JSDoc と `docs/security.md` §1 の 2026-09-05 追補が正）。 */}
               {obsState === "failed" && (
                 <span
                   className={styles.toolbarError}

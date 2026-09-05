@@ -678,6 +678,9 @@ describe("061a: ObsEffectsScreen", () => {
     //   ⇒ **語の否定ではなく、カードの同一性（見出し・固有の文言・トグル名）で見る。**
     //   ⚠ **語の否定へ戻さないこと**——戻すと「何が起きるか説明しない」方向へ倒れ、
     //   061a Q-1（黙って何かが起きる状態を作らない）に反する。
+    // ⚠ 2026-09-05: 一時この語の否定を外していた（master switch 化の案内文がこの語を使ったため）が、
+    //   同日中に master switch 化ごと撤回した（stage の起動時エラーは静音化で解決・
+    //   `CommentViewerApp` の `requestObsAutoAdd` の JSDoc が正）ので、否定を戻した。
     expect(container.textContent).not.toContain("OBSに自動で反映する");
     // ⚠⚠ **旧トグルを戻す変異は名前で殺す**（件数では 063c のトグルと区別できない）。
     expect(screen.queryByRole("switch", { name: "OBS へ自動で反映" })).toBeNull();

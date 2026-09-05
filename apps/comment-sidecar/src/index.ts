@@ -508,10 +508,18 @@ async function main(): Promise<void> {
 
   // 044a: OBS 連携クライアント。状態は obs.state で viewer へ通知（UI のトグル状態・失敗時の手動誘導に使う）。
   // パスワードは下の stdin 受領（COMMENT_SIDECAR_OBS_PW=）で in-memory に設定する（loopback WS には載せない）。
-  const obsClient = createObsClient((state, reason) => {
+  // 2026-09-05（静音化）: payload に lane（発生元レーン・固定 union 値）を追加した。enable/hide は対象窓の
+  // 種別（comments/pinned/stage）、発火系（fireSource/listSources）は "effects"。viewer が
+  // 「stage / effects レーンの結果は UI に出さない」を判定するために使う（ObsStateListener の JSDoc が正）。
+  // §9: lane は固定 union 値のみ＝第三者データは 1 バイトも増えない。
+  const obsClient = createObsClient((state, reason, lane) => {
     output.broadcastMessage({
       type: OBS_STATE_FRAME,
-      payload: { state, ...(reason ? { reason } : {}) },
+      payload: {
+        state,
+        ...(reason ? { reason } : {}),
+        ...(lane ? { lane } : {}),
+      },
     });
   });
 

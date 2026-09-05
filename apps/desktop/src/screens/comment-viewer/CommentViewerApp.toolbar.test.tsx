@@ -259,12 +259,21 @@ function renderApp(overlayAlreadyOpen = false) {
   return result;
 }
 
-/** 044a: sidecar からの obs.state 通知を再現する（実 WS は張らないので捕捉した handlers を直接叩く）。 */
-function emitObsState(state: string) {
+/**
+ * 044a: sidecar からの obs.state 通知を再現する（実 WS は張らないので捕捉した handlers を直接叩く）。
+ *
+ * ⚠⚠ **2026-09-05（静音化・レビュー S-4）: `lane`（発生元レーン）を必ず渡すこと。**
+ * 実物の sidecar は enable / hide 由来の通知に対象窓の種別（comments/pinned/stage）を、発火・一覧取得に
+ * "effects" を**必ず載せる**（`ObsStateListener` が正）。lane なしで届くのは `disable` の echo（idle）だけで、
+ * **lane なしの `failed` / `added` は実物に存在しない形**である。
+ * ⚠ このファイルはツールバー（コメント一覧の反映結果）を見るので既定は `"comments"`。
+ * ⚠ 既定に頼らず明示したいケース（無音を見る否定ケース等）は第 2 引数で渡す。
+ */
+function emitObsState(state: string, lane: string | undefined = "comments") {
   // 045c レビュー: 下の `?.` は捕捉が壊れても黙って no-op になるため、「何も出ない」を見る否定ケースが
   // **通知が届いていないから通る**（vacuous）状態になりうる。捕捉の生存をここで明示的に落とす。
   expect(mocks.handlers.current).not.toBeNull();
-  act(() => mocks.handlers.current?.onObsState?.(state));
+  act(() => mocks.handlers.current?.onObsState?.(state, undefined, lane));
 }
 
 /** ツールバーの表示トグル（role="switch"）を取る。 */

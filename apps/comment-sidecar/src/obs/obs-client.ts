@@ -37,7 +37,66 @@ export type ObsState =
   | "reused" // 既存ソースを再利用した
   | "failed"; // 接続/作成に失敗（手動手順へフォールバック）
 
-export type ObsStateListener = (state: ObsState, reason?: string) => void;
+/**
+ * 状態通知の**発生元レーン**。
+ *
+ * 2026-09-05（静音化・2 段階）: `ObsOverlayKind`（enable / hide の対象窓）に **`"effects"`＝
+ * 発火系（`fireSource` / `listSources`）**を加えた union。発火は「窓の追加」ではないので
+ * `ObsOverlayKind` には**混ぜない**（あちらは Rust の契約テストが desktop 側と突き合わせている
+ * 固定 union で、OBS に作るソースの種別を意味する）。
+ *
+ * ## ⚠ `"effects"` と `lane` キーは契約テストで固定していない（レビュー指摘・修正不要と判断）
+ *
+ * **意図**: Rust の `obs_overlay_kind_union_matches_between_sidecar_and_desktop` が固定するのは
+ * `ObsOverlayKind` の 3 値だけで、`"effects"` リテラルと `lane` というキー名は
+ * **sidecar ⇔ desktop の人手同期**である。
+ * **なぜ修正不要か**: ①typo しても壊れ方が **fail-visible** ——lane が届かない／未知値になると
+ * viewer 側の許可リスト（`isObsLaneVisible`）が**弾く**ので、`"effects"` が `"effcts"` になっても
+ * 「静音化が効かず赤字が出る」ではなく「無音のまま」に倒れ、`lane` キー名を間違えた場合だけ
+ * 赤字が復活する＝**実機で即分かる**（黙って権限や宛先が広がる類の壊れ方ではない）
+ * ②固定するには `createObsClient` を起こして `OBSWebSocket` をモックする新しいハーネスが要り、
+ * 現行の `test-obs-client.mjs`（dist の**純関数だけ**を import する作法）とは別物になる。
+ * **再修正のトリガー**: ⑴レーンが 3 つ目に増えるとき（人手同期の面が広がる）
+ * ⑵`test-obs-client.mjs` に WS モックのハーネスが別の理由で入ったとき
+ * ⇒ そのときは「`fireSource` / `listSources` の全通知に `lane==="effects"` が載る」を 1 本足す
+ * （desktop 側テストは lane を自分で注入するので、**sidecar 側の付け忘れは今どこも見ていない**）。
+ */
+export type ObsLane = ObsOverlayKind | "effects";
+
+/**
+ * 状態通知の受け口。
+ *
+ * 2026-09-05（静音化）: 第 3 引数 `lane`（発生元レーン）を追加した。
+ * **`enable` / `hide` は対象の窓種別を、`fireSource` / `listSources` は `"effects"` を載せる**
+ * （`disable` は全レーン対象なので載せない）。
+ * viewer 側はこれを見て **stage / effects レーンの結果（成功も失敗も）を UI に出さない**——
+ * 「OBS 未起動だと、コメビュを開くたび・エフェクトが発火するたびに接続失敗の赤字が出て面倒。
+ * エラーが出るべきは『コメントをOBSに表示』等を ON にした時だけ」という実機フィードバックへの
+ * 答えである（判断の全文は `docs/security.md` §1 の 2026-09-05 追補と
+ * desktop 側 `CommentViewerApp` の該当コメントが正）。
+ * ⚠ sidecar 側では**出し分けをしない**（全部通知する）——黙らせる判断は表示の持ち主（viewer）に置く。
+ *
+ * ## ⚠⚠ 静音化の帰結: **host-guard の拒否も stage / effects では無観測になる**（受容・修正不要と判断）
+ *
+ * **意図**: 下の 4 か所の `assertAllowedObsUrl` 失敗（`onState("failed", "OBS の接続先が不正です", …)`）は、
+ * 「OBS が起動していない」ではなく **loopback 固定のガードが実際に何かを弾いた**という別種の事象だが、
+ * lane が stage / effects なら viewer は**それも捨てる**（＝どこにも出ない）。
+ * **なぜ修正不要か**: ①**fail-closed は不変**——弾いた接続は行われない（可視性だけの問題）
+ * ②URL は `ws://${OBS_HOST}:${port}` を**コード側で組む**形で、host は定数・port は read-only 検出由来の
+ * 数値だけ＝**実運用でここが発火する経路が無い**（発火するなら検出側かコード側のバグで、その場合は
+ * comments / pinned でも同じく発火し、そちらは赤字に出る）
+ * ③§9 の都合でこの sidecar は OBS 周りのログを一切出しておらず、観測点を足すこと自体が
+ * 「ログ面を新設する」判断になる（本タスク＝可視性の縮小、とは逆向きの独立した決定）。
+ * **再修正のトリガー**: ⑴ユーザーが port を指定できるようにするなど、**host-guard が現実に発火しうる
+ * 入力経路ができたとき** ⑵OBS 接続に関する調査ログを入れる別タスクが立つとき
+ * ⇒ そのときは**固定文字列 1 行**（URL も理由も載せない・§9）を全レーン共通で `logInfo` する。
+ * ⚠ 赤字（UI）を stage / effects へ戻す方向で直さないこと（本人判断で反転済み・§1 の 2026-09-05 追補）。
+ */
+export type ObsStateListener = (
+  state: ObsState,
+  reason?: string,
+  lane?: ObsLane,
+) => void;
 
 /**
  * 046d: 自動追加の対象オーバーレイ種別。**viewer から任意の名前を受け取らない**ための固定 union で、
@@ -448,20 +507,20 @@ export function createObsClient(onState: ObsStateListener): ObsClient {
       try {
         assertAllowedObsUrl(url);
       } catch {
-        onState("failed", "OBS の接続先が不正です");
+        onState("failed", "OBS の接続先が不正です", overlay);
         return;
       }
-      onState("connecting");
+      onState("connecting", undefined, overlay);
       const obs = new OBSWebSocket();
       try {
         await connectWithTimeout(obs, url, password);
         const result = await ensureOverlaySource(obs, overlay);
         // reuse 時に前回の非表示を確実に戻す（新規作成は sceneItemEnabled:true と冪等）。失敗は無視（現在シーンに無い等）。
         await setOverlaySceneItemEnabled(obs, overlay, true).catch(() => {});
-        onState(result);
+        onState(result, undefined, overlay);
       } catch (err) {
         // OBS 未起動 / WS 無効 / 認証失敗 / 窓未検出 等はすべて graceful に失敗通知（hot-loop しない）。
-        onState("failed", safeReason(err, "OBS に接続できませんでした"));
+        onState("failed", safeReason(err, "OBS に接続できませんでした"), overlay);
       } finally {
         await obs.disconnect().catch(() => {});
       }
@@ -474,7 +533,7 @@ export function createObsClient(onState: ObsStateListener): ObsClient {
       try {
         assertAllowedObsUrl(url);
       } catch {
-        onState("idle");
+        onState("idle", undefined, overlay);
         return;
       }
       const obs = new OBSWebSocket();
@@ -485,7 +544,7 @@ export function createObsClient(onState: ObsStateListener): ObsClient {
         // OBS 未起動 / ソース未作成 / 現在シーンに無い等はすべて無視（非表示は best-effort・hot-loop しない）。
       } finally {
         await obs.disconnect().catch(() => {});
-        onState("idle");
+        onState("idle", undefined, overlay);
       }
     },
 
@@ -506,14 +565,16 @@ export function createObsClient(onState: ObsStateListener): ObsClient {
      * **`ok:false` を返すのは「OBS へ辿り着けなかった」ときだけ**で、
      * 繋がって 0 件だったときは **`ok:true` ＋ 空配列**である——この 2 つを混ぜると
      * main 窓が間違った対処を案内する（型の JSDoc が正）。
-     * ⚠ `onState("failed", …)` は**従来どおり残す**（コメビュ窓ツールバーの赤字＝既存の観測点）。
+     * ⚠ `onState("failed", …)` は**従来どおり送る**が、2026-09-05（静音化 2 段目）で lane="effects" が
+     *   付き、**viewer はもう赤字に出さない**（黙らせる判断は表示の持ち主＝viewer に置く、の原則どおり
+     *   こちらは全部通知するだけ）。ユーザーへの案内は main 窓のカードが `ok:false` 経由で行う（上の段落）。
      */
     async listSources(port: number): Promise<ObsSourceListResult> {
       const url = `ws://${OBS_HOST}:${port}`;
       try {
         assertAllowedObsUrl(url);
       } catch {
-        onState("failed", "OBS の接続先が不正です");
+        onState("failed", "OBS の接続先が不正です", "effects");
         return { ok: false, sources: [] };
       }
       const obs = new OBSWebSocket();
@@ -523,7 +584,7 @@ export function createObsClient(onState: ObsStateListener): ObsClient {
         // ⚠⚠ 絞り込みと `ok:true` は [`toObsSourceListResult`] が持つ（0 件でも `ok:true`）。
         return toObsSourceListResult(inputs);
       } catch (err) {
-        onState("failed", safeReason(err, "OBS に接続できませんでした"));
+        onState("failed", safeReason(err, "OBS に接続できませんでした"), "effects");
         return { ok: false, sources: [] };
       } finally {
         await obs.disconnect().catch(() => {});
@@ -571,7 +632,7 @@ export function createObsClient(onState: ObsStateListener): ObsClient {
       durationMs: number,
     ): Promise<boolean> {
       if (!isAllowedObsSourceName(sourceName)) {
-        onState("failed", "ソース名が不正です");
+        onState("failed", "ソース名が不正です", "effects");
         return false;
       }
       const name = sourceName.trim();
@@ -583,7 +644,7 @@ export function createObsClient(onState: ObsStateListener): ObsClient {
       try {
         assertAllowedObsUrl(url);
       } catch {
-        onState("failed", "OBS の接続先が不正です");
+        onState("failed", "OBS の接続先が不正です", "effects");
         return false;
       }
 
@@ -604,7 +665,7 @@ export function createObsClient(onState: ObsStateListener): ObsClient {
           .map(toFireableSource)
           .find((s): s is ObsSourceInfo => s !== null && s.name === name);
         if (target === undefined) {
-          onState("failed", "そのソースが OBS に見つかりません");
+          onState("failed", "そのソースが OBS に見つかりません", "effects");
           return false;
         }
 
@@ -679,7 +740,7 @@ export function createObsClient(onState: ObsStateListener): ObsClient {
         pendingHides.set(name, { timer, close });
         return true;
       } catch (err) {
-        onState("failed", safeReason(err, "OBS に接続できませんでした"));
+        onState("failed", safeReason(err, "OBS に接続できませんでした"), "effects");
         if (connected) {
           // ⚠⚠⚠ S-2: **出した後で失敗したなら、切る前に必ず消す。**
           //   ここに来る経路は 2 つ——①`SetSceneItemEnabled(true)` の後の想定外の throw

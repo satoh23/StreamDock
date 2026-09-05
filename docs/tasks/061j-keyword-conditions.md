@@ -569,11 +569,18 @@ grep -rn "new RegExp" apps/desktop/src/screens/obs-effects
 ⚠⚠ **`MOCK_TEXTS` は provider ごとに固定 6 本で、「草」を部分文字列として含むより長い本文は 1 本も無い**
 （`LONG_CHAT_TEXT` / `LONG_SUPERCHAT_TEXT` にも無い）＝ **「草生える」は作れない**。
 
+⚠⚠ **2026-09-05 訂正（投げ銭頻度の削減）: 下表の `eventType` 列は 2026-08-15 時点のもの。**
+投げ銭は `seq % 20 === 0` の 1 枠だけに集約されたので、**seq=5 はいま `superchat` ではなく `chat`**
+（最初の投げ銭は seq=20）。⚠ **本文の列（キーワード判定の対象）は不変**——本文は `MOCK_TEXTS`（provider ごと 6 本）の周回で決まり、
+**この表の seq はどれも投げ銭枠（`%20===0`）に当たらない**ので上書きも起きない。
+⇒ この表は**キーワード確認用としてはそのまま使える**（変わったのは seq=5 の種別欄だけ）。
+周期表は `apps/comment-sidecar/src/dev-mock.ts` の `makeComment` 冒頭が正。
+
 | seq | 到達 | eventType | 本文 |
 |---|---|---|---|
 | 2 | 2.4s | chat | ナイスプレイ👏 |
 | 4 | 6.0s | chat | スパチャ投げます |
-| 5 | 7.8s | **superchat** | **草**（⚠ `seq%5===0` は本文を上書きしない） |
+| 5 | 7.8s | ~~**superchat**~~ → chat | **草**（⚠ 旧 `seq%5===0` は本文を上書きしなかった。現在は非課金） |
 | 6 | 9.6s | chat | こんばんは〜 |
 | 11 | 18.6s | chat | **草** |
 | 13 | 22.8s | chat | 初見です！ |

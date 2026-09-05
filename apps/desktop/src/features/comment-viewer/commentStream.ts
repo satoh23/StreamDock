@@ -57,8 +57,18 @@ export interface CommentStreamHandlers {
   onConnectionChange?: (connected: boolean) => void;
   /** 032c-b/032c-d: ログイン済みか（platform 別）。twitch=keychain 復元/成功/失効、youtube=in-memory の当該セッション。 */
   onLinkState?: (platform: CommentService, linked: boolean) => void;
-  /** 044a: OBS 連携の状態（idle/connecting/added/reused/failed）。UI のトグル状態・失敗時の手動誘導に使う。 */
-  onObsState?: (state: string, reason?: string) => void;
+  /**
+   * 044a: OBS 連携の状態（idle/connecting/added/reused/failed）。UI のトグル状態・失敗時の手動誘導に使う。
+   *
+   * 2026-09-05（静音化）: `lane`（発生元レーン）が増えた。sidecar は
+   * `"comments" | "pinned" | "stage"`（enable/hide の対象窓）または `"effects"`（発火・一覧取得）の
+   * 固定 union 値を送るが、**WS 境界で型が失われるので `string` で受ける**
+   * （`state` と同じ作法・受け手がリテラル比較で判定する）。
+   * `disable` 由来の echo（idle）には載らない（undefined）。
+   * 受け手（`CommentViewerApp`）は `lane === "stage" | "effects"` を **UI に出さずに捨てる**——
+   * 判断の全文はあちらの `requestObsAutoAdd` の JSDoc が正。
+   */
+  onObsState?: (state: string, reason?: string, lane?: string) => void;
   /**
    * 064a: **OBS に既にあるソースのうち、エフェクトとして鳴らせるものの一覧**。
    *
@@ -544,16 +554,18 @@ export function connectCommentStream(
           handlers.onChannelPointsState?.(p.state);
         }
       } else if (m.type === "obs.state") {
-        // 044a: OBS 連携の状態通知。非秘密（state/reason のみ・パスワードは載らない）。
+        // 044a: OBS 連携の状態通知。非秘密（state/reason/lane のみ・パスワードは載らない）。
         // L4(修正不要): state は WS 境界を跨ぐため string で受ける（sidecar の ObsState union は共有しない）。
         // SettingsView がリテラル比較で網羅する。再修正トリガー: 状態語が増えて取りこぼしが問題化したら共有 union 化する。
+        // 2026-09-05（静音化）: lane も同じ作法（string で受け、受け手がリテラル比較）。
         const p = m.payload as
-          | { state?: unknown; reason?: unknown }
+          | { state?: unknown; reason?: unknown; lane?: unknown }
           | undefined;
         if (typeof p?.state === "string") {
           handlers.onObsState?.(
             p.state,
             typeof p.reason === "string" ? p.reason : undefined,
+            typeof p.lane === "string" ? p.lane : undefined,
           );
         }
       }

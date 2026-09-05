@@ -255,7 +255,8 @@ const MOCK_TEXTS: Record<Provider, string[]> = {
   ],
 };
 
-// 043c 動作確認用: 課金額バリエーション表（tauri dev で配色/金額バッジを目視確認するため額を固定せず seq で回す）。
+// 043c 動作確認用: 課金額バリエーション表（tauri dev で配色/金額バッジを目視確認するため額を固定せず回す）。
+//   読み手は makeComment の**投げ銭枠（seq % 20 === 0）**だけで、種別・金額はサイクル番号のローテーションで一巡する。
 //   スパチャは superchatTier が通貨コードで閾値表を引く（JPY=大単位[100,200,500,1000,2000,5000,10000] /
 //   USD=小単位[1,2,5,10,20,50,100]）。※ bits/jewels/donation はティア非対象（種別単色）＝額は金額バッジのみに反映。
 const SUPERCHAT_VARIANTS = [
@@ -290,8 +291,8 @@ const JEWELS_VARIANTS = [
 ];
 
 /**
- * 043e: 直近に発行した Jewels（seq % 20 === 9）の id と投稿者。combo 更新（seq % 20 === 12）で
- * **同じ id・同じ投稿者**を再送するために覚えておく。
+ * 043e: 直近に発行した Jewels（投げ銭枠 seq % 20 === 0 の jewels 周）の id・投稿者・金額。
+ * combo 更新（同じ周の seq % 20 === 12）で**同じ id・同じ投稿者・本体×3 の金額**を再送するために覚えておく。
  *
  * なぜ id を計算式で作らず覚えるのか: makeComment の id は `Date.now()` を含むため計算では再現できず、
  * 固定 id にすると**セッションをまたいで同じ id が再利用され**（起動のたびに既存行の UPDATE 経路へ落ちて
@@ -300,12 +301,30 @@ const JEWELS_VARIANTS = [
  * なおこれは**モジュールスコープの可変状態**であって top-level 副作用ではない（宣言だけで何も実行しない）ので、
  * 本ファイル冒頭の「OFF 時に import されても実行経路へ影響しない」不変条件は保たれる。
  *
+ * 金額も覚えるのは（投げ銭頻度の削減で）本体がローテーション式になり、combo 側で同じ式を書き写すと
+ * 「本体だけ直って ×3 がずれる」コピー事故が起きうるため（値の出所を本体 1 か所に閉じる）。
+ *
  * 043e（レビュー指摘 S-6）: 覚えた id も**セッションを跨ぐ**ため、上の「固定 id はセッション跨ぎで再利用される
  * から覚える」という理由だけでは足りない。`clearProvider("youtube")`（stop / 再開始）で null に戻すことで
- * セッション単位に閉じている。
+ * セッション単位に閉じている。加えて combo 更新を 1 回出したら null に戻す（一対で完結・下の分岐の注記）。
+ *
+ * ⚠⚠ **既知の制約（両 provider 同時接続時・レビュー I-1・受容と判断）**:
+ * `seq` は両 provider の共有カウンタなので、**jewels 本体を覚えた後の `seq % 20 === 12` を Twitch 側が
+ * 消費する**と、再送の分岐（`source === "youtube"`）に入らず記憶が残る。すると combo 更新は
+ * 「本体の 12 tick 後」ではなく**次に YouTube が 12 枠を引いた周**（数分後もありうる）に届き、
+ * 画面上は**古い行の金額バッジが突然 ×3 に変わる**形になる。
+ * **なぜ修正不要か**: ①これは Q-M2 で受容済みの「同時接続では周期がずれる」の一形態（あちらは
+ * 頻度のずれだけを書いていたので、**遅延の側面をここに補足する**）②dev-mock（`COMMENT_SIDECAR_MOCK=1`）
+ * 限定で実データの意味論に影響しない ③この合成が担保したい 3 層貫通（行が増えない・読み上げ 1 回・
+ * 記録が更新される）は**遅れて届いても同じように目視できる**。
+ * **再修正のトリガー**: 同時接続でも「本体 → 22 秒後に更新」を安定して見たくなったとき
+ * ⇒ Q-M2 の答えと同じく `seq` を provider 別に割る（そのとき本制約ごと消える）。
  */
-let lastMockJewels: { id: string; author: CanonicalComment["author"] } | null =
-  null;
+let lastMockJewels: {
+  id: string;
+  author: CanonicalComment["author"];
+  amount: number;
+} | null = null;
 
 // 043c エッジケース確認用: 長文コメント（本文の折返し・カード/吹き出しの伸長・スクロールが崩れないか目視するため）。
 //   文字数は YouTube の赤スパ（最高額帯）本文上限 ≈290 字を目安にした長文。スパチャ用と通常チャット用の 2 種。
@@ -329,27 +348,24 @@ function makeComment(source: Provider, seq: number): CanonicalComment {
     eventType: "chat",
   };
 
-  // 043a: 種別分離の目視用に投げ銭系イベントを周期で混ぜる（provider 実態に沿う・3/7/9/11/12/13/14/17 は %5≠0 で superchat と衝突しない）。
-  //   membership・jewels … YouTube のみ／subscription・donation・power-up・channelpoint … Twitch のみ／
-  //   gift … **両方**（Twitch=サブギフト seq%20===13／YouTube=メンバーシップギフト seq%20===14・呼び名が配信元で異なる）。
-  //   superchat/bits（額つき）… seq % 5 === 0。付随数値（monthCount/giftCount/tier）・金額は受贈者名/団体名を含まない（§9）。
+  // 043a〜043e: 種別分離の目視用にイベントを周期で混ぜる（provider 実態に沿う）。
+  //   **投げ銭系（＝金額つき。superchat/bits/donation/jewels/power-up）は seq % 20 === 0 の 1 枠だけ**（20 件に 1 件）。
+  //   当初は %5===0 ＋個別スロット（1/3/9/11）で 20 件中 6 件が投げ銭になっており、実際の配信の体感から
+  //   かけ離れていたため 1 枠に集約した。種別・金額ティアはサイクル番号（seq / 20）のローテーションで一巡する
+  //   ＝全ティア配色・長文赤スパ・jewels の目視は「待てば順に全部出る」（1800ms 間隔で Twitch 1 周 約 6 分・
+  //   YouTube 1 周 約 7 分）。
+  //   非課金イベントの周期は従来どおり: membership seq%20===7（YouTube）／gift … **両方**
+  //   （Twitch=サブギフト 13／YouTube=メンバーシップギフト 14・呼び名が配信元で異なる）／raid 16・
+  //   subscription 17（Twitch）／チャンネルポイント 4・6・8（Twitch・emitComment 側で分岐）／長文チャット 19。
+  //   付随数値（monthCount/giftCount/tier）・金額は受贈者名/団体名を含まない（§9）。
   //   ※jewels/gift(YouTube) の取得（ingestion）は 043d で実装済み。ここは表示/実機確認用の合成発行。
-  //   ※043e: jewels の combo 更新（seq%20===12）は **9 で出した jewels と同一 id の再送**で、単独では成立しない
-  //     （lastMockJewels が無ければ通常チャットへ落ちる）。
+  //   ※043e: jewels の combo 更新（seq%20===12）は **投げ銭枠で jewels を出した周だけ**、同一 id の再送として
+  //     出る（行は増えない・lastMockJewels が無ければ通常チャットへ落ちる）。
   if (seq % 20 === 7 && source === "youtube") {
     comment.eventType = "membership";
     // 043b: 種別要約は表示側が monthCount 等から組み立てるため、本文は視聴者の自由コメントのみ（無しは空）。
     comment.text = "";
     comment.monthCount = 6;
-  } else if (seq % 20 === 9 && source === "youtube") {
-    // 043a(拡張): YouTube Jewels（合成のみ・取得は 043d）。jewels は仮想通貨のため bits と同様に数値＋通貨で表す。
-    const v = JEWELS_VARIANTS[Math.floor(seq / 20) % JEWELS_VARIANTS.length];
-    comment.eventType = "jewels";
-    comment.text = "投げ銭ジュエル 🎁";
-    comment.monetaryAmount = v.label;
-    comment.monetary = { amount: v.amount, currency: "JEWELS" };
-    // 043e: この 1 件を「combo の 1 回目」として覚え、seq % 20 === 12 で同じ id を再送する。
-    lastMockJewels = { id: comment.id, author: comment.author };
   } else if (seq % 20 === 12 && source === "youtube" && lastMockJewels) {
     // 043e: Jewels の combo 更新（**同一 id の再送**）。公式仕様どおり「別メッセージが N 件届く」のではなく
     //   「同じ 1 件が更新される」形を合成し、3 層（mergeComments の updated → recordComments → Rust の
@@ -357,8 +373,8 @@ function makeComment(source: Provider, seq: number): CanonicalComment {
     //     ・コメント行は**増えない**（1 行のまま金額バッジが 30 → 90 jewels に変わり「×3」が付く）
     //     ・読み上げは**1 回だけ**（combo 更新は added に載らないため）
     //     ・視聴者詳細の過去コメントも金額が置き換わる（total_comments は増えない）
-    //   周期に 12 を選んだ理由: 既存の設計原則「%5 ≠ 0 で superchat 枠と衝突しない」に従いつつ、
-    //   9（jewels 本体）の直後に置いて対応関係を読みやすくした（1800ms 間隔で約 5 秒後に更新が届く）。
+    //   発火するのは**投げ銭枠（seq % 20 === 0）で jewels を出した周だけ**（lastMockJewels が
+    //   その周の本体を覚えている間だけ）。本体の約 22 秒後（12 tick 後）に更新が届く。
     //
     // ⚠【レビュー指摘 Q-3・フェーズ2 の判断を誤読しないこと】ここで金額を ×3 にしているのは
     //   **`jewels_amount` が「累計」で届く世界を模した合成値**であって、実データがどちらかの根拠ではない。
@@ -366,15 +382,17 @@ function makeComment(source: Provider, seq: number): CanonicalComment {
     //   実データが「単価」で届く世界なら同一 id の再送で金額は**変化しない**（＝×N だけが増える）のが正しい。
     //   フェーズ2 の判別は**実データの観測のみ**で行い、本モックの見え方を根拠にしないこと。
     //   （モックの役割は 3 層貫通〔行が増えない・読み上げ 1 回・記録が更新される〕の目視に限る。）
-    const v = JEWELS_VARIANTS[Math.floor(seq / 20) % JEWELS_VARIANTS.length];
     comment.id = lastMockJewels.id; // ← ここが本質（同一 id の再送）
     comment.author = lastMockJewels.author; // combo は同じ視聴者からの連続ギフト
     comment.eventType = "jewels";
     comment.text = "投げ銭ジュエル 🎁";
-    comment.monetaryAmount = `${v.amount * 3} jewels`;
-    comment.monetary = { amount: v.amount * 3, currency: "JEWELS" };
+    comment.monetaryAmount = `${lastMockJewels.amount * 3} jewels`;
+    comment.monetary = { amount: lastMockJewels.amount * 3, currency: "JEWELS" };
     // combo_count はギフト回数（公式は「0 if not a combo」＝単発は 0）。合成では 3 連 combo とする。
     comment.comboCount = 3;
+    // 一対（本体 → combo 更新 1 回）で完結させる。null に戻さないと jewels を出していない周の 12 でも
+    // 古い id へ再送し続け、「投げ銭は 20 件に 1 件」の頻度設計が崩れる（S-6 の stop 時クリアとは別の話）。
+    lastMockJewels = null;
   } else if (seq % 20 === 13 && source === "twitch") {
     comment.eventType = "gift";
     comment.text = ""; // 表示側が「〇〇さんがサブギフトを5件贈りました（Tier1）」を組み立てる。
@@ -392,8 +410,8 @@ function makeComment(source: Provider, seq: number): CanonicalComment {
   } else if (seq % 20 === 16 && source === "twitch") {
     // 062a: Twitch のレイド（合成のみ）。実機で「レイド 42人」のバッジ・**課金扱いされないこと**・
     //   **読み上げられないこと**・**視聴者メモリの subscription_count が増えないこと**を目視するため。
-    //   周期に 16 を選んだ理由: 既存の設計原則「%5 ≠ 0 で superchat 枠と衝突しない」に従いつつ、
-    //   未使用の値（1/3/7/9/11/12/13/14/17/19 と %5===0 が使用済み）から選んだ。
+    //   周期に 16 を選んだ理由: 導入当時（旧周期表）の未使用値から選んだ。現在の周期表は
+    //   makeComment 冒頭のコメントが正（投げ銭枠 %20===0 と衝突しないことだけ守ればよい）。
     //
     // ⚠⚠ **このモックで確認できないもの（穴 F・誤った安心をしないこと）**:
     //   本ファイルは `CanonicalComment` を**直接**組んでおり、**`wire.ts` を通らない**
@@ -414,42 +432,69 @@ function makeComment(source: Provider, seq: number): CanonicalComment {
     comment.text = "いつも応援してます！"; // 視聴者が添えた自由コメント（要約の下に表示される）。
     comment.monthCount = 3;
     comment.tier = 2;
-  } else if (seq % 20 === 3 && source === "twitch") {
-    // 043a(拡張): チャリティ・ドネーション（実金銭・団体名は持たない）。
-    const v = DONATION_VARIANTS[Math.floor(seq / 20) % DONATION_VARIANTS.length];
-    comment.eventType = "donation";
-    comment.text = "チャリティに寄付しました";
-    comment.monetaryAmount = v.label;
-    comment.monetary = { amount: v.amount, currency: v.currency };
-  } else if (seq % 20 === 11 && source === "twitch") {
-    // 043a(拡張): Bits Power-up（bits 消費＝既存の superchat+BITS 表現に集約）。
-    const v = BITS_VARIANTS[Math.floor(seq / 20) % BITS_VARIANTS.length];
-    comment.eventType = "superchat";
-    comment.text = "Power-up 🎉";
-    comment.monetaryAmount = v.label;
-    comment.monetary = { amount: v.amount, currency: "BITS" };
-  } else if (seq % 20 === 1 && source === "youtube") {
-    // 043c エッジケース: 赤スパ（最高額帯＝tier6 赤）＋赤スパ本文上限（290字）の長文。カードのボディ折返し/伸長/スクロールの目視用。
-    comment.eventType = "superchat";
-    comment.text = LONG_SUPERCHAT_TEXT;
-    comment.monetaryAmount = "20,000 JPY";
-    comment.monetary = { amount: 20000, currency: "JPY" };
   } else if (seq % 20 === 19) {
     // 043c エッジケース: 通常チャットの長文（赤スパ本文上限 290字を参考）。吹き出しの折返し/伸長/スクロールの目視用。
     comment.eventType = "chat";
     comment.text = LONG_CHAT_TEXT;
-  } else if (seq % 5 === 0) {
-    // 043c 動作確認: スパチャ額を全ティア（青→赤）へ渡って回す。twitch=bits（種別単色・額のみ変化）/ youtube=スパチャ（金額ティア配色）。
-    comment.eventType = "superchat";
-    // 038a: 数値内訳も付与（Rust CommentViewDto.monetary と同形）。twitch=bits / youtube=JPY/USD。
+  } else if (seq % 20 === 0) {
+    // **投げ銭枠**（20 件に 1 件・このファイルで金額つきを出す唯一のスロット。頻度の判断は makeComment 冒頭が正）。
+    // 038a: 数値内訳（Rust CommentViewDto.monetary と同形）も付与する。
+    // 最初の枠（seq=20）がローテーション表の先頭から始まるよう 0 起点のサイクル番号にする（seq%20===0 なので整数）。
+    const rot = seq / 20 - 1;
     if (source === "twitch") {
-      const v = BITS_VARIANTS[Math.floor(seq / 5) % BITS_VARIANTS.length];
-      comment.monetaryAmount = v.label;
-      comment.monetary = { amount: v.amount, currency: "BITS" };
+      // bits 全 5 種 → チャリティ・ドネーション全 4 種 → Bits Power-up、の 10 周期で一巡。
+      // ⚠ 一巡の長さは**変種表から計算する**（レビュー S-1）。旧実装は Power-up の額だけ `rot / 10` と
+      //   直値で書いており、変種を 1 つ足すと**この行だけ古い周期のまま**ずれた（無音の不整合）。
+      const cycle = BITS_VARIANTS.length + DONATION_VARIANTS.length + 1;
+      const t = rot % cycle;
+      if (t < BITS_VARIANTS.length) {
+        // 043c 動作確認: bits（種別単色・額のみ変化）。
+        const v = BITS_VARIANTS[t];
+        comment.eventType = "superchat";
+        comment.monetaryAmount = v.label;
+        comment.monetary = { amount: v.amount, currency: "BITS" };
+      } else if (t < BITS_VARIANTS.length + DONATION_VARIANTS.length) {
+        // 043a(拡張): チャリティ・ドネーション（実金銭・団体名は持たない）。
+        const v = DONATION_VARIANTS[t - BITS_VARIANTS.length];
+        comment.eventType = "donation";
+        comment.text = "チャリティに寄付しました";
+        comment.monetaryAmount = v.label;
+        comment.monetary = { amount: v.amount, currency: v.currency };
+      } else {
+        // 043a(拡張): Bits Power-up（bits 消費＝既存の superchat+BITS 表現に集約）。額は一巡ごとに変える。
+        const v = BITS_VARIANTS[Math.floor(rot / cycle) % BITS_VARIANTS.length];
+        comment.eventType = "superchat";
+        comment.text = "Power-up 🎉";
+        comment.monetaryAmount = v.label;
+        comment.monetary = { amount: v.amount, currency: "BITS" };
+      }
     } else {
-      const v = SUPERCHAT_VARIANTS[Math.floor(seq / 5) % SUPERCHAT_VARIANTS.length];
-      comment.monetaryAmount = v.label;
-      comment.monetary = { amount: v.amount, currency: v.currency };
+      // スパチャ全ティア（10 種・青→赤）→ 長文赤スパ → jewels、の 12 周期で一巡。
+      // ⚠ Twitch 側と同じく一巡の長さは変種表から計算する（+2 は長文赤スパと jewels のぶん）。
+      const cycle = SUPERCHAT_VARIANTS.length + 2;
+      const t = rot % cycle;
+      if (t < SUPERCHAT_VARIANTS.length) {
+        // 043c 動作確認: スパチャ（金額ティア配色）。
+        const v = SUPERCHAT_VARIANTS[t];
+        comment.eventType = "superchat";
+        comment.monetaryAmount = v.label;
+        comment.monetary = { amount: v.amount, currency: v.currency };
+      } else if (t === SUPERCHAT_VARIANTS.length) {
+        // 043c エッジケース: 赤スパ（最高額帯＝tier6 赤）＋赤スパ本文上限（290字）の長文。カードのボディ折返し/伸長/スクロールの目視用。
+        comment.eventType = "superchat";
+        comment.text = LONG_SUPERCHAT_TEXT;
+        comment.monetaryAmount = "20,000 JPY";
+        comment.monetary = { amount: 20000, currency: "JPY" };
+      } else {
+        // 043a(拡張): YouTube Jewels（合成のみ・取得は 043d）。jewels は仮想通貨のため bits と同様に数値＋通貨で表す。
+        const v = JEWELS_VARIANTS[Math.floor(rot / cycle) % JEWELS_VARIANTS.length];
+        comment.eventType = "jewels";
+        comment.text = "投げ銭ジュエル 🎁";
+        comment.monetaryAmount = v.label;
+        comment.monetary = { amount: v.amount, currency: "JEWELS" };
+        // 043e: この 1 件を「combo の 1 回目」として覚え、同じ周の seq % 20 === 12 で同じ id に再送する。
+        lastMockJewels = { id: comment.id, author: comment.author, amount: v.amount };
+      }
     }
   }
   return comment;
@@ -467,9 +512,10 @@ export function createMockCommentSource(deps: MockDeps): MockCommentSource {
     Provider,
     { connect?: NodeJS.Timeout; emit?: NodeJS.Timeout }
   >();
-  // レビュー指摘 Q-3（修正不要と判断）: seq は provider 共通の単調カウンタ（id 一意化＋名前/本文の周回＋superchat 混入
-  // `seq % 5` に使う）。両 provider 合算で 5 件ごとに額つきになるが、額表示/バッジの目視には十分で意図どおり（実害なし）。
-  // 再修正トリガー: provider ごとに superchat 比率を厳密に制御したくなったら provider 別 seq に分ける。
+  // レビュー指摘 Q-3（修正不要と判断）: seq は provider 共通の単調カウンタ（id 一意化＋名前/本文の周回＋投げ銭枠
+  // `seq % 20 === 0` に使う）。両 provider 同時接続では合算 20 件ごとに額つきになり、枠がどちらの provider に
+  // 当たるかもずれるが、額表示/バッジの目視には十分で意図どおり（実害なし）。
+  // 再修正トリガー: provider ごとに投げ銭比率を厳密に制御したくなったら provider 別 seq に分ける。
   let seq = 0;
 
   const clearProvider = (provider: Provider): void => {
@@ -487,7 +533,8 @@ export function createMockCommentSource(deps: MockDeps): MockCommentSource {
   /**
    * 063e 段 2-b: **チャンネルポイントを流す周期**（Twitch のみ）。
    *
-   * ⚠ 既存の設計原則「`% 5 !== 0` で superchat 枠と衝突しない」に従い、未使用だった 4 / 6 / 8 を割り当てる。
+   * ⚠ 既存の設計原則「投げ銭枠（`% 20 === 0`）と衝突しない」に従い、未使用だった 4 / 6 / 8 を割り当てる
+   *   （割り当て当時の原則は「`% 5 !== 0`」だったが、投げ銭枠の 1 本化後も 4/6/8 はそのまま条件を満たす）。
    * ⚠ 並びは [`CHANNEL_POINTS_ENVELOPES`] の順（入力あり → 入力なし → 仕様外）。
    *
    * ## ⚠⚠⚠ 既知の制約: `seq` は **両 provider の共有カウンタ**である（レビュー Q-M2）

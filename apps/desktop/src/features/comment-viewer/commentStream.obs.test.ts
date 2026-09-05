@@ -122,12 +122,13 @@ describe("commentStream OBS 制御フレーム", () => {
     handle.disconnect();
   });
 
-  it("obs.state 受信で onObsState(state, reason) を通知する", async () => {
+  it("obs.state 受信で onObsState(state, reason, lane) を通知する", async () => {
     const { handle, socket, onObsState } = await connectAndOpen();
     socket.onmessage?.({
       data: JSON.stringify({ type: "obs.state", payload: { state: "added" } }),
     });
-    expect(onObsState).toHaveBeenCalledWith("added", undefined);
+    // lane 無し（disable の echo）は undefined のまま渡す。
+    expect(onObsState).toHaveBeenCalledWith("added", undefined, undefined);
     socket.onmessage?.({
       data: JSON.stringify({
         type: "obs.state",
@@ -137,7 +138,32 @@ describe("commentStream OBS 制御フレーム", () => {
     expect(onObsState).toHaveBeenCalledWith(
       "failed",
       "OBS に接続できませんでした",
+      undefined,
     );
+    // 2026-09-05（静音化）: enable/hide 由来の通知は対象窓の種別を、発火・一覧取得は "effects" を運ぶ。
+    // 受け手（CommentViewerApp）はこれで stage / effects の結果を UI に出さない判定をする。
+    socket.onmessage?.({
+      data: JSON.stringify({
+        type: "obs.state",
+        payload: { state: "failed", lane: "stage" },
+      }),
+    });
+    expect(onObsState).toHaveBeenCalledWith("failed", undefined, "stage");
+    socket.onmessage?.({
+      data: JSON.stringify({
+        type: "obs.state",
+        payload: { state: "failed", lane: "effects" },
+      }),
+    });
+    expect(onObsState).toHaveBeenCalledWith("failed", undefined, "effects");
+    // 非文字列の lane は捨てて undefined（state と同じ「型が違うものを渡さない」作法）。
+    socket.onmessage?.({
+      data: JSON.stringify({
+        type: "obs.state",
+        payload: { state: "idle", lane: 123 },
+      }),
+    });
+    expect(onObsState).toHaveBeenCalledWith("idle", undefined, undefined);
     handle.disconnect();
   });
 

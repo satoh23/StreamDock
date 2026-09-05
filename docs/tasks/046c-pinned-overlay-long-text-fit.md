@@ -138,6 +138,11 @@ git diff --stat -- apps/desktop/src/screens/comment-viewer/OverlayApp.tsx \
 
 **実機**（`COMMENT_SIDECAR_MOCK=1 pnpm tauri dev`）。dev-mock は `seq % 20 === 19` で `LONG_CHAT_TEXT`、
 `seq % 20 === 1`（youtube）で `LONG_SUPERCHAT_TEXT` を 1800ms 間隔で流す。`PinnedOverlayApp` は WS に繋がないので、
+⚠⚠ **2026-09-05 訂正（投げ銭頻度の削減）: `LONG_SUPERCHAT_TEXT` の周期が変わった。**
+投げ銭は `seq % 20 === 0` の 1 枠だけになり、長文赤スパはその**ローテーション 11 周目＝ seq=220**
+（YouTube 単独接続で約 6.6 分後）に出る。`LONG_CHAT_TEXT`（`seq % 20 === 19`）は不変。
+⚠ 最初の数分で長文赤スパが出なくても回帰ではない（周期表は `apps/comment-sidecar/src/dev-mock.ts` の
+`makeComment` 冒頭が正）。急ぐなら `SUPERCHAT_VARIANTS` を一時的に減らして先頭へ寄せる。
 **コメビュ本体で該当コメントを右クリック→固定**して確認する。
 
 - `LONG_CHAT_TEXT`（290 字）→ 等倍のまま全文表示（560 化だけで足りることの確認）

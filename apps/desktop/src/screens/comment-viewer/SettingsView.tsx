@@ -698,7 +698,13 @@ export function SettingsView({
               **このトグル単体で反映が起きる**ようにも読め、実際 044a の旧実装も ON だけでオーバーレイを開いて
               いた（045c で削除）。鉤括弧内は移設先トグルの label と同一文字列（045a 確定）にして指示語を避ける。
               054 追補(E2E): 「失敗時は**上の手動手順にフォールバックする**」と書いていたが、その手動手順の注記は
-              画面から削除した（挙動としてのフォールバック＝自動追加を諦めて失敗状態を出すこと自体は不変）。 */}
+              画面から削除した（挙動としてのフォールバック＝自動追加を諦めて失敗状態を出すこと自体は不変）。
+              ⚠ 2026-09-05: いったんこのトグルを「OBS 連携全体（stage 含む）の master switch」へ
+              昇格させ label も変えたが、**同日中に本人指示で撤回**した——「これはコメントビューアの
+              設定であって、OBS エフェクトとはユーザー的に別。分けるべき」。⇒ label・適用範囲
+              （comments / pinned の 2 レーン）とも 045c のまま。ステージ演出の起動時エラーは
+              こちらではなく **stage レーンの静音化**で解決した（`CommentViewerApp` の
+              `requestObsAutoAdd` の JSDoc が正）。 */}
           <ToggleSwitch
             label="「コメントをOBSに表示」ON時、OBSに自動で反映する"
             checked={obsAutoAdd}
@@ -718,12 +724,21 @@ export function SettingsView({
             <span className={styles.note}>OBSに接続しています…</span>
           )}
           {/* ⚠⚠ 061e(3): 「OBSにコメントを表示しました。」→「OBSに表示しました。」（**「コメント」を消しただけ**）。
-              `obsState` は comments / pinned / effects の **3 種別で共有**されているので、
-              **エフェクトや固定コメントの成功でもこの文が出る**＝「コメントを」と書くと嘘になる。
+              **当時の前提**＝`obsState` は comments / pinned / effects の **3 種別で共有**されており、
+              **エフェクトや固定コメントの成功でもこの文が出る**＝「コメントを」と書くと嘘になる、だった。
+              ⚠ 2026-09-05（静音化・2 段階）: **stage も発火系（effects）もこの state に流れ込まなくなった**
+              （`CommentViewerApp` の `onObsState` が [`isObsLaneVisible`] の許可リストで弾く）。この文が出るのは
+              comments / pinned の成功だけになったが、固定コメントぶんが残るので文言はこのままが正しい。
               ⚠ `connecting` / `failed` は既に種別非依存なので触らない。カードの見出し・トグルの label も触らない
               （あちらはコメント用トグルの説明として正しい）。⚠ 「OBSに」表記の統一（045b）は維持する。
-              ⚠ 種別を名乗らないのは wire が種別を運ばないため（`obs.state` の payload は `{ state, reason? }`）。
-              再修正トリガーは 046d / 061a Q-2 と同じ（`CommentViewerApp` のツールバー赤字のコメントが正）。 */}
+              ⚠⚠ **2026-09-05 訂正（レビュー S-2）: 「種別を名乗らないのは wire が種別を運ばないため
+              （payload は `{ state, reason? }`）」と書いていたが、これはもう理由になっていない**——
+              payload は `{ state, reason?, lane? }` で**種別は運べる**。いま名乗らない理由は
+              **①この文へ届くのが comments / pinned の 2 つだけになり、どちらでもユーザーの行動が同じ
+              ②レーン名（「ステージ窓」等）は UI 語彙に無い**の 2 点である。
+              再修正トリガーは 046d / 061a Q-2 と同じ（`CommentViewerApp` のツールバー赤字のコメントが正）＝
+              「どちらのオーバーレイが OBS に出ていないか分からない」と実機で言われたとき。⚠ そのときに
+              **wire を触る必要はない**（`lane` は既にある）＝ この窓で lane を state に持つだけでよい。 */}
           {(obsState === "added" || obsState === "reused") && (
             <span className={styles.note}>OBSに表示しました。</span>
           )}

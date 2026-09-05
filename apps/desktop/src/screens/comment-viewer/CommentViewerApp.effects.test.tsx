@@ -74,6 +74,21 @@ import { EFFECT_MAX_CONCURRENT } from "../obs-effects/effectTrigger";
  * ⚠ ①を前提にしていたケース（OFF で送らない／OFF で猶予を取り消す／OFF で赤字を消す 等）は、
  * **契機を「終了」または `clear()` へ差し替えて残してある**——守りたい壊れ方は 1 つも変わっていない。
  *
+ * ## ⚠⚠⚠ 2026-09-05: stage の静音化（ゲートは 1 枚のまま・**結果を UI に出さなくなった**）
+ *
+ * 063c 段 1 レビュー S-4 の再修正トリガー（実機で「OBS 連携を OFF にしたのに OBS を触られた」＝
+ * OBS 未起動でコメビュを開くたびステージ演出ぶんの接続失敗の赤字）が発火した。
+ * ⚠ いったん `OBS_AUTO_ADD_KEY` の master switch 化で答えたが、**同日中に本人指示で撤回**——
+ * 「あのトグルはコメントビューアの設定であって、OBS エフェクトとはユーザー的に別。
+ * エフェクト側は接続できなかったら黙って落ちればよい」。
+ * ⇒ **enable の条件は 064e のまま**（ガードは `isStageOverlayRequired()` 1 枚・
+ * `OBS_AUTO_ADD_KEY` は見ない）で、**stage レーンの進行・結果を UI に出さない**:
+ *   - `requestObsAutoAdd("stage")` は connecting / failed（L2 含む）を立てない
+ *   - sidecar は `obs.state` に lane（発生元レーン）を載せ、`onObsState` が lane="stage" /
+ *     "effects"（発火・一覧取得）を捨てる（2 段目で effects も静音化・本人指示）
+ * ⚠ このファイルでの見方: **enableObs / hideObs の呼ばれ方は従来どおり**固定し、
+ * **表示（赤字・状態文言）は「stage 由来では出ない」ことを固定する**（061e の表は書き換えた）。
+ *
  * ハーネスは `CommentViewerApp.toolbar.test.tsx` と同型（マウント時に走る外部境界を全てモックして隔離する。
  * **テストは外部通信も OS 操作も一切行わない**）。localStorage は実物（jsdom）。
  *
@@ -268,10 +283,16 @@ function emitSettingChange(key: string, value: string) {
  * 061e: sidecar からの `obs.state` 通知を再現する（実 WS は張らないので捕捉した handlers を直接叩く）。
  * ⚠ `?.` は捕捉が壊れても黙って no-op になり、「何も出ない」を見る否定ケースが**通知が届いていないから通る**
  * （vacuous）状態になりうるため、捕捉の生存をここで明示的に落とす（toolbar テストと同じ作法）。
+ *
+ * ⚠⚠ 2026-09-05（静音化）: `lane`（発生元レーン）が増えた。実物の sidecar は **enable / hide 由来の
+ * 通知に対象窓の種別（comments/pinned/stage）を、発火・一覧取得には "effects" を必ず載せる**
+ * （obs-client.ts の `ObsStateListener`）。lane なしを送るのは disable の echo（idle）だけ——
+ * **lane なしの failed は実物には存在しない形**なので、テストで使わないこと
+ * （区別を怠ると、実物では起きない形を固定してしまう）。
  */
-function emitObsState(state: string) {
+function emitObsState(state: string, lane?: string) {
   expect(mocks.handlers.current).not.toBeNull();
-  act(() => mocks.handlers.current?.onObsState?.(state));
+  act(() => mocks.handlers.current?.onObsState?.(state, undefined, lane));
 }
 
 /**
@@ -380,15 +401,14 @@ describe("061a/064d ステージ窓の OBS 自動反映（コメビュ窓が代�
     expect(mocks.stream.enableObs).toHaveBeenCalledTimes(1);
   });
 
-  it("⚠⚠ B4 (Bug-1): 切断中に配信イベントを開始したら connecting で固まらず failed に落とす", async () => {
-    // ⚠ `requestObsAutoAdd` の未接続判定を「ハンドルの有無」から「**WS が OPEN か**」に直した分。
+  it("⚠⚠ B4' (Bug-1 → 静音化): 切断中に配信イベントを開始しても、送らず・connecting でも固まらず・赤字も出ない", async () => {
+    // ⚠ `requestObsAutoAdd` の未接続判定を「ハンドルの有無」から「**WS が OPEN か**」に直した分（Bug-1）。
     // ハンドルは `connectCommentStream` が接続を待たずに同期で返すので、**接続前でも非 null**＝
     // 旧ガードは素通りしていた（これが Bug-1 の直接の原因）。
-    // ⚠ 保証ベースラインの経路（B1）と違い、こちらは**ユーザーが今まさに操作した**ので、
-    // 黙って何もしないのではなく **failed を出して伝える**のが正しい（L2 が元から意図していたこと）。
-    // ⚠⚠ **064e: 契機を「連携トグルを ON」から「配信イベントの開始」へ移した**——
-    //   トグルが消えた（既定 ON）ので、**ユーザーの明示操作は開始 1 つだけ**になった。
-    //   ⚠ 開始は猶予を挟むので、タイマーを進めてから見る。
+    // ⚠⚠⚠ **2026-09-05（stage の静音化）: 期待値を「failed を出して伝える」から「何も出さない」へ反転した。**
+    //   旧 B4 は L2 の意図（送っても届かないなら failed）どおり赤字を期待していたが、
+    //   本人指示「エフェクト側は接続できなかったら黙って落ちればよい」で stage は silent になった。
+    //   ⚠ **「届かない送信はしない」（固着の芽を作らない）は不変**——変わったのは表示だけである。
     vi.useFakeTimers();
     try {
       mocks.isStageOverlayOpen.mockResolvedValue(true);
@@ -401,9 +421,10 @@ describe("061a/064d ステージ窓の OBS 自動反映（コメビュ窓が代�
 
       await act(() => vi.advanceTimersByTimeAsync(10_000));
 
-      expect(screen.getByText(OBS_ERROR_TEXT)).toBeInTheDocument();
       // 届かない送信はしない（固着の芽を作らない）。
       expect(mocks.stream.enableObs).not.toHaveBeenCalled();
+      // 静音化: stage は failed も connecting も出さない。
+      expect(screen.queryByText(OBS_ERROR_TEXT)).not.toBeInTheDocument();
       expect(
         screen.queryByText("OBSに接続しています…"),
       ).not.toBeInTheDocument();
@@ -738,6 +759,11 @@ describe("061a/064d ステージ窓の OBS 自動反映（コメビュ窓が代�
       //   064e でエフェクト側の設定が消えたので、**独立の意味が逆向きになった**——
       //   ⇒ **コメント側が OFF でもステージは反映される**（＝あちらに引きずられない）。
       //   ⚠ ここが壊れると「コメントの OBS 連携を切っている人は玉入れが配信画面に出ない」になる。
+      // ⚠⚠⚠ **2026-09-05: このケースはいったん master switch 化で反転し、同日中に本人指示で戻った**
+      //   ——「あのトグルはコメントビューアの設定であって、OBS エフェクトとはユーザー的に別。分けるべき」。
+      //   S-4 の再修正トリガー（OFF なのに起動時に赤字）へ答えたのは**ここのゲートではなく静音化**
+      //   （`requestObsAutoAdd` の JSDoc が正）。⚠ **再び束ねる変更はこのケースを見てから**＝
+      //   反転させるなら本人の明示判断が要る（今回それで 1 往復した）。
       expect(localStorage.getItem(OBS_AUTO_ADD_KEY)).toBeNull(); // コメント側は OFF
       render(<CommentViewerApp />);
       emitConnected();
@@ -750,6 +776,28 @@ describe("061a/064d ステージ窓の OBS 自動反映（コメビュ窓が代�
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("⚠⚠⚠ 静音化 (2026-09-05): 実機フィードバックの経路——OBS 未起動でコメビュを開いても赤字が出ない", async () => {
+    // ⚠⚠ **今回の実機フィードバックの経路そのもの**——「OBS 未起動 ＋ ガード true」でコメビュ窓を
+    //   開くたび、reconcile → `enableObs("stage")` → 4 秒タイムアウト → failed →
+    //   ツールバーに「OBSに接続できませんでした」が出ていた。
+    //   ⚠ enable 自体は**従来どおり送る**（あとから OBS を立ち上げた場合に備えた試行はする）。
+    //   黙らせたのは**結果の表示だけ**である。ここが落ちたら症状が再発している。
+    localStorage.setItem(STAGE_OVERLAY_ENABLED_KEY, "true");
+    mocks.isStageOverlayOpen.mockResolvedValue(true);
+
+    render(<CommentViewerApp />);
+    emitConnected();
+    await waitFor(() =>
+      expect(mocks.stream.enableObs).toHaveBeenCalledWith(4455, "stage"),
+    );
+
+    // sidecar からの stage の失敗通知（lane 付き＝実物の形）は表示に流れ込まない。
+    emitObsState("failed", "stage");
+
+    expect(screen.queryByText(OBS_ERROR_TEXT)).not.toBeInTheDocument();
+    expect(screen.queryByText("OBSに接続しています…")).not.toBeInTheDocument();
   });
 
   it("⚠ 設定ごと消えたとき（localStorage.clear）は仕掛かりを取り消し、OBS へは何も送らない", async () => {
@@ -832,32 +880,83 @@ describe("061a/064d ステージ窓の OBS 自動反映（コメビュ窓が代�
  *     返すので、コメント側の OFF は effects の failed も消す。ここでは sidecar をモックしているため
  *     再現できない（実機確認でしか見られない）。frontend で塞げないことが (1) を effects 側だけに
  *     狭めた理由そのものなので、**この穴は仕様として受容している**。
+ *
+ * ## ⚠⚠⚠ 2026-09-05（静音化・2 段階）: この表の前提が大きく変わった
+ *
+ * `obs.state` は **lane（発生元レーン）を運ぶようになった**が、それで文言を出し分けるのではなく
+ * **stage（追加）と effects（発火・一覧取得）由来は成功も失敗も表示に流れ込まない**
+ * （本人指示 1 段目「エフェクト側は接続できなかったら黙って落ちればよい」／
+ * 2 段目「エラーが出るべきは『コメントをOBSに表示』を ON にした時だけ」）。
+ * ⇒ 上の「赤字がどの種別か区別できない」穴は、**OBSエフェクト系についてだけ**「そもそも出ない」で
+ * 塞がった。共有 `obsState` に残る書き手は **comments / pinned（＝表示トグルを ON にした時の
+ * 反映結果）**と、lane を運ばない disable の echo（idle のみ）である。
+ * ⚠ 旧 T1〜T10 のうち OBSエフェクト系の赤字を前提にしたケースは **T3' / T4' / T7' / T8' / T10' に
+ * 反転して残した**（守りたい壊れ方が「出ない」→「出る」へ裏返っただけで、経路の検査は同じ数だけある）。
  */
 describe("061e OBS 連携の失敗がツールバーに出る（共有 obsState の上での出し分け）", () => {
-  /** エフェクトの「表示 ON ＋ 自動反映 ON ＋ 実窓あり」を作り、失敗通知まで進める。 */
-  async function renderWithEffectFailure() {
-    localStorage.setItem(STAGE_OVERLAY_ENABLED_KEY, "true");
-    mocks.isStageOverlayOpen.mockResolvedValue(true);
+  /**
+   * comments レーンの失敗で赤字が出た状態を作る（＝「コメントをOBSに表示」を ON にした反映が
+   * 失敗した後の状態。静音化 2 段目以降、**赤字を出せるのは comments / pinned の反映結果だけ**である）。
+   * ⚠ 2026-09-05 の 1 段目まで、ここは stage の enable 失敗で赤字を作っていた（旧名
+   *   renderWithEffectFailure）。同日の 2 段目で発火系（lane="effects"）も黙ったので、
+   *   赤字の前提を作れる実物の形は comments / pinned の failed だけになった。
+   */
+  async function renderWithSharedObsFailure() {
     render(<CommentViewerApp />);
     emitConnected();
-    await waitFor(() =>
-      expect(mocks.stream.enableObs).toHaveBeenCalledWith(4455, "stage"),
-    );
-    emitObsState("failed");
+    await act(async () => {});
+    emitObsState("failed", "comments"); // 「コメントをOBSに表示」ON の反映が失敗した形
   }
 
-  it("⚠⚠ T3 (2): コメント側の自動反映 OFF でも、失敗すればツールバーに赤字が出る", async () => {
-    // ⚠ `OBS_AUTO_ADD_KEY` を立てない＝コメント側の自動反映 OFF。旧実装（`obsAutoAdd && ...`）では
-    // ここで赤字が 1 文字も出ず、**エフェクトが OBS に反映されていないことに気付く手段がゼロ**だった。
+  it("⚠⚠⚠ T3' (2026-09-05 反転): 発火系（lane='effects'）の失敗は赤字を出さない（黙って落ちる）", async () => {
+    // ⚠⚠⚠ **旧 T3 の反転**——旧ケースは「コメント側の自動反映 OFF でも、（発火の）失敗は赤字に出る」を
+    //   061e(2) の可視化として固定していた。まさにその形が実機で
+    //   「『コメントをOBSに表示』OFF ＋ OBS 未起動なのに接続エラーが出る」と報告された
+    //   （正体＝エフェクトの自動発火・「1回鳴らす」・一覧取得の失敗が同じ赤字に流れ込む）。
+    //   本人指示「エラーが出るべきは表示を ON にした時だけ」で、OBSエフェクト系は
+    //   stage（追加）に続き effects（発火・一覧）も「黙って落ちる」に統一した。
+    //   ⚠ 一覧取得の失敗は OBSエフェクト画面のカードが `obs.sources` の ok:false 経由で案内する
+    //   （そちらは別配線・無改変＝完全な無音ではない）。
+    render(<CommentViewerApp />);
+    emitConnected();
+    await act(async () => {});
+
+    emitObsState("failed", "effects"); // 自動発火／「1回鳴らす」／一覧取得の失敗（実物の形）
+
+    expect(screen.queryByText(OBS_ERROR_TEXT)).not.toBeInTheDocument();
+  });
+
+  it("⚠⚠ T3 (2): コメント側の反映（comments レーン）の失敗は、連携トグルの状態に依らず赤字が出る", async () => {
+    // ⚠ `OBS_AUTO_ADD_KEY` を立てない＝連携トグル OFF。061e(2) がツールバーの赤字から
+    // `obsAutoAdd &&` ゲートを外した意味は静音化後も残る——**送ってしまった反映要求の結果**
+    // （in-flight の失敗が OFF 後に着弾する等）は、トグルの状態に関わらず読めなければならない。
     // ⚠ ゲートを戻す変異でレッドになるのはこのケース。
-    await renderWithEffectFailure();
+    await renderWithSharedObsFailure();
 
     const error = screen.getByText(OBS_ERROR_TEXT);
-    // 文言は変えない（どの種別で失敗してもユーザーが取る行動は同じ＝OBS を起動する・059b）。
+    // 文言は変えない（どのレーンで失敗してもユーザーが取る行動は同じ＝OBS を起動する・059b）。
     expect(error).toHaveAttribute(
       "title",
       "OBSに接続できませんでした。OBSが起動しているか確認してください。",
     );
+  });
+
+  it("⚠⚠ T3-pinned (レビュー M-2): 固定コメントの反映（lane='pinned'）の失敗も赤字が出る", async () => {
+    // ⚠⚠⚠ **フィルタを「通る」側の 2 本目**（レビュー M-2 で追加）。静音化のフィルタは
+    //   [`isObsLaneVisible`] の**許可リスト**（comments / pinned ＋ lane なし）で書かれているが、
+    //   これが無いと **pinned を許可リストから落とす変異が全スイート緑のまま生存する**
+    //   （T3 は comments、T3'/T7'/T8' は捨てる側しか見ていない）。
+    //   ⇒ 「固定コメントをOBSに表示」を ON にした人だけ、OBS 未起動の失敗が黙って消える形を殺す。
+    // ⚠ 落ちたら疑うのは「pinned を静音化したのか」——静音化の対象は OBSエフェクト系
+    //   （stage / effects）だけで、**表示トグルを ON にした反映結果は 2 レーンとも出す**が仕様
+    //   （`docs/security.md` §1 の 2026-09-05 追補が正）。
+    render(<CommentViewerApp />);
+    emitConnected();
+    await act(async () => {});
+
+    emitObsState("failed", "pinned"); // 「固定コメントをOBSに表示」ON の反映が失敗した形
+
+    expect(screen.getByText(OBS_ERROR_TEXT)).toBeInTheDocument();
   });
 
   // ⚠⚠⚠ **064e: T1 / T2（「エフェクトの自動反映を OFF にすると赤字が消える／消さない」）を
@@ -876,7 +975,7 @@ describe("061e OBS 連携の失敗がツールバーに出る（共有 obsState 
     //   `clear()` ぶんの後始末を `STAGE_OVERLAY_ENABLED_KEY` 分岐へ移設したため
     //   （`CommentViewerApp` の該当箇所のコメントが正）。
     localStorage.setItem(OBS_AUTO_ADD_KEY, "true"); // コメント側の連携は ON のまま
-    await renderWithEffectFailure();
+    await renderWithSharedObsFailure();
 
     localStorage.clear();
     localStorage.setItem(OBS_AUTO_ADD_KEY, "true"); // clear() 後もコメント側は ON という状況
@@ -891,35 +990,33 @@ describe("061e OBS 連携の失敗がツールバーに出る（共有 obsState 
     expect(mocks.stream.disableObs).not.toHaveBeenCalled();
   });
 
-  it("T4 (回帰): エフェクトの表示を OFF にすると赤字が消える（061a の既存挙動）", async () => {
-    // 表示 OFF は OBS 側も非表示にする（`hideObs`）ので、直前の結果は実態と食い違う＝ idle へ戻す。
-    // ⚠ こちらは 061a から在る経路で、061e では**触っていない**（回帰として固定するだけ）。
-    await renderWithEffectFailure();
+  it("⚠⚠ T4' (2026-09-05 反転): 配信イベントの終了は、共有の赤字を巻き添えで消さない", async () => {
+    // ⚠⚠⚠ **旧 T4/T5 の反転**——旧 2 本は「stage の表示 OFF で赤字（stage 由来）が消える」を固定していた。
+    //   静音化で stage 由来の赤字そのものが無くなり、終了時の `setObsState("idle")` も削除した:
+    //   残しておくと**他レーン（comments / pinned）の failed の赤字だけを巻き添えで消す**
+    //   （061e 穴 1 と同じ形。旧実装ではそれを「stage 自身の赤字の後始末」として正当化できていた）。
+    //   ⚠ `hideObs`（OBS 側の後始末）は従来どおり送る——消したのは共有 state への書き込みだけ。
+    localStorage.setItem(STAGE_OVERLAY_ENABLED_KEY, "true"); // マウント時からガード true
+    mocks.isStageOverlayOpen.mockResolvedValue(true);
+    render(<CommentViewerApp />);
+    emitConnected();
+    await waitFor(() =>
+      expect(mocks.stream.enableObs).toHaveBeenCalledWith(4455, "stage"),
+    );
+    emitObsState("failed", "comments"); // comments レーンの反映失敗（＝赤字を出せる唯一の形）
     expect(screen.getByText(OBS_ERROR_TEXT)).toBeInTheDocument();
 
-    emitSettingChange(STAGE_OVERLAY_ENABLED_KEY, "false");
+    emitSettingChange(STAGE_OVERLAY_ENABLED_KEY, "false"); // 終了
 
     expect(mocks.stream.hideObs).toHaveBeenCalledWith(4455, "stage");
-    expect(screen.queryByText(OBS_ERROR_TEXT)).not.toBeInTheDocument();
-  });
-
-  it("⚠⚠ T5 (穴 1 の対): コメント側の連携が ON でも、エフェクトの**表示** OFF は赤字を消す（狭めない）", async () => {
-    // ⚠⚠ **T2 と対にして「2 本の分岐の非対称」を表として固定する**（061e レビュー Q-3）。
-    //   - **自動反映 OFF**（T2）＝ OBS へ**何も送らない**ので frontend の判断が最終決定
-    //     → `!loadObsAutoAdd()` で狭める（他種別の failed を巻き添えにしない）
-    //   - **表示 OFF**（ここ）＝ `hideObs` を送るので **sidecar が `idle` を broadcast し返す**
-    //     → frontend で狭めても echo が着弾して同じ結果になる＝**効かないガード**なので狭めない
-    // ⚠ これが無いと、「対称にしよう」と表示 OFF 側にも `!loadObsAutoAdd()` を足す変異が**生存する**
-    //（実測: T1〜T4 だけでは 50/50 緑のまま通ってしまった）。WS 未接続時には挙動が変わる変更なので、
-    // 意図せず入ることを防ぐ意味でもここで固定する。
-    localStorage.setItem(OBS_AUTO_ADD_KEY, "true"); // コメント側の連携は ON のまま
-    await renderWithEffectFailure();
+    // 赤字は残る（stage の終了は共有 obsState を触らない）。
     expect(screen.getByText(OBS_ERROR_TEXT)).toBeInTheDocument();
 
-    emitSettingChange(STAGE_OVERLAY_ENABLED_KEY, "false");
-
-    expect(mocks.stream.hideObs).toHaveBeenCalledWith(4455, "stage");
-    expect(screen.queryByText(OBS_ERROR_TEXT)).not.toBeInTheDocument();
+    // sidecar の hide echo（idle・lane="stage"＝実物の形）が着弾しても消えない（onObsState が捨てる）。
+    // ⚠ 061e 穴 1 が「frontend では塞げない」と受容していた「stage の OFF が他種別の failed を消す」は、
+    //   lane が付いたことで**構造的に塞がった**。
+    emitObsState("idle", "stage");
+    expect(screen.getByText(OBS_ERROR_TEXT)).toBeInTheDocument();
   });
 
   it("⚠⚠ T6 (実機③後半): 残った赤字は、sidecar の echo（obs.state = idle）が着弾すれば消える", async () => {
@@ -931,10 +1028,12 @@ describe("061e OBS 連携の失敗がツールバーに出る（共有 obsState 
     // ⚠ これが T2'（＝共有 obsState を巻き添えで倒さない）と両立して初めて
     // 「(b) は消せない赤字を作らない」＝残った赤字にも必ず出口がある、が成立する。
     // ⚠⚠ **064e: 「連携 OFF で残った赤字」という前段が無くなった**ので、
-    //   **エフェクト由来の failed がそのまま残っている状態**から echo を当てる形にした
+    //   **failed がそのまま残っている状態**から echo を当てる形にした
     //   （見たいのは「idle の echo が着弾したら消えること」であって、残り方ではない）。
+    // ⚠ 2026-09-05: 前段の失敗は comments レーンへ差し替えた（OBSエフェクト系の赤字は消滅）。
+    //   lane なしの idle echo（disable の echo）が消すのは従来どおり。
     localStorage.setItem(OBS_AUTO_ADD_KEY, "true"); // コメント側の連携は ON のまま
-    await renderWithEffectFailure();
+    await renderWithSharedObsFailure();
     expect(screen.getByText(OBS_ERROR_TEXT)).toBeInTheDocument();
 
     // コメント側で表示 OFF / 連携 OFF を操作した結果、sidecar から返ってくる idle。
@@ -943,18 +1042,13 @@ describe("061e OBS 連携の失敗がツールバーに出る（共有 obsState 
     expect(screen.queryByText(OBS_ERROR_TEXT)).not.toBeInTheDocument();
   });
 
-  it("⚠⚠ T7 (実機⑦): 設定 ON ＋ OBS 未起動なら、コメビュ窓を開き直すたびに赤字が出る", async () => {
-    // ⚠⚠ **061a Q-2 の再修正トリガー①（「コメビュを開くたびに OBS の赤字が出る」）の症状そのもの**を
-    // 仕様として固定する。設定の持ち主は main 窓なので、コメビュ窓は**開くたびにマウント時 reconcile を
-    // 走らせる**（061a の保証ベースライン）＝ OBS が起動していなければ毎回 failed になる。
-    // ⚠ 061e(2) 前はコメント側連携が OFF ならゲートで隠れていたので、**061e で初めて可視化された**。
-    // ⚠ これは 061e の目的（失敗の可視化）そのものなので**赤字を隠す方向では直さない**。
-    // 煩わしいと分かったときの答えは wire 変更（種別ごとの state と文言）で、ゲート復活ではない。
-    // ⚠⚠ **訂正（実機確認・061e(5)）**: このケースを最初に書いたとき、実機では**赤字が出なかった**
-    //（Bug-1＝マウント時 reconcile が WS 未接続で捨てられ `connecting` 固着）。本ケースが緑だったのは
-    // `emitObsState("failed")` を**手で注入**していて「failed が来ない」経路を再現していなかったため。
-    // いまは `emitConnected()` で実機の順序（接続してから反映）を再現している＝
-    // **「開き直すたびに赤字」が成立するのは接続確立後**、というのが正しい仕様。
+  it("⚠⚠ T7' (2026-09-05 反転): OBS 未起動でも、コメビュ窓を開き直すたびに enable は試行される（赤字は出ない）", async () => {
+    // ⚠⚠⚠ **旧 T7 の反転**——旧ケースは 061a Q-2 のトリガー①（「コメビュを開くたびに OBS の赤字が出る」）を
+    // 061e の可視化の帰結として**仕様に固定していた**。まさにその症状が実機で「面倒」と言われ
+    // （＝トリガー①の発火）、本人指示で stage は静音化された。
+    // ⚠ **「開き直すたびの enable 試行」は残っている**ことを対で固定する——これが
+    // 「OBS をあとから立ち上げたら次の契機で繋がる」の契機の 1 つである
+    // （他はガチャ演出トグルの入れ直し・配信イベントの開始。ソース自体は一度作れば OBS 側に永続する）。
     localStorage.setItem(STAGE_OVERLAY_ENABLED_KEY, "true");
     mocks.isStageOverlayOpen.mockResolvedValue(true);
 
@@ -963,10 +1057,10 @@ describe("061e OBS 連携の失敗がツールバーに出る（共有 obsState 
     await waitFor(() =>
       expect(mocks.stream.enableObs).toHaveBeenCalledWith(4455, "stage"),
     );
-    emitObsState("failed");
-    expect(screen.getByText(OBS_ERROR_TEXT)).toBeInTheDocument();
+    emitObsState("failed", "stage"); // OBS 未起動（実物は lane="stage" 付きで届く）
+    expect(screen.queryByText(OBS_ERROR_TEXT)).not.toBeInTheDocument();
 
-    // 窓を閉じる＝アンマウント。`obsState` は窓ごとの state なので次のマウントでは idle から始まる。
+    // 窓を閉じて開き直す＝再マウント。reconcile は毎マウント走る（061a の保証ベースライン）。
     first.unmount();
     mocks.stream.enableObs.mockClear();
 
@@ -975,49 +1069,17 @@ describe("061e OBS 連携の失敗がツールバーに出る（共有 obsState 
     await waitFor(() =>
       expect(mocks.stream.enableObs).toHaveBeenCalledWith(4455, "stage"),
     );
-    expect(screen.queryByText(OBS_ERROR_TEXT)).not.toBeInTheDocument(); // 通知が来るまでは出ない
-    emitObsState("failed");
-
-    expect(screen.getByText(OBS_ERROR_TEXT)).toBeInTheDocument();
-  });
-
-  it("⚠⚠ T8 (実機⑧・レビュー Q-1): 連携 OFF 後に in-flight の failed が着弾すると、全部 OFF でも赤字が出る", async () => {
-    // ⚠⚠ **受容した stale-positive を仕様として固定する**（061e 独立レビュー Q-1）。
-    // 連携 ON でゲートされるのは**「呼ぶ瞬間」だけ**で、`enableObs` を送ったあとの結果は追いかけられない
-    //（sidecar の `disable()` は `onState("idle")` を出すだけで**走っている `enable()` を止めない**）。
-    // ⇒ 連携を OFF にした数秒後に `failed` が届き、**連携が 1 つも ON でないのに赤字が出る**。
-    // **受容の根拠**＝その赤字が指す事実（OBS へ繋がらない）はその瞬間**現に真**で、
-    // ユーザーが取る行動も変わらない（OBS を起動する）。
-    // ⚠ **直すならゲート復活ではなく世代カウンタ**（`requestObsAutoAdd` のコメント参照）。
-    // この表明が落ちたら、まず「世代カウンタを入れたのか」を疑うこと（＝そのときはこのケースを消す）。
-    localStorage.setItem(STAGE_OVERLAY_ENABLED_KEY, "true");
-    mocks.isStageOverlayOpen.mockResolvedValue(true);
-    render(<CommentViewerApp />);
-    emitConnected();
-    await waitFor(() =>
-      expect(mocks.stream.enableObs).toHaveBeenCalledWith(4455, "stage"),
-    );
-
-    // ⚠⚠ **064e: 「連携 OFF」から「配信イベントの終了」へ契機を差し替えた**（操作が無くなったため）。
-    //   終了は `hideObs` を送り、コメント側も OFF（`OBS_AUTO_ADD_KEY` を立てていない）なので idle へ倒れる。
-    emitSettingChange(STAGE_OVERLAY_ENABLED_KEY, "false");
+    emitObsState("failed", "stage");
     expect(screen.queryByText(OBS_ERROR_TEXT)).not.toBeInTheDocument();
-
-    // 送出済みだった反映要求の結果が、遅れて届く。
-    emitObsState("failed");
-
-    expect(screen.getByText(OBS_ERROR_TEXT)).toBeInTheDocument();
   });
 
-  it("⚠⚠ T9' (064e で挙動が変わった): 遅れて着弾した赤字は「終了」で必ず消える", async () => {
-    // ⚠⚠⚠ **064e で仕様が変わったケースである（＝書き換えた理由を残す）。**
-    //   旧 T9 は「その赤字は**表示 OFF では消えない**」を固定していた。根拠は
-    //   **表示 OFF の後始末（`hideObs` ＋ idle）が `loadEffectObsAutoAdd()` が真のときだけ走る**ことで、
-    //   既に連携 OFF になっている状態では後始末そのものに入らなかったため
-    //   （progress の「表示 OFF または自動反映 OFF のどちらかで必ず消える」が**不正確**だった、
-    //   という 061e レビュー Q-1 の訂正）。
-    //   ⚠ **064e でそのゲートを外した**ので、**後始末は必ず走る＝出口が 1 つに戻った。**
-    //   ⇒ 「消せない赤字」が構造的に無くなった（061e が (b) で気にしていた形が 1 つ減った）。
+  it("⚠⚠ T8' (2026-09-05 反転): 終了後に in-flight の stage の failed が遅れて着弾しても、何も出ない", async () => {
+    // ⚠⚠⚠ **旧 T8 の反転**——旧ケースは「受容した stale-positive」（連携が 1 つも ON でないのに、
+    //   遅れて届いた stage の failed が赤字に出る・061e 独立レビュー Q-1）を仕様として固定していた。
+    //   静音化で stage の failed は**着弾しても捨てられる**ので、この stale-positive は stage については
+    //   構造的に消えた（旧コメントが「直すなら世代カウンタ」と書いていた形よりも強い解になっている）。
+    //   ⚠ comments / pinned（＝表示トグルを ON にした反映）の stale-positive は従来どおり出る——
+    //   そちらまで黙らせる変更はしていない（T3 が守る）。
     localStorage.setItem(STAGE_OVERLAY_ENABLED_KEY, "true");
     mocks.isStageOverlayOpen.mockResolvedValue(true);
     render(<CommentViewerApp />);
@@ -1025,21 +1087,25 @@ describe("061e OBS 連携の失敗がツールバーに出る（共有 obsState 
     await waitFor(() =>
       expect(mocks.stream.enableObs).toHaveBeenCalledWith(4455, "stage"),
     );
-    emitObsState("failed");
-    expect(screen.getByText(OBS_ERROR_TEXT)).toBeInTheDocument();
 
     emitSettingChange(STAGE_OVERLAY_ENABLED_KEY, "false"); // 終了
+    expect(screen.queryByText(OBS_ERROR_TEXT)).not.toBeInTheDocument();
+
+    // 送出済みだった反映要求の結果が、遅れて届く（実物は lane="stage" 付き）。
+    emitObsState("failed", "stage");
 
     expect(screen.queryByText(OBS_ERROR_TEXT)).not.toBeInTheDocument();
-    // ⚠ 終了では OBS 側を**非表示にする**（ソースは消さない・064d の判断）。
-    expect(mocks.stream.hideObs).toHaveBeenCalledWith(4455, "stage");
   });
 
-  it("⚠⚠ T10 (実機④・(C) の目的): エフェクトの成功でも設定カードは「OBSに表示しました。」と出る", async () => {
-    // ⚠⚠ **(C) が直したのはここ**。旧文「OBSにコメントを表示しました。」は、`obsState` が 3 種別で
-    // 共有されているせいで**エフェクトの成功でも出て嘘になっていた**。
-    // ⚠ `SettingsView.obs.test.tsx` は props で `obsState` を渡す単体テストなので、
-    // 「**エフェクト由来の added が実際にこのカードへ届く**」経路はここでしか固定できない。
+  // ⚠⚠ **2026-09-05: T9'（「遅れて着弾した赤字は『終了』で必ず消える」）を削除した。**
+  //   あのケースの主題「消せない赤字を作らない」は、stage の赤字そのものが消滅したことで対象を失った
+  //   （終了時の `setObsState("idle")` も削除済み＝残すと他レーンの赤字を巻き添えで消す・T4' が正）。
+  //   共有レーンの赤字の出口は T6（idle の echo）が引き続き固定している。
+
+  it("⚠⚠ T10' (2026-09-05 反転): stage の成功（added）は設定カードに出ない（出るのは comments / pinned だけ）", async () => {
+    // ⚠⚠⚠ **旧 T10 の反転**——旧ケースは「エフェクトの成功でも『OBSに表示しました。』が出る」を
+    //   固定していた（obsState 共有の帰結）。静音化で stage は**成功も表示しない**
+    //   （「黙って落ちる」は「黙って成功する」でもある＝対称。ユーザーは配信プレビューで結果を見る）。
     localStorage.setItem(STAGE_OVERLAY_ENABLED_KEY, "true");
     mocks.isStageOverlayOpen.mockResolvedValue(true);
     render(<CommentViewerApp />);
@@ -1048,14 +1114,13 @@ describe("061e OBS 連携の失敗がツールバーに出る（共有 obsState 
       expect(mocks.stream.enableObs).toHaveBeenCalledWith(4455, "stage"),
     );
 
-    emitObsState("added");
+    emitObsState("added", "stage"); // 実物は lane="stage" 付きで届く
     fireEvent.click(screen.getByRole("button", { name: "設定" }));
+    expect(screen.queryByText("OBSに表示しました。")).not.toBeInTheDocument();
 
-    const note = await screen.findByText("OBSに表示しました。");
-    // 種別に依存しない文であること（エフェクトの成功なので「コメント」と書いてあったら嘘になる）。
-    expect(note.textContent).not.toContain("コメント");
-    // 045c: 成功はツールバーへ出さない（配信中のツールバーを騒がしくしない）。
-    expect(screen.queryByText(OBS_ERROR_TEXT)).not.toBeInTheDocument();
+    // 対照: lane="comments"（コメント一覧の成功）は従来どおりカードに出る。
+    emitObsState("added", "comments");
+    expect(await screen.findByText("OBSに表示しました。")).toBeInTheDocument();
   });
   // --- 061k（新規 9）: ステージ窓ぶんの連携 --------------------------------------------------------
 
