@@ -44,6 +44,7 @@
 // 秘密鍵は `tauri-action` の env にしか存在せず、このスクリプトも `latest.json` も一切触らない。
 // 読む env も `DIST_DIR` / `BODY_PATH` / `RELEASE_TAG` / `RELEASE_REPO` / `IS_TAG` の 5 つだけ。
 
+import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -255,6 +256,60 @@ const latest = {
   },
 };
 
+// --- (4b) 人が手でダウンロードする配布物の SHA-256 ----------------------------------------------
+//
+// ⚠ なぜ要るか: **macOS は当面未署名**で、しかも LP の FAQ は Gatekeeper の警告を通す手順
+//   （右クリック →「開く」）を案内している。つまり利用者は「警告が出たら通す」よう事前に
+//   訓練された状態で、**落としたファイルが本物かを確かめる手段を 1 つも持っていない**。
+//   コード署名・公証が入るまでの暫定として、照合できる値をリリース本文に出す。
+//
+// ⚠⚠ **過大に説明しないこと。** これで守れるのは「配布物だけがすり替わった場合」と
+//   「ダウンロードが途中で壊れた場合」だけ。Releases ページごと書き換えられる状況では、
+//   併記したハッシュも一緒に書き換えられるので**守れない**。
+//
+// ⚠ `latest.json` の `notes` には入れない（アプリの更新ダイアログに出す値ではない）。
+//   本文（BODY_PATH）にだけ足す。
+const humanAssets = allFiles.filter((f) => /\.(dmg|exe)$/i.test(f)).sort();
+
+// fail-closed。タグ push なのに人が落とすファイルが 1 つも無いのは、
+// upload-artifact の glob か bundle.targets が壊れている合図。
+if (IS_TAG && humanAssets.length === 0) {
+  die(
+    "人がダウンロードする配布物（.dmg / .exe）が dist/ に 1 つもありません。" +
+      "release.yml の upload-artifact の glob を確認してください。",
+  );
+}
+
+const checksumRows = humanAssets.map((f) => {
+  const hash = createHash("sha256").update(readFileSync(f)).digest("hex");
+  return `| \`${basename(f)}\` | \`${hash}\` |`;
+});
+
+const CHECKSUMS =
+  checksumRows.length === 0
+    ? ""
+    : [
+        // ⚠ 先頭の空行は 2 つ必要。1 つだと直前の行と `---` がくっつき、
+        //   Markdown が**その行を見出しとして解釈**する（setext heading）。
+        "",
+        "",
+        "---",
+        "",
+        "### ダウンロードしたファイルの照合（SHA-256）",
+        "",
+        "macOS 版は現在**未署名**のため、OS の警告だけでは配布物が本物かを確かめられません。",
+        "気になる場合は、下のコマンドの出力とこの表を突き合わせてください。",
+        "",
+        "```",
+        "macOS   : shasum -a 256 <ファイル>",
+        "Windows : certutil -hashfile <ファイル> SHA256",
+        "```",
+        "",
+        "| ファイル | SHA-256 |",
+        "| --- | --- |",
+        ...checksumRows,
+      ].join("\n");
+
 // Release 本文。**空回し（dispatch）は必ず警告バナー付き**にする——`docs/release-notes/v<version>.md` を
 // 実物として置いた結果、空回しの下書きが本物のリリースと見分けがつかなくなったため（レビュー S-2）。
 // `latest.json` の `notes` は素のままにしておく（空回しだけで「notes がファイルの内容そのまま」を検証したいので、
@@ -262,7 +317,7 @@ const latest = {
 const CI_BANNER =
   `> ⚠ **これは CI 検証用のビルド（\`${RELEASE_TAG}\`）です。リリースではありません。**\n` +
   `> publish しないでください（publish した瞬間に配信対象になります）。`;
-const body = IS_TAG ? notes : `${CI_BANNER}\n\n${notes}`;
+const body = `${IS_TAG ? notes : `${CI_BANNER}\n\n${notes}`}${CHECKSUMS}`;
 
 writeFileSync(join(DIST_DIR, "latest.json"), `${JSON.stringify(latest, null, 2)}\n`);
 writeFileSync(BODY_PATH, `${body}\n`);
@@ -284,6 +339,7 @@ if (msiCandidates.length > 0) {
       `latest.json は NSIS の .exe しか指さないため、MSI で入れたユーザーは更新でインストール形式が入れ替わります。`,
   );
 }
+console.log(`  SHA-256   : ${humanAssets.length} 件（${humanAssets.map((f) => basename(f)).join(", ") || "なし"}）`);
 console.log(`  出力      : ${join(DIST_DIR, "latest.json")} / ${BODY_PATH}`);
 console.log(`  dist/ 内の全ファイル:\n${allFiles.map((f) => `    ${f.slice(DIST_DIR.length + 1)}`).join("\n")}`);
 // 空回しの結果からファイル名・キーを確定してタスクファイルへ追記するため、中身も出す（すべて公開値）。
