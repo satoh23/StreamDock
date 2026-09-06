@@ -66,8 +66,14 @@ jobs:
         with:
           persist-credentials: false
 
+      # 供給網対策: **サードパーティ Action はコミット SHA へ固定する**。
+      #   このジョブは後段の `Build installers` で updater 秘密鍵と Windows 署名資格情報を扱う。
+      #   `dtolnay/rust-toolchain` を固定したのとまったく同じ理屈で——同一ジョブの Action は
+      #   ワークスペースと PATH を書き換えられるので、ステップ単位の env でも後続ステップの
+      #   秘密を奪うラッパを仕込みうる——ここも可動タグのままにはできない。
+      #   固定時点で `v4` が指していた commit と同一なので**挙動は変わらない**。更新は手動で行う。
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -156,8 +162,9 @@ jobs:
         with:
           targets: ${{ matrix.rust_targets }}
 
+      # 上の `Setup pnpm` と同じ理由でコミット SHA へ固定する（同一ジョブに秘密がある）。
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: apps/desktop/src-tauri -> target
 
@@ -435,8 +442,16 @@ jobs:
       #   手動実行の下書き `ci-<番号>` を誤って publish しても **updater からは決して見えない**。
       #   draft・下書き名・README の注意はいずれも人間依存だったが、これは機械的な安全弁になる。
       #   （空回しの Release 本文には make-latest-json.mjs が警告バナーも付ける）
+      # ⚠⚠ 供給網対策: ここは **RELEASE_REPO_TOKEN（配布リポジトリの Contents: Read/Write な PAT）を
+      #   直接受け取り、実際に配布物を Releases へ置く当事者**。可動タグのままだと、この Action が
+      #   乗っ取られた時点で「ダウンロード先のファイルを差し替える」が LP を一切触らずに成立する。
+      #   本ファイルは jsign / tauri-action / rust-toolchain を「秘密を扱うから」という理由で
+      #   固定しているのに、**一番配布物に近いここだけが可動タグのままだった**（2026-09-06 のレビューで発覚）。
+      #   固定時点で `v2` が指していた commit と同一なので**挙動は変わらない**。更新は手動で行う。
+      #   ⚠ `actions/*`（checkout / setup-node / upload-artifact / download-artifact）は GitHub 自身が
+      #     所有しているので可動タグのままにしている。ここが線引き。
       - name: Publish to public releases repo (draft)
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           repository: satoh23/StreamDock-releases
           token: ${{ secrets.RELEASE_REPO_TOKEN }}
