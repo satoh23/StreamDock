@@ -32,6 +32,16 @@ const SESSION_PLATFORMS_LIST = [
   SESSION_PLATFORMS.TWITCH,
 ] as const;
 
+// 069(T-1): この loopback WS に接続できる正規クライアント（StreamDockのwebview）のOrigin。
+// 悪意あるWebページ（A1）はブラウザが付ける本物のOriginを偽装できないため、ここで弾ける。
+// ⚠ 同一PC上の任意プロセス（A2）はOriginヘッダを自由に送れるので、これだけでは防げない
+//   （T-1の「二層目」＝nonce/セッション認証は別タスク）。
+const ALLOWED_WEBVIEW_ORIGINS = new Set([
+  "tauri://localhost", // 本番（macOS / Linux）
+  "http://tauri.localhost", // 本番（Windows / WebView2）
+  "http://localhost:1420", // 開発時（tauri.conf.json の devUrl）
+]);
+
 // 032c-b(stream-dock): viewer→sidecar の制御フレームを同一ソケットで受けるための inbound ハンドラ型。
 export type ControlMessageHandler = (raw: string, client: WebSocket) => void;
 
@@ -89,18 +99,23 @@ export class WebSocketCommentOutputPort
   }
 
   private bind(host: string, port: number): Promise<void> {
-    const server = new WebSocketServer({ host, port });
+    const server = new WebSocketServer({
+      host,
+      port,
+      // 069(T-1): Origin allow-list。悪意あるWebページ（A1）からの接続を拒否する。
+      verifyClient: (info: { origin: string }) =>
+        ALLOWED_WEBVIEW_ORIGINS.has(info.origin),
+    });
 
     server.on("connection", (client) => {
-      // 032c-b(stream-dock): この loopback WS は現状「未認証」で、127.0.0.1 に到達できる
-      // 同一 PC の任意プロセス（およびユーザーがブラウザで開いた悪意あるページ）が接続して
-      // 制御フレーム送信・comments.append / device_code(user_code) 受信をし得る。
+      // 032c-b(stream-dock): この loopback WS は 069 で Origin allow-list を入れたが、
+      // 同一 PC の任意プロセス（A2）はOriginヘッダを自由に送れるため、未認証な点は変わらない。
       //  - なぜ現状で許容か: **秘密情報（access/refresh token・device_code）は WS に一切流さない**
       //    （送るのは user_code / verification_uri＝ユーザー提示用の非機密のみ、index.ts 参照）。
       //    宛先は allow-list 限定で、露出は「公開コメント＋非機密 user_code」程度。032c-c の
       //    loopback（VOICEVOX 50021）と同レベルの前提で、docs/progress.md に後回し改善として記録済み。
       //  - どうなったら直すべきか: WS に機密を載せる必要が出たとき / 脅威モデルが変わったときは、
-      //    接続時の Origin 検証（webview 由来以外を拒否）＋ nonce ハンドシェイクを入れて認証する。
+      //    nonce ハンドシェイクでA2も含めて認証する（069の残課題）。
       // 032c-b(stream-dock): これらのスナップショット（sessionSnapshots/accountSnapshots）は
       // publishSessionState/publishAccountState でのみ更新されるが、stream-dock の制御経路（index.ts）は
       // それらではなく broadcastMessage(session.state) を直接使うため、スナップショットは常に初期値

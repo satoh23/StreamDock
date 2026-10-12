@@ -30704,3 +30704,44 @@ Twitch 視聴者の表示名は配信に載る。
 `pnpm typecheck` ✅ ／ `pnpm lint` ✅ ／ CSS ガード ✅ ／
 frontend ✅ **92 files / 2308 tests**（+1・Q-8） ／ `cargo test` ✅ **475**（Rust 無変更） ／
 sidecar ✅ exit 0（無変更）
+
+## 069 コメントビューア sidecar の loopback WS に Origin 検証を入れる（2026-10-12）
+
+【本人発案】リポジトリを一時的に public にして採用担当者へ見せる過程で、`docs/security-threats.md` の
+T-1（loopback WS が未認証）が公開ドキュメント上に攻撃レシピとして残っていることに本人が気づき、対応を指示。
+
+`apps/comment-sidecar/vendor/gateway/src/adapters/ws/websocket-comment.output-port.ts` の `bind()` に
+`verifyClient` で Origin allow-list（`tauri://localhost` / `http://tauri.localhost` / `http://localhost:1420`）
+を追加。悪意あるWebページ（A1）からの接続を拒否するようにした。新規依存ゼロ・Rust側の変更ゼロ。
+
+**スコープ外（意図的）**: 同一PC上の悪意あるプロセス（A2）はOriginヘッダを自由に送れるため、
+今回の修正では塞げない。nonce/セッション認証による二層目の対策は別タスクとする。
+
+### 実施内容
+
+- `docs/tasks/069-ws-origin-auth.md` を作成（実コード調査済みの完成形）
+- `websocket-comment.output-port.ts` に `verifyClient` を追加
+- `apps/comment-sidecar/scripts/test-ws-unauth-origin.mjs` を「拒否されること」を確認する向きへ反転。
+  正規Origin（`tauri://localhost`）が引き続き接続できることの確認も追加した
+- `docs/security-threats.md` T-1 の状態を更新（A1対応済み・A2は理由つきで受容）
+- `docs/release.md` のリリース手順4に、本番ビルドでのOrigin実機確認チェックを追記
+
+### security-review（実施済み・判定: 軽微な懸念あり）
+
+- 良かった点: Origin検証が完全一致（前方一致すり抜けを回避）・undefined originもfail-closed・
+  新規依存ゼロ・再現テストを正しく反転＋正規経路の確認も追加・`pnpm tauri dev` + `lsof` で実機のTCP接続を確認
+- ⚠⚠ **懸念点（修正不要・要実機確認）**: 本番ビルド（署名済み.app/.exe）でのOrigin実測が未実施。
+  `pnpm tauri dev` で確認できたのは `http://localhost:1420`（devUrl）経路のみで、本番の
+  `tauri://localhost` / `http://tauri.localhost` は一般的なTauri 2の既定値からの推測に留まる。
+  ズレていた場合、コメントビューアの接続が**エラー表示なくサイレントに**壊れる。
+  ⇒ **次回リリースのpublish前に実機確認すること**（`docs/release.md`に追記済み・確認後はメモ削除可）
+- 軽微な改善（任意・未実施）: 開発用Origin（`http://localhost:1420`）が `tauri.conf.json` の `devUrl` と
+  手動二重管理になっている（低リスク）
+
+### 検証
+
+- `pnpm --filter @stream-dock/comment-sidecar typecheck` ✅
+- `pnpm --filter @stream-dock/comment-sidecar test` ✅（`test-ws-unauth-origin.mjs` 含む全件PASS）
+- `pnpm typecheck` ✅ ／ `pnpm lint` ✅（desktop側、無変更の回帰確認）
+- 実機確認: `pnpm tauri dev` でコメントビューアを起動し、`lsof -i :17331` で
+  webview↔sidecar間のTCP接続が `ESTABLISHED` であることを確認（正規クライアントが壊れていない証跡）

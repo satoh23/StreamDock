@@ -20,8 +20,8 @@
 
 ### T-1: loopback WS が未認証・Origin未検証（sidecar 制御フレーム）
 
-- **状態**: 未対応（発見と再現テストまで／修正は別タスク）
-- **攻撃者**: A1 / A2
+- **状態**: **A1は対応済み（069・2026-10-12）／A2は受容（未対応・理由は下記）**
+- **攻撃者**: A1（対応済み） / A2（未対応・受容）
 - **面**: `apps/comment-sidecar/vendor/gateway/src/adapters/ws/websocket-comment.output-port.ts` `bind()`
 - **内容**: WS サーバは `WebSocketServer({ host, port })` のみで、接続時の **Origin 検証も認証ハンドシェイクも無い**。
   ブラウザは WS ハンドシェイクに `Origin` を必ず付けるが、サーバはこれを見ない。結果、A1/A2 が接続でき、
@@ -40,8 +40,18 @@
 - **再現テスト**: `apps/comment-sidecar/scripts/test-ws-unauth-origin.mjs`（`pnpm --filter @stream-dock/comment-sidecar test` に含む）。
   本物の WS サーバへ **偽 Origin (`https://evil.example`)** のクライアントで接続し、①接続が拒否されない
   ②未認証フレームが全て届く ③`bind()` に Origin 検証コードが無い、の3点を固定する。修正が入ると③（と①）が反転する。
-- **修正案（別タスク）**: 接続時に **Origin allow-list**（webview 由来以外を拒否）を入れる。コード自身が挙げている対策
-  （`Origin 検証 ＋ nonce ハンドシェイク`）に沿う。二層目として、未認証フレーム（obs-*・start-login）にも
-  セッション nonce を要求する案。実装時は本再現テストを「拒否されること」を確認する向きへ反転する。
+- **修正内容（069・2026-10-12）**: `bind()` の `WebSocketServer` に `verifyClient` を追加し、Origin allow-list
+  （`tauri://localhost` / `http://tauri.localhost` / `http://localhost:1420`）で接続を検証するようにした。
+  一致しない Origin は接続自体を拒否する（`ws` パッケージ標準機能・新規依存ゼロ）。詳細は
+  [`docs/tasks/069-ws-origin-auth.md`](tasks/069-ws-origin-auth.md)。
+- **再現テストの反転**: `test-ws-unauth-origin.mjs` を「偽Originは拒否される」「正規Origin（`tauri://localhost`）は
+  引き続き接続できる」「`bind()` に `verifyClient` がある」の3点を固定する向きへ書き換えた。
+- **実機確認**: `pnpm tauri dev` でコメントビューアを起動し、`lsof -i :<port>` で webview↔sidecar 間の
+  TCP接続が `ESTABLISHED` になることを確認した（正規クライアントが壊れていないことの実測）。
+- **A2が未対応で受容である理由**: `Origin` ヘッダはブラウザが付与する場合は偽装できないが、**任意のローカル
+  プロセスが自分で送信する分には自由に偽装できる**ため、Origin allow-listだけではA2（同一PC上の悪意ある
+  プロセス）を塞げない。A2対策には別途nonce/セッション認証が要る（T-1の「二層目」・別タスク）。
+  現状A2で奪えるのは「秘密を含まない・外部送信も起きない」範囲（033c-cのVOICEVOX loopbackと同水準）に
+  留まるため、A1（ブラウザ経由の方が現実的に起きやすい）を優先して塞ぎ、A2は既知の受容リスクとして残す。
 
 <!-- 次の脅威（T-2: 第三者コメント → csp:null 描画 / T-3: 取り込み系の allow-list 回避 …）は別セッションで追記する。 -->
