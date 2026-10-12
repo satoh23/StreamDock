@@ -1,71 +1,200 @@
-# stream-dock
+# StreamDock
 
-配信者がPC上の複数ツールをプリセット単位で起動・停止するためのデスクトップアプリ。
+> 配信前に毎回同じ手順でOBS・コメントビューア・読み上げなどを起動する面倒を、プリセットのワンクリック起動で解決するデスクトップアプリ
 
-## 技術構成
+![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?style=flat&logo=tauri&logoColor=white)
+![React](https://img.shields.io/badge/React-19-61DAFB?style=flat&logo=react&logoColor=black)
+![Rust](https://img.shields.io/badge/Rust-stable-DE3D1B?style=flat&logo=rust&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?style=flat&logo=typescript&logoColor=white)
+![Tests](https://img.shields.io/badge/tests-2308%20%2B%20475%20passing-2ea44f)
+[![Release](https://img.shields.io/github/v/release/satoh23/StreamDock-releases)](https://github.com/satoh23/StreamDock-releases/releases)
 
-- Frontend: React + TypeScript (Vite)
-- Desktop: Tauri 2
-- Backend: Rust
+## デモ
 
-## 必要要件
+![メイン画面: プリセット「雑談配信用」から5つのツールを一括起動できる](docs/screenshots/dashboard.png)
 
-- Node.js 20 以上
-- pnpm 10 以上
-- Rust ツールチェイン (rustc / cargo)
+## プロダクト概要
 
-## ディレクトリ構成
+配信者は、配信を開始するまでにOBS、コメントビューア、読み上げソフト、翻訳ツール、アバターソフトなど、複数のアプリケーションを起動・設定する必要があります。
 
-pnpm workspace のモノレポ構成。
+配信内容によって必要なツールは変わり、それぞれを毎回起動する手間や、起動順序・設定を確認する負担が発生します。
 
-- `apps/desktop/` … デスクトップアプリ全体
-  - `apps/desktop/src/` … React + TypeScript フロントエンド
-  - `apps/desktop/src-tauri/` … Rust / Tauri バックエンド
-- root … workspace 管理用（`pnpm-workspace.yaml` / 管理用 `package.json`）
+StreamDockは、こうした配信準備を**プリセットとして管理し、ワンクリックで実行できるデスクトップアプリ**です。
 
-各コマンドは root から実行する（`--filter` で `apps/desktop` に委譲）。
+既存の配信ツールを置き換えるのではなく、配信者がすでに使っている環境を活かしながら、準備に必要な操作を減らすことを目指しています。
 
-## セットアップ
+---
+
+## 1. 開発の背景
+
+開発当初は「配信中のコメント管理」を課題として想定していました。ただしこれは開発者自身の仮説に過ぎなかったため、X経由で同時接続30〜80人規模の配信者に直接アプローチし、Google Meetで個別インタビューを実施しました（文字起こし等は非公開の約束のもとで実施したため、本リポジトリには掲載していません）。
+
+インタビューで見えてきたのは、コメント管理よりも**配信開始前の準備**——複数ツールの起動・設定確認や、コラボ配信時にDiscordのURLを調べてOBSへ設定するような手作業——の負担でした。この結果を受けて、プロダクトの軸を「コメント支援ツール」から「配信準備を自動化するデスクトップアプリ」へ転換し、コメントビューアはその中の一機能として位置づけ直しました。
+
+v1.0.0リリース後、実際に使ってくれている配信者もいますが、準備時間の削減効果や継続利用率などの定量検証はまだこれからです。
+
+インタビュー手法・仮説の見直し過程・今後の検証計画の詳細は [docs/product-story.md](docs/product-story.md) にまとめています。
+
+---
+
+## 2. 主な機能
+
+### 配信準備の自動化
+
+- ツール登録・プリセット作成、プリセットごとに起動順/並行起動を設定
+- 一括起動・個別起動、StreamDock経由で起動したプロセスだけを安全に一括停止
+- 起動状態のリアルタイム表示、PC起動時のプリセット自動起動
+
+### 内蔵コメントビューア
+
+- Twitch・YouTubeのコメントを同時取得してマージ表示（OAuthトークンはOSキーチェーンに保存）
+- VOICEVOXによる直接音声合成読み上げ（読み替え辞書つき）
+- OBS用の透過オーバーレイウィンドウ、実視聴者アイコン表示
+- コメント種別（スーパーチャット／サブスク／メンバーシップ／ギフト）に応じたOBSエフェクト自動再生
+
+### 配布・運用
+
+- macOS(Universal)・Windows(x64)インストーラをGitHub Actionsで自動ビルド
+- Windowsはクラウド署名、アプリ自身の自己アップデート機能つき
+
+<table>
+<tr>
+<td><img src="docs/screenshots/obs-effects.png" alt="OBSエフェクト設定画面" /><br/><sub>コメント種別ごとにOBSエフェクトの発火条件を設定</sub></td>
+<td><img src="docs/screenshots/comment-viewer.png" alt="内蔵コメントビューア" /><br/><sub>Twitch / YouTube コメントを同時表示する内蔵ビューア</sub></td>
+</tr>
+</table>
+
+---
+
+## 3. アーキテクチャ・技術スタック
+
+| レイヤー           | 技術                                                          |
+| ------------------ | --------------------------------------------------------------- |
+| UI                 | React 19 + TypeScript（Vite）                                 |
+| デスクトップシェル | Tauri 2                                                       |
+| バックエンド       | Rust                                                          |
+| データ永続化       | SQLite                                                        |
+| 配信コメント取得   | Node.js sidecar（単一実行ファイル化／gRPC／obs-websocket-js） |
+| パッケージ管理     | pnpm workspace（モノレポ）                                    |
+
+```mermaid
+flowchart LR
+  UI["React UI"] --> IPC["Tauri invoke API"]
+  IPC --> CMD["Tauri Rust commands"]
+  CMD --> SVC["Service layer\n(ToolRegistry / Preset / LaunchOrchestrator / Process / Settings / Log)"]
+  SVC --> REPO["Repository layer"]
+  REPO --> DB[(SQLite)]
+  CMD -. private pipe .-> SIDE["Node sidecar\n(Twitch / YouTube / OBS WS)"]
+  SIDE -. 許可リストの宛先のみ .-> EXT[("Twitch / YouTube API")]
+```
+
+StreamDock本体（mainプロセス）はインターネットに直接出ない。外部通信が必要なコメント取得だけを、隔離したNode sidecarに封じ込めている。
+
+---
+
+## 4. 技術的に工夫した点
+
+### 外部通信は既定で禁止、例外は許可リスト方式
+
+本体は原則ネット通信をしない。
+
+Twitch/YouTubeのコメント取得のみ、ユーザーの明示操作+宛先許可リスト+Node sidecarへの封じ込めという条件つきで例外許可している。
+
+詳細は [docs/security.md](docs/security.md) を参照。
+
+### OAuthトークンはOSキーチェーンに保存
+
+ログにも外部にも出さず、Twitch/YouTube両方で同じ方式に統一。
+
+### チケット制の認可で未認証WSからの不正操作を防止
+
+チャット書き込み機能では、Rustが発行したチケットをstdinのプライベートパイプでNode sidecarへ渡し、sidecar側で定数時間比較・スロットルする。
+
+frontend側に置くと未認証WS経由で回避されるため、検証はsidecar側にだけ置いている。
+
+### 個人開発者でもコード署名できる配信基盤を構築
+
+当初Azure Trusted Signingを想定したが、日本在住の個人開発者は対象外と判明。
+
+SSL.com eSignerのクラウド署名に切り替え、GitHub Actions上で完結する署名パイプラインを構築した。
+
+Updater用のminisign署名とコード署名の経路を分離し、ビルド後に成果物のバイト列を変えない設計にして自己更新の破損を防いでいる。
+
+### テストの実効性をミューテーションテストで検証
+
+カバレッジ数値だけでなく、意図的にロジックを壊してテストが落ちるかを手動で確認し、守られていなかった箇所を実際に発見・修正した。
+
+---
+
+## 5. 開発プロセス（AIとの協働について）
+
+このプロジェクトはClaude Code（AIペアプログラミング）を使って開発しています。
+
+AIによって実装速度を高める一方で、品質や安全性を維持するため、計画・実装・レビュー・検証を分離した開発プロセスを採用しました。
+
+### 5.1 自分自身が担当した意思決定
+
+- ユーザーインタビューの企画・実施
+- ユーザー課題の分析とインサイトの仮説設定
+- プロダクトの方向転換と機能の優先順位付け
+- 要件定義と実装方針の決定
+- セキュリティ要件と設計上の制約の策定
+- AIが提示した実装計画や変更内容のレビュー
+- テスト・検証方針の策定
+- リリースと運用上の意思決定
+
+AIは実装・調査・レビューの支援に利用しましたが、プロダクトの方向性や採用する設計については、開発者自身が判断する形で進めました。
+
+### 5.2 実装前の計画・承認
+
+実装前に計画と対象ファイルを提示し、承認を得てから着手するルールを設けています。
+
+詳細は [CLAUDE.md](CLAUDE.md) を参照。
+
+### 5.3 セキュリティレビューと攻撃者視点の検証
+
+OS操作・ファイル操作・プロセス操作・外部通信に関わる変更は、[docs/security.md](docs/security.md) の基準に基づくレビューを必須としています。
+
+そのレビューとは**別セッション・別ロールで攻撃者視点の検証**も実施しています。
+
+チェックリスト型のレビューは守り側の前提に乗ってしまいがちなので、「誰が・どこから・何を送れるか」という攻撃者モデルを [docs/security-threats.md](docs/security-threats.md) に台帳化しました。
+
+見つけた穴は「危ないかも」で終わらせず、再現テストに固定してから完了としています。
+
+### 5.4 意思決定の記録
+
+意思決定とレビュー結果は [docs/progress.md](docs/progress.md) に記録し、後から経緯を追えるようにしています。
+
+`docs/tasks/` には178件の設計ドキュメントがあります。
+
+### 5.5 小さな差分による開発
+
+1回の作業で複数機能をまとめて実装しない方針を採用しました。
+
+タスクを小さく分割し、差分をレビュー可能な単位に保つことで、AIが生成したコードの変更範囲と影響を追いやすくしています。
+
+### 5.6 AI開発に対する考え方
+
+AIを利用することで、一人でも複数の技術領域にまたがるアプリケーションを開発しやすくなりました。
+
+一方で、AIが生成したコードが正しいことや、安全であることが自動的に保証されるわけではありません。
+
+そのため、AIに実装を任せること自体よりも、**何を作るかを自分で判断し、どのような基準で設計・実装を承認し、どう検証するか**を重視しました。
+
+このプロジェクトでは、プロダクト企画からリリースまでを個人で進めるための手段としてAIを活用しています。
+
+---
+
+## 6. クイックスタート
+
+必要要件: Node.js 20以上 / pnpm 10以上 / Rustツールチェイン
 
 ```sh
 pnpm install
-# 依存の脆弱性検査に使う（pre-commit フックが要求する。未導入だと Cargo.lock を変えるコミットが通らない）
-cargo install cargo-audit --locked
-```
-
-`pnpm install` は root の `prepare` スクリプトで `git config core.hooksPath .githooks` を自動設定します
-（新規依存ゼロ・husky 等は使いません）。設定されているかは `git config core.hooksPath` で確認できます。
-
-### pre-commit フック（依存の脆弱性検査・056）
-
-`.githooks/pre-commit` が、**`Cargo.lock` か `pnpm-lock.yaml` をステージしたコミットのときだけ**
-脆弱性検査を実行し、**既知の脆弱性があればコミットを中止**します。
-
-| 検査 | 対象 | 落ちる条件 |
-| --- | --- | --- |
-| `cargo audit` | `apps/desktop/src-tauri/Cargo.lock` | **脆弱性**があるとき（`unmaintained` / `unsound` の警告では落ちない） |
-| `pnpm audit --prod` | `pnpm-lock.yaml` | **配布される依存**に脆弱性があるとき（開発専用の依存は対象外） |
-
-- 依存を変えないコミットでは**一切走りません**（所要 0 秒・オフラインでも困らない）。
-- いつでも手動で回せます: `pnpm audit:deps`
-- 走るときは外部に問い合わせます（`cargo audit` は rustsec advisory-db を GitHub から取得、
-  `pnpm audit` は npm レジストリへ）。
-- ⚠ **`core.hooksPath` を設定すると `.git/hooks/` 配下は無効になります。** 今後フックを足すときは
-  `.githooks/` 側に置いてください（`.git/hooks/` に置いても黙って動きません）。
-- ⚠ **依存が変わっていなくても脆弱性は日々公表される。** このフックは「自分が依存を変えたとき」しか
-  見ないので、既存依存に後から報告されたものは捕まえられません（定期実行の仕組みは未整備・task-board の 056）。
-  `git merge` / `git pull` が持ち込む依存変更も素通りします（merge commit はフックを通らないため）。
-- 緊急時は `git commit --no-verify` で飛ばせますが、**飛ばした理由を `docs/progress.md` に残すこと**。
-
-## 開発起動
-
-```sh
 pnpm tauri dev
 ```
 
-初回は Rust 側のビルドに数分かかります。ビルド後にアプリのウィンドウが表示されます。
-
-## 検証コマンド
+初回はRust側のビルドに数分かかる。
 
 ```sh
 pnpm typecheck   # tsc --noEmit
@@ -73,148 +202,28 @@ pnpm lint        # eslint
 cd apps/desktop/src-tauri && cargo check
 ```
 
-## リリース / 配布（099）
+署名・自己アップデート・リリース手順など配布まわりの詳細は [docs/release.md](docs/release.md) を参照。
 
-ビルドは **GitHub Actions**（`.github/workflows/release.yml`）で自動化している。VM も Docker も不要で、
-macOS と Windows(x64) のインストーラをクラウドで生成する。
+---
 
-- **ユーザーが落とすもの**: macOS `.dmg`（universal・Intel/Apple Silicon 両対応）/ Windows x64 `.exe`(NSIS) の**各 1 本だけ**。
-  - Release にはこのほか `latest.json` / `*.app.tar.gz` / `*.sig` が並ぶが、これらは **updater が使う**もので人は落とさない
-    （`.app.tar.gz` は macOS の自己更新時にアプリ自身が取得して自分を置き換える実体）。
-  - ⚠ **`.msi`(WiX) は作らない**（`bundle.targets` から除外）。updater の `windows-x86_64` は NSIS の `.exe` しか
-    指さないため、`.msi` を並べると **MSI で入れたユーザーが更新のたびに NSIS へ入れ替わる**（アンインストールの
-    エントリが二重化しうる）。使わない形式を並べる意味が無いので生成ごとやめた。
-- Windows は **x64 のみ**（一般ユーザーのほぼ全員。ARM64 Windows でも x64 エミュで動作）。
-- **このリポジトリ（ソース）は private のまま**。成果物だけを **別の public リポジトリ
-  `satoh23/StreamDock-releases`** の Releases 下書きに添付する（ユーザーはそちらから登録不要で DL）。
+## 7. プロジェクトの状況
 
-### 前提（配布リポジトリと Secrets）
+- v1.0.0 リリース済み（2026-09-06、開発開始は2026-07-05）
+- frontend 2308テスト（Vitest） / Rust 475テスト
+- `docs/tasks/` 配下に178件の設計ドキュメント
+- 通常はソースコードをprivateで運用
+- 配布物のみ別のpublicリポジトリ（[StreamDock-releases](https://github.com/satoh23/StreamDock-releases)）で公開
 
-- public リポジトリ `satoh23/StreamDock-releases` を作成済み（README 等で最低1コミットが必要）。
-- private リポジトリの Secrets に **`RELEASE_REPO_TOKEN`**（`StreamDock-releases` への Contents: Read/Write な
-  Fine-grained PAT）を登録済み。`GITHUB_TOKEN` は別リポジトリへ書けないため PAT を使う。
+本リポジトリのソースコードは、開発内容や設計上の意思決定を確認できるよう、選考・ポートフォリオ閲覧を目的として一時的に公開しています。
 
-#### 追加 Secrets（099a・値はユーザーが各コンソールから取得。リポジトリには置かない）
+---
 
-- **コメントビューア焼き込み**（sidecar ビルド時に必須。未設定だと build-sea が fail-fast）:
-  - `TWITCH_CLIENT_ID` … Twitch Developer Console のアプリ Client ID（public・非機密）
-  - `YOUTUBE_CLIENT_ID` / `YOUTUBE_CLIENT_SECRET` … Google Cloud の「Desktop app」OAuth クライアント
-- **Windows 署名（SSL.com eSigner・クラウド署名）**:
-  - `ES_USERNAME` / `ES_PASSWORD` … SSL.com アカウントのログイン情報
-  - `CREDENTIAL_ID` … eSigner の署名資格情報（証明書）ID（SSL.com ダッシュボード、または `get_credential_ids` で取得）。
-    署名時は jsign の `--alias` に入る
-  - `ES_TOTP_SECRET` … 自動署名用の TOTP シークレット（eSigner の自動化設定で取得）
-  - ⚠ 4 本とも **Windows レグの `Build installers` にだけ** env で渡す（macOS へは渡さない）。
-    `ES_USERNAME` を登録した時点で署名が有効になる（＝ CI の判定キー）
-- **アプリ自己アップデート（updater）の署名鍵（055a）**:
-  - `TAURI_SIGNING_PRIVATE_KEY` … `pnpm --filter ./apps/desktop tauri signer generate -w <保存先>` で作った**秘密鍵ファイルの中身**
-  - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` … 上記の生成時に設定したパスワード
-  - **公開鍵は非機密**なので `apps/desktop/src-tauri/tauri.conf.json` の `plugins.updater.pubkey` にコミットしてある。
-  - ⚠ **秘密鍵とパスワードを失うと、既に配布済みのインストールへ二度と更新を配れない**
-    （全ユーザーに手動で入れ直してもらうしかない）。パスワードマネージャ等に**必ずバックアップする**。
-    鍵を作り直すと、旧鍵で署名された配布物からは更新できない。
-  - ⚠ 鍵を設定した以上、**`pnpm tauri build`（インストーラ生成）にはこの 2 つの環境変数が必要**になる。
-    未設定だと「A public key has been found, but no private key」で失敗する。
+## 8. ライセンス
 
-### リリース手順
+未設定。
 
-**1. リリースノートを先に書く。** **これから付けるバージョン番号**でファイル名を決め、
-`docs/release-notes/vX.Y.Z.md` を作る（書式は
-[`docs/release-notes/README.md`](docs/release-notes/README.md)）。**このファイルが単一ソース**で、CI が
-アプリ内アップデート画面（`latest.json` の `notes`）と GitHub Release 本文の両方へ流す。
-CI は**タグ名ではなく手順 2 で入れる `tauri.conf.json` の `version`** でこのファイルを探すので、
-両者は必ず同じ番号にすること（手順 2・3 でズレていれば CI が落ちる）。
-**無いままタグを打つと CI が fail する。**
+ソースコードの公開は、第三者に対して利用・改変・再配布等を許諾するものではありません。
 
-**2. バージョンを 5 箇所すべて更新する。**
+## 作者
 
-```sh
-# package.json（root） / apps/desktop/package.json / apps/comment-sidecar/package.json /
-# apps/desktop/src-tauri/Cargo.toml の [package] / apps/desktop/src-tauri/tauri.conf.json
-pnpm --filter ./apps/desktop check:version   # 5 箇所が揃っているか（pnpm test からも走る）
-```
-
-updater が比較するのは `tauri.conf.json`、診断画面が表示するのは `Cargo.toml` 由来の値なので、
-**ズレたまま配ると「診断画面と updater でバージョンが食い違う」**という追いにくい不整合になる。
-CI もタグ push 時に「タグ名 − `v` == 5 箇所」を検証して落とす。
-
-**3. タグを push する。**
-
-```sh
-git tag v0.1.0
-git push --tags
-```
-
-タグ push で Actions が走り、完了すると **`StreamDock-releases` の Releases に下書き**が作られる
-（インストーラ・`latest.json`・各 `.sig` が添付される）。動作確認だけなら GitHub の Actions 画面から
-`release` ワークフローを**手動実行（workflow_dispatch）**してもビルドできる（下書き名は `CI build <番号>`）。
-
-**4. 内容を確認して publish する。**
-
-> ⚠ **publish した瞬間に、既存の全ユーザーへの配信が始まる。**
-> updater は `releases/latest/download/latest.json` を見ており、下書きのうちはこの URL が 404 で
-> アプリからは見えない。**publish が配信スイッチ**なので、成果物を確認してから押すこと。
-> 手動実行（`ci-<番号>`）の下書きは**publish しない**（配布物ではない）。
-> なお手動実行の下書きは CI が **prerelease** としても作るので、誤って publish しても
-> `releases/latest` からは除外され updater には配信されない（本文にも警告バナーが入る）。
-> ただしこれは保険であって、**publish しないのが手順**。
-
-なお `release.yml` の `tauri-apps/tauri-action` と `dtolnay/rust-toolchain` は、updater の秘密鍵を扱うジョブに
-いるため**コミット SHA へ固定**してある（供給網対策）。更新するときは手でその SHA を上げる。
-
-### ⚠ アーティファクトと Actions のストレージ枠
-
-build ジョブの成果物は **workflow artifact 経由で release ジョブへ受け渡すだけ**（同じ run の中で消費される）。
-⚠ ただし**サイズが大きい**——comment-sidecar だけで 110MB あり、それが macOS の `.dmg` と `.app.tar.gz`、
-Windows の NSIS `.exe` にそれぞれ入るので、**1 回の実行で数百 MB** 使う。
-
-- **保持は 1 日**（`retention-days: 1`）。⚠ **実機確認のためにインストーラを落とすなら run の当日中に。**
-  期限切れ後に必要になったら run を再実行する。
-- 枠が埋まると `Failed to CreateArtifact: Artifact storage quota has been hit` でビルドが落ちる。
-  そのときは **Actions → `cleanup-artifacts` → Run workflow** で残っている artifact をまとめて削除する
-  （UI からは run を 1 つずつ開く必要があり、**期限切れの artifact はゴミ箱アイコンすら出ない**ため）。
-  ⚠ 0 件だった場合は「消せるものが既に無い」＝ **GitHub 側の使用量の再計算待ち（6〜12 時間）**か、
-  **別の private リポジトリ**が枠を使っている（Settings → Billing and licensing で確認）。
-- ⚠ **配布物（public 側の Releases）はこの枠とは別勘定**なので、artifact を消しても配布に影響しない。
-
-### 署名について
-
-- **Windows**: CI に SSL.com の署名 Secrets（`ES_USERNAME` 他）が**設定されていれば**、
-  **tauri のバンドル過程の中で** NSIS `.exe` を **SSL.com の個人検証(IV)証明書 + eSigner クラウド署名**で署名する
-  （プロパティ →「デジタル署名」に発行者表示）。**Secrets 未設定なら署名せず、未署名で配布**される
-  ＝証明書取得前でも comment-viewer 入り MVP を配布でき、Secrets を入れた瞬間からコード変更なしで署名に切り替わる。
-  - 経路は `tauri.conf.json` の **`bundle.windows.signCommand`** → `apps/desktop/src-tauri/scripts/sign-windows.ps1`
-    → **jsign**（Apache-2.0・CI 上にだけ入れる。リリースタグ固定＋SHA-256 照合）→ SSL.com eSigner。
-    ⚠ **ビルド後にインストーラを署名し直す形は採らない**——updater の minisign 署名はバンドル時点の
-      バイト列に対して作られるので、後からバイト列を変えると**自己更新だけが静かに壊れる**（下記・055a）。
-  - 「署名するかどうか」は `sign-windows.ps1` が `STREAMDOCK_WINDOWS_SIGNING` で判断する。
-    ⚠ tauri 公式の `--no-sign` は**使わない**（updater の minisign 署名まで止めてしまうため）。
-  - **署名に失敗したらビルドを落とす**（未署名の成果物を public 側へ出さない）。署名後に
-    `signtool verify /pa` で検証もしている。
-  - 未署名の間は初回に SmartScreen「不明な発行元」警告（「詳細情報 → 実行」で回避）。
-  - 署名後も IV/OV は**評判蓄積型**のため配布直後は警告が残り、ダウンロード実績が貯まると発行者名表示へ切り替わる
-    （即時解消は EV のみ・法人登録が要る）。
-  - 補足: 当初は Azure Trusted Signing を予定したが、**日本在住の個人開発者は公開信頼証明書の対象外**
-    （米国・カナダの個人／米国・カナダ・EU・英国の組織のみ）と判明したため、個人でも取得できる SSL.com IV に変更した。
-  - 認証情報はすべて GitHub Secrets のみ（`ES_USERNAME` / `ES_PASSWORD` / `CREDENTIAL_ID` / `ES_TOTP_SECRET`）。
-    リポジトリ・生成物・ログには含めない（`tauri.conf.json` にも書かない。**env でのみ渡す**）。
-- **macOS = 未署名**（親 099 の決定どおり当面）。初回は Gatekeeper 警告が出るため、右クリック →「開く」で回避する。
-- **updater の署名（minisign）はコード署名とは別物**（055a）。前者は「配った更新が改ざんされていないか」を
-  アプリ自身が公開鍵で検証するためのもので、OS の「不明な発行元」警告とは無関係。両方必要。
-  - ⚠ この 2 つは**壊れ方が噛み合う**: ビルド後にインストーラを署名し直すとバイト列が変わり minisign 署名と
-    食い違って、**Windows の自己更新だけが静かに壊れる**（CI は緑・インストーラも動くので実機まで気づけない）。
-    そのため署名は `bundle.windows.signCommand` に寄せてある。**CI にガードもあり**、この構成が崩れると
-    重いビルドの前に落ちる（詳細は [`docs/tasks/099a-windows-code-signing.md`](docs/tasks/099a-windows-code-signing.md)）。
-
-### ローカルで手動ビルドする場合
-
-```sh
-# updater の署名鍵が必要（未設定だと bundle 段階で失敗する。055a）
-export TAURI_SIGNING_PRIVATE_KEY="$(cat <秘密鍵ファイル>)"
-export TAURI_SIGNING_PRIVATE_KEY_PASSWORD='<生成時のパスワード>'
-pnpm tauri build            # 実行した OS 向けのインストーラを生成
-```
-
-⚠ 鍵を**パスワード無し**で生成した場合も、`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` は**空文字で export する**こと
-（`export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=''`）。未設定のままだと CLI が対話プロンプトで止まる。
-CI では `CI=true` のため空文字が自動で使われる。
+Tetsuya Satoh — [@satoh23](https://github.com/satoh23)
