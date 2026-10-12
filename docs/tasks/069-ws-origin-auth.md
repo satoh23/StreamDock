@@ -61,8 +61,11 @@ const server = new WebSocketServer({
 ## 残課題
 
 - A2対策(nonce/セッション認証)は別タスク
-- ⚠⚠ **本番ビルド(署名済み.app / .exe)でのOrigin実測は未実施。** `pnpm tauri dev`で確認できたのは
-  `http://localhost:1420`(devUrl)経路のみで、本番で使われる`tauri://localhost` / `http://tauri.localhost`は
-  一般的なTauri 2の既定値からの推測に留まる。もし想定と違えば、コメントビューアの接続が**エラー表示なく**
-  「待機中」のまま固まる(サイレント故障)。**次回リリースのpublish前に実機確認すること**
-  (`docs/release.md`のリリース手順4にチェック項目を追記済み)。
+- ✅ **macOSの本番Origin実測(2026-10-12)**: `.app`バンドル(`pnpm tauri build --bundles app --debug`、
+  ローカル検証用に`createUpdaterArtifacts: false`へ一時変更してビルド・未コミット)を実際に起動し、
+  コメントビューアのウィンドウを開いて`lsof -iTCP -a -p <sidecarのpid>`でwebview↔sidecar間のTCP接続が
+  `ESTABLISHED`になることを確認した(3秒後の再確認でも安定)。ビルド済みsidecarバイナリに`strings`で
+  `tauri://localhost`のallow-list文字列が焼き込まれていることも確認済み。`tauri://localhost`がmacOS本番の
+  実際のOriginであることを実機で確認できた。詳細は`docs/progress.md`の「069b」。
+- ⚠ **Windows(`http://tauri.localhost`)は未検証。** 手元にWindows実機が無いため確認できていない。
+  Windows版を初めて配布する前に実機確認する(`docs/release.md`のリリース手順4に記載)。

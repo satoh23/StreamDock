@@ -46,8 +46,11 @@
   [`docs/tasks/069-ws-origin-auth.md`](tasks/069-ws-origin-auth.md)。
 - **再現テストの反転**: `test-ws-unauth-origin.mjs` を「偽Originは拒否される」「正規Origin（`tauri://localhost`）は
   引き続き接続できる」「`bind()` に `verifyClient` がある」の3点を固定する向きへ書き換えた。
-- **実機確認**: `pnpm tauri dev` でコメントビューアを起動し、`lsof -i :<port>` で webview↔sidecar 間の
-  TCP接続が `ESTABLISHED` になることを確認した（正規クライアントが壊れていないことの実測）。
+- **実機確認**: `pnpm tauri dev`（`http://localhost:1420`経路）でコメントビューアを起動し、`lsof -i :<port>` で
+  webview↔sidecar 間の TCP接続が `ESTABLISHED` になることを確認した（正規クライアントが壊れていないことの実測）。
+  加えて2026-10-12、macOSの本番 `.app` バンドルでも同様に `ESTABLISHED` を確認し、`tauri://localhost` が
+  実際の本番Originであることを実機で確認した（詳細は `docs/progress.md` の「069b」）。Windows
+  （`http://tauri.localhost`）は手元に実機が無く未確認（`docs/release.md` に記載）。
 - **A2が未対応で受容である理由**: `Origin` ヘッダはブラウザが付与する場合は偽装できないが、**任意のローカル
   プロセスが自分で送信する分には自由に偽装できる**ため、Origin allow-listだけではA2（同一PC上の悪意ある
   プロセス）を塞げない。A2対策には別途nonce/セッション認証が要る（T-1の「二層目」・別タスク）。

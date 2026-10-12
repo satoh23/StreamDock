@@ -109,11 +109,13 @@ git push --tags
 
 **4. 内容を確認して publish する。**
 
-> ⚠⚠ **069: publish前に、ビルドしたインストーラを実機で動かし、コメントビューアの接続を確認すること。**
-> sidecarのloopback WSに Origin allow-list（`tauri://localhost` / `http://tauri.localhost`）を入れたが、
-> `pnpm tauri dev`（`http://localhost:1420`経路）でしか実機確認できていない。本番ビルドのwebviewが送る
-> Originが想定と違うと、コメントビューアの接続が**サイレントに**壊れる（エラー表示は出ず「待機中」のまま）。
-> 一度確認が取れたら、このメモは削除してよい。
+> ⚠ **Windows: 初回配布前に、ビルドしたインストーラを実機で動かし、コメントビューアの接続を確認すること。**
+> sidecarのloopback WSに Origin allow-list（`tauri://localhost` / `http://tauri.localhost`）を2026-10-12に
+> 追加した。macOSは `.app` バンドルで実機確認済み（`tauri://localhost` で接続し、`lsof` で webview↔sidecar
+> 間のTCP接続が `ESTABLISHED` になることを確認。詳細は `docs/progress.md` の「069b」）。
+> Windows（`http://tauri.localhost`、WebView2）は手元に実機が無く未確認。Originが想定と違うと、
+> コメントビューアの接続が**サイレントに**壊れる（エラー表示は出ず「待機中」のまま）ため、Windows版を
+> 初めて配布する前に一度確認する。確認が取れたら、このメモは削除してよい。
 
 > ⚠ **publish した瞬間に、既存の全ユーザーへの配信が始まる。**
 > updater は `releases/latest/download/latest.json` を見ており、下書きのうちはこの URL が 404 で

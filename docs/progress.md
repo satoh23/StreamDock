@@ -30745,3 +30745,42 @@ T-1（loopback WS が未認証）が公開ドキュメント上に攻撃レシ�
 - `pnpm typecheck` ✅ ／ `pnpm lint` ✅（desktop側、無変更の回帰確認）
 - 実機確認: `pnpm tauri dev` でコメントビューアを起動し、`lsof -i :17331` で
   webview↔sidecar間のTCP接続が `ESTABLISHED` であることを確認（正規クライアントが壊れていない証跡）
+
+## 069b macOSの本番Originを実機確認（2026-10-12）
+
+【本人発案】069のsecurity-reviewで「本番ビルドのOrigin実測が未実施」という懸念点を残したまま
+`docs/release.md`に「publish前に確認すること」という先送りメモを置いていたことを本人が指摘。
+「確認できたら消せるメモなら、メモするんじゃなくてその場で確認して消すべきでは」という指摘を受け、
+その場で実機確認した。
+
+### 確認方法
+
+1. `apps/desktop/src-tauri/tauri.conf.json` の `createUpdaterArtifacts` を一時的に `false` に変更
+   （updater署名鍵なしでローカルビルドするため。ローカル検証専用・コミットしていない）
+2. `pnpm --filter ./apps/desktop tauri build --bundles app --debug` で実際に `.app` バンドルをビルド
+   （`cargo run` 直接実行も試したが `tauri://` カスタムプロトコルが解決できず白画面になり、検証方法として
+   無効と判明。実際の `.app` バンドル・Info.plistが無いとmacOSはカスタムプロトコルを解決しない）
+3. ビルドした `StreamDock.app` を起動し、コメントビューアのウィンドウを開く
+4. `lsof -iTCP -a -p <sidecarのpid>` で sidecar への TCP 接続が `ESTABLISHED` であることを確認
+   （3秒後に再確認し、一過性でなく安定していることも確認）
+5. `strings` でビルド済みsidecarバイナリに `tauri://localhost` / `http://tauri.localhost` の
+   allow-list文字列が実際に焼き込まれていることを確認（069の修正コードがこのバイナリに反映されている
+   ことの裏付け）
+6. `tauri.conf.json` の一時変更を `true` に戻し、`git status` で差分が残っていないことを確認
+
+### 結果
+
+macOS本番ビルド（`.app`バンドル）のwebviewが送るOriginは `tauri://localhost` で、069で入れた
+allow-listと一致し、コメントビューアの接続は壊れないことを実機で確認した。
+
+### 残課題（引き続き未検証）
+
+Windows（`http://tauri.localhost`、WebView2）は手元にWindows実機が無いため未検証のまま。
+Windows版を初めて配布する前に実機確認が必要（`docs/release.md` に記載・`docs/tasks/069-ws-origin-auth.md`
+の残課題にも記載）。
+
+### ドキュメント更新
+
+- `docs/release.md`: 「publish前にmacOSの実機確認をすること」という先送りメモを削除し、
+  Windows未検証のみを残す形に更新
+- `docs/tasks/069-ws-origin-auth.md`: 残課題をmacOS確認済み・Windows未検証に更新
