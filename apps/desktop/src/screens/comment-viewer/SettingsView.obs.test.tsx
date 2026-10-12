@@ -1,5 +1,5 @@
 import type { ComponentProps } from "react";
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { SettingsView } from "./SettingsView";
 import { DEFAULT_OVERLAY_FONT } from "../../features/comment-viewer/overlaySettings";
@@ -20,9 +20,20 @@ import { TTS_MAX_LENGTH_DEFAULT } from "../../features/comment-viewer/ttsPrefs";
  */
 
 // useHostOs は Rust host_os を invoke するため、テストでは OS を固定してコンポーネントを隔離する（表示専用性は不変）。
+//
+// ⚠ 067a 追補（2026-09-09）: **切り替えられる**モックにした。理由＝プラグイン導入手順の
+// 「どのファイルを落とすか」が OS で変わるので、**同じカードの中で macOS と Windows の両方を固定する**必要がある。
+// ⚠⚠ 既定は `"macos"` のままで、**各テストの後に必ず戻す**（既存テストの前提を 1 つも動かさない）。
+// ⚠ OS ごとに別ファイルへ切らなかったのは、このリポジトリがテストを**関心**で割っているため
+//   （OS で割ると `baseProps` 約 50 行を丸ごと複製することになり、props が増えるたび二重に直す羽目になる）。
+const hostOsMock = vi.hoisted(() => ({ current: "macos" as string | null }));
 vi.mock("../../features/platform/useHostOs", () => ({
-  useHostOs: () => "macos",
+  useHostOs: () => hostOsMock.current,
 }));
+
+afterEach(() => {
+  hostOsMock.current = "macos";
+});
 
 type Props = ComponentProps<typeof SettingsView>;
 
@@ -76,6 +87,12 @@ function baseProps(over: Partial<Props> = {}): Props {
     // 046b: 固定コメント専用オーバーレイの表示トグル（既定 OFF）。
     pinnedOverlayEnabled: false,
     onPinnedOverlayToggle: vi.fn(),
+    // 067a: 高度な設定（`comment-overlay` 窓に出す配信元・既定は両方 ON）。
+    // ⚠ Twitch 専用ウィンドウは 2026-09-12 の撤回で**窓ごと削除した**（トグルも無い）。
+    overlayShowTwitch: true,
+    onOverlayShowTwitchChange: vi.fn(),
+    overlayShowYouTube: true,
+    onOverlayShowYouTubeChange: vi.fn(),
     ...over,
   };
 }
@@ -345,5 +362,198 @@ describe("SettingsView 046b 固定コメントオーバーレイの設定", () =
     const card = pinned.closest('[class*="card"]');
     expect(card).not.toBeNull();
     expect(card).toContainElement(autoAdd);
+  });
+});
+
+/**
+ * 067a（2026-09-12 改訂）: **Twitch の規約についての注意書き**の仕様テスト。
+ *
+ * ⚠⚠⚠ このカードの文言は**事実の正確さがそのまま品質**である。
+ * - 断定（「禁止されているので出せません」）→ StreamDock が勝手に決めていることになる。
+ * - 誤った安心（「Twitch が許可しました」）→ **条文は残っているので嘘**になる。
+ * ⇒ 「①条文はある ②CEO が配信内で取り締まらないと述べた ③決めるのは配信者」の 3 点を固定する。
+ *
+ * ⚠⚠ 2026-09-12: 配信先ごとの出し分け（067b/c/e）を撤回したので、
+ * **「自動で出し分けます」と Branch Output の導入手順は消えた**。
+ * ⇒ 消えたことも固定する（戻すと、できないことを約束する画面に逆戻りする）。
+ * 経緯は `docs/tasks/067-multistream-output-split.md` §25 が正。
+ */
+describe("⚠⚠ 067a Twitch の規約についての注意書き", () => {
+  /** ⚠ 3 文は 1 つの ※ 注記にまとめてある（2026-09-12）。要素を 1 つに絞って引く。 */
+  function noticeEl(): HTMLElement {
+    return screen.getByText(/利用規約で.*禁じています/s);
+  }
+
+  it("① 規約で禁止されている事実を書いている", () => {
+    render(<SettingsView {...baseProps()} />);
+    expect(
+      screen.getByText(/利用規約で.*禁じています/s),
+    ).toBeTruthy();
+  });
+
+  it("⚠⚠ ② 誰が・どこで・何を言ったかを書く（「Twitch が許可した」にしない）", () => {
+    render(<SettingsView {...baseProps()} />);
+    const t = screen.getByText(/取り締まらない/s).textContent ?? "";
+    // ⚠ 主語（CEO）と場（配信内）が要る——公式文書は出ていないため。
+    expect(t).toContain("CEO");
+    expect(t).toContain("配信内");
+    // ⚠⚠⚠ 条文が残っていることを**同じ文の中で**言う（片方だけ読まれても誤解しないように）。
+    expect(t).toContain("条文は残っています");
+  });
+
+  it("⚠⚠⚠ 「許可」と読める言い方をしていない", () => {
+    // ⚠⚠⚠ レビュー Q-7 で `closest("div")`（＝注記を包む `.overlayDetailsBody` だけ）から
+    //   `document.body` へ広げた。⚠ **狭いスコープでは実際に穴が空いていた**——
+    //   ミューテーション確認で、折りたたみの**外**（カード直下の note）に「解禁されました」を
+    //   足しても緑のままだと実測した。⚠⚠ 誤った安心を与える文言は折りたたみの中だけに
+    //   書かれるとは限らず、**カード直下に書かれるほうが危ない**（開かなくても読まれる）。
+    // ⚠ 隣の「撤回した機能の案内が残っていない」も `document.body` を見ている＝作法を揃える。
+    //   `<details>` が閉じていても `textContent` は中身まで届くことは実測済み。
+    render(<SettingsView {...baseProps()} />);
+    const text = document.body.textContent ?? "";
+    for (const ng of ["許可されました", "許可されています", "解禁"]) {
+      expect(text).not.toContain(ng);
+    }
+  });
+
+  it("③ 決めるのは配信者だと書いている", () => {
+    render(<SettingsView {...baseProps()} />);
+    expect(screen.getByText(/ご自身の判断で決めてください/s)).toBeTruthy();
+  });
+
+  it("⚠⚠⚠ 撤回した機能の案内が残っていない（Branch Output / 自動の出し分け）", () => {
+    render(<SettingsView {...baseProps()} />);
+    const body = document.body.textContent ?? "";
+    // ⚠ 導入手順を戻すと、StreamDock が設定しない拡張の導入を要求する画面になる。
+    expect(body).not.toContain("Branch Output");
+    expect(body).not.toContain("branch-output");
+    // ⚠⚠ 「自動で出し分けます」は**もうできない約束**である。
+    expect(body).not.toMatch(/自動で出し分け/);
+  });
+
+  it("⚠⚠⚠ 規約の注意書きは高度な設定の中にある（カード直下に出しっぱなしにしない）", () => {
+    // 2026-09-12（依頼者の指示）: **この設定を触る人にしか関係しない話**なので、
+    // 普段の画面には出さない。⚠ 折りたたみの外へ戻すと、画面の常時表示が 3 行増える。
+    render(<SettingsView {...baseProps()} />);
+    const advanced = screen
+      .getByText(/^高度な設定/)
+      .closest("details") as HTMLDetailsElement;
+    expect(advanced).not.toBeNull();
+    expect(advanced).toContainElement(noticeEl());
+  });
+
+  it("⚠⚠ 注意書きは ※ の注記で、トグルより後ろにある（操作 → 判断材料の順）", () => {
+    // 2026-09-12（依頼者の指示）。⚠ 先頭に戻すと、設定を開いた人が毎回まず規約を読まされる。
+    render(<SettingsView {...baseProps()} />);
+    const notice = noticeEl();
+    expect(notice.textContent?.trimStart().startsWith("※")).toBe(true);
+
+    const lastToggle = screen.getByRole("switch", {
+      name: "Twitchのコメントを表示する",
+    });
+    // ⚠⚠ DOM 上の前後関係で見る（`DOCUMENT_POSITION_FOLLOWING` = notice が後ろ）。
+    expect(
+      lastToggle.compareDocumentPosition(notice) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("⚠ 高度な設定はコメント一覧の話だと開く前に分かる（summary に書いてある）", () => {
+    render(<SettingsView {...baseProps()} />);
+    const advanced = screen
+      .getByText(/^高度な設定/)
+      .closest("details") as HTMLDetailsElement;
+    expect(advanced).not.toBeNull();
+    expect(advanced.querySelector("summary")?.textContent).toContain(
+      "コメント一覧",
+    );
+    // ⚠⚠ 「YouTube 向け」限定の話ではなくなった（撤回で一覧が 1 つになったため）。
+    expect(advanced.querySelector("summary")?.textContent).not.toContain(
+      "YouTube 向け",
+    );
+  });
+
+  it("⚠⚠ 折りたたみは既定で閉じている（情報量を増やさない）", () => {
+    render(<SettingsView {...baseProps()} />);
+    const all = Array.from(
+      document.querySelectorAll<HTMLDetailsElement>("details"),
+    );
+    expect(all.length).toBeGreaterThanOrEqual(1);
+    for (const d of all) expect(d.open).toBe(false);
+  });
+
+  it("⚠ 配信元トグルは高度な設定の中にある（カード直下に出ていない）", () => {
+    render(<SettingsView {...baseProps()} />);
+    const advanced = screen
+      .getByText(/^高度な設定/)
+      .closest("details") as HTMLDetailsElement;
+    for (const name of [
+      "Twitchのコメントを表示する",
+      "YouTubeのコメントを表示する",
+    ]) {
+      const sw = screen.getByRole("switch", { name });
+      expect(advanced).toContainElement(sw);
+    }
+  });
+
+  it("⚠ 配信元トグルの並びは YouTube → Twitch（依頼者の指示・2026-09-12）", () => {
+    // ⚠⚠ 上の注意書きが Twitch の話なので、読み終えた直後に Twitch のトグルが来る並びにしてある。
+    //   ⇒ 入れ替えると、文と操作の繋がりが切れる。
+    render(<SettingsView {...baseProps()} />);
+    const labels = Array.from(
+      document.querySelectorAll<HTMLElement>('[role="switch"]'),
+    )
+      .map((el) => el.getAttribute("aria-label") ?? el.textContent ?? "")
+      .filter((t) => t.includes("のコメントを表示する"));
+    expect(labels).toHaveLength(2);
+    expect(labels[0]).toContain("YouTube");
+    expect(labels[1]).toContain("Twitch");
+  });
+
+  it("⚠⚠ Twitch 専用ウィンドウを出すかのトグルは**無い**（窓ごと撤回した）", () => {
+    render(<SettingsView {...baseProps()} />);
+    expect(
+      screen.queryByRole("switch", {
+        name: /Twitchのコメントだけの専用ウィンドウ/,
+      }),
+    ).toBeNull();
+  });
+});
+
+
+/**
+ * 067a 追補（2026-09-09）: **Windows 限定の注記 2 本**。
+ *
+ * ⚠⚠ これらは 033f / 046b から画面にあるのに、**どのテストにも触られていなかった**
+ * （設定ビューのテストは全ファイルが `useHostOs` を `"macos"` に固定していたため）。
+ * OS 切替モックを入れたついでに埋める——**触れる状態になったものは触っておく**。
+ */
+describe("⚠ Windows 限定の注記（033f / 046b・従来どこからもテストされていなかった）", () => {
+  const WGC = /旧方式（BitBlt）のままだと真っ黒になります/;
+  const PINNED = /上のコメント用と同じく/;
+
+  it("Windows ではキャプチャ方式と透過の案内を出す（出さないと画面が真っ黒になる）", () => {
+    hostOsMock.current = "windows";
+    render(<SettingsView {...baseProps()} />);
+    expect(screen.getByText(WGC)).toBeTruthy();
+  });
+
+  it("macOS では出さない（関係のない OS の設定手順を読ませない）", () => {
+    render(<SettingsView {...baseProps()} />);
+    expect(screen.queryByText(WGC)).toBeNull();
+    expect(screen.queryByText(PINNED)).toBeNull();
+  });
+
+  it("⚠⚠ 固定コメント側の注記は必ずコメント用の**後ろ**に出る（「上の」が指す先を壊さない）", () => {
+    // ⚠ 文面が位置参照（「上のコメント用と同じく」）なので、カードの並べ替えで**黙って嘘になる**。
+    //   SettingsView 側にも「このカードは末尾に置くこと」というコメントがあるが、
+    //   コメントは実行されない。⇒ 順序をここで固定する。
+    hostOsMock.current = "windows";
+    render(<SettingsView {...baseProps()} />);
+    const upper = screen.getByText(WGC);
+    const lower = screen.getByText(PINNED);
+    expect(
+      upper.compareDocumentPosition(lower) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 });

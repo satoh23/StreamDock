@@ -94,6 +94,11 @@ function baseProps(over: Partial<Props> = {}): Props {
     overlayFont: DEFAULT_OVERLAY_FONT,
     onOverlayFontChange: vi.fn(),
     overlayShowSource: false,
+    // 067a: オーバーレイに出す配信元（既定は両方 ON＝035b 以来の現行挙動）。
+    overlayShowTwitch: true,
+    onOverlayShowTwitchChange: vi.fn(),
+    overlayShowYouTube: true,
+    onOverlayShowYouTubeChange: vi.fn(),
     onOverlayShowSourceChange: vi.fn(),
     obsConfig: null,
     obsAutoAdd: false,

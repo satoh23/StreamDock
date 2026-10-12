@@ -153,6 +153,19 @@ interface SettingsViewProps {
   // 値は CommentViewerApp が保持し localStorage 永続。ここは表示とユーザー操作の受け渡しのみ。
   pinnedOverlayEnabled: boolean;
   onPinnedOverlayToggle: (next: boolean) => void;
+  // 067a: **高度な設定**（普段は折りたたみ）＝ オーバーレイ窓に出す配信元。
+  // ⚠⚠⚠ **効くのは `comment-overlay` 窓だけである。**`pinned-overlay`（固定コメント）と
+  // `stage-overlay`（ガチャ演出の `viewerName`）は**この設定を読まない＝素通りする**。
+  // ⇒ 「Twitch を OFF にした」のに、ピン留め済みの Twitch コメントと Twitch 視聴者の表示名は配信に載る。
+  // ⚠ これは 067a 当初からの範囲で、撤回で新たに空いた穴ではない（レビュー S-2・2026-09-12）。
+  // ⚠⚠ **規約の強制はコードから完全に消えている**（撤回前の `stream-policy.ts` の凍結テーブルごと削除した）。
+  // いま規約に関して StreamDock が持つのは「ユーザーが選ぶ ＋ 注記」だけで、**強制はゼロ**である。
+  // 判断の経緯は `docs/tasks/067-multistream-output-split.md` §25、仕組みは
+  // `features/comment-viewer/overlayCommentFilter.ts` の JSDoc が正。
+  overlayShowTwitch: boolean;
+  onOverlayShowTwitchChange: (next: boolean) => void;
+  overlayShowYouTube: boolean;
+  onOverlayShowYouTubeChange: (next: boolean) => void;
   /*
    * ⚠⚠⚠ **2026-08-30: チャット送信の props 3 本（`onChatTestSend` / `chatSendChannel` /
    * `gachaChatResult`）を削除した。** 依頼者の判断
@@ -208,6 +221,10 @@ export function SettingsView({
   onClearObsPassword,
   pinnedOverlayEnabled,
   onPinnedOverlayToggle,
+  overlayShowTwitch,
+  onOverlayShowTwitchChange,
+  overlayShowYouTube,
+  onOverlayShowYouTubeChange,
 }: SettingsViewProps) {
   // 044a: OBS パスワード入力のローカル state（**この値は保存しない・保存は Rust→keychain**）。認証が必要な OBS の
   // ときだけ入力欄を出す。保存ボタンで onSetObsPassword に渡し、入力欄は即クリアして DOM/メモリに残さない（§9）。
@@ -848,6 +865,65 @@ export function SettingsView({
             ON にすると、OBSに表示する各コメントに配信サービス名（Twitch /
             YouTube）を小さく表示します。
           </span>
+
+          {/* 067a: 出す配信元の選択は**高度な設定**（063f と同じ `<details>` の折りたたみ）。
+              ⚠ 既定（両方 ON）のまま触らなくても成立するのが前提で、**普段は開かない**のが正しい。
+              ⚠⚠ 2026-09-12: 配信先ごとの出し分け（067b/c/e）を撤回したので、**この 2 本が
+              コメント一覧そのものに効く**ようになった（以前は「YouTube 向け」限定だった）。
+
+              ⚠⚠⚠ 2026-09-12（依頼者の指示）: **Twitch の規約の注意書きも、この折りたたみの中に置く。**
+              カード直下に出していたが、**この設定を触る人にしか関係しない話**なので、
+              普段の画面に出しっぱなしにしない（「ユーザーが知る必要のあることだけ」）。
+              ⚠ **既定（両方 ON）は、この注意書きが述べている状態そのもの**なので、開かない人は読まない。
+                それを承知のうえでの配置である（取り締まりは停止中＝実害が小さいという判断）。
+              ⚠⚠ **書き方の制約はカード直下にあったときと同じ**: 2026-02 に CEO が配信内で
+              「取り締まらない」と述べたのは事実だが、**公式文書は出ておらず ToS §11 の条文も残っている**
+              （Last modified 2026-08-12 時点）。⇒ **誰が・どこで・何を言ったか**を書き、決めるのは配信者にする。
+              ⚠⚠⚠ 断定（「禁止されているので出せません」）も、誤った安心（「許可されました」）も、どちらも嘘になる。
+                `SettingsView.obs.test.tsx` がこの 2 方向を両方とも固定している。 */}
+          <details className={styles.overlayDetails}>
+            <summary>高度な設定（コメント一覧に出すサイト）</summary>
+            <div className={styles.overlayDetailsBody}>
+              {/* 067a レビュー Q-3: ⚠ **「OBSに表示する」を必ず入れる。**撤回で「YouTube 向け」を外した
+                  とき、範囲を名乗る語が 1 つも無くなり「手元のコメントビューア本体の一覧」とも読めた。
+                  ⚠⚠ そう誤読した人は「設定が効かない」と判断してトグルを ON へ戻す＝**配信にも戻る**。
+                  ⇒ 隣の「サイト名を表示する」の説明（「OBSに表示する各コメントに…」）と同じ語法に揃える。
+                  ⚠ `summary` 側は据え置き（カード見出しが「OBSに表示」なので、開く前の文脈は足りている）。 */}
+              <span className={styles.note}>
+                OBSに表示するコメント一覧に、どのサイトのコメントを出すかを選べます。
+              </span>
+              {/* ⚠ 並びは **YouTube → Twitch**（依頼者の指示・2026-09-12）。
+                  ⚠⚠ 上の注意書きが Twitch の話なので、**読み終えた直後に Twitch のトグルが来る**ほうが
+                  文と操作が繋がる。⇒ 入れ替えるとその繋がりが切れる。順序は下のテストが固定している。
+                  ⚠ 間隔はこのグループだけ広げてある（`overlayToggleGroup`）——押し間違いを避けるため、
+                  本文の行間（`overlayDetailsBody` の gap）と同じにしない。 */}
+              <div className={styles.overlayToggleGroup}>
+                <ToggleSwitch
+                  label="YouTubeのコメントを表示する"
+                  checked={overlayShowYouTube}
+                  onChange={onOverlayShowYouTubeChange}
+                />
+                <ToggleSwitch
+                  label="Twitchのコメントを表示する"
+                  checked={overlayShowTwitch}
+                  onChange={onOverlayShowTwitchChange}
+                />
+              </div>
+              {/* ⚠ 規約の話は**トグルの下に ※ の注記として置く**（依頼者の指示・2026-09-12）。
+                  ⚠⚠ 操作（何を出すか）を先に見せ、**その判断材料をあとに置く**——
+                  先頭に置くと、設定を開いた人が毎回まず規約を読まされる。
+                  ⚠⚠⚠ **書き方の制約は位置が変わっても同じ**: 2026-02 に CEO が配信内で
+                  「取り締まらない」と述べたのは事実だが、**公式文書は出ておらず ToS §11 の条文も残っている**
+                  （Last modified 2026-08-12 時点）。⇒ **誰が・どこで・何を言ったか**を書き、決めるのは配信者にする。
+                  ⚠ 断定（「出せません」）も、誤った安心（「許可されました」）も、どちらも嘘になる。
+                    `SettingsView.obs.test.tsx` が 2 方向とも固定している。 */}
+              <span className={`${styles.note} ${styles.overlayFootnote}`}>
+                ※ Twitch は利用規約で、同時配信中に他サイトのコメントを Twitch
+                の配信画面へ表示することを禁じています。2026年2月、Twitch の CEO
+                は配信内で「これを取り締まらない」と述べましたが、規約の条文は残っています。両方を表示するかどうかは、ご自身の判断で決めてください。
+              </span>
+            </div>
+          </details>
 
           {/* 046b: 固定コメント（右クリック→「上部に固定」）を OBS へ出す専用オーバーレイ窓の設定。
               上の「コメントをOBSに表示」とは**別ウィンドウ**（label `pinned-overlay`）で、OBS では別ソースとして取り込む。

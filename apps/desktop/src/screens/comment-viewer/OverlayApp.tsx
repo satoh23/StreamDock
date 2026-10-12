@@ -1,16 +1,25 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { CommentViewDto } from "../../features/comment-viewer/types";
 import { connectCommentStream } from "../../features/comment-viewer/commentStream";
 import { mergeComments } from "../../features/comment-viewer/mergeComments";
 import {
   loadOverlayFont,
   loadOverlayShowSource,
+  loadOverlayShowTwitch,
+  loadOverlayShowYouTube,
   loadOverlayTheme,
   resolveOverlayFontStack,
   OVERLAY_FONT_KEY,
   OVERLAY_SHOW_SOURCE_KEY,
+  OVERLAY_SHOW_TWITCH_KEY,
+  OVERLAY_SHOW_YOUTUBE_KEY,
   OVERLAY_THEME_KEY,
 } from "../../features/comment-viewer/overlaySettings";
+import {
+  filterCommentsBySource,
+  resolveOverlaySources,
+  toOverlaySourceFilter,
+} from "../../features/comment-viewer/overlayCommentFilter";
 import { rewriteSelectors } from "../../features/comment-viewer/cssCompat";
 import {
   OVERLAY_ROOT_SELECTOR,
@@ -25,7 +34,10 @@ import { CommentList } from "./CommentList";
 import styles from "./OverlayApp.module.css";
 
 /**
- * 033f: OBS 用の背景透過オーバーレイ（別ウィンドウ label `comment-overlay`）の描画本体。
+ * 033f: OBS 用の背景透過オーバーレイの描画本体。
+ *
+ * ⚠ **描く配信元はユーザー設定で絞れる**（067a）。判断は `overlayCommentFilter.ts` の純関数に閉じており、
+ * テーマ・カスタム CSS・フォント・アバターの経路は 1 本も分岐させない（061g の共通化方針）。
  *
  * コメビュ本体と**同じ** loopback sidecar WS（`ws://127.0.0.1:<port>`）へ `connectCommentStream` で
  * **読み取り専用接続**する（`onComments` のみ使用・制御フレームメソッド `startLogin`/`startSession`/`stopSession` は
@@ -42,7 +54,19 @@ import styles from "./OverlayApp.module.css";
  * （transparent / decorations(false) / always_on_bottom＝最背面・focused(false)＝非フォーカス。追修正①で最前面→最背面に変更）は
  * Rust の `open_comment_overlay_window` が担い、frontend からは窓を生成しない。
  */
-export function OverlayApp() {
+/**
+ * 067a: この窓のラベル（`comment-overlay`）。**呼び出し側（`App.tsx`）が渡す。**
+ *
+ * ⚠⚠ **ここで `getCurrentWindow()` を呼ばないのは意図的**——このコンポーネントは
+ * 「窓の種類」以外に Tauri の**同期 API**を 1 つも使っておらず、ここで呼ぶと
+ * **テストのたびに Tauri の窓 API をモックしないと描画すらできなくなる**（実際に踏んだ）。
+ * ラベルは `App.tsx` が既に握っているので、そのまま渡すのが安い。
+ */
+export interface OverlayAppProps {
+  label: string;
+}
+
+export function OverlayApp({ label }: OverlayAppProps) {
   const [comments, setComments] = useState<CommentViewDto[]>([]);
 
   // 034e: オーバーレイの表示設定（フォント / サイト名表示）。設定窓（CommentViewerApp/SettingsView）が localStorage に
@@ -50,6 +74,9 @@ export function OverlayApp() {
   // ままで、新規外部通信・宛先・依存は増やさない（localStorage の非機密 UI 設定を読むだけ）。
   const [font, setFont] = useState(() => loadOverlayFont());
   const [showSource, setShowSource] = useState(() => loadOverlayShowSource());
+  // 067a: 描画対象の配信元。⚠ **既定は両方 ON＝035b 以来の現行挙動**。
+  const [showTwitch, setShowTwitch] = useState(() => loadOverlayShowTwitch());
+  const [showYouTube, setShowYouTube] = useState(() => loadOverlayShowYouTube());
   // 060d: 選択中のカスタム CSS テーマ id（null = 既定意匠）。フォント／サイト名表示と**同じ二段構え**で、
   // ここが保証ベースラインの read-on-mount、下の storage 購読が即時反映（ベストエフォート）。
   const [themeId, setThemeId] = useState(() => loadOverlayTheme());
@@ -84,6 +111,13 @@ export function OverlayApp() {
       }
       if (e.key === OVERLAY_THEME_KEY || e.key === null) {
         setThemeId(loadOverlayTheme());
+      }
+      // 067a: 配信元フィルタ。⚠ 判断は `resolveOverlaySources` にある。分岐をここに増やさない。
+      if (e.key === OVERLAY_SHOW_TWITCH_KEY || e.key === null) {
+        setShowTwitch(loadOverlayShowTwitch());
+      }
+      if (e.key === OVERLAY_SHOW_YOUTUBE_KEY || e.key === null) {
+        setShowYouTube(loadOverlayShowYouTube());
       }
     };
     window.addEventListener("storage", onStorage);
@@ -204,6 +238,17 @@ export function OverlayApp() {
     };
   }, []);
 
+  // 067a: **描くコメントを配信元で絞る**（受信時ではなく描画時に絞る＝設定を戻したら過去分も戻る）。
+  // ⚠⚠ 未知のラベルは空集合になる（fail-closed・`overlayCommentFilter.ts` の JSDoc が正）。
+  const visibleComments = useMemo(
+    () =>
+      filterCommentsBySource(
+        comments,
+        resolveOverlaySources(label, toOverlaySourceFilter(showTwitch, showYouTube)),
+      ),
+    [comments, label, showTwitch, showYouTube],
+  );
+
   return (
     // 034e: フォント選択はモジュール CSS ではなく .root への inline font-family で当て、子孫（名前/本文）が継承する
     // （font スタック文字列は overlaySettings.ts に置く＝色ではないので生 hex 規約の対象外）。
@@ -231,7 +276,7 @@ export function OverlayApp() {
           （release のときだけ出る listWrap ラッパ/ボタンは付かない）＝033f の透過体裁を非退行で維持する。 */}
       {/* 034e: OBS 用オーバーレイはチャット意匠（variant="overlay"）で描く。サイト名表示は設定トグル値を渡す。 */}
       <CommentList
-        comments={comments}
+        comments={visibleComments}
         showCount={false}
         followMode="always"
         variant="overlay"

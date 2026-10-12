@@ -50,6 +50,12 @@ import {
   saveOverlayFont,
   loadOverlayShowSource,
   saveOverlayShowSource,
+  // 067a: オーバーレイに出す配信元（サイト別）。⚠ 描画の判断は `overlayCommentFilter.ts` が持ち、
+  //   この窓は**設定 UI と永続化だけ**を担う（overlayFont / overlayShowSource と同型）。
+  loadOverlayShowTwitch,
+  saveOverlayShowTwitch,
+  loadOverlayShowYouTube,
+  saveOverlayShowYouTube,
   loadObsAutoAdd,
   saveObsAutoAdd,
   loadPinnedOverlayEnabled,
@@ -630,6 +636,14 @@ export function CommentViewerApp() {
   const [overlayShowSource, setOverlayShowSource] = useState(() =>
     loadOverlayShowSource(),
   );
+  // 067a: オーバーレイに出す配信元。⚠ **既定は両方 ON＝035b 以来の現行挙動**。
+  //   既定を変えると、既存ユーザーのオーバーレイから黙ってコメントが消える。
+  const [overlayShowTwitch, setOverlayShowTwitch] = useState(() =>
+    loadOverlayShowTwitch(),
+  );
+  const [overlayShowYouTube, setOverlayShowYouTube] = useState(() =>
+    loadOverlayShowYouTube(),
+  );
 
   // 046a: 固定コメント（ピン留め）。変化のたびに localStorage へ保存する（channel / overlayFont と同型）。
   // 書換は他窓（046b の固定専用オーバーレイ）で storage イベントを発火させる。
@@ -1075,6 +1089,13 @@ export function CommentViewerApp() {
   useEffect(() => {
     saveOverlayShowSource(overlayShowSource);
   }, [overlayShowSource]);
+  // 067a: 配信元フィルタの永続化（非機密）。⚠ 書換でオーバーレイ窓の storage 購読が発火し、即反映される。
+  useEffect(() => {
+    saveOverlayShowTwitch(overlayShowTwitch);
+  }, [overlayShowTwitch]);
+  useEffect(() => {
+    saveOverlayShowYouTube(overlayShowYouTube);
+  }, [overlayShowYouTube]);
   // 044a: OBS 自動追加 ON/OFF を永続化（非機密・パスワードは含めない）。
   useEffect(() => {
     saveObsAutoAdd(obsAutoAdd);
@@ -2983,6 +3004,10 @@ export function CommentViewerApp() {
           onOverlayFontChange={setOverlayFont}
           overlayShowSource={overlayShowSource}
           onOverlayShowSourceChange={setOverlayShowSource}
+          overlayShowTwitch={overlayShowTwitch}
+          onOverlayShowTwitchChange={setOverlayShowTwitch}
+          overlayShowYouTube={overlayShowYouTube}
+          onOverlayShowYouTubeChange={setOverlayShowYouTube}
           onRequestThemeImport={requestThemeImport}
           onRequestThemeFont={requestThemeFont}
           obsConfig={obsConfig}

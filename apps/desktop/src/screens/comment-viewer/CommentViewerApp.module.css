@@ -774,6 +774,20 @@
   gap: 10px;
   min-width: 280px;
   max-width: calc(100vw - 32px);
+  /* **縦にも溢れ止めを入れる。**⚠ 窓を低くすると中身の下端がビューポートの外へ出て、
+     「停止ボタンが押せない」＝押せているつもりで押せていない状態になりうる。
+     ⚠⚠ 96px はツールバー（上）と余白のぶん。⚠ 横方向のクランプ（max-width）と同じ考え方で、
+     アンカー（top/left）は動かさず**大きさだけ**をビューポート内に収める。
+
+     ⚠⚠⚠ **来歴（レビュー Q-2・2026-09-12 に書き直した）**: この 2 行は 067c（接続ピル 2 つを
+     1 つへ統合する変更）の作業中に入り、当初のコメントは「統合で背丈が 2 倍になったから」と
+     書いていた。⚠ **067 は撤回され、ピルの統合も `ConnectionCard.tsx` ごと HEAD へ戻した**ので、
+     その理由は現存しない（すぐ上の `.connCluster` は「Twitch / YouTube を横並び」＝ 2 つのまま）。
+     ⇒ ⚠⚠ **この 2 行自体は 067 と無関係に正しい**——`.connPopover` に `max-height` / `overflow` が
+     無いことは**067 以前から `docs/progress.md` の過去レビューで「後回し可・要実機確認」として
+     挙がっていた既存論点**である。撤回で戻さず残したのはそのため。 */
+  max-height: calc(100vh - 96px);
+  overflow-y: auto;
   padding: 14px;
   border-radius: var(--radius);
   background: var(--surface);
@@ -2002,4 +2016,53 @@
 .themeCssInput:focus-visible {
   outline: 2px solid var(--primary-soft-border);
   outline-offset: 1px;
+}
+
+/* 067a: 「OBSに表示」カードの折りたたみ 2 つ（配信の準備手順 / 高度な設定）。
+   ⚠ 意匠は 063f の `.gachaAdvanced`（OBSエフェクト画面）と揃える——同じアプリの中で
+   「折りたためる補足」の見え方を 2 種類にしない。
+   ⚠ 三角（マーカー）は残す: 消すと「ただの見出し」に見えて誰も開かない（063f の注記が正）。 */
+/* 067a: 高度な設定の折りたたみ。⚠ **上を詰めて下を広げる**（依頼者の指示・2026-09-12）＝
+   「直前のグループに属する補助設定」に見せるため。上は `.cardBody > * + .note` と同じ引き寄せ方
+   （ブロック間 gap をブロック内 gap まで負 margin で戻す）にしてある——**同じ意味には同じ手**を使う。
+   ⚠⚠ 下は逆に足して、次のブロックとの境目をはっきりさせる（上 4px / 下 20px）。 */
+.overlayDetails {
+  margin-top: calc(var(--card-inner-gap) - var(--card-block-gap));
+  margin-bottom: 10px;
+}
+
+/* 067a: ※ 付きの注記（依頼者の指示・2026-09-12）。
+   ⚠ 折り返した 2 行目以降が ※ の下に潜らないよう、ぶら下げインデントにする。 */
+.overlayFootnote {
+  padding-left: 1em;
+  text-indent: -1em;
+}
+
+.overlayDetails > summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--muted);
+  user-select: none;
+}
+
+.overlayDetailsBody {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+}
+
+/* 067a: 配信元トグル 2 本のまとまり（依頼者の指示・2026-09-12）。
+   ⚠ 本文の行間（上の gap: 6px）のままだと 2 本が近すぎて押し間違えるので、ここだけ広げる。
+   ⚠⚠ `.overlayDetailsBody` の gap 自体は上げないこと——注意書きの行間まで広がって、
+   折りたたみに収めた意味（画面を詰める）が薄れる。 */
+.overlayToggleGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin: 4px 0;
 }

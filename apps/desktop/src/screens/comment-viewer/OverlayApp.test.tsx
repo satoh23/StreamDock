@@ -93,7 +93,7 @@ afterEach(() => {
 
 describe("OverlayApp: テーマ CSS の注入", () => {
   it("未選択なら <style> を作らない（既定意匠）", async () => {
-    render(<OverlayApp />);
+    render(<OverlayApp label="comment-overlay" />);
     await waitFor(() => expect(mocks.connectCommentStream).toHaveBeenCalled());
     expect(themeStyles()).toHaveLength(0);
     expect(mocks.getOverlayThemeCss).not.toHaveBeenCalled();
@@ -101,7 +101,7 @@ describe("OverlayApp: テーマ CSS の注入", () => {
 
   it("選択中テーマがあると <style> を 1 つだけ足す", async () => {
     saveOverlayTheme(THEME_A);
-    render(<OverlayApp />);
+    render(<OverlayApp label="comment-overlay" />);
     await waitFor(() => expect(themeStyles()).toHaveLength(1));
     expect(mocks.getOverlayThemeCss).toHaveBeenCalledWith(THEME_A);
     expect(themeCssOf(themeStyles()[0])).toBe(".sd-comment{color:red}");
@@ -112,7 +112,7 @@ describe("OverlayApp: テーマ CSS の注入", () => {
       ".chat-line__no-background{color:red}",
     );
     saveOverlayTheme(THEME_A);
-    render(<OverlayApp />);
+    render(<OverlayApp label="comment-overlay" />);
     await waitFor(() => expect(themeStyles()).toHaveLength(1));
     // ⚠ 060f: 純正チャットの「テキストコメント専用」セレクタは **chat 専用クラス**へ向く
     // （`.sd-comment` は chat と課金の両方に付くため、そこへ向けると課金カードの意匠が壊れる）。
@@ -132,7 +132,7 @@ describe("OverlayApp: テーマ CSS の注入", () => {
       "body{margin:6px auto;letter-spacing:.1em}",
     );
     saveOverlayTheme(THEME_A);
-    render(<OverlayApp />);
+    render(<OverlayApp label="comment-overlay" />);
     await waitFor(() => expect(themeStyles()).toHaveLength(1));
     expect(themeCssOf(themeStyles()[0])).toBe(
       ".sd-overlay{margin:6px auto;letter-spacing:.1em}",
@@ -142,7 +142,7 @@ describe("OverlayApp: テーマ CSS の注入", () => {
   it("⚠ 通常のセレクタは前置されない（プレビューの scopeSelectors とはここが違う）", async () => {
     mocks.getOverlayThemeCss.mockResolvedValue(".sd-comment{color:red}");
     saveOverlayTheme(THEME_A);
-    render(<OverlayApp />);
+    render(<OverlayApp label="comment-overlay" />);
     await waitFor(() => expect(themeStyles()).toHaveLength(1));
     // 前置すると詳細度が無意味に上がる（配信窓には閉じ込める相手がいない）。
     expect(themeCssOf(themeStyles()[0])).toBe(".sd-comment{color:red}");
@@ -151,7 +151,7 @@ describe("OverlayApp: テーマ CSS の注入", () => {
   it(":root の CSS 変数が窓ルートに載る（実サンプルの --txtcolor が効く）", async () => {
     mocks.getOverlayThemeCss.mockResolvedValue(":root{--txtcolor:#555}");
     saveOverlayTheme(THEME_A);
-    render(<OverlayApp />);
+    render(<OverlayApp label="comment-overlay" />);
     await waitFor(() => expect(themeStyles()).toHaveLength(1));
     expect(themeCssOf(themeStyles()[0])).toBe(".sd-overlay{--txtcolor:#555}");
   });
@@ -170,7 +170,7 @@ describe("OverlayApp: テーマ CSS の注入", () => {
     const css = '.sd-comment{content:"</style><img src=x>"}';
     mocks.getOverlayThemeCss.mockResolvedValue(css);
     saveOverlayTheme(THEME_A);
-    render(<OverlayApp />);
+    render(<OverlayApp label="comment-overlay" />);
 
     await waitFor(() => expect(themeStyles()).toHaveLength(1));
     const style = themeStyles()[0];
@@ -183,7 +183,7 @@ describe("OverlayApp: テーマ CSS の注入", () => {
 
   it("切り替えても <style> は 1 つのまま（積み上がらない）", async () => {
     saveOverlayTheme(THEME_A);
-    render(<OverlayApp />);
+    render(<OverlayApp label="comment-overlay" />);
     await waitFor(() => expect(themeStyles()).toHaveLength(1));
 
     for (const [id, css] of [
@@ -205,7 +205,7 @@ describe("OverlayApp: テーマ CSS の注入", () => {
 
   it("storage イベントで既定へ戻すと <style> が消える（「既定のデザインに戻す」の受け口）", async () => {
     saveOverlayTheme(THEME_A);
-    render(<OverlayApp />);
+    render(<OverlayApp label="comment-overlay" />);
     await waitFor(() => expect(themeStyles()).toHaveLength(1));
 
     saveOverlayTheme(null);
@@ -215,7 +215,7 @@ describe("OverlayApp: テーマ CSS の注入", () => {
 
   it("localStorage.clear()（key=null）でも既定へ戻る", async () => {
     saveOverlayTheme(THEME_A);
-    render(<OverlayApp />);
+    render(<OverlayApp label="comment-overlay" />);
     await waitFor(() => expect(themeStyles()).toHaveLength(1));
 
     localStorage.clear();
@@ -225,7 +225,7 @@ describe("OverlayApp: テーマ CSS の注入", () => {
 
   it("アンマウントで <style> を取り除く", async () => {
     saveOverlayTheme(THEME_A);
-    const view = render(<OverlayApp />);
+    const view = render(<OverlayApp label="comment-overlay" />);
     await waitFor(() => expect(themeStyles()).toHaveLength(1));
     view.unmount();
     expect(themeStyles()).toHaveLength(0);
@@ -237,7 +237,7 @@ describe("OverlayApp: テーマ CSS の注入", () => {
       message: "テーマが見つかりません。",
     });
     saveOverlayTheme(THEME_A);
-    render(<OverlayApp />);
+    render(<OverlayApp label="comment-overlay" />);
 
     await waitFor(() => expect(mocks.getOverlayThemeCss).toHaveBeenCalled());
     expect(themeStyles()).toHaveLength(0);
@@ -254,7 +254,7 @@ describe("OverlayApp: テーマ CSS の注入", () => {
   it("⚠⚠ 不可視にするテーマ（display:none）でも、既定へ戻せば <style> が外れて復帰する", async () => {
     mocks.getOverlayThemeCss.mockResolvedValue(".sd-comment{display:none}");
     saveOverlayTheme(THEME_A);
-    render(<OverlayApp />);
+    render(<OverlayApp label="comment-overlay" />);
     await waitFor(() => expect(themeStyles()).toHaveLength(1));
     expect(themeCssOf(themeStyles()[0])).toBe(".sd-comment{display:none}");
 
@@ -271,7 +271,7 @@ describe("OverlayApp: テーマ CSS の注入", () => {
 
   it("フォントが無いテーマではフォント用 <style> を作らない", async () => {
     saveOverlayTheme(THEME_A);
-    render(<OverlayApp />);
+    render(<OverlayApp label="comment-overlay" />);
     await waitFor(() => expect(themeStyles()).toHaveLength(1));
     expect(fontStyles()).toHaveLength(0);
   });
@@ -284,7 +284,7 @@ describe("OverlayApp: テーマ CSS の注入", () => {
       '@font-face{font-family:"X";src:url(data:font/woff2;base64,d09GMg==) format("woff2")}';
     mocks.getOverlayThemeFontCss.mockResolvedValue(fontCss);
     saveOverlayTheme(THEME_A);
-    render(<OverlayApp />);
+    render(<OverlayApp label="comment-overlay" />);
     await waitFor(() => expect(fontStyles()).toHaveLength(1));
     expect(mocks.getOverlayThemeFontCss).toHaveBeenCalledWith(THEME_A);
     // ⚠ **1 文字も書き換わっていないこと**（変換を通していないことの担保）。
@@ -296,7 +296,7 @@ describe("OverlayApp: テーマ CSS の注入", () => {
   it("⚠ テーマを切り替えてもフォント用 <style> は積み上がらない", async () => {
     mocks.getOverlayThemeFontCss.mockResolvedValue("@font-face{font-family:A}");
     saveOverlayTheme(THEME_A);
-    render(<OverlayApp />);
+    render(<OverlayApp label="comment-overlay" />);
     await waitFor(() => expect(fontStyles()).toHaveLength(1));
 
     mocks.getOverlayThemeFontCss.mockResolvedValue("@font-face{font-family:B}");
@@ -312,7 +312,7 @@ describe("OverlayApp: テーマ CSS の注入", () => {
   it("⚠⚠ 既定へ戻すとフォント用 <style> も消える（脱出路がフォントにも効く）", async () => {
     mocks.getOverlayThemeFontCss.mockResolvedValue("@font-face{font-family:A}");
     saveOverlayTheme(THEME_A);
-    render(<OverlayApp />);
+    render(<OverlayApp label="comment-overlay" />);
     await waitFor(() => expect(fontStyles()).toHaveLength(1));
 
     saveOverlayTheme(null);
@@ -325,7 +325,7 @@ describe("OverlayApp: テーマ CSS の注入", () => {
   it("フォントの取得に失敗しても意匠は入る（フォントだけ無しへ倒す）", async () => {
     mocks.getOverlayThemeFontCss.mockRejectedValue({ code: "NotFound" });
     saveOverlayTheme(THEME_A);
-    render(<OverlayApp />);
+    render(<OverlayApp label="comment-overlay" />);
     await waitFor(() => expect(themeStyles()).toHaveLength(1));
     expect(fontStyles()).toHaveLength(0);
     expect(themeCssOf(themeStyles()[0])).toBe(".sd-comment{color:red}");
@@ -333,7 +333,7 @@ describe("OverlayApp: テーマ CSS の注入", () => {
 
   it("不正な id が保存されていても既定意匠へ倒す（コマンドを呼ばない）", async () => {
     localStorage.setItem(OVERLAY_THEME_KEY, "../../evil");
-    render(<OverlayApp />);
+    render(<OverlayApp label="comment-overlay" />);
     await waitFor(() => expect(mocks.connectCommentStream).toHaveBeenCalled());
     expect(mocks.getOverlayThemeCss).not.toHaveBeenCalled();
     expect(themeStyles()).toHaveLength(0);

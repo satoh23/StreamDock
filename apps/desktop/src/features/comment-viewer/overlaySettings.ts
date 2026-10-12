@@ -60,6 +60,37 @@ export const GACHA_CHAT_ENABLED_KEY =
  */
 export const PINNED_OVERLAY_ENABLED_KEY =
   "stream-dock.comment-viewer.pinned-overlay-enabled";
+/*
+ * ⚠⚠⚠ 067a: **`TWITCH_OVERLAY_ENABLED_KEY` は作らなかった。**
+ *
+ * 初版は「TwitchコメントだけをOBSに表示」という**ユーザーが押すトグル**を足していたが、
+ * 依頼者の指摘＝**「情報を増やしすぎるとユーザーが見る気をなくす」**で撤去した（2026-09-09）。
+ * ⚠⚠ その後 2026-09-12 に**Twitch 専用窓そのものを撤回・削除**したので、この判断は結果的に正しかった
+ * （キーを作っていたら、使われない設定が localStorage に残っていた）。
+ * ⇒ **設定キーを足して復活させないこと**（経緯は `docs/tasks/067-multistream-output-split.md` §25）。
+ */
+/**
+ * 067a: **オーバーレイ窓（`comment-overlay`）に Twitch のコメントを出すか**（⚠ 既定 **ON**）。
+ *
+ * ⚠⚠ **既定を ON にするのが機能要件である**——035b 以来「取得中の全配信元を混ぜて描く」のが現行挙動で、
+ * 既定を OFF にすると**アップデートしただけで配信画面からコメントが消える**。
+ * ⚠ そのため [`loadOverlayShowTwitch`] は「未保存なら true」で読む（他のトグルと**向きが逆**なので注意）。
+ * ⚠ この 2 本（twitch / youtube）は 035c の `speak-twitch` / `speak-youtube`（読み上げの配信元フィルタ）と
+ * **同じ形**にしてある（1 キー 1 真偽値・JSON にしない）。
+ *
+ * ⚠⚠ **これは「高度な設定」の中にある**（063f と同じ `<details>` の折りたたみ）。
+ * 既定のまま触らなくても成立するのが前提で、**普段は開かない**のが正しい。
+ */
+export const OVERLAY_SHOW_TWITCH_KEY =
+  "stream-dock.comment-viewer.overlay-show-twitch";
+/**
+ * 067a: **オーバーレイ窓に YouTube のコメントを出すか**（⚠ 既定 **ON**）。
+ * 理由・作法は [`OVERLAY_SHOW_TWITCH_KEY`] と同じ。
+ * ⚠ 効くのは `comment-overlay` 窓だけである（判断は `overlayCommentFilter.ts` の
+ * `resolveOverlaySources`・**未知のラベルは何も描かない**）。
+ */
+export const OVERLAY_SHOW_YOUTUBE_KEY =
+  "stream-dock.comment-viewer.overlay-show-youtube";
 /**
  * ⚠⚠⚠ **064 レビュー S-6: `EFFECT_OVERLAY_ENABLED_KEY`（コーナー窓を出すかの派生値）を削除した。**
  *
@@ -728,6 +759,49 @@ export function loadPinnedOverlayEnabled(): boolean {
 export function savePinnedOverlayEnabled(enabled: boolean): void {
   try {
     localStorage.setItem(PINNED_OVERLAY_ENABLED_KEY, String(enabled));
+  } catch {
+    // プライベートモード等で書けない場合は黙って無視する。
+  }
+}
+
+/**
+ * 067a: オーバーレイ窓に Twitch のコメントを出すか。
+ * ⚠⚠ **未保存・例外は `true`（ON）へフォールバックする**——他のトグルと**向きが逆**である。
+ * 理由は [`OVERLAY_SHOW_TWITCH_KEY`] の JSDoc が正（既定 OFF にすると既存ユーザーの
+ * オーバーレイからコメントが黙って消える）。
+ */
+export function loadOverlayShowTwitch(): boolean {
+  try {
+    return localStorage.getItem(OVERLAY_SHOW_TWITCH_KEY) !== "false";
+  } catch {
+    return true;
+  }
+}
+
+/** 067a: オーバーレイ窓に Twitch のコメントを出すかを保存する（ローカルのみ・非機密）。 */
+export function saveOverlayShowTwitch(show: boolean): void {
+  try {
+    localStorage.setItem(OVERLAY_SHOW_TWITCH_KEY, String(show));
+  } catch {
+    // プライベートモード等で書けない場合は黙って無視する。
+  }
+}
+
+/**
+ * 067a: オーバーレイ窓に YouTube のコメントを出すか（⚠ 既定 ON・向きは上と同じ）。
+ */
+export function loadOverlayShowYouTube(): boolean {
+  try {
+    return localStorage.getItem(OVERLAY_SHOW_YOUTUBE_KEY) !== "false";
+  } catch {
+    return true;
+  }
+}
+
+/** 067a: オーバーレイ窓に YouTube のコメントを出すかを保存する（ローカルのみ・非機密）。 */
+export function saveOverlayShowYouTube(show: boolean): void {
+  try {
+    localStorage.setItem(OVERLAY_SHOW_YOUTUBE_KEY, String(show));
   } catch {
     // プライベートモード等で書けない場合は黙って無視する。
   }

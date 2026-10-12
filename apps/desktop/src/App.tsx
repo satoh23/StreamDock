@@ -33,6 +33,10 @@ import { TutorialOverlay } from "./components/tutorial/TutorialOverlay";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { CommentViewerApp } from "./screens/comment-viewer/CommentViewerApp";
 import { OverlayApp } from "./screens/comment-viewer/OverlayApp";
+// 067a レビュー S-5: ⚠ 窓ラベルは**ここと `overlayCommentFilter.ts` の 2 箇所に別々の文字列**で
+//   書かれていた。`resolveOverlaySources` は未知ラベルを空集合（fail-closed）へ倒すので、
+//   ここを typo すると**どのテストも落ちないままオーバーレイが真っ白になる**。⇒ 定数を共有する。
+import { COMMENT_OVERLAY_LABEL } from "./features/comment-viewer/overlayCommentFilter";
 import { PinnedOverlayApp } from "./screens/comment-viewer/PinnedOverlayApp";
 import { EffectOverlayApp } from "./screens/obs-effects/EffectOverlayApp";
 import { ObsEffectsScreen } from "./screens/obs-effects/ObsEffectsScreen";
@@ -437,8 +441,10 @@ function App() {
   if (label === "comment-viewer") {
     return <CommentViewerApp />;
   }
-  if (label === "comment-overlay") {
-    return <OverlayApp />;
+  if (label === COMMENT_OVERLAY_LABEL) {
+    // 067a: ⚠ ラベルは**ここから渡す**。`OverlayApp` 側で `getCurrentWindow()` を呼ぶと、
+    //   描画テストのたびに Tauri の窓 API をモックしないと動かなくなる（同ファイルの JSDoc が正）。
+    return <OverlayApp label={label} />;
   }
   if (label === "pinned-overlay") {
     return <PinnedOverlayApp />;
